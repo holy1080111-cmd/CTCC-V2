@@ -1,0 +1,72 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ctcc-v2-api
+    env_file:
+      - .env
+    ports:
+      - "127.0.0.1:8100:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/liveness', timeout=3)"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    security_opt:
+      - no-new-privileges:true
+
+  postgres:
+    image: postgres:17-alpine
+    container_name: ctcc-v2-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-ctcc}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ctcc_dev_password}
+      POSTGRES_DB: ${POSTGRES_DB:-ctcc}
+    volumes:
+      - ctcc_v2_postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ctcc} -d ${POSTGRES_DB:-ctcc}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
+
+  redis:
+    image: redis:8-alpine
+    container_name: ctcc-v2-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - ctcc_v2_redis_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
+
+volumes:
+  ctcc_v2_postgres_data:
+  ctcc_v2_redis_data:

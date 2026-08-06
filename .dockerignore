@@ -1,0 +1,9 @@
+.env
+.git
+.gitignore
+__pycache__/
+*.py[cod]
+.pytest_cache/
+backups/
+*.zip
+CTCC-V2-v*-backup/
