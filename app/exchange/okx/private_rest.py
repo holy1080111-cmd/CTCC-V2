@@ -37,7 +37,7 @@ def build_signature(
     return base64.b64encode(digest).decode("ascii")
 
 
-class OkxPrivateRestClient:
+class OkxDemoPrivateRestClient:
     """Authenticated OKX Demo REST client.
 
     Every request includes x-simulated-trading: 1. Read requests have bounded

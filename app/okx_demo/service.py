@@ -31,7 +31,7 @@ from app.exchange.okx.private_parsers import (
     parse_order,
     parse_position,
 )
-from app.exchange.okx.private_rest import OkxPrivateRestClient
+from app.exchange.okx.private_rest import OkxDemoPrivateRestClient
 from app.exchange.okx.public_rest import OkxPublicRestClient
 from app.okx_demo import OkxDemoSafetyError, OkxDemoUnavailableError
 
@@ -41,7 +41,7 @@ class OkxDemoService:
 
     def __init__(
         self,
-        private_client: OkxPrivateRestClient,
+        private_client: OkxDemoPrivateRestClient,
         public_client: OkxPublicRestClient,
         repository: OkxDemoRepository | None,
         *,
@@ -574,7 +574,7 @@ else:
     repository = None
 
 okx_demo_service = OkxDemoService(
-    OkxPrivateRestClient(settings=settings),
+    OkxDemoPrivateRestClient(settings=settings),
     OkxPublicRestClient(),
     repository,
     settings=settings,
