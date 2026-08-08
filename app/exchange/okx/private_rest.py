@@ -258,3 +258,50 @@ class OkxDemoPrivateRestClient(_OkxPrivateRestClientBase):
 
     def _extra_headers(self) -> dict[str, str]:
         return {"x-simulated-trading": "1"}
+
+
+class OkxLivePrivateRestClient(_OkxPrivateRestClientBase):
+    """Authenticated OKX Production REST client with writes hard-blocked."""
+
+    def _credentials(self) -> tuple[str, str, str]:
+        if not self.settings.okx_live_credentials_configured:
+            raise OkxPrivateApiError(
+                "OKX Live credentials are not configured",
+                code="credentials_missing",
+            )
+        return (
+            self.settings.okx_live_api_key.get_secret_value(),
+            self.settings.okx_live_api_secret.get_secret_value(),
+            self.settings.okx_live_api_passphrase.get_secret_value(),
+        )
+
+    def _rest_base_url(self) -> str:
+        return self.settings.okx_live_rest_base_url
+
+    def _timeout_seconds(self) -> float:
+        return self.settings.okx_live_timeout_seconds
+
+    def _read_max_retries(self) -> int:
+        return self.settings.okx_live_read_max_retries
+
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        body: dict[str, Any] | None = None,
+        write: bool = False,
+    ) -> list[dict[str, Any]]:
+        if write or method.upper() != "GET":
+            raise OkxPrivateApiError(
+                "OKX Live write operations are disabled",
+                code="live_writes_disabled",
+            )
+        return await super()._request(
+            method,
+            path,
+            params=params,
+            body=body,
+            write=False,
+        )

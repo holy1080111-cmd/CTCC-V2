@@ -87,10 +87,13 @@ class Settings(BaseSettings):
     paper_persist_mark_interval_seconds: int = Field(default=30, ge=5, le=3600)
     paper_recovery_history_limit: int = Field(default=100, ge=10, le=1000)
 
-    # OKX Live credentials are isolated from Demo. Runtime remains hard-blocked.
+    # OKX Live authenticated read transport. Runtime writes remain hard-blocked.
+    okx_live_rest_base_url: str = "https://openapi.okx.com"
     okx_live_api_key: SecretStr = SecretStr("")
     okx_live_api_secret: SecretStr = SecretStr("")
     okx_live_api_passphrase: SecretStr = SecretStr("")
+    okx_live_timeout_seconds: float = Field(default=10, gt=1, le=60)
+    okx_live_read_max_retries: int = Field(default=2, ge=0, le=5)
 
     # OKX Demo REST execution. Credentials are never returned by the API.
     okx_demo_enabled: bool = False
@@ -238,6 +241,22 @@ class Settings(BaseSettings):
                 raise ValueError("PAPER_AUTO_EXECUTION requires PAPER_AUTO_TICKS=true")
             if not self.paper_persistence_enabled:
                 raise ValueError("PAPER_AUTO_EXECUTION requires PAPER_PERSISTENCE_ENABLED=true")
+
+        live_parsed = urlparse(self.okx_live_rest_base_url)
+        if (
+            live_parsed.scheme != "https"
+            or live_parsed.path not in {"", "/"}
+            or live_parsed.query
+            or live_parsed.fragment
+            or live_parsed.username is not None
+            or live_parsed.password is not None
+            or live_parsed.port not in {None, 443}
+        ):
+            raise ValueError(
+                "OKX_LIVE_REST_BASE_URL must be an HTTPS origin without credentials, path, query, or fragment"
+            )
+        if live_parsed.hostname not in {"openapi.okx.com", "eea.okx.com"}:
+            raise ValueError("OKX_LIVE_REST_BASE_URL must use an approved OKX API host")
 
         parsed = urlparse(self.okx_demo_rest_base_url)
         if parsed.scheme != "https" or parsed.path not in {"", "/"} or parsed.query or parsed.fragment:

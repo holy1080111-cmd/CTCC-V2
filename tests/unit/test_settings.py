@@ -9,6 +9,9 @@ def test_safe_defaults(monkeypatch) -> None:
         "TRADING_MODE",
         "AUTO_TRADE",
         "LIVE_TRADING",
+        "OKX_LIVE_REST_BASE_URL",
+        "OKX_LIVE_TIMEOUT_SECONDS",
+        "OKX_LIVE_READ_MAX_RETRIES",
         "OKX_LIVE_API_KEY",
         "OKX_LIVE_API_SECRET",
         "OKX_LIVE_API_PASSPHRASE",
@@ -46,6 +49,9 @@ def test_safe_defaults(monkeypatch) -> None:
     assert settings.auto_trade is False
     assert settings.live_trading is False
     assert settings.okx_live_credentials_configured is False
+    assert settings.okx_live_rest_base_url == "https://openapi.okx.com"
+    assert settings.okx_live_timeout_seconds == 10
+    assert settings.okx_live_read_max_retries == 2
     assert settings.paper_auto_execution is False
     assert settings.okx_demo_enabled is False
     assert settings.okx_demo_allow_order_writes is False
@@ -314,3 +320,30 @@ def test_live_credentials_are_masked_in_repr() -> None:
 def test_rejects_live_trading_flag() -> None:
     with pytest.raises(ValidationError):
         Settings(_env_file=None, live_trading=True)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://openapi.okx.com",
+        "https://example.com",
+        "https://openapi.okx.com/api/v5",
+        "https://openapi.okx.com?source=unsafe",
+        "https://user@openapi.okx.com",
+        "https://openapi.okx.com:8443",
+    ],
+)
+def test_live_base_url_must_be_approved_okx_origin(url: str) -> None:
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, okx_live_rest_base_url=url)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://openapi.okx.com",
+        "https://eea.okx.com",
+    ],
+)
+def test_live_base_url_accepts_approved_okx_origin(url: str) -> None:
+    settings = Settings(_env_file=None, okx_live_rest_base_url=url)
