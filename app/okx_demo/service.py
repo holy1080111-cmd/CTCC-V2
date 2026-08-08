@@ -24,6 +24,7 @@ from app.domain.okx_demo import (
     OkxDemoWriteResult,
 )
 from app.exchange.okx.errors import OkxPrivateApiError, OkxPublicApiError
+from app.exchange.okx.private_api import OkxPrivateApiClient
 from app.exchange.okx.private_parsers import (
     parse_account_config,
     parse_algo_order,
@@ -41,7 +42,7 @@ class OkxDemoService:
 
     def __init__(
         self,
-        private_client: OkxDemoPrivateRestClient,
+        private_client: OkxPrivateApiClient,
         public_client: OkxPublicRestClient,
         repository: OkxDemoRepository | None,
         *,
