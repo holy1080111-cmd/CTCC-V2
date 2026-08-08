@@ -37,12 +37,12 @@ def build_signature(
     return base64.b64encode(digest).decode("ascii")
 
 
-class OkxDemoPrivateRestClient:
-    """Authenticated OKX Demo REST client.
+class _OkxPrivateRestClientBase:
+    """Authenticated OKX private REST transport shared by fixed environments.
 
-    Every request includes x-simulated-trading: 1. Read requests have bounded
-    retries; write requests are never automatically retried to avoid duplicate
-    orders after ambiguous network failures.
+    Environment-specific subclasses supply credentials and headers. Read requests
+    have bounded retries; write requests are never automatically retried to avoid
+    duplicate orders after ambiguous network failures.
     """
 
     def __init__(
@@ -57,13 +57,19 @@ class OkxDemoPrivateRestClient:
         self._clock = clock or (lambda: datetime.now(timezone.utc))
 
     def _credentials(self) -> tuple[str, str, str]:
-        if not self.settings.okx_demo_credentials_configured:
-            raise OkxPrivateApiError("OKX Demo credentials are not configured", code="credentials_missing")
-        return (
-            self.settings.okx_demo_api_key.get_secret_value(),
-            self.settings.okx_demo_api_secret.get_secret_value(),
-            self.settings.okx_demo_api_passphrase.get_secret_value(),
-        )
+        raise NotImplementedError
+
+    def _rest_base_url(self) -> str:
+        raise NotImplementedError
+
+    def _timeout_seconds(self) -> float:
+        raise NotImplementedError
+
+    def _read_max_retries(self) -> int:
+        raise NotImplementedError
+
+    def _extra_headers(self) -> dict[str, str]:
+        return {}
 
     def _headers(self, *, method: str, request_path: str, body: str) -> dict[str, str]:
         api_key, api_secret, passphrase = self._credentials()
@@ -75,7 +81,7 @@ class OkxDemoPrivateRestClient:
             body=body,
             secret=api_secret,
         )
-        return {
+        headers = {
             "Content-Type": "application/json",
             "Accept": "application/json",
             "User-Agent": f"CTCC-V2/{self.settings.app_version}",
@@ -83,8 +89,9 @@ class OkxDemoPrivateRestClient:
             "OK-ACCESS-SIGN": signature,
             "OK-ACCESS-PASSPHRASE": passphrase,
             "OK-ACCESS-TIMESTAMP": timestamp,
-            "x-simulated-trading": "1",
         }
+        headers.update(self._extra_headers())
+        return headers
 
     async def _request(
         self,
@@ -101,10 +108,10 @@ class OkxDemoPrivateRestClient:
 
         own_client = self._external_client is None
         client = self._external_client or httpx.AsyncClient(
-            base_url=self.settings.okx_demo_rest_base_url,
-            timeout=httpx.Timeout(self.settings.okx_demo_timeout_seconds),
+            base_url=self._rest_base_url(),
+            timeout=httpx.Timeout(self._timeout_seconds()),
         )
-        attempts = 1 if write else self.settings.okx_demo_read_max_retries + 1
+        attempts = 1 if write else self._read_max_retries() + 1
         last_error: Exception | None = None
         try:
             for attempt in range(attempts):
@@ -223,3 +230,31 @@ class OkxDemoPrivateRestClient:
 
     async def set_leverage(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
         return await self._request("POST", "/api/v5/account/set-leverage", body=payload, write=True)
+
+
+class OkxDemoPrivateRestClient(_OkxPrivateRestClientBase):
+    """Authenticated OKX Demo REST client with simulation permanently enabled."""
+
+    def _credentials(self) -> tuple[str, str, str]:
+        if not self.settings.okx_demo_credentials_configured:
+            raise OkxPrivateApiError(
+                "OKX Demo credentials are not configured",
+                code="credentials_missing",
+            )
+        return (
+            self.settings.okx_demo_api_key.get_secret_value(),
+            self.settings.okx_demo_api_secret.get_secret_value(),
+            self.settings.okx_demo_api_passphrase.get_secret_value(),
+        )
+
+    def _rest_base_url(self) -> str:
+        return self.settings.okx_demo_rest_base_url
+
+    def _timeout_seconds(self) -> float:
+        return self.settings.okx_demo_timeout_seconds
+
+    def _read_max_retries(self) -> int:
+        return self.settings.okx_demo_read_max_retries
+
+    def _extra_headers(self) -> dict[str, str]:
+        return {"x-simulated-trading": "1"}
