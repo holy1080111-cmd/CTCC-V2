@@ -9,6 +9,9 @@ def test_safe_defaults(monkeypatch) -> None:
         "TRADING_MODE",
         "AUTO_TRADE",
         "LIVE_TRADING",
+        "OKX_LIVE_API_KEY",
+        "OKX_LIVE_API_SECRET",
+        "OKX_LIVE_API_PASSPHRASE",
         "PAPER_AUTO_EXECUTION",
         "OKX_DEMO_ENABLED",
         "OKX_DEMO_ALLOW_ORDER_WRITES",
@@ -42,6 +45,7 @@ def test_safe_defaults(monkeypatch) -> None:
     assert settings.trading_mode == "analysis_only"
     assert settings.auto_trade is False
     assert settings.live_trading is False
+    assert settings.okx_live_credentials_configured is False
     assert settings.paper_auto_execution is False
     assert settings.okx_demo_enabled is False
     assert settings.okx_demo_allow_order_writes is False
@@ -267,3 +271,46 @@ def test_performance_window_cannot_exceed_retention() -> None:
 def test_strategy_auto_disable_is_forbidden() -> None:
     with pytest.raises(ValidationError):
         Settings(_env_file=None, okx_demo_strategy_auto_disable=True)
+
+
+def test_live_and_demo_credentials_are_isolated() -> None:
+    live = Settings(
+        _env_file=None,
+        okx_live_api_key="live-key",
+        okx_live_api_secret="live-secret",
+        okx_live_api_passphrase="live-pass",
+        okx_demo_api_key="",
+        okx_demo_api_secret="",
+        okx_demo_api_passphrase="",
+    )
+    assert live.okx_live_credentials_configured is True
+    assert live.okx_demo_credentials_configured is False
+
+    demo = Settings(
+        _env_file=None,
+        okx_demo_api_key="demo-key",
+        okx_demo_api_secret="demo-secret",
+        okx_demo_api_passphrase="demo-pass",
+        okx_live_api_key="",
+        okx_live_api_secret="",
+        okx_live_api_passphrase="",
+    )
+    assert demo.okx_demo_credentials_configured is True
+    assert demo.okx_live_credentials_configured is False
+
+
+def test_live_credentials_are_masked_in_repr() -> None:
+    settings = Settings(
+        _env_file=None,
+        okx_live_api_key="live-key",
+        okx_live_api_secret="live-secret",
+        okx_live_api_passphrase="live-pass",
+    )
+    rendered = repr(settings)
+    assert "live-secret" not in rendered
+    assert "live-pass" not in rendered
+
+
+def test_rejects_live_trading_flag() -> None:
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, live_trading=True)

@@ -87,6 +87,11 @@ class Settings(BaseSettings):
     paper_persist_mark_interval_seconds: int = Field(default=30, ge=5, le=3600)
     paper_recovery_history_limit: int = Field(default=100, ge=10, le=1000)
 
+    # OKX Live credentials are isolated from Demo. Runtime remains hard-blocked.
+    okx_live_api_key: SecretStr = SecretStr("")
+    okx_live_api_secret: SecretStr = SecretStr("")
+    okx_live_api_passphrase: SecretStr = SecretStr("")
+
     # OKX Demo REST execution. Credentials are never returned by the API.
     okx_demo_enabled: bool = False
     okx_demo_allow_order_writes: bool = False
@@ -192,6 +197,17 @@ class Settings(BaseSettings):
     @property
     def api_token_is_safe(self) -> bool:
         return len(self.api_token_value.strip()) >= 32
+
+    @property
+    def okx_live_credentials_configured(self) -> bool:
+        return all(
+            len(secret.get_secret_value().strip()) >= 3
+            for secret in (
+                self.okx_live_api_key,
+                self.okx_live_api_secret,
+                self.okx_live_api_passphrase,
+            )
+        )
 
     @property
     def okx_demo_credentials_configured(self) -> bool:
