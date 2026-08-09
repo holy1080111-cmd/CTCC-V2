@@ -136,3 +136,34 @@ class OkxLiveSyncCheckpoint(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
+
+
+class OkxLiveExecutionIntent(Base):
+    """Durable fail-closed idempotency record for a production write attempt."""
+
+    __tablename__ = "okx_live_execution_intents"
+    __table_args__ = (
+        CheckConstraint(
+            "action IN ('place_order','cancel_order','close_position','set_leverage')",
+            name="action_allowed",
+        ),
+        CheckConstraint(
+            "status IN ('reserved','acknowledged','confirmed','ambiguous','rejected')",
+            name="status_allowed",
+        ),
+    )
+
+    idempotency_key: Mapped[str] = mapped_column(String(32), primary_key=True)
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    action: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    instrument_id: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    client_order_id: Mapped[str | None] = mapped_column(String(32), index=True)
+    exchange_order_id: Mapped[str | None] = mapped_column(String(100), index=True)
+    detail_codes: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )

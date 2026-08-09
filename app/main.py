@@ -11,6 +11,7 @@ from app.market.realtime_service import realtime_client
 from app.paper.service import paper_service
 from app.orchestrator.runtime import auto_paper_orchestrator
 from app.okx_demo.service import okx_demo_service
+from app.okx_live.runtime import controlled_live_automation, okx_live_service
 from app.demo_automation.runtime import safe_demo_automation
 from app.observability.runtime import demo_observability
 
@@ -36,11 +37,14 @@ async def lifespan(_: FastAPI):
         await auto_paper_orchestrator.start()
     if settings.environment != "test":
         await okx_demo_service.startup()
+        await okx_live_service.startup()
         await safe_demo_automation.recover()
         await demo_observability.recover()
         await demo_observability.start_monitoring()
     yield
     await demo_observability.shutdown()
+    await controlled_live_automation.stop()
+    await okx_live_service.shutdown()
     await safe_demo_automation.stop()
     await auto_paper_orchestrator.stop()
     await realtime_client.stop()
@@ -63,6 +67,6 @@ async def root() -> dict[str, str]:
     return {
         "name": settings.app_name,
         "version": settings.app_version,
-        "stage": "Demo Reliability & Performance Validation v1.5",
+        "stage": "Controlled OKX Live execution boundary v1.6.8",
         "docs": "/docs",
     }

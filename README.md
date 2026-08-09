@@ -1,196 +1,181 @@
-# CTCC V2 v1.5 — Demo Reliability & Performance Validation
+# CTCC V2 v1.6.8 — Controlled OKX Live Execution
 
-v1.5 adds durable OKX Demo performance evidence on top of the verified v1.4
-controlled execution soak.
+CTCC V2 now has an isolated OKX production boundary that can reconcile and,
+only after explicit multi-stage authorization, operate real OKX SWAP positions.
+Paper and OKX Demo remain separate systems and cannot be enabled together with
+Live execution.
 
 ```text
-OKX Demo reconciliation
-→ append-only equity snapshots
-→ filled-order and realized-PnL extraction
-→ fee, funding, and adverse-slippage analysis
-→ UTC daily reports
-→ strategy-level review metrics
-→ operator-only strategy enable/disable controls
-→ reliability validation with explicit sample-size gates
+OKX Live authenticated reads
+→ capability and account-identity pinning
+→ atomic PostgreSQL mirror
+→ process-local short-lived Arm
+→ durable idempotency intent
+→ exchange precheck and hard risk caps
+→ one protected market order
+→ exchange-state reconciliation
+→ automatic disarm or emergency stop
 ```
 
 ## Safety boundary
 
-This release remains Demo-only. It does not contain a live-money broker.
+The shipped defaults cannot place an exchange order:
 
 ```env
+TRADING_MODE=analysis_only
 AUTO_TRADE=false
 LIVE_TRADING=false
-TRADING_MODE=okx_demo
+OKX_LIVE_ENABLED=false
+OKX_LIVE_ALLOW_ORDER_WRITES=false
+OKX_LIVE_AUTO_EXECUTION=false
 ```
 
-Performance endpoints are read-only with respect to exchange exposure. Capturing
-an equity snapshot calls OKX Demo reconciliation, but it does not place, cancel,
-or close an order.
+Production writes require all of the following at the same time:
 
-Automatic strategy disabling is deliberately forbidden:
+- `ENVIRONMENT=production`, `TRADING_MODE=live`, and `WEB_CONCURRENCY=1`;
+- an API token of at least 32 characters;
+- a dedicated OKX key with Read + Trade, no Withdraw, and an IP binding;
+- Live writes explicitly enabled in configuration;
+- no Paper or Demo automatic execution;
+- an authenticated runtime Arm with an exact confirmation phrase;
+- a flat account start with no position, pending order, or pending Algo order;
+- a protected SWAP market order within the symbol, size, notional, leverage,
+  lot-size, tick-size, exchange max-size, and loss-budget limits;
+- a short exchange-side request expiry on the actual order submission;
+- a new durable idempotency key that has never been reserved before.
 
-```env
-OKX_DEMO_STRATEGY_AUTO_DISABLE=false
-```
+A PostgreSQL advisory lock also serializes the entire Live write section across
+accidental duplicate API instances connected to the same database.
 
-A strategy can be disabled only through an authenticated operator request with
-an exact confirmation phrase. Disabling a strategy affects future candidate
-selection only; it never closes or modifies an existing position.
+An Arm is held only in the API process, expires in at most 15 minutes (5 minutes
+by default), allows exactly one order submission, and is never restored after a
+restart. A write transport error is not retried. If an order may have reached
+OKX but its result is ambiguous, CTCC engages Emergency Stop and does not submit
+again.
 
-## Added persistence
+Missing protection or untracked exposure never causes CTCC to silently close a
+real position. The operator must reconcile the exchange and choose an explicit
+cancel or close action.
 
-Migration `0008` adds:
+## Persistence
+
+Migration `0009` adds the isolated read-only Live account mirror. Migration
+`0010` adds `okx_live_execution_intents`, which stores only request hashes,
+identifiers, finite status values, and safe detail codes. It does not store API
+credentials or raw request/response payloads.
+
+Expected migration after upgrade:
 
 ```text
-demo_performance_snapshots
-demo_daily_performance_reports
-demo_strategy_controls
+0010 (head)
 ```
 
-Every successful OKX Demo reconciliation appends an equity snapshot. Historical
-OKX Demo order rows and automation-run attribution are used to derive:
+## Authenticated Live API
 
-- realized PnL samples;
-- recorded fees, rebates, and funding fees;
-- adverse slippage against the automation reference price;
-- win rate, profit factor, expectancy, and equity drawdown;
-- per-strategy review recommendations.
-
-Metrics are evidence from the available Demo records. They are not a guarantee
-of future profitability and they do not authorize live execution.
-
-## New API
-
-All endpoints require `X-CTCC-Token`.
+Every `/api/okx-live/*` endpoint, including status, requires `X-CTCC-Token`.
 
 ```text
-GET  /api/demo-performance/summary
-GET  /api/demo-performance/validation
-POST /api/demo-performance/snapshot/capture
-GET  /api/demo-performance/daily/{YYYY-MM-DD}
-GET  /api/demo-performance/strategies
-POST /api/demo-performance/strategies/{strategy}/disable
-POST /api/demo-performance/strategies/{strategy}/enable
+GET  /api/okx-live/status
+POST /api/okx-live/connectivity-check
+GET  /api/okx-live/account-config
+GET  /api/okx-live/balance
+GET  /api/okx-live/positions
+GET  /api/okx-live/orders/pending
+GET  /api/okx-live/algo-orders/pending
+GET  /api/okx-live/order-detail
+POST /api/okx-live/reconcile
+
+POST /api/okx-live/arm
+POST /api/okx-live/disarm
+POST /api/okx-live/emergency-stop
+POST /api/okx-live/clear-emergency-stop
+POST /api/okx-live/orders
+POST /api/okx-live/orders/cancel
+POST /api/okx-live/positions/close
+POST /api/okx-live/leverage
+
+GET  /api/okx-live/automation/status
+POST /api/okx-live/automation/start
+POST /api/okx-live/automation/stop
+POST /api/okx-live/automation/run-once
 ```
 
-Daily report dates use UTC.
+Account IDs and raw OKX payloads are excluded from API response models. The
+database mirror stores one-way account fingerprints so a changed account cannot
+silently replace the original mirror.
 
-## Upgrade from v1.4
+## Upgrade and test
 
-Stop without deleting PostgreSQL volumes:
+Keep the PostgreSQL volume:
+
+Before running this regression gate, keep every Paper, Demo, and Live
+write/automation switch disabled. The packaged script enforces that preflight
+and runs pytest under an additional test-only environment override.
 
 ```powershell
 cd C:\CTCC-V2
 docker compose down
-```
-
-Do not use `-v`.
-
-Back up the current folder, extract this release as `C:\CTCC-V2`, and copy the
-old `.env` into the new folder. Set:
-
-```env
-APP_VERSION=1.5.0
-
-OKX_DEMO_PERFORMANCE_WINDOW_DAYS=30
-OKX_DEMO_PERFORMANCE_SNAPSHOT_RETENTION_DAYS=90
-OKX_DEMO_PERFORMANCE_SNAPSHOT_QUERY_LIMIT=50000
-OKX_DEMO_PERFORMANCE_ORDER_QUERY_LIMIT=10000
-OKX_DEMO_PERFORMANCE_MIN_ACTIVE_DAYS=7
-OKX_DEMO_PERFORMANCE_MIN_REALIZED_TRADES=20
-OKX_DEMO_PERFORMANCE_MAX_AVERAGE_SLIPPAGE_BPS=10
-OKX_DEMO_PERFORMANCE_MIN_PROFIT_FACTOR=1.0
-OKX_DEMO_PERFORMANCE_MAX_DRAWDOWN_PCT=0.02
-OKX_DEMO_STRATEGY_REVIEW_MIN_TRADES=5
-OKX_DEMO_STRATEGY_REVIEW_MIN_WIN_RATE=0.35
-OKX_DEMO_STRATEGY_AUTO_DISABLE=false
-
-WEB_CONCURRENCY=1
-AUTO_TRADE=false
-LIVE_TRADING=false
-PAPER_AUTO_EXECUTION=false
-```
-
-For installation verification, keep automatic Demo execution disabled:
-
-```env
-OKX_DEMO_ALLOW_ORDER_WRITES=false
-OKX_DEMO_AUTO_EXECUTION=false
-OKX_DEMO_SOAK_ALLOW_EXECUTE=false
-```
-
-Build, migrate, and test:
-
-```powershell
-cd C:\CTCC-V2
 docker compose up -d --build
-docker compose exec api alembic current
-docker compose exec api pytest -p no:cacheprovider
+docker compose exec -T api alembic heads
+docker compose exec -T api alembic current 2>&1
+docker compose exec -T api alembic check
+docker compose exec -T `
+  -e ENVIRONMENT=test `
+  -e TRADING_MODE=analysis_only `
+  -e AUTO_TRADE=false `
+  -e LIVE_TRADING=false `
+  -e PAPER_AUTO_EXECUTION=false `
+  -e OKX_LIVE_ENABLED=false `
+  -e OKX_LIVE_ALLOW_ORDER_WRITES=false `
+  -e OKX_LIVE_AUTO_RECONCILE_ON_START=false `
+  -e OKX_LIVE_AUTO_EXECUTION=false `
+  -e OKX_DEMO_ALLOW_ORDER_WRITES=false `
+  -e OKX_DEMO_AUTO_EXECUTION=false `
+  -e OKX_DEMO_SOAK_ALLOW_EXECUTE=false `
+  api python -m pytest -q -p no:cacheprovider
+docker compose run --rm --no-deps `
+  --volume "${PWD}:/source:ro" `
+  api python /source/scripts/manifest.py --root /source --check
 ```
 
-Expected migration:
-
-```text
-0008 (head)
-```
-
-## Read-only verification
+The same sequence is packaged for Windows PowerShell:
 
 ```powershell
 powershell -ExecutionPolicy Bypass `
-  -File .\scripts\verify_demo_performance.ps1 `
-  -WindowDays 30
+  -File .\scripts\verify_v168_live_boundary.ps1
 ```
 
-The script captures one read-only reconciliation snapshot, checks the summary,
-validation, and eight strategy-control records, and confirms that position,
-pending-order, and Algo-order counts did not change.
+Do not use `docker compose down -v` during an upgrade.
 
-## Daily report
+PowerShell 5.1 may render Alembic INFO lines written to stderr as
+`NativeCommandError` when `$ErrorActionPreference = "Stop"`. Capture the native
+exit code and combined output; do not interpret the INFO line alone as a failed
+migration.
 
-```powershell
-powershell -ExecutionPolicy Bypass `
-  -File .\scripts\generate_demo_daily_report.ps1
-```
+## Staged real-account activation
 
-The JSON report is saved under `reports\` by default.
+Do not jump directly from installation to automation:
 
-## Operator strategy control
+1. Use a dedicated, IP-bound Read + Trade key with Withdraw disabled.
+2. Enable Live read mode only and run `verify_okx_live_readonly.ps1`.
+3. Review the account fingerprint pin, equity, positions, orders, and Algo
+   orders in OKX itself.
+4. Enable Live writes while leaving Live automation false.
+5. Run one operator-controlled micro order with
+   `execute_okx_live_micro_order.ps1`; independently verify fill and TP/SL on
+   OKX.
+6. Explicitly close or cancel through the operator endpoint if required and
+   reconcile again.
+7. Only after the manual evidence passes, enable Live automation and first use
+   `run_okx_live_automation_once.ps1`. Scheduled automation remains separately
+   armed and process-local.
 
-Example:
+See [docs/live_execution_v1.6.8.md](docs/live_execution_v1.6.8.md) for the exact
+configuration and runbook.
 
-```powershell
-powershell -ExecutionPolicy Bypass `
-  -File .\scripts\set_demo_strategy_control.ps1 `
-  -Strategy trend_pullback `
-  -Action disable `
-  -Reason "Review after sufficient negative Demo sample"
-```
+## Existing Demo and Paper systems
 
-The script requires the exact interactive phrase `DISABLE_DEMO_STRATEGY` or
-`ENABLE_DEMO_STRATEGY`.
-
-## Reliability validation
-
-`/api/demo-performance/validation` does not return a live-trading approval. It
-only checks whether the configured Demo evidence gates are met:
-
-- minimum active days;
-- minimum realized-trade samples;
-- maximum average adverse slippage;
-- minimum profit factor;
-- maximum observed equity drawdown.
-
-A result of `reliability_ready=false` is normal until enough Demo data exists.
-Do not lower thresholds merely to make the field become true.
-
-## Limitations
-
-- Private account reconciliation remains REST-based.
-- Performance attribution depends on retained OKX order fields and CTCC client
-  order IDs; unmatched orders are reported as `unattributed`.
-- Flat or zero-PnL opening orders are not treated as closed trades unless they
-  can be identified as closing/reduce-only orders.
-- External Slack, email, and mobile push delivery are not included.
-- No live-money execution adapter exists in this release.
+The v1.5 Demo reliability, performance reports, controlled Demo soak, operator
+strategy controls, and deterministic Paper broker remain available. Their
+settings and tables are unchanged, but their write or automation switches must
+be off in Live mode.

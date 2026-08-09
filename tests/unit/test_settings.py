@@ -15,6 +15,26 @@ def test_safe_defaults(monkeypatch) -> None:
         "OKX_LIVE_API_KEY",
         "OKX_LIVE_API_SECRET",
         "OKX_LIVE_API_PASSPHRASE",
+        "OKX_LIVE_ENABLED",
+        "OKX_LIVE_ALLOW_ORDER_WRITES",
+        "OKX_LIVE_ALLOWED_SYMBOLS",
+        "OKX_LIVE_MAX_ORDER_SIZE_CONTRACTS",
+        "OKX_LIVE_MAX_NOTIONAL_USDT",
+        "OKX_LIVE_MAX_OPEN_POSITIONS",
+        "OKX_LIVE_MAX_LEVERAGE",
+        "OKX_LIVE_REQUIRE_PROTECTION",
+        "OKX_LIVE_REQUIRE_IP_BOUND_KEY",
+        "OKX_LIVE_FORBID_WITHDRAW_PERMISSION",
+        "OKX_LIVE_AUTO_RECONCILE_ON_START",
+        "OKX_LIVE_ARM_TTL_SECONDS",
+        "OKX_LIVE_MAX_SUBMISSIONS_PER_ARM",
+        "OKX_LIVE_SESSION_LOSS_LIMIT_PCT",
+        "OKX_LIVE_CANCEL_ALL_AFTER_SECONDS",
+        "OKX_LIVE_REQUIRE_FLAT_START",
+        "OKX_LIVE_AUTO_DISARM",
+        "OKX_LIVE_AUTO_EXECUTION",
+        "OKX_LIVE_SCAN_SYMBOLS",
+        "OKX_LIVE_AUTOMATION_LEVERAGE",
         "PAPER_AUTO_EXECUTION",
         "OKX_DEMO_ENABLED",
         "OKX_DEMO_ALLOW_ORDER_WRITES",
@@ -49,6 +69,15 @@ def test_safe_defaults(monkeypatch) -> None:
     assert settings.auto_trade is False
     assert settings.live_trading is False
     assert settings.okx_live_credentials_configured is False
+    assert settings.okx_live_enabled is False
+    assert settings.okx_live_allow_order_writes is False
+    assert settings.okx_live_auto_execution is False
+    assert settings.okx_live_max_submissions_per_arm == 1
+    assert settings.okx_live_require_protection is True
+    assert settings.okx_live_require_ip_bound_key is True
+    assert settings.okx_live_forbid_withdraw_permission is True
+    assert settings.okx_live_require_flat_start is True
+    assert settings.okx_live_auto_disarm is True
     assert settings.okx_live_rest_base_url == "https://openapi.okx.com"
     assert settings.okx_live_timeout_seconds == 10
     assert settings.okx_live_read_max_retries == 2
@@ -160,6 +189,22 @@ def test_api_token_is_masked_in_repr() -> None:
     settings = Settings(_env_file=None, api_token="local-token-" + "x" * 32)
     assert "local-token" not in repr(settings)
     assert settings.api_token_is_safe is True
+
+
+def test_public_example_api_token_is_never_accepted_for_live_writes() -> None:
+    with pytest.raises(ValidationError, match="API token"):
+        Settings(
+            _env_file=None,
+            environment="production",
+            trading_mode="live",
+            live_trading=True,
+            okx_live_enabled=True,
+            okx_live_allow_order_writes=True,
+            okx_live_api_key="key",
+            okx_live_api_secret="secret",
+            okx_live_api_passphrase="pass",
+            api_token="replace_with_at_least_32_random_characters",
+        )
 
 
 def test_demo_automation_requires_websocket() -> None:
@@ -347,3 +392,77 @@ def test_live_base_url_must_be_approved_okx_origin(url: str) -> None:
 )
 def test_live_base_url_accepts_approved_okx_origin(url: str) -> None:
     settings = Settings(_env_file=None, okx_live_rest_base_url=url)
+    assert settings.okx_live_rest_base_url == url
+
+
+def _live_write_settings(**updates) -> Settings:
+    values = {
+        "environment": "production",
+        "trading_mode": "live",
+        "live_trading": True,
+        "okx_live_enabled": True,
+        "okx_live_allow_order_writes": True,
+        "okx_live_api_key": "live-key",
+        "okx_live_api_secret": "live-secret",
+        "okx_live_api_passphrase": "live-passphrase",
+        "api_token": "x" * 40,
+        "web_concurrency": 1,
+    }
+    values.update(updates)
+    return Settings(_env_file=None, **values)
+
+
+def test_live_read_mode_can_be_enabled_without_write_authority() -> None:
+    settings = Settings(
+        _env_file=None,
+        trading_mode="live",
+        okx_live_enabled=True,
+        okx_live_api_key="live-key",
+        okx_live_api_secret="live-secret",
+        okx_live_api_passphrase="live-passphrase",
+    )
+
+    assert settings.live_trading is False
+    assert settings.okx_live_allow_order_writes is False
+
+
+def test_live_write_configuration_requires_every_explicit_gate() -> None:
+    settings = _live_write_settings()
+
+    assert settings.live_trading is True
+    assert settings.okx_live_allow_order_writes is True
+    assert settings.okx_live_max_submissions_per_arm == 1
+    assert settings.okx_live_require_protection is True
+    assert settings.okx_live_require_flat_start is True
+    assert settings.okx_live_auto_disarm is True
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("okx_live_require_protection", False),
+        ("okx_live_require_ip_bound_key", False),
+        ("okx_live_forbid_withdraw_permission", False),
+        ("okx_live_require_flat_start", False),
+        ("okx_live_auto_disarm", False),
+        ("okx_live_max_open_positions", 2),
+        ("web_concurrency", 2),
+        ("environment", "development"),
+    ],
+)
+def test_live_write_required_guardrails_cannot_be_relaxed(
+    field: str, value: object
+) -> None:
+    with pytest.raises(ValidationError):
+        _live_write_settings(**{field: value})
+
+
+def test_live_automation_requires_websocket_and_write_authority() -> None:
+    with pytest.raises(ValidationError):
+        _live_write_settings(okx_live_auto_execution=True, okx_ws_enabled=False)
+
+    settings = _live_write_settings(
+        okx_live_auto_execution=True,
+        okx_ws_enabled=True,
+    )
+    assert settings.okx_live_auto_execution is True

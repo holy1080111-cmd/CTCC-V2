@@ -3,6 +3,7 @@ from app.database.base import Base
 from app.database.models.okx_live import (
     OkxLiveAccountConfigState,
     OkxLiveAlgoOrderState,
+    OkxLiveExecutionIntent,
     OkxLiveOrderState,
     OkxLivePositionState,
 )
@@ -15,6 +16,7 @@ LIVE_TABLES = {
     "okx_live_position_state",
     "okx_live_algo_order_state",
     "okx_live_sync_checkpoints",
+    "okx_live_execution_intents",
 }
 DEMO_TABLES = {
     "okx_demo_balance_state",
@@ -79,4 +81,28 @@ def test_live_account_state_excludes_credentials_and_actual_ip() -> None:
         "api_secret",
         "passphrase",
         "raw",
+    }.isdisjoint(columns)
+
+
+def test_live_execution_intent_stores_only_hashes_ids_and_safe_codes() -> None:
+    columns = set(OkxLiveExecutionIntent.__table__.c.keys())
+
+    assert {
+        "idempotency_key",
+        "request_hash",
+        "action",
+        "status",
+        "instrument_id",
+        "client_order_id",
+        "exchange_order_id",
+        "detail_codes",
+    } <= columns
+    assert {
+        "request",
+        "payload",
+        "response",
+        "api_key",
+        "secret",
+        "passphrase",
+        "uid",
     }.isdisjoint(columns)

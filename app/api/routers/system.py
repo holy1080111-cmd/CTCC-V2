@@ -33,9 +33,14 @@ async def readiness() -> JSONResponse | ReadinessResponse:
     if settings.readiness_require_redis and not redis_ok:
         blockers.append("redis_unavailable")
     if settings.auto_trade:
-        blockers.append("exchange_auto_trade_forbidden_in_v1_5")
-    if settings.live_trading or settings.trading_mode == "live":
-        blockers.append("live_trading_forbidden_in_v1_5")
+        blockers.append("legacy_auto_trade_forbidden")
+    if settings.trading_mode == "live":
+        if not settings.okx_live_enabled:
+            blockers.append("okx_live_disabled")
+        if not settings.okx_live_credentials_configured:
+            blockers.append("okx_live_credentials_missing")
+        if settings.live_trading and not settings.okx_live_allow_order_writes:
+            blockers.append("okx_live_order_writes_disabled")
     if settings.trading_mode == "okx_demo":
         if not settings.okx_demo_enabled:
             blockers.append("okx_demo_disabled")
@@ -128,10 +133,19 @@ async def capabilities() -> CapabilityResponse:
             "okx_demo_reliability_validation",
             "okx_demo_operator_strategy_controls",
             "okx_demo_disabled_strategy_execution_filter",
+            "okx_live_authenticated_read_reconciliation",
+            "okx_live_account_identity_pinning",
+            "okx_live_postgresql_mirror",
+            "okx_live_production_execution_transport",
+            "okx_live_durable_intent_idempotency",
+            "okx_live_explicit_arm_and_emergency_stop",
+            "okx_live_protected_real_position_execution",
+            "okx_live_one_shot_automation",
+            "live_execution",
         ],
         not_yet_available=[
             "okx_private_websocket",
-            "live_execution",
+            "okx_live_real_account_operator_acceptance",
         ],
     )
 

@@ -108,6 +108,8 @@ async def test_live_client_does_not_fall_back_to_demo_credentials() -> None:
         ("cancel_order", {"instId": "BTC-USDT-SWAP", "ordId": "1"}),
         ("close_position", {"instId": "BTC-USDT-SWAP", "mgnMode": "cross"}),
         ("set_leverage", {"instId": "BTC-USDT-SWAP", "lever": "1", "mgnMode": "cross"}),
+        ("order_precheck", {"instId": "BTC-USDT-SWAP", "sz": "1"}),
+        ("cancel_all_after", {"timeOut": "30", "tag": "CTCCV168"}),
     ],
 )
 async def test_live_public_write_methods_are_blocked_before_http(

@@ -15,6 +15,7 @@
 - v1.3 Demo soak and observability
 - v1.4 Controlled Demo execution soak
 - v1.5 Demo reliability and performance validation
+- v1.6.8 Isolated OKX Live reads, real-position execution gates, and one-shot automation
 - v2.0 Final acceptance
 
 ## v1.0 completed
@@ -64,3 +65,14 @@
 - Authenticated operator enable/disable controls for future candidate selection
 - Reliability evidence gates for active days, realized trades, slippage, profit factor, and drawdown
 - Automatic strategy disabling and live-money execution remain unavailable
+
+## v1.6.8 implementation complete; operator acceptance pending
+
+- Dedicated production REST transport with Demo header structurally absent
+- Account capability validation and one-way identity pinning
+- Atomic Live PostgreSQL mirror and durable execution-intent idempotency
+- Production-only write settings, process-local expiring Arm, one submission, and auto-disarm
+- Protected market-order precheck, contract/notional/leverage caps, bounded polling, and reconciliation
+- Explicit cancel, close, leverage, Emergency Stop, and clear-stop flows
+- One-shot strategy/risk automation that can write only through the Live service
+- Remaining acceptance: local PostgreSQL migration/regression and staged real-account read/micro-order evidence

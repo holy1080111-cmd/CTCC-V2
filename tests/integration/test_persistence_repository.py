@@ -18,39 +18,53 @@ from app.paper.engine import PaperBroker
 async def test_paper_state_round_trip_and_audit() -> None:
     settings = get_settings()
     test_engine = create_async_engine(settings.database_url, poolclass=NullPool)
-    Session = async_sessionmaker(test_engine, expire_on_commit=False, autoflush=False)
-    repository = PersistenceRepository(Session)
-
-    async def cleanup() -> None:
-        async with Session() as session:
-            async with session.begin():
-                await session.execute(delete(PaperPositionState))
-                await session.execute(delete(PaperOrderState))
-                await session.execute(delete(PaperAccountState))
-                await session.execute(delete(AuditLog).where(AuditLog.action == "test_paper_state_saved"))
-
     try:
-        await cleanup()
-        broker = PaperBroker()
-        broker.submit(
-            PaperOrderRequest(
-                symbol="BTC-USDT-SWAP",
-                side="long",
-                quantity=Decimal("1"),
-                reference_price=Decimal("100"),
-                stop_loss=Decimal("95"),
-                take_profit=Decimal("110"),
-                strategy="integration_test",
-                score=80,
-            )
-        )
-        expected = broker.state()
-        await repository.save_paper_state(expected, action="test_paper_state_saved")
-        actual = await repository.load_paper_state()
+        async with test_engine.connect() as connection:
+            outer_transaction = await connection.begin()
+            try:
+                Session = async_sessionmaker(
+                    bind=connection,
+                    expire_on_commit=False,
+                    autoflush=False,
+                    join_transaction_mode="create_savepoint",
+                )
+                repository = PersistenceRepository(Session)
+                await connection.execute(delete(PaperPositionState))
+                await connection.execute(delete(PaperOrderState))
+                await connection.execute(delete(PaperAccountState))
+                await connection.execute(
+                    delete(AuditLog).where(
+                        AuditLog.action == "test_paper_state_saved"
+                    )
+                )
 
-        assert actual == expected
-        audits = await repository.audit_entries(10)
-        assert any(item.action == "test_paper_state_saved" for item in audits)
+                broker = PaperBroker()
+                broker.submit(
+                    PaperOrderRequest(
+                        symbol="BTC-USDT-SWAP",
+                        side="long",
+                        quantity=Decimal("1"),
+                        reference_price=Decimal("100"),
+                        stop_loss=Decimal("95"),
+                        take_profit=Decimal("110"),
+                        strategy="integration_test",
+                        score=80,
+                    )
+                )
+                expected = broker.state()
+                await repository.save_paper_state(
+                    expected, action="test_paper_state_saved"
+                )
+                actual = await repository.load_paper_state()
+
+                assert actual == expected
+                audits = await repository.audit_entries(10)
+                assert any(
+                    item.action == "test_paper_state_saved" for item in audits
+                )
+                assert outer_transaction.is_active
+            finally:
+                if outer_transaction.is_active:
+                    await outer_transaction.rollback()
     finally:
-        await cleanup()
         await test_engine.dispose()

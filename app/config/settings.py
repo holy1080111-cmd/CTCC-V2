@@ -18,12 +18,13 @@ class Settings(BaseSettings):
     )
 
     app_name: str = "CTCC V2"
-    app_version: str = "1.5.0"
+    app_version: str = "1.6.8"
     environment: Literal["development", "test", "production"] = "development"
     log_level: str = "INFO"
 
     host: str = "0.0.0.0"
     port: int = 8000
+    web_concurrency: int = Field(default=1, ge=1, le=8)
 
     database_url: str = Field(
         default="postgresql+asyncpg://ctcc:ctcc_dev_password@postgres:5432/ctcc"
@@ -87,13 +88,63 @@ class Settings(BaseSettings):
     paper_persist_mark_interval_seconds: int = Field(default=30, ge=5, le=3600)
     paper_recovery_history_limit: int = Field(default=100, ge=10, le=1000)
 
-    # OKX Live authenticated read transport. Runtime writes remain hard-blocked.
+    # OKX Live production boundary. Read access can be enabled independently;
+    # every write and automation switch remains disabled by default.
+    okx_live_enabled: bool = False
+    okx_live_allow_order_writes: bool = False
     okx_live_rest_base_url: str = "https://openapi.okx.com"
     okx_live_api_key: SecretStr = SecretStr("")
     okx_live_api_secret: SecretStr = SecretStr("")
     okx_live_api_passphrase: SecretStr = SecretStr("")
     okx_live_timeout_seconds: float = Field(default=10, gt=1, le=60)
     okx_live_read_max_retries: int = Field(default=2, ge=0, le=5)
+    okx_live_allowed_symbols: str = "BTC-USDT-SWAP,ETH-USDT-SWAP"
+    okx_live_max_order_size_contracts: Decimal = Field(
+        default=Decimal("1"), gt=0, le=Decimal("10")
+    )
+    okx_live_max_notional_usdt: Decimal = Field(
+        default=Decimal("1000"), gt=0, le=Decimal("10000")
+    )
+    okx_live_max_open_positions: int = Field(default=1, ge=1, le=2)
+    okx_live_max_leverage: int = Field(default=1, ge=1, le=3)
+    okx_live_require_protection: bool = True
+    okx_live_require_ip_bound_key: bool = True
+    okx_live_forbid_withdraw_permission: bool = True
+    okx_live_auto_reconcile_on_start: bool = False
+    okx_live_order_detail_poll_attempts: int = Field(default=5, ge=1, le=10)
+    okx_live_order_detail_poll_delay_seconds: float = Field(default=0.5, ge=0, le=5)
+    okx_live_order_expiry_milliseconds: int = Field(
+        default=5000, ge=1000, le=10000
+    )
+
+    # An arm is process-local, short lived, flat-start, and one-submission only.
+    okx_live_arm_ttl_seconds: int = Field(default=300, ge=60, le=900)
+    okx_live_max_submissions_per_arm: int = Field(default=1, ge=1, le=1)
+    okx_live_session_loss_limit_pct: Decimal = Field(
+        default=Decimal("0.0025"), gt=0, le=Decimal("0.01")
+    )
+    okx_live_cancel_all_after_seconds: int = Field(default=30, ge=10, le=120)
+    okx_live_order_tag: str = Field(
+        default="CTCCV168",
+        min_length=1,
+        max_length=16,
+        pattern=r"^[A-Za-z0-9]+$",
+    )
+    okx_live_require_flat_start: bool = True
+    okx_live_auto_disarm: bool = True
+
+    # Explicitly armed production automation. It never restores an arm after
+    # restart and is capped at one protected order per arm.
+    okx_live_auto_execution: bool = False
+    okx_live_scan_symbols: str = "BTC-USDT-SWAP,ETH-USDT-SWAP"
+    okx_live_scan_interval_seconds: int = Field(default=300, ge=60, le=86_400)
+    okx_live_scan_initial_delay_seconds: int = Field(default=10, ge=0, le=600)
+    okx_live_scan_candle_limit: int = Field(default=250, ge=200, le=300)
+    okx_live_scan_max_snapshot_age_seconds: int = Field(default=30, ge=5, le=300)
+    okx_live_scan_max_entry_drift_bps: Decimal = Field(
+        default=Decimal("20"), ge=1, le=Decimal("100")
+    )
+    okx_live_automation_leverage: int = Field(default=1, ge=1, le=3)
 
     # OKX Demo REST execution. Credentials are never returned by the API.
     okx_demo_enabled: bool = False
@@ -190,6 +241,14 @@ class Settings(BaseSettings):
         return [item.strip() for item in self.okx_demo_allowed_symbols.split(",") if item.strip()]
 
     @property
+    def okx_live_allowed_symbol_list(self) -> list[str]:
+        return [item.strip() for item in self.okx_live_allowed_symbols.split(",") if item.strip()]
+
+    @property
+    def okx_live_scan_symbol_list(self) -> list[str]:
+        return [item.strip() for item in self.okx_live_scan_symbols.split(",") if item.strip()]
+
+    @property
     def okx_demo_scan_symbol_list(self) -> list[str]:
         return [item.strip() for item in self.okx_demo_scan_symbols.split(",") if item.strip()]
 
@@ -199,7 +258,18 @@ class Settings(BaseSettings):
 
     @property
     def api_token_is_safe(self) -> bool:
-        return len(self.api_token_value.strip()) >= 32
+        value = self.api_token_value.strip()
+        normalized = value.lower()
+        return (
+            len(value) >= 32
+            and not normalized.startswith("replace_with")
+            and normalized
+            not in {
+                "change_me",
+                "changeme",
+                "your_api_token_here",
+            }
+        )
 
     @property
     def okx_live_credentials_configured(self) -> bool:
@@ -224,13 +294,12 @@ class Settings(BaseSettings):
         )
 
     @model_validator(mode="after")
-    def enforce_v15_safety(self) -> "Settings":
-        if self.live_trading:
-            raise ValueError("LIVE_TRADING must remain false in CTCC V2 v1.5")
+    def enforce_v168_safety(self) -> "Settings":
         if self.auto_trade:
-            raise ValueError("AUTO_TRADE must remain false in CTCC V2 v1.5")
-        if self.trading_mode == "live":
-            raise ValueError("live mode is unavailable in CTCC V2 v1.5")
+            raise ValueError(
+                "AUTO_TRADE is a legacy unsafe switch and must remain false; "
+                "use explicitly armed OKX_LIVE_AUTO_EXECUTION"
+            )
 
         if self.paper_auto_execution:
             if self.trading_mode != "paper":
@@ -257,6 +326,80 @@ class Settings(BaseSettings):
             )
         if live_parsed.hostname not in {"openapi.okx.com", "eea.okx.com"}:
             raise ValueError("OKX_LIVE_REST_BASE_URL must use an approved OKX API host")
+
+        if self.trading_mode == "live":
+            if not self.okx_live_enabled:
+                raise ValueError("TRADING_MODE=live requires OKX_LIVE_ENABLED=true")
+            if not self.okx_live_credentials_configured:
+                raise ValueError("TRADING_MODE=live requires OKX Live credentials")
+            if self.paper_auto_execution:
+                raise ValueError("PAPER_AUTO_EXECUTION must be false in live mode")
+            if self.okx_demo_auto_execution or self.okx_demo_allow_order_writes:
+                raise ValueError("OKX Demo writes and automation must be disabled in live mode")
+
+        if self.live_trading:
+            if self.trading_mode != "live":
+                raise ValueError("LIVE_TRADING=true requires TRADING_MODE=live")
+            if not self.okx_live_enabled or not self.okx_live_credentials_configured:
+                raise ValueError("LIVE_TRADING=true requires enabled OKX Live credentials")
+            if not self.okx_live_allow_order_writes:
+                raise ValueError(
+                    "LIVE_TRADING=true requires OKX_LIVE_ALLOW_ORDER_WRITES=true"
+                )
+            if self.environment != "production":
+                raise ValueError("OKX Live writes require ENVIRONMENT=production")
+            if not self.api_token_is_safe:
+                raise ValueError("OKX Live writes require an API token of at least 32 characters")
+            if self.web_concurrency != 1:
+                raise ValueError("OKX Live writes require WEB_CONCURRENCY=1")
+
+        if self.okx_live_allow_order_writes:
+            if not self.live_trading:
+                raise ValueError(
+                    "OKX_LIVE_ALLOW_ORDER_WRITES=true requires LIVE_TRADING=true"
+                )
+            if not self.okx_live_require_protection:
+                raise ValueError("OKX_LIVE_REQUIRE_PROTECTION must remain true")
+            if not self.okx_live_require_ip_bound_key:
+                raise ValueError("OKX_LIVE_REQUIRE_IP_BOUND_KEY must remain true")
+            if not self.okx_live_forbid_withdraw_permission:
+                raise ValueError("OKX_LIVE_FORBID_WITHDRAW_PERMISSION must remain true")
+            if not self.okx_live_require_flat_start:
+                raise ValueError("OKX_LIVE_REQUIRE_FLAT_START must remain true")
+            if not self.okx_live_auto_disarm:
+                raise ValueError("OKX_LIVE_AUTO_DISARM must remain true")
+            if self.okx_live_max_submissions_per_arm != 1:
+                raise ValueError("OKX_LIVE_MAX_SUBMISSIONS_PER_ARM must equal 1")
+            if self.okx_live_max_open_positions != 1:
+                raise ValueError("OKX_LIVE_MAX_OPEN_POSITIONS must equal 1")
+
+        if self.okx_live_auto_reconcile_on_start:
+            if self.trading_mode != "live" or not self.okx_live_enabled:
+                raise ValueError(
+                    "OKX_LIVE_AUTO_RECONCILE_ON_START requires enabled live mode"
+                )
+            if not self.okx_live_credentials_configured:
+                raise ValueError(
+                    "OKX_LIVE_AUTO_RECONCILE_ON_START requires OKX Live credentials"
+                )
+
+        if self.okx_live_auto_execution:
+            if not self.okx_live_allow_order_writes or not self.live_trading:
+                raise ValueError(
+                    "OKX_LIVE_AUTO_EXECUTION requires explicitly enabled live writes"
+                )
+            if not self.okx_ws_enabled:
+                raise ValueError("OKX_LIVE_AUTO_EXECUTION requires OKX_WS_ENABLED=true")
+            if self.okx_live_automation_leverage > self.okx_live_max_leverage:
+                raise ValueError(
+                    "OKX_LIVE_AUTOMATION_LEVERAGE cannot exceed OKX_LIVE_MAX_LEVERAGE"
+                )
+            if not set(self.okx_live_scan_symbol_list).issubset(
+                set(self.okx_live_allowed_symbol_list)
+            ):
+                raise ValueError(
+                    "OKX_LIVE_SCAN_SYMBOLS must be a subset of OKX_LIVE_ALLOWED_SYMBOLS"
+                )
 
         parsed = urlparse(self.okx_demo_rest_base_url)
         if parsed.scheme != "https" or parsed.path not in {"", "/"} or parsed.query or parsed.fragment:

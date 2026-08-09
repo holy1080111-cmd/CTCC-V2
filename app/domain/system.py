@@ -30,7 +30,7 @@ class VersionResponse(BaseModel):
     trading_mode: str
     auto_trade: bool
     live_trading: bool
-    architecture_stage: str = "demo_soak_observability"
+    architecture_stage: str = "controlled_okx_live_execution_v1_6_8"
 
 
 class CapabilityResponse(BaseModel):

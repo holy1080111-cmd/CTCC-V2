@@ -15,6 +15,7 @@ LIVE_TABLES = {
     "okx_live_position_state",
     "okx_live_algo_order_state",
     "okx_live_sync_checkpoints",
+    "okx_live_execution_intents",
 }
 DEMO_TABLES = {
     "okx_demo_balance_state",
@@ -65,6 +66,11 @@ async def test_okx_live_mirror_schema_is_isolated_and_fail_closed() -> None:
                     "okx_live_algo_order_state"
                 )
             )
+            intent_columns = await connection.run_sync(
+                lambda sync_connection: inspect(sync_connection).get_columns(
+                    "okx_live_execution_intents"
+                )
+            )
 
         assert LIVE_TABLES <= table_names
         assert DEMO_TABLES <= table_names
@@ -94,5 +100,22 @@ async def test_okx_live_mirror_schema_is_isolated_and_fail_closed() -> None:
             and not index.get("unique", False)
             for index in algo_indexes
         )
+        intent_column_names = {column["name"] for column in intent_columns}
+        assert {
+            "idempotency_key",
+            "request_hash",
+            "action",
+            "status",
+            "detail_codes",
+        } <= intent_column_names
+        assert {
+            "request",
+            "payload",
+            "response",
+            "api_key",
+            "secret",
+            "passphrase",
+            "uid",
+        }.isdisjoint(intent_column_names)
     finally:
         await engine.dispose()
