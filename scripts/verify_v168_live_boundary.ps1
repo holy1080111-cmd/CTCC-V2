@@ -13,6 +13,7 @@ $testEnvironment = @(
     "-e", "OKX_LIVE_AUTO_EXECUTION=false",
     "-e", "OKX_DEMO_ALLOW_ORDER_WRITES=false",
     "-e", "OKX_DEMO_AUTO_EXECUTION=false",
+    "-e", "OKX_DEMO_SCORE_RISK_ENABLED=false",
     "-e", "OKX_DEMO_SOAK_ALLOW_EXECUTE=false"
 )
 
@@ -79,6 +80,22 @@ Invoke-NativeStep "Live boundary targeted tests" {
         tests/integration/test_okx_live_repository_integration.py `
         tests/integration/test_okx_live_execution_repository_integration.py
 }
+Invoke-NativeStep "Adaptive Demo portfolio targeted tests" {
+    docker compose exec -T @testEnvironment api python -m pytest -q -p no:cacheprovider `
+        tests/unit/indicators/test_causal_trend.py `
+        tests/unit/indicators/test_causal_state.py `
+        tests/unit/indicators/test_conformal_return.py `
+        tests/unit/analysis/test_service.py `
+        tests/unit/analysis/test_mathematical_core.py `
+        tests/unit/strategies/test_derivative_confirmation.py `
+        tests/unit/strategies/test_mathematical_confirmation.py `
+        tests/unit/strategies/test_service_mathematical_gate.py `
+        tests/unit/test_demo_automation_risk_profile.py `
+        tests/unit/test_demo_automation.py `
+        tests/unit/test_observability.py `
+        tests/unit/database/test_demo_adaptive_portfolio_models.py `
+        tests/integration/test_demo_adaptive_portfolio_schema_integration.py
+}
 Invoke-NativeStep "Full regression" {
     docker compose exec -T @testEnvironment api python -m pytest -q -p no:cacheprovider
 }
@@ -99,5 +116,5 @@ $head = (git rev-parse HEAD).Trim()
 $health = (docker inspect --format '{{.State.Health.Status}}' ctcc-v2-api).Trim()
 Write-Host "V168_LIVE_BOUNDARY_VERIFIED=1"
 Write-Host "HEAD=$head"
-Write-Host "ALEMBIC_HEAD=0010"
+Write-Host "ALEMBIC_HEAD=0011"
 Write-Host "API_HEALTH=$health"

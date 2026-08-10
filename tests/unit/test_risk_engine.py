@@ -85,3 +85,14 @@ def test_risk_rejects_expired_candidate():
     )
     assert result.decision == "rejected"
     assert "candidate_expired" in result.reason_codes
+
+
+def test_risk_uses_mathematically_capped_score_instead_of_raw_score():
+    result = evaluate_risk(
+        candidate(score=95, risk_score=70),
+        AccountRiskState(equity=Decimal("10000")),
+        RiskLimits(minimum_score=72),
+    )
+
+    assert result.decision == "rejected"
+    assert "score_below_minimum" in result.reason_codes

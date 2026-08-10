@@ -53,6 +53,91 @@ class DemoAutomationRunRequest(BaseModel):
         return self
 
 
+class DemoAutomationRiskTier(BaseModel):
+    name: Literal["low", "medium", "high"]
+    minimum_score: int = Field(ge=0, le=100)
+    maximum_score: int = Field(ge=0, le=100)
+    risk_pct: Decimal = Field(gt=0)
+    leverage: int = Field(ge=1)
+    margin_allocation_pct: Decimal = Field(gt=0, le=1)
+
+    @model_validator(mode="after")
+    def validate_score_range(self) -> "DemoAutomationRiskTier":
+        if self.minimum_score > self.maximum_score:
+            raise ValueError("minimum_score cannot exceed maximum_score")
+        return self
+
+
+class DemoAutomationActiveTrade(BaseModel):
+    instrument_id: str
+    direction: Literal["long", "short"] | None = None
+    strategy: str | None = None
+    score: int | None = Field(default=None, ge=0, le=100)
+    effective_score: int | None = Field(default=None, ge=0, le=100)
+    derivative_status: Literal[
+        "confirmed", "mixed", "opposed", "insufficient"
+    ] | None = None
+    derivative_confidence: Decimal | None = Field(default=None, ge=0, le=1)
+    mathematical_status: Literal[
+        "confirmed", "mixed", "opposed", "insufficient", "unstable"
+    ] | None = None
+    mathematical_risk_grade: Literal[
+        "high", "medium", "low", "blocked"
+    ] | None = None
+    mathematical_confidence: Decimal | None = Field(default=None, ge=0, le=1)
+    mathematical_reliability: Decimal | None = Field(default=None, ge=0, le=1)
+    mathematical_auxiliary_bonus: int = Field(default=0, ge=0, le=5)
+    mathematical_validated_components: list[str] = Field(default_factory=list)
+    mathematical_auxiliary_components: list[str] = Field(default_factory=list)
+    tier: Literal["low", "medium", "high", "legacy"] = "legacy"
+    client_order_id: str | None = None
+    exchange_order_id: str | None = None
+    contracts: Decimal = Field(default=Decimal("0"), ge=0)
+    leverage: int = Field(default=1, ge=1)
+    risk_budget_pct: Decimal = Field(default=Decimal("0"), ge=0, le=1)
+    estimated_stop_loss_amount: Decimal = Field(default=Decimal("0"), ge=0)
+    estimated_stop_loss_pct: Decimal = Field(default=Decimal("0"), ge=0, le=1)
+    estimated_notional: Decimal = Field(default=Decimal("0"), ge=0)
+    margin_allocation_pct: Decimal = Field(default=Decimal("0"), ge=0, le=1)
+    estimated_margin: Decimal = Field(default=Decimal("0"), ge=0)
+    reference_price: Decimal | None = Field(default=None, gt=0)
+    stop_loss: Decimal | None = Field(default=None, gt=0)
+    take_profit: Decimal | None = Field(default=None, gt=0)
+    start_equity: Decimal | None = Field(default=None, gt=0)
+    started_at: datetime
+
+    @model_validator(mode="after")
+    def validate_adaptive_trade(self) -> "DemoAutomationActiveTrade":
+        if self.started_at.tzinfo is None or self.started_at.utcoffset() is None:
+            raise ValueError("active trade started_at must be timezone-aware")
+        if self.tier == "legacy":
+            return self
+        if (
+            self.direction is None
+            or self.strategy is None
+            or self.score is None
+            or self.reference_price is None
+            or self.stop_loss is None
+            or self.take_profit is None
+            or self.start_equity is None
+            or self.contracts <= 0
+            or self.risk_budget_pct <= 0
+            or self.estimated_stop_loss_amount <= 0
+            or self.estimated_notional <= 0
+            or self.estimated_margin <= 0
+        ):
+            raise ValueError("adaptive active trade is incomplete")
+        if self.direction == "long" and not (
+            self.stop_loss < self.reference_price < self.take_profit
+        ):
+            raise ValueError("long active trade protection is invalid")
+        if self.direction == "short" and not (
+            self.take_profit < self.reference_price < self.stop_loss
+        ):
+            raise ValueError("short active trade protection is invalid")
+        return self
+
+
 class DemoAutomationSymbolResult(BaseModel):
     symbol: str
     instrument_id: str | None = None
@@ -60,12 +145,34 @@ class DemoAutomationSymbolResult(BaseModel):
     direction: Literal["long", "short"] | None = None
     strategy: str | None = None
     score: int | None = None
+    effective_score: int | None = Field(default=None, ge=0, le=100)
+    derivative_status: Literal[
+        "confirmed", "mixed", "opposed", "insufficient"
+    ] | None = None
+    derivative_confidence: Decimal | None = Field(default=None, ge=0, le=1)
+    mathematical_status: Literal[
+        "confirmed", "mixed", "opposed", "insufficient", "unstable"
+    ] | None = None
+    mathematical_risk_grade: Literal[
+        "high", "medium", "low", "blocked"
+    ] | None = None
+    mathematical_confidence: Decimal | None = Field(default=None, ge=0, le=1)
+    mathematical_reliability: Decimal | None = Field(default=None, ge=0, le=1)
+    mathematical_auxiliary_bonus: int = Field(default=0, ge=0, le=5)
+    mathematical_validated_components: list[str] = Field(default_factory=list)
+    mathematical_auxiliary_components: list[str] = Field(default_factory=list)
     reference_price: Decimal | None = None
     stop_loss: Decimal | None = None
     take_profit: Decimal | None = None
     risk_reward: Decimal | None = None
     approved_base_quantity: Decimal | None = None
     approved_contracts: Decimal | None = None
+    score_tier: Literal["low", "medium", "high"] | None = None
+    selected_leverage: int | None = Field(default=None, ge=1)
+    risk_budget_pct: Decimal | None = None
+    estimated_stop_loss_pct: Decimal | None = None
+    margin_allocation_pct: Decimal | None = None
+    estimated_margin: Decimal | None = None
     client_order_id: str | None = None
     exchange_order_id: str | None = None
     reason_codes: list[str] = Field(default_factory=list)
@@ -83,6 +190,9 @@ class DemoAutomationRunResult(BaseModel):
     daily_pnl: Decimal = Decimal("0")
     trades_today: int = 0
     consecutive_losses: int = 0
+    active_position_count: int = Field(default=0, ge=0)
+    portfolio_open_risk_pct: Decimal = Field(default=Decimal("0"), ge=0)
+    portfolio_margin_pct: Decimal = Field(default=Decimal("0"), ge=0)
 
 
 class DemoAutomationStatus(BaseModel):
@@ -101,6 +211,17 @@ class DemoAutomationStatus(BaseModel):
     daily_loss_limit_pct: Decimal
     max_consecutive_losses: int
     session_date: date
+    score_risk_enabled: bool = False
+    derivative_risk_gate_enabled: bool = False
+    mathematical_risk_gate_enabled: bool = False
+    score_risk_tiers: list[DemoAutomationRiskTier] = Field(default_factory=list)
+    max_open_positions: int = 1
+    portfolio_max_risk_pct: Decimal = Decimal("0")
+    portfolio_max_margin_pct: Decimal = Decimal("0")
+    portfolio_open_risk_pct: Decimal = Decimal("0")
+    portfolio_margin_pct: Decimal = Decimal("0")
+    active_position_count: int = 0
+    active_trades: list[DemoAutomationActiveTrade] = Field(default_factory=list)
     baseline_equity: Decimal | None = None
     peak_equity: Decimal | None = None
     daily_pnl: Decimal = Decimal("0")

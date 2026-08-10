@@ -16,6 +16,10 @@
 - v1.4 Controlled Demo execution soak
 - v1.5 Demo reliability and performance validation
 - v1.6.8 Isolated OKX Live reads, real-position execution gates, and one-shot automation
+- Adaptive Demo portfolio gate: score-tiered leverage/risk/margin, multiple
+  instruments, aggregate caps, shared causal mathematical fusion, robust state,
+  prequential conformal coverage validation, auxiliary-score isolation, and
+  three-stop UTC lock (operator acceptance pending)
 - v2.0 Final acceptance
 
 ## v1.0 completed

@@ -9,8 +9,32 @@ Credential/private-key scan: none found
 Python compileall: passed
 Non-PostgreSQL regression suite: 236 passed (8 PostgreSQL tests deselected)
 Live fault-injection tests: passed
-Alembic graph: 0010 (head)
+Alembic graph at original v1.6.8 artifact generation: 0010 (head)
 Canonical cross-platform manifest: passed
+```
+
+Additional adaptive Demo/calculus source validation in the patch-generation
+environment:
+
+```text
+Python compileall: passed
+Exact exponential log-velocity recovery: passed
+Exact quadratic log-acceleration recovery: passed
+Noise-confidence suppression: passed
+Unconfirmed-candle exclusion: passed
+Robust-state exact-trend recovery: passed
+Robust-state noise and endpoint-shock suppression: passed
+Causal conformal prequential-coverage probes: passed
+Mathematical fusion direction/conflict/instability probes: passed
+Analytical/prequential/auxiliary separation probes: passed
+Randomized auxiliary non-escalation paths: 100 passed
+True-tie-only strategy ranking tests: source added; operator pytest pending
+Pure cross-module mathematical assertions: 18 passed
+Randomized causal numerical paths: 100 passed
+Non-finite input and constant-series fail-closed probes: passed
+Static Python compileall and Git whitespace check: passed
+Canonical manifest: passed (281 files)
+Docker/pytest/PostgreSQL: not available; operator gate still required
 ```
 
 The Live fault-injection suite covers duplicate intent keys, single-attempt
@@ -23,7 +47,7 @@ Not performed in the artifact-generation environment:
 
 ```text
 Docker Compose image build
-PostgreSQL online migration 0009 -> 0010
+PostgreSQL online migration through current head (now 0011)
 Alembic online schema-drift check
 PostgreSQL integration tests
 Authenticated OKX production read reconciliation

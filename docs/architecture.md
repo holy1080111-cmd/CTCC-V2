@@ -18,6 +18,20 @@ authenticated Demo request
 → PostgreSQL exchange-state mirror
 ```
 
+The optional adaptive Demo portfolio remains inside that simulated boundary:
+
+```text
+ranked analysis candidates
+→ shared causal mathematical fusion contract
+→ robust state and conformal uncertainty
+→ downward-only effective score
+→ score risk/leverage tier
+→ remaining portfolio risk and margin
+→ one protected position per instrument
+→ instrument-level close attribution
+→ UTC daily stop-loss lock
+```
+
 The OKX Live boundary is isolated from Demo and Paper:
 
 ```text
@@ -73,6 +87,12 @@ successful OKX Demo reconciliation
 - `okx_live.automation` may request one protected order only through
   `okx_live.service`; it has no direct exchange-write client.
 - `demo_automation.service` owns Arm, order submission, and trading locks.
+- `demo_automation.risk_profile` maps validated analysis-score ranges to Demo
+  risk, leverage, and margin ceilings, and applies the downward-only shared
+  mathematical grade without granting Live authority.
+- `analysis.mathematical_core` is the single read-only fusion point for
+  structure, momentum, derivative, state, conformal, volatility, and quality
+  evidence.
 - `observability.service` owns soak preflight, bounded-session safety, and watchdogs.
 - `performance.service` derives evidence, persists daily reports, and exposes operator strategy controls without exchange-write authority.
 - `database.repositories` persists exchange mirrors, automation state, soak sessions,
@@ -89,6 +109,18 @@ successful OKX Demo reconciliation
   API instances that share the same database.
 - An ambiguous Live submission engages Emergency Stop and is never retried.
 - Execute soak cannot enable writes or arm itself.
+- Adaptive Demo sizing is disabled by default, enforces aggregate open-stop-risk
+  and margin ceilings, and never reuses one instrument for multiple concurrent
+  CTCC positions.
+- The mathematical gate uses confirmed past candles only; missing or conflicting
+  evidence lowers coverage/consensus, shocks become instability, low-confidence
+  evidence downgrades leverage, and opposed or unstable evidence blocks before
+  leverage or order writes.
+- Uncalibrated structure/momentum evidence and failed conformal coverage are
+  isolated as auxiliary tie-break evidence; they never enter execution score,
+  sizing, leverage, margin, or write authorization.
+- Three consecutive negative Demo closes lock new entries until the next UTC
+  day; ambiguous multi-position close attribution engages Emergency Stop.
 - Execute soak requires a flat start, protection verification, a session loss
   budget, a submission cap, and automatic disarm.
 - Missing protection or untracked exposure engages emergency stop but does not

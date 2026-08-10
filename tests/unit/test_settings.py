@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 import pytest
 from pydantic import ValidationError
 
@@ -43,6 +45,22 @@ def test_safe_defaults(monkeypatch) -> None:
         "OKX_DEMO_API_PASSPHRASE",
         "OKX_DEMO_AUTO_RECONCILE_ON_START",
         "OKX_DEMO_AUTO_EXECUTION",
+        "OKX_DEMO_TRADE_RECONCILE_GRACE_SECONDS",
+        "OKX_DEMO_AUTOMATION_MAX_CONSECUTIVE_LOSSES",
+        "OKX_DEMO_SCORE_RISK_ENABLED",
+        "OKX_DEMO_SCORE_MEDIUM_MIN",
+        "OKX_DEMO_SCORE_HIGH_MIN",
+        "OKX_DEMO_SCORE_LOW_RISK_PCT",
+        "OKX_DEMO_SCORE_MEDIUM_RISK_PCT",
+        "OKX_DEMO_SCORE_HIGH_RISK_PCT",
+        "OKX_DEMO_SCORE_LOW_LEVERAGE",
+        "OKX_DEMO_SCORE_MEDIUM_LEVERAGE",
+        "OKX_DEMO_SCORE_HIGH_LEVERAGE",
+        "OKX_DEMO_SCORE_LOW_MARGIN_PCT",
+        "OKX_DEMO_SCORE_MEDIUM_MARGIN_PCT",
+        "OKX_DEMO_SCORE_HIGH_MARGIN_PCT",
+        "OKX_DEMO_PORTFOLIO_MAX_RISK_PCT",
+        "OKX_DEMO_PORTFOLIO_MAX_MARGIN_PCT",
         "OKX_DEMO_SOAK_ALLOW_EXECUTE",
         "OKX_DEMO_SOAK_ENABLED",
         "OKX_DEMO_EXECUTION_SOAK_MAX_SUBMISSIONS",
@@ -466,3 +484,77 @@ def test_live_automation_requires_websocket_and_write_authority() -> None:
         okx_ws_enabled=True,
     )
     assert settings.okx_live_auto_execution is True
+
+
+def test_demo_adaptive_portfolio_defaults_to_disabled_and_three_stop_limit(
+    monkeypatch,
+) -> None:
+    for variable in (
+        "OKX_DEMO_SCORE_RISK_ENABLED",
+        "OKX_DEMO_AUTOMATION_MAX_CONSECUTIVE_LOSSES",
+        "OKX_DEMO_PORTFOLIO_MAX_RISK_PCT",
+        "OKX_DEMO_PORTFOLIO_MAX_MARGIN_PCT",
+    ):
+        monkeypatch.delenv(variable, raising=False)
+    settings = Settings(_env_file=None)
+
+    assert settings.okx_demo_score_risk_enabled is False
+    assert settings.okx_demo_automation_max_consecutive_losses == 3
+    assert settings.okx_demo_portfolio_max_risk_pct == Decimal("0.02")
+    assert settings.okx_demo_portfolio_max_margin_pct == Decimal("0.60")
+
+
+def test_demo_adaptive_portfolio_requires_multiple_position_capacity() -> None:
+    with pytest.raises(ValidationError):
+        Settings(
+            _env_file=None,
+            okx_demo_score_risk_enabled=True,
+            okx_demo_max_open_positions=1,
+            okx_demo_daily_loss_limit_pct=Decimal("0.03"),
+        )
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {
+            "okx_demo_score_medium_min": 72,
+        },
+        {
+            "okx_demo_score_medium_min": 91,
+            "okx_demo_score_high_min": 90,
+        },
+        {
+            "okx_demo_score_medium_risk_pct": Decimal("0.004"),
+        },
+        {
+            "okx_demo_score_medium_leverage": 4,
+            "okx_demo_score_high_leverage": 3,
+        },
+        {
+            "okx_demo_score_high_margin_pct": Decimal("0.70"),
+        },
+    ],
+)
+def test_demo_adaptive_portfolio_rejects_non_monotonic_tiers(
+    updates: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError):
+        Settings(
+            _env_file=None,
+            okx_demo_score_risk_enabled=True,
+            okx_demo_max_open_positions=3,
+            okx_demo_daily_loss_limit_pct=Decimal("0.03"),
+            **updates,
+        )
+
+
+def test_demo_portfolio_open_risk_cannot_exceed_daily_loss_limit() -> None:
+    with pytest.raises(ValidationError):
+        Settings(
+            _env_file=None,
+            okx_demo_score_risk_enabled=True,
+            okx_demo_max_open_positions=3,
+            okx_demo_portfolio_max_risk_pct=Decimal("0.02"),
+            okx_demo_daily_loss_limit_pct=Decimal("0.01"),
+        )

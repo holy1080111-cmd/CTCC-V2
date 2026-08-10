@@ -9,6 +9,7 @@ import sys
 TEXT_SUFFIXES = {
     ".example",
     ".ini",
+    ".mako",
     ".md",
     ".ps1",
     ".py",

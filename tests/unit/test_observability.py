@@ -7,6 +7,7 @@ import pytest
 
 from app.config.settings import Settings
 from app.domain.demo_automation import (
+    DemoAutomationActiveTrade,
     DemoAutomationRunResult,
     DemoAutomationStatus,
     DemoAutomationSymbolResult,
@@ -18,13 +19,23 @@ from app.observability.service import DemoObservabilityService
 
 
 class FakeAutomation:
-    def __init__(self, *, armed: bool = False, outcome: str = "approved_dry_run") -> None:
+    def __init__(
+        self,
+        *,
+        armed: bool = False,
+        outcome: str = "approved_dry_run",
+        submission_count: int = 1,
+    ) -> None:
         self.armed = armed
         self.outcome = outcome
+        self.submission_count = submission_count
         self.runs: list[DemoAutomationRunResult] = []
         self.emergency = False
         self.locked = False
         self.active_instrument_id: str | None = None
+        self.active_instrument_ids: set[str] = set()
+        self.max_open_positions = 1
+        self.submission_limits: list[int | None] = []
         self.disarm_calls = 0
         self.emergency_calls = 0
 
@@ -45,14 +56,32 @@ class FakeAutomation:
             max_trades_per_day=3,
             daily_loss_limit_pct="0.01",
             max_consecutive_losses=2,
+            max_open_positions=self.max_open_positions,
+            active_trades=[
+                DemoAutomationActiveTrade(
+                    instrument_id=instrument_id,
+                    started_at=now,
+                )
+                for instrument_id in sorted(self.active_instrument_ids)
+            ],
             session_date=now.date(),
             active_instrument_id=self.active_instrument_id,
             recovered=True,
         )
 
-    async def run_once(self, *, symbols=None, execute=False, trigger="manual"):
+    async def run_once(
+        self,
+        *,
+        symbols=None,
+        execute=False,
+        trigger="manual",
+        submission_limit=None,
+    ):
         now = datetime.now(timezone.utc)
+        self.submission_limits.append(submission_limit)
         outcome = "submitted" if execute and self.outcome == "submitted" else self.outcome
+        if execute and submission_limit == 0 and outcome == "submitted":
+            outcome = "blocked"
         if execute and outcome == "submitted":
             self.active_instrument_id = "BTC-USDT-SWAP"
         run = DemoAutomationRunResult(
@@ -63,9 +92,14 @@ class FakeAutomation:
             results=[
                 DemoAutomationSymbolResult(
                     symbol=(symbols or ["BTC-USDT-SWAP"])[0],
-                    instrument_id="BTC-USDT-SWAP",
+                    instrument_id=(
+                        "BTC-USDT-SWAP" if index == 0 else "ETH-USDT-SWAP"
+                    ),
                     outcome=outcome,
                     detail="unit_test",
+                )
+                for index in range(
+                    self.submission_count if outcome == "submitted" else 1
                 )
             ],
         )
@@ -126,17 +160,19 @@ def exchange_snapshot(
     pending_orders: int = 0,
     algo_orders: int = 0,
     protected_recent_order: bool = False,
+    position_symbols: list[str] | None = None,
+    algo_symbols: list[str] | None = None,
 ):
     instrument_id = "BTC-USDT-SWAP"
+    position_ids = position_symbols or [instrument_id for _ in range(positions)]
+    algo_ids = algo_symbols or [instrument_id for _ in range(algo_orders)]
     return SimpleNamespace(
         balance=SimpleNamespace(total_equity=Decimal(equity)),
-        positions=[SimpleNamespace(instrument_id=instrument_id) for _ in range(positions)],
+        positions=[SimpleNamespace(instrument_id=item) for item in position_ids],
         pending_orders=[
             SimpleNamespace(instrument_id=instrument_id) for _ in range(pending_orders)
         ],
-        pending_algo_orders=[
-            SimpleNamespace(instrument_id=instrument_id) for _ in range(algo_orders)
-        ],
+        pending_algo_orders=[SimpleNamespace(instrument_id=item) for item in algo_ids],
         recent_orders=[
             SimpleNamespace(
                 instrument_id=instrument_id,
@@ -294,6 +330,7 @@ async def test_execute_soak_auto_disarms_after_clean_run() -> None:
     assert status.auto_disarmed is True
     assert automation.armed is False
     assert automation.disarm_calls == 1
+    assert automation.submission_limits == [1]
 
 
 @pytest.mark.asyncio
@@ -360,6 +397,39 @@ async def test_protected_position_is_not_safety_stopped() -> None:
     assert status.protection_failures == 0
     assert status.auto_disarmed is True
     assert automation.emergency_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_execute_soak_defensively_stops_over_limit_automation_result() -> None:
+    automation = FakeAutomation(
+        armed=True,
+        outcome="submitted",
+        submission_count=2,
+    )
+    service = DemoObservabilityService(
+        automation=automation,
+        settings=execute_settings(),
+        repository=None,
+        realtime_client=FakeRealtime(),
+        demo_service=FakeDemoService(exchange_snapshot(), exchange_snapshot()),
+    )
+    await service.recover()
+    await service.start_soak(
+        DemoSoakStartRequest(
+            execute=True,
+            duration_minutes=1,
+            interval_seconds=60,
+            max_runs=1,
+            confirmation="START_DEMO_SOAK_EXECUTE",
+        )
+    )
+
+    status = await wait_for_finished(service)
+
+    assert status.state == "safety_stopped"
+    assert status.safety_stop_reason == "submission_limit_exceeded"
+    assert status.submitted_runs == 2
+    assert automation.emergency_calls == 1
 
 
 @pytest.mark.asyncio
@@ -511,6 +581,41 @@ async def test_runtime_watchdog_accepts_protected_active_position() -> None:
             "active_position_missing_protection",
             "exchange_exposure_symbol_mismatch",
             "multiple_exchange_positions_detected",
+        }
+        for event in service._events
+    )
+
+
+@pytest.mark.asyncio
+async def test_runtime_watchdog_accepts_two_tracked_protected_positions() -> None:
+    automation = FakeAutomation()
+    automation.max_open_positions = 2
+    automation.active_instrument_ids = {
+        "BTC-USDT-SWAP",
+        "ETH-USDT-SWAP",
+    }
+    snapshot = exchange_snapshot(
+        position_symbols=["BTC-USDT-SWAP", "ETH-USDT-SWAP"],
+        algo_symbols=["BTC-USDT-SWAP", "ETH-USDT-SWAP"],
+    )
+    service = DemoObservabilityService(
+        automation=automation,
+        settings=execute_settings(),
+        repository=None,
+        realtime_client=FakeRealtime(),
+        demo_service=FakeDemoService(snapshot),
+    )
+
+    await service.recover()
+    await service._refresh_runtime_exchange_safety()
+
+    assert automation.emergency_calls == 0
+    assert not any(
+        event.code
+        in {
+            "multiple_exchange_positions_detected",
+            "exchange_exposure_symbol_mismatch",
+            "active_position_missing_protection",
         }
         for event in service._events
     )

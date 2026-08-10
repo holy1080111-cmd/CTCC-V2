@@ -418,16 +418,37 @@ class DemoObservabilityService:
                     await self._finish_soak("completed", "submission_limit_reached")
                     return True
 
+            submission_limit = (
+                max(
+                    0,
+                    self._soak.max_submissions - self._soak.submitted_runs,
+                )
+                if self._soak.execute
+                else None
+            )
             run = await self.automation.run_once(
                 symbols=self._soak.symbols,
                 execute=self._soak.execute,
                 trigger="scheduled",
+                submission_limit=submission_limit,
+            )
+            actual_submissions = sum(
+                result.outcome == "submitted" for result in run.results
             )
             self._apply_run(run)
             await self._persist_soak()
 
             if self._soak.execute:
-                submitted = any(result.outcome == "submitted" for result in run.results)
+                if actual_submissions > (submission_limit or 0):
+                    await self._safety_stop(
+                        "submission_limit_exceeded",
+                        {
+                            "allowed": submission_limit,
+                            "actual": actual_submissions,
+                        },
+                    )
+                    return True
+                submitted = actual_submissions > 0
                 if await self._refresh_execution_safety(
                     stage="after_run", poll_for_protection=submitted
                 ):
@@ -505,15 +526,21 @@ class DemoObservabilityService:
                 engage_stop=False,
             )
 
-        if self._soak.active_position_count > 1:
+        if self._soak.active_position_count > automation.max_open_positions:
             return await self._safety_stop(
                 "multiple_exchange_positions_detected",
-                {"stage": stage, "count": self._soak.active_position_count},
+                {
+                    "stage": stage,
+                    "count": self._soak.active_position_count,
+                    "limit": automation.max_open_positions,
+                },
             )
 
-        active_id = automation.active_instrument_id
+        tracked_ids = {item.instrument_id for item in automation.active_trades}
+        if not tracked_ids and automation.active_instrument_id:
+            tracked_ids.add(automation.active_instrument_id)
         exposure = self._has_exchange_exposure()
-        if exposure and not active_id:
+        if exposure and not tracked_ids:
             return await self._safety_stop(
                 "untracked_exchange_exposure_detected",
                 {
@@ -532,18 +559,26 @@ class DemoObservabilityService:
                 *snapshot.pending_algo_orders,
             ]
         }
-        if active_id and exposed_symbols and exposed_symbols != {active_id}:
+        untracked_symbols = exposed_symbols - tracked_ids
+        if untracked_symbols:
             return await self._safety_stop(
                 "exchange_exposure_symbol_mismatch",
                 {
                     "stage": stage,
-                    "active_instrument_id": active_id,
+                    "tracked_instrument_ids": sorted(tracked_ids),
                     "exchange_symbols": sorted(exposed_symbols),
+                    "untracked_symbols": sorted(untracked_symbols),
                 },
             )
 
         if self._soak.active_position_count and self.settings.okx_demo_execution_soak_require_protection:
-            protected = self._protection_present(snapshot, active_id)
+            position_ids = {item.instrument_id for item in snapshot.positions}
+            missing_protection = {
+                instrument_id
+                for instrument_id in position_ids
+                if not self._protection_present(snapshot, instrument_id)
+            }
+            protected = not missing_protection
             if not protected and poll_for_protection:
                 attempts = self.settings.okx_demo_execution_soak_reconcile_attempts
                 delay = self.settings.okx_demo_execution_soak_reconcile_delay_seconds
@@ -552,7 +587,13 @@ class DemoObservabilityService:
                         await asyncio.sleep(delay)
                     snapshot = await self.demo_service.reconcile()
                     self._update_execution_snapshot(snapshot)
-                    protected = self._protection_present(snapshot, active_id)
+                    position_ids = {item.instrument_id for item in snapshot.positions}
+                    missing_protection = {
+                        instrument_id
+                        for instrument_id in position_ids
+                        if not self._protection_present(snapshot, instrument_id)
+                    }
+                    protected = not missing_protection
                     if protected:
                         break
             self._soak.protection_checks += 1
@@ -562,7 +603,10 @@ class DemoObservabilityService:
                 await self._persist_soak()
                 return await self._safety_stop(
                     "active_position_missing_protection",
-                    {"stage": stage, "active_instrument_id": active_id},
+                    {
+                        "stage": stage,
+                        "instrument_ids": sorted(missing_protection),
+                    },
                 )
         elif self._soak.active_position_count == 0:
             self._soak.protection_verified = True
@@ -673,8 +717,11 @@ class DemoObservabilityService:
         self._soak.completed_runs += 1
         self._soak.last_run_at = run.completed_at
         self._soak.last_outcome = outcomes[0] if len(outcomes) == 1 else ",".join(outcomes)[:40]
-        if "submitted" in outcome_set:
-            self._soak.submitted_runs += 1
+        submitted_count = outcomes.count("submitted")
+        if submitted_count:
+            # The legacy field name is retained in the persisted contract, but
+            # the value is an order-submission count rather than a run count.
+            self._soak.submitted_runs += submitted_count
         if "approved_dry_run" in outcome_set:
             self._soak.dry_run_runs += 1
         if outcome_set.intersection({"blocked", "locked", "monitoring", "duplicate"}):
@@ -754,7 +801,9 @@ class DemoObservabilityService:
         pending_orders = list(snapshot.pending_orders)
         pending_algo_orders = list(snapshot.pending_algo_orders)
 
-        active_id = automation.active_instrument_id
+        tracked_ids = {item.instrument_id for item in automation.active_trades}
+        if not tracked_ids and automation.active_instrument_id:
+            tracked_ids.add(automation.active_instrument_id)
         has_exposure = bool(
             positions
             or pending_orders
@@ -764,16 +813,17 @@ class DemoObservabilityService:
         reason = None
         details = {
             "stage": "runtime_watchdog",
-            "active_instrument_id": active_id,
+            "tracked_instrument_ids": sorted(tracked_ids),
             "positions": len(positions),
             "pending_orders": len(pending_orders),
             "algo_orders": len(pending_algo_orders),
         }
 
-        if len(positions) > 1:
+        if len(positions) > automation.max_open_positions:
             reason = "multiple_exchange_positions_detected"
+            details["position_limit"] = automation.max_open_positions
 
-        elif has_exposure and not active_id:
+        elif has_exposure and not tracked_ids:
             reason = "untracked_exchange_exposure_detected"
 
         else:
@@ -786,20 +836,23 @@ class DemoObservabilityService:
                 ]
             }
 
-            if (
-                active_id
-                and exposed_symbols
-                and exposed_symbols != {active_id}
-            ):
+            untracked_symbols = exposed_symbols - tracked_ids
+            if untracked_symbols:
                 reason = "exchange_exposure_symbol_mismatch"
                 details["exchange_symbols"] = sorted(exposed_symbols)
+                details["untracked_symbols"] = sorted(untracked_symbols)
 
-            elif (
-                positions
-                and self.settings.okx_demo_execution_soak_require_protection
-                and not self._protection_present(snapshot, active_id)
-            ):
-                reason = "active_position_missing_protection"
+            elif positions and self.settings.okx_demo_execution_soak_require_protection:
+                missing_protection = {
+                    position.instrument_id
+                    for position in positions
+                    if not self._protection_present(
+                        snapshot, position.instrument_id
+                    )
+                }
+                if missing_protection:
+                    reason = "active_position_missing_protection"
+                    details["instrument_ids"] = sorted(missing_protection)
 
         if reason is None:
             return

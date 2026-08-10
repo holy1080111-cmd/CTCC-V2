@@ -26,6 +26,16 @@ def test_manifest_is_cross_platform_and_detects_changes(tmp_path: Path) -> None:
     assert manifest.check_manifest(tmp_path, manifest_path) is False
 
 
+def test_manifest_normalizes_alembic_mako_line_endings(tmp_path: Path) -> None:
+    template = tmp_path / "script.py.mako"
+    template.write_bytes(b"revision = ${repr(up_revision)}\r\n")
+    first_digest = manifest.canonical_digest(template)
+
+    template.write_bytes(b"revision = ${repr(up_revision)}\n")
+
+    assert manifest.canonical_digest(template) == first_digest
+
+
 def test_manifest_excludes_secrets_build_products_and_archives(tmp_path: Path) -> None:
     (tmp_path / "app.py").write_text("pass\n", encoding="utf-8")
     (tmp_path / ".env").write_text("SECRET=value\n", encoding="utf-8")

@@ -173,11 +173,46 @@ class Settings(BaseSettings):
     okx_demo_scan_max_snapshot_age_seconds: int = Field(default=30, ge=5, le=300)
     okx_demo_scan_max_entry_drift_bps: Decimal = Field(default=Decimal("30"), ge=1, le=500)
     okx_demo_trade_cooldown_seconds: int = Field(default=1800, ge=0, le=86_400)
+    okx_demo_trade_reconcile_grace_seconds: int = Field(default=30, ge=5, le=300)
     okx_demo_max_trades_per_day: int = Field(default=3, ge=1, le=20)
     okx_demo_daily_loss_limit_pct: Decimal = Field(default=Decimal("0.01"), gt=0, le=Decimal("0.10"))
-    okx_demo_automation_max_consecutive_losses: int = Field(default=2, ge=1, le=10)
+    okx_demo_automation_max_consecutive_losses: int = Field(default=3, ge=1, le=10)
     okx_demo_automation_leverage: int = Field(default=1, ge=1, le=5)
     okx_demo_automation_history_limit: int = Field(default=100, ge=10, le=1000)
+
+    # Score-tiered Demo portfolio sizing plus the downward-only shared
+    # mathematical gate. It remains disabled by default and never changes the
+    # isolated OKX Live production boundary.
+    okx_demo_score_risk_enabled: bool = False
+    okx_demo_score_medium_min: int = Field(default=80, ge=1, le=99)
+    okx_demo_score_high_min: int = Field(default=90, ge=2, le=100)
+    okx_demo_score_low_risk_pct: Decimal = Field(
+        default=Decimal("0.005"), gt=0, le=Decimal("0.02")
+    )
+    okx_demo_score_medium_risk_pct: Decimal = Field(
+        default=Decimal("0.0075"), gt=0, le=Decimal("0.02")
+    )
+    okx_demo_score_high_risk_pct: Decimal = Field(
+        default=Decimal("0.01"), gt=0, le=Decimal("0.02")
+    )
+    okx_demo_score_low_leverage: int = Field(default=1, ge=1, le=5)
+    okx_demo_score_medium_leverage: int = Field(default=2, ge=1, le=5)
+    okx_demo_score_high_leverage: int = Field(default=3, ge=1, le=5)
+    okx_demo_score_low_margin_pct: Decimal = Field(
+        default=Decimal("0.15"), gt=0, le=Decimal("0.50")
+    )
+    okx_demo_score_medium_margin_pct: Decimal = Field(
+        default=Decimal("0.20"), gt=0, le=Decimal("0.50")
+    )
+    okx_demo_score_high_margin_pct: Decimal = Field(
+        default=Decimal("0.25"), gt=0, le=Decimal("0.50")
+    )
+    okx_demo_portfolio_max_risk_pct: Decimal = Field(
+        default=Decimal("0.02"), gt=0, le=Decimal("0.05")
+    )
+    okx_demo_portfolio_max_margin_pct: Decimal = Field(
+        default=Decimal("0.60"), gt=0, le=Decimal("0.80")
+    )
 
     # Controlled Demo execution soak and observability. Execute stays disabled by default.
     okx_demo_observability_enabled: bool = True
@@ -449,6 +484,60 @@ class Settings(BaseSettings):
                     "OKX_DEMO_SCAN_SYMBOLS must be a subset of OKX_DEMO_ALLOWED_SYMBOLS"
                 )
 
+        if self.okx_demo_score_risk_enabled:
+            if not (
+                self.strategy_min_score
+                < self.okx_demo_score_medium_min
+                < self.okx_demo_score_high_min
+                <= 100
+            ):
+                raise ValueError(
+                    "Demo score tiers must satisfy STRATEGY_MIN_SCORE < "
+                    "OKX_DEMO_SCORE_MEDIUM_MIN < OKX_DEMO_SCORE_HIGH_MIN <= 100"
+                )
+            if not (
+                self.okx_demo_score_low_risk_pct
+                <= self.okx_demo_score_medium_risk_pct
+                <= self.okx_demo_score_high_risk_pct
+                <= self.okx_demo_portfolio_max_risk_pct
+            ):
+                raise ValueError(
+                    "Demo score risk tiers must be nondecreasing and cannot exceed "
+                    "OKX_DEMO_PORTFOLIO_MAX_RISK_PCT"
+                )
+            if not (
+                self.okx_demo_score_low_leverage
+                <= self.okx_demo_score_medium_leverage
+                <= self.okx_demo_score_high_leverage
+                <= self.okx_demo_max_leverage
+            ):
+                raise ValueError(
+                    "Demo score leverage tiers must be nondecreasing and cannot exceed "
+                    "OKX_DEMO_MAX_LEVERAGE"
+                )
+            if not (
+                self.okx_demo_score_low_margin_pct
+                <= self.okx_demo_score_medium_margin_pct
+                <= self.okx_demo_score_high_margin_pct
+                <= self.okx_demo_portfolio_max_margin_pct
+            ):
+                raise ValueError(
+                    "Demo score margin tiers must be nondecreasing and cannot exceed "
+                    "OKX_DEMO_PORTFOLIO_MAX_MARGIN_PCT"
+                )
+            if self.okx_demo_max_open_positions < 2:
+                raise ValueError(
+                    "OKX_DEMO_SCORE_RISK_ENABLED requires "
+                    "OKX_DEMO_MAX_OPEN_POSITIONS >= 2"
+                )
+            if (
+                self.okx_demo_portfolio_max_risk_pct
+                > self.okx_demo_daily_loss_limit_pct
+            ):
+                raise ValueError(
+                    "OKX_DEMO_PORTFOLIO_MAX_RISK_PCT cannot exceed "
+                    "OKX_DEMO_DAILY_LOSS_LIMIT_PCT"
+                )
 
         if self.okx_demo_soak_default_duration_minutes > self.okx_demo_soak_max_duration_minutes:
             raise ValueError(

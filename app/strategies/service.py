@@ -6,6 +6,7 @@ from app.config.settings import get_settings
 from app.domain.strategy import StrategyDecision
 from app.market.service import MarketDataService
 from app.strategies.base import StrategyContext
+from app.strategies.mathematical_confirmation import mathematical_score_cap
 from app.strategies.registry import STRATEGIES
 
 
@@ -49,8 +50,63 @@ class StrategyService:
                 else item
                 for item in evaluations
             ]
+        evaluations = [
+            item.model_copy(
+                update={
+                    "eligible": False,
+                    "vetoes": sorted(
+                        set(
+                            [
+                                *item.vetoes,
+                                (
+                                    "mathematical_core_regime_instability"
+                                    if item.candidate.mathematical_confirmation.status
+                                    == "unstable"
+                                    else "mathematical_core_opposes_trade_direction"
+                                ),
+                            ]
+                        )
+                    ),
+                }
+            )
+            if (
+                item.candidate is not None
+                and item.candidate.mathematical_confirmation is not None
+                and item.candidate.mathematical_confirmation.status
+                in {"opposed", "unstable"}
+            )
+            else item
+            for item in evaluations
+        ]
         eligible = [item for item in evaluations if item.eligible and item.candidate is not None]
-        selected = max(eligible, key=lambda item: item.score, default=None)
+        def selection_key(item):
+            candidate = item.candidate
+            if candidate is None:
+                return (-1, item.score, Decimal("0"), 0)
+            confirmation = candidate.mathematical_confirmation
+            effective_score = item.score
+            confidence = Decimal("0")
+            auxiliary_bonus = 0
+            if confirmation is not None:
+                effective_score = min(
+                    item.score,
+                    mathematical_score_cap(
+                        confirmation,
+                        medium_minimum=settings.okx_demo_score_medium_min,
+                        high_minimum=settings.okx_demo_score_high_min,
+                    ),
+                )
+                confidence = confirmation.confidence
+                auxiliary_bonus = confirmation.auxiliary_bonus
+            # Auxiliary evidence is deliberately last: it can break a true
+            # tie, but cannot lift eligibility, execution score, or risk.
+            return (effective_score, item.score, confidence, auxiliary_bonus)
+
+        selected = max(
+            eligible,
+            key=selection_key,
+            default=None,
+        )
         blockers = list(analysis.blockers)
         if disabled:
             blockers.extend(f"strategy_disabled:{name}" for name in sorted(disabled))

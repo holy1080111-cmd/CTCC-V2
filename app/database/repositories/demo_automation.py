@@ -39,6 +39,8 @@ class DemoAutomationRepository:
             "active_client_order_id": row.active_client_order_id,
             "active_start_equity": row.active_start_equity,
             "active_started_at": row.active_started_at,
+            "active_trades": dict(row.active_trades or {}),
+            "symbol_cooldowns": dict(row.symbol_cooldowns or {}),
             "last_trade_closed_at": row.last_trade_closed_at,
             "last_started_at": row.last_started_at,
             "last_completed_at": row.last_completed_at,

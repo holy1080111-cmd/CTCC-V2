@@ -27,6 +27,12 @@ class DemoAutomationState(Base):
     active_client_order_id: Mapped[str | None] = mapped_column(String(32))
     active_start_equity: Mapped[Decimal | None] = mapped_column(Numeric(28, 10))
     active_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    active_trades: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )
+    symbol_cooldowns: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )
     last_trade_closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

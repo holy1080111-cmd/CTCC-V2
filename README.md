@@ -62,13 +62,49 @@ cancel or close action.
 Migration `0009` adds the isolated read-only Live account mirror. Migration
 `0010` adds `okx_live_execution_intents`, which stores only request hashes,
 identifiers, finite status values, and safe detail codes. It does not store API
-credentials or raw request/response payloads.
+credentials or raw request/response payloads. Migration `0011` adds JSONB state
+for the disabled-by-default adaptive Demo portfolio and per-symbol cooldowns.
 
 Expected migration after upgrade:
 
 ```text
-0010 (head)
+0011 (head)
 ```
+
+## Adaptive Demo portfolio (disabled by default)
+
+The Demo automation can rank candidates by analysis score and, only when
+`OKX_DEMO_SCORE_RISK_ENABLED=true`, use score-tiered leverage, stop-risk, and
+margin caps. Different instruments may coexist; CTCC still permits at most one
+tracked position per instrument because OKX cross-margin SWAP leverage is set
+per instrument.
+
+The default tiers are 72–79 (1x / 0.5% risk / 15% margin cap), 80–89
+(2x / 0.75% / 20%), and 90–100 (3x / 1.0% / 25%). Aggregate open stop-risk is
+capped at 2% of equity and estimated margin at 60%. These values are ceilings,
+not targets: exchange lot rounding, stop distance, and the global notional cap
+can produce smaller positions. Enabling the feature also requires the configured
+daily loss limit to be at least as large as the aggregate open-risk ceiling.
+
+Adaptive risk also requires a shared, past-only mathematical fusion contract.
+It separates analytically checked derivative/state evidence and
+prequentially checked conformal coverage from uncalibrated structure/momentum
+evidence. The latter produces only a bounded auxiliary tie-break bonus and
+cannot change eligibility, effective score, leverage, margin, or risk. The raw
+strategy score is retained, while an `effective_score` can only be lower:
+high-reliability validated alignment may retain 3x, moderate evidence is
+capped at 2x, mixed or insufficient evidence is capped at 1x, and opposed or
+unstable mathematics blocks the candidate before leverage or order writes.
+
+Three consecutive negative closing outcomes lock new Demo entries for the
+remainder of the UTC day. A profitable close resets the sequence; the UTC day
+rollover resets it. With multiple positions, CTCC requires instrument-level
+realized-PnL evidence and engages Emergency Stop rather than guessing from a
+shared account-equity change.
+
+See `docs/mathematical_core.md` and `docs/demo_adaptive_portfolio.md` for the
+equations, exclusions, configuration, and rollout gates. This capability does
+not expand the one-position, one-submission OKX Live boundary.
 
 ## Authenticated Live API
 

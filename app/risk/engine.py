@@ -26,10 +26,15 @@ def evaluate_risk(
     reasons: list[str] = []
     now = datetime.now(timezone.utc)
     stop_distance = abs(candidate.entry - candidate.stop_loss)
+    effective_score = (
+        candidate.risk_score
+        if candidate.risk_score is not None
+        else candidate.score
+    )
 
     if candidate.expires_at <= now:
         reasons.append("candidate_expired")
-    if candidate.score < limits.minimum_score:
+    if effective_score < limits.minimum_score:
         reasons.append("score_below_minimum")
     if candidate.risk_reward < limits.minimum_risk_reward:
         reasons.append("risk_reward_below_minimum")
