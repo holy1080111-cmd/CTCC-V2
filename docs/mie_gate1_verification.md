@@ -86,13 +86,19 @@ One existing warning remains:
 
 ## Operator acceptance
 
-From a clean `C:\CTCC-V2` with Docker Desktop running and all write switches
-disabled:
+From a clean `C:\CTCC-V2` with Docker Desktop running and all execution-authority
+switches disabled:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass `
   -File .\scripts\verify_mie_gate1.ps1
 ```
+
+The script checks the unsanitized running container first. Pytest then runs
+through `scripts/hermetic_pytest.py`, which preserves only the configured
+PostgreSQL and Redis URLs and resets every other application setting to safe
+test defaults. Read-only analytical profile values therefore cannot alter MIE
+contract-test expectations.
 
 Acceptance requires:
 

@@ -58,10 +58,19 @@ Independent verification of live TP/SL in the OKX UI
 Those checks require the operator's local Docker services, retained PostgreSQL
 volume, network location, and private OKX credentials. They must not be reported
 as passed until completed locally. Source tests never contact OKX production or
-place a real order. The packaged Docker verification explicitly overrides its
-test process to `ENVIRONMENT=test`, `TRADING_MODE=analysis_only`, and disables
-every Paper, Demo, and Live write/automation switch even if the deployment
-`.env` has since enabled production execution.
+place a real order. The packaged Docker verification runs pytest through
+`scripts/hermetic_pytest.py`. The helper preserves only `DATABASE_URL` and
+`REDIS_URL`, removes all other `Settings` values inherited from the deployment,
+then applies `ENVIRONMENT=test` and `TRADING_MODE=analysis_only`. It also
+asserts that the resulting test process has no Paper, Demo, or Live execution
+authority. The outer verifier separately checks the real running container
+before sanitization, so a test override cannot conceal an enabled write path.
+
+The isolation contract is covered by `tests/unit/test_hermetic_pytest.py`,
+including a deployment profile with 10% Demo portfolio risk, a 10% weekly
+backstop, structural dynamic leverage, and Demo writes enabled. Those values
+must be absent from the pytest process while the Docker database and Redis URLs
+remain available to integration tests.
 
 ## 2,000 USDT Demo capital-bucket gate
 

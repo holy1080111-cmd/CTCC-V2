@@ -36,7 +36,13 @@ pruning/deduplication, non-daily high-water behavior, and safe settings.
 
 ## Operator Docker/PostgreSQL acceptance still required
 
-Run with every write switch disabled:
+Run with every execution-authority switch disabled. Read-only score risk,
+capital buckets, continuous-session analysis, and structural dynamic risk may
+remain enabled in the deployment profile; the verifier checks the real runtime
+write boundary first and then removes deployment `Settings` from its pytest
+child process. This prevents a 10% structural validation profile from changing
+legacy 2,000-USDT test expectations while preserving PostgreSQL and Redis
+connectivity:
 
 ```powershell
 cd C:\CTCC-V2
