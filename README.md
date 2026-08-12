@@ -66,11 +66,13 @@ credentials or raw request/response payloads. Migration `0011` adds JSONB state
 for the disabled-by-default adaptive Demo portfolio and per-symbol cooldowns.
 Migration `0012` records the exact equity basis used by Demo risk controls so
 an account-mode change cannot silently reuse an incompatible daily baseline.
+Migration `0013` stores attributed rolling realized-PnL events and a separate
+non-daily equity high-water mark for weekly-loss and drawdown backstops.
 
 Expected migration after upgrade:
 
 ```text
-0012 (head)
+0013 (head)
 ```
 
 ## Adaptive Demo portfolio (disabled by default)
@@ -85,8 +87,41 @@ The default tiers are 72–79 (1x / 0.5% risk / 15% margin cap), 80–89
 (2x / 0.75% / 20%), and 90–100 (3x / 1.0% / 25%). Aggregate open stop-risk is
 capped at 2% of equity and estimated margin at 60%. These values are ceilings,
 not targets: exchange lot rounding, stop distance, and the global notional cap
-can produce smaller positions. Enabling the feature also requires the configured
-daily loss limit to be at least as large as the aggregate open-risk ceiling.
+can produce smaller positions. In standard session mode, enabling the feature
+also requires the configured daily loss limit to be at least as large as the
+aggregate open-risk ceiling.
+
+An additional disabled-by-default Demo capital-bucket gate can replace the
+percentage margin ceiling. With a verified USDT equity basis, an account at or
+below 2,000 USDT forms one full-equity slot; above 2,000 USDT, only complete
+2,000 USDT slots count, up to the configured position limit. Each order still
+uses the lower of that slot, available USDT equity, score-tier stop-risk, the
+global notional/contract caps, and exchange lot rounding. The bucket controls
+estimated cross-margin sizing only; it does not isolate exchange collateral,
+force the full amount to be consumed, authorize a write, or alter OKX Live.
+
+The structural dynamic-risk extension is separately disabled by default. When
+enabled, it uses complete 15m/1H/4H brackets made from confirmed swing
+support/resistance, places a volatility buffer beyond the structural stop, and
+uses the next confirmed structure as the target. It rejects candidates unless
+reward/risk remains at least 2.0 after configured round-trip fees, slippage,
+and funding. Those costs are included in position risk rather than reported
+after sizing.
+
+Its bands are 72–79 (1.5% risk, at most 3x), 80–89 (2.5%, 5x), 90–94
+(3%, 8x), 95–97 (4%, 10x), and 98–100 (6%, 20x). CTCC selects the smallest
+ladder leverage needed by structural stop distance plus costs. A 20x result
+also requires confirmed high-grade mathematics, confidence/reliability at
+least 0.65, instability no higher than 0.20, confirmed derivative alignment,
+net-RR approval, isolated margin, and all normal safety gates. A missing 20x
+quality condition caps leverage at 10x; missing structure or insufficient net
+RR blocks the candidate.
+
+At or below 2,000 USDT, one bucket is capped by available risk equity. Above
+2,000 USDT, each complete 2,000-USDT bucket creates one possible slot, subject
+to the configured position limit. A bucket remains a ceiling, not an order to
+consume all margin. Risk sizing, costs, exchange limits, and portfolio risk can
+produce a smaller allocation. Structural orders use isolated margin.
 
 For OKX single-currency margin accounts, USDT-settled automation uses only the
 USDT detail equity and `details[].availEq` as its risk and availability basis;
@@ -112,9 +147,22 @@ rollover resets it. With multiple positions, CTCC requires instrument-level
 realized-PnL evidence and engages Emergency Stop rather than guessing from a
 shared account-equity change.
 
-See `docs/mathematical_core.md` and `docs/demo_adaptive_portfolio.md` for the
-equations, exclusions, configuration, and rollout gates. This capability does
-not expand the one-position, one-submission OKX Live boundary.
+An optional, disabled-by-default Demo continuous-session mode removes the
+daily realized-loss, daily trade-count, consecutive-loss, and post-close
+cooldown entry gates. It
+does not create an unconditional order loop: every scheduled scan must still
+produce a qualifying mathematical/strategy/risk decision, and duplicate,
+position, capital-bucket, available-equity, weekly-loss, drawdown, protection,
+reconciliation, submission-limit, Arm, and Emergency Stop gates remain active.
+The mode requires a zero configured cooldown. The daily PnL and all skipped
+counters remain visible for audit, but `OKX_DEMO_DAILY_LOSS_LIMIT_PCT` is not an
+eligibility stop while continuous mode is active. It never changes the OKX Live
+boundary.
+
+See `docs/mathematical_core.md`, `docs/demo_adaptive_portfolio.md`, and
+`docs/demo_structural_dynamic_risk.md` for the equations, exclusions,
+configuration, and rollout gates. These capabilities do not expand the
+one-position, one-submission OKX Live boundary.
 
 ## Authenticated Live API
 

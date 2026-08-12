@@ -21,6 +21,7 @@ class DemoAutomationState(Base):
     equity_basis: Mapped[str | None] = mapped_column(String(40))
     baseline_equity: Mapped[Decimal | None] = mapped_column(Numeric(28, 10))
     peak_equity: Mapped[Decimal | None] = mapped_column(Numeric(28, 10))
+    risk_peak_equity: Mapped[Decimal | None] = mapped_column(Numeric(28, 10))
     daily_pnl: Mapped[Decimal] = mapped_column(Numeric(28, 10), nullable=False, default=Decimal("0"))
     trades_today: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     consecutive_losses: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -33,6 +34,9 @@ class DemoAutomationState(Base):
     )
     symbol_cooldowns: Mapped[dict[str, Any]] = mapped_column(
         JSONB, nullable=False, default=dict
+    )
+    realized_pnl_events: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False, default=list
     )
     last_trade_closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

@@ -20,6 +20,10 @@
   instruments, aggregate caps, shared causal mathematical fusion, robust state,
   prequential conformal coverage validation, auxiliary-score isolation, and
   three-stop UTC lock (operator acceptance pending)
+- v1.7.0 MIE rearchitecture:
+  - Gate 0 rebaseline and validation registry completed in isolated verification
+  - Gate 1 immutable shadow contracts and legacy evidence adapter
+  - later Gates remain shadow-only until independently frozen
 - v2.0 Final acceptance
 
 ## v1.0 completed
@@ -79,4 +83,24 @@
 - Protected market-order precheck, contract/notional/leverage caps, bounded polling, and reconciliation
 - Explicit cancel, close, leverage, Emergency Stop, and clear-stop flows
 - One-shot strategy/risk automation that can write only through the Live service
+- Disabled-by-default continuous Demo eligibility can skip daily loss,
+  trade-count, consecutive-loss, and cooldown locks while retaining per-order
+  protection, weekly-loss/drawdown, capital/portfolio, and execution boundaries
+- Disabled-by-default structural Demo risk uses confirmed swing brackets,
+  cost-adjusted net RR, isolated margin, and downward-only 3–20x leverage;
+  migration 0013 persists true rolling close evidence and a non-daily high-water
+  mark
 - Remaining acceptance: local PostgreSQL migration/regression and staged real-account read/micro-order evidence
+
+## v1.7.0 MIE Gate 0/1
+
+- Gate 0 records the canonical v1.6.8 commit, migration 0012, 282-file
+  manifest, fail-safe flags, and the current mathematical validation registry.
+- Gate 1 extracts immutable Evidence, ProbabilityForecast, RegimeSnapshot,
+  ModelHealth, DecisionCandidate, and MieShadowTrace contracts.
+- The legacy mathematical adapter preserves causal/prequential/auxiliary
+  distinctions and assigns one shared dependency group.
+- Directional candidates require positive net EV and every logic check, but
+  remain shadow-only and contain no order geometry.
+- Gate 1 has no execution-side imports and does not change the legacy strategy,
+  Demo, or Live paths.

@@ -13,10 +13,21 @@ from typing import Any, Iterable
 from app.config.settings import Settings, get_settings
 from app.database.repositories.demo_automation import DemoAutomationRepository
 from app.demo_automation import DemoAutomationBusyError, DemoAutomationSafetyError
+from app.demo_automation.capital_bucket import (
+    DemoCapitalBucketPlan,
+    build_demo_capital_bucket_plan,
+    demo_position_notional_ceiling,
+)
 from app.demo_automation.risk_profile import (
     configured_score_risk_tiers,
     mathematical_adjusted_score,
     score_risk_tier,
+)
+from app.demo_automation.structural_risk import (
+    apply_cost_adjusted_reward_risk,
+    candidate_with_structural_prices,
+    select_structural_leverage,
+    structural_cost_rate,
 )
 from app.domain.demo_automation import (
     DemoAutomationActiveTrade,
@@ -123,6 +134,7 @@ class SafeDemoAutomation:
             "equity_basis": None,
             "baseline_equity": None,
             "peak_equity": None,
+            "risk_peak_equity": None,
             "daily_pnl": D("0"),
             "trades_today": 0,
             "consecutive_losses": 0,
@@ -132,6 +144,7 @@ class SafeDemoAutomation:
             "active_started_at": None,
             "active_trades": {},
             "symbol_cooldowns": {},
+            "realized_pnl_events": [],
             "last_trade_closed_at": None,
             "last_started_at": None,
             "last_completed_at": None,
@@ -166,12 +179,24 @@ class SafeDemoAutomation:
         self._state["armed"] = False
         self._state["last_error"] = None
         self._normalize_portfolio_state()
+        self._clear_disabled_continuous_session_locks()
         self._recovered = True
         await self._persist_state(required=False)
 
     async def status(self) -> DemoAutomationStatus:
         active_trades = self._active_trades()
         open_risk, margin_pct = self._portfolio_usage(active_trades)
+        baseline_equity = self._state["baseline_equity"]
+        status_equity = (
+            baseline_equity + self._state["daily_pnl"]
+            if isinstance(baseline_equity, Decimal)
+            else None
+        )
+        bucket_plan = (
+            self._capital_bucket_plan(status_equity, status_equity)
+            if isinstance(status_equity, Decimal) and status_equity > 0
+            else None
+        )
         return DemoAutomationStatus(
             capability_enabled=self.settings.okx_demo_auto_execution,
             trading_mode=self.settings.trading_mode,
@@ -187,15 +212,48 @@ class SafeDemoAutomation:
             max_trades_per_day=self.settings.okx_demo_max_trades_per_day,
             daily_loss_limit_pct=D(str(self.settings.okx_demo_daily_loss_limit_pct)),
             max_consecutive_losses=self.settings.okx_demo_automation_max_consecutive_losses,
+            continuous_session_enabled=(
+                self.settings.okx_demo_continuous_session_enabled
+            ),
+            daily_loss_limit_enforced=(
+                not self.settings.okx_demo_continuous_session_enabled
+            ),
+            daily_trade_limit_enforced=(
+                not self.settings.okx_demo_continuous_session_enabled
+            ),
+            consecutive_loss_limit_enforced=(
+                not self.settings.okx_demo_continuous_session_enabled
+            ),
+            effective_trade_cooldown_seconds=(
+                self._effective_trade_cooldown_seconds()
+            ),
             score_risk_enabled=self.settings.okx_demo_score_risk_enabled,
             derivative_risk_gate_enabled=self.settings.okx_demo_score_risk_enabled,
             mathematical_risk_gate_enabled=self.settings.okx_demo_score_risk_enabled,
+            structural_dynamic_leverage_enabled=(
+                self.settings.okx_demo_structural_dynamic_leverage_enabled
+            ),
+            structural_margin_mode=(
+                "isolated"
+                if self.settings.okx_demo_structural_dynamic_leverage_enabled
+                else None
+            ),
+            structural_min_net_risk_reward=(
+                D(str(self.settings.okx_demo_structural_min_net_risk_reward))
+                if self.settings.okx_demo_structural_dynamic_leverage_enabled
+                else None
+            ),
+            structural_estimated_cost_bps=(
+                structural_cost_rate(self.settings) * D("10000")
+                if self.settings.okx_demo_structural_dynamic_leverage_enabled
+                else None
+            ),
             score_risk_tiers=(
                 configured_score_risk_tiers(self.settings)
                 if self.settings.okx_demo_score_risk_enabled
                 else []
             ),
-            max_open_positions=self._portfolio_position_limit(),
+            max_open_positions=self._portfolio_position_limit(status_equity),
             portfolio_max_risk_pct=(
                 D(str(self.settings.okx_demo_portfolio_max_risk_pct))
                 if self.settings.okx_demo_score_risk_enabled
@@ -204,17 +262,35 @@ class SafeDemoAutomation:
             portfolio_max_margin_pct=(
                 D(str(self.settings.okx_demo_portfolio_max_margin_pct))
                 if self.settings.okx_demo_score_risk_enabled
+                and not self.settings.okx_demo_capital_bucket_enabled
                 else D("0")
+            ),
+            capital_bucket_enabled=self.settings.okx_demo_capital_bucket_enabled,
+            capital_bucket_usdt=(
+                D(str(self.settings.okx_demo_position_margin_bucket_usdt))
+                if self.settings.okx_demo_capital_bucket_enabled
+                else None
+            ),
+            capital_bucket_position_limit=(
+                bucket_plan.effective_position_limit
+                if bucket_plan is not None
+                else None
             ),
             portfolio_open_risk_pct=open_risk,
             portfolio_margin_pct=margin_pct,
+            portfolio_estimated_margin=sum(
+                (max(D("0"), item.estimated_margin) for item in active_trades),
+                D("0"),
+            ),
             active_position_count=len(active_trades),
             active_trades=active_trades,
             session_date=self._state["session_date"],
             equity_basis=self._state["equity_basis"],
             baseline_equity=self._state["baseline_equity"],
             peak_equity=self._state["peak_equity"],
+            risk_peak_equity=self._state["risk_peak_equity"],
             daily_pnl=self._state["daily_pnl"],
+            rolling_7d_realized_pnl=self._rolling_realized_pnl(),
             trades_today=int(self._state["trades_today"]),
             consecutive_losses=int(self._state["consecutive_losses"]),
             active_instrument_id=self._state["active_instrument_id"],
@@ -247,6 +323,7 @@ class SafeDemoAutomation:
         capital, capital_blocker = self._automation_capital(snapshot)
         if capital is None:
             raise DemoAutomationSafetyError(capital_blocker)
+        self._ensure_capital_bucket_currency(capital)
         basis_blocker = self._roll_session(
             capital.risk_equity,
             capital.basis,
@@ -304,6 +381,7 @@ class SafeDemoAutomation:
         return await self.status()
 
     async def start(self) -> DemoAutomationStatus:
+        self._clear_disabled_continuous_session_locks()
         self._ensure_execute_ready()
         if not self._recovered:
             raise DemoAutomationSafetyError("demo_automation_recovery_not_completed")
@@ -347,6 +425,7 @@ class SafeDemoAutomation:
             total_equity: Decimal | None = None
             risk_equity: Decimal | None = None
             risk_equity_currency: str | None = None
+            capital_bucket_position_limit: int | None = None
             available_margin_equity = D("0")
             portfolio_view = self._active_trades()
             try:
@@ -363,9 +442,18 @@ class SafeDemoAutomation:
                 capital, capital_blocker = self._automation_capital(snapshot)
                 if capital is None:
                     raise DemoAutomationSafetyError(capital_blocker)
+                self._ensure_capital_bucket_currency(capital)
                 risk_equity = capital.risk_equity
                 risk_equity_currency = capital.currency
                 available_margin_equity = capital.available_equity
+                bucket_plan = self._capital_bucket_plan(
+                    risk_equity,
+                    available_margin_equity,
+                )
+                if bucket_plan is not None:
+                    capital_bucket_position_limit = (
+                        bucket_plan.effective_position_limit
+                    )
                 basis_blocker = self._roll_session(
                     risk_equity,
                     capital.basis,
@@ -388,10 +476,30 @@ class SafeDemoAutomation:
                 exposure_violation: str | None = None
                 if untracked_symbols:
                     exposure_violation = "untracked_exchange_exposure_detected"
-                elif len(position_symbols) > self._portfolio_position_limit():
+                elif len(position_symbols) > self._portfolio_position_limit(
+                    risk_equity
+                ):
                     exposure_violation = "exchange_position_limit_exceeded"
                 elif len(position_symbols) != len(set(position_symbols)):
                     exposure_violation = "multiple_positions_per_instrument_detected"
+                elif (
+                    self.settings.okx_demo_score_risk_enabled
+                    and self._portfolio_usage(portfolio_view)[0]
+                    > D(str(self.settings.okx_demo_portfolio_max_risk_pct))
+                ):
+                    exposure_violation = "active_portfolio_stop_risk_limit_exceeded"
+                elif (
+                    self.settings.okx_demo_score_risk_enabled
+                    and bucket_plan is None
+                    and self._portfolio_usage(portfolio_view)[1]
+                    > D(str(self.settings.okx_demo_portfolio_max_margin_pct))
+                ):
+                    exposure_violation = "active_portfolio_margin_limit_exceeded"
+                elif bucket_plan is not None:
+                    exposure_violation = self._capital_bucket_violation(
+                        portfolio_view,
+                        bucket_plan,
+                    )
                 if execute and exposure_violation:
                     self._engage_emergency(exposure_violation)
                     self._apply_locks(risk_equity)
@@ -414,6 +522,14 @@ class SafeDemoAutomation:
                                 "untracked_exchange_exposure_blocks_automation:"
                                 + ",".join(sorted(untracked_symbols))
                             ),
+                        )
+                    )
+                elif exposure_violation:
+                    results.append(
+                        DemoAutomationSymbolResult(
+                            symbol="*",
+                            outcome="blocked",
+                            detail=exposure_violation,
                         )
                     )
                 else:
@@ -503,12 +619,29 @@ class SafeDemoAutomation:
                 total_equity=total_equity,
                 risk_equity=risk_equity,
                 risk_equity_currency=risk_equity_currency,
+                capital_bucket_enabled=(
+                    self.settings.okx_demo_capital_bucket_enabled
+                ),
+                capital_bucket_usdt=(
+                    D(str(self.settings.okx_demo_position_margin_bucket_usdt))
+                    if self.settings.okx_demo_capital_bucket_enabled
+                    else None
+                ),
+                capital_bucket_position_limit=capital_bucket_position_limit,
                 daily_pnl=self._state["daily_pnl"],
                 trades_today=int(self._state["trades_today"]),
                 consecutive_losses=int(self._state["consecutive_losses"]),
+                rolling_7d_realized_pnl=self._rolling_realized_pnl(completed),
                 active_position_count=len(portfolio_view),
                 portfolio_open_risk_pct=self._portfolio_usage(portfolio_view)[0],
                 portfolio_margin_pct=self._portfolio_usage(portfolio_view)[1],
+                portfolio_estimated_margin=sum(
+                    (
+                        max(D("0"), item.estimated_margin)
+                        for item in portfolio_view
+                    ),
+                    D("0"),
+                ),
             )
             self._history.append(run)
             await self._persist_state(required=False)
@@ -713,7 +846,17 @@ class SafeDemoAutomation:
                     ),
                     None,
                 )
-            execution_candidate = self._candidate_at_reference(candidate, reference_price)
+            if self.settings.okx_demo_structural_dynamic_leverage_enabled:
+                execution_candidate = candidate_with_structural_prices(
+                    candidate,
+                    reference_price=reference_price,
+                )
+                protective_detail = "structural_protection_geometry_unavailable"
+            else:
+                execution_candidate = self._candidate_at_reference(
+                    candidate, reference_price
+                )
+                protective_detail = "reference_price_outside_protective_bounds"
             if execution_candidate is None:
                 return (
                     self._candidate_result(
@@ -722,7 +865,7 @@ class SafeDemoAutomation:
                         candidate,
                         outcome="blocked",
                         reference_price=reference_price,
-                        detail="reference_price_outside_protective_bounds",
+                        detail=protective_detail,
                     ),
                     None,
                 )
@@ -742,7 +885,7 @@ class SafeDemoAutomation:
                     None,
                 )
 
-            position_limit = self._portfolio_position_limit()
+            position_limit = self._portfolio_position_limit(balance_equity)
             if any(item.tier == "legacy" for item in portfolio):
                 return (
                     self._candidate_result(
@@ -797,14 +940,60 @@ class SafeDemoAutomation:
             stop_loss, take_profit = self._align_protection(
                 execution_candidate, instrument.tick_size
             )
-            aligned_candidate = execution_candidate.model_copy(
+            tick_aligned = execution_candidate.model_copy(
                 update={"stop_loss": stop_loss, "take_profit": take_profit}
             )
+            aligned_candidate = self._candidate_at_reference(
+                tick_aligned, reference_price
+            )
+            if aligned_candidate is None:
+                return (
+                    self._candidate_result(
+                        strategy.symbol,
+                        instrument_id,
+                        execution_candidate,
+                        outcome="blocked",
+                        reference_price=reference_price,
+                        detail="tick_aligned_protection_geometry_invalid",
+                    ),
+                    None,
+                )
+            if self.settings.okx_demo_structural_dynamic_leverage_enabled:
+                aligned_candidate, structural_blocker = (
+                    apply_cost_adjusted_reward_risk(
+                        aligned_candidate,
+                        self.settings,
+                    )
+                )
+                if aligned_candidate is None:
+                    return (
+                        self._candidate_result(
+                            strategy.symbol,
+                            instrument_id,
+                            execution_candidate,
+                            outcome="blocked",
+                            reference_price=reference_price,
+                            detail=structural_blocker or "structural_risk_rejected",
+                        ),
+                        None,
+                    )
 
             tier, requested_risk_pct, leverage, margin_cap_pct = self._risk_profile(
                 aligned_candidate.risk_score
                 if aligned_candidate.risk_score is not None
                 else aligned_candidate.score
+            )
+            required_leverage: int | None = None
+            leverage_cap: int | None = tier.leverage if tier is not None else None
+            leverage_cap_reasons: list[str] = []
+            bucket_plan = self._capital_bucket_plan(
+                balance_equity,
+                available_margin_equity,
+            )
+            position_margin_cap_usdt = (
+                bucket_plan.available_position_margin_cap_usdt
+                if bucket_plan is not None
+                else None
             )
             open_risk_pct, open_margin_pct = self._portfolio_usage(portfolio)
             if self.settings.okx_demo_score_risk_enabled:
@@ -813,13 +1002,7 @@ class SafeDemoAutomation:
                     D(str(self.settings.okx_demo_portfolio_max_risk_pct))
                     - open_risk_pct,
                 )
-                remaining_margin = max(
-                    D("0"),
-                    D(str(self.settings.okx_demo_portfolio_max_margin_pct))
-                    - open_margin_pct,
-                )
                 requested_risk_pct = min(requested_risk_pct, remaining_risk)
-                margin_cap_pct = min(margin_cap_pct, remaining_margin)
                 if requested_risk_pct <= 0:
                     return (
                         self._candidate_result(
@@ -834,21 +1017,69 @@ class SafeDemoAutomation:
                         ),
                         None,
                     )
-                if margin_cap_pct <= 0:
-                    return (
-                        self._candidate_result(
-                            strategy.symbol,
-                            instrument_id,
-                            aligned_candidate,
-                            outcome="blocked",
-                            reference_price=reference_price,
-                            score_tier=tier,
-                            selected_leverage=leverage,
-                            detail="portfolio_margin_limit_reached",
-                        ),
-                        None,
+                if (
+                    self.settings.okx_demo_structural_dynamic_leverage_enabled
+                    and tier is not None
+                ):
+                    selection = select_structural_leverage(
+                        aligned_candidate,
+                        tier.model_copy(update={"risk_pct": requested_risk_pct}),
+                        self.settings,
                     )
-                margin_notional_cap = balance_equity * margin_cap_pct * D(leverage)
+                    leverage = selection.selected_leverage
+                    required_leverage = selection.required_leverage
+                    leverage_cap = selection.leverage_cap
+                    leverage_cap_reasons = list(selection.cap_reasons)
+                if bucket_plan is not None:
+                    if position_margin_cap_usdt is None or position_margin_cap_usdt <= 0:
+                        return (
+                            self._candidate_result(
+                                strategy.symbol,
+                                instrument_id,
+                                aligned_candidate,
+                                outcome="blocked",
+                                reference_price=reference_price,
+                                score_tier=tier,
+                                selected_leverage=leverage,
+                                position_margin_cap_usdt=None,
+                                capital_bucket_usdt=(
+                                    bucket_plan.configured_bucket_usdt
+                                ),
+                                detail="exchange_available_equity_exhausted",
+                            ),
+                            None,
+                        )
+                    margin_notional_cap = demo_position_notional_ceiling(
+                        plan=bucket_plan,
+                        leverage=leverage,
+                        global_notional_ceiling_usdt=D(
+                            str(self.settings.order_size_cap_usdt)
+                        ),
+                    )
+                else:
+                    remaining_margin = max(
+                        D("0"),
+                        D(str(self.settings.okx_demo_portfolio_max_margin_pct))
+                        - open_margin_pct,
+                    )
+                    margin_cap_pct = min(margin_cap_pct, remaining_margin)
+                    if margin_cap_pct <= 0:
+                        return (
+                            self._candidate_result(
+                                strategy.symbol,
+                                instrument_id,
+                                aligned_candidate,
+                                outcome="blocked",
+                                reference_price=reference_price,
+                                score_tier=tier,
+                                selected_leverage=leverage,
+                                detail="portfolio_margin_limit_reached",
+                            ),
+                            None,
+                        )
+                    margin_notional_cap = (
+                        balance_equity * margin_cap_pct * D(leverage)
+                    )
                 max_notional = min(
                     D(str(self.settings.order_size_cap_usdt)),
                     margin_notional_cap,
@@ -864,6 +1095,12 @@ class SafeDemoAutomation:
                             reference_price=reference_price,
                             score_tier=tier,
                             selected_leverage=leverage,
+                            position_margin_cap_usdt=position_margin_cap_usdt,
+                            capital_bucket_usdt=(
+                                bucket_plan.configured_bucket_usdt
+                                if bucket_plan is not None
+                                else None
+                            ),
                             detail="exchange_available_equity_exhausted",
                         ),
                         None,
@@ -889,10 +1126,24 @@ class SafeDemoAutomation:
 
             account = AccountRiskState(
                 equity=balance_equity,
-                daily_realized_pnl=min(D("0"), self._state["daily_pnl"]),
-                weekly_realized_pnl=min(D("0"), self._state["daily_pnl"]),
-                peak_equity=self._state["peak_equity"] or balance_equity,
-                consecutive_losses=int(self._state["consecutive_losses"]),
+                daily_realized_pnl=(
+                    D("0")
+                    if self.settings.okx_demo_continuous_session_enabled
+                    else min(D("0"), self._state["daily_pnl"])
+                ),
+                # Rolling attributed closes are authoritative.  The current
+                # UTC-day equity delta is retained as a conservative fallback
+                # for a close that the exchange has not attributed yet.
+                weekly_realized_pnl=min(
+                    self._rolling_realized_pnl(now),
+                    self._state["daily_pnl"],
+                ),
+                peak_equity=self._state["risk_peak_equity"] or balance_equity,
+                consecutive_losses=(
+                    0
+                    if self.settings.okx_demo_continuous_session_enabled
+                    else int(self._state["consecutive_losses"])
+                ),
                 open_positions=len(portfolio),
                 same_direction_positions=sum(
                     1 for item in portfolio if item.direction == aligned_candidate.direction
@@ -919,7 +1170,16 @@ class SafeDemoAutomation:
                         approved_base_quantity=risk.approved_quantity,
                         score_tier=tier,
                         selected_leverage=leverage,
+                        required_leverage=required_leverage,
+                        leverage_cap=leverage_cap,
+                        leverage_cap_reasons=leverage_cap_reasons,
                         risk_budget_pct=requested_risk_pct,
+                        position_margin_cap_usdt=position_margin_cap_usdt,
+                        capital_bucket_usdt=(
+                            bucket_plan.configured_bucket_usdt
+                            if bucket_plan is not None
+                            else None
+                        ),
                         reason_codes=risk.reason_codes,
                         detail="risk_engine_rejected_candidate",
                     ),
@@ -941,7 +1201,16 @@ class SafeDemoAutomation:
                         approved_contracts=contracts,
                         score_tier=tier,
                         selected_leverage=leverage,
+                        required_leverage=required_leverage,
+                        leverage_cap=leverage_cap,
+                        leverage_cap_reasons=leverage_cap_reasons,
                         risk_budget_pct=requested_risk_pct,
+                        position_margin_cap_usdt=position_margin_cap_usdt,
+                        capital_bucket_usdt=(
+                            bucket_plan.configured_bucket_usdt
+                            if bucket_plan is not None
+                            else None
+                        ),
                         detail=size_error,
                     ),
                     None,
@@ -951,16 +1220,36 @@ class SafeDemoAutomation:
             notional = base_quantity * reference_price
             estimated_margin = notional / D(leverage)
             estimated_margin_pct = estimated_margin / balance_equity
-            estimated_stop_loss_amount = base_quantity * abs(
+            estimated_price_stop_loss_amount = base_quantity * abs(
                 reference_price - stop_loss
             )
+            estimated_cost_amount = (
+                notional * aligned_candidate.estimated_round_trip_cost_pct
+            )
+            estimated_stop_loss_amount = (
+                estimated_price_stop_loss_amount + estimated_cost_amount
+            )
             estimated_stop_loss_pct = estimated_stop_loss_amount / balance_equity
+            rounded_budget_detail: str | None = None
             if self.settings.okx_demo_score_risk_enabled and (
                 open_risk_pct + estimated_stop_loss_pct
                 > D(str(self.settings.okx_demo_portfolio_max_risk_pct))
-                or open_margin_pct + estimated_margin_pct
+            ):
+                rounded_budget_detail = "rounded_order_exceeds_portfolio_budget"
+            elif (
+                bucket_plan is not None
+                and position_margin_cap_usdt is not None
+                and estimated_margin > position_margin_cap_usdt
+            ):
+                rounded_budget_detail = "rounded_order_exceeds_position_margin_bucket"
+            elif (
+                self.settings.okx_demo_score_risk_enabled
+                and bucket_plan is None
+                and open_margin_pct + estimated_margin_pct
                 > D(str(self.settings.okx_demo_portfolio_max_margin_pct))
             ):
+                rounded_budget_detail = "rounded_order_exceeds_portfolio_budget"
+            if rounded_budget_detail is not None:
                 return (
                     self._candidate_result(
                         strategy.symbol,
@@ -976,7 +1265,13 @@ class SafeDemoAutomation:
                         estimated_stop_loss_pct=estimated_stop_loss_pct,
                         margin_allocation_pct=estimated_margin_pct,
                         estimated_margin=estimated_margin,
-                        detail="rounded_order_exceeds_portfolio_budget",
+                        position_margin_cap_usdt=position_margin_cap_usdt,
+                        capital_bucket_usdt=(
+                            bucket_plan.configured_bucket_usdt
+                            if bucket_plan is not None
+                            else None
+                        ),
+                        detail=rounded_budget_detail,
                     ),
                     None,
                 )
@@ -1036,15 +1331,66 @@ class SafeDemoAutomation:
                 tier=tier.name if tier is not None else "legacy",
                 contracts=contracts,
                 leverage=leverage,
+                required_leverage=required_leverage,
+                leverage_cap=leverage_cap,
+                leverage_cap_reasons=leverage_cap_reasons,
+                margin_mode=(
+                    "isolated"
+                    if self.settings.okx_demo_structural_dynamic_leverage_enabled
+                    else "cross"
+                ),
                 risk_budget_pct=requested_risk_pct,
                 estimated_stop_loss_amount=estimated_stop_loss_amount,
                 estimated_stop_loss_pct=estimated_stop_loss_pct,
                 estimated_notional=notional,
                 margin_allocation_pct=estimated_margin_pct,
                 estimated_margin=estimated_margin,
+                estimated_round_trip_cost_pct=(
+                    aligned_candidate.estimated_round_trip_cost_pct
+                ),
+                estimated_cost_amount=estimated_cost_amount,
+                position_margin_cap_usdt=position_margin_cap_usdt,
+                capital_bucket_usdt=(
+                    bucket_plan.configured_bucket_usdt
+                    if bucket_plan is not None
+                    else None
+                ),
                 reference_price=reference_price,
                 stop_loss=stop_loss,
                 take_profit=take_profit,
+                protection_model=aligned_candidate.protection_model,
+                structure_timeframe=(
+                    aligned_candidate.structural_protection.timeframe
+                    if aligned_candidate.protection_model == "structure"
+                    and aligned_candidate.structural_protection is not None
+                    else None
+                ),
+                structure_source_closed_at=(
+                    aligned_candidate.structural_protection.source_closed_at
+                    if aligned_candidate.protection_model == "structure"
+                    and aligned_candidate.structural_protection is not None
+                    else None
+                ),
+                structure_stop_anchor=(
+                    aligned_candidate.structural_protection.stop_anchor
+                    if aligned_candidate.protection_model == "structure"
+                    and aligned_candidate.structural_protection is not None
+                    else None
+                ),
+                structure_target_anchor=(
+                    aligned_candidate.structural_protection.target_anchor
+                    if aligned_candidate.protection_model == "structure"
+                    and aligned_candidate.structural_protection is not None
+                    else None
+                ),
+                structure_volatility_buffer=(
+                    aligned_candidate.structural_protection.volatility_buffer
+                    if aligned_candidate.protection_model == "structure"
+                    and aligned_candidate.structural_protection is not None
+                    else None
+                ),
+                gross_risk_reward=aligned_candidate.gross_risk_reward,
+                net_risk_reward=aligned_candidate.net_risk_reward,
                 start_equity=balance_equity,
                 started_at=now,
             )
@@ -1060,21 +1406,35 @@ class SafeDemoAutomation:
                         approved_contracts=contracts,
                         score_tier=tier,
                         selected_leverage=leverage,
+                        required_leverage=required_leverage,
+                        leverage_cap=leverage_cap,
+                        leverage_cap_reasons=leverage_cap_reasons,
                         risk_budget_pct=requested_risk_pct,
                         estimated_stop_loss_pct=estimated_stop_loss_pct,
                         margin_allocation_pct=estimated_margin_pct,
                         estimated_margin=estimated_margin,
+                        position_margin_cap_usdt=position_margin_cap_usdt,
+                        capital_bucket_usdt=(
+                            bucket_plan.configured_bucket_usdt
+                            if bucket_plan is not None
+                            else None
+                        ),
                         detail="risk_approved_demo_execution_disabled_for_this_run",
                     ),
                     reservation,
                 )
 
             client_order_id = "AUT" + fingerprint[:29]
+            margin_mode = (
+                "isolated"
+                if self.settings.okx_demo_structural_dynamic_leverage_enabled
+                else "cross"
+            )
             await self.demo_service.set_leverage(
                 OkxDemoLeverageRequest(
                     instrument_id=instrument_id,
                     leverage=leverage,
-                    margin_mode="cross",
+                    margin_mode=margin_mode,
                     direction=aligned_candidate.direction,
                     confirmation=DEMO_CONFIRMATION_PHRASE,
                 )
@@ -1084,7 +1444,7 @@ class SafeDemoAutomation:
                     instrument_id=instrument_id,
                     direction=aligned_candidate.direction,
                     size=contracts,
-                    margin_mode="cross",
+                    margin_mode=margin_mode,
                     order_type="market",
                     stop_loss=stop_loss,
                     take_profit=take_profit,
@@ -1107,7 +1467,9 @@ class SafeDemoAutomation:
             self._state["trades_today"] = int(self._state["trades_today"]) + 1
             expiry = max(
                 aligned_candidate.expires_at,
-                now + timedelta(seconds=self.settings.okx_demo_trade_cooldown_seconds),
+                now + timedelta(
+                    seconds=self._effective_trade_cooldown_seconds()
+                ),
             )
             state_persisted = False
             try:
@@ -1154,10 +1516,19 @@ class SafeDemoAutomation:
                     approved_contracts=contracts,
                     score_tier=tier,
                     selected_leverage=leverage,
+                    required_leverage=required_leverage,
+                    leverage_cap=leverage_cap,
+                    leverage_cap_reasons=leverage_cap_reasons,
                     risk_budget_pct=requested_risk_pct,
                     estimated_stop_loss_pct=estimated_stop_loss_pct,
                     margin_allocation_pct=estimated_margin_pct,
                     estimated_margin=estimated_margin,
+                    position_margin_cap_usdt=position_margin_cap_usdt,
+                    capital_bucket_usdt=(
+                        bucket_plan.configured_bucket_usdt
+                        if bucket_plan is not None
+                        else None
+                    ),
                     client_order_id=client_order_id,
                     exchange_order_id=exchange_order_id,
                     detail="protected_okx_demo_market_order_submitted",
@@ -1235,9 +1606,19 @@ class SafeDemoAutomation:
     @staticmethod
     def _align_protection(candidate: TradeCandidate, tick: Decimal) -> tuple[Decimal, Decimal]:
         if candidate.direction == "long":
-            sl_round, tp_round = ROUND_FLOOR, ROUND_CEILING
+            sl_round = ROUND_FLOOR
+            tp_round = (
+                ROUND_FLOOR
+                if candidate.protection_model == "structure"
+                else ROUND_CEILING
+            )
         else:
-            sl_round, tp_round = ROUND_CEILING, ROUND_FLOOR
+            sl_round = ROUND_CEILING
+            tp_round = (
+                ROUND_CEILING
+                if candidate.protection_model == "structure"
+                else ROUND_FLOOR
+            )
         stop = (candidate.stop_loss / tick).to_integral_value(rounding=sl_round) * tick
         take = (candidate.take_profit / tick).to_integral_value(rounding=tp_round) * tick
         # Re-validate geometry after exchange tick alignment.
@@ -1267,10 +1648,70 @@ class SafeDemoAutomation:
             D("1"),
         )
 
-    def _portfolio_position_limit(self) -> int:
+    def _portfolio_position_limit(
+        self,
+        risk_equity: Decimal | None = None,
+    ) -> int:
         if self.settings.okx_demo_score_risk_enabled:
+            if self.settings.okx_demo_capital_bucket_enabled:
+                if risk_equity is None or risk_equity <= 0:
+                    return 1
+                plan = self._capital_bucket_plan(
+                    risk_equity,
+                    risk_equity,
+                )
+                if plan is None:
+                    return 1
+                return plan.effective_position_limit
             return self.settings.okx_demo_max_open_positions
         return 1
+
+    def _capital_bucket_plan(
+        self,
+        risk_equity: Decimal,
+        available_equity: Decimal,
+    ) -> DemoCapitalBucketPlan | None:
+        if not self.settings.okx_demo_capital_bucket_enabled:
+            return None
+        return build_demo_capital_bucket_plan(
+            risk_equity_usdt=risk_equity,
+            available_equity_usdt=available_equity,
+            configured_bucket_usdt=D(
+                str(self.settings.okx_demo_position_margin_bucket_usdt)
+            ),
+            configured_position_limit=self.settings.okx_demo_max_open_positions,
+        )
+
+    def _ensure_capital_bucket_currency(
+        self,
+        capital: _AutomationCapital,
+    ) -> None:
+        if (
+            self.settings.okx_demo_capital_bucket_enabled
+            and capital.currency != _AUTOMATION_SETTLEMENT_CURRENCY
+        ):
+            raise DemoAutomationSafetyError(
+                "capital_bucket_requires_single_currency_usdt_equity"
+            )
+
+    @staticmethod
+    def _capital_bucket_violation(
+        trades: Iterable[DemoAutomationActiveTrade],
+        plan: DemoCapitalBucketPlan,
+    ) -> str | None:
+        items = list(trades)
+        if len(items) > plan.effective_position_limit:
+            return "capital_bucket_position_limit_exceeded"
+        for item in items:
+            stored_cap = (
+                item.position_margin_cap_usdt
+                if item.position_margin_cap_usdt is not None
+                else plan.target_position_margin_usdt
+            )
+            effective_cap = min(stored_cap, plan.target_position_margin_usdt)
+            if max(D("0"), item.estimated_margin) > effective_cap:
+                return "active_trade_exceeds_position_margin_bucket"
+        return None
 
     @staticmethod
     def _automation_capital(
@@ -1349,7 +1790,11 @@ class SafeDemoAutomation:
             max_correlated_positions=position_limit,
             max_notional=max_notional,
             minimum_score=self.settings.strategy_min_score,
-            minimum_risk_reward=D(str(self.settings.strategy_min_risk_reward)),
+            minimum_risk_reward=(
+                D(str(self.settings.okx_demo_structural_min_net_risk_reward))
+                if self.settings.okx_demo_structural_dynamic_leverage_enabled
+                else D(str(self.settings.strategy_min_risk_reward))
+            ),
         )
 
     def _roll_session(
@@ -1373,6 +1818,8 @@ class SafeDemoAutomation:
             self._state["session_date"] = today
             self._state["baseline_equity"] = equity
             self._state["peak_equity"] = equity
+            self._state["risk_peak_equity"] = equity
+            self._state["realized_pnl_events"] = []
             self._state["daily_pnl"] = D("0")
             self._state["trades_today"] = 0
             self._state["consecutive_losses"] = 0
@@ -1391,11 +1838,18 @@ class SafeDemoAutomation:
         elif force_if_empty and self._state["baseline_equity"] is None:
             self._state["baseline_equity"] = equity
             self._state["peak_equity"] = equity
+            if self._state["risk_peak_equity"] is None:
+                self._state["risk_peak_equity"] = equity
         baseline = self._state["baseline_equity"]
         if baseline is not None:
             self._state["daily_pnl"] = equity - baseline
         peak = self._state["peak_equity"]
         self._state["peak_equity"] = equity if peak is None else max(peak, equity)
+        risk_peak = self._state["risk_peak_equity"]
+        self._state["risk_peak_equity"] = (
+            equity if risk_peak is None else max(risk_peak, equity)
+        )
+        self._normalize_realized_pnl_events()
         return None
 
     def _finalize_active_trades(
@@ -1465,6 +1919,7 @@ class SafeDemoAutomation:
 
         cooldowns = dict(self._state.get("symbol_cooldowns") or {})
         for closed_at, trade, net_pnl in sorted(outcomes, key=lambda item: item[0]):
+            self._record_realized_pnl_event(trade, closed_at, net_pnl)
             if closed_at.date() == self._state["session_date"]:
                 if net_pnl < 0:
                     self._state["consecutive_losses"] = (
@@ -1492,6 +1947,13 @@ class SafeDemoAutomation:
             if trade.tier == "legacy":
                 continue
             position = positions.get(trade.instrument_id)
+            if (
+                trade.protection_model == "structure"
+                and position is not None
+                and position.margin_mode != "isolated"
+            ):
+                self._engage_emergency("isolated_margin_mode_mismatch")
+                continue
             current_notional = trade.estimated_notional
             if (
                 position is not None
@@ -1522,7 +1984,7 @@ class SafeDemoAutomation:
         trade: DemoAutomationActiveTrade,
         orders: Iterable[OkxDemoOrderView],
     ) -> tuple[datetime, Decimal] | None:
-        matches: list[tuple[datetime, Decimal]] = []
+        matches: dict[str, tuple[datetime, Decimal]] = {}
         for order in orders:
             if order.instrument_id != trade.instrument_id:
                 continue
@@ -1549,13 +2011,88 @@ class SafeDemoAutomation:
             if rebate < 0:
                 rebate = D("0")
             funding = cls._first_decimal(order.raw, "fundingFee") or D("0")
-            matches.append(
-                (closed_at, realized - fee_cost + rebate + funding)
-            )
+            value = (closed_at, realized - fee_cost + rebate + funding)
+            previous = matches.get(order.order_id)
+            if previous is None or closed_at >= previous[0]:
+                matches[order.order_id] = value
         if not matches:
             return None
-        return max(item[0] for item in matches), sum(
-            (item[1] for item in matches), D("0")
+        unique = list(matches.values())
+        return max(item[0] for item in unique), sum(
+            (item[1] for item in unique), D("0")
+        )
+
+    def _record_realized_pnl_event(
+        self,
+        trade: DemoAutomationActiveTrade,
+        closed_at: datetime,
+        net_pnl: Decimal,
+    ) -> None:
+        closed_utc = closed_at.astimezone(timezone.utc)
+        event_id = hashlib.sha256(
+            "|".join(
+                [
+                    trade.instrument_id,
+                    trade.started_at.astimezone(timezone.utc).isoformat(),
+                    closed_utc.isoformat(),
+                ]
+            ).encode("utf-8")
+        ).hexdigest()
+        events = self._normalize_realized_pnl_events()
+        if any(item["event_id"] == event_id for item in events):
+            return
+        events.append(
+            {
+                "event_id": event_id,
+                "instrument_id": trade.instrument_id,
+                "closed_at": closed_utc.isoformat(),
+                "net_pnl": str(net_pnl),
+            }
+        )
+        self._state["realized_pnl_events"] = sorted(
+            events, key=lambda item: (item["closed_at"], item["event_id"])
+        )
+
+    def _normalize_realized_pnl_events(
+        self,
+        now: datetime | None = None,
+    ) -> list[dict[str, str]]:
+        reference = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        cutoff = reference - timedelta(days=7)
+        normalized: dict[str, dict[str, str]] = {}
+        raw_events = self._state.get("realized_pnl_events") or []
+        if not isinstance(raw_events, list):
+            raw_events = []
+        for raw in raw_events:
+            if not isinstance(raw, dict):
+                continue
+            event_id = str(raw.get("event_id") or "")
+            instrument_id = str(raw.get("instrument_id") or "")
+            closed_at = self._parse_datetime(raw.get("closed_at"))
+            if not event_id or not instrument_id or closed_at is None:
+                continue
+            if closed_at < cutoff or closed_at > reference + timedelta(minutes=5):
+                continue
+            try:
+                net_pnl = D(str(raw.get("net_pnl")))
+            except (ArithmeticError, ValueError):
+                continue
+            normalized[event_id] = {
+                "event_id": event_id,
+                "instrument_id": instrument_id,
+                "closed_at": closed_at.isoformat(),
+                "net_pnl": str(net_pnl),
+            }
+        events = sorted(
+            normalized.values(), key=lambda item: (item["closed_at"], item["event_id"])
+        )
+        self._state["realized_pnl_events"] = events
+        return events
+
+    def _rolling_realized_pnl(self, now: datetime | None = None) -> Decimal:
+        return sum(
+            (D(item["net_pnl"]) for item in self._normalize_realized_pnl_events(now)),
+            D("0"),
         )
 
     @staticmethod
@@ -1590,18 +2127,24 @@ class SafeDemoAutomation:
         reasons: list[str] = []
         if _EQUITY_BASIS_LOCK in self._state["lock_reasons"]:
             reasons.append(_EQUITY_BASIS_LOCK)
-        baseline = self._state["baseline_equity"]
-        if baseline is not None and baseline > 0:
-            loss_limit = baseline * D(str(self.settings.okx_demo_daily_loss_limit_pct))
-            if self._state["daily_pnl"] <= -loss_limit:
-                reasons.append("daily_loss_limit_reached")
-        if int(self._state["trades_today"]) >= self.settings.okx_demo_max_trades_per_day:
-            reasons.append("daily_trade_count_limit_reached")
-        if (
-            int(self._state["consecutive_losses"])
-            >= self.settings.okx_demo_automation_max_consecutive_losses
-        ):
-            reasons.append("consecutive_loss_limit_reached")
+        if not self.settings.okx_demo_continuous_session_enabled:
+            baseline = self._state["baseline_equity"]
+            if baseline is not None and baseline > 0:
+                loss_limit = baseline * D(
+                    str(self.settings.okx_demo_daily_loss_limit_pct)
+                )
+                if self._state["daily_pnl"] <= -loss_limit:
+                    reasons.append("daily_loss_limit_reached")
+            if (
+                int(self._state["trades_today"])
+                >= self.settings.okx_demo_max_trades_per_day
+            ):
+                reasons.append("daily_trade_count_limit_reached")
+            if (
+                int(self._state["consecutive_losses"])
+                >= self.settings.okx_demo_automation_max_consecutive_losses
+            ):
+                reasons.append("consecutive_loss_limit_reached")
         if self._state["emergency_stop"]:
             reasons.append("emergency_stop_engaged")
             reasons.extend(
@@ -1609,7 +2152,12 @@ class SafeDemoAutomation:
                 for reason in self._state["lock_reasons"]
                 if reason
                 in {
+                    "active_trade_exceeds_position_margin_bucket",
+                    "active_portfolio_margin_limit_exceeded",
+                    "active_portfolio_stop_risk_limit_exceeded",
+                    "capital_bucket_position_limit_exceeded",
                     "exchange_position_limit_exceeded",
+                    "isolated_margin_mode_mismatch",
                     "multiple_positions_per_instrument_detected",
                     "portfolio_state_invalid",
                     "post_submission_acknowledgement_invalid",
@@ -1631,15 +2179,51 @@ class SafeDemoAutomation:
         )
 
     def _cooldown_active(self, instrument_id: str, now: datetime) -> bool:
+        if self.settings.okx_demo_continuous_session_enabled:
+            return False
         value = (self._state.get("symbol_cooldowns") or {}).get(instrument_id)
         if value is None:
             return False
         closed = self._parse_datetime(value)
         if closed is None:
             return True
-        return now < closed + timedelta(seconds=self.settings.okx_demo_trade_cooldown_seconds)
+        return now < closed + timedelta(
+            seconds=self._effective_trade_cooldown_seconds()
+        )
+
+    def _effective_trade_cooldown_seconds(self) -> int:
+        if self.settings.okx_demo_continuous_session_enabled:
+            return 0
+        return self.settings.okx_demo_trade_cooldown_seconds
+
+    def _clear_disabled_continuous_session_locks(self) -> None:
+        if not self.settings.okx_demo_continuous_session_enabled:
+            return
+        disabled = {
+            "daily_loss_limit_reached",
+            "daily_trade_count_limit_reached",
+            "consecutive_loss_limit_reached",
+        }
+        original = list(self._state["lock_reasons"])
+        if not any(reason in disabled for reason in original):
+            return
+        retained = [
+            reason
+            for reason in original
+            if reason not in disabled
+        ]
+        if self._state["emergency_stop"]:
+            retained.append("emergency_stop_engaged")
+        self._state["lock_reasons"] = sorted(set(retained))
+        self._state["locked"] = bool(retained)
 
     def _normalize_portfolio_state(self) -> None:
+        if self._state.get("risk_peak_equity") is None:
+            self._state["risk_peak_equity"] = (
+                self._state.get("peak_equity")
+                or self._state.get("baseline_equity")
+            )
+        self._normalize_realized_pnl_events()
         raw_active = self._state.get("active_trades")
         if not isinstance(raw_active, dict):
             raw_active = {}
@@ -1857,10 +2441,15 @@ class SafeDemoAutomation:
         approved_contracts: Decimal | None = None,
         score_tier: DemoAutomationRiskTier | None = None,
         selected_leverage: int | None = None,
+        required_leverage: int | None = None,
+        leverage_cap: int | None = None,
+        leverage_cap_reasons: list[str] | None = None,
         risk_budget_pct: Decimal | None = None,
         estimated_stop_loss_pct: Decimal | None = None,
         margin_allocation_pct: Decimal | None = None,
         estimated_margin: Decimal | None = None,
+        position_margin_cap_usdt: Decimal | None = None,
+        capital_bucket_usdt: Decimal | None = None,
         client_order_id: str | None = None,
         exchange_order_id: str | None = None,
         reason_codes: list[str] | None = None,
@@ -1930,10 +2519,61 @@ class SafeDemoAutomation:
             approved_contracts=approved_contracts,
             score_tier=score_tier.name if score_tier is not None else None,
             selected_leverage=selected_leverage,
+            required_leverage=required_leverage,
+            leverage_cap=leverage_cap,
+            leverage_cap_reasons=leverage_cap_reasons or [],
+            margin_mode=(
+                "isolated" if candidate.protection_model == "structure" else "cross"
+            ),
             risk_budget_pct=risk_budget_pct,
             estimated_stop_loss_pct=estimated_stop_loss_pct,
             margin_allocation_pct=margin_allocation_pct,
             estimated_margin=estimated_margin,
+            protection_model=candidate.protection_model,
+            structure_timeframe=(
+                candidate.structural_protection.timeframe
+                if candidate.protection_model == "structure"
+                and candidate.structural_protection is not None
+                else None
+            ),
+            structure_source_closed_at=(
+                candidate.structural_protection.source_closed_at
+                if candidate.protection_model == "structure"
+                and candidate.structural_protection is not None
+                else None
+            ),
+            structure_stop_anchor=(
+                candidate.structural_protection.stop_anchor
+                if candidate.protection_model == "structure"
+                and candidate.structural_protection is not None
+                else None
+            ),
+            structure_target_anchor=(
+                candidate.structural_protection.target_anchor
+                if candidate.protection_model == "structure"
+                and candidate.structural_protection is not None
+                else None
+            ),
+            structure_volatility_buffer=(
+                candidate.structural_protection.volatility_buffer
+                if candidate.protection_model == "structure"
+                and candidate.structural_protection is not None
+                else None
+            ),
+            estimated_round_trip_cost_pct=(
+                candidate.estimated_round_trip_cost_pct
+            ),
+            estimated_cost_amount=(
+                estimated_margin
+                * D(selected_leverage)
+                * candidate.estimated_round_trip_cost_pct
+                if estimated_margin is not None and selected_leverage is not None
+                else None
+            ),
+            gross_risk_reward=candidate.gross_risk_reward,
+            net_risk_reward=candidate.net_risk_reward,
+            position_margin_cap_usdt=position_margin_cap_usdt,
+            capital_bucket_usdt=capital_bucket_usdt,
             client_order_id=client_order_id,
             exchange_order_id=exchange_order_id,
             reason_codes=reason_codes or [],

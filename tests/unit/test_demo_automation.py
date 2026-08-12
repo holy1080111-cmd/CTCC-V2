@@ -22,6 +22,7 @@ from app.domain.realtime import RealtimeSnapshot, RealtimeStatus
 from app.domain.strategy import (
     DerivativeConfirmation,
     MathematicalConfirmation,
+    StructuralProtectionGeometry,
     StrategyDecision,
     TradeCandidate,
 )
@@ -72,7 +73,11 @@ class FakeDemo:
     ) -> None:
         self.place_calls = []
         self.leverage_calls = []
+        self.account_level = "2"
         self.equity = Decimal("10000")
+        self.available_equity: Decimal | None = None
+        self.adjusted_equity = Decimal("0")
+        self.account_available_equity = Decimal("0")
         self.other_asset_equity = Decimal("0")
         self.acknowledged = acknowledged
         self.include_acknowledgement = include_acknowledgement
@@ -121,19 +126,23 @@ class FakeDemo:
     async def reconcile(self) -> OkxDemoReconcileResult:
         return OkxDemoReconcileResult(
             account_config=OkxDemoAccountConfig(
-                account_level="2",
+                account_level=self.account_level,
                 position_mode="net_mode",
             ),
             balance=OkxDemoBalanceSnapshot(
                 total_equity=self.equity + self.other_asset_equity,
                 isolated_equity=Decimal("0"),
-                adjusted_equity=Decimal("0"),
-                available_equity=Decimal("0"),
+                adjusted_equity=self.adjusted_equity,
+                available_equity=self.account_available_equity,
                 details=[
                     OkxDemoBalanceDetail(
                         currency="USDT",
                         equity=self.equity,
-                        available_equity=self.equity,
+                        available_equity=(
+                            self.equity
+                            if self.available_equity is None
+                            else self.available_equity
+                        ),
                         cash_balance=self.equity,
                         available_balance=self.equity,
                         frozen_balance=Decimal("0"),
@@ -317,6 +326,40 @@ def with_mathematical_confirmation(
     )
 
 
+def structural_demo_candidate() -> TradeCandidate:
+    value = with_mathematical_confirmation(
+        candidate(score=99),
+        status="confirmed",
+        risk_grade="high",
+        confidence="0.9",
+    )
+    return value.model_copy(
+        update={
+            "structural_protection": StructuralProtectionGeometry(
+                timeframe="15m",
+                source_closed_at=datetime.now(timezone.utc) - timedelta(minutes=1),
+                reference_entry=Decimal("100"),
+                stop_anchor=Decimal("99.95"),
+                target_anchor=Decimal("101"),
+                volatility_buffer=Decimal("0.05"),
+                stop_loss=Decimal("99.9"),
+                take_profit=Decimal("101"),
+                gross_risk_reward=Decimal("10"),
+            )
+        }
+    )
+
+
+def structural_dynamic_updates() -> dict[str, object]:
+    return {
+        **continuous_session_updates(),
+        "okx_demo_structural_dynamic_leverage_enabled": True,
+        "okx_demo_max_leverage": 20,
+        "okx_demo_portfolio_max_risk_pct": Decimal("0.10"),
+        "max_weekly_loss_pct": 0.10,
+    }
+
+
 def make_service(
     demo: FakeDemo,
     *,
@@ -362,6 +405,29 @@ async def test_single_currency_margin_uses_usdt_risk_equity_not_total_equity() -
     assert status.equity_basis == "single_currency:USDT"
     assert status.baseline_equity == Decimal("4998.339000436543")
     assert status.daily_pnl == Decimal("0")
+    assert demo.place_calls == []
+
+
+@pytest.mark.asyncio
+async def test_usdt_capital_bucket_rejects_pooled_usd_equity_basis() -> None:
+    demo = FakeDemo()
+    demo.account_level = "3"
+    demo.adjusted_equity = Decimal("5000")
+    demo.account_available_equity = Decimal("5000")
+    service = adaptive_service(
+        demo,
+        {"BTC-USDT-SWAP": 95},
+        okx_demo_capital_bucket_enabled=True,
+    )
+    await service.recover()
+
+    run = await service.run_once(execute=False)
+
+    assert run.results[0].outcome == "blocked"
+    assert run.results[0].detail == (
+        "DemoAutomationSafetyError: "
+        "capital_bucket_requires_single_currency_usdt_equity"
+    )
     assert demo.place_calls == []
 
 
@@ -446,6 +512,289 @@ async def test_daily_trade_count_lock_blocks_execution() -> None:
     assert demo.place_calls == []
 
 
+def continuous_session_updates() -> dict[str, object]:
+    return {
+        "okx_demo_continuous_session_enabled": True,
+        "okx_demo_trade_cooldown_seconds": 0,
+        "okx_demo_capital_bucket_enabled": True,
+    }
+
+
+@pytest.mark.asyncio
+async def test_continuous_session_status_exposes_disabled_time_gates() -> None:
+    service = adaptive_service(
+        FakeDemo(),
+        {"BTC-USDT-SWAP": 95},
+        **continuous_session_updates(),
+    )
+    await service.recover()
+
+    status = await service.status()
+
+    assert status.continuous_session_enabled is True
+    assert status.daily_loss_limit_enforced is False
+    assert status.daily_trade_limit_enforced is False
+    assert status.consecutive_loss_limit_enforced is False
+    assert status.effective_trade_cooldown_seconds == 0
+    assert status.daily_loss_limit_pct == Decimal("0.03")
+
+
+@pytest.mark.asyncio
+async def test_continuous_session_ignores_trade_count_and_loss_streak_locks() -> None:
+    demo = FakeDemo()
+    service = adaptive_service(
+        demo,
+        {"BTC-USDT-SWAP": 95},
+        **continuous_session_updates(),
+    )
+    await service.recover()
+    await service.arm()
+    service._state["trades_today"] = 99
+    service._state["consecutive_losses"] = 12
+    service._state["locked"] = True
+    service._state["lock_reasons"] = [
+        "daily_loss_limit_reached",
+        "daily_trade_count_limit_reached",
+        "consecutive_loss_limit_reached",
+    ]
+
+    run = await service.run_once(execute=True)
+    status = await service.status()
+
+    assert run.results[0].outcome == "submitted"
+    assert len(demo.place_calls) == 1
+    assert status.trades_today == 100
+    assert status.consecutive_losses == 12
+    assert status.locked is False
+    assert status.lock_reasons == []
+
+
+@pytest.mark.asyncio
+async def test_continuous_session_scheduler_can_refresh_a_legacy_time_lock() -> None:
+    service = adaptive_service(
+        FakeDemo(),
+        {"BTC-USDT-SWAP": 95},
+        okx_demo_scan_initial_delay_seconds=600,
+        **continuous_session_updates(),
+    )
+    await service.recover()
+    service._state["armed"] = True
+    service._state["locked"] = True
+    service._state["lock_reasons"] = [
+        "daily_trade_count_limit_reached",
+        "consecutive_loss_limit_reached",
+    ]
+
+    status = await service.start()
+
+    assert status.running is True
+    assert status.locked is False
+    assert status.lock_reasons == []
+    await service.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("hard_reason", "emergency_stop", "error_match"),
+    [
+        ("trade_outcome_unconfirmed", False, "automation_locked"),
+        ("emergency_stop_engaged", True, "emergency_stop_engaged"),
+    ],
+)
+async def test_continuous_session_does_not_clear_hard_safety_locks(
+    hard_reason: str,
+    emergency_stop: bool,
+    error_match: str,
+) -> None:
+    service = adaptive_service(
+        FakeDemo(),
+        {"BTC-USDT-SWAP": 95},
+        **continuous_session_updates(),
+    )
+    await service.recover()
+    service._state["armed"] = True
+    service._state["emergency_stop"] = emergency_stop
+    service._state["locked"] = True
+    service._state["lock_reasons"] = [
+        "daily_loss_limit_reached",
+        "daily_trade_count_limit_reached",
+        "consecutive_loss_limit_reached",
+        hard_reason,
+    ]
+
+    with pytest.raises(DemoAutomationSafetyError, match=error_match):
+        await service.start()
+
+    status = await service.status()
+    assert status.locked is True
+    assert hard_reason in status.lock_reasons
+    assert "daily_loss_limit_reached" not in status.lock_reasons
+    assert "daily_trade_count_limit_reached" not in status.lock_reasons
+    assert "consecutive_loss_limit_reached" not in status.lock_reasons
+
+
+@pytest.mark.asyncio
+async def test_continuous_session_does_not_enforce_daily_loss_limit() -> None:
+    demo = FakeDemo()
+    service = adaptive_service(
+        demo,
+        {"BTC-USDT-SWAP": 95},
+        **continuous_session_updates(),
+    )
+    await service.recover()
+    await service.arm()
+    demo.equity = Decimal("9700")
+
+    run = await service.run_once(execute=True)
+    status = await service.status()
+
+    assert run.results[0].outcome == "submitted"
+    assert "daily_loss_limit_reached" not in run.results[0].reason_codes
+    assert status.daily_loss_limit_enforced is False
+    assert status.locked is False
+    assert status.daily_pnl == Decimal("-300")
+    assert len(demo.place_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_continuous_session_retains_weekly_loss_backstop() -> None:
+    demo = FakeDemo()
+    service = adaptive_service(
+        demo,
+        {"BTC-USDT-SWAP": 95},
+        **continuous_session_updates(),
+    )
+    await service.recover()
+    await service.arm()
+    demo.equity = Decimal("9400")
+
+    run = await service.run_once(execute=True)
+    status = await service.status()
+
+    assert run.results[0].outcome == "risk_rejected"
+    assert "weekly_loss_limit_reached" in run.results[0].reason_codes
+    assert "daily_loss_limit_reached" not in run.results[0].reason_codes
+    assert status.locked is False
+    assert demo.place_calls == []
+
+
+@pytest.mark.asyncio
+async def test_standard_session_still_enforces_daily_loss_limit() -> None:
+    demo = FakeDemo()
+    service = adaptive_service(demo, {"BTC-USDT-SWAP": 95})
+    await service.recover()
+    await service.arm()
+    demo.equity = Decimal("9700")
+
+    run = await service.run_once(execute=True)
+    status = await service.status()
+
+    assert run.results[0].outcome == "locked"
+    assert "daily_loss_limit_reached" in run.results[0].reason_codes
+    assert status.daily_loss_limit_enforced is True
+    assert status.locked is True
+    assert demo.place_calls == []
+
+
+@pytest.mark.asyncio
+async def test_continuous_session_retains_drawdown_backstop() -> None:
+    demo = FakeDemo()
+    service = adaptive_service(
+        demo,
+        {"BTC-USDT-SWAP": 95},
+        max_weekly_loss_pct=Decimal("0.50"),
+        **continuous_session_updates(),
+    )
+    await service.recover()
+    await service.arm()
+    demo.equity = Decimal("8900")
+
+    run = await service.run_once(execute=True)
+
+    assert run.results[0].outcome == "risk_rejected"
+    assert "drawdown_limit_reached" in run.results[0].reason_codes
+    assert "daily_loss_limit_reached" not in run.results[0].reason_codes
+    assert demo.place_calls == []
+
+
+@pytest.mark.asyncio
+async def test_continuous_session_bypasses_post_trade_cooldown_only() -> None:
+    demo = FakeDemo()
+    service = adaptive_service(
+        demo,
+        {"BTC-USDT-SWAP": 95},
+        **continuous_session_updates(),
+    )
+    await service.recover()
+    service._state["symbol_cooldowns"] = {
+        "BTC-USDT-SWAP": datetime.now(timezone.utc).isoformat()
+    }
+
+    run = await service.run_once(execute=False)
+
+    assert run.results[0].outcome == "approved_dry_run"
+    assert demo.place_calls == []
+
+
+@pytest.mark.asyncio
+async def test_standard_session_still_enforces_post_trade_cooldown() -> None:
+    demo = FakeDemo()
+    service = adaptive_service(demo, {"BTC-USDT-SWAP": 95})
+    await service.recover()
+    service._state["symbol_cooldowns"] = {
+        "BTC-USDT-SWAP": datetime.now(timezone.utc).isoformat()
+    }
+
+    run = await service.run_once(execute=False)
+
+    assert run.results[0].outcome == "blocked"
+    assert run.results[0].detail == "post_trade_cooldown_active"
+    assert demo.place_calls == []
+
+
+@pytest.mark.asyncio
+async def test_continuous_session_does_not_bypass_candidate_fingerprint() -> None:
+    demo = FakeDemo()
+    selected = candidate(score=95)
+    service = adaptive_service(
+        demo,
+        {"BTC-USDT-SWAP": 95},
+        candidates={"BTC-USDT-SWAP": selected},
+        **continuous_session_updates(),
+    )
+    await service.recover()
+    fingerprint = service._fingerprint("BTC-USDT-SWAP", selected)
+    service._fingerprints[fingerprint] = datetime.now(timezone.utc) + timedelta(
+        minutes=10
+    )
+
+    run = await service.run_once(execute=False)
+
+    assert run.results[0].outcome == "duplicate"
+    assert run.results[0].detail == "candidate_fingerprint_already_processed"
+    assert demo.place_calls == []
+
+
+@pytest.mark.asyncio
+async def test_continuous_session_keeps_per_run_submission_limit() -> None:
+    demo = FakeDemo()
+    service = adaptive_service(
+        demo,
+        {
+            "BTC-USDT-SWAP": 80,
+            "ETH-USDT-SWAP": 95,
+        },
+        **continuous_session_updates(),
+    )
+    await service.recover()
+    await service.arm()
+
+    run = await service.run_once(execute=True, submission_limit=1)
+
+    assert len(demo.place_calls) == 1
+    assert run.results[1].detail == "run_submission_limit_reached"
+
+
 def adaptive_service(
     demo: FakeDemo,
     scores: dict[str, int],
@@ -514,6 +863,23 @@ def tracked_trade(
     )
 
 
+def test_active_trade_recovery_preserves_margin_above_current_equity() -> None:
+    trade = tracked_trade(
+        "BTC-USDT-SWAP",
+        started_at=datetime.now(timezone.utc) - timedelta(minutes=5),
+    )
+    payload = trade.model_dump(mode="json")
+    payload["estimated_stop_loss_pct"] = "1.5"
+    payload["margin_allocation_pct"] = "1.25"
+    payload["estimated_margin"] = "12500"
+
+    recovered = DemoAutomationActiveTrade.model_validate(payload)
+
+    assert recovered.estimated_stop_loss_pct == Decimal("1.5")
+    assert recovered.margin_allocation_pct == Decimal("1.25")
+    assert recovered.estimated_margin == Decimal("12500")
+
+
 @pytest.mark.asyncio
 async def test_high_score_uses_three_x_leverage_and_margin_cap() -> None:
     demo = FakeDemo()
@@ -539,6 +905,275 @@ async def test_high_score_uses_three_x_leverage_and_margin_cap() -> None:
     assert result.margin_allocation_pct == Decimal("0.25")
     assert result.estimated_margin == Decimal("2500")
     assert result.approved_contracts == Decimal("75")
+    assert demo.place_calls == []
+
+
+@pytest.mark.asyncio
+async def test_capital_bucket_caps_high_score_position_at_2000_usdt_margin() -> None:
+    demo = FakeDemo()
+    high = candidate(score=95, stop_loss="99.9", take_profit="102")
+    service = adaptive_service(
+        demo,
+        {"BTC-USDT-SWAP": 95},
+        candidates={"BTC-USDT-SWAP": high},
+        okx_demo_capital_bucket_enabled=True,
+    )
+    await service.recover()
+
+    run = await service.run_once(execute=False)
+    result = run.results[0]
+
+    assert result.outcome == "approved_dry_run"
+    assert result.selected_leverage == 3
+    assert result.position_margin_cap_usdt == Decimal("2000")
+    assert result.capital_bucket_usdt == Decimal("2000")
+    assert result.estimated_margin == Decimal("2000")
+    assert result.approved_contracts == Decimal("60")
+    assert run.capital_bucket_enabled is True
+    assert run.capital_bucket_position_limit == 3
+    assert run.portfolio_estimated_margin == Decimal("2000")
+    assert demo.place_calls == []
+
+
+@pytest.mark.asyncio
+async def test_capital_bucket_execute_uses_the_dry_run_contract_size() -> None:
+    demo = FakeDemo()
+    high = candidate(score=95, stop_loss="99.9", take_profit="102")
+    service = adaptive_service(
+        demo,
+        {"BTC-USDT-SWAP": 95},
+        candidates={"BTC-USDT-SWAP": high},
+        okx_demo_capital_bucket_enabled=True,
+    )
+    await service.recover()
+    await service.arm()
+
+    result = (await service.run_once(execute=True)).results[0]
+
+    assert result.outcome == "submitted"
+    assert result.position_margin_cap_usdt == Decimal("2000")
+    assert result.estimated_margin == Decimal("2000")
+    assert len(demo.leverage_calls) == 1
+    assert demo.leverage_calls[0].leverage == 3
+    assert demo.leverage_calls[0].margin_mode == "cross"
+    assert len(demo.place_calls) == 1
+    assert demo.place_calls[0].size == Decimal("60")
+    assert demo.place_calls[0].margin_mode == "cross"
+
+
+@pytest.mark.asyncio
+async def test_capital_below_2000_forms_one_full_equity_slot() -> None:
+    demo = FakeDemo()
+    demo.equity = Decimal("1500")
+    high = candidate(score=95, stop_loss="99.9", take_profit="102")
+    service = adaptive_service(
+        demo,
+        {"BTC-USDT-SWAP": 95, "ETH-USDT-SWAP": 95},
+        candidates={
+            "BTC-USDT-SWAP": high,
+            "ETH-USDT-SWAP": high,
+        },
+        okx_demo_capital_bucket_enabled=True,
+    )
+    await service.recover()
+
+    run = await service.run_once(execute=False)
+    approved = [item for item in run.results if item.outcome == "approved_dry_run"]
+    blocked = [item for item in run.results if item.outcome == "blocked"]
+
+    assert len(approved) == 1
+    assert approved[0].position_margin_cap_usdt == Decimal("1500")
+    assert approved[0].estimated_margin == Decimal("1500")
+    assert len(blocked) == 1
+    assert blocked[0].detail == "portfolio_open_position_limit_reached"
+    assert run.capital_bucket_position_limit == 1
+    assert run.active_position_count == 1
+    status = await service.status()
+    assert status.max_open_positions == 1
+    assert status.capital_bucket_enabled is True
+    assert status.capital_bucket_usdt == Decimal("2000")
+    assert status.capital_bucket_position_limit == 1
+
+
+@pytest.mark.asyncio
+async def test_capital_bucket_uses_only_complete_2000_usdt_position_slots(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(
+        SUPPORTED_SYMBOLS,
+        "SOL/USDT:USDT",
+        "SOL-USDT-SWAP",
+    )
+    demo = FakeDemo()
+    demo.equity = Decimal("4998.339000436543")
+    high = candidate(score=95, stop_loss="99.9", take_profit="102")
+    symbols = ["BTC-USDT-SWAP", "ETH-USDT-SWAP", "SOL-USDT-SWAP"]
+    service = adaptive_service(
+        demo,
+        {symbol: 95 for symbol in symbols},
+        candidates={symbol: high for symbol in symbols},
+        okx_demo_capital_bucket_enabled=True,
+    )
+    await service.recover()
+
+    run = await service.run_once(execute=False)
+    approved = [item for item in run.results if item.outcome == "approved_dry_run"]
+    blocked = [item for item in run.results if item.outcome == "blocked"]
+
+    assert len(approved) == 2
+    assert [item.estimated_margin for item in approved] == [
+        Decimal("2000"),
+        Decimal("2000"),
+    ]
+    assert len(blocked) == 1
+    assert blocked[0].detail == "portfolio_open_position_limit_reached"
+    assert run.capital_bucket_position_limit == 2
+    assert run.portfolio_estimated_margin == Decimal("4000")
+
+
+@pytest.mark.asyncio
+async def test_status_position_limit_tracks_latest_equity_across_bucket_boundary() -> None:
+    demo = FakeDemo()
+    demo.equity = Decimal("6000")
+    service = adaptive_service(
+        demo,
+        {"BTC-USDT-SWAP": 95},
+        okx_demo_capital_bucket_enabled=True,
+    )
+    await service.recover()
+    await service.run_once(execute=False)
+
+    assert (await service.status()).capital_bucket_position_limit == 3
+
+    demo.equity = Decimal("5999.99")
+    await service.run_once(execute=False)
+    status = await service.status()
+
+    assert status.capital_bucket_position_limit == 2
+    assert status.max_open_positions == 2
+
+
+@pytest.mark.asyncio
+async def test_stop_risk_and_available_equity_can_only_reduce_bucket_size() -> None:
+    demo = FakeDemo()
+    demo.equity = Decimal("5000")
+    demo.available_equity = Decimal("750")
+    high = candidate(score=95, stop_loss="99.9", take_profit="102")
+    service = adaptive_service(
+        demo,
+        {"BTC-USDT-SWAP": 95},
+        candidates={"BTC-USDT-SWAP": high},
+        okx_demo_capital_bucket_enabled=True,
+    )
+    await service.recover()
+
+    result = (await service.run_once(execute=False)).results[0]
+
+    assert result.outcome == "approved_dry_run"
+    assert result.position_margin_cap_usdt == Decimal("750")
+    assert result.estimated_margin == Decimal("733.3333333333333333333333333")
+    assert result.estimated_margin <= result.position_margin_cap_usdt
+
+
+@pytest.mark.asyncio
+async def test_reconciled_active_trade_above_stored_bucket_blocks_new_work() -> None:
+    demo = FakeDemo(exposed=True)
+    service = adaptive_service(
+        demo,
+        {"ETH-USDT-SWAP": 95},
+        okx_demo_capital_bucket_enabled=True,
+    )
+    await service.recover()
+    prime_usdt_equity_basis(service, demo)
+    oversized = tracked_trade(
+        "BTC-USDT-SWAP",
+        started_at=datetime.now(timezone.utc) - timedelta(minutes=5),
+    ).model_copy(
+        update={
+            "estimated_notional": Decimal("6003"),
+            "estimated_margin": Decimal("2001"),
+            "margin_allocation_pct": Decimal("0.2001"),
+            "position_margin_cap_usdt": Decimal("2000"),
+            "capital_bucket_usdt": Decimal("2000"),
+        }
+    )
+    service._set_active_trade(oversized)
+
+    run = await service.run_once(execute=False)
+
+    assert len(run.results) == 1
+    assert run.results[0].outcome == "blocked"
+    assert run.results[0].detail == "active_trade_exceeds_position_margin_bucket"
+    assert demo.place_calls == []
+
+
+@pytest.mark.asyncio
+async def test_execute_run_emergency_stops_when_active_margin_exceeds_bucket() -> None:
+    demo = FakeDemo(exposed=True)
+    service = adaptive_service(
+        demo,
+        {"ETH-USDT-SWAP": 95},
+        okx_demo_capital_bucket_enabled=True,
+    )
+    await service.recover()
+    prime_usdt_equity_basis(service, demo)
+    service._set_active_trade(
+        tracked_trade(
+            "BTC-USDT-SWAP",
+            started_at=datetime.now(timezone.utc) - timedelta(minutes=5),
+        ).model_copy(
+            update={
+                "estimated_notional": Decimal("6003"),
+                "estimated_margin": Decimal("2001"),
+                "margin_allocation_pct": Decimal("0.2001"),
+                "position_margin_cap_usdt": Decimal("2000"),
+                "capital_bucket_usdt": Decimal("2000"),
+            }
+        )
+    )
+    service._state["armed"] = True
+
+    run = await service.run_once(execute=True)
+    status = await service.status()
+
+    assert run.results[0].outcome == "locked"
+    assert "active_trade_exceeds_position_margin_bucket" in run.results[0].reason_codes
+    assert status.emergency_stop is True
+    assert status.armed is False
+    assert demo.place_calls == []
+
+
+@pytest.mark.asyncio
+async def test_execute_run_emergency_stops_when_open_stop_risk_exceeds_limit() -> None:
+    demo = FakeDemo(exposed=True)
+    service = adaptive_service(
+        demo,
+        {"ETH-USDT-SWAP": 95},
+        okx_demo_capital_bucket_enabled=True,
+    )
+    await service.recover()
+    prime_usdt_equity_basis(service, demo)
+    service._set_active_trade(
+        tracked_trade(
+            "BTC-USDT-SWAP",
+            started_at=datetime.now(timezone.utc) - timedelta(minutes=5),
+        ).model_copy(
+            update={
+                "estimated_stop_loss_amount": Decimal("300"),
+                "estimated_stop_loss_pct": Decimal("0.03"),
+                "position_margin_cap_usdt": Decimal("2000"),
+                "capital_bucket_usdt": Decimal("2000"),
+            }
+        )
+    )
+    service._state["armed"] = True
+
+    run = await service.run_once(execute=True)
+
+    assert run.results[0].outcome == "locked"
+    assert "active_portfolio_stop_risk_limit_exceeded" in (
+        run.results[0].reason_codes
+    )
     assert demo.place_calls == []
 
 
@@ -1005,3 +1640,160 @@ async def test_invalid_post_submission_acknowledgement_stops_remaining_orders() 
     assert status.emergency_stop is True
     assert "post_submission_acknowledgement_invalid" in status.lock_reasons
     assert status.active_position_count == 1
+
+
+@pytest.mark.asyncio
+async def test_structural_dynamic_demo_uses_isolated_20x_only_after_all_gates() -> None:
+    demo = FakeDemo()
+    service = adaptive_service(
+        demo,
+        {"BTC-USDT-SWAP": 99},
+        candidates={"BTC-USDT-SWAP": structural_demo_candidate()},
+        **structural_dynamic_updates(),
+    )
+    await service.recover()
+    await service.arm()
+
+    run = await service.run_once(execute=True)
+    status = await service.status()
+
+    result = run.results[0]
+    assert result.outcome == "submitted"
+    assert result.protection_model == "structure"
+    assert result.margin_mode == "isolated"
+    assert result.selected_leverage == 20
+    assert result.required_leverage == 24
+    assert result.leverage_cap == 20
+    assert result.leverage_cap_reasons == []
+    assert result.stop_loss == Decimal("99.9")
+    assert result.take_profit == Decimal("101")
+    assert result.estimated_round_trip_cost_pct == Decimal("0.0016")
+    assert result.net_risk_reward is not None
+    assert result.net_risk_reward >= Decimal("2")
+    assert demo.leverage_calls[0].margin_mode == "isolated"
+    assert demo.leverage_calls[0].leverage == 20
+    assert demo.place_calls[0].margin_mode == "isolated"
+    assert status.structural_dynamic_leverage_enabled is True
+    assert status.structural_margin_mode == "isolated"
+
+
+@pytest.mark.asyncio
+async def test_structural_dynamic_demo_fails_closed_without_structure() -> None:
+    demo = FakeDemo()
+    service = adaptive_service(
+        demo,
+        {"BTC-USDT-SWAP": 99},
+        candidates={
+            "BTC-USDT-SWAP": with_mathematical_confirmation(
+                candidate(score=99),
+                status="confirmed",
+                risk_grade="high",
+            )
+        },
+        **structural_dynamic_updates(),
+    )
+    await service.recover()
+
+    run = await service.run_once(execute=False)
+
+    assert run.results[0].outcome == "blocked"
+    assert run.results[0].detail == "structural_protection_geometry_unavailable"
+    assert demo.place_calls == []
+
+
+@pytest.mark.asyncio
+async def test_150_usdt_structural_profile_uses_one_full_equity_margin_ceiling() -> None:
+    demo = FakeDemo()
+    demo.equity = Decimal("150")
+    service = adaptive_service(
+        demo,
+        {"BTC-USDT-SWAP": 99},
+        candidates={"BTC-USDT-SWAP": structural_demo_candidate()},
+        **structural_dynamic_updates(),
+    )
+    await service.recover()
+
+    run = await service.run_once(execute=False)
+
+    result = run.results[0]
+    assert result.outcome == "approved_dry_run"
+    assert run.risk_equity == Decimal("150")
+    assert run.capital_bucket_position_limit == 1
+    assert result.position_margin_cap_usdt == Decimal("150")
+    assert result.estimated_margin == Decimal("150")
+    assert result.selected_leverage == 20
+    assert result.estimated_stop_loss_pct == Decimal("0.052")
+    assert result.estimated_stop_loss_pct < result.risk_budget_pct
+    assert demo.place_calls == []
+
+
+@pytest.mark.asyncio
+async def test_rolling_seven_day_realized_pnl_prunes_old_and_deduplicates() -> None:
+    demo = FakeDemo()
+    service = adaptive_service(demo, {"BTC-USDT-SWAP": 95})
+    await service.recover()
+    now = datetime.now(timezone.utc)
+    trade = tracked_trade(
+        "BTC-USDT-SWAP", started_at=now - timedelta(hours=2)
+    )
+
+    service._record_realized_pnl_event(trade, now - timedelta(hours=1), Decimal("-12"))
+    service._record_realized_pnl_event(trade, now - timedelta(hours=1), Decimal("-12"))
+    service._state["realized_pnl_events"].append(
+        {
+            "event_id": "expired",
+            "instrument_id": "ETH-USDT-SWAP",
+            "closed_at": (now - timedelta(days=8)).isoformat(),
+            "net_pnl": "-999",
+        }
+    )
+
+    assert service._rolling_realized_pnl(now) == Decimal("-12")
+    assert len(service._state["realized_pnl_events"]) == 1
+
+
+def test_closing_pnl_deduplicates_repeated_exchange_order_id() -> None:
+    started_at = datetime.now(timezone.utc) - timedelta(minutes=5)
+    closed_at = started_at + timedelta(minutes=1)
+    trade = tracked_trade("BTC-USDT-SWAP", started_at=started_at)
+    order = OkxDemoOrderView(
+        order_id="same-close-order",
+        instrument_id="BTC-USDT-SWAP",
+        side="sell",
+        position_side="long",
+        order_type="market",
+        state="filled",
+        size=Decimal("1"),
+        accumulated_fill_size=Decimal("1"),
+        reduce_only=True,
+        updated_at=closed_at,
+        raw={"pnl": "10", "fee": "-1"},
+    )
+
+    outcome = SafeDemoAutomation._closing_trade_outcome(
+        trade,
+        [order, order.model_copy(deep=True)],
+    )
+
+    assert outcome == (closed_at, Decimal("9"))
+
+
+@pytest.mark.asyncio
+async def test_risk_high_water_does_not_reset_at_utc_day_boundary() -> None:
+    demo = FakeDemo()
+    service = adaptive_service(demo, {"BTC-USDT-SWAP": 95})
+    await service.recover()
+    service._state["equity_basis"] = "single_currency:USDT"
+    service._state["session_date"] = datetime.now(timezone.utc).date() - timedelta(days=1)
+    service._state["baseline_equity"] = Decimal("11000")
+    service._state["peak_equity"] = Decimal("11500")
+    service._state["risk_peak_equity"] = Decimal("12000")
+
+    blocker = service._roll_session(
+        Decimal("10000"),
+        "single_currency:USDT",
+    )
+
+    assert blocker is None
+    assert service._state["peak_equity"] == Decimal("10000")
+    assert service._state["risk_peak_equity"] == Decimal("12000")

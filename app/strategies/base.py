@@ -8,6 +8,7 @@ from app.domain.market import MarketSnapshot
 from app.domain.strategy import ScoreComponent, StrategyEvaluation, TradeCandidate
 from app.strategies.derivative_confirmation import derivative_confirmation
 from app.strategies.mathematical_confirmation import mathematical_confirmation
+from app.strategies.structural_protection import structural_protection_geometry
 
 D = Decimal
 
@@ -78,6 +79,11 @@ def build_candidate(
         derivative_confirmation=derivative_confirmation(ctx.analysis, direction),
         mathematical_confirmation=mathematical_confirmation(
             ctx.analysis, direction
+        ),
+        structural_protection=structural_protection_geometry(
+            ctx.analysis,
+            direction=direction,
+            entry=_q(entry),
         ),
     )
 

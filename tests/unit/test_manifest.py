@@ -39,6 +39,7 @@ def test_manifest_normalizes_alembic_mako_line_endings(tmp_path: Path) -> None:
 def test_manifest_excludes_secrets_build_products_and_archives(tmp_path: Path) -> None:
     (tmp_path / "app.py").write_text("pass\n", encoding="utf-8")
     (tmp_path / ".env").write_text("SECRET=value\n", encoding="utf-8")
+    (tmp_path / ".git").write_text("gitdir: /tmp/worktrees/example\n", encoding="utf-8")
     (tmp_path / "delivery.patch").write_text("patch\n", encoding="utf-8")
     (tmp_path / ".venv").mkdir()
     (tmp_path / ".venv" / "installed.py").write_text("pass\n", encoding="utf-8")

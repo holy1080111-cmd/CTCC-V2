@@ -47,6 +47,7 @@ def test_safe_defaults(monkeypatch) -> None:
         "OKX_DEMO_AUTO_EXECUTION",
         "OKX_DEMO_TRADE_RECONCILE_GRACE_SECONDS",
         "OKX_DEMO_AUTOMATION_MAX_CONSECUTIVE_LOSSES",
+        "OKX_DEMO_CONTINUOUS_SESSION_ENABLED",
         "OKX_DEMO_SCORE_RISK_ENABLED",
         "OKX_DEMO_SCORE_MEDIUM_MIN",
         "OKX_DEMO_SCORE_HIGH_MIN",
@@ -61,6 +62,28 @@ def test_safe_defaults(monkeypatch) -> None:
         "OKX_DEMO_SCORE_HIGH_MARGIN_PCT",
         "OKX_DEMO_PORTFOLIO_MAX_RISK_PCT",
         "OKX_DEMO_PORTFOLIO_MAX_MARGIN_PCT",
+        "OKX_DEMO_CAPITAL_BUCKET_ENABLED",
+        "OKX_DEMO_POSITION_MARGIN_BUCKET_USDT",
+        "OKX_DEMO_STRUCTURAL_DYNAMIC_LEVERAGE_ENABLED",
+        "OKX_DEMO_STRUCTURAL_SCORE_ELITE_MIN",
+        "OKX_DEMO_STRUCTURAL_SCORE_EXTREME_MIN",
+        "OKX_DEMO_STRUCTURAL_LOW_RISK_PCT",
+        "OKX_DEMO_STRUCTURAL_MEDIUM_RISK_PCT",
+        "OKX_DEMO_STRUCTURAL_HIGH_RISK_PCT",
+        "OKX_DEMO_STRUCTURAL_ELITE_RISK_PCT",
+        "OKX_DEMO_STRUCTURAL_EXTREME_RISK_PCT",
+        "OKX_DEMO_STRUCTURAL_LOW_LEVERAGE_CAP",
+        "OKX_DEMO_STRUCTURAL_MEDIUM_LEVERAGE_CAP",
+        "OKX_DEMO_STRUCTURAL_HIGH_LEVERAGE_CAP",
+        "OKX_DEMO_STRUCTURAL_ELITE_LEVERAGE_CAP",
+        "OKX_DEMO_STRUCTURAL_EXTREME_LEVERAGE_CAP",
+        "OKX_DEMO_STRUCTURAL_ROUND_TRIP_FEE_BPS",
+        "OKX_DEMO_STRUCTURAL_ROUND_TRIP_SLIPPAGE_BPS",
+        "OKX_DEMO_STRUCTURAL_FUNDING_BUFFER_BPS",
+        "OKX_DEMO_STRUCTURAL_MIN_NET_RISK_REWARD",
+        "OKX_DEMO_STRUCTURAL_20X_MIN_CONFIDENCE",
+        "OKX_DEMO_STRUCTURAL_20X_MIN_RELIABILITY",
+        "OKX_DEMO_STRUCTURAL_20X_MAX_INSTABILITY",
         "OKX_DEMO_SOAK_ALLOW_EXECUTE",
         "OKX_DEMO_SOAK_ENABLED",
         "OKX_DEMO_EXECUTION_SOAK_MAX_SUBMISSIONS",
@@ -103,6 +126,8 @@ def test_safe_defaults(monkeypatch) -> None:
     assert settings.okx_demo_enabled is False
     assert settings.okx_demo_allow_order_writes is False
     assert settings.okx_demo_auto_execution is False
+    assert settings.okx_demo_continuous_session_enabled is False
+    assert settings.okx_demo_structural_dynamic_leverage_enabled is False
     assert settings.okx_demo_credentials_configured is False
     assert settings.okx_demo_rest_base_url == "https://openapi.okx.com"
     assert settings.okx_demo_observability_enabled is True
@@ -112,6 +137,87 @@ def test_safe_defaults(monkeypatch) -> None:
     assert settings.okx_demo_execution_soak_require_flat_start is True
     assert settings.okx_demo_execution_soak_require_protection is True
     assert settings.okx_demo_execution_soak_auto_disarm is True
+
+
+def _structural_dynamic_settings(**updates) -> Settings:
+    values = {
+        "okx_demo_score_risk_enabled": True,
+        "okx_demo_capital_bucket_enabled": True,
+        "okx_demo_continuous_session_enabled": True,
+        "okx_demo_trade_cooldown_seconds": 0,
+        "okx_demo_structural_dynamic_leverage_enabled": True,
+        "okx_demo_max_open_positions": 3,
+        "okx_demo_max_leverage": 20,
+        "okx_demo_portfolio_max_risk_pct": Decimal("0.10"),
+        "max_weekly_loss_pct": 0.10,
+    }
+    values.update(updates)
+    return Settings(_env_file=None, **values)
+
+
+def test_structural_dynamic_risk_accepts_explicit_safe_dependency_set() -> None:
+    settings = _structural_dynamic_settings()
+
+    assert settings.okx_demo_structural_extreme_risk_pct == Decimal("0.06")
+    assert settings.okx_demo_structural_extreme_leverage_cap == 20
+    assert settings.okx_demo_position_margin_bucket_usdt == Decimal("2000")
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("okx_demo_score_risk_enabled", False),
+        ("okx_demo_capital_bucket_enabled", False),
+        ("okx_demo_continuous_session_enabled", False),
+        ("okx_demo_require_protection", False),
+        ("okx_demo_max_leverage", 10),
+        ("max_weekly_loss_pct", 0.05),
+    ],
+)
+def test_structural_dynamic_risk_rejects_missing_hard_dependency(
+    field: str, value: object
+) -> None:
+    with pytest.raises(ValidationError):
+        _structural_dynamic_settings(**{field: value})
+
+
+def test_structural_dynamic_risk_rejects_portfolio_limit_below_extreme_tier() -> None:
+    with pytest.raises(ValidationError, match="portfolio stop-risk"):
+        _structural_dynamic_settings(
+            okx_demo_portfolio_max_risk_pct=Decimal("0.05")
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("strategy_min_score", 71),
+        ("okx_demo_score_medium_min", 79),
+        ("okx_demo_score_high_min", 89),
+        ("okx_demo_structural_score_elite_min", 94),
+        ("okx_demo_structural_score_extreme_min", 97),
+        ("okx_demo_structural_low_risk_pct", Decimal("0.016")),
+        ("okx_demo_structural_medium_risk_pct", Decimal("0.026")),
+        ("okx_demo_structural_high_risk_pct", Decimal("0.031")),
+        ("okx_demo_structural_elite_risk_pct", Decimal("0.041")),
+        ("okx_demo_structural_extreme_risk_pct", Decimal("0.061")),
+        ("okx_demo_structural_low_leverage_cap", 4),
+        ("okx_demo_structural_medium_leverage_cap", 6),
+        ("okx_demo_structural_high_leverage_cap", 9),
+        ("okx_demo_structural_elite_leverage_cap", 11),
+        ("okx_demo_structural_round_trip_fee_bps", Decimal("9")),
+        ("okx_demo_structural_min_net_risk_reward", Decimal("1.9")),
+        ("okx_demo_structural_20x_min_confidence", Decimal("0.64")),
+        ("okx_demo_structural_20x_min_reliability", Decimal("0.64")),
+        ("okx_demo_structural_20x_max_instability", Decimal("0.21")),
+    ],
+)
+def test_structural_dynamic_profile_can_only_be_made_stricter(
+    field: str,
+    value: object,
+) -> None:
+    with pytest.raises(ValidationError):
+        _structural_dynamic_settings(**{field: value})
 
 
 def test_rejects_auto_trade() -> None:
@@ -251,6 +357,7 @@ def test_demo_automation_defaults_to_disabled(monkeypatch) -> None:
     assert settings.okx_demo_auto_execution is False
     assert settings.okx_demo_automation_leverage == 1
     assert settings.okx_demo_max_trades_per_day == 3
+    assert settings.okx_demo_continuous_session_enabled is False
 
 
 def test_execute_soak_requires_demo_automation() -> None:
@@ -500,6 +607,8 @@ def test_demo_adaptive_portfolio_defaults_to_disabled_and_three_stop_limit(
         "OKX_DEMO_AUTOMATION_MAX_CONSECUTIVE_LOSSES",
         "OKX_DEMO_PORTFOLIO_MAX_RISK_PCT",
         "OKX_DEMO_PORTFOLIO_MAX_MARGIN_PCT",
+        "OKX_DEMO_CAPITAL_BUCKET_ENABLED",
+        "OKX_DEMO_POSITION_MARGIN_BUCKET_USDT",
     ):
         monkeypatch.delenv(variable, raising=False)
     settings = Settings(_env_file=None)
@@ -508,6 +617,96 @@ def test_demo_adaptive_portfolio_defaults_to_disabled_and_three_stop_limit(
     assert settings.okx_demo_automation_max_consecutive_losses == 3
     assert settings.okx_demo_portfolio_max_risk_pct == Decimal("0.02")
     assert settings.okx_demo_portfolio_max_margin_pct == Decimal("0.60")
+    assert settings.okx_demo_capital_bucket_enabled is False
+    assert settings.okx_demo_position_margin_bucket_usdt == Decimal("2000")
+
+
+def test_demo_capital_bucket_requires_score_risk_gate() -> None:
+    with pytest.raises(ValidationError):
+        Settings(
+            _env_file=None,
+            okx_demo_capital_bucket_enabled=True,
+            okx_demo_score_risk_enabled=False,
+        )
+
+    settings = Settings(
+        _env_file=None,
+        okx_demo_capital_bucket_enabled=True,
+        okx_demo_position_margin_bucket_usdt=Decimal("2000"),
+        okx_demo_score_risk_enabled=True,
+        okx_demo_max_open_positions=3,
+        okx_demo_daily_loss_limit_pct=Decimal("0.03"),
+    )
+    assert settings.okx_demo_capital_bucket_enabled is True
+
+
+@pytest.mark.parametrize(
+    ("updates", "message"),
+    [
+        (
+            {},
+            "OKX_DEMO_CONTINUOUS_SESSION_ENABLED requires "
+            "OKX_DEMO_SCORE_RISK_ENABLED=true",
+        ),
+        (
+            {
+                "okx_demo_score_risk_enabled": True,
+                "okx_demo_max_open_positions": 3,
+                "okx_demo_daily_loss_limit_pct": Decimal("0.03"),
+            },
+            "OKX_DEMO_CONTINUOUS_SESSION_ENABLED requires "
+            "OKX_DEMO_CAPITAL_BUCKET_ENABLED=true",
+        ),
+        (
+            {
+                "okx_demo_score_risk_enabled": True,
+                "okx_demo_capital_bucket_enabled": True,
+                "okx_demo_max_open_positions": 3,
+                "okx_demo_daily_loss_limit_pct": Decimal("0.03"),
+                "okx_demo_require_protection": False,
+                "okx_demo_trade_cooldown_seconds": 0,
+            },
+            "OKX_DEMO_CONTINUOUS_SESSION_ENABLED requires "
+            "OKX_DEMO_REQUIRE_PROTECTION=true",
+        ),
+        (
+            {
+                "okx_demo_score_risk_enabled": True,
+                "okx_demo_capital_bucket_enabled": True,
+                "okx_demo_max_open_positions": 3,
+                "okx_demo_daily_loss_limit_pct": Decimal("0.03"),
+            },
+            "OKX_DEMO_CONTINUOUS_SESSION_ENABLED requires "
+            "OKX_DEMO_TRADE_COOLDOWN_SECONDS=0",
+        ),
+    ],
+)
+def test_demo_continuous_session_requires_bounded_risk_gates(
+    updates: dict[str, object],
+    message: str,
+) -> None:
+    with pytest.raises(ValidationError, match=message):
+        Settings(
+            _env_file=None,
+            okx_demo_continuous_session_enabled=True,
+            **updates,
+        )
+
+
+def test_demo_continuous_session_can_be_explicitly_configured() -> None:
+    settings = Settings(
+        _env_file=None,
+        okx_demo_continuous_session_enabled=True,
+        okx_demo_trade_cooldown_seconds=0,
+        okx_demo_require_protection=True,
+        okx_demo_score_risk_enabled=True,
+        okx_demo_capital_bucket_enabled=True,
+        okx_demo_max_open_positions=3,
+    )
+
+    assert settings.okx_demo_continuous_session_enabled is True
+    assert settings.okx_demo_trade_cooldown_seconds == 0
+    assert settings.okx_demo_daily_loss_limit_pct == Decimal("0.01")
 
 
 def test_demo_adaptive_portfolio_requires_multiple_position_capacity() -> None:

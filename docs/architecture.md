@@ -29,8 +29,30 @@ ranked analysis candidates
 → remaining portfolio risk and margin
 → one protected position per instrument
 → instrument-level close attribution
-→ UTC daily stop-loss lock
+→ standard session locks or opt-in continuous eligibility
 ```
+
+Continuous Demo eligibility skips daily-loss, daily trade-count,
+consecutive-loss, and cooldown entry gates only. Weekly-loss, drawdown,
+protection, portfolio/capital, reconciliation, Arm, submission, and Emergency
+Stop boundaries remain in force. It never changes Live execution authority.
+
+The separately opted-in structural dynamic-risk adapter remains below the
+strategy decision and above Demo order construction:
+
+```text
+confirmed 15m/1H/4H swing bracket
+→ structural stop plus volatility buffer
+→ next-structure target
+→ fee/slippage/funding-adjusted net RR
+→ downward-only five-band score risk
+→ smallest required 3/5/8/10/20x leverage
+→ isolated-margin Demo request
+```
+
+Missing structure or net RR fails closed. A 20x cap additionally requires
+high-grade validated mathematics and derivative alignment. The adapter has no
+Live imports or authority.
 
 The OKX Live boundary is isolated from Demo and Paper:
 
@@ -67,6 +89,21 @@ successful OKX Demo reconciliation
 → authenticated operator review
 ```
 
+The v1.7 MIE extraction begins as a parallel, shadow-only boundary:
+
+~~~text
+frozen feature snapshot reference
+→ versioned Evidence contracts
+→ probability and regime contracts
+→ model-health coverage
+→ long/short/no-trade candidate
+→ replayable shadow trace
+~~~
+
+MIE Gate 1 has no import from Paper, Demo, Live, exchange, or execution
+packages. Every nested contract fixes execution_authority=false; predictive
+validation may grant decision-gate use but never exchange-write authority.
+
 ## Authority rules
 
 - The Paper engine is authoritative for local Paper state; PostgreSQL restores it.
@@ -90,9 +127,16 @@ successful OKX Demo reconciliation
 - `demo_automation.risk_profile` maps validated analysis-score ranges to Demo
   risk, leverage, and margin ceilings, and applies the downward-only shared
   mathematical grade without granting Live authority.
+- `strategies.structural_protection` derives causal swing brackets;
+  `demo_automation.structural_risk` applies cost-adjusted net RR and a
+  quality-capped leverage ladder without granting write authority.
 - `analysis.mathematical_core` is the single read-only fusion point for
   structure, momentum, derivative, state, conformal, volatility, and quality
   evidence.
+- mie.contracts owns strict shadow Evidence, Forecast, Regime, ModelHealth,
+  DecisionCandidate, and replay trace contracts.
+- mie.adapters.legacy_mathematical translates the frozen mathematical core
+  into correlated, downward-only MIE evidence without changing execution.
 - `observability.service` owns soak preflight, bounded-session safety, and watchdogs.
 - `performance.service` derives evidence, persists daily reports, and exposes operator strategy controls without exchange-write authority.
 - `database.repositories` persists exchange mirrors, automation state, soak sessions,
@@ -116,11 +160,16 @@ successful OKX Demo reconciliation
   evidence lowers coverage/consensus, shocks become instability, low-confidence
   evidence downgrades leverage, and opposed or unstable evidence blocks before
   leverage or order writes.
-- Uncalibrated structure/momentum evidence and failed conformal coverage are
-  isolated as auxiliary tie-break evidence; they never enter execution score,
-  sizing, leverage, margin, or write authorization.
-- Three consecutive negative Demo closes lock new entries until the next UTC
-  day; ambiguous multi-position close attribution engages Emergency Stop.
+- Uncalibrated predictive structure/momentum evidence and failed conformal
+  coverage remain auxiliary: they never add direction score, probability,
+  leverage eligibility, or write authority. The separately gated structural
+  adapter may use confirmed past-only swing prices as deterministic protection
+  geometry; those anchors constrain stop, target, and the resulting worst-case
+  sizing but are never interpreted as validated market alpha.
+- Standard Demo sessions lock after three consecutive negative closes;
+  continuous sessions skip that daily gate but retain true rolling seven-day
+  close evidence and a non-daily high-water drawdown backstop. Ambiguous
+  multi-position close attribution engages Emergency Stop.
 - Execute soak requires a flat start, protection verification, a session loss
   budget, a submission cap, and automatic disarm.
 - Missing protection or untracked exposure engages emergency stop but does not

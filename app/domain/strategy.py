@@ -79,6 +79,50 @@ class MathematicalConfirmation(BaseModel):
         return self
 
 
+class StructuralProtectionGeometry(BaseModel):
+    """Past-only K-line structure proposed for exchange protection.
+
+    The geometry is evidence, not execution authority.  Demo automation must
+    still apply exchange tick alignment, cost-adjusted reward/risk checks, and
+    every portfolio safety gate before it can use these prices.
+    """
+
+    timeframe: str
+    source_closed_at: datetime
+    reference_entry: Decimal = Field(gt=0)
+    stop_anchor: Decimal = Field(gt=0)
+    target_anchor: Decimal = Field(gt=0)
+    volatility_buffer: Decimal = Field(gt=0)
+    stop_loss: Decimal = Field(gt=0)
+    take_profit: Decimal = Field(gt=0)
+    gross_risk_reward: Decimal = Field(gt=0)
+
+    @model_validator(mode="after")
+    def validate_geometry(self) -> "StructuralProtectionGeometry":
+        if (
+            self.source_closed_at.tzinfo is None
+            or self.source_closed_at.utcoffset() is None
+        ):
+            raise ValueError("structural source timestamp must be timezone-aware")
+        if self.stop_loss < self.reference_entry < self.take_profit:
+            if not self.stop_loss < self.stop_anchor < self.reference_entry:
+                raise ValueError("long structural stop anchor is invalid")
+            if self.stop_anchor - self.stop_loss != self.volatility_buffer:
+                raise ValueError("long structural volatility buffer is inconsistent")
+            if self.target_anchor != self.take_profit:
+                raise ValueError("long structural target must equal its anchor")
+            return self
+        if self.take_profit < self.reference_entry < self.stop_loss:
+            if not self.reference_entry < self.stop_anchor < self.stop_loss:
+                raise ValueError("short structural stop anchor is invalid")
+            if self.stop_loss - self.stop_anchor != self.volatility_buffer:
+                raise ValueError("short structural volatility buffer is inconsistent")
+            if self.target_anchor != self.take_profit:
+                raise ValueError("short structural target must equal its anchor")
+            return self
+        raise ValueError("structural protection geometry is invalid")
+
+
 class ScoreComponent(BaseModel):
     code: str
     label: str
@@ -103,6 +147,13 @@ class TradeCandidate(BaseModel):
     derivative_confirmation: DerivativeConfirmation | None = None
     mathematical_confirmation: MathematicalConfirmation | None = None
     risk_score: int | None = Field(default=None, ge=0, le=100)
+    protection_model: Literal["atr", "structure"] = "atr"
+    structural_protection: StructuralProtectionGeometry | None = None
+    estimated_round_trip_cost_pct: Decimal = Field(
+        default=Decimal("0"), ge=0, le=Decimal("0.20")
+    )
+    gross_risk_reward: Decimal | None = Field(default=None, gt=0)
+    net_risk_reward: Decimal | None = Field(default=None, gt=0)
 
     @model_validator(mode="after")
     def validate_geometry(self) -> "TradeCandidate":
@@ -112,6 +163,24 @@ class TradeCandidate(BaseModel):
             raise ValueError("short candidate requires take_profit < entry < stop_loss")
         if self.risk_reward <= 0:
             raise ValueError("risk_reward must be positive")
+        if self.protection_model == "structure":
+            geometry = self.structural_protection
+            if geometry is None:
+                raise ValueError("structural protection model requires structural geometry")
+            if self.direction == "long" and not (
+                self.stop_loss < geometry.stop_anchor < self.entry
+                < self.take_profit <= geometry.target_anchor
+            ):
+                raise ValueError("candidate prices exceed long structural anchors")
+            if self.direction == "short" and not (
+                geometry.target_anchor <= self.take_profit < self.entry
+                < geometry.stop_anchor < self.stop_loss
+            ):
+                raise ValueError("candidate prices exceed short structural anchors")
+            if geometry.source_closed_at >= self.expires_at:
+                raise ValueError("structural source must predate candidate expiry")
+        if self.net_risk_reward is not None and self.risk_reward != self.net_risk_reward:
+            raise ValueError("risk_reward must equal net_risk_reward when net RR is set")
         return self
 
 

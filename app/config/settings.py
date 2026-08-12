@@ -173,6 +173,12 @@ class Settings(BaseSettings):
     okx_demo_scan_max_snapshot_age_seconds: int = Field(default=30, ge=5, le=300)
     okx_demo_scan_max_entry_drift_bps: Decimal = Field(default=Decimal("30"), ge=1, le=500)
     okx_demo_trade_cooldown_seconds: int = Field(default=1800, ge=0, le=86_400)
+    # Optional continuous Demo session. It removes the daily-loss, daily
+    # trade-count, consecutive-loss, and post-close cooldown gates. Protected
+    # stops, weekly-loss/drawdown, portfolio risk, capital buckets, duplicate
+    # suppression, and execution-authority gates remain mandatory. Disabled by
+    # default.
+    okx_demo_continuous_session_enabled: bool = False
     okx_demo_trade_reconcile_grace_seconds: int = Field(default=30, ge=5, le=300)
     okx_demo_max_trades_per_day: int = Field(default=3, ge=1, le=20)
     okx_demo_daily_loss_limit_pct: Decimal = Field(default=Decimal("0.01"), gt=0, le=Decimal("0.10"))
@@ -208,10 +214,65 @@ class Settings(BaseSettings):
         default=Decimal("0.25"), gt=0, le=Decimal("0.50")
     )
     okx_demo_portfolio_max_risk_pct: Decimal = Field(
-        default=Decimal("0.02"), gt=0, le=Decimal("0.05")
+        default=Decimal("0.02"), gt=0, le=Decimal("0.20")
     )
     okx_demo_portfolio_max_margin_pct: Decimal = Field(
         default=Decimal("0.60"), gt=0, le=Decimal("0.80")
+    )
+    # Optional absolute USDT capital buckets for adaptive Demo sizing. The
+    # feature is disabled by default and cannot authorize a Demo or Live write.
+    okx_demo_capital_bucket_enabled: bool = False
+    okx_demo_position_margin_bucket_usdt: Decimal = Field(
+        default=Decimal("2000"), gt=0, le=Decimal("10000")
+    )
+
+    # Opt-in structural Demo risk model.  It consumes confirmed K-line swing
+    # geometry, deducts estimated costs before reward/risk approval, uses
+    # isolated margin, and selects the smallest score-capped leverage needed
+    # for the risk budget.  It cannot enable exchange writes or Live trading.
+    okx_demo_structural_dynamic_leverage_enabled: bool = False
+    okx_demo_structural_score_elite_min: int = Field(default=95, ge=3, le=99)
+    okx_demo_structural_score_extreme_min: int = Field(default=98, ge=4, le=100)
+    okx_demo_structural_low_risk_pct: Decimal = Field(
+        default=Decimal("0.015"), gt=0, le=Decimal("0.10")
+    )
+    okx_demo_structural_medium_risk_pct: Decimal = Field(
+        default=Decimal("0.025"), gt=0, le=Decimal("0.10")
+    )
+    okx_demo_structural_high_risk_pct: Decimal = Field(
+        default=Decimal("0.03"), gt=0, le=Decimal("0.10")
+    )
+    okx_demo_structural_elite_risk_pct: Decimal = Field(
+        default=Decimal("0.04"), gt=0, le=Decimal("0.10")
+    )
+    okx_demo_structural_extreme_risk_pct: Decimal = Field(
+        default=Decimal("0.06"), gt=0, le=Decimal("0.10")
+    )
+    okx_demo_structural_low_leverage_cap: int = Field(default=3, ge=1, le=20)
+    okx_demo_structural_medium_leverage_cap: int = Field(default=5, ge=1, le=20)
+    okx_demo_structural_high_leverage_cap: int = Field(default=8, ge=1, le=20)
+    okx_demo_structural_elite_leverage_cap: int = Field(default=10, ge=1, le=20)
+    okx_demo_structural_extreme_leverage_cap: int = Field(default=20, ge=1, le=20)
+    okx_demo_structural_round_trip_fee_bps: Decimal = Field(
+        default=Decimal("10"), ge=0, le=Decimal("100")
+    )
+    okx_demo_structural_round_trip_slippage_bps: Decimal = Field(
+        default=Decimal("4"), ge=0, le=Decimal("100")
+    )
+    okx_demo_structural_funding_buffer_bps: Decimal = Field(
+        default=Decimal("2"), ge=0, le=Decimal("100")
+    )
+    okx_demo_structural_min_net_risk_reward: Decimal = Field(
+        default=Decimal("2.0"), gt=0, le=Decimal("10")
+    )
+    okx_demo_structural_20x_min_confidence: Decimal = Field(
+        default=Decimal("0.65"), ge=0, le=1
+    )
+    okx_demo_structural_20x_min_reliability: Decimal = Field(
+        default=Decimal("0.65"), ge=0, le=1
+    )
+    okx_demo_structural_20x_max_instability: Decimal = Field(
+        default=Decimal("0.20"), ge=0, le=1
     )
 
     # Controlled Demo execution soak and observability. Execute stays disabled by default.
@@ -531,7 +592,8 @@ class Settings(BaseSettings):
                     "OKX_DEMO_MAX_OPEN_POSITIONS >= 2"
                 )
             if (
-                self.okx_demo_portfolio_max_risk_pct
+                not self.okx_demo_continuous_session_enabled
+                and self.okx_demo_portfolio_max_risk_pct
                 > self.okx_demo_daily_loss_limit_pct
             ):
                 raise ValueError(
@@ -539,6 +601,149 @@ class Settings(BaseSettings):
                     "OKX_DEMO_DAILY_LOSS_LIMIT_PCT"
                 )
 
+        if (
+            self.okx_demo_capital_bucket_enabled
+            and not self.okx_demo_score_risk_enabled
+        ):
+            raise ValueError(
+                "OKX_DEMO_CAPITAL_BUCKET_ENABLED requires "
+                "OKX_DEMO_SCORE_RISK_ENABLED=true"
+            )
+
+        if self.okx_demo_structural_dynamic_leverage_enabled:
+            if not self.okx_demo_score_risk_enabled:
+                raise ValueError(
+                    "OKX_DEMO_STRUCTURAL_DYNAMIC_LEVERAGE_ENABLED requires "
+                    "OKX_DEMO_SCORE_RISK_ENABLED=true"
+                )
+            if not self.okx_demo_capital_bucket_enabled:
+                raise ValueError(
+                    "OKX_DEMO_STRUCTURAL_DYNAMIC_LEVERAGE_ENABLED requires "
+                    "OKX_DEMO_CAPITAL_BUCKET_ENABLED=true"
+                )
+            if not self.okx_demo_continuous_session_enabled:
+                raise ValueError(
+                    "OKX_DEMO_STRUCTURAL_DYNAMIC_LEVERAGE_ENABLED requires "
+                    "OKX_DEMO_CONTINUOUS_SESSION_ENABLED=true"
+                )
+            if not self.okx_demo_require_protection:
+                raise ValueError(
+                    "structural dynamic leverage requires exchange protection"
+                )
+            if not (
+                self.strategy_min_score
+                < self.okx_demo_score_medium_min
+                < self.okx_demo_score_high_min
+                < self.okx_demo_structural_score_elite_min
+                < self.okx_demo_structural_score_extreme_min
+                <= 100
+            ):
+                raise ValueError("structural Demo score tiers must be strictly increasing")
+            if (
+                self.strategy_min_score < 72
+                or self.okx_demo_score_medium_min < 80
+                or self.okx_demo_score_high_min < 90
+                or self.okx_demo_structural_score_elite_min < 95
+                or self.okx_demo_structural_score_extreme_min < 98
+            ):
+                raise ValueError(
+                    "structural Demo score thresholds cannot be relaxed"
+                )
+            structural_risks = (
+                self.okx_demo_structural_low_risk_pct,
+                self.okx_demo_structural_medium_risk_pct,
+                self.okx_demo_structural_high_risk_pct,
+                self.okx_demo_structural_elite_risk_pct,
+                self.okx_demo_structural_extreme_risk_pct,
+            )
+            if tuple(sorted(structural_risks)) != structural_risks:
+                raise ValueError("structural Demo risk tiers must be nondecreasing")
+            risk_ceilings = (
+                Decimal("0.015"),
+                Decimal("0.025"),
+                Decimal("0.03"),
+                Decimal("0.04"),
+                Decimal("0.06"),
+            )
+            if any(
+                configured > ceiling
+                for configured, ceiling in zip(structural_risks, risk_ceilings)
+            ):
+                raise ValueError("structural Demo risk ceilings cannot be increased")
+            if structural_risks[-1] > self.okx_demo_portfolio_max_risk_pct:
+                raise ValueError(
+                    "structural extreme risk cannot exceed portfolio stop-risk limit"
+                )
+            if structural_risks[-1] > Decimal(str(self.max_weekly_loss_pct)):
+                raise ValueError(
+                    "structural extreme risk cannot exceed the weekly-loss backstop"
+                )
+            structural_leverage = (
+                self.okx_demo_structural_low_leverage_cap,
+                self.okx_demo_structural_medium_leverage_cap,
+                self.okx_demo_structural_high_leverage_cap,
+                self.okx_demo_structural_elite_leverage_cap,
+                self.okx_demo_structural_extreme_leverage_cap,
+            )
+            if tuple(sorted(structural_leverage)) != structural_leverage:
+                raise ValueError("structural Demo leverage caps must be nondecreasing")
+            leverage_ceilings = (3, 5, 8, 10, 20)
+            if any(
+                configured > ceiling
+                for configured, ceiling in zip(
+                    structural_leverage, leverage_ceilings
+                )
+            ):
+                raise ValueError(
+                    "structural Demo leverage ceilings cannot be increased"
+                )
+            if structural_leverage[-1] != 20 or self.okx_demo_max_leverage < 20:
+                raise ValueError(
+                    "structural dynamic leverage requires an explicit 20x Demo ceiling"
+                )
+            total_cost_bps = (
+                self.okx_demo_structural_round_trip_fee_bps
+                + self.okx_demo_structural_round_trip_slippage_bps
+                + self.okx_demo_structural_funding_buffer_bps
+            )
+            if total_cost_bps < Decimal("16"):
+                raise ValueError(
+                    "structural Demo cost buffer cannot be below 16 bps"
+                )
+            if self.okx_demo_structural_min_net_risk_reward < Decimal("2"):
+                raise ValueError("structural Demo net RR floor cannot be relaxed")
+            if (
+                self.okx_demo_structural_20x_min_confidence < Decimal("0.65")
+                or self.okx_demo_structural_20x_min_reliability
+                < Decimal("0.65")
+                or self.okx_demo_structural_20x_max_instability
+                > Decimal("0.20")
+            ):
+                raise ValueError(
+                    "structural Demo 20x quality thresholds cannot be relaxed"
+                )
+
+        if self.okx_demo_continuous_session_enabled:
+            if not self.okx_demo_score_risk_enabled:
+                raise ValueError(
+                    "OKX_DEMO_CONTINUOUS_SESSION_ENABLED requires "
+                    "OKX_DEMO_SCORE_RISK_ENABLED=true"
+                )
+            if not self.okx_demo_capital_bucket_enabled:
+                raise ValueError(
+                    "OKX_DEMO_CONTINUOUS_SESSION_ENABLED requires "
+                    "OKX_DEMO_CAPITAL_BUCKET_ENABLED=true"
+                )
+            if not self.okx_demo_require_protection:
+                raise ValueError(
+                    "OKX_DEMO_CONTINUOUS_SESSION_ENABLED requires "
+                    "OKX_DEMO_REQUIRE_PROTECTION=true"
+                )
+            if self.okx_demo_trade_cooldown_seconds != 0:
+                raise ValueError(
+                    "OKX_DEMO_CONTINUOUS_SESSION_ENABLED requires "
+                    "OKX_DEMO_TRADE_COOLDOWN_SECONDS=0"
+                )
         if self.okx_demo_soak_default_duration_minutes > self.okx_demo_soak_max_duration_minutes:
             raise ValueError(
                 "OKX_DEMO_SOAK_DEFAULT_DURATION_MINUTES cannot exceed "

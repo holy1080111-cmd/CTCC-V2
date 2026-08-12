@@ -27,7 +27,7 @@ class AccountRiskState(BaseModel):
 
 
 class RiskLimits(BaseModel):
-    risk_per_trade_pct: Decimal = Field(default=Decimal("0.005"), gt=0, le=Decimal("0.05"))
+    risk_per_trade_pct: Decimal = Field(default=Decimal("0.005"), gt=0, le=Decimal("0.10"))
     max_daily_loss_pct: Decimal = Field(default=Decimal("0.02"), gt=0, le=Decimal("0.25"))
     max_weekly_loss_pct: Decimal = Field(default=Decimal("0.05"), gt=0, le=Decimal("0.50"))
     max_drawdown_pct: Decimal = Field(default=Decimal("0.10"), gt=0, le=Decimal("0.80"))
@@ -56,6 +56,8 @@ class RiskDecision(BaseModel):
     notional: Decimal
     max_loss_amount: Decimal
     stop_distance: Decimal
+    effective_risk_distance: Decimal = Decimal("0")
+    estimated_cost_amount: Decimal = Decimal("0")
     reason_codes: list[str] = Field(default_factory=list)
     evaluated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     version: str = "1.0.0"

@@ -34,7 +34,7 @@ EXCLUDED_DIRECTORIES = {
     "pytest-of-root",
     "reports",
 }
-EXCLUDED_FILES = {".coverage", ".env", "MANIFEST.sha256", "uv.lock"}
+EXCLUDED_FILES = {".coverage", ".env", ".git", "MANIFEST.sha256", "uv.lock"}
 EXCLUDED_SUFFIXES = {".bak", ".dump", ".log", ".patch", ".pyc", ".pyo", ".zip"}
 
 
