@@ -1,6 +1,52 @@
 from decimal import Decimal
 
-from app.exchange.okx.parsers import parse_candle, parse_ticker
+from app.exchange.okx.parsers import parse_candle, parse_instrument, parse_ticker
+from app.exchange.okx.private_parsers import parse_balance
+
+
+def test_parse_instrument_preserves_settlement_currency() -> None:
+    instrument = parse_instrument(
+        {
+            "instId": "BTC-USDT-SWAP",
+            "instType": "SWAP",
+            "state": "live",
+            "tickSz": "0.1",
+            "lotSz": "1",
+            "minSz": "1",
+            "ctVal": "0.01",
+            "ctValCcy": "BTC",
+            "settleCcy": "USDT",
+        }
+    )
+
+    assert instrument.settlement_currency == "USDT"
+
+
+def test_parse_demo_balance_preserves_currency_available_equity() -> None:
+    balance = parse_balance(
+        {
+            "totalEq": "81511.77052855614",
+            "adjEq": "",
+            "availEq": "",
+            "isoEq": "0",
+            "details": [
+                {
+                    "ccy": "USDT",
+                    "eq": "4998.339000436543",
+                    "availEq": "4998.339000436543",
+                    "availBal": "4998.339000436543",
+                    "cashBal": "4998.339000436543",
+                    "frozenBal": "0",
+                    "upl": "0",
+                }
+            ],
+        }
+    )
+
+    assert balance.available_equity == Decimal("0")
+    assert balance.details[0].available_equity == Decimal(
+        "4998.339000436543"
+    )
 
 
 def test_parse_candle() -> None:

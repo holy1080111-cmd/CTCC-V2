@@ -47,7 +47,7 @@ Not performed in the artifact-generation environment:
 
 ```text
 Docker Compose image build
-PostgreSQL online migration through current head (now 0011)
+PostgreSQL online migration through current head (now 0012)
 Alembic online schema-drift check
 PostgreSQL integration tests
 Authenticated OKX production read reconciliation

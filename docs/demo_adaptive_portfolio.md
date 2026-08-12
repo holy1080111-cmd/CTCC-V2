@@ -83,6 +83,29 @@ OKX cross-margin SWAP leverage is managed per instrument, so CTCC allows at
 most one active CTCC trade per instrument. Multiple different allowlisted
 instruments may coexist up to `OKX_DEMO_MAX_OPEN_POSITIONS`.
 
+## Account-mode-aware capital basis
+
+The adaptive Demo boundary supports USDT-settled SWAP instruments only. It
+verifies the exchange `settleCcy` metadata before sizing a candidate.
+
+For OKX account level 2 (single-currency margin), the risk denominator is the
+USDT entry in `details[].eq`, and exchange buying-power capacity is bounded by
+that entry's `details[].availEq`. A blank account-level `availEq` is expected in
+this mode and is never converted into a false account-wide zero. BTC, ETH, OKB,
+and other balances are neither numerically summed nor treated as USDT
+collateral.
+
+For account levels 3 and 4, the pooled risk denominator is adjusted account
+equity and the capacity input is account-level available equity. Missing or
+unsupported account-level, settlement-currency, or equity data blocks the run;
+`totalEq` is retained only as account reporting and is never an availability
+fallback.
+
+Migration `0012` stores the selected equity basis. A legacy or changed basis is
+rebased automatically only while the exchange is flat, no CTCC trade is
+tracked, and the UTC session has not submitted a trade. Otherwise the
+automation remains locked until a flat session can be verified.
+
 ## Daily stop-loss lock
 
 Each tracked instrument is finalized from filled closing-order realized PnL,

@@ -15,6 +15,7 @@ class InstrumentInfo(BaseModel):
     minimum_size: Decimal
     contract_value: Decimal | None = None
     contract_currency: str | None = None
+    settlement_currency: str | None = None
 
 
 class Candle(BaseModel):

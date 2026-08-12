@@ -64,11 +64,13 @@ Migration `0009` adds the isolated read-only Live account mirror. Migration
 identifiers, finite status values, and safe detail codes. It does not store API
 credentials or raw request/response payloads. Migration `0011` adds JSONB state
 for the disabled-by-default adaptive Demo portfolio and per-symbol cooldowns.
+Migration `0012` records the exact equity basis used by Demo risk controls so
+an account-mode change cannot silently reuse an incompatible daily baseline.
 
 Expected migration after upgrade:
 
 ```text
-0011 (head)
+0012 (head)
 ```
 
 ## Adaptive Demo portfolio (disabled by default)
@@ -85,6 +87,14 @@ capped at 2% of equity and estimated margin at 60%. These values are ceilings,
 not targets: exchange lot rounding, stop distance, and the global notional cap
 can produce smaller positions. Enabling the feature also requires the configured
 daily loss limit to be at least as large as the aggregate open-risk ceiling.
+
+For OKX single-currency margin accounts, USDT-settled automation uses only the
+USDT detail equity and `details[].availEq` as its risk and availability basis;
+BTC, ETH, OKB, and account-level USD valuation are not pooled into USDT buying
+power. Multi-currency and portfolio-margin accounts instead use adjusted
+account equity and account-level available equity. The raw account `totalEq`
+remains visible for reporting but never substitutes for missing available
+margin.
 
 Adaptive risk also requires a shared, past-only mathematical fusion contract.
 It separates analytically checked derivative/state evidence and

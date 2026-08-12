@@ -240,8 +240,14 @@ def test_demo_automation_requires_websocket() -> None:
         )
 
 
-def test_demo_automation_defaults_to_disabled() -> None:
-    settings = Settings(_env_file=None, okx_demo_auto_execution=False)
+def test_demo_automation_defaults_to_disabled(monkeypatch) -> None:
+    for variable in (
+        "OKX_DEMO_AUTO_EXECUTION",
+        "OKX_DEMO_AUTOMATION_LEVERAGE",
+        "OKX_DEMO_MAX_TRADES_PER_DAY",
+    ):
+        monkeypatch.delenv(variable, raising=False)
+    settings = Settings(_env_file=None)
     assert settings.okx_demo_auto_execution is False
     assert settings.okx_demo_automation_leverage == 1
     assert settings.okx_demo_max_trades_per_day == 3

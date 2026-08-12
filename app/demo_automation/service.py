@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections import deque
 from contextlib import suppress
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR, ROUND_DOWN
 import hashlib
@@ -26,6 +27,7 @@ from app.domain.demo_automation import (
 )
 from app.domain.okx_demo import (
     DEMO_CONFIRMATION_PHRASE,
+    OkxDemoBalanceSnapshot,
     OkxDemoLeverageRequest,
     OkxDemoOrderView,
     OkxDemoOrderRequest,
@@ -42,6 +44,16 @@ from app.strategies import StrategyService
 
 logger = logging.getLogger(__name__)
 D = Decimal
+_AUTOMATION_SETTLEMENT_CURRENCY = "USDT"
+_EQUITY_BASIS_LOCK = "equity_basis_change_requires_flat_session"
+
+
+@dataclass(frozen=True)
+class _AutomationCapital:
+    risk_equity: Decimal
+    available_equity: Decimal
+    currency: str
+    basis: str
 
 
 class SafeDemoAutomation:
@@ -108,6 +120,7 @@ class SafeDemoAutomation:
             "locked": False,
             "lock_reasons": [],
             "session_date": today,
+            "equity_basis": None,
             "baseline_equity": None,
             "peak_equity": None,
             "daily_pnl": D("0"),
@@ -198,6 +211,7 @@ class SafeDemoAutomation:
             active_position_count=len(active_trades),
             active_trades=active_trades,
             session_date=self._state["session_date"],
+            equity_basis=self._state["equity_basis"],
             baseline_equity=self._state["baseline_equity"],
             peak_equity=self._state["peak_equity"],
             daily_pnl=self._state["daily_pnl"],
@@ -230,8 +244,18 @@ class SafeDemoAutomation:
             raise DemoAutomationSafetyError(
                 "tracked_trade_state_must_be_resolved_before_arming"
             )
-        self._roll_session(snapshot.balance.total_equity, force_if_empty=True)
-        self._apply_locks(snapshot.balance.total_equity)
+        capital, capital_blocker = self._automation_capital(snapshot)
+        if capital is None:
+            raise DemoAutomationSafetyError(capital_blocker)
+        basis_blocker = self._roll_session(
+            capital.risk_equity,
+            capital.basis,
+            force_if_empty=True,
+            allow_rebase=int(self._state["trades_today"]) == 0,
+        )
+        if basis_blocker is not None:
+            raise DemoAutomationSafetyError(basis_blocker)
+        self._apply_locks(capital.risk_equity)
         if self._state["locked"]:
             raise DemoAutomationSafetyError("automation_locked:" + ",".join(self._state["lock_reasons"]))
         self._state["armed"] = True
@@ -263,8 +287,19 @@ class SafeDemoAutomation:
             raise DemoAutomationSafetyError(
                 "tracked_trade_state_must_be_resolved_before_clearing_stop"
             )
+        capital, capital_blocker = self._automation_capital(snapshot)
+        if capital is None:
+            raise DemoAutomationSafetyError(capital_blocker)
+        basis_blocker = self._roll_session(
+            capital.risk_equity,
+            capital.basis,
+            force_if_empty=True,
+            allow_rebase=int(self._state["trades_today"]) == 0,
+        )
+        if basis_blocker is not None:
+            raise DemoAutomationSafetyError(basis_blocker)
         self._state["emergency_stop"] = False
-        self._apply_locks(snapshot.balance.total_equity)
+        self._apply_locks(capital.risk_equity)
         await self._persist_state(required=True)
         return await self.status()
 
@@ -310,20 +345,13 @@ class SafeDemoAutomation:
             self._state["last_started_at"] = started
             results: list[DemoAutomationSymbolResult] = []
             total_equity: Decimal | None = None
+            risk_equity: Decimal | None = None
+            risk_equity_currency: str | None = None
             available_margin_equity = D("0")
             portfolio_view = self._active_trades()
             try:
                 snapshot = await self.demo_service.reconcile()
                 total_equity = snapshot.balance.total_equity
-                available_margin_equity = max(
-                    D("0"), snapshot.balance.available_equity
-                )
-                self._roll_session(total_equity)
-                self._finalize_active_trades(snapshot)
-                self._refresh_active_trade_estimates(snapshot, total_equity)
-                self._apply_locks(total_equity)
-                portfolio_view = self._active_trades()
-
                 exposed_symbols = {
                     item.instrument_id
                     for item in [
@@ -332,6 +360,28 @@ class SafeDemoAutomation:
                         *snapshot.pending_algo_orders,
                     ]
                 }
+                capital, capital_blocker = self._automation_capital(snapshot)
+                if capital is None:
+                    raise DemoAutomationSafetyError(capital_blocker)
+                risk_equity = capital.risk_equity
+                risk_equity_currency = capital.currency
+                available_margin_equity = capital.available_equity
+                basis_blocker = self._roll_session(
+                    risk_equity,
+                    capital.basis,
+                    allow_rebase=(
+                        not exposed_symbols
+                        and not portfolio_view
+                        and int(self._state["trades_today"]) == 0
+                    ),
+                )
+                if basis_blocker is not None:
+                    raise DemoAutomationSafetyError(basis_blocker)
+                self._finalize_active_trades(snapshot, risk_equity)
+                self._refresh_active_trade_estimates(snapshot, risk_equity)
+                self._apply_locks(risk_equity)
+                portfolio_view = self._active_trades()
+
                 tracked_symbols = {item.instrument_id for item in portfolio_view}
                 untracked_symbols = exposed_symbols - tracked_symbols
                 position_symbols = [item.instrument_id for item in snapshot.positions]
@@ -344,7 +394,7 @@ class SafeDemoAutomation:
                     exposure_violation = "multiple_positions_per_instrument_detected"
                 if execute and exposure_violation:
                     self._engage_emergency(exposure_violation)
-                    self._apply_locks(total_equity)
+                    self._apply_locks(risk_equity)
 
                 if execute and self._state["locked"]:
                     results.append(
@@ -376,7 +426,7 @@ class SafeDemoAutomation:
                     submitted_this_run = 0
                     for raw_symbol, strategy in ranked:
                         if execute:
-                            self._apply_locks(total_equity)
+                            self._apply_locks(risk_equity)
                             if self._state["locked"]:
                                 results.append(
                                     DemoAutomationSymbolResult(
@@ -405,7 +455,7 @@ class SafeDemoAutomation:
                             raw_symbol,
                             strategy,
                             execute=execute,
-                            balance_equity=total_equity,
+                            balance_equity=risk_equity,
                             available_margin_equity=available_margin_equity,
                             portfolio=shadow_portfolio,
                         )
@@ -422,6 +472,15 @@ class SafeDemoAutomation:
                     portfolio_view = (
                         self._active_trades() if execute else shadow_portfolio
                     )
+            except DemoAutomationSafetyError as exc:
+                self._state["last_error"] = self._safe_error(exc)
+                results.append(
+                    DemoAutomationSymbolResult(
+                        symbol="*",
+                        outcome="blocked",
+                        detail=self._state["last_error"],
+                    )
+                )
             except Exception as exc:
                 self._state["last_error"] = self._safe_error(exc)
                 logger.exception("demo_automation_run_failed")
@@ -442,6 +501,8 @@ class SafeDemoAutomation:
                 completed_at=completed,
                 results=results,
                 total_equity=total_equity,
+                risk_equity=risk_equity,
+                risk_equity_currency=risk_equity_currency,
                 daily_pnl=self._state["daily_pnl"],
                 trades_today=int(self._state["trades_today"]),
                 consecutive_losses=int(self._state["consecutive_losses"]),
@@ -721,6 +782,18 @@ class SafeDemoAutomation:
                     None,
                 )
             instrument = instruments[0]
+            if instrument.settlement_currency != _AUTOMATION_SETTLEMENT_CURRENCY:
+                return (
+                    self._candidate_result(
+                        strategy.symbol,
+                        instrument_id,
+                        execution_candidate,
+                        outcome="blocked",
+                        reference_price=reference_price,
+                        detail="unsupported_or_missing_settlement_currency",
+                    ),
+                    None,
+                )
             stop_loss, take_profit = self._align_protection(
                 execution_candidate, instrument.tick_size
             )
@@ -910,6 +983,7 @@ class SafeDemoAutomation:
 
             reservation = DemoAutomationActiveTrade(
                 instrument_id=instrument_id,
+                settlement_currency=instrument.settlement_currency,
                 direction=aligned_candidate.direction,
                 strategy=aligned_candidate.strategy,
                 score=aligned_candidate.score,
@@ -1199,6 +1273,55 @@ class SafeDemoAutomation:
         return 1
 
     @staticmethod
+    def _automation_capital(
+        snapshot: OkxDemoReconcileResult,
+    ) -> tuple[_AutomationCapital | None, str]:
+        account_level = snapshot.account_config.account_level or ""
+        balance: OkxDemoBalanceSnapshot = snapshot.balance
+        if account_level == "2":
+            matches = [
+                item
+                for item in balance.details
+                if item.currency.upper() == _AUTOMATION_SETTLEMENT_CURRENCY
+            ]
+            if len(matches) != 1:
+                return None, "demo_settlement_currency_balance_unavailable"
+            detail = matches[0]
+            if detail.equity <= 0:
+                return None, "demo_settlement_currency_equity_exhausted"
+            return (
+                _AutomationCapital(
+                    risk_equity=detail.equity,
+                    available_equity=min(
+                        detail.equity,
+                        max(D("0"), detail.available_equity),
+                    ),
+                    currency=_AUTOMATION_SETTLEMENT_CURRENCY,
+                    basis=(
+                        "single_currency:"
+                        + _AUTOMATION_SETTLEMENT_CURRENCY
+                    ),
+                ),
+                "",
+            )
+        if account_level in {"3", "4"}:
+            if balance.adjusted_equity <= 0:
+                return None, "demo_account_adjusted_equity_unavailable"
+            return (
+                _AutomationCapital(
+                    risk_equity=balance.adjusted_equity,
+                    available_equity=min(
+                        balance.adjusted_equity,
+                        max(D("0"), balance.available_equity),
+                    ),
+                    currency="USD",
+                    basis="account_adjusted:USD",
+                ),
+                "",
+            )
+        return None, "unsupported_okx_demo_account_level"
+
+    @staticmethod
     def _portfolio_usage(
         trades: Iterable[DemoAutomationActiveTrade],
     ) -> tuple[Decimal, Decimal]:
@@ -1229,8 +1352,35 @@ class SafeDemoAutomation:
             minimum_risk_reward=D(str(self.settings.strategy_min_risk_reward)),
         )
 
-    def _roll_session(self, equity: Decimal, *, force_if_empty: bool = False) -> None:
+    def _roll_session(
+        self,
+        equity: Decimal,
+        equity_basis: str,
+        *,
+        force_if_empty: bool = False,
+        allow_rebase: bool = False,
+    ) -> str | None:
         today = datetime.now(timezone.utc).date()
+        current_basis = self._state.get("equity_basis")
+        if current_basis != equity_basis:
+            if not allow_rebase:
+                self._state["locked"] = True
+                self._state["lock_reasons"] = sorted(
+                    set([*self._state["lock_reasons"], _EQUITY_BASIS_LOCK])
+                )
+                return _EQUITY_BASIS_LOCK
+            self._state["equity_basis"] = equity_basis
+            self._state["session_date"] = today
+            self._state["baseline_equity"] = equity
+            self._state["peak_equity"] = equity
+            self._state["daily_pnl"] = D("0")
+            self._state["trades_today"] = 0
+            self._state["consecutive_losses"] = 0
+        self._state["lock_reasons"] = [
+            reason
+            for reason in self._state["lock_reasons"]
+            if reason != _EQUITY_BASIS_LOCK
+        ]
         if self._state["session_date"] != today:
             self._state["session_date"] = today
             self._state["baseline_equity"] = equity
@@ -1246,8 +1396,13 @@ class SafeDemoAutomation:
             self._state["daily_pnl"] = equity - baseline
         peak = self._state["peak_equity"]
         self._state["peak_equity"] = equity if peak is None else max(peak, equity)
+        return None
 
-    def _finalize_active_trades(self, snapshot: OkxDemoReconcileResult) -> None:
+    def _finalize_active_trades(
+        self,
+        snapshot: OkxDemoReconcileResult,
+        risk_equity: Decimal,
+    ) -> None:
         active = self._active_trades()
         if not active:
             return
@@ -1291,7 +1446,7 @@ class SafeDemoAutomation:
                     (
                         snapshot.reconciled_at,
                         trade,
-                        snapshot.balance.total_equity - trade.start_equity,
+                        risk_equity - trade.start_equity,
                     )
                 )
 
@@ -1433,6 +1588,8 @@ class SafeDemoAutomation:
 
     def _apply_locks(self, equity: Decimal) -> None:
         reasons: list[str] = []
+        if _EQUITY_BASIS_LOCK in self._state["lock_reasons"]:
+            reasons.append(_EQUITY_BASIS_LOCK)
         baseline = self._state["baseline_equity"]
         if baseline is not None and baseline > 0:
             loss_limit = baseline * D(str(self.settings.okx_demo_daily_loss_limit_pct))

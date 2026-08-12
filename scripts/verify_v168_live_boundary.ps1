@@ -82,6 +82,7 @@ Invoke-NativeStep "Live boundary targeted tests" {
 }
 Invoke-NativeStep "Adaptive Demo portfolio targeted tests" {
     docker compose exec -T @testEnvironment api python -m pytest -q -p no:cacheprovider `
+        tests/unit/exchange/test_parsers.py `
         tests/unit/indicators/test_causal_trend.py `
         tests/unit/indicators/test_causal_state.py `
         tests/unit/indicators/test_conformal_return.py `
@@ -116,5 +117,5 @@ $head = (git rev-parse HEAD).Trim()
 $health = (docker inspect --format '{{.State.Health.Status}}' ctcc-v2-api).Trim()
 Write-Host "V168_LIVE_BOUNDARY_VERIFIED=1"
 Write-Host "HEAD=$head"
-Write-Host "ALEMBIC_HEAD=0011"
+Write-Host "ALEMBIC_HEAD=0012"
 Write-Host "API_HEALTH=$health"

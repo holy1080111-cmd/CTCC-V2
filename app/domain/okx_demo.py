@@ -43,6 +43,7 @@ class OkxDemoAccountConfig(BaseModel):
 class OkxDemoBalanceDetail(BaseModel):
     currency: str
     equity: Decimal
+    available_equity: Decimal
     cash_balance: Decimal
     available_balance: Decimal
     frozen_balance: Decimal

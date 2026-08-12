@@ -70,6 +70,7 @@ class DemoAutomationRiskTier(BaseModel):
 
 class DemoAutomationActiveTrade(BaseModel):
     instrument_id: str
+    settlement_currency: str | None = None
     direction: Literal["long", "short"] | None = None
     strategy: str | None = None
     score: int | None = Field(default=None, ge=0, le=100)
@@ -187,6 +188,8 @@ class DemoAutomationRunResult(BaseModel):
     completed_at: datetime
     results: list[DemoAutomationSymbolResult]
     total_equity: Decimal | None = None
+    risk_equity: Decimal | None = None
+    risk_equity_currency: str | None = None
     daily_pnl: Decimal = Decimal("0")
     trades_today: int = 0
     consecutive_losses: int = 0
@@ -222,6 +225,7 @@ class DemoAutomationStatus(BaseModel):
     portfolio_margin_pct: Decimal = Decimal("0")
     active_position_count: int = 0
     active_trades: list[DemoAutomationActiveTrade] = Field(default_factory=list)
+    equity_basis: str | None = None
     baseline_equity: Decimal | None = None
     peak_equity: Decimal | None = None
     daily_pnl: Decimal = Decimal("0")

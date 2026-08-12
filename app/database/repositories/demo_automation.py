@@ -30,6 +30,7 @@ class DemoAutomationRepository:
             "locked": row.locked,
             "lock_reasons": list(row.lock_reasons or []),
             "session_date": row.session_date,
+            "equity_basis": row.equity_basis,
             "baseline_equity": row.baseline_equity,
             "peak_equity": row.peak_equity,
             "daily_pnl": row.daily_pnl,

@@ -18,6 +18,7 @@ class DemoAutomationState(Base):
     locked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     lock_reasons: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
     session_date: Mapped[date] = mapped_column(Date, nullable=False)
+    equity_basis: Mapped[str | None] = mapped_column(String(40))
     baseline_equity: Mapped[Decimal | None] = mapped_column(Numeric(28, 10))
     peak_equity: Mapped[Decimal | None] = mapped_column(Numeric(28, 10))
     daily_pnl: Mapped[Decimal] = mapped_column(Numeric(28, 10), nullable=False, default=Decimal("0"))

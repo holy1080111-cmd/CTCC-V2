@@ -10,6 +10,7 @@ from app.domain.demo_automation import DemoAutomationActiveTrade
 from app.domain.market import InstrumentInfo
 from app.domain.okx_demo import (
     OkxDemoAccountConfig,
+    OkxDemoBalanceDetail,
     OkxDemoBalanceSnapshot,
     OkxDemoOrderAcknowledgement,
     OkxDemoOrderView,
@@ -72,6 +73,7 @@ class FakeDemo:
         self.place_calls = []
         self.leverage_calls = []
         self.equity = Decimal("10000")
+        self.other_asset_equity = Decimal("0")
         self.acknowledged = acknowledged
         self.include_acknowledgement = include_acknowledgement
         self.positions: list[OkxDemoPositionView] = []
@@ -118,12 +120,26 @@ class FakeDemo:
 
     async def reconcile(self) -> OkxDemoReconcileResult:
         return OkxDemoReconcileResult(
-            account_config=OkxDemoAccountConfig(position_mode="net_mode"),
+            account_config=OkxDemoAccountConfig(
+                account_level="2",
+                position_mode="net_mode",
+            ),
             balance=OkxDemoBalanceSnapshot(
-                total_equity=self.equity,
+                total_equity=self.equity + self.other_asset_equity,
                 isolated_equity=Decimal("0"),
-                adjusted_equity=self.equity,
-                available_equity=self.equity,
+                adjusted_equity=Decimal("0"),
+                available_equity=Decimal("0"),
+                details=[
+                    OkxDemoBalanceDetail(
+                        currency="USDT",
+                        equity=self.equity,
+                        available_equity=self.equity,
+                        cash_balance=self.equity,
+                        available_balance=self.equity,
+                        frozen_balance=Decimal("0"),
+                        unrealized_pnl=Decimal("0"),
+                    )
+                ],
             ),
             positions=list(self.positions),
             pending_orders=list(self.pending_orders),
@@ -165,6 +181,7 @@ class FakePublic:
                 minimum_size=Decimal("1"),
                 contract_value=Decimal("1"),
                 contract_currency=instrument_id.split("-")[0],
+                settlement_currency="USDT",
             )
         ]
 
@@ -328,6 +345,51 @@ async def test_dry_run_never_places_demo_order() -> None:
 
 
 @pytest.mark.asyncio
+async def test_single_currency_margin_uses_usdt_risk_equity_not_total_equity() -> None:
+    demo = FakeDemo()
+    demo.equity = Decimal("4998.339000436543")
+    demo.other_asset_equity = Decimal("76513.431528119597")
+    service = adaptive_service(demo, {"BTC-USDT-SWAP": 95})
+    await service.recover()
+
+    run = await service.run_once(execute=False)
+    status = await service.status()
+
+    assert run.results[0].outcome == "approved_dry_run"
+    assert run.total_equity == Decimal("81511.770528556140")
+    assert run.risk_equity == Decimal("4998.339000436543")
+    assert run.risk_equity_currency == "USDT"
+    assert status.equity_basis == "single_currency:USDT"
+    assert status.baseline_equity == Decimal("4998.339000436543")
+    assert status.daily_pnl == Decimal("0")
+    assert demo.place_calls == []
+
+
+@pytest.mark.asyncio
+async def test_equity_basis_change_requires_flat_untraded_session() -> None:
+    demo = FakeDemo()
+    service = adaptive_service(demo, {"BTC-USDT-SWAP": 95})
+    await service.recover()
+    service._set_active_trade(
+        tracked_trade(
+            "BTC-USDT-SWAP",
+            started_at=datetime.now(timezone.utc) - timedelta(minutes=5),
+        )
+    )
+
+    run = await service.run_once(execute=False)
+    status = await service.status()
+
+    assert run.results[0].outcome == "blocked"
+    assert run.results[0].detail == (
+        "DemoAutomationSafetyError: equity_basis_change_requires_flat_session"
+    )
+    assert status.locked is True
+    assert status.active_position_count == 1
+    assert demo.place_calls == []
+
+
+@pytest.mark.asyncio
 async def test_execute_requires_explicit_arming() -> None:
     service = make_service(FakeDemo())
     await service.recover()
@@ -411,6 +473,16 @@ def adaptive_service(
         strategy=FakeStrategy(by_symbol=strategy_candidates),
         **settings,
     )
+
+
+def prime_usdt_equity_basis(
+    service: SafeDemoAutomation,
+    demo: FakeDemo,
+) -> None:
+    service._state["equity_basis"] = "single_currency:USDT"
+    service._state["baseline_equity"] = demo.equity
+    service._state["peak_equity"] = demo.equity
+    service._state["daily_pnl"] = Decimal("0")
 
 
 def tracked_trade(
@@ -748,6 +820,7 @@ async def test_three_consecutive_stop_losses_lock_execution_for_utc_day() -> Non
     symbols = ["BTC-USDT-SWAP", "ETH-USDT-SWAP", "SOL-USDT-SWAP"]
     service = adaptive_service(demo, {symbol: 95 for symbol in symbols})
     await service.recover()
+    prime_usdt_equity_basis(service, demo)
     service._state["armed"] = True
     started_at = datetime.now(timezone.utc) - timedelta(minutes=5)
     for index, symbol in enumerate(symbols):
@@ -774,6 +847,7 @@ async def test_profitable_close_resets_consecutive_stop_loss_count() -> None:
     demo = FakeDemo()
     service = adaptive_service(demo, {"BTC-USDT-SWAP": 95})
     await service.recover()
+    prime_usdt_equity_basis(service, demo)
     service._state["consecutive_losses"] = 2
     started_at = datetime.now(timezone.utc) - timedelta(minutes=5)
     service._set_active_trade(
@@ -815,6 +889,7 @@ async def test_late_reconciled_prior_utc_day_close_does_not_lock_new_day() -> No
     demo = FakeDemo()
     service = adaptive_service(demo, {"BTC-USDT-SWAP": 95})
     await service.recover()
+    prime_usdt_equity_basis(service, demo)
     now = datetime.now(timezone.utc)
     started_at = now - timedelta(days=1, minutes=10)
     service._set_active_trade(
@@ -845,6 +920,7 @@ async def test_unknown_multi_position_close_outcome_fails_closed() -> None:
         },
     )
     await service.recover()
+    prime_usdt_equity_basis(service, demo)
     started_at = datetime.now(timezone.utc) - timedelta(minutes=5)
     service._set_active_trade(
         tracked_trade("BTC-USDT-SWAP", started_at=started_at)
@@ -868,6 +944,7 @@ async def test_single_legacy_trade_keeps_equity_delta_close_fallback() -> None:
     demo.equity = Decimal("9990")
     service = make_service(demo)
     await service.recover()
+    prime_usdt_equity_basis(service, demo)
     service._set_active_trade(
         DemoAutomationActiveTrade(
             instrument_id="BTC-USDT-SWAP",
@@ -890,6 +967,7 @@ async def test_reconciliation_grace_prevents_premature_trade_finalization() -> N
     demo = FakeDemo()
     service = adaptive_service(demo, {"BTC-USDT-SWAP": 95})
     await service.recover()
+    prime_usdt_equity_basis(service, demo)
     service._set_active_trade(
         tracked_trade(
             "BTC-USDT-SWAP",

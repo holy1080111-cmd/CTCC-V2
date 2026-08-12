@@ -55,6 +55,7 @@ def parse_balance(row: dict[str, Any]) -> OkxDemoBalanceSnapshot:
             OkxDemoBalanceDetail(
                 currency=str(item.get("ccy") or ""),
                 equity=decimal_or_zero(item.get("eq")),
+                available_equity=decimal_or_zero(item.get("availEq")),
                 cash_balance=decimal_or_zero(item.get("cashBal")),
                 available_balance=decimal_or_zero(item.get("availBal")),
                 frozen_balance=decimal_or_zero(item.get("frozenBal")),

@@ -22,11 +22,14 @@ async def test_demo_adaptive_portfolio_columns_are_durable_jsonb() -> None:
             )
         by_name = {column["name"]: column for column in columns}
 
-        assert {"active_trades", "symbol_cooldowns"} <= set(by_name)
+        assert {"active_trades", "symbol_cooldowns", "equity_basis"} <= set(
+            by_name
+        )
         assert by_name["active_trades"]["nullable"] is False
         assert by_name["symbol_cooldowns"]["nullable"] is False
         assert by_name["active_trades"]["type"].__class__.__name__ == "JSONB"
         assert by_name["symbol_cooldowns"]["type"].__class__.__name__ == "JSONB"
+        assert by_name["equity_basis"]["nullable"] is True
         assert {
             "api_key",
             "api_secret",
