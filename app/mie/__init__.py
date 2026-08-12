@@ -1,6 +1,6 @@
-"""Mathematical Intelligence Engine contracts.
+"""Shadow-only Mathematical Intelligence Engine contracts and features.
 
-Gate 1 is shadow-only and deliberately exposes no execution adapter.
+Gates 1 and 2 deliberately expose no decision or execution adapter.
 """
 
 from app.mie.adapters import adapt_legacy_mathematical_core
@@ -25,6 +25,23 @@ from app.mie.contracts import (
     ValidationMetric,
     ValidationReference,
 )
+from app.mie.features import (
+    DynamicsFeatures,
+    FeatureBar,
+    FeatureWindow,
+    GeometryFeatures,
+    MathematicalFeatureSnapshot,
+    MomentumFeatures,
+    SignalFeatures,
+    StatisticsFeatures,
+    SwingPoint,
+    causal_dynamics,
+    causal_signal_features,
+    confirmed_geometry_features,
+    mathematical_feature_snapshot,
+    momentum_features,
+    statistical_features,
+)
 
 __all__ = [
     "CalibrationStatus",
@@ -34,17 +51,32 @@ __all__ = [
     "Evidence",
     "EvidenceDirection",
     "EvidenceUse",
+    "DynamicsFeatures",
+    "FeatureBar",
+    "FeatureWindow",
     "ForecastHorizon",
+    "GeometryFeatures",
+    "MathematicalFeatureSnapshot",
     "MarketRegime",
     "MieShadowTrace",
     "ModelHealth",
     "ModelHealthStatus",
+    "MomentumFeatures",
     "ProbabilityForecast",
     "ProbabilityVector",
     "RegimeProbabilityVector",
     "RegimeSnapshot",
+    "SignalFeatures",
+    "StatisticsFeatures",
+    "SwingPoint",
     "ValidationLevel",
     "ValidationMetric",
     "ValidationReference",
     "adapt_legacy_mathematical_core",
+    "causal_dynamics",
+    "causal_signal_features",
+    "confirmed_geometry_features",
+    "mathematical_feature_snapshot",
+    "momentum_features",
+    "statistical_features",
 ]

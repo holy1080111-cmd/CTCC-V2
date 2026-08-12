@@ -5,6 +5,7 @@ from pathlib import Path
 
 from app.config.settings import Settings
 from app.mie.contracts import DecisionCandidate, MieShadowTrace
+from app.mie.features import MathematicalFeatureSnapshot
 
 
 MIE_ROOT = Path(__file__).resolve().parents[3] / "app" / "mie"
@@ -39,7 +40,7 @@ def imported_names(node: ast.AST) -> tuple[str, ...]:
     return tuple(names)
 
 
-def test_mie_gate1_has_no_execution_side_imports() -> None:
+def test_mie_has_no_execution_side_imports() -> None:
     violations: list[str] = []
     for path in sorted(MIE_ROOT.rglob("*.py")):
         tree = ast.parse(
@@ -61,7 +62,7 @@ def test_mie_gate1_has_no_execution_side_imports() -> None:
     assert violations == []
 
 
-def test_mie_gate1_has_no_external_runtime_consumers() -> None:
+def test_mie_has_no_external_runtime_consumers() -> None:
     violations: list[str] = []
     for path in sorted(APP_ROOT.rglob("*.py")):
         if path.is_relative_to(MIE_ROOT):
@@ -97,9 +98,10 @@ def test_mie_decision_and_trace_have_no_order_geometry() -> None:
     }
     assert forbidden_fields.isdisjoint(DecisionCandidate.model_fields)
     assert forbidden_fields.isdisjoint(MieShadowTrace.model_fields)
+    assert forbidden_fields.isdisjoint(MathematicalFeatureSnapshot.model_fields)
 
 
-def test_mie_gate1_does_not_change_fail_safe_runtime_defaults() -> None:
+def test_mie_does_not_change_fail_safe_runtime_defaults() -> None:
     settings = Settings(_env_file=None)
     assert settings.auto_trade is False
     assert settings.live_trading is False

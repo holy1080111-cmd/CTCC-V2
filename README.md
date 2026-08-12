@@ -164,6 +164,20 @@ See `docs/mathematical_core.md`, `docs/demo_adaptive_portfolio.md`, and
 configuration, and rollout gates. These capabilities do not expand the
 one-position, one-submission OKX Live boundary.
 
+## MIE shadow rearchitecture
+
+MIE Gate 1 defines immutable evidence, forecast, regime, health, candidate,
+and replay-trace contracts. Gate 2 adds a deterministic feature snapshot over
+strict UTC, confirmed, fixed-horizon OHLCV bars: descriptive statistics,
+causal signal processing, endpoint dynamics, normalized momentum, and delayed
+confirmed geometry.
+
+MIE remains disconnected from every Paper, Demo, Live, exchange, risk-sizing,
+and order path. Gate 2 creates no probability, decision, migration, API route,
+or execution authority, and it makes no predictive or profitability claim.
+See `docs/mie_gate2_mathematical_features.md` and
+`docs/mie_gate2_verification.md`.
+
 ## Authenticated Live API
 
 Every `/api/okx-live/*` endpoint, including status, requires `X-CTCC-Token`.

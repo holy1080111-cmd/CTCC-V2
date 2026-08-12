@@ -89,9 +89,12 @@ successful OKX Demo reconciliation
 → authenticated operator review
 ```
 
-The v1.7 MIE extraction begins as a parallel, shadow-only boundary:
+The v1.7 MIE extraction is a parallel, shadow-only boundary:
 
 ~~~text
+confirmed fixed-horizon OHLCV window
+→ deterministic Gate 2 feature snapshot (no runtime consumer)
+
 frozen feature snapshot reference
 → versioned Evidence contracts
 → probability and regime contracts
@@ -100,9 +103,10 @@ frozen feature snapshot reference
 → replayable shadow trace
 ~~~
 
-MIE Gate 1 has no import from Paper, Demo, Live, exchange, or execution
-packages. Every nested contract fixes execution_authority=false; predictive
-validation may grant decision-gate use but never exchange-write authority.
+MIE Gates 1 and 2 have no import from Paper, Demo, Live, exchange, or execution
+packages, and existing runtime modules do not consume MIE. Every nested
+contract fixes execution_authority=false; predictive validation may grant
+decision-gate use in a later Gate but never exchange-write authority.
 
 ## Authority rules
 
@@ -137,6 +141,9 @@ validation may grant decision-gate use but never exchange-write authority.
   DecisionCandidate, and replay trace contracts.
 - mie.adapters.legacy_mathematical translates the frozen mathematical core
   into correlated, downward-only MIE evidence without changing execution.
+- `mie.features` owns strict fixed-horizon confirmed-bar inputs and pure
+  statistics, signal, dynamics, momentum, and confirmed-geometry snapshots;
+  Gate 2 has no runtime consumer or execution authority.
 - `observability.service` owns soak preflight, bounded-session safety, and watchdogs.
 - `performance.service` derives evidence, persists daily reports, and exposes operator strategy controls without exchange-write authority.
 - `database.repositories` persists exchange mirrors, automation state, soak sessions,

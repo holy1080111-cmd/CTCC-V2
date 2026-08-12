@@ -33,6 +33,15 @@ No evidence level grants exchange-write authority.
 | score-to-risk tiers | bounded configuration | Demo risk policy | controlled Demo only | score-conditioned loss and EV calibration |
 | settlement equity basis | execution/account semantic verification | exchange account | Safety Kernel input | no predictive claim required |
 | summed stop-risk budget | deterministic bound | portfolio positions | controlled Demo only | covariance, gap stress, CVaR, liquidation stress |
+| MIE descriptive statistics | computational | `mie.price_path.shared` | shadow only | purged OOS incremental information and economic value |
+| MIE causal signal processor | causal implementation | `mie.price_path.shared` | shadow only | frozen parameters, OOS information gain, calibration and net EV |
+| MIE endpoint dynamics | causal; exact legacy characterization | `mie.price_path.shared` | shadow only in Gate 2 | OOS information gain and net EV beyond legacy |
+| MIE normalized momentum | computational/causal implementation | `mie.price_path.shared` | shadow only | OOS incremental value after costs and dependency correction |
+| MIE confirmed geometry | causal confirmation; auxiliary market claim | `mie.price_path.shared` | shadow only | objective labels and OOS incremental value after costs |
+
+All five Gate 2 families consume the same confirmed OHLCV path and therefore
+share the `mie.price_path.shared` dependency group in later evidence adapters.
+Gate 4 must not multiply them as independent likelihoods.
 
 Derivative, state, conformal, structure, and momentum currently share market
 price inputs. They must be tagged with a common dependency group so Bayesian

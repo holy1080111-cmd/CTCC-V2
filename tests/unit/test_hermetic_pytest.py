@@ -67,10 +67,41 @@ def test_safe_defaults_have_no_execution_authority(
 
 @pytest.mark.parametrize(
     "script_name",
-    ["verify_v168_live_boundary.ps1", "verify_mie_gate1.ps1"],
+    [
+        "verify_v168_live_boundary.ps1",
+        "verify_mie_gate1.ps1",
+        "verify_mie_gate2.ps1",
+    ],
 )
 def test_docker_verifiers_use_hermetic_pytest(script_name: str) -> None:
     source = (ROOT / "scripts" / script_name).read_text(encoding="utf-8")
 
     assert "python scripts/hermetic_pytest.py" in source
     assert "@testEnvironment" not in source
+
+
+def test_mie_gate2_checks_host_authority_before_container_start() -> None:
+    source = (ROOT / "scripts" / "verify_mie_gate2.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    host_preflight = source.index(
+        "Host Compose execution-authority preflight"
+    )
+    container_start = source.index("Docker build and start")
+
+    assert host_preflight < container_start
+    assert "python -c" not in source
+    assert "$authorityProbe | docker compose exec -T api python -" in source
+    assert "$revisionProbe | docker compose exec -T api python -" in source
+    for setting_name in (
+        "AUTO_TRADE",
+        "PAPER_AUTO_EXECUTION",
+        "LIVE_TRADING",
+        "OKX_LIVE_ALLOW_ORDER_WRITES",
+        "OKX_LIVE_AUTO_EXECUTION",
+        "OKX_DEMO_ALLOW_ORDER_WRITES",
+        "OKX_DEMO_AUTO_EXECUTION",
+        "OKX_DEMO_SOAK_ALLOW_EXECUTE",
+    ):
+        assert setting_name in source

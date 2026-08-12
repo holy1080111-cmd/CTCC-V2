@@ -4,9 +4,11 @@ Date: 2026-08-12
 
 ## Result
 
-Gate 1 is a verified isolated candidate. It is not promoted to the canonical
-repository and Gate 2 remains blocked until the Windows Docker acceptance
-script succeeds against the operator's clean commit.
+Gate 1 was subsequently accepted by the Windows Docker/PostgreSQL boundary and
+is present in the canonical `develop/v1.6.8` history. The hermetic-verifier
+checkpoint `54964568a76c06afbdfdebd765353b03fc54e2b1` later revalidated the full
+repository at migration `0013`, API health `healthy`, and a 317-file manifest.
+Gate 2 may therefore proceed from that exact tree while remaining shadow-only.
 
 ## Verified scope
 
@@ -105,12 +107,12 @@ Acceptance requires:
 ```text
 MIE_GATE1_VERIFIED=1
 MIE_EXECUTION_AUTHORITY=0
-ALEMBIC_HEAD=0012
+ALEMBIC_HEAD=0013
 API_HEALTH=healthy
 ```
 
-Only after that output, a clean Git status, and a reviewed commit may Gate 1 be
-frozen and Gate 2 begin.
+Gate 1 is frozen only at the operator-verified canonical history; this report
+does not promote any later Gate.
 
 ## Explicit exclusions
 

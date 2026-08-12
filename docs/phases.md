@@ -22,7 +22,10 @@
   three-stop UTC lock (operator acceptance pending)
 - v1.7.0 MIE rearchitecture:
   - Gate 0 rebaseline and validation registry completed in isolated verification
-  - Gate 1 immutable shadow contracts and legacy evidence adapter
+  - Gate 1 immutable shadow contracts and legacy evidence adapter frozen after
+    Windows Docker/PostgreSQL acceptance
+  - Gate 2 deterministic statistics, signal, dynamics, momentum, and confirmed
+    geometry feature core is shadow-only pending operator acceptance
   - later Gates remain shadow-only until independently frozen
 - v2.0 Final acceptance
 
@@ -92,7 +95,7 @@
   mark
 - Remaining acceptance: local PostgreSQL migration/regression and staged real-account read/micro-order evidence
 
-## v1.7.0 MIE Gate 0/1
+## v1.7.0 MIE Gate 0/1/2
 
 - Gate 0 records the canonical v1.6.8 commit, migration 0012, 282-file
   manifest, fail-safe flags, and the current mathematical validation registry.
@@ -104,3 +107,8 @@
   remain shadow-only and contain no order geometry.
 - Gate 1 has no execution-side imports and does not change the legacy strategy,
   Demo, or Live paths.
+- Gate 2 adds strict confirmed-bar inputs, deterministic replay/provenance, and
+  five pure feature families without connecting MIE to an existing runtime
+  caller.
+- Gate 2 makes no predictive or profitability claim and adds no migration,
+  probability model, decision, risk sizing, API, or exchange authority.
