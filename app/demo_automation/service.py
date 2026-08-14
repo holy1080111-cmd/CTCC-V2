@@ -38,6 +38,7 @@ from app.domain.demo_automation import (
 )
 from app.domain.okx_demo import (
     DEMO_CONFIRMATION_PHRASE,
+    OkxDemoAlgoOrderView,
     OkxDemoBalanceSnapshot,
     OkxDemoLeverageRequest,
     OkxDemoOrderView,
@@ -465,7 +466,7 @@ class SafeDemoAutomation:
                 )
                 if basis_blocker is not None:
                     raise DemoAutomationSafetyError(basis_blocker)
-                self._finalize_active_trades(snapshot, risk_equity)
+                self._finalize_active_trades(snapshot)
                 self._refresh_active_trade_estimates(snapshot, risk_equity)
                 self._apply_locks(risk_equity)
                 portfolio_view = self._active_trades()
@@ -473,9 +474,14 @@ class SafeDemoAutomation:
                 tracked_symbols = {item.instrument_id for item in portfolio_view}
                 untracked_symbols = exposed_symbols - tracked_symbols
                 position_symbols = [item.instrument_id for item in snapshot.positions]
-                exposure_violation: str | None = None
+                exposure_violation = self._active_protection_violation(
+                    snapshot,
+                    portfolio_view,
+                )
                 if untracked_symbols:
                     exposure_violation = "untracked_exchange_exposure_detected"
+                elif exposure_violation is not None:
+                    pass
                 elif len(position_symbols) > self._portfolio_position_limit(
                     risk_equity
                 ):
@@ -1021,10 +1027,35 @@ class SafeDemoAutomation:
                     self.settings.okx_demo_structural_dynamic_leverage_enabled
                     and tier is not None
                 ):
+                    if (
+                        position_margin_cap_usdt is None
+                        or position_margin_cap_usdt <= 0
+                    ):
+                        return (
+                            self._candidate_result(
+                                strategy.symbol,
+                                instrument_id,
+                                aligned_candidate,
+                                outcome="blocked",
+                                reference_price=reference_price,
+                                score_tier=tier,
+                                selected_leverage=leverage,
+                                position_margin_cap_usdt=None,
+                                capital_bucket_usdt=(
+                                    bucket_plan.configured_bucket_usdt
+                                    if bucket_plan is not None
+                                    else None
+                                ),
+                                detail="exchange_available_equity_exhausted",
+                            ),
+                            None,
+                        )
                     selection = select_structural_leverage(
                         aligned_candidate,
                         tier.model_copy(update={"risk_pct": requested_risk_pct}),
                         self.settings,
+                        account_equity=balance_equity,
+                        position_margin_cap=position_margin_cap_usdt,
                     )
                     leverage = selection.selected_leverage
                     required_leverage = selection.required_leverage
@@ -1131,13 +1162,13 @@ class SafeDemoAutomation:
                     if self.settings.okx_demo_continuous_session_enabled
                     else min(D("0"), self._state["daily_pnl"])
                 ),
-                # Rolling attributed closes are authoritative.  The current
-                # UTC-day equity delta is retained as a conservative fallback
-                # for a close that the exchange has not attributed yet.
-                weekly_realized_pnl=min(
-                    self._rolling_realized_pnl(now),
-                    self._state["daily_pnl"],
-                ),
+                # Only exchange-attributed, de-duplicated close outcomes may
+                # enter the realized seven-day loss gate.  Account equity
+                # deltas include open-position PnL, deposits, withdrawals, and
+                # other assets, so mixing them into this field can fabricate a
+                # weekly realized loss.  Account-wide deterioration remains
+                # independently bounded by the persistent drawdown high-water.
+                weekly_realized_pnl=self._rolling_realized_pnl(now),
                 peak_equity=self._state["risk_peak_equity"] or balance_equity,
                 consecutive_losses=(
                     0
@@ -1261,6 +1292,9 @@ class SafeDemoAutomation:
                         approved_contracts=contracts,
                         score_tier=tier,
                         selected_leverage=leverage,
+                        required_leverage=required_leverage,
+                        leverage_cap=leverage_cap,
+                        leverage_cap_reasons=leverage_cap_reasons,
                         risk_budget_pct=requested_risk_pct,
                         estimated_stop_loss_pct=estimated_stop_loss_pct,
                         margin_allocation_pct=estimated_margin_pct,
@@ -1430,15 +1464,24 @@ class SafeDemoAutomation:
                 if self.settings.okx_demo_structural_dynamic_leverage_enabled
                 else "cross"
             )
-            await self.demo_service.set_leverage(
-                OkxDemoLeverageRequest(
-                    instrument_id=instrument_id,
-                    leverage=leverage,
-                    margin_mode=margin_mode,
-                    direction=aligned_candidate.direction,
-                    confirmation=DEMO_CONFIRMATION_PHRASE,
+            try:
+                leverage_write = await self.demo_service.set_leverage(
+                    OkxDemoLeverageRequest(
+                        instrument_id=instrument_id,
+                        leverage=leverage,
+                        margin_mode=margin_mode,
+                        direction=aligned_candidate.direction,
+                        confirmation=DEMO_CONFIRMATION_PHRASE,
+                    )
                 )
-            )
+                if not leverage_write.acknowledged:
+                    raise DemoAutomationSafetyError(
+                        "okx_demo_leverage_exchange_response_unconfirmed"
+                    )
+            except Exception:
+                self._engage_emergency("leverage_configuration_unconfirmed")
+                await self._persist_state(required=False)
+                raise
             write = await self.demo_service.place_order(
                 OkxDemoOrderRequest(
                     instrument_id=instrument_id,
@@ -1461,6 +1504,9 @@ class SafeDemoAutomation:
                 update={
                     "client_order_id": client_order_id,
                     "exchange_order_id": exchange_order_id,
+                    "protection_client_order_id": (
+                        write.protection_client_order_id
+                    ),
                 }
             )
             self._set_active_trade(reservation)
@@ -1486,6 +1532,17 @@ class SafeDemoAutomation:
                     await self._persist_state(required=False)
                     raise DemoAutomationSafetyError(
                         "okx_demo_order_submission_acknowledgement_invalid"
+                    )
+                if (
+                    self.settings.okx_demo_require_protection
+                    and write.protection_confirmed is not True
+                ):
+                    self._engage_emergency(
+                        "post_submission_protection_unconfirmed"
+                    )
+                    await self._persist_state(required=False)
+                    raise DemoAutomationSafetyError(
+                        "okx_demo_order_protection_unconfirmed"
                     )
                 await self._save_fingerprint(
                     fingerprint,
@@ -1557,15 +1614,78 @@ class SafeDemoAutomation:
         if require_realtime and not self.market_client.status().connected:
             return candidate.entry, "realtime_websocket_not_connected"
         snapshot: RealtimeSnapshot | None = await self.market_hub.snapshot(instrument_id)
-        if snapshot is None or snapshot.last is None:
+        if snapshot is None:
             return candidate.entry, "realtime_snapshot_not_available" if require_realtime else None
-        age = (datetime.now(timezone.utc) - snapshot.received_at).total_seconds()
-        if age > self.settings.okx_demo_scan_max_snapshot_age_seconds:
-            return snapshot.last, "realtime_snapshot_stale" if require_realtime else None
-        drift_bps = abs(snapshot.last - candidate.entry) / candidate.entry * D("10000")
+
+        executable_quote = (
+            snapshot.ask if candidate.direction == "long" else snapshot.bid
+        )
+        if executable_quote is None or executable_quote <= 0:
+            if require_realtime:
+                return candidate.entry, "realtime_executable_quote_not_available"
+            executable_quote = snapshot.last or candidate.entry
+        if require_realtime:
+            if snapshot.quote_received_at is None:
+                return executable_quote, "realtime_quote_timestamp_missing"
+            quote_age = (
+                datetime.now(timezone.utc) - snapshot.quote_received_at
+            ).total_seconds()
+            if quote_age > self.settings.okx_demo_scan_max_snapshot_age_seconds:
+                return executable_quote, "realtime_executable_quote_stale"
+            if (
+                snapshot.bid is None
+                or snapshot.ask is None
+                or snapshot.bid <= 0
+                or snapshot.ask <= 0
+                or snapshot.bid > snapshot.ask
+            ):
+                return executable_quote, "realtime_quote_geometry_invalid"
+            if snapshot.mark_price is None or snapshot.mark_price <= 0:
+                return executable_quote, "realtime_mark_price_not_available"
+            if snapshot.mark_price_received_at is None:
+                return executable_quote, "realtime_mark_price_timestamp_missing"
+            mark_age = (
+                datetime.now(timezone.utc) - snapshot.mark_price_received_at
+            ).total_seconds()
+            if mark_age > self.settings.okx_demo_scan_max_snapshot_age_seconds:
+                return executable_quote, "realtime_mark_price_stale"
+            basis_bps = (
+                abs(snapshot.mark_price - executable_quote)
+                / executable_quote
+                * D("10000")
+            )
+            if basis_bps > D(
+                str(self.settings.okx_demo_scan_max_entry_drift_bps)
+            ):
+                return executable_quote, "mark_execution_basis_exceeds_limit"
+            geometry = candidate.structural_protection
+            stop_loss = (
+                geometry.stop_loss
+                if self.settings.okx_demo_structural_dynamic_leverage_enabled
+                and geometry is not None
+                else candidate.stop_loss
+            )
+            take_profit = (
+                geometry.take_profit
+                if self.settings.okx_demo_structural_dynamic_leverage_enabled
+                and geometry is not None
+                else candidate.take_profit
+            )
+            if candidate.direction == "long":
+                mark_inside = stop_loss < snapshot.mark_price < take_profit
+            else:
+                mark_inside = take_profit < snapshot.mark_price < stop_loss
+            if not mark_inside:
+                return executable_quote, "mark_price_outside_protective_bounds"
+
+        drift_bps = (
+            abs(executable_quote - candidate.entry)
+            / candidate.entry
+            * D("10000")
+        )
         if drift_bps > D(str(self.settings.okx_demo_scan_max_entry_drift_bps)):
-            return snapshot.last, "entry_price_drift_exceeds_limit"
-        return snapshot.last, None
+            return executable_quote, "entry_price_drift_exceeds_limit"
+        return executable_quote, None
 
     @staticmethod
     def _candidate_at_reference(
@@ -1855,7 +1975,6 @@ class SafeDemoAutomation:
     def _finalize_active_trades(
         self,
         snapshot: OkxDemoReconcileResult,
-        risk_equity: Decimal,
     ) -> None:
         active = self._active_trades()
         if not active:
@@ -1891,19 +2010,6 @@ class SafeDemoAutomation:
                 closed_at, net_pnl = outcome
                 outcomes.append((closed_at, trade, net_pnl))
 
-        # The former single-position implementation used account equity delta.
-        # Retain that fallback only when no other trade can contaminate it.
-        if unknown and len(active) == 1 and len(closed) == 1:
-            trade = unknown.pop()
-            if trade.start_equity is not None:
-                outcomes.append(
-                    (
-                        snapshot.reconciled_at,
-                        trade,
-                        risk_equity - trade.start_equity,
-                    )
-                )
-
         if unknown:
             self._state["armed"] = False
             self._state["emergency_stop"] = True
@@ -1934,6 +2040,58 @@ class SafeDemoAutomation:
                 closed_at if previous is None else max(previous, closed_at)
             )
         self._state["symbol_cooldowns"] = cooldowns
+
+    def _active_protection_violation(
+        self,
+        snapshot: OkxDemoReconcileResult,
+        active: Iterable[DemoAutomationActiveTrade],
+    ) -> str | None:
+        if not self.settings.okx_demo_require_protection:
+            return None
+        tracked = {item.instrument_id: item for item in active}
+        pending = list(snapshot.pending_algo_orders)
+        for position in snapshot.positions:
+            trade = tracked.get(position.instrument_id)
+            if trade is None:
+                continue
+            if not self._active_trade_has_matching_protection(
+                trade,
+                abs(position.size),
+                pending,
+            ):
+                return "tracked_position_protection_missing_or_mismatched"
+        return None
+
+    @staticmethod
+    def _active_trade_has_matching_protection(
+        trade: DemoAutomationActiveTrade,
+        position_size: Decimal,
+        pending: Iterable[OkxDemoAlgoOrderView],
+    ) -> bool:
+        if (
+            not trade.protection_client_order_id
+            or trade.stop_loss is None
+            or trade.take_profit is None
+            or position_size <= 0
+        ):
+            return False
+        for algo in pending:
+            if (
+                algo.instrument_id != trade.instrument_id
+                or algo.client_algo_order_id
+                != trade.protection_client_order_id
+                or algo.stop_loss_trigger_price != trade.stop_loss
+                or algo.take_profit_trigger_price != trade.take_profit
+                or algo.size < position_size
+            ):
+                continue
+            if (
+                str(algo.raw.get("slTriggerPxType") or "") != "mark"
+                or str(algo.raw.get("tpTriggerPxType") or "") != "mark"
+            ):
+                continue
+            return True
+        return False
 
     def _refresh_active_trade_estimates(
         self,
@@ -2163,6 +2321,7 @@ class SafeDemoAutomation:
                     "post_submission_acknowledgement_invalid",
                     "post_submission_fingerprint_persistence_failed",
                     "post_submission_state_persistence_failed",
+                    "tracked_position_protection_missing_or_mismatched",
                     "trade_outcome_unconfirmed",
                     "untracked_exchange_exposure_detected",
                 }

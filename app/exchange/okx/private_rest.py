@@ -230,7 +230,7 @@ class _OkxPrivateRestClientBase:
         return await self._request(
             "GET",
             "/api/v5/trade/orders-algo-pending",
-            params={"ordType": "conditional", "instId": instrument_id},
+            params={"ordType": "conditional,oco", "instId": instrument_id},
         )
 
     async def order_detail(

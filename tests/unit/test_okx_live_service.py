@@ -122,6 +122,7 @@ class FakeExecutionClient:
         self.include_protection = True
         self.inject_exposure_after_caa = False
         self.order_state = "filled"
+        self.leverage_response_override = None
 
     async def max_order_size(
         self, instrument_id, *, margin_mode, price=None, leverage=None
@@ -135,7 +136,17 @@ class FakeExecutionClient:
 
     async def set_leverage(self, payload):
         self.calls.append(("set_leverage", dict(payload)))
-        return [{"sCode": "0"}]
+        return (
+            self.leverage_response_override
+            if self.leverage_response_override is not None
+            else [
+                {
+                    **payload,
+                    "posSide": payload.get("posSide", "net"),
+                    "sCode": "0",
+                }
+            ]
+        )
 
     async def cancel_all_after(self, payload):
         self.calls.append(("cancel_all_after", dict(payload)))
@@ -423,6 +434,33 @@ async def test_duplicate_idempotency_key_never_reaches_order_transport() -> None
 
     assert "place_order" not in [name for name, _ in execution.calls]
     assert read.position_rows == []
+
+
+@pytest.mark.asyncio
+async def test_leverage_response_mismatch_disarms_before_live_order_post() -> None:
+    service, _, execution, intents, _ = service_fixture()
+    execution.leverage_response_override = [
+        {
+            "instId": "BTC-USDT-SWAP",
+            "mgnMode": "cross",
+            "posSide": "net",
+            "lever": "2",
+        }
+    ]
+    await service.arm(
+        OkxLiveArmRequest(duration_seconds=60, confirmation=LIVE_ARM_PHRASE)
+    )
+
+    with pytest.raises(
+        OkxLiveSafetyError,
+        match="okx_live_leverage_exchange_response_mismatch",
+    ):
+        await service.place_order(live_order(leverage=1))
+
+    assert service.arm_status().armed is False
+    assert service.arm_status().emergency_stop is True
+    assert intents.rows["CTCCLabcdef"]["status"] == "ambiguous"
+    assert "place_order" not in [name for name, _ in execution.calls]
 
 
 @pytest.mark.asyncio

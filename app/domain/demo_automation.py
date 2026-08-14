@@ -93,6 +93,7 @@ class DemoAutomationActiveTrade(BaseModel):
     tier: Literal["low", "medium", "high", "elite", "extreme", "legacy"] = "legacy"
     client_order_id: str | None = None
     exchange_order_id: str | None = None
+    protection_client_order_id: str | None = None
     contracts: Decimal = Field(default=Decimal("0"), ge=0)
     leverage: int = Field(default=1, ge=1)
     required_leverage: int | None = Field(default=None, ge=1)

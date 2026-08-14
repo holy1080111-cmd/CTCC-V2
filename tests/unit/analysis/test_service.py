@@ -64,7 +64,7 @@ def test_timeframe_analysis_excludes_unconfirmed_candle_from_derivative():
 
     result = analyze_timeframe("5m", rows, quality)
 
-    assert result.last_closed_at == rows[-2].timestamp
+    assert result.last_closed_at == rows[-2].timestamp + timedelta(minutes=5)
     assert result.indicators.causal_trend is not None
     assert result.indicators.causal_trend.direction == "rising"
     assert result.indicators.causal_state is not None

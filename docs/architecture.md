@@ -46,13 +46,18 @@ confirmed 15m/1H/4H swing bracket
 → next-structure target
 → fee/slippage/funding-adjusted net RR
 → downward-only five-band score risk
-→ smallest required 3/5/8/10/20x leverage
+→ account-risk / position-bucket required 3/5/8/10/20x leverage
 → isolated-margin Demo request
 ```
 
 Missing structure or net RR fails closed. A 20x cap additionally requires
-high-grade validated mathematics and derivative alignment. The adapter has no
-Live imports or authority.
+high-grade validated mathematics and derivative alignment. The exchange
+leverage response and post-acknowledgement protection are confirmed before the
+run remains eligible. Attached parameters alone are not confirmation: the
+exchange pending-Algo row must match the generated client ID, instrument,
+mark-trigger prices, and protected size. Every later reconciliation repeats
+that coverage check while a position is open; mismatch engages a safety stop.
+The adapter has no Live imports or authority.
 
 The OKX Live boundary is isolated from Demo and Paper:
 
@@ -176,7 +181,8 @@ decision-gate use in a later Gate but never exchange-write authority.
 - Standard Demo sessions lock after three consecutive negative closes;
   continuous sessions skip that daily gate but retain true rolling seven-day
   close evidence and a non-daily high-water drawdown backstop. Ambiguous
-  multi-position close attribution engages Emergency Stop.
+  unknown close attribution engages Emergency Stop. Account equity deltas are
+  never substituted for exchange-attributed trade PnL, even for one position.
 - Execute soak requires a flat start, protection verification, a session loss
   budget, a submission cap, and automatic disarm.
 - Missing protection or untracked exposure engages emergency stop but does not

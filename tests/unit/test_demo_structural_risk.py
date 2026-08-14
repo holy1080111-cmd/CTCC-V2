@@ -175,12 +175,16 @@ def test_high_quality_extreme_geometry_can_select_20x() -> None:
         candidate,
         score_risk_tier(99, settings),
         settings,
+        account_equity=D("150"),
+        position_margin_cap=D("150"),
     )
 
     assert selection.required_leverage == 24
     assert selection.selected_leverage == 20
     assert selection.twenty_x_eligible is True
-    assert selection.cap_reasons == ()
+    assert selection.cap_reasons == (
+        "required_leverage_exceeds_20x_safety_cap",
+    )
 
 
 def test_20x_is_capped_to_10x_when_mathematics_is_not_high_grade() -> None:
@@ -190,9 +194,12 @@ def test_20x_is_capped_to_10x_when_mathematics_is_not_high_grade() -> None:
         candidate,
         score_risk_tier(99, settings),
         settings,
+        account_equity=D("150"),
+        position_margin_cap=D("150"),
     )
 
     assert selection.selected_leverage == 10
+    assert selection.leverage_cap == 10
     assert selection.twenty_x_eligible is False
     assert "mathematical_grade_below_20x_threshold" in selection.cap_reasons
 
@@ -224,7 +231,13 @@ def test_leverage_matrix_preserves_risk_and_ladder_invariants() -> None:
                 score=score,
                 stop_rate=stop_rate,
             )
-            selection = select_structural_leverage(candidate, tier, settings)
+            selection = select_structural_leverage(
+                candidate,
+                tier,
+                settings,
+                account_equity=D("1000"),
+                position_margin_cap=D("1000"),
+            )
             total_risk_rate = (
                 stop_rate + candidate.estimated_round_trip_cost_pct
             )
@@ -257,6 +270,52 @@ def test_leverage_matrix_preserves_risk_and_ladder_invariants() -> None:
                 # below 0.6%, far inside 20x nominal initial margin. This is
                 # not a liquidation guarantee under gaps or maintenance fees.
                 assert total_risk_rate < D("0.006")
+
+
+def test_required_leverage_includes_account_to_position_bucket_ratio() -> None:
+    settings = structural_settings()
+    candidate = finalized_candidate()
+
+    selection = select_structural_leverage(
+        candidate,
+        score_risk_tier(99, settings),
+        settings,
+        account_equity=D("5000"),
+        position_margin_cap=D("2000"),
+    )
+
+    assert selection.required_leverage == 58
+    assert selection.selected_leverage == 20
+    assert selection.leverage_cap == 20
+    assert selection.cap_reasons == (
+        "required_leverage_exceeds_20x_safety_cap",
+    )
+
+
+def test_bucket_ratio_can_raise_selected_leverage_within_score_cap() -> None:
+    settings = structural_settings()
+    candidate = finalized_candidate_for_rate(
+        score=85,
+        stop_rate=D("0.0084"),
+    )
+
+    selection = select_structural_leverage(
+        candidate,
+        score_risk_tier(85, settings),
+        settings,
+        account_equity=D("5000"),
+        position_margin_cap=D("2000"),
+    )
+
+    # total loss rate is 1%; a 2.5% account risk request needs 6.25x
+    # from one 2,000-USDT bucket, so the 5x score cap is selected and the
+    # shortfall is explicit.  The old account==bucket shortcut selected 3x.
+    assert selection.required_leverage == 7
+    assert selection.selected_leverage == 5
+    assert selection.leverage_cap == 5
+    assert selection.cap_reasons == (
+        "required_leverage_exceeds_score_tier_cap",
+    )
 
 
 def test_candidate_cannot_move_stop_inside_structural_anchor() -> None:

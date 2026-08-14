@@ -45,6 +45,7 @@ from app.domain.okx_live import (
     OkxLiveWriteResult,
 )
 from app.exchange.okx.errors import OkxPrivateApiError, OkxPublicApiError
+from app.exchange.okx.leverage import leverage_response_matches
 from app.exchange.okx.live_private_parsers import (
     parse_live_account_config,
     parse_live_algo_order,
@@ -377,7 +378,7 @@ class OkxLiveService:
             try:
                 await self._execution().order_precheck(payload)
                 stage = "set_leverage"
-                await self._execution().set_leverage(
+                leverage_data = await self._execution().set_leverage(
                     {
                         "instId": request.instrument_id,
                         "lever": str(request.leverage),
@@ -390,6 +391,16 @@ class OkxLiveService:
                         ),
                     }
                 )
+                if not leverage_response_matches(
+                    leverage_data,
+                    instrument_id=request.instrument_id,
+                    margin_mode=request.margin_mode,
+                    leverage=request.leverage,
+                    position_side=position_side,
+                ):
+                    raise OkxLiveSafetyError(
+                        "okx_live_leverage_exchange_response_mismatch"
+                    )
                 stage = "cancel_all_after"
                 await self._execution().cancel_all_after(
                     {
@@ -701,7 +712,17 @@ class OkxLiveService:
                 instrument_id=request.instrument_id,
             )
             try:
-                await self._execution().set_leverage(payload)
+                leverage_data = await self._execution().set_leverage(payload)
+                if not leverage_response_matches(
+                    leverage_data,
+                    instrument_id=request.instrument_id,
+                    margin_mode=request.margin_mode,
+                    leverage=request.leverage,
+                    position_side=position_side,
+                ):
+                    raise OkxLiveSafetyError(
+                        "okx_live_leverage_exchange_response_mismatch"
+                    )
             except Exception as exc:
                 await self._record_write_failure(
                     request.idempotency_key,

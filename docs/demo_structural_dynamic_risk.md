@@ -131,16 +131,26 @@ evidence. They can make a stop/target pair tighter, wider, or ineligible and
 therefore change worst-case sizing, but they never add direction score,
 confidence, or 20x eligibility. Their market-alpha claim remains unverified.
 
-Let `q` be the tier risk ceiling and `s + c` total loss rate per notional:
+Let `E` be account risk equity, `M` the current position-margin ceiling, `q`
+the tier risk ceiling, and `s + c` total loss rate per notional:
 
 ```text
-required leverage = ceil(q / (s + c))
+requested risk amount = E × q
+required leverage = ceil((E × q) / (M × (s + c)))
 ```
+
+The earlier shortcut `ceil(q / (s + c))` is valid only when `E = M`, which is
+the below-bucket case. Above 2,000 USDT, omitting `E / M` understates the
+leverage needed to deploy the account-level risk request from one fixed-size
+position bucket.
 
 CTCC selects the smallest value in `[3, 5, 8, 10, 20]` that meets the
 requirement without exceeding the score-tier ceiling. If the requirement is
 above the ceiling, the ceiling is used and actual risk is smaller than the
-requested risk budget.
+requested risk budget. Results retain both numbers and an explicit reason such
+as `required_leverage_exceeds_score_tier_cap`,
+`required_leverage_exceeds_approved_leverage_cap`, or
+`required_leverage_exceeds_20x_safety_cap`.
 
 20x additionally requires all of:
 
@@ -155,6 +165,18 @@ requested risk budget.
 
 Failure of a 20x quality condition caps leverage at 10x. It does not make the
 candidate eligible or add score.
+
+Immediately before any Demo order, CTCC validates that the OKX set-leverage
+response identifies the requested instrument, isolated margin mode, position
+side, and exact leverage. A mismatch or unconfirmed response engages Emergency
+Stop before the order call. After an order acknowledgement, attached or pending
+mark-trigger TP/SL must also be confirmed; otherwise CTCC retains the exposure
+record and stops without silently closing it.
+
+The reviewed order boundary is mark-trigger only. A market long is risked from
+the current ask and a market short from the current bid; a fresh public mark
+must have acceptable basis and both the executable quote and mark must remain
+inside the stop/target bracket at the final service check.
 
 When this profile is enabled, configuration may only become stricter: score
 thresholds may rise, risk/leverage ceilings may fall, estimated costs may rise,
@@ -180,6 +202,13 @@ request needs more than 20x, so the 20x ceiling and one 150-USDT bucket cap
 notional at 3,000 USDT. Estimated worst-case stop plus costs is 7.80 USDT
 (5.2%), below the 9-USDT risk request. This verifies sizing mechanics only; it
 is not a return forecast.
+
+For comparison, with 10,000 USDT account equity and one 2,000-USDT bucket, the
+same 6% request and 0.26% stop-plus-cost rate mathematically requires 116x.
+CTCC still selects no more than 20x, reports the 116x requirement as an
+unfunded risk-budget target, and sizes the position below the requested 6%
+risk. `required_leverage` is therefore diagnostic, never permission to exceed
+the approved cap.
 
 Continuous Demo mode removes only the daily realized-loss entry gate, daily
 trade-count gate, consecutive-loss gate, and post-close cooldown. It retains:

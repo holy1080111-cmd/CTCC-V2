@@ -51,6 +51,11 @@ Demo, or Live execution-authority flag before it starts or rebuilds the API.
 After startup, it checks the unsanitized running `Settings` again before any
 test isolation is applied.
 
+The v1.6.8, MIE Gate 1, and MIE Gate 2 Docker verifiers all use the same safe
+Windows boundary: no `python -c` quote transport, host authority checks before
+container startup, literal probes piped to `python -`, exact `0013 (head)`, and
+both staged and unstaged whitespace checks.
+
 A canonical manifest pass and a clean reviewed worktree are mandatory before
 commit. Gate 2 adds no migration and may not advance Alembic beyond `0013`.
 

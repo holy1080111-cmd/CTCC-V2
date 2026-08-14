@@ -164,3 +164,23 @@ Docker build/health, PostgreSQL migration `0013`, online schema drift,
 PostgreSQL integration tests, and the authenticated execute=false structural
 dry-run remain operator gates. See
 `docs/verification_demo_structural_dynamic_risk.md`.
+
+## Execution-price and leverage correctness follow-up
+
+The combined source tree was revalidated after closing field-freshness,
+executable-side quote, mark-basis, candle-close, rolling-PnL, tick-alignment,
+capital-bucket leverage, leverage-response, actual-fill pending-Algo
+protection, ongoing protection coverage, and close-attribution defects:
+
+```text
+Focused Demo/private-transport regression: 89 passed
+Complete unit suite: 521 passed
+Non-PostgreSQL suite: 533 passed (10 integration tests deselected)
+Python compileall and Git staged/unstaged whitespace checks: passed
+Canonical cross-platform manifest: passed (333 files)
+No Demo or Live order submitted
+```
+
+Docker build/health, exact online migration `0013`, schema drift, the ten
+PostgreSQL-marked tests, and authenticated read-only exchange probes remain
+operator acceptance steps on the exact same reviewed tree.

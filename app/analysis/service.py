@@ -25,6 +25,7 @@ from app.indicators import (
     vwap,
 )
 from app.market.service import MarketDataService
+from app.market.quality.candles import candle_closed_at
 from app.regime import classify_regime
 from app.structure import analyze_structure
 
@@ -196,7 +197,9 @@ def analyze_timeframe(timeframe: str, candles: list[Candle], quality) -> Timefra
     else: bias = "neutral"
     issue_strings = [f"{issue.severity}:{issue.code}" for issue in quality.issues]
     return TimeframeAnalysis(
-        timeframe=timeframe, candle_count=len(confirmed), last_closed_at=confirmed[-1].timestamp,
+        timeframe=timeframe,
+        candle_count=len(confirmed),
+        last_closed_at=candle_closed_at(confirmed[-1], timeframe),
         close=confirmed[-1].close, data_quality_ok=quality.ok, data_quality_issues=issue_strings,
         indicators=indicators, structure=structure, volatility=_volatility(atr_pct),
         directional_bias=bias, evidence=evidence, counter_evidence=counter,

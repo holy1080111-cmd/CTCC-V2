@@ -10,6 +10,7 @@ from app.domain.demo_automation import DemoAutomationActiveTrade
 from app.domain.market import InstrumentInfo
 from app.domain.okx_demo import (
     OkxDemoAccountConfig,
+    OkxDemoAlgoOrderView,
     OkxDemoBalanceDetail,
     OkxDemoBalanceSnapshot,
     OkxDemoOrderAcknowledgement,
@@ -70,6 +71,8 @@ class FakeDemo:
         exposed: bool = False,
         acknowledged: bool = True,
         include_acknowledgement: bool = True,
+        leverage_acknowledged: bool = True,
+        protection_confirmed: bool = True,
     ) -> None:
         self.place_calls = []
         self.leverage_calls = []
@@ -81,6 +84,12 @@ class FakeDemo:
         self.other_asset_equity = Decimal("0")
         self.acknowledged = acknowledged
         self.include_acknowledgement = include_acknowledgement
+        self.leverage_acknowledged = leverage_acknowledged
+        self.protection_confirmed = protection_confirmed
+        self.protection_present = True
+        self.protection_by_instrument: dict[
+            str, tuple[str, Decimal, Decimal]
+        ] = {}
         self.positions: list[OkxDemoPositionView] = []
         self.pending_orders: list[OkxDemoOrderView] = []
         self.recent_orders: list[OkxDemoOrderView] = []
@@ -124,6 +133,37 @@ class FakeDemo:
         )
 
     async def reconcile(self) -> OkxDemoReconcileResult:
+        pending_algo_orders: list[OkxDemoAlgoOrderView] = []
+        if self.protection_present:
+            for position in self.positions:
+                client_id, stop_loss, take_profit = (
+                    self.protection_by_instrument.get(
+                        position.instrument_id,
+                        (
+                            fake_protection_id(position.instrument_id),
+                            Decimal("95"),
+                            Decimal("110"),
+                        ),
+                    )
+                )
+                pending_algo_orders.append(
+                    OkxDemoAlgoOrderView(
+                        algo_order_id="algo-" + position.instrument_id,
+                        client_algo_order_id=client_id,
+                        instrument_id=position.instrument_id,
+                        order_type="oco",
+                        state="live",
+                        side="sell",
+                        position_side=position.position_side,
+                        size=abs(position.size),
+                        take_profit_trigger_price=take_profit,
+                        stop_loss_trigger_price=stop_loss,
+                        raw={
+                            "slTriggerPxType": "mark",
+                            "tpTriggerPxType": "mark",
+                        },
+                    )
+                )
         return OkxDemoReconcileResult(
             account_config=OkxDemoAccountConfig(
                 account_level=self.account_level,
@@ -153,17 +193,27 @@ class FakeDemo:
             positions=list(self.positions),
             pending_orders=list(self.pending_orders),
             recent_orders=list(self.recent_orders),
-            pending_algo_orders=[],
+            pending_algo_orders=pending_algo_orders,
             persisted=True,
         )
 
     async def set_leverage(self, request):
         self.leverage_calls.append(request)
-        return OkxDemoWriteResult(action="set_leverage", acknowledged=True)
+        return OkxDemoWriteResult(
+            action="set_leverage",
+            acknowledged=self.leverage_acknowledged,
+        )
 
     async def place_order(self, request):
         self.place_calls.append(request)
         self.positions.append(self._position(request.instrument_id, request.direction))
+        protection_client_order_id = fake_protection_id(request.instrument_id)
+        if request.stop_loss is not None and request.take_profit is not None:
+            self.protection_by_instrument[request.instrument_id] = (
+                protection_client_order_id,
+                request.stop_loss,
+                request.take_profit,
+            )
         return OkxDemoWriteResult(
             action="place_order",
             acknowledged=self.acknowledged,
@@ -174,6 +224,8 @@ class FakeDemo:
                 if self.include_acknowledgement
                 else None
             ),
+            protection_confirmed=self.protection_confirmed,
+            protection_client_order_id=protection_client_order_id,
         )
 
 
@@ -196,12 +248,31 @@ class FakePublic:
 
 
 class FakeHub:
-    async def snapshot(self, symbol: str):
-        return RealtimeSnapshot(
-            symbol=symbol,
-            last=Decimal("100"),
-            received_at=datetime.now(timezone.utc),
+    def __init__(
+        self,
+        *,
+        last: Decimal = Decimal("100"),
+        bid: Decimal = Decimal("100"),
+        ask: Decimal = Decimal("100"),
+        mark: Decimal = Decimal("100"),
+        quote_age_seconds: int = 0,
+        mark_age_seconds: int = 0,
+    ) -> None:
+        now = datetime.now(timezone.utc)
+        self.value = RealtimeSnapshot(
+            symbol="BTC-USDT-SWAP",
+            last=last,
+            bid=bid,
+            ask=ask,
+            mark_price=mark,
+            last_received_at=now,
+            quote_received_at=now - timedelta(seconds=quote_age_seconds),
+            mark_price_received_at=now - timedelta(seconds=mark_age_seconds),
+            received_at=now,
         )
+
+    async def snapshot(self, symbol: str):
+        return self.value.model_copy(update={"symbol": symbol})
 
 
 class FakeClient:
@@ -364,6 +435,7 @@ def make_service(
     demo: FakeDemo,
     *,
     strategy: FakeStrategy | None = None,
+    market_hub: FakeHub | None = None,
     **setting_updates,
 ) -> SafeDemoAutomation:
     return SafeDemoAutomation(
@@ -371,7 +443,7 @@ def make_service(
         strategy_service=strategy or FakeStrategy(candidate()),
         demo_service=demo,
         public_client=FakePublic(),
-        market_hub=FakeHub(),
+        market_hub=market_hub or FakeHub(),
         market_client=FakeClient(),
         repository=None,
     )
@@ -384,6 +456,85 @@ async def test_dry_run_never_places_demo_order() -> None:
     await service.recover()
     run = await service.run_once(execute=False)
     assert run.results[0].outcome == "approved_dry_run"
+    assert demo.place_calls == []
+
+
+@pytest.mark.asyncio
+async def test_demo_market_buy_uses_fresh_ask_as_risk_reference() -> None:
+    demo = FakeDemo()
+    service = make_service(
+        demo,
+        market_hub=FakeHub(ask=Decimal("100.2")),
+    )
+    await service.recover()
+    await service.arm()
+
+    run = await service.run_once(execute=True)
+
+    assert run.results[0].outcome == "submitted"
+    assert run.results[0].reference_price == Decimal("100.2")
+    assert len(demo.place_calls) == 1
+    assert demo.place_calls[0].trigger_price_type == "mark"
+
+
+@pytest.mark.asyncio
+async def test_demo_market_sell_uses_fresh_bid_as_risk_reference() -> None:
+    demo = FakeDemo()
+    short = candidate().model_copy(
+        update={
+            "direction": "short",
+            "stop_loss": Decimal("105"),
+            "take_profit": Decimal("90"),
+            "risk_reward": Decimal("2"),
+        }
+    )
+    service = make_service(
+        demo,
+        strategy=FakeStrategy(short),
+        market_hub=FakeHub(bid=Decimal("99.8")),
+    )
+    await service.recover()
+    await service.arm()
+
+    run = await service.run_once(execute=True)
+
+    assert run.results[0].outcome == "submitted"
+    assert run.results[0].reference_price == Decimal("99.8")
+    assert len(demo.place_calls) == 1
+    assert demo.place_calls[0].direction == "short"
+
+
+@pytest.mark.asyncio
+async def test_demo_fresh_mark_does_not_hide_stale_executable_quote() -> None:
+    demo = FakeDemo()
+    service = make_service(
+        demo,
+        market_hub=FakeHub(quote_age_seconds=120, mark_age_seconds=0),
+    )
+    await service.recover()
+    await service.arm()
+
+    run = await service.run_once(execute=True)
+
+    assert run.results[0].outcome == "blocked"
+    assert run.results[0].detail == "realtime_executable_quote_stale"
+    assert demo.place_calls == []
+
+
+@pytest.mark.asyncio
+async def test_demo_mark_to_execution_basis_above_limit_fails_closed() -> None:
+    demo = FakeDemo()
+    service = make_service(
+        demo,
+        market_hub=FakeHub(mark=Decimal("99")),
+    )
+    await service.recover()
+    await service.arm()
+
+    run = await service.run_once(execute=True)
+
+    assert run.results[0].outcome == "blocked"
+    assert run.results[0].detail == "mark_execution_basis_exceeds_limit"
     assert demo.place_calls == []
 
 
@@ -666,7 +817,15 @@ async def test_continuous_session_retains_weekly_loss_backstop() -> None:
     )
     await service.recover()
     await service.arm()
-    demo.equity = Decimal("9400")
+    now = datetime.now(timezone.utc)
+    service._record_realized_pnl_event(
+        tracked_trade(
+            "BTC-USDT-SWAP",
+            started_at=now - timedelta(hours=2),
+        ),
+        now - timedelta(hours=1),
+        Decimal("-600"),
+    )
 
     run = await service.run_once(execute=True)
     status = await service.status()
@@ -676,6 +835,26 @@ async def test_continuous_session_retains_weekly_loss_backstop() -> None:
     assert "daily_loss_limit_reached" not in run.results[0].reason_codes
     assert status.locked is False
     assert demo.place_calls == []
+
+
+@pytest.mark.asyncio
+async def test_unrealized_equity_delta_is_not_weekly_realized_pnl() -> None:
+    demo = FakeDemo()
+    service = adaptive_service(
+        demo,
+        {"BTC-USDT-SWAP": 95},
+        max_drawdown_pct=Decimal("0.50"),
+        **continuous_session_updates(),
+    )
+    await service.recover()
+    await service.arm()
+    demo.equity = Decimal("9400")
+
+    run = await service.run_once(execute=True)
+
+    assert run.rolling_7d_realized_pnl == Decimal("0")
+    assert "weekly_loss_limit_reached" not in run.results[0].reason_codes
+    assert run.results[0].outcome == "submitted"
 
 
 @pytest.mark.asyncio
@@ -834,6 +1013,10 @@ def prime_usdt_equity_basis(
     service._state["daily_pnl"] = Decimal("0")
 
 
+def fake_protection_id(instrument_id: str) -> str:
+    return "PROT" + instrument_id.replace("-", "")[:24]
+
+
 def tracked_trade(
     instrument_id: str,
     *,
@@ -847,6 +1030,7 @@ def tracked_trade(
         tier="high",
         client_order_id="AUT" + instrument_id.replace("-", "")[:20],
         exchange_order_id="order-" + instrument_id,
+        protection_client_order_id=fake_protection_id(instrument_id),
         contracts=Decimal("1"),
         leverage=3,
         risk_budget_pct=Decimal("0.01"),
@@ -1574,7 +1758,7 @@ async def test_unknown_multi_position_close_outcome_fails_closed() -> None:
 
 
 @pytest.mark.asyncio
-async def test_single_legacy_trade_keeps_equity_delta_close_fallback() -> None:
+async def test_single_legacy_trade_never_uses_account_equity_delta_as_pnl() -> None:
     demo = FakeDemo()
     demo.equity = Decimal("9990")
     service = make_service(demo)
@@ -1592,9 +1776,37 @@ async def test_single_legacy_trade_keeps_equity_delta_close_fallback() -> None:
     await service.run_once(execute=False)
     status = await service.status()
 
-    assert status.consecutive_losses == 1
-    assert status.emergency_stop is False
-    assert status.active_position_count == 0
+    assert status.consecutive_losses == 0
+    assert status.emergency_stop is True
+    assert status.locked is True
+    assert "trade_outcome_unconfirmed" in status.lock_reasons
+    assert status.active_position_count == 1
+    assert service._state["realized_pnl_events"] == []
+
+
+@pytest.mark.asyncio
+async def test_account_deposit_is_not_attributed_to_closed_trade() -> None:
+    demo = FakeDemo()
+    demo.equity = Decimal("10150")
+    service = make_service(demo)
+    await service.recover()
+    prime_usdt_equity_basis(service, demo)
+    service._set_active_trade(
+        DemoAutomationActiveTrade(
+            instrument_id="BTC-USDT-SWAP",
+            tier="legacy",
+            start_equity=Decimal("10000"),
+            started_at=datetime.now(timezone.utc) - timedelta(minutes=5),
+        )
+    )
+
+    await service.run_once(execute=False)
+    status = await service.status()
+
+    assert status.emergency_stop is True
+    assert "trade_outcome_unconfirmed" in status.lock_reasons
+    assert status.active_position_count == 1
+    assert service._state["realized_pnl_events"] == []
 
 
 @pytest.mark.asyncio
@@ -1643,6 +1855,89 @@ async def test_invalid_post_submission_acknowledgement_stops_remaining_orders() 
 
 
 @pytest.mark.asyncio
+async def test_unconfirmed_leverage_stops_before_any_demo_order() -> None:
+    demo = FakeDemo(leverage_acknowledged=False)
+    service = adaptive_service(
+        demo,
+        {"BTC-USDT-SWAP": 99},
+        candidates={"BTC-USDT-SWAP": structural_demo_candidate()},
+        **structural_dynamic_updates(),
+    )
+    await service.recover()
+    await service.arm()
+
+    run = await service.run_once(execute=True)
+    status = await service.status()
+
+    assert run.results[0].outcome == "error"
+    assert (
+        run.results[0].detail
+        == "DemoAutomationSafetyError: "
+        "okx_demo_leverage_exchange_response_unconfirmed"
+    )
+    assert demo.place_calls == []
+    assert status.emergency_stop is True
+    assert "leverage_configuration_unconfirmed" in status.lock_reasons
+
+
+@pytest.mark.asyncio
+async def test_unconfirmed_protection_stops_after_ack_without_auto_close() -> None:
+    demo = FakeDemo(protection_confirmed=False)
+    service = adaptive_service(
+        demo,
+        {"BTC-USDT-SWAP": 99},
+        candidates={"BTC-USDT-SWAP": structural_demo_candidate()},
+        **structural_dynamic_updates(),
+    )
+    await service.recover()
+    await service.arm()
+
+    run = await service.run_once(execute=True)
+    status = await service.status()
+
+    assert run.results[0].outcome == "error"
+    assert (
+        run.results[0].detail
+        == "DemoAutomationSafetyError: okx_demo_order_protection_unconfirmed"
+    )
+    assert len(demo.place_calls) == 1
+    assert status.emergency_stop is True
+    assert "post_submission_protection_unconfirmed" in status.lock_reasons
+    # The exchange is authoritative after acknowledgement.  The safety stop
+    # never guesses that exposure vanished and never silently closes it.
+    assert status.active_position_count == 1
+
+
+@pytest.mark.asyncio
+async def test_open_tracked_position_without_matching_algo_protection_stops() -> None:
+    demo = FakeDemo(exposed=True)
+    demo.protection_present = False
+    service = adaptive_service(demo, {"ETH-USDT-SWAP": 95})
+    await service.recover()
+    prime_usdt_equity_basis(service, demo)
+    service._set_active_trade(
+        tracked_trade(
+            "BTC-USDT-SWAP",
+            started_at=datetime.now(timezone.utc) - timedelta(minutes=5),
+        )
+    )
+    service._state["armed"] = True
+
+    run = await service.run_once(execute=True)
+    status = await service.status()
+
+    assert run.results[0].outcome == "locked"
+    assert (
+        "tracked_position_protection_missing_or_mismatched"
+        in run.results[0].reason_codes
+    )
+    assert status.emergency_stop is True
+    assert status.armed is False
+    assert status.active_position_count == 1
+    assert demo.place_calls == []
+
+
+@pytest.mark.asyncio
 async def test_structural_dynamic_demo_uses_isolated_20x_only_after_all_gates() -> None:
     demo = FakeDemo()
     service = adaptive_service(
@@ -1662,9 +1957,15 @@ async def test_structural_dynamic_demo_uses_isolated_20x_only_after_all_gates() 
     assert result.protection_model == "structure"
     assert result.margin_mode == "isolated"
     assert result.selected_leverage == 20
-    assert result.required_leverage == 24
+    # 6% of 10,000 USDT must be funded from one 2,000-USDT bucket.
+    # With a 0.26% stop-plus-cost rate this would require 116x, so the
+    # executable result remains capped at 20x and consumes less than the
+    # nominal risk budget.
+    assert result.required_leverage == 116
     assert result.leverage_cap == 20
-    assert result.leverage_cap_reasons == []
+    assert result.leverage_cap_reasons == [
+        "required_leverage_exceeds_20x_safety_cap"
+    ]
     assert result.stop_loss == Decimal("99.9")
     assert result.take_profit == Decimal("101")
     assert result.estimated_round_trip_cost_pct == Decimal("0.0016")
@@ -1673,6 +1974,9 @@ async def test_structural_dynamic_demo_uses_isolated_20x_only_after_all_gates() 
     assert demo.leverage_calls[0].margin_mode == "isolated"
     assert demo.leverage_calls[0].leverage == 20
     assert demo.place_calls[0].margin_mode == "isolated"
+    assert status.active_trades[0].protection_client_order_id == (
+        fake_protection_id("BTC-USDT-SWAP")
+    )
     assert status.structural_dynamic_leverage_enabled is True
     assert status.structural_margin_mode == "isolated"
 

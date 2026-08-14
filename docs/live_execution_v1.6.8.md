@@ -115,6 +115,10 @@ Immediately verify in the OKX UI:
 - no unexpected pending order or Algo order;
 - CTCC reconciliation matches the exchange.
 
+Before the order call, CTCC requires the set-leverage response to echo the
+requested instrument, margin mode, position side, and leverage. Any mismatch
+disarms and stops before posting the order.
+
 If CTCC reports an ambiguous order or missing protection, do not rerun with the
 same or a new key until the OKX UI and read endpoints have been reconciled. CTCC
 does not silently close the position.
@@ -154,6 +158,18 @@ powershell -ExecutionPolicy Bypass `
 Automation requires a connected, fresh public WebSocket snapshot. It stops
 after one protected submission and the Live service consumes the Arm. Restarting
 the API never restores the Arm or restarts the Live scheduler.
+
+For a market order, automated risk sizing uses the executable side of the
+quote: ask for long and bid for short. Last, quote, and mark freshness are
+tracked independently. Mark-trigger TP/SL is allowed only when the fresh mark
+remains inside the protective bracket and its basis to the executable quote is
+within the configured drift limit. Stop/target prices are aligned to exchange
+ticks before reward/risk and quantity are recomputed.
+
+The structural 3/5/8/10/20x profile is intentionally not a Live feature in
+v1.6.8. Live automation remains the separately reviewed cross-margin 1–3x ATR
+boundary until a future gate supplies out-of-sample, Demo-soak, liquidation,
+and exchange confirmation evidence. Do not copy Demo 20x settings into Live.
 
 ## Incident rules
 

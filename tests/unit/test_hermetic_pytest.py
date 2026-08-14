@@ -80,10 +80,18 @@ def test_docker_verifiers_use_hermetic_pytest(script_name: str) -> None:
     assert "@testEnvironment" not in source
 
 
-def test_mie_gate2_checks_host_authority_before_container_start() -> None:
-    source = (ROOT / "scripts" / "verify_mie_gate2.ps1").read_text(
-        encoding="utf-8"
-    )
+@pytest.mark.parametrize(
+    "script_name",
+    [
+        "verify_v168_live_boundary.ps1",
+        "verify_mie_gate1.ps1",
+        "verify_mie_gate2.ps1",
+    ],
+)
+def test_docker_verifiers_are_safe_on_windows_powershell(
+    script_name: str,
+) -> None:
+    source = (ROOT / "scripts" / script_name).read_text(encoding="utf-8")
 
     host_preflight = source.index(
         "Host Compose execution-authority preflight"
@@ -94,6 +102,7 @@ def test_mie_gate2_checks_host_authority_before_container_start() -> None:
     assert "python -c" not in source
     assert "$authorityProbe | docker compose exec -T api python -" in source
     assert "$revisionProbe | docker compose exec -T api python -" in source
+    assert "git diff --cached --check" in source
     for setting_name in (
         "AUTO_TRADE",
         "PAPER_AUTO_EXECUTION",

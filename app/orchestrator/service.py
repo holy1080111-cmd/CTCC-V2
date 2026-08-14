@@ -434,7 +434,8 @@ class AutoPaperOrchestrator:
         if snapshot is None or snapshot.last is None:
             return candidate.entry, "realtime_snapshot_not_available" if require_realtime else None
 
-        age = (datetime.now(timezone.utc) - snapshot.received_at).total_seconds()
+        observed_at = snapshot.last_received_at or snapshot.received_at
+        age = (datetime.now(timezone.utc) - observed_at).total_seconds()
         if age > self.settings.paper_scan_max_snapshot_age_seconds:
             return snapshot.last, "realtime_snapshot_stale" if require_realtime else None
 
@@ -567,4 +568,3 @@ class AutoPaperOrchestrator:
             except TimeoutError:
                 continue
             break
-

@@ -8,6 +8,10 @@
 - cost-adjusted net RR and cost-inclusive risk sizing;
 - score bands with downward-only mathematical caps;
 - smallest-required 3/5/8/10/20x leverage and explicit 20x downgrade rules;
+- account-equity-to-position-bucket leverage mathematics and explicit
+  unfunded-risk reasons above each approved cap;
+- exact set-leverage response validation before order submission;
+- post-acknowledgement TP/SL confirmation with fail-closed Emergency Stop;
 - isolated-margin Demo requests;
 - 150-USDT / complete 2,000-USDT capital buckets;
 - continuous eligibility without daily loss/count/streak/cooldown locks;
@@ -22,17 +26,23 @@ arms automation, or submits an order.
 ```text
 Python compileall: passed
 Git whitespace check: passed
-Unit regression: 467 passed
-Non-PostgreSQL regression: 479 passed (10 integration tests deselected)
+Unit regression: 513 passed
+Non-PostgreSQL regression: 525 passed (10 integration tests deselected)
 Alembic heads: 0013 (head)
 Alembic 0012 -> 0013 offline SQL generation: passed
-Canonical manifest: 315 files
+Canonical manifest: 333 files
 ```
 
-The unit matrix includes long/short structure, missing structure, costs and
-unit consistency, five risk bands, net-RR failure, 20x approval/downgrade,
+The unit matrix includes long/short structure and executable-side quotes,
+missing structure, costs and unit consistency, five risk bands, net-RR failure,
+20x approval/downgrade,
 isolated order construction, the exact 150-USDT bucket fixture, rolling PnL
 pruning/deduplication, non-daily high-water behavior, and safe settings.
+
+It also covers 5,000- and 10,000-USDT accounts whose per-position margin is
+fixed at 2,000 USDT, exchange leverage-response mismatch, stale quote versus
+fresh mark, excessive mark/quote basis, tick-aligned Live risk recomputation,
+and protection acknowledgement failure without an automatic close.
 
 ## Operator Docker/PostgreSQL acceptance still required
 

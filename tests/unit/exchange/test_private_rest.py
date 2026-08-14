@@ -69,6 +69,40 @@ async def test_authenticated_get_includes_simulated_header_and_signed_query() ->
 
 
 @pytest.mark.asyncio
+async def test_pending_algos_queries_conditional_and_oco_with_signed_query() -> None:
+    settings = demo_settings()
+    fixed = datetime(2026, 8, 4, 13, 1, 2, 345000, tzinfo=timezone.utc)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/v5/trade/orders-algo-pending"
+        assert request.url.params["ordType"] == "conditional,oco"
+        assert request.url.params["instId"] == "BTC-USDT-SWAP"
+        query = request.url.query.decode()
+        expected = build_signature(
+            timestamp=request.headers["OK-ACCESS-TIMESTAMP"],
+            method="GET",
+            request_path=f"/api/v5/trade/orders-algo-pending?{query}",
+            body="",
+            secret="demo-secret",
+        )
+        assert request.headers["OK-ACCESS-SIGN"] == expected
+        return httpx.Response(200, json={"code": "0", "msg": "", "data": []})
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="https://www.okx.com",
+    ) as client:
+        result = await OkxDemoPrivateRestClient(
+            client,
+            settings=settings,
+            clock=lambda: fixed,
+        ).pending_algo_orders("BTC-USDT-SWAP")
+
+    assert result == []
+
+
+@pytest.mark.asyncio
 async def test_write_item_error_is_raised() -> None:
     settings = demo_settings()
 

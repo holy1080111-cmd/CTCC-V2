@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -101,16 +101,23 @@ class FakeLiveService:
 
 
 class FakeStrategy:
+    def __init__(self, selected: TradeCandidate | None = None) -> None:
+        self.selected = selected or candidate()
+
     async def evaluate(self, instrument_id, candle_limit):
         return SimpleNamespace(
             symbol=instrument_id,
-            selected_candidate=candidate(),
+            selected_candidate=self.selected,
             blockers=[],
         )
 
 
 class FakeRisk:
+    def __init__(self) -> None:
+        self.candidates: list[TradeCandidate] = []
+
     def evaluate(self, candidate, account, limits):
+        self.candidates.append(candidate)
         return SimpleNamespace(
             decision="approved",
             approved_quantity=D("0.001"),
@@ -119,6 +126,9 @@ class FakeRisk:
 
 
 class FakePublic:
+    def __init__(self, *, tick_size: Decimal = D("0.1")) -> None:
+        self.tick_size = tick_size
+
     async def instruments(self, instrument_id):
         return [
             InstrumentInfo(
@@ -126,7 +136,7 @@ class FakePublic:
                 instrument_id=instrument_id,
                 instrument_type="SWAP",
                 state="live",
-                tick_size=D("0.1"),
+                tick_size=self.tick_size,
                 lot_size=D("0.1"),
                 minimum_size=D("0.1"),
                 contract_value=D("0.01"),
@@ -136,12 +146,31 @@ class FakePublic:
 
 
 class FakeHub:
-    async def snapshot(self, symbol):
-        return RealtimeSnapshot(
-            symbol=symbol,
-            last=D("100000"),
-            received_at=datetime.now(timezone.utc),
+    def __init__(
+        self,
+        *,
+        last: Decimal = D("100000"),
+        bid: Decimal = D("99999.9"),
+        ask: Decimal = D("100000.1"),
+        mark: Decimal = D("100000"),
+        quote_age_seconds: int = 0,
+        mark_age_seconds: int = 0,
+    ) -> None:
+        now = datetime.now(timezone.utc)
+        self.value = RealtimeSnapshot(
+            symbol="BTC-USDT-SWAP",
+            last=last,
+            bid=bid,
+            ask=ask,
+            mark_price=mark,
+            last_received_at=now,
+            quote_received_at=now - timedelta(seconds=quote_age_seconds),
+            mark_price_received_at=now - timedelta(seconds=mark_age_seconds),
+            received_at=now,
         )
+
+    async def snapshot(self, symbol):
+        return self.value.model_copy(update={"symbol": symbol})
 
 
 class FakeMarketClient:
@@ -152,14 +181,22 @@ class FakeMarketClient:
         return SimpleNamespace(connected=self.connected)
 
 
-def automation(live: FakeLiveService, *, connected=True):
+def automation(
+    live: FakeLiveService,
+    *,
+    connected=True,
+    hub: FakeHub | None = None,
+    risk: FakeRisk | None = None,
+    public: FakePublic | None = None,
+    selected_candidate: TradeCandidate | None = None,
+):
     return ControlledLiveAutomation(
         live,
         settings=settings(),
-        strategy_service=FakeStrategy(),
-        risk_service=FakeRisk(),
-        public_client=FakePublic(),
-        market_hub=FakeHub(),
+        strategy_service=FakeStrategy(selected_candidate),
+        risk_service=risk or FakeRisk(),
+        public_client=public or FakePublic(),
+        market_hub=hub or FakeHub(),
         market_client=FakeMarketClient(connected),
     )
 
@@ -195,9 +232,94 @@ async def test_execute_submits_exactly_one_protected_order_and_consumes_arm() ->
     order = live.orders[0]
     assert order.stop_loss == D("99000")
     assert order.take_profit == D("102000")
+    assert result.results[0].reference_price == D("100000.1")
+    assert order.trigger_price_type == "mark"
     assert order.client_order_id.startswith("CTCCL")
     assert len(order.client_order_id) == 32
     assert live.armed is False
+
+
+@pytest.mark.asyncio
+async def test_live_market_sell_uses_fresh_bid_as_risk_reference() -> None:
+    live = FakeLiveService()
+    short = candidate().model_copy(
+        update={
+            "direction": "short",
+            "stop_loss": D("101000"),
+            "take_profit": D("98000"),
+            "risk_reward": D("2"),
+        }
+    )
+    worker = automation(
+        live,
+        hub=FakeHub(bid=D("99999.8")),
+        selected_candidate=short,
+    )
+
+    result = await worker.run_once(
+        symbols=["BTC-USDT-SWAP"],
+        execute=True,
+    )
+
+    assert result.results[0].outcome == "submitted"
+    assert result.results[0].reference_price == D("99999.8")
+    assert len(live.orders) == 1
+    assert live.orders[0].direction == "short"
+
+
+@pytest.mark.asyncio
+async def test_fresh_mark_update_does_not_hide_stale_executable_quote() -> None:
+    live = FakeLiveService()
+    worker = automation(
+        live,
+        hub=FakeHub(quote_age_seconds=120, mark_age_seconds=0),
+    )
+
+    result = await worker.run_once(execute=True)
+
+    assert result.results[0].outcome == "blocked"
+    assert result.results[0].detail == "realtime_executable_quote_stale"
+    assert live.orders == []
+
+
+@pytest.mark.asyncio
+async def test_mark_to_execution_basis_above_limit_fails_closed() -> None:
+    live = FakeLiveService()
+    worker = automation(
+        live,
+        hub=FakeHub(mark=D("99000")),
+    )
+
+    result = await worker.run_once(execute=True)
+
+    assert result.results[0].outcome == "blocked"
+    assert result.results[0].detail == "mark_execution_basis_exceeds_live_limit"
+    assert live.orders == []
+
+
+@pytest.mark.asyncio
+async def test_live_risk_uses_tick_aligned_protection_geometry() -> None:
+    live = FakeLiveService()
+    risk = FakeRisk()
+    worker = automation(
+        live,
+        connected=False,
+        hub=FakeHub(bid=D("100000"), ask=D("100000")),
+        risk=risk,
+        public=FakePublic(tick_size=D("700")),
+    )
+
+    result = await worker.run_once(
+        symbols=["BTC-USDT-SWAP"],
+        execute=False,
+    )
+
+    assert result.results[0].outcome == "approved_dry_run"
+    assert len(risk.candidates) == 1
+    assessed = risk.candidates[0]
+    assert assessed.stop_loss == D("98700")
+    assert assessed.take_profit == D("102200")
+    assert assessed.risk_reward == D("2200") / D("1300")
 
 
 @pytest.mark.asyncio

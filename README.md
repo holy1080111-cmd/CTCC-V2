@@ -57,6 +57,11 @@ Missing protection or untracked exposure never causes CTCC to silently close a
 real position. The operator must reconcile the exchange and choose an explicit
 cancel or close action.
 
+For Demo automation, attached TP/SL parameters or order-detail echoes are not
+treated as proof of protection. CTCC requires the active pending Algo returned
+by OKX to match its unique protection client ID, instrument, mark-trigger
+prices, and covered size, and repeats that check on later reconciliations.
+
 ## Persistence
 
 Migration `0009` adds the isolated read-only Live account mirror. Migration
@@ -110,12 +115,21 @@ after sizing.
 
 Its bands are 72–79 (1.5% risk, at most 3x), 80–89 (2.5%, 5x), 90–94
 (3%, 8x), 95–97 (4%, 10x), and 98–100 (6%, 20x). CTCC selects the smallest
-ladder leverage needed by structural stop distance plus costs. A 20x result
+ladder leverage needed to fund the account-level risk ceiling from the current
+position-margin bucket after structural stop distance and costs. Above 2,000
+USDT this calculation includes `account equity / 2,000`; requirements above
+the approved cap are reported but never executed above 20x. A 20x result
 also requires confirmed high-grade mathematics, confidence/reliability at
 least 0.65, instability no higher than 0.20, confirmed derivative alignment,
 net-RR approval, isolated margin, and all normal safety gates. A missing 20x
 quality condition caps leverage at 10x; missing structure or insufficient net
 RR blocks the candidate.
+
+Before an order, the OKX leverage response must echo the intended instrument,
+margin mode, position side, and leverage. After acknowledgement, attached or
+pending mark-trigger TP/SL must be confirmed. Either mismatch stops automation;
+confirmed exchange exposure is retained for operator reconciliation and is
+never silently closed.
 
 At or below 2,000 USDT, one bucket is capped by available risk equity. Above
 2,000 USDT, each complete 2,000-USDT bucket creates one possible slot, subject
@@ -259,6 +273,10 @@ PowerShell 5.1 may render Alembic INFO lines written to stderr as
 `NativeCommandError` when `$ErrorActionPreference = "Stop"`. Capture the native
 exit code and combined output; do not interpret the INFO line alone as a failed
 migration.
+
+The reconciled history of reported CTCC-V2 defects, operator-command failures,
+closed regressions, and still-unproven claims is maintained in
+[docs/ctccv2_conversation_issue_audit.md](docs/ctccv2_conversation_issue_audit.md).
 
 ## Staged real-account activation
 

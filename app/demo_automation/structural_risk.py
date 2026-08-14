@@ -133,31 +133,56 @@ def select_structural_leverage(
     candidate: TradeCandidate,
     tier: DemoAutomationRiskTier,
     settings: Settings,
+    *,
+    account_equity: Decimal,
+    position_margin_cap: Decimal,
 ) -> StructuralLeverageSelection:
+    if account_equity <= 0:
+        raise ValueError("structural_account_equity_must_be_positive")
+    if position_margin_cap <= 0:
+        raise ValueError("structural_position_margin_cap_must_be_positive")
     total_risk_rate = (
         abs(candidate.entry - candidate.stop_loss) / candidate.entry
         + candidate.estimated_round_trip_cost_pct
     )
     if total_risk_rate <= 0:
         raise ValueError("structural_total_risk_rate_must_be_positive")
+    # ``tier.risk_pct`` is an account-equity risk budget, whereas leverage is
+    # applied to the margin available to this one position.  Those quantities
+    # are equal only while the account is no larger than its capital bucket.
+    # Above the 2,000-USDT bucket boundary, omitting this ratio understates the
+    # leverage required to deploy the requested risk budget.
+    risk_budget_amount = account_equity * D(str(tier.risk_pct))
     required = int(
-        (D(str(tier.risk_pct)) / total_risk_rate).to_integral_value(
-            rounding=ROUND_CEILING
-        )
+        (
+            risk_budget_amount
+            / (position_margin_cap * total_risk_rate)
+        ).to_integral_value(rounding=ROUND_CEILING)
     )
-    allowed = [value for value in LEVERAGE_LADDER if value <= tier.leverage]
-    if not allowed:
-        allowed = [tier.leverage]
-    selected = next((value for value in allowed if value >= required), allowed[-1])
     twenty_x_reasons = _twenty_x_reasons(candidate, settings)
-    cap_reasons = twenty_x_reasons if selected == 20 else []
-    if cap_reasons:
-        non_twenty = [value for value in allowed if value <= 10]
-        selected = non_twenty[-1] if non_twenty else min(10, tier.leverage)
+    effective_cap = tier.leverage
+    cap_reasons: list[str] = []
+    if tier.leverage >= 20 and twenty_x_reasons:
+        effective_cap = min(10, tier.leverage)
+        cap_reasons.extend(twenty_x_reasons)
+
+    allowed = [value for value in LEVERAGE_LADDER if value <= effective_cap]
+    if not allowed:
+        allowed = [effective_cap]
+    selected = next((value for value in allowed if value >= required), allowed[-1])
+
+    if required > 20:
+        cap_reasons.append("required_leverage_exceeds_20x_safety_cap")
+    elif required > effective_cap:
+        cap_reasons.append(
+            "required_leverage_exceeds_approved_leverage_cap"
+            if effective_cap < tier.leverage
+            else "required_leverage_exceeds_score_tier_cap"
+        )
     return StructuralLeverageSelection(
         selected_leverage=selected,
         required_leverage=max(1, required),
-        leverage_cap=tier.leverage,
+        leverage_cap=effective_cap,
         twenty_x_eligible=not twenty_x_reasons,
-        cap_reasons=tuple(cap_reasons),
+        cap_reasons=tuple(dict.fromkeys(cap_reasons)),
     )

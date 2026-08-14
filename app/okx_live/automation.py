@@ -265,8 +265,35 @@ class ControlledLiveAutomation:
                     reference_price=reference,
                     detail="reference_price_outside_protective_bounds",
                 )
+            instruments = await self.public_client.instruments(instrument_id)
+            if len(instruments) != 1 or instruments[0].state != "live":
+                return self._result(
+                    strategy.symbol,
+                    instrument_id,
+                    candidate,
+                    outcome="blocked",
+                    reference_price=reference,
+                    detail="live_instrument_metadata_unavailable",
+                )
+            instrument = instruments[0]
+            stop_loss, take_profit = self._align_protection(
+                candidate, instrument.tick_size
+            )
+            tick_aligned = candidate.model_copy(
+                update={"stop_loss": stop_loss, "take_profit": take_profit}
+            )
+            aligned = self._candidate_at_reference(tick_aligned, reference)
+            if aligned is None:
+                return self._result(
+                    strategy.symbol,
+                    instrument_id,
+                    candidate,
+                    outcome="blocked",
+                    reference_price=reference,
+                    detail="tick_aligned_live_protection_geometry_invalid",
+                )
             decision = self.risk_service.evaluate(
-                candidate,
+                aligned,
                 AccountRiskState(
                     equity=equity,
                     peak_equity=equity,
@@ -280,33 +307,16 @@ class ControlledLiveAutomation:
                 return self._result(
                     strategy.symbol,
                     instrument_id,
-                    candidate,
+                    aligned,
                     outcome="risk_rejected",
                     reference_price=reference,
                     detail="live_risk_engine_rejected_candidate",
                     reason_codes=decision.reason_codes,
                 )
-            instruments = await self.public_client.instruments(instrument_id)
-            if len(instruments) != 1 or instruments[0].state != "live":
-                return self._result(
-                    strategy.symbol,
-                    instrument_id,
-                    candidate,
-                    outcome="blocked",
-                    reference_price=reference,
-                    detail="live_instrument_metadata_unavailable",
-                )
-            instrument = instruments[0]
             contracts, size_error = self._contracts_from_base_quantity(
                 decision.approved_quantity,
                 reference,
                 instrument,
-            )
-            stop_loss, take_profit = self._align_protection(
-                candidate, instrument.tick_size
-            )
-            aligned = candidate.model_copy(
-                update={"stop_loss": stop_loss, "take_profit": take_profit}
             )
             if size_error:
                 return self._result(
@@ -381,21 +391,80 @@ class ControlledLiveAutomation:
         snapshot: RealtimeSnapshot | None = await self.market_hub.snapshot(
             instrument_id
         )
-        if snapshot is None or snapshot.last is None:
+        if snapshot is None:
             return (
                 candidate.entry,
                 "realtime_snapshot_not_available" if require_realtime else None,
             )
-        age = (datetime.now(timezone.utc) - snapshot.received_at).total_seconds()
-        if age > self.settings.okx_live_scan_max_snapshot_age_seconds:
-            return (
-                snapshot.last,
-                "realtime_snapshot_stale" if require_realtime else None,
+
+        executable_quote = (
+            snapshot.ask if candidate.direction == "long" else snapshot.bid
+        )
+        if executable_quote is None or executable_quote <= 0:
+            if require_realtime:
+                return candidate.entry, "realtime_executable_quote_not_available"
+            executable_quote = snapshot.last or candidate.entry
+        if require_realtime:
+            if snapshot.quote_received_at is None:
+                return executable_quote, "realtime_quote_timestamp_missing"
+            quote_age = (
+                datetime.now(timezone.utc) - snapshot.quote_received_at
+            ).total_seconds()
+            if quote_age > self.settings.okx_live_scan_max_snapshot_age_seconds:
+                return executable_quote, "realtime_executable_quote_stale"
+            if (
+                snapshot.bid is None
+                or snapshot.ask is None
+                or snapshot.bid <= 0
+                or snapshot.ask <= 0
+                or snapshot.bid > snapshot.ask
+            ):
+                return executable_quote, "realtime_quote_geometry_invalid"
+            if snapshot.mark_price is None or snapshot.mark_price <= 0:
+                return executable_quote, "realtime_mark_price_not_available"
+            if snapshot.mark_price_received_at is None:
+                return executable_quote, "realtime_mark_price_timestamp_missing"
+            mark_age = (
+                datetime.now(timezone.utc) - snapshot.mark_price_received_at
+            ).total_seconds()
+            if mark_age > self.settings.okx_live_scan_max_snapshot_age_seconds:
+                return executable_quote, "realtime_mark_price_stale"
+            basis = (
+                abs(snapshot.mark_price - executable_quote)
+                / executable_quote
+                * D("10000")
             )
-        drift = abs(snapshot.last - candidate.entry) / candidate.entry * D("10000")
+            if basis > self.settings.okx_live_scan_max_entry_drift_bps:
+                return (
+                    executable_quote,
+                    "mark_execution_basis_exceeds_live_limit",
+                )
+            if candidate.direction == "long":
+                mark_inside = (
+                    candidate.stop_loss
+                    < snapshot.mark_price
+                    < candidate.take_profit
+                )
+            else:
+                mark_inside = (
+                    candidate.take_profit
+                    < snapshot.mark_price
+                    < candidate.stop_loss
+                )
+            if not mark_inside:
+                return (
+                    executable_quote,
+                    "mark_price_outside_live_protective_bounds",
+                )
+
+        drift = (
+            abs(executable_quote - candidate.entry)
+            / candidate.entry
+            * D("10000")
+        )
         if drift > self.settings.okx_live_scan_max_entry_drift_bps:
-            return snapshot.last, "entry_price_drift_exceeds_live_limit"
-        return snapshot.last, None
+            return executable_quote, "entry_price_drift_exceeds_live_limit"
+        return executable_quote, None
 
     @staticmethod
     def _candidate_at_reference(
@@ -458,7 +527,6 @@ class ControlledLiveAutomation:
         take = (candidate.take_profit / tick).to_integral_value(
             rounding=take_round
         ) * tick
-        candidate.model_copy(update={"stop_loss": stop, "take_profit": take})
         return stop, take
 
     def _risk_limits(self) -> RiskLimits:
