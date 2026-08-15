@@ -165,6 +165,7 @@ Invoke-NativeStep "Live boundary targeted tests" {
 }
 Invoke-NativeStep "Adaptive Demo portfolio targeted tests" {
     docker compose exec -T api python scripts/hermetic_pytest.py -q -p no:cacheprovider `
+        tests/unit/exchange/test_symbols.py `
         tests/unit/exchange/test_parsers.py `
         tests/unit/indicators/test_causal_trend.py `
         tests/unit/indicators/test_causal_state.py `

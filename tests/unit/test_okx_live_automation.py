@@ -344,13 +344,27 @@ async def test_scheduled_start_honors_operator_symbol_scope() -> None:
 
 
 @pytest.mark.asyncio
-async def test_scheduled_start_rejects_unsupported_symbol() -> None:
+async def test_scheduled_start_rejects_symbol_outside_live_allowlist() -> None:
+    live = FakeLiveService()
+    worker = automation(live)
+
+    with pytest.raises(
+        OkxLiveSafetyError,
+        match="instrument_not_in_okx_live_allowlist",
+    ):
+        await worker.start(symbols=["SOL-USDT-SWAP"])
+
+    assert live.orders == []
+
+
+@pytest.mark.asyncio
+async def test_scheduled_start_rejects_malformed_symbol() -> None:
     live = FakeLiveService()
     worker = automation(live)
 
     with pytest.raises(
         OkxLiveSafetyError, match="invalid_live_scan_symbol"
     ):
-        await worker.start(symbols=["SOL-USDT-SWAP"])
+        await worker.start(symbols=["NOT-A-SYMBOL"])
 
     assert live.orders == []

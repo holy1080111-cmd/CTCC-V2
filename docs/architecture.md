@@ -21,7 +21,9 @@ authenticated Demo request
 The optional adaptive Demo portfolio remains inside that simulated boundary:
 
 ```text
-ranked analysis candidates
+reviewed eight-symbol Demo/public universe
+→ independent per-symbol analysis
+→ cross-symbol candidate ranking
 → shared causal mathematical fusion contract
 → robust state and conformal uncertainty
 → downward-only effective score
@@ -31,6 +33,12 @@ ranked analysis candidates
 → instrument-level close attribution
 → standard session locks or opt-in continuous eligibility
 ```
+
+The universe contains BTC, ETH, SOL, XRP, DOGE, ADA, LINK, and LTC USDT
+perpetual swaps. It broadens discovery only: it does not raise position,
+capital-bucket, portfolio-risk, submission, or execution-authority limits.
+Fresh instrument metadata must still be unique, live, SWAP, and USDT-settled
+before Demo sizing. The Live boundary remains the separate BTC/ETH allowlist.
 
 Continuous Demo eligibility skips daily-loss, daily trade-count,
 consecutive-loss, and cooldown entry gates only. Weekly-loss, drawdown,
@@ -168,6 +176,10 @@ decision-gate use in a later Gate but never exchange-write authority.
 - Adaptive Demo sizing is disabled by default, enforces aggregate open-stop-risk
   and margin ceilings, and never reuses one instrument for multiple concurrent
   CTCC positions.
+- Demo/Public symbol expansion is constrained to the reviewed eight-symbol
+  mapping; configuration rejects duplicates, unknown instruments, scan symbols
+  outside the allowlist, and automation scans missing a WebSocket subscription.
+  The Live allowlist remains independently constrained to BTC and ETH.
 - The mathematical gate uses confirmed past candles only; missing or conflicting
   evidence lowers coverage/consensus, shocks become instability, low-confidence
   evidence downgrades leverage, and opposed or unstable evidence blocks before

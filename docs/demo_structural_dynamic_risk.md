@@ -22,6 +22,13 @@ It can operate only after the existing authenticated Arm, Demo write flags,
 reconciliation, exposure checks, duplicate suppression, portfolio gates, and
 exchange protection checks pass. It never changes the OKX Live boundary.
 
+Candidate discovery covers the reviewed BTC, ETH, SOL, XRP, DOGE, ADA, LINK,
+and LTC USDT-SWAP universe. The automation ranks all eligible candidates before
+sizing; adding scan symbols does not add position slots or relax aggregate
+stop-risk, margin, capital-bucket, submission, or protection limits. Fresh
+metadata must still identify exactly one live, USDT-settled SWAP. See
+`docs/demo_multi_symbol_universe.md`.
+
 Enabling the feature also requires `OKX_DEMO_MAX_LEVERAGE=20`, a portfolio
 stop-risk ceiling of at least 6%, and a weekly-loss backstop of at least 6%.
 The validation profile uses `MAX_WEEKLY_LOSS_PCT=0.10`; the default remains 5%

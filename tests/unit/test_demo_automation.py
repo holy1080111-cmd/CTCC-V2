@@ -27,7 +27,6 @@ from app.domain.strategy import (
     StrategyDecision,
     TradeCandidate,
 )
-from app.exchange.okx.symbols import SUPPORTED_SYMBOLS
 
 
 class FakeStrategy:
@@ -230,19 +229,33 @@ class FakeDemo:
 
 
 class FakePublic:
+    def __init__(
+        self,
+        *,
+        instrument_type: str = "SWAP",
+        state: str = "live",
+        settlement_currency: str = "USDT",
+        returned_instrument_id: str | None = None,
+    ) -> None:
+        self.instrument_type = instrument_type
+        self.state = state
+        self.settlement_currency = settlement_currency
+        self.returned_instrument_id = returned_instrument_id
+
     async def instruments(self, instrument_id: str):
+        returned_instrument_id = self.returned_instrument_id or instrument_id
         return [
             InstrumentInfo(
-                symbol=instrument_id,
-                instrument_id=instrument_id,
-                instrument_type="SWAP",
-                state="live",
+                symbol=returned_instrument_id,
+                instrument_id=returned_instrument_id,
+                instrument_type=self.instrument_type,
+                state=self.state,
                 tick_size=Decimal("0.1"),
                 lot_size=Decimal("1"),
                 minimum_size=Decimal("1"),
                 contract_value=Decimal("1"),
-                contract_currency=instrument_id.split("-")[0],
-                settlement_currency="USDT",
+                contract_currency=returned_instrument_id.split("-")[0],
+                settlement_currency=self.settlement_currency,
             )
         ]
 
@@ -436,13 +449,14 @@ def make_service(
     *,
     strategy: FakeStrategy | None = None,
     market_hub: FakeHub | None = None,
+    public_client: FakePublic | None = None,
     **setting_updates,
 ) -> SafeDemoAutomation:
     return SafeDemoAutomation(
         settings=configured_settings(**setting_updates),
         strategy_service=strategy or FakeStrategy(candidate()),
         demo_service=demo,
-        public_client=FakePublic(),
+        public_client=public_client or FakePublic(),
         market_hub=market_hub or FakeHub(),
         market_client=FakeClient(),
         repository=None,
@@ -456,6 +470,33 @@ async def test_dry_run_never_places_demo_order() -> None:
     await service.recover()
     run = await service.run_once(execute=False)
     assert run.results[0].outcome == "approved_dry_run"
+    assert demo.place_calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("public_client", "expected_detail"),
+    [
+        (
+            FakePublic(returned_instrument_id="ETH-USDT-SWAP"),
+            "instrument_metadata_mismatch",
+        ),
+        (FakePublic(instrument_type="FUTURES"), "instrument_not_swap"),
+        (FakePublic(state="suspend"), "instrument_not_live"),
+    ],
+)
+async def test_dry_run_fails_closed_for_ineligible_instrument_metadata(
+    public_client: FakePublic,
+    expected_detail: str,
+) -> None:
+    demo = FakeDemo()
+    service = make_service(demo, public_client=public_client)
+    await service.recover()
+
+    run = await service.run_once(execute=False)
+
+    assert run.results[0].outcome == "blocked"
+    assert run.results[0].detail == expected_detail
     assert demo.place_calls == []
 
 
@@ -1180,14 +1221,7 @@ async def test_capital_below_2000_forms_one_full_equity_slot() -> None:
 
 
 @pytest.mark.asyncio
-async def test_capital_bucket_uses_only_complete_2000_usdt_position_slots(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setitem(
-        SUPPORTED_SYMBOLS,
-        "SOL/USDT:USDT",
-        "SOL-USDT-SWAP",
-    )
+async def test_capital_bucket_uses_only_complete_2000_usdt_position_slots() -> None:
     demo = FakeDemo()
     demo.equity = Decimal("4998.339000436543")
     high = candidate(score=95, stop_loss="99.9", take_profit="102")
@@ -1599,17 +1633,7 @@ async def test_auxiliary_bonus_breaks_only_equal_cross_symbol_rank() -> None:
 
 
 @pytest.mark.asyncio
-async def test_shadow_portfolio_enforces_aggregate_open_stop_risk(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # The production symbol boundary intentionally defaults to BTC and ETH.
-    # Add a third test-only instrument so this case isolates aggregate risk
-    # reservation instead of failing earlier in symbol normalization.
-    monkeypatch.setitem(
-        SUPPORTED_SYMBOLS,
-        "SOL/USDT:USDT",
-        "SOL-USDT-SWAP",
-    )
+async def test_shadow_portfolio_enforces_aggregate_open_stop_risk() -> None:
     demo = FakeDemo()
     symbols = ["BTC-USDT-SWAP", "ETH-USDT-SWAP", "SOL-USDT-SWAP"]
     service = adaptive_service(

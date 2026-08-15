@@ -918,7 +918,7 @@ class SafeDemoAutomation:
                 )
 
             instruments = await self.public_client.instruments(instrument_id)
-            if not instruments:
+            if len(instruments) != 1:
                 return (
                     self._candidate_result(
                         strategy.symbol,
@@ -926,11 +926,47 @@ class SafeDemoAutomation:
                         execution_candidate,
                         outcome="blocked",
                         reference_price=reference_price,
-                        detail="instrument_metadata_not_available",
+                        detail="instrument_metadata_not_unique",
                     ),
                     None,
                 )
             instrument = instruments[0]
+            if instrument.instrument_id.upper() != instrument_id.upper():
+                return (
+                    self._candidate_result(
+                        strategy.symbol,
+                        instrument_id,
+                        execution_candidate,
+                        outcome="blocked",
+                        reference_price=reference_price,
+                        detail="instrument_metadata_mismatch",
+                    ),
+                    None,
+                )
+            if instrument.instrument_type.upper() != "SWAP":
+                return (
+                    self._candidate_result(
+                        strategy.symbol,
+                        instrument_id,
+                        execution_candidate,
+                        outcome="blocked",
+                        reference_price=reference_price,
+                        detail="instrument_not_swap",
+                    ),
+                    None,
+                )
+            if instrument.state.lower() != "live":
+                return (
+                    self._candidate_result(
+                        strategy.symbol,
+                        instrument_id,
+                        execution_candidate,
+                        outcome="blocked",
+                        reference_price=reference_price,
+                        detail="instrument_not_live",
+                    ),
+                    None,
+                )
             if instrument.settlement_currency != _AUTOMATION_SETTLEMENT_CURRENCY:
                 return (
                     self._candidate_result(

@@ -53,7 +53,6 @@ try {
         duration_minutes = $DurationMinutes
         interval_seconds = $IntervalSeconds
         max_runs = $MaxRuns
-        symbols = @("BTC-USDT-SWAP", "ETH-USDT-SWAP")
         confirmation = "START_DEMO_SOAK_EXECUTE"
     } | ConvertTo-Json
 

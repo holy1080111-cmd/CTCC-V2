@@ -4,6 +4,10 @@ import pytest
 from pydantic import ValidationError
 
 from app.config.settings import Settings
+from app.exchange.okx.symbols import (
+    LIVE_BOUNDARY_INSTRUMENT_IDS,
+    REVIEWED_DEMO_INSTRUMENT_IDS,
+)
 
 
 def test_safe_defaults(monkeypatch) -> None:
@@ -11,6 +15,7 @@ def test_safe_defaults(monkeypatch) -> None:
         "TRADING_MODE",
         "AUTO_TRADE",
         "LIVE_TRADING",
+        "OKX_WS_SYMBOLS",
         "OKX_LIVE_REST_BASE_URL",
         "OKX_LIVE_TIMEOUT_SECONDS",
         "OKX_LIVE_READ_MAX_RETRIES",
@@ -38,13 +43,16 @@ def test_safe_defaults(monkeypatch) -> None:
         "OKX_LIVE_SCAN_SYMBOLS",
         "OKX_LIVE_AUTOMATION_LEVERAGE",
         "PAPER_AUTO_EXECUTION",
+        "PAPER_SCAN_SYMBOLS",
         "OKX_DEMO_ENABLED",
         "OKX_DEMO_ALLOW_ORDER_WRITES",
+        "OKX_DEMO_ALLOWED_SYMBOLS",
         "OKX_DEMO_API_KEY",
         "OKX_DEMO_API_SECRET",
         "OKX_DEMO_API_PASSPHRASE",
         "OKX_DEMO_AUTO_RECONCILE_ON_START",
         "OKX_DEMO_AUTO_EXECUTION",
+        "OKX_DEMO_SCAN_SYMBOLS",
         "OKX_DEMO_TRADE_RECONCILE_GRACE_SECONDS",
         "OKX_DEMO_AUTOMATION_MAX_CONSECUTIVE_LOSSES",
         "OKX_DEMO_CONTINUOUS_SESSION_ENABLED",
@@ -137,6 +145,63 @@ def test_safe_defaults(monkeypatch) -> None:
     assert settings.okx_demo_execution_soak_require_flat_start is True
     assert settings.okx_demo_execution_soak_require_protection is True
     assert settings.okx_demo_execution_soak_auto_disarm is True
+    assert tuple(settings.okx_ws_symbol_list) == REVIEWED_DEMO_INSTRUMENT_IDS
+    assert tuple(settings.paper_scan_symbol_list) == REVIEWED_DEMO_INSTRUMENT_IDS
+    assert tuple(settings.okx_demo_allowed_symbol_list) == (
+        REVIEWED_DEMO_INSTRUMENT_IDS
+    )
+    assert tuple(settings.okx_demo_scan_symbol_list) == (
+        REVIEWED_DEMO_INSTRUMENT_IDS
+    )
+    assert tuple(settings.okx_live_allowed_symbol_list) == (
+        LIVE_BOUNDARY_INSTRUMENT_IDS
+    )
+    assert tuple(settings.okx_live_scan_symbol_list) == (
+        LIVE_BOUNDARY_INSTRUMENT_IDS
+    )
+
+
+def test_symbol_lists_are_normalized_without_expanding_live_boundary() -> None:
+    settings = Settings(
+        _env_file=None,
+        okx_demo_allowed_symbols=" btc-usdt-swap, sol-usdt-swap ",
+        okx_demo_scan_symbols=" sol-usdt-swap ",
+        okx_live_allowed_symbols=" btc-usdt-swap ",
+        okx_live_scan_symbols=" btc-usdt-swap ",
+    )
+
+    assert settings.okx_demo_allowed_symbol_list == [
+        "BTC-USDT-SWAP",
+        "SOL-USDT-SWAP",
+    ]
+    assert settings.okx_demo_scan_symbol_list == ["SOL-USDT-SWAP"]
+    assert settings.okx_live_allowed_symbol_list == ["BTC-USDT-SWAP"]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("okx_demo_allowed_symbols", "BTC-USDT-SWAP,BNB-USDT-SWAP"),
+        ("okx_demo_scan_symbols", "BTC-USDT-SWAP,BTC-USDT-SWAP"),
+        ("okx_live_allowed_symbols", "BTC-USDT-SWAP,SOL-USDT-SWAP"),
+        ("okx_ws_symbols", "BTC-USDT-SWAP,BNB-USDT-SWAP"),
+    ],
+)
+def test_symbol_scope_rejects_unreviewed_or_duplicate_instruments(
+    field: str,
+    value: str,
+) -> None:
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, **{field: value})
+
+
+def test_demo_scan_must_always_be_inside_demo_allowlist() -> None:
+    with pytest.raises(ValidationError, match="subset"):
+        Settings(
+            _env_file=None,
+            okx_demo_allowed_symbols="BTC-USDT-SWAP",
+            okx_demo_scan_symbols="SOL-USDT-SWAP",
+        )
 
 
 def _structural_dynamic_settings(**updates) -> Settings:
@@ -343,6 +408,36 @@ def test_demo_automation_requires_websocket() -> None:
             okx_demo_api_passphrase="pass",
             okx_demo_auto_execution=True,
             okx_ws_enabled=False,
+        )
+
+
+def test_demo_automation_scan_requires_matching_websocket_subscription() -> None:
+    with pytest.raises(ValidationError, match="OKX_WS_SYMBOLS"):
+        Settings(
+            _env_file=None,
+            trading_mode="okx_demo",
+            okx_demo_enabled=True,
+            okx_demo_allow_order_writes=True,
+            okx_demo_api_key="key",
+            okx_demo_api_secret="secret",
+            okx_demo_api_passphrase="pass",
+            okx_demo_auto_execution=True,
+            okx_ws_enabled=True,
+            okx_ws_symbols="BTC-USDT-SWAP",
+            okx_demo_allowed_symbols="BTC-USDT-SWAP,SOL-USDT-SWAP",
+            okx_demo_scan_symbols="SOL-USDT-SWAP",
+        )
+
+
+def test_paper_automation_scan_requires_matching_websocket_subscription() -> None:
+    with pytest.raises(ValidationError, match="OKX_WS_SYMBOLS"):
+        Settings(
+            _env_file=None,
+            trading_mode="paper",
+            paper_auto_execution=True,
+            okx_ws_enabled=True,
+            okx_ws_symbols="BTC-USDT-SWAP",
+            paper_scan_symbols="SOL-USDT-SWAP",
         )
 
 

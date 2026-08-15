@@ -80,6 +80,34 @@ Expected migration after upgrade:
 0013 (head)
 ```
 
+## Reviewed Demo and public-data universe
+
+Public WebSocket, Paper scanning, and OKX Demo scanning use one reviewed
+eight-instrument USDT-SWAP universe:
+
+```text
+BTC-USDT-SWAP  ETH-USDT-SWAP  SOL-USDT-SWAP  XRP-USDT-SWAP
+DOGE-USDT-SWAP ADA-USDT-SWAP  LINK-USDT-SWAP LTC-USDT-SWAP
+```
+
+This expands candidate discovery, not exchange authority or simultaneous
+exposure. Candidates are ranked across the complete scan by downward-adjusted
+mathematical score, raw score, validated confidence, and then the bounded
+auxiliary tie-break. Existing position-count, 2,000-USDT capital-bucket,
+portfolio stop-risk, margin, duplicate, protection, Arm, and per-run submission
+limits still decide whether any candidate may proceed.
+
+Immediately before Demo sizing, instrument metadata must be unique, `SWAP`,
+`live`, and USDT-settled. Settings reject duplicate or unreviewed symbols and
+require Demo scans to remain inside both the Demo allowlist and, for automation,
+the active public WebSocket subscription. The OKX Live boundary remains
+strictly limited to BTC and ETH and is not expanded by this universe.
+
+Run `scripts/verify_demo_multi_symbol_universe.ps1` with every execution switch
+disabled to requalify live instrument state, spread, estimated 24-hour USDT
+notional, minimum-order notional, order-book presence, and confirmed 4H history.
+See `docs/demo_multi_symbol_universe.md` for the exact policy and rollout gate.
+
 ## Adaptive Demo portfolio (disabled by default)
 
 The Demo automation can rank candidates by analysis score and, only when

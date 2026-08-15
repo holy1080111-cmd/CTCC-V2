@@ -184,3 +184,34 @@ No Demo or Live order submitted
 Docker build/health, exact online migration `0013`, schema drift, the ten
 PostgreSQL-marked tests, and authenticated read-only exchange probes remain
 operator acceptance steps on the exact same reviewed tree.
+
+## Reviewed eight-symbol Demo/public universe
+
+The candidate-universe gate is separate from execution. With every Paper,
+Demo, and Live authority switch false, the public-only qualification checks:
+
+```text
+BTC-USDT-SWAP  ETH-USDT-SWAP  SOL-USDT-SWAP  XRP-USDT-SWAP
+DOGE-USDT-SWAP ADA-USDT-SWAP  LINK-USDT-SWAP LTC-USDT-SWAP
+```
+
+Each instrument must be a unique live USDT-settled SWAP with a valid book,
+spread no greater than 8 bps, estimated 24-hour USDT notional of at least
+10 million, minimum-order notional no greater than 25 USDT, and at least 200
+confirmed non-stale 4H candles. The verifier also requires the running
+WebSocket, Paper, Demo allowlist, and Demo scan configuration to equal the
+reviewed universe while the Live lists remain inside the separate BTC/ETH
+boundary.
+
+Run:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File .\scripts\verify_demo_multi_symbol_universe.ps1 `
+  -RepoPath C:\CTCC-V2
+```
+
+Passing the market qualification is time-sensitive and must be repeated before
+a later separately authorized Demo soak. It does not place an order, increase
+portfolio exposure, prove profitability, or promote any additional instrument
+into Live execution.

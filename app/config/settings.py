@@ -6,6 +6,44 @@ from urllib.parse import urlparse
 from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.exchange.okx.symbols import (
+    LIVE_BOUNDARY_INSTRUMENT_IDS,
+    REVIEWED_DEMO_INSTRUMENT_IDS,
+)
+
+
+_REVIEWED_DEMO_SYMBOLS_CSV = ",".join(REVIEWED_DEMO_INSTRUMENT_IDS)
+_LIVE_BOUNDARY_SYMBOLS_CSV = ",".join(LIVE_BOUNDARY_INSTRUMENT_IDS)
+
+
+def _normalized_symbol_list(value: str) -> list[str]:
+    return [
+        item.strip().upper()
+        for item in value.split(",")
+        if item.strip()
+    ]
+
+
+def _validate_symbol_scope(
+    name: str,
+    symbols: list[str],
+    *,
+    permitted: tuple[str, ...],
+    maximum: int,
+) -> None:
+    if not symbols:
+        raise ValueError(f"{name} must contain at least one instrument")
+    if len(symbols) > maximum:
+        raise ValueError(f"{name} cannot contain more than {maximum} instruments")
+    if len(symbols) != len(set(symbols)):
+        raise ValueError(f"{name} cannot contain duplicate instruments")
+    unsupported = [item for item in symbols if item not in permitted]
+    if unsupported:
+        raise ValueError(
+            f"{name} contains instruments outside its reviewed boundary: "
+            + ", ".join(unsupported)
+        )
+
 
 class Settings(BaseSettings):
     """Runtime configuration with fail-safe trading defaults."""
@@ -45,7 +83,7 @@ class Settings(BaseSettings):
 
     okx_ws_enabled: bool = False
     okx_ws_public_url: str = "wss://ws.okx.com:8443/ws/v5/public"
-    okx_ws_symbols: str = "BTC-USDT-SWAP,ETH-USDT-SWAP"
+    okx_ws_symbols: str = _REVIEWED_DEMO_SYMBOLS_CSV
     okx_ws_connect_timeout_seconds: float = Field(default=15, gt=1, le=120)
     okx_ws_receive_timeout_seconds: float = Field(default=25, gt=5, le=120)
     okx_ws_ping_timeout_seconds: float = Field(default=10, gt=1, le=60)
@@ -74,7 +112,7 @@ class Settings(BaseSettings):
 
     # Auto-paper orchestrator. This is never exchange execution.
     paper_auto_execution: bool = False
-    paper_scan_symbols: str = "BTC-USDT-SWAP,ETH-USDT-SWAP"
+    paper_scan_symbols: str = _REVIEWED_DEMO_SYMBOLS_CSV
     paper_scan_interval_seconds: int = Field(default=300, ge=30, le=86_400)
     paper_scan_initial_delay_seconds: int = Field(default=10, ge=0, le=600)
     paper_scan_candle_limit: int = Field(default=250, ge=200, le=300)
@@ -98,7 +136,7 @@ class Settings(BaseSettings):
     okx_live_api_passphrase: SecretStr = SecretStr("")
     okx_live_timeout_seconds: float = Field(default=10, gt=1, le=60)
     okx_live_read_max_retries: int = Field(default=2, ge=0, le=5)
-    okx_live_allowed_symbols: str = "BTC-USDT-SWAP,ETH-USDT-SWAP"
+    okx_live_allowed_symbols: str = _LIVE_BOUNDARY_SYMBOLS_CSV
     okx_live_max_order_size_contracts: Decimal = Field(
         default=Decimal("1"), gt=0, le=Decimal("10")
     )
@@ -136,7 +174,7 @@ class Settings(BaseSettings):
     # Explicitly armed production automation. It never restores an arm after
     # restart and is capped at one protected order per arm.
     okx_live_auto_execution: bool = False
-    okx_live_scan_symbols: str = "BTC-USDT-SWAP,ETH-USDT-SWAP"
+    okx_live_scan_symbols: str = _LIVE_BOUNDARY_SYMBOLS_CSV
     okx_live_scan_interval_seconds: int = Field(default=300, ge=60, le=86_400)
     okx_live_scan_initial_delay_seconds: int = Field(default=10, ge=0, le=600)
     okx_live_scan_candle_limit: int = Field(default=250, ge=200, le=300)
@@ -155,7 +193,7 @@ class Settings(BaseSettings):
     okx_demo_api_passphrase: SecretStr = SecretStr("")
     okx_demo_timeout_seconds: float = Field(default=10, gt=1, le=60)
     okx_demo_read_max_retries: int = Field(default=2, ge=0, le=5)
-    okx_demo_allowed_symbols: str = "BTC-USDT-SWAP,ETH-USDT-SWAP"
+    okx_demo_allowed_symbols: str = _REVIEWED_DEMO_SYMBOLS_CSV
     okx_demo_max_order_size_contracts: Decimal = Field(default=Decimal("1"), gt=0, le=1000)
     okx_demo_max_open_positions: int = Field(default=1, ge=1, le=10)
     okx_demo_max_leverage: int = Field(default=3, ge=1, le=20)
@@ -166,7 +204,7 @@ class Settings(BaseSettings):
 
     # Explicitly armed OKX Demo automation. Never used for real trading.
     okx_demo_auto_execution: bool = False
-    okx_demo_scan_symbols: str = "BTC-USDT-SWAP,ETH-USDT-SWAP"
+    okx_demo_scan_symbols: str = _REVIEWED_DEMO_SYMBOLS_CSV
     okx_demo_scan_interval_seconds: int = Field(default=300, ge=60, le=86_400)
     okx_demo_scan_initial_delay_seconds: int = Field(default=10, ge=0, le=600)
     okx_demo_scan_candle_limit: int = Field(default=250, ge=200, le=300)
@@ -326,27 +364,27 @@ class Settings(BaseSettings):
 
     @property
     def okx_ws_symbol_list(self) -> list[str]:
-        return [item.strip() for item in self.okx_ws_symbols.split(",") if item.strip()]
+        return _normalized_symbol_list(self.okx_ws_symbols)
 
     @property
     def paper_scan_symbol_list(self) -> list[str]:
-        return [item.strip() for item in self.paper_scan_symbols.split(",") if item.strip()]
+        return _normalized_symbol_list(self.paper_scan_symbols)
 
     @property
     def okx_demo_allowed_symbol_list(self) -> list[str]:
-        return [item.strip() for item in self.okx_demo_allowed_symbols.split(",") if item.strip()]
+        return _normalized_symbol_list(self.okx_demo_allowed_symbols)
 
     @property
     def okx_live_allowed_symbol_list(self) -> list[str]:
-        return [item.strip() for item in self.okx_live_allowed_symbols.split(",") if item.strip()]
+        return _normalized_symbol_list(self.okx_live_allowed_symbols)
 
     @property
     def okx_live_scan_symbol_list(self) -> list[str]:
-        return [item.strip() for item in self.okx_live_scan_symbols.split(",") if item.strip()]
+        return _normalized_symbol_list(self.okx_live_scan_symbols)
 
     @property
     def okx_demo_scan_symbol_list(self) -> list[str]:
-        return [item.strip() for item in self.okx_demo_scan_symbols.split(",") if item.strip()]
+        return _normalized_symbol_list(self.okx_demo_scan_symbols)
 
     @property
     def api_token_value(self) -> str:
@@ -397,6 +435,57 @@ class Settings(BaseSettings):
                 "use explicitly armed OKX_LIVE_AUTO_EXECUTION"
             )
 
+        _validate_symbol_scope(
+            "OKX_WS_SYMBOLS",
+            self.okx_ws_symbol_list,
+            permitted=REVIEWED_DEMO_INSTRUMENT_IDS,
+            maximum=len(REVIEWED_DEMO_INSTRUMENT_IDS),
+        )
+        _validate_symbol_scope(
+            "PAPER_SCAN_SYMBOLS",
+            self.paper_scan_symbol_list,
+            permitted=REVIEWED_DEMO_INSTRUMENT_IDS,
+            maximum=len(REVIEWED_DEMO_INSTRUMENT_IDS),
+        )
+        _validate_symbol_scope(
+            "OKX_DEMO_ALLOWED_SYMBOLS",
+            self.okx_demo_allowed_symbol_list,
+            permitted=REVIEWED_DEMO_INSTRUMENT_IDS,
+            maximum=len(REVIEWED_DEMO_INSTRUMENT_IDS),
+        )
+        _validate_symbol_scope(
+            "OKX_DEMO_SCAN_SYMBOLS",
+            self.okx_demo_scan_symbol_list,
+            permitted=REVIEWED_DEMO_INSTRUMENT_IDS,
+            maximum=len(REVIEWED_DEMO_INSTRUMENT_IDS),
+        )
+        _validate_symbol_scope(
+            "OKX_LIVE_ALLOWED_SYMBOLS",
+            self.okx_live_allowed_symbol_list,
+            permitted=LIVE_BOUNDARY_INSTRUMENT_IDS,
+            maximum=len(LIVE_BOUNDARY_INSTRUMENT_IDS),
+        )
+        _validate_symbol_scope(
+            "OKX_LIVE_SCAN_SYMBOLS",
+            self.okx_live_scan_symbol_list,
+            permitted=LIVE_BOUNDARY_INSTRUMENT_IDS,
+            maximum=len(LIVE_BOUNDARY_INSTRUMENT_IDS),
+        )
+        if not set(self.okx_demo_scan_symbol_list).issubset(
+            set(self.okx_demo_allowed_symbol_list)
+        ):
+            raise ValueError(
+                "OKX_DEMO_SCAN_SYMBOLS must be a subset of "
+                "OKX_DEMO_ALLOWED_SYMBOLS"
+            )
+        if not set(self.okx_live_scan_symbol_list).issubset(
+            set(self.okx_live_allowed_symbol_list)
+        ):
+            raise ValueError(
+                "OKX_LIVE_SCAN_SYMBOLS must be a subset of "
+                "OKX_LIVE_ALLOWED_SYMBOLS"
+            )
+
         if self.paper_auto_execution:
             if self.trading_mode != "paper":
                 raise ValueError("PAPER_AUTO_EXECUTION requires TRADING_MODE=paper")
@@ -406,6 +495,13 @@ class Settings(BaseSettings):
                 raise ValueError("PAPER_AUTO_EXECUTION requires PAPER_AUTO_TICKS=true")
             if not self.paper_persistence_enabled:
                 raise ValueError("PAPER_AUTO_EXECUTION requires PAPER_PERSISTENCE_ENABLED=true")
+            if not set(self.paper_scan_symbol_list).issubset(
+                set(self.okx_ws_symbol_list)
+            ):
+                raise ValueError(
+                    "PAPER_SCAN_SYMBOLS must be a subset of OKX_WS_SYMBOLS "
+                    "when Paper automation is enabled"
+                )
 
         live_parsed = urlparse(self.okx_live_rest_base_url)
         if (
@@ -490,12 +586,6 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "OKX_LIVE_AUTOMATION_LEVERAGE cannot exceed OKX_LIVE_MAX_LEVERAGE"
                 )
-            if not set(self.okx_live_scan_symbol_list).issubset(
-                set(self.okx_live_allowed_symbol_list)
-            ):
-                raise ValueError(
-                    "OKX_LIVE_SCAN_SYMBOLS must be a subset of OKX_LIVE_ALLOWED_SYMBOLS"
-                )
 
         parsed = urlparse(self.okx_demo_rest_base_url)
         if parsed.scheme != "https" or parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
@@ -539,10 +629,11 @@ class Settings(BaseSettings):
                     "OKX_DEMO_AUTOMATION_LEVERAGE cannot exceed OKX_DEMO_MAX_LEVERAGE"
                 )
             if not set(self.okx_demo_scan_symbol_list).issubset(
-                set(self.okx_demo_allowed_symbol_list)
+                set(self.okx_ws_symbol_list)
             ):
                 raise ValueError(
-                    "OKX_DEMO_SCAN_SYMBOLS must be a subset of OKX_DEMO_ALLOWED_SYMBOLS"
+                    "OKX_DEMO_SCAN_SYMBOLS must be a subset of OKX_WS_SYMBOLS "
+                    "when Demo automation is enabled"
                 )
 
         if self.okx_demo_score_risk_enabled:
