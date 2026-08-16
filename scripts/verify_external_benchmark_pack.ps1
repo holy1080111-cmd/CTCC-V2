@@ -1,5 +1,6 @@
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+
 $sourceRoot = (Get-Location).Path
 
 function Invoke-NativeStep {
@@ -7,6 +8,7 @@ function Invoke-NativeStep {
         [Parameter(Mandatory = $true)][string]$Name,
         [Parameter(Mandatory = $true)][scriptblock]$Command
     )
+
     Write-Host "== $Name =="
     $previousPreference = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
@@ -20,7 +22,9 @@ function Invoke-NativeStep {
         $ErrorActionPreference = $previousPreference
     }
     $output | ForEach-Object { Write-Host $_ }
-    if ($exitCode -ne 0) { throw "$Name failed (exit=$exitCode)" }
+    if ($exitCode -ne 0) {
+        throw "$Name failed (exit=$exitCode)"
+    }
 }
 
 function Test-TruthyValue {
@@ -34,7 +38,7 @@ function Test-TruthyValue {
     )
 }
 
-Write-Host "== Host Compose execution-authority preflight =="
+Write-Host "== External benchmark execution-authority preflight =="
 $previousPreference = $ErrorActionPreference
 $ErrorActionPreference = "Continue"
 $composeJson = ""
@@ -73,9 +77,9 @@ $enabledAuthority = @(
     }
 )
 if ($enabledAuthority.Count -ne 0) {
-    throw "Disable execution authority before startup: $($enabledAuthority -join ', ')"
+    throw "Disable execution authority before verification: $($enabledAuthority -join ', ')"
 }
-Write-Host "V168_HOST_EXECUTION_AUTHORITY_DISABLED=1"
+Write-Host "EXTERNAL_BENCHMARK_HOST_EXECUTION_AUTHORITY_DISABLED=1"
 
 Invoke-NativeStep "Docker build and start" {
     docker compose up -d --build
@@ -83,8 +87,14 @@ Invoke-NativeStep "Docker build and start" {
 
 $deadline = (Get-Date).AddSeconds(120)
 do {
-    $health = (docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' ctcc-v2-api 2>$null).Trim()
-    if ($health -eq "healthy") { break }
+    $health = (
+        docker inspect `
+            --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' `
+            ctcc-v2-api 2>$null
+    ).Trim()
+    if ($health -eq "healthy") {
+        break
+    }
     if ((Get-Date) -ge $deadline) {
         docker compose ps api
         docker compose logs --tail 120 api
@@ -93,9 +103,10 @@ do {
     Start-Sleep -Seconds 2
 } while ($true)
 
-Invoke-NativeStep "Verification safety preflight" {
-    $authorityProbe = @'
+Invoke-NativeStep "External benchmark authority boundary" {
+    $probe = @'
 from app.config.settings import get_settings
+from app.research.external_benchmarks import REFERENCE_SOURCE_CATALOG
 
 settings = get_settings()
 active = any(
@@ -110,90 +121,50 @@ active = any(
         settings.okx_demo_soak_allow_execute,
     )
 )
-assert not active, (
-    "Disable every Paper, Demo, and Live execution-authority switch "
-    "before running the regression suite"
+assert not active
+assert all(
+    source.reference_only
+    and not source.execution_authority
+    and source.terms_review_required
+    for source in REFERENCE_SOURCE_CATALOG.values()
 )
-print("REGRESSION_WRITE_AUTHORITY_DISABLED=1")
+print("EXTERNAL_BENCHMARK_EXECUTION_AUTHORITY=0")
 '@
-    $authorityProbe | docker compose exec -T api python -
+    $probe | docker compose exec -T api python -
 }
 
-Invoke-NativeStep "Alembic heads" {
-    docker compose exec -T api alembic heads
-}
-Invoke-NativeStep "Alembic current" {
-    docker compose exec -T api alembic current
-}
 Invoke-NativeStep "Alembic exact revision" {
-    $revisionProbe = @'
+    $probe = @'
 import subprocess
 
 expected = "0013 (head)"
-heads = subprocess.check_output(
-    ["alembic", "heads"],
-    text=True,
-).strip()
+heads = subprocess.check_output(["alembic", "heads"], text=True).strip()
 current = subprocess.check_output(
-    ["alembic", "current"],
-    text=True,
+    ["alembic", "current"], text=True
 ).strip().splitlines()[-1]
 assert heads == expected, (heads, expected)
 assert current == expected, (current, expected)
 print("ALEMBIC_REVISION=0013")
 '@
-    $revisionProbe | docker compose exec -T api python -
+    $probe | docker compose exec -T api python -
 }
+
 Invoke-NativeStep "Alembic schema drift" {
     docker compose exec -T api alembic check
 }
-Invoke-NativeStep "Live boundary targeted tests" {
-    docker compose exec -T api python scripts/hermetic_pytest.py -q -p no:cacheprovider `
-        tests/unit/test_hermetic_pytest.py `
-        tests/unit/test_settings.py `
-        tests/unit/exchange/test_live_private_rest.py `
-        tests/unit/exchange/test_live_execution_rest.py `
-        tests/unit/exchange/test_live_private_parsers.py `
-        tests/unit/database/test_okx_live_models.py `
-        tests/unit/database/test_okx_live_repository.py `
-        tests/unit/database/test_okx_live_execution_repository.py `
-        tests/unit/test_okx_live_service.py `
-        tests/unit/test_okx_live_automation.py `
-        tests/integration/test_okx_live_schema_integration.py `
-        tests/integration/test_okx_live_repository_integration.py `
-        tests/integration/test_okx_live_execution_repository_integration.py
-}
-Invoke-NativeStep "Adaptive Demo portfolio targeted tests" {
-    docker compose exec -T api python scripts/hermetic_pytest.py -q -p no:cacheprovider `
-        tests/unit/exchange/test_symbols.py `
-        tests/unit/exchange/test_parsers.py `
-        tests/unit/indicators/test_causal_trend.py `
-        tests/unit/indicators/test_causal_state.py `
-        tests/unit/indicators/test_conformal_return.py `
-        tests/unit/analysis/test_service.py `
-        tests/unit/analysis/test_mathematical_core.py `
-        tests/unit/strategies/test_derivative_confirmation.py `
-        tests/unit/strategies/test_mathematical_confirmation.py `
-        tests/unit/strategies/test_service_mathematical_gate.py `
-        tests/unit/strategies/test_structural_protection.py `
-        tests/unit/test_demo_capital_bucket.py `
-        tests/unit/test_demo_automation_risk_profile.py `
-        tests/unit/test_demo_structural_risk.py `
-        tests/unit/test_risk_engine.py `
-        tests/unit/test_demo_automation.py `
-        tests/unit/test_observability.py `
-        tests/unit/database/test_demo_adaptive_portfolio_models.py `
-        tests/integration/test_demo_adaptive_portfolio_schema_integration.py
-}
-Invoke-NativeStep "External benchmark pack targeted tests" {
+
+Invoke-NativeStep "External benchmark targeted tests" {
     docker compose exec -T api python scripts/hermetic_pytest.py `
         -q -p no:cacheprovider `
         tests/unit/research `
         tests/integration/test_external_benchmark_reference_flow.py
 }
+
 Invoke-NativeStep "Full regression" {
-    docker compose exec -T api python scripts/hermetic_pytest.py -q -p no:cacheprovider
+    docker compose exec -T api python scripts/hermetic_pytest.py `
+        -q -p no:cacheprovider
 }
+
 Invoke-NativeStep "Git whitespace check" {
     git diff --check
     if ($LASTEXITCODE -ne 0) {
@@ -204,7 +175,7 @@ Invoke-NativeStep "Git whitespace check" {
 
 Invoke-NativeStep "Canonical source manifest" {
     docker compose run --rm --no-deps `
-        --volume "${sourceRoot}:/source:ro" `
+        --volume "$($sourceRoot):/source:ro" `
         api python /source/scripts/manifest.py `
         --root /source `
         --manifest /source/MANIFEST.sha256 `
@@ -212,8 +183,12 @@ Invoke-NativeStep "Canonical source manifest" {
 }
 
 $head = (git rev-parse HEAD).Trim()
-$health = (docker inspect --format '{{.State.Health.Status}}' ctcc-v2-api).Trim()
-Write-Host "V168_LIVE_BOUNDARY_VERIFIED=1"
+$health = (
+    docker inspect --format '{{.State.Health.Status}}' ctcc-v2-api
+).Trim()
+Write-Host "EXTERNAL_BENCHMARK_PACK_V1_VERIFIED=1"
+Write-Host "EXTERNAL_BENCHMARK_RUNTIME_CONSUMERS=0"
+Write-Host "EXTERNAL_BENCHMARK_EXECUTION_AUTHORITY=0"
 Write-Host "HEAD=$head"
 Write-Host "ALEMBIC_HEAD=0013"
 Write-Host "API_HEALTH=$health"

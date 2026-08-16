@@ -121,6 +121,20 @@ packages, and existing runtime modules do not consume MIE. Every nested
 contract fixes execution_authority=false; predictive validation may grant
 decision-gate use in a later Gate but never exchange-write authority.
 
+The external benchmark pack is a second isolated research boundary:
+
+```text
+reviewed public source metadata
+→ immutable external dataset manifest
+→ local artifact SHA-256 verification
+→ explicit data-quality profile
+→ reference-only formula and published-result records
+```
+
+Gate v1 has no network client, runtime consumer, database migration, or import
+from MIE, strategy, risk, Paper, Demo, Live, exchange, or execution packages.
+Every result fixes `promotion_eligible=false` and `execution_authority=false`.
+
 ## Authority rules
 
 - The Paper engine is authoritative for local Paper state; PostgreSQL restores it.
@@ -157,6 +171,9 @@ decision-gate use in a later Gate but never exchange-write authority.
 - `mie.features` owns strict fixed-horizon confirmed-bar inputs and pure
   statistics, signal, dynamics, momentum, and confirmed-geometry snapshots;
   Gate 2 has no runtime consumer or execution authority.
+- `research.external_benchmarks` owns frozen public-source metadata, artifact
+  identity, point-in-time dataset contracts, quality reports, and
+  formula-parity records. It cannot fetch data or promote a model in Gate v1.
 - `observability.service` owns soak preflight, bounded-session safety, and watchdogs.
 - `performance.service` derives evidence, persists daily reports, and exposes operator strategy controls without exchange-write authority.
 - `database.repositories` persists exchange mirrors, automation state, soak sessions,
@@ -202,3 +219,5 @@ decision-gate use in a later Gate but never exchange-write authority.
 - API remains single-worker because Arm and scheduler ownership are process-local.
 - Performance validation never enables live trading and never auto-disables a strategy.
 - Disabling a strategy affects future candidate selection only; existing positions and exchange orders are untouched.
+- Public data and published benchmark results remain calculation references;
+  they cannot increase score, risk, leverage, or execution authority.

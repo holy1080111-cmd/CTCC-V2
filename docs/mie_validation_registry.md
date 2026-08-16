@@ -38,6 +38,8 @@ No evidence level grants exchange-write authority.
 | MIE endpoint dynamics | causal; exact legacy characterization | `mie.price_path.shared` | shadow only in Gate 2 | OOS information gain and net EV beyond legacy |
 | MIE normalized momentum | computational/causal implementation | `mie.price_path.shared` | shadow only | OOS incremental value after costs and dependency correction |
 | MIE confirmed geometry | causal confirmation; auxiliary market claim | `mie.price_path.shared` | shadow only | objective labels and OOS incremental value after costs |
+| external public dataset manifest and quality profile | computational identity and data-quality checks | external provider artifact | calculation reference only | canonical parsers, point-in-time replay, OOS economics and independent review |
+| published external benchmark record | reported or reproducible reference, not CTCC validation | external project/dataset | calculation reference only | identical data/cost/trial protocol and independent CTCC reproduction |
 
 All five Gate 2 families consume the same confirmed OHLCV path and therefore
 share the `mie.price_path.shared` dependency group in later evidence adapters.
