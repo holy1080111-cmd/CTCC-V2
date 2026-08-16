@@ -108,6 +108,21 @@ disabled to requalify live instrument state, spread, estimated 24-hour USDT
 notional, minimum-order notional, order-book presence, and confirmed 4H history.
 See `docs/demo_multi_symbol_universe.md` for the exact policy and rollout gate.
 
+## External benchmark evidence (reference-only)
+
+The external benchmark package freezes official public-source identity,
+point-in-time metadata, artifact hashes, data-quality profiles, published
+results, and formula-parity calculations. Gate v2 adds an operator-only HTTPS
+acquisition tool that requires the expected SHA-256 and byte size before a
+download, revalidates every redirect host, rejects unsafe ZIP metadata, and
+places a verified artifact without overwriting an existing path.
+
+No API route or application runtime imports this package. External files and
+published metrics cannot promote a model, change score/risk/leverage, or reach
+Paper, Demo, Live, or exchange writes. See
+`docs/external_benchmark_pack_v1.md` and
+`docs/external_benchmark_pack_v2.md`.
+
 ## Adaptive Demo portfolio (disabled by default)
 
 The Demo automation can rank candidates by analysis score and, only when

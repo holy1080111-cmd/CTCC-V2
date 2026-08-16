@@ -173,7 +173,9 @@ Every result fixes `promotion_eligible=false` and `execution_authority=false`.
   Gate 2 has no runtime consumer or execution authority.
 - `research.external_benchmarks` owns frozen public-source metadata, artifact
   identity, point-in-time dataset contracts, quality reports, and
-  formula-parity records. It cannot fetch data or promote a model in Gate v1.
+  formula-parity records. Its Gate v2 acquisition tool can issue only bounded
+  GET requests for pre-hashed artifacts on reviewed provider hosts; no
+  application runtime imports it and it cannot promote a model or execute.
 - `observability.service` owns soak preflight, bounded-session safety, and watchdogs.
 - `performance.service` derives evidence, persists daily reports, and exposes operator strategy controls without exchange-write authority.
 - `database.repositories` persists exchange mirrors, automation state, soak sessions,

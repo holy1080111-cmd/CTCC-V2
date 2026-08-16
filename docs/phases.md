@@ -30,9 +30,11 @@
 - External Benchmark Pack:
   - Gate v1 immutable source/dataset/result contracts, artifact verification,
     strict quality profiling, and deterministic formula parity
-  - no network adapter, runtime consumer, model promotion, or execution authority
-  - later gates add provider-specific ingestion, replay, execution calibration,
-    and independently reviewed OOS validation
+  - Gate v2 operator-only, pre-hashed HTTPS acquisition with reviewed-host
+    redirects, byte/media limits, atomic no-clobber placement, and ZIP safety
+  - no runtime consumer, model promotion, database write, or execution authority
+  - later gates add canonical parsing, replay, execution calibration, and
+    independently reviewed OOS validation
 - v2.0 Final acceptance
 
 ## v1.0 completed

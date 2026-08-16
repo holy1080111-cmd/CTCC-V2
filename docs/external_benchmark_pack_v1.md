@@ -151,8 +151,9 @@ API_HEALTH=healthy
 
 ## Later gates
 
-1. Provider-specific, bounded, redirect-aware download adapters with explicit
-   terms acceptance and archive-bomb defenses.
+1. Provider-scoped, bounded, redirect-aware acquisition with explicit terms
+   review, pinned identity, atomic placement, and ZIP-bomb defenses is
+   implemented in [External Benchmark Pack v2](external_benchmark_pack_v2.md).
 2. Canonical OKX/Binance trade, candle, funding, and L2 parsers.
 3. Deterministic market-event and order-book replay under `app/replay`.
 4. Realistic partial-fill, queue, latency, spread, funding, gap, and liquidation

@@ -95,6 +95,16 @@ class TimestampEncoding(StrEnum):
     UNIX_NANOSECONDS = "unix_nanoseconds"
 
 
+class ArchiveKind(StrEnum):
+    NONE = "none"
+    ZIP = "zip"
+
+
+class AcquisitionStatus(StrEnum):
+    DOWNLOADED = "downloaded"
+    ALREADY_PRESENT = "already_present"
+
+
 class DatasetWindow(ReferenceContract):
     start: datetime
     end: datetime
@@ -351,6 +361,232 @@ class ArtifactVerification(ReferenceContract):
     byte_size: int = Field(ge=1)
     verified: Literal[True] = True
     execution_authority: Literal[False] = False
+
+
+class ExternalArtifactAcquisitionRequest(ReferenceContract):
+    """Operator-reviewed request for one immutable public artifact.
+
+    The expected identity must be known before transport begins. This prevents
+    HTTPS success from being mistaken for source-integrity verification.
+    """
+
+    request_id: str = Field(
+        min_length=3,
+        max_length=160,
+        pattern=r"^[a-z0-9]+(?:[._:-][a-z0-9]+)*$",
+    )
+    source_id: str = Field(
+        min_length=3,
+        max_length=160,
+        pattern=r"^[a-z0-9]+(?:[._-][a-z0-9]+)*$",
+    )
+    download_url: HttpUrl
+    terms_url: HttpUrl
+    terms_review_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    terms_reviewed_at: datetime
+    relative_path: str = Field(min_length=1, max_length=240)
+    expected_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_byte_size: int = Field(ge=1)
+    expected_media_types: tuple[str, ...] = Field(min_length=1)
+    archive_kind: ArchiveKind = ArchiveKind.NONE
+    terms_accepted: Literal[True] = True
+    reference_only: Literal[True] = True
+    promotion_eligible: Literal[False] = False
+    execution_authority: Literal[False] = False
+
+    @field_validator("download_url", "terms_url")
+    @classmethod
+    def validate_urls(cls, value: HttpUrl, info) -> HttpUrl:
+        if value.scheme != "https":
+            raise ValueError(f"{info.field_name} must use HTTPS")
+        if value.username or value.password or value.query or value.fragment:
+            raise ValueError(
+                f"{info.field_name} cannot contain credentials, query, or fragment"
+            )
+        return value
+
+    @field_validator("terms_reviewed_at")
+    @classmethod
+    def validate_terms_reviewed_at(cls, value: datetime) -> datetime:
+        return require_utc(value, "terms_reviewed_at")
+
+    @field_validator("relative_path")
+    @classmethod
+    def validate_relative_path(cls, value: str) -> str:
+        if "\\" in value:
+            raise ValueError("acquisition paths must use POSIX separators")
+        path = PurePosixPath(value)
+        if path.is_absolute() or any(
+            part in {"", ".", ".."} for part in path.parts
+        ):
+            raise ValueError("acquisition path must remain below its dataset root")
+        return value
+
+    @field_validator("expected_media_types")
+    @classmethod
+    def validate_expected_media_types(
+        cls,
+        value: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        if len(value) != len(set(value)):
+            raise ValueError("expected media types must be unique")
+        if any(
+            item != item.lower()
+            or "/" not in item
+            or ";" in item
+            or not item.strip()
+            for item in value
+        ):
+            raise ValueError("expected media types must be lowercase base types")
+        return value
+
+    @model_validator(mode="after")
+    def validate_archive_identity(self) -> "ExternalArtifactAcquisitionRequest":
+        is_zip_path = self.relative_path.lower().endswith(".zip")
+        if is_zip_path != (self.archive_kind == ArchiveKind.ZIP):
+            raise ValueError("zip path and archive_kind must agree")
+        return self
+
+
+class ArchiveInspectionPolicy(ReferenceContract):
+    max_members: int = Field(default=10_000, ge=1, le=1_000_000)
+    max_total_uncompressed_bytes: int = Field(
+        default=4 * 1024 * 1024 * 1024,
+        ge=1,
+    )
+    max_single_member_bytes: int = Field(
+        default=1024 * 1024 * 1024,
+        ge=1,
+    )
+    max_expansion_ratio: Decimal = Field(default=Decimal("100"), ge=1)
+    allow_nested_archives: Literal[False] = False
+
+
+class ArchiveInspectionReport(ReferenceContract):
+    artifact_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    member_count: int = Field(ge=0)
+    total_compressed_bytes: int = Field(ge=0)
+    total_uncompressed_bytes: int = Field(ge=0)
+    maximum_expansion_ratio: Decimal = Field(ge=0)
+    duplicate_member_count: int = Field(ge=0)
+    unsafe_path_count: int = Field(ge=0)
+    encrypted_member_count: int = Field(ge=0)
+    symlink_member_count: int = Field(ge=0)
+    nested_archive_count: int = Field(ge=0)
+    passed: bool
+    failure_codes: tuple[str, ...] = ()
+    reference_only: Literal[True] = True
+    promotion_eligible: Literal[False] = False
+    execution_authority: Literal[False] = False
+
+    @model_validator(mode="after")
+    def validate_archive_report(self) -> "ArchiveInspectionReport":
+        if len(self.failure_codes) != len(set(self.failure_codes)) or any(
+            not code.strip() for code in self.failure_codes
+        ):
+            raise ValueError("archive failure codes must be unique and nonblank")
+        if self.passed != (len(self.failure_codes) == 0):
+            raise ValueError("archive pass state must match failure codes")
+        for count in (
+            self.duplicate_member_count,
+            self.unsafe_path_count,
+            self.encrypted_member_count,
+            self.symlink_member_count,
+            self.nested_archive_count,
+        ):
+            if count > self.member_count:
+                raise ValueError("archive defect counts cannot exceed member count")
+        return self
+
+
+class AcquisitionLimits(ReferenceContract):
+    max_bytes: int = Field(
+        default=1024 * 1024 * 1024,
+        ge=4096,
+        le=16 * 1024 * 1024 * 1024,
+    )
+    max_redirects: int = Field(default=3, ge=0, le=10)
+    chunk_size: int = Field(
+        default=1024 * 1024,
+        ge=4096,
+        le=16 * 1024 * 1024,
+    )
+    connect_timeout_seconds: Decimal = Field(default=Decimal("10"), gt=0, le=120)
+    read_timeout_seconds: Decimal = Field(default=Decimal("60"), gt=0, le=600)
+
+
+class ExternalArtifactAcquisitionReceipt(ReferenceContract):
+    request_id: str = Field(
+        min_length=3,
+        max_length=160,
+        pattern=r"^[a-z0-9]+(?:[._:-][a-z0-9]+)*$",
+    )
+    request_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source_id: str = Field(
+        min_length=3,
+        max_length=160,
+        pattern=r"^[a-z0-9]+(?:[._-][a-z0-9]+)*$",
+    )
+    final_url: HttpUrl
+    relative_path: str = Field(min_length=1, max_length=240)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    byte_size: int = Field(ge=1)
+    media_type: str = Field(min_length=3, max_length=100)
+    retrieved_at: datetime
+    redirect_count: int = Field(ge=0, le=10)
+    status: AcquisitionStatus
+    archive_report_sha256: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    verified: Literal[True] = True
+    reference_only: Literal[True] = True
+    promotion_eligible: Literal[False] = False
+    execution_authority: Literal[False] = False
+
+    @field_validator("final_url")
+    @classmethod
+    def validate_final_url(cls, value: HttpUrl) -> HttpUrl:
+        if (
+            value.scheme != "https"
+            or value.username
+            or value.password
+            or value.query
+            or value.fragment
+        ):
+            raise ValueError("final_url must be credential-free HTTPS")
+        return value
+
+    @field_validator("retrieved_at")
+    @classmethod
+    def validate_retrieved_at(cls, value: datetime) -> datetime:
+        return require_utc(value, "retrieved_at")
+
+    @field_validator("relative_path")
+    @classmethod
+    def validate_relative_path(cls, value: str) -> str:
+        if "\\" in value:
+            raise ValueError("receipt paths must use POSIX separators")
+        path = PurePosixPath(value)
+        if path.is_absolute() or any(
+            part in {"", ".", ".."} for part in path.parts
+        ):
+            raise ValueError("receipt path must remain below its dataset root")
+        return value
+
+    @field_validator("media_type")
+    @classmethod
+    def validate_media_type(cls, value: str) -> str:
+        if value != value.lower() or "/" not in value or ";" in value:
+            raise ValueError("receipt media_type must be a lowercase base type")
+        return value
+
+    @model_validator(mode="after")
+    def validate_archive_receipt(self) -> "ExternalArtifactAcquisitionReceipt":
+        is_zip_path = self.relative_path.lower().endswith(".zip")
+        if is_zip_path != (self.archive_report_sha256 is not None):
+            raise ValueError("zip receipts require an archive report identity")
+        return self
 
 
 class BenchmarkMetric(ReferenceContract):

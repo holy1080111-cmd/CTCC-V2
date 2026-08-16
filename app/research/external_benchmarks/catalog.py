@@ -7,6 +7,7 @@ from pydantic import Field, HttpUrl, field_validator, model_validator
 
 from app.research.external_benchmarks.contracts import (
     DatasetKind,
+    ExternalArtifactAcquisitionRequest,
     ExternalDatasetManifest,
     IntendedUse,
     ReferenceContract,
@@ -231,4 +232,21 @@ def validate_published_benchmark_source(
 ) -> ReferenceSourceDescriptor:
     descriptor = reference_source(record.source_id)
     _validate_provider_url("benchmark source_url", record.source_url, descriptor)
+    return descriptor
+
+
+def validate_acquisition_source(
+    request: ExternalArtifactAcquisitionRequest,
+) -> ReferenceSourceDescriptor:
+    descriptor = reference_source(request.source_id)
+    _validate_provider_url(
+        "acquisition download_url",
+        request.download_url,
+        descriptor,
+    )
+    _validate_provider_url(
+        "acquisition terms_url",
+        request.terms_url,
+        descriptor,
+    )
     return descriptor

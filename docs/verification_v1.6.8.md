@@ -66,6 +66,21 @@ asserts that the resulting test process has no Paper, Demo, or Live execution
 authority. The outer verifier separately checks the real running container
 before sanitization, so a test override cannot conceal an enabled write path.
 
+## External Benchmark Pack v2 acquisition gate
+
+The source-validation environment verifies the network boundary with
+`httpx.MockTransport`; it does not contact an external provider. Acceptance
+covers predeclared SHA-256 and byte size, reviewed-host redirects, media type,
+stream limits, no-clobber placement, identical-file idempotence, partial-file
+cleanup, ZIP traversal/duplicate/nesting/expansion rejection, and an end-to-end
+acquisition-to-v1-quality reference flow.
+
+The operator must still run `scripts/verify_external_benchmark_pack.ps1` under
+Docker/PostgreSQL with every write switch disabled. A real provider artifact is
+not accepted until its terms review digest, official URL, byte size, and
+checksum are independently supplied in the acquisition request. No external
+artifact is bundled with CTCC and no source test performs a public download.
+
 The isolation contract is covered by `tests/unit/test_hermetic_pytest.py`,
 including a deployment profile with 10% Demo portfolio risk, a 10% weekly
 backstop, structural dynamic leverage, and Demo writes enabled. Those values

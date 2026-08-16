@@ -7,16 +7,19 @@ import pytest
 from pydantic import ValidationError
 
 from app.research.external_benchmarks import (
+    ArchiveKind,
     BenchmarkMetric,
     BenchmarkRunStatus,
     DatasetArtifact,
     DatasetWindow,
     ExternalBenchmarkRun,
     ExternalDatasetManifest,
+    ExternalArtifactAcquisitionRequest,
     PublishedBenchmarkRecord,
     ReproducibilityLevel,
 )
 from tests.unit.research.helpers import AVAILABLE, END, RETRIEVED, START, trade_manifest
+from tests.unit.research.helpers import acquisition_request
 
 
 SHA = "a" * 64
@@ -153,3 +156,29 @@ def test_benchmark_run_requires_consistent_status_and_unique_metrics() -> None:
     payload["metrics"] = payload["metrics"] * 2
     with pytest.raises(ValidationError, match="metric names"):
         ExternalBenchmarkRun.model_validate(payload)
+
+
+def test_acquisition_request_requires_pinned_identity_and_safe_public_url() -> None:
+    request = acquisition_request(b"public-data")
+    assert request.terms_accepted is True
+    assert request.reference_only is True
+    assert request.promotion_eligible is False
+    assert request.execution_authority is False
+
+    payload = request.model_dump()
+    payload["download_url"] = "https://data.binance.vision/file?token=secret"
+    with pytest.raises(ValidationError, match="query"):
+        ExternalArtifactAcquisitionRequest.model_validate(payload)
+
+    payload = request.model_dump()
+    payload["relative_path"] = "raw/archive.zip"
+    with pytest.raises(ValidationError, match="archive_kind"):
+        ExternalArtifactAcquisitionRequest.model_validate(payload)
+
+    zip_request = acquisition_request(
+        b"zip-data",
+        relative_path="raw/archive.zip",
+        archive_kind=ArchiveKind.ZIP,
+        media_types=("application/zip",),
+    )
+    assert zip_request.archive_kind == ArchiveKind.ZIP

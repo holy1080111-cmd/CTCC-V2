@@ -10,6 +10,8 @@ from app.config.settings import Settings
 from app.research.external_benchmarks import (
     REFERENCE_SOURCE_CATALOG,
     DatasetQualityReport,
+    ExternalArtifactAcquisitionReceipt,
+    ExternalArtifactAcquisitionRequest,
     ExternalBenchmarkRun,
     ExternalDatasetManifest,
     PublishedBenchmarkRecord,
@@ -43,6 +45,7 @@ FORBIDDEN_IMPORT_PREFIXES = (
     "subprocess",
     "urllib.request",
 )
+NETWORK_ACQUISITION_MODULE = Path("external_benchmarks/acquisition.py")
 
 
 def imported_names(node: ast.AST) -> tuple[str, ...]:
@@ -60,15 +63,18 @@ def imported_names(node: ast.AST) -> tuple[str, ...]:
     )
 
 
-def test_external_benchmark_pack_has_no_network_or_execution_imports() -> None:
+def test_external_benchmark_network_import_is_isolated_from_execution() -> None:
     violations: list[str] = []
     for path in sorted(RESEARCH_ROOT.rglob("*.py")):
+        relative = path.relative_to(RESEARCH_ROOT)
         tree = ast.parse(path.read_text(encoding="utf-8-sig"), filename=str(path))
         for node in ast.walk(tree):
             for name in imported_names(node):
+                if relative == NETWORK_ACQUISITION_MODULE and name == "httpx":
+                    continue
                 if name.startswith(FORBIDDEN_IMPORT_PREFIXES):
                     violations.append(
-                        f"{path.relative_to(RESEARCH_ROOT)}:{node.lineno}:{name}"
+                        f"{relative}:{node.lineno}:{name}"
                     )
     assert violations == []
 
@@ -101,6 +107,8 @@ def test_reference_contracts_contain_no_order_sizing_or_promotion_fields() -> No
     for model in (
         ExternalDatasetManifest,
         DatasetQualityReport,
+        ExternalArtifactAcquisitionRequest,
+        ExternalArtifactAcquisitionReceipt,
         PublishedBenchmarkRecord,
         ReferenceMetricBundle,
         ExternalBenchmarkRun,
@@ -176,3 +184,21 @@ def test_external_benchmarks_do_not_change_fail_safe_runtime_defaults() -> None:
     assert settings.okx_demo_allow_order_writes is False
     assert settings.okx_demo_auto_execution is False
     assert settings.okx_demo_soak_allow_execute is False
+
+
+def test_network_acquisition_is_get_only_and_never_follows_redirects_implicitly() -> None:
+    source = (RESEARCH_ROOT / NETWORK_ACQUISITION_MODULE).read_text(
+        encoding="utf-8"
+    )
+    tree = ast.parse(source)
+    string_literals = {
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+    assert "GET" in string_literals
+    assert "POST" not in string_literals
+    assert "PUT" not in string_literals
+    assert "PATCH" not in string_literals
+    assert "DELETE" not in string_literals
+    assert "follow_redirects=True" not in source

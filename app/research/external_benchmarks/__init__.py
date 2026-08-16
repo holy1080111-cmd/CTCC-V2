@@ -3,14 +3,29 @@ from app.research.external_benchmarks.artifacts import (
     sha256_file,
     verify_dataset_artifacts,
 )
+from app.research.external_benchmarks.acquisition import (
+    ExternalArtifactAcquisitionError,
+    acquire_external_artifact,
+)
+from app.research.external_benchmarks.archive import (
+    ArchiveInspectionError,
+    inspect_zip_archive,
+    require_safe_zip_archive,
+)
 from app.research.external_benchmarks.catalog import (
     REFERENCE_SOURCE_CATALOG,
     ReferenceSourceDescriptor,
     reference_source,
+    validate_acquisition_source,
     validate_manifest_source,
     validate_published_benchmark_source,
 )
 from app.research.external_benchmarks.contracts import (
+    AcquisitionLimits,
+    AcquisitionStatus,
+    ArchiveInspectionPolicy,
+    ArchiveInspectionReport,
+    ArchiveKind,
     ArtifactVerification,
     BenchmarkMetric,
     BenchmarkRunStatus,
@@ -20,6 +35,8 @@ from app.research.external_benchmarks.contracts import (
     DatasetQualityReport,
     DatasetWindow,
     ExternalBenchmarkRun,
+    ExternalArtifactAcquisitionReceipt,
+    ExternalArtifactAcquisitionRequest,
     ExternalDatasetManifest,
     IntendedUse,
     LicenseStatus,
@@ -36,6 +53,12 @@ from app.research.external_benchmarks.metrics import (
 from app.research.external_benchmarks.quality import profile_dataset_records
 
 __all__ = [
+    "AcquisitionLimits",
+    "AcquisitionStatus",
+    "ArchiveInspectionError",
+    "ArchiveInspectionPolicy",
+    "ArchiveInspectionReport",
+    "ArchiveKind",
     "ArtifactVerification",
     "ArtifactVerificationError",
     "BenchmarkMetric",
@@ -46,6 +69,9 @@ __all__ = [
     "DatasetQualityReport",
     "DatasetWindow",
     "ExternalBenchmarkRun",
+    "ExternalArtifactAcquisitionError",
+    "ExternalArtifactAcquisitionReceipt",
+    "ExternalArtifactAcquisitionRequest",
     "ExternalDatasetManifest",
     "IntendedUse",
     "LicenseStatus",
@@ -57,11 +83,15 @@ __all__ = [
     "RevisionPolicy",
     "SourceKind",
     "TimestampEncoding",
+    "acquire_external_artifact",
     "calculate_reference_return_metrics",
+    "inspect_zip_archive",
     "profile_dataset_records",
     "reference_source",
+    "require_safe_zip_archive",
     "sha256_file",
     "verify_dataset_artifacts",
+    "validate_acquisition_source",
     "validate_manifest_source",
     "validate_published_benchmark_source",
 ]
