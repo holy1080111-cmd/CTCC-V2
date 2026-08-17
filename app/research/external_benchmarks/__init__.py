@@ -20,6 +20,19 @@ from app.research.external_benchmarks.catalog import (
     validate_manifest_source,
     validate_published_benchmark_source,
 )
+from app.research.external_benchmarks.binance import (
+    BinanceKlineCoordinates,
+    BinancePublicArtifactIdentity,
+    BinanceReferencePreparationError,
+    parse_binance_checksum,
+    prepare_binance_kline_request,
+)
+from app.research.external_benchmarks.binance_klines import (
+    BinanceKlineEvidence,
+    BinanceKlineQualityReport,
+    BinanceKlineValidationError,
+    profile_binance_kline_archive,
+)
 from app.research.external_benchmarks.contracts import (
     AcquisitionLimits,
     AcquisitionStatus,
@@ -63,6 +76,12 @@ __all__ = [
     "ArtifactVerificationError",
     "BenchmarkMetric",
     "BenchmarkRunStatus",
+    "BinanceKlineCoordinates",
+    "BinanceKlineEvidence",
+    "BinanceKlineQualityReport",
+    "BinanceKlineValidationError",
+    "BinancePublicArtifactIdentity",
+    "BinanceReferencePreparationError",
     "DatasetArtifact",
     "DatasetKind",
     "DatasetQualityPolicy",
@@ -86,6 +105,9 @@ __all__ = [
     "acquire_external_artifact",
     "calculate_reference_return_metrics",
     "inspect_zip_archive",
+    "parse_binance_checksum",
+    "prepare_binance_kline_request",
+    "profile_binance_kline_archive",
     "profile_dataset_records",
     "reference_source",
     "require_safe_zip_archive",

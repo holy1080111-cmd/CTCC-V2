@@ -189,6 +189,7 @@ Invoke-NativeStep "External benchmark pack targeted tests" {
     docker compose exec -T api python scripts/hermetic_pytest.py `
         -q -p no:cacheprovider `
         tests/unit/research `
+        tests/integration/test_binance_reference_probe_flow.py `
         tests/integration/test_external_benchmark_acquisition_flow.py `
         tests/integration/test_external_benchmark_reference_flow.py
 }

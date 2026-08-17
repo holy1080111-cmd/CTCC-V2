@@ -117,11 +117,18 @@ acquisition tool that requires the expected SHA-256 and byte size before a
 download, revalidates every redirect host, rejects unsafe ZIP metadata, and
 places a verified artifact without overwriting an existing path.
 
+Gate v2.1 adds the first provider-specific flow: it freezes Binance USD-M
+`BTCUSDT` one-minute data for 2024-01-01 from the official sibling checksum and
+HEAD metadata, shows the complete identity before an exact operator
+confirmation, then performs a bounded ZIP download and a strict 1,440-row
+quality profile. Raw data and evidence stay outside Git.
+
 No API route or application runtime imports this package. External files and
 published metrics cannot promote a model, change score/risk/leverage, or reach
 Paper, Demo, Live, or exchange writes. See
-`docs/external_benchmark_pack_v1.md` and
-`docs/external_benchmark_pack_v2.md`.
+`docs/external_benchmark_pack_v1.md`,
+`docs/external_benchmark_pack_v2.md`, and
+`docs/external_benchmark_pack_v2_1.md`.
 
 ## Adaptive Demo portfolio (disabled by default)
 

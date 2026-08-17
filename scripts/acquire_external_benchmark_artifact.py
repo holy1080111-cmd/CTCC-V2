@@ -11,6 +11,7 @@ from app.research.external_benchmarks import (
     ExternalArtifactAcquisitionRequest,
     acquire_external_artifact,
 )
+from app.research.external_benchmarks.evidence_io import write_contract_json
 
 
 def _real_file(path: Path, name: str) -> Path:
@@ -44,6 +45,13 @@ async def _run(args: argparse.Namespace) -> int:
             max_expansion_ratio=args.max_expansion_ratio,
         ),
     )
+    if args.receipt_relative_path:
+        status = write_contract_json(
+            args.dataset_root,
+            args.receipt_relative_path,
+            receipt,
+        )
+        print(f"RECEIPT_OUTPUT_STATUS={status}")
     print(receipt.model_dump_json(indent=2))
     return 0
 
@@ -60,6 +68,7 @@ def main() -> int:
     parser.add_argument("--max-bytes", type=int, default=1024 * 1024 * 1024)
     parser.add_argument("--max-redirects", type=int, default=3)
     parser.add_argument("--max-archive-members", type=int, default=10_000)
+    parser.add_argument("--receipt-relative-path")
     parser.add_argument(
         "--max-uncompressed-bytes",
         type=int,

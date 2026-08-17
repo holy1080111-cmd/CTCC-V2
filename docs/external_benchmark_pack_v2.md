@@ -159,6 +159,7 @@ Gate v2 does not:
 - perform walk-forward, PBO, DSR, bootstrap, or promotion review;
 - write PostgreSQL, expose an API route, or alter execution settings.
 
-The next gate is canonical provider parsing plus deterministic time-partitioned
-replay. It must consume only v2 receipts and v1 manifests that passed every
-quality check.
+The first provider-specific parser and operator flow are implemented in
+[External Benchmark Pack v2.1](external_benchmark_pack_v2_1.md). Later gates
+must add deterministic time-partitioned replay and may consume only v2 receipts
+and v1 manifests that passed every quality check.

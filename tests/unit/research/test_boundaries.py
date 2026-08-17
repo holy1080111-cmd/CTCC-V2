@@ -8,6 +8,9 @@ import pytest
 
 from app.config.settings import Settings
 from app.research.external_benchmarks import (
+    BinanceKlineEvidence,
+    BinanceKlineQualityReport,
+    BinancePublicArtifactIdentity,
     REFERENCE_SOURCE_CATALOG,
     DatasetQualityReport,
     ExternalArtifactAcquisitionReceipt,
@@ -45,7 +48,10 @@ FORBIDDEN_IMPORT_PREFIXES = (
     "subprocess",
     "urllib.request",
 )
-NETWORK_ACQUISITION_MODULE = Path("external_benchmarks/acquisition.py")
+NETWORK_ACQUISITION_MODULES = {
+    Path("external_benchmarks/acquisition.py"),
+    Path("external_benchmarks/binance.py"),
+}
 
 
 def imported_names(node: ast.AST) -> tuple[str, ...]:
@@ -70,7 +76,7 @@ def test_external_benchmark_network_import_is_isolated_from_execution() -> None:
         tree = ast.parse(path.read_text(encoding="utf-8-sig"), filename=str(path))
         for node in ast.walk(tree):
             for name in imported_names(node):
-                if relative == NETWORK_ACQUISITION_MODULE and name == "httpx":
+                if relative in NETWORK_ACQUISITION_MODULES and name == "httpx":
                     continue
                 if name.startswith(FORBIDDEN_IMPORT_PREFIXES):
                     violations.append(
@@ -109,6 +115,9 @@ def test_reference_contracts_contain_no_order_sizing_or_promotion_fields() -> No
         DatasetQualityReport,
         ExternalArtifactAcquisitionRequest,
         ExternalArtifactAcquisitionReceipt,
+        BinancePublicArtifactIdentity,
+        BinanceKlineQualityReport,
+        BinanceKlineEvidence,
         PublishedBenchmarkRecord,
         ReferenceMetricBundle,
         ExternalBenchmarkRun,
@@ -187,18 +196,19 @@ def test_external_benchmarks_do_not_change_fail_safe_runtime_defaults() -> None:
 
 
 def test_network_acquisition_is_get_only_and_never_follows_redirects_implicitly() -> None:
-    source = (RESEARCH_ROOT / NETWORK_ACQUISITION_MODULE).read_text(
-        encoding="utf-8"
-    )
-    tree = ast.parse(source)
-    string_literals = {
-        node.value
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Constant) and isinstance(node.value, str)
-    }
-    assert "GET" in string_literals
-    assert "POST" not in string_literals
-    assert "PUT" not in string_literals
-    assert "PATCH" not in string_literals
-    assert "DELETE" not in string_literals
-    assert "follow_redirects=True" not in source
+    combined_literals: set[str] = set()
+    for relative in NETWORK_ACQUISITION_MODULES:
+        source = (RESEARCH_ROOT / relative).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        combined_literals.update(
+            node.value
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Constant) and isinstance(node.value, str)
+        )
+        assert "follow_redirects=True" not in source
+    assert "GET" in combined_literals
+    assert "HEAD" in combined_literals
+    assert "POST" not in combined_literals
+    assert "PUT" not in combined_literals
+    assert "PATCH" not in combined_literals
+    assert "DELETE" not in combined_literals

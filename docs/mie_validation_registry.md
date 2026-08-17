@@ -41,6 +41,7 @@ No evidence level grants exchange-write authority.
 | external public dataset manifest and quality profile | computational identity and data-quality checks | external provider artifact | calculation reference only | canonical parsers, point-in-time replay, OOS economics and independent review |
 | pre-hashed external artifact acquisition receipt | transport identity and archive-metadata safety | reviewed provider host | offline calculation reference only | canonical parsing, semantic validation, point-in-time replay, OOS economics and independent review |
 | published external benchmark record | reported or reproducible reference, not CTCC validation | external project/dataset | calculation reference only | identical data/cost/trial protocol and independent CTCC reproduction |
+| Binance BTCUSDT 1m public archive | computational data-quality reference | external provider archive | isolated reference only | real operator probe, frozen replay partitions, leakage/cost/OOS validation, and independent promotion review |
 
 All five Gate 2 families consume the same confirmed OHLCV path and therefore
 share the `mie.price_path.shared` dependency group in later evidence adapters.

@@ -81,6 +81,23 @@ not accepted until its terms review digest, official URL, byte size, and
 checksum are independently supplied in the acquisition request. No external
 artifact is bundled with CTCC and no source test performs a public download.
 
+### Gate v2.1 Binance reference probe
+
+Gate v2.1 fixes the first provider-specific reference to Binance USD-M
+`BTCUSDT`, one-minute klines, UTC day 2024-01-01. Mock-backed verification must
+prove that preparation performs only a bounded checksum GET followed by the
+artifact HEAD, that cross-contract identity tampering is rejected, and that a
+complete synthetic archive produces exactly 1,440 valid rows without any
+promotion or execution authority.
+
+After `EXTERNAL_BENCHMARK_PACK_V2_1_VERIFIED=1`, the operator may run
+`scripts/run_binance_btcusdt_reference_probe.ps1`. It prints the live official
+identity before requiring the exact phrase `ACQUIRE_REFERENCE_ONLY`; only then
+does it download the pre-hashed public ZIP into an outside-repository data root
+and generate immutable quality evidence. The source suite does not make this
+public request, so `BINANCE_BTCUSDT_REFERENCE_PROBE_VERIFIED=1` must not be
+reported until the local operator probe actually emits it.
+
 The isolation contract is covered by `tests/unit/test_hermetic_pytest.py`,
 including a deployment profile with 10% Demo portfolio risk, a 10% weekly
 backstop, structural dynamic leverage, and Demo writes enabled. Those values

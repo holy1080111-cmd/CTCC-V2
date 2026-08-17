@@ -154,7 +154,9 @@ API_HEALTH=healthy
 1. Provider-scoped, bounded, redirect-aware acquisition with explicit terms
    review, pinned identity, atomic placement, and ZIP-bomb defenses is
    implemented in [External Benchmark Pack v2](external_benchmark_pack_v2.md).
-2. Canonical OKX/Binance trade, candle, funding, and L2 parsers.
+2. The first canonical Binance candle parser is implemented in
+   [External Benchmark Pack v2.1](external_benchmark_pack_v2_1.md); other
+   provider trade, candle, funding, and L2 parsers remain future gates.
 3. Deterministic market-event and order-book replay under `app/replay`.
 4. Realistic partial-fill, queue, latency, spread, funding, gap, and liquidation
    calibration.

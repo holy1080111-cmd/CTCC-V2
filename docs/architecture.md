@@ -131,9 +131,13 @@ reviewed public source metadata
 → reference-only formula and published-result records
 ```
 
-Gate v1 has no network client, runtime consumer, database migration, or import
-from MIE, strategy, risk, Paper, Demo, Live, exchange, or execution packages.
-Every result fixes `promotion_eligible=false` and `execution_authority=false`.
+Gate v2.1 adds one provider-specific operator path: the official Binance
+checksum sidecar and HEAD metadata are frozen before the operator can confirm a
+bounded artifact GET; the one expected CSV member is parsed in memory and must
+pass exact daily one-minute quality checks. It still has no runtime consumer,
+database migration, or import from MIE, strategy, risk, Paper, Demo, Live,
+exchange, or execution packages. Every result fixes
+`promotion_eligible=false` and `execution_authority=false`.
 
 ## Authority rules
 
@@ -174,8 +178,10 @@ Every result fixes `promotion_eligible=false` and `execution_authority=false`.
 - `research.external_benchmarks` owns frozen public-source metadata, artifact
   identity, point-in-time dataset contracts, quality reports, and
   formula-parity records. Its Gate v2 acquisition tool can issue only bounded
-  GET requests for pre-hashed artifacts on reviewed provider hosts; no
-  application runtime imports it and it cannot promote a model or execute.
+  GET requests for pre-hashed artifacts on reviewed provider hosts. Gate v2.1
+  may GET a bounded Binance checksum sidecar and HEAD the matching artifact to
+  prepare that identity before explicit operator confirmation; no application
+  runtime imports it and it cannot promote a model or execute.
 - `observability.service` owns soak preflight, bounded-session safety, and watchdogs.
 - `performance.service` derives evidence, persists daily reports, and exposes operator strategy controls without exchange-write authority.
 - `database.repositories` persists exchange mirrors, automation state, soak sessions,

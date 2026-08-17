@@ -32,8 +32,11 @@
     strict quality profiling, and deterministic formula parity
   - Gate v2 operator-only, pre-hashed HTTPS acquisition with reviewed-host
     redirects, byte/media limits, atomic no-clobber placement, and ZIP safety
+  - Gate v2.1 official Binance BTCUSDT 2024-01-01 identity preparation,
+    operator-confirmed bounded acquisition, canonical one-minute parsing, and
+    strict 1,440-row provider-quality evidence
   - no runtime consumer, model promotion, database write, or execution authority
-  - later gates add canonical parsing, replay, execution calibration, and
+  - later gates add deterministic replay, execution calibration, and
     independently reviewed OOS validation
 - v2.0 Final acceptance
 
