@@ -1,7 +1,13 @@
 from pathlib import Path
 
 
-SCRIPT = Path("scripts/run_binance_btcusdt_reference_probe.ps1")
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+SCRIPT = PROJECT_ROOT / "scripts/run_binance_btcusdt_reference_probe.ps1"
+TERMS_REVIEW = (
+    "docs/external_sources/"
+    "binance_public_data_review_2026-08-17.md"
+)
+TERMS_REVIEW_PATH = PROJECT_ROOT / TERMS_REVIEW
 
 
 def test_operator_probe_requires_review_before_artifact_get() -> None:
@@ -40,3 +46,11 @@ def test_operator_probe_cannot_enable_execution_authority() -> None:
     assert "REAL_ORDER_TESTED=0" in source
     assert "Invoke-RestMethod" not in source
     assert "place_order" not in source
+
+
+def test_reviewed_terms_are_packaged_at_the_probe_runtime_path() -> None:
+    source = SCRIPT.read_text(encoding="utf-8")
+
+    assert TERMS_REVIEW_PATH.is_file()
+    assert TERMS_REVIEW_PATH.stat().st_size > 0
+    assert f"/app/{TERMS_REVIEW}" in source.replace("`\n", "")

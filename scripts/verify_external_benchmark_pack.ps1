@@ -133,6 +133,21 @@ print("EXTERNAL_BENCHMARK_EXECUTION_AUTHORITY=0")
     $probe | docker compose exec -T api python -
 }
 
+Invoke-NativeStep "Reviewed Binance terms materialization" {
+    $probe = @'
+from pathlib import Path
+
+path = Path(
+    "/app/docs/external_sources/"
+    "binance_public_data_review_2026-08-17.md"
+)
+assert path.is_file(), path
+assert path.stat().st_size > 0, path
+print("BINANCE_TERMS_REVIEW_MATERIALIZED=1")
+'@
+    $probe | docker compose exec -T api python -
+}
+
 Invoke-NativeStep "Alembic exact revision" {
     $probe = @'
 import subprocess
