@@ -72,7 +72,7 @@ async def test_official_metadata_to_quality_evidence_remains_reference_only(
             200,
             headers={
                 "content-length": str(len(payload)),
-                "content-type": "application/zip",
+                "content-type": "binary/octet-stream",
                 "last-modified": "Tue, 02 Jan 2024 06:07:08 GMT",
             },
         )
@@ -94,7 +94,7 @@ async def test_official_metadata_to_quality_evidence_remains_reference_only(
             stream=MockAsyncByteStream(payload, chunk_size=997),
             headers={
                 "content-length": str(len(payload)),
-                "content-type": "application/zip",
+                "content-type": "binary/octet-stream",
             },
         )
 
@@ -132,6 +132,8 @@ async def test_official_metadata_to_quality_evidence_remains_reference_only(
     assert generic.passed is True
     assert provider.passed is True
     assert evidence.passed is True
+    assert identity.artifact_media_type == "binary/octet-stream"
+    assert receipt.media_type == "binary/octet-stream"
     assert evidence.reference_only is True
     assert evidence.promotion_eligible is False
     assert evidence.execution_authority is False

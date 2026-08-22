@@ -62,8 +62,17 @@ def test_checksum_parser_requires_hash_and_exact_filename() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "artifact_media_type",
+    (
+        "application/zip",
+        "application/octet-stream",
+        "binary/octet-stream",
+    ),
+)
 async def test_preparation_gets_only_sidecar_then_heads_artifact(
     tmp_path: Path,
+    artifact_media_type: str,
 ) -> None:
     value = coordinates()
     terms = tmp_path / "terms.md"
@@ -86,7 +95,7 @@ async def test_preparation_gets_only_sidecar_then_heads_artifact(
             200,
             headers={
                 "content-length": str(ARTIFACT_SIZE),
-                "content-type": "application/zip",
+                "content-type": artifact_media_type,
                 "last-modified": "Tue, 02 Jan 2024 06:07:08 GMT",
             },
         )
@@ -107,9 +116,11 @@ async def test_preparation_gets_only_sidecar_then_heads_artifact(
     ]
     assert identity.artifact_sha256 == ARTIFACT_HASH
     assert identity.artifact_byte_size == ARTIFACT_SIZE
+    assert identity.artifact_media_type == artifact_media_type
     assert identity.revision_policy == "provider_correctable"
     assert request.expected_sha256 == ARTIFACT_HASH
     assert request.expected_byte_size == ARTIFACT_SIZE
+    assert artifact_media_type in request.expected_media_types
     assert request.reference_only is True
     assert request.promotion_eligible is False
     assert request.execution_authority is False
@@ -122,6 +133,7 @@ async def test_preparation_gets_only_sidecar_then_heads_artifact(
         ("oversized_sidecar", "declared byte limit"),
         ("missing_length", "Content-Length"),
         ("oversized_artifact", "reviewed limit"),
+        ("html_media_type", "media type"),
         ("evil_redirect", "exact reviewed data host"),
     ],
 )
@@ -154,7 +166,11 @@ async def test_preparation_fails_closed_on_untrusted_metadata(
                 ),
             )
         headers = {
-            "content-type": "application/zip",
+            "content-type": (
+                "text/html"
+                if case == "html_media_type"
+                else "application/zip"
+            ),
             "last-modified": "Tue, 02 Jan 2024 06:07:08 GMT",
         }
         if case != "missing_length":

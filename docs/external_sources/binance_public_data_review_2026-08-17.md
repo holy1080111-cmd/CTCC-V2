@@ -32,9 +32,13 @@ states that:
 The official object listing for
 [BTCUSDT USD-M 1-minute daily klines](https://data.binance.vision/?prefix=data%2Ffutures%2Fum%2Fdaily%2Fklines%2FBTCUSDT%2F1m%2F)
 lists the 2024-01-01 ZIP and its sibling checksum with a 2024-01-02 last-modified
-time. Exact SHA-256, byte size, media type, and Last-Modified values are not
-copied into source code; the preparation step reads them from the official
-host and freezes them before the ZIP artifact is requested.
+time. A read-only operator probe on 2026-08-22 observed the exact ZIP URL return
+HTTP 200 without a redirect and the base media type `binary/octet-stream` from
+Amazon S3. CTCC accepts that exact provider value alongside `application/zip`
+and `application/octet-stream`; HTML and every other media type remain blocked.
+Exact SHA-256, byte size, and Last-Modified values are not copied into source
+code; the preparation step reads them from the official host and freezes them
+before the ZIP artifact is requested.
 
 ## CTCC interpretation
 

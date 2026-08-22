@@ -26,7 +26,11 @@ BINANCE_TERMS_URL = "https://github.com/binance/binance-public-data"
 CHECKSUM_MAX_BYTES = 512
 ARTIFACT_MAX_BYTES = 1024 * 1024
 REDIRECT_STATUS_CODES = {301, 302, 303, 307, 308}
-EXPECTED_MEDIA_TYPES = ("application/zip", "application/octet-stream")
+EXPECTED_MEDIA_TYPES = (
+    "application/zip",
+    "application/octet-stream",
+    "binary/octet-stream",
+)
 FIRST_REFERENCE_DAY = date(2024, 1, 1)
 CHECKSUM_PATTERN = re.compile(
     rb"\A([0-9a-fA-F]{64})[ \t]+\*?([^\r\n]+)\r?\n?\Z"

@@ -54,7 +54,8 @@ real provider artifact and must be replaced with reviewed values:
   "expected_byte_size": 123456,
   "expected_media_types": [
     "application/zip",
-    "application/octet-stream"
+    "application/octet-stream",
+    "binary/octet-stream"
   ],
   "archive_kind": "zip",
   "terms_accepted": true,

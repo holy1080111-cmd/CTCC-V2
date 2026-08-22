@@ -83,7 +83,11 @@ def contracts(
         relative_path=value.relative_path,
         expected_sha256=digest,
         expected_byte_size=len(payload),
-        expected_media_types=("application/zip", "application/octet-stream"),
+        expected_media_types=(
+            "application/zip",
+            "application/octet-stream",
+            "binary/octet-stream",
+        ),
         archive_kind=ArchiveKind.ZIP,
     )
     identity = BinancePublicArtifactIdentity(

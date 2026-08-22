@@ -71,6 +71,12 @@ header, or exchange credential. The first stage performs a GET only for the
 maximum-512-byte checksum sidecar and a HEAD for the ZIP; the artifact GET
 exists only after the exact interactive phrase.
 
+The exact ZIP media-type allowlist is `application/zip`,
+`application/octet-stream`, and the provider-observed
+`binary/octet-stream`. This is not a wildcard: `text/html`, missing types, and
+all other values remain fail-closed. SHA-256, byte-size, URL, redirect,
+Last-Modified, archive-member, and decompression limits still apply.
+
 ## Cross-contract identity
 
 The profiler rejects the evidence set unless all of these agree:
