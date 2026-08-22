@@ -8,9 +8,15 @@ import pytest
 
 from app.config.settings import Settings
 from app.research.external_benchmarks import (
+    BinanceBatchEvidence,
+    BinanceBatchPlan,
+    BinanceBatchPreparation,
+    BinanceBatchResultEntry,
+    BinanceDailyMarketSummary,
     BinanceKlineEvidence,
     BinanceKlineQualityReport,
     BinancePublicArtifactIdentity,
+    BinancePartitionMarketSummary,
     REFERENCE_SOURCE_CATALOG,
     DatasetQualityReport,
     ExternalArtifactAcquisitionReceipt,
@@ -118,6 +124,12 @@ def test_reference_contracts_contain_no_order_sizing_or_promotion_fields() -> No
         BinancePublicArtifactIdentity,
         BinanceKlineQualityReport,
         BinanceKlineEvidence,
+        BinanceBatchPlan,
+        BinanceBatchPreparation,
+        BinanceBatchResultEntry,
+        BinanceDailyMarketSummary,
+        BinancePartitionMarketSummary,
+        BinanceBatchEvidence,
         PublishedBenchmarkRecord,
         ReferenceMetricBundle,
         ExternalBenchmarkRun,

@@ -139,6 +139,14 @@ database migration, or import from MIE, strategy, risk, Paper, Demo, Live,
 exchange, or execution packages. Every result fixes
 `promotion_eligible=false` and `execution_authority=false`.
 
+Gate v3 remains a separate research-only layer above v2.1. It freezes two
+symbols across three non-overlapping 30-day calendar windows, prepares all 180
+artifact identities before operator confirmation, and then creates six
+descriptive partition summaries. Theil-Sen log-close slope and path efficiency
+describe observed paths only. The recent window is explicitly retrospective;
+strategy, costs, prediction, promotion, runtime consumption, and execution
+authority all remain absent.
+
 ## Authority rules
 
 - The Paper engine is authoritative for local Paper state; PostgreSQL restores it.
@@ -180,8 +188,10 @@ exchange, or execution packages. Every result fixes
   formula-parity records. Its Gate v2 acquisition tool can issue only bounded
   GET requests for pre-hashed artifacts on reviewed provider hosts. Gate v2.1
   may GET a bounded Binance checksum sidecar and HEAD the matching artifact to
-  prepare that identity before explicit operator confirmation; no application
-  runtime imports it and it cannot promote a model or execute.
+  prepare that identity before explicit operator confirmation. Gate v3 may
+  repeat that path only for its frozen 180-coordinate batch and compute
+  descriptive summaries after quality acceptance; no application runtime
+  imports it and it cannot promote a model or execute.
 - `observability.service` owns soak preflight, bounded-session safety, and watchdogs.
 - `performance.service` derives evidence, persists daily reports, and exposes operator strategy controls without exchange-write authority.
 - `database.repositories` persists exchange mirrors, automation state, soak sessions,

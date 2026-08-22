@@ -35,6 +35,9 @@
   - Gate v2.1 official Binance BTCUSDT 2024-01-01 identity preparation,
     operator-confirmed bounded acquisition, canonical one-minute parsing, and
     strict 1,440-row provider-quality evidence
+  - Gate v3 frozen BTCUSDT/ETHUSDT development, validation, and retrospective
+    holdout windows; 180 exact daily artifacts, 259,200 expected minute rows,
+    and descriptive partition evidence with no strategy or cost evaluation
   - no runtime consumer, model promotion, database write, or execution authority
   - later gates add deterministic replay, execution calibration, and
     independently reviewed OOS validation

@@ -172,6 +172,7 @@ Invoke-NativeStep "External benchmark targeted tests" {
     docker compose exec -T api python scripts/hermetic_pytest.py `
         -q -p no:cacheprovider `
         tests/unit/research `
+        tests/integration/test_binance_reference_batch_flow.py `
         tests/integration/test_binance_reference_probe_flow.py `
         tests/integration/test_external_benchmark_acquisition_flow.py `
         tests/integration/test_external_benchmark_reference_flow.py
@@ -206,6 +207,7 @@ $health = (
 Write-Host "EXTERNAL_BENCHMARK_PACK_V1_VERIFIED=1"
 Write-Host "EXTERNAL_BENCHMARK_PACK_V2_VERIFIED=1"
 Write-Host "EXTERNAL_BENCHMARK_PACK_V2_1_VERIFIED=1"
+Write-Host "EXTERNAL_BENCHMARK_PACK_V3_VERIFIED=1"
 Write-Host "EXTERNAL_BENCHMARK_RUNTIME_CONSUMERS=0"
 Write-Host "EXTERNAL_BENCHMARK_EXECUTION_AUTHORITY=0"
 Write-Host "HEAD=$head"

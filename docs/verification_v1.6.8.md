@@ -98,6 +98,42 @@ and generate immutable quality evidence. The source suite does not make this
 public request, so `BINANCE_BTCUSDT_REFERENCE_PROBE_VERIFIED=1` must not be
 reported until the local operator probe actually emits it.
 
+### Gate v3 frozen Binance reference batch
+
+Gate v3 preserves the v2.1 single-day coordinate and adds a separate frozen
+batch contract for BTCUSDT and ETHUSDT. Development, validation, and
+retrospective-holdout partitions each contain 30 complete UTC days. Acceptance
+requires 180 exact ZIP identities, 259,200 minute rows, six complete partition
+summaries, and no overlap.
+
+The targeted source flow is mock-backed and must verify metadata preparation,
+immutable acquisition receipts, provider and generic quality reports, daily
+summaries, robust log-close slopes, path efficiency, and final evidence. It
+also proves that the batch contract contains no sizing/promotion fields and
+that no application runtime imports the research package.
+
+After `EXTERNAL_BENCHMARK_PACK_V3_VERIFIED=1`, the operator may run
+`scripts/run_binance_reference_batch_probe.ps1`. The script performs no ZIP
+GET until the exact phrase `ACQUIRE_BINANCE_BATCH_REFERENCE_ONLY` is supplied.
+The real probe is accepted only when it emits all of:
+
+```text
+BINANCE_REFERENCE_BATCH_PROBE_VERIFIED=1
+BINANCE_BATCH_ARTIFACTS=180
+BINANCE_BATCH_MINUTE_ROWS=259200
+BINANCE_BATCH_PARTITION_SUMMARIES=6
+RETROSPECTIVE_HOLDOUT=1
+STRATEGY_EVALUATED=0
+COSTS_EVALUATED=0
+RUNTIME_CONSUMERS=0
+EXECUTION_AUTHORITY=0
+REAL_ORDER_TESTED=0
+```
+
+This gate validates data and descriptive calculations only. A later replay
+gate must freeze strategy selection, event-time alignment, costs, walk-forward
+evaluation, and uncertainty before any predictive claim is considered.
+
 The isolation contract is covered by `tests/unit/test_hermetic_pytest.py`,
 including a deployment profile with 10% Demo portfolio risk, a 10% weekly
 backstop, structural dynamic leverage, and Demo writes enabled. Those values

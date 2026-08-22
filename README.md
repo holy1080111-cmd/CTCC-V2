@@ -123,12 +123,20 @@ HEAD metadata, shows the complete identity before an exact operator
 confirmation, then performs a bounded ZIP download and a strict 1,440-row
 quality profile. Raw data and evidence stay outside Git.
 
+Gate v3 adds a separate frozen BTCUSDT/ETHUSDT batch: three non-overlapping
+30-day windows, 180 pre-hashed daily ZIPs, and 259,200 expected minute rows.
+It emits deterministic data-quality, return-path, Theil-Sen trend, and path
+efficiency evidence. The recent window is retrospective, and all trend labels
+remain descriptive rather than predictive; no strategy or trading-cost model
+is evaluated by this gate.
+
 No API route or application runtime imports this package. External files and
 published metrics cannot promote a model, change score/risk/leverage, or reach
 Paper, Demo, Live, or exchange writes. See
 `docs/external_benchmark_pack_v1.md`,
 `docs/external_benchmark_pack_v2.md`, and
-`docs/external_benchmark_pack_v2_1.md`.
+`docs/external_benchmark_pack_v2_1.md`, and
+`docs/external_benchmark_pack_v3.md`.
 
 ## Adaptive Demo portfolio (disabled by default)
 

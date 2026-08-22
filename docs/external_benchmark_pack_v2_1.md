@@ -199,5 +199,6 @@ produce that point-in-time evidence.
   partitions, leakage checks, cost assumptions, walk-forward OOS evidence,
   uncertainty, and an independent promotion review.
 
-The next gate should add deterministic canonical conversion and replay while
-keeping provider evidence isolated from strategy and execution authority.
+Gate v3 adds frozen multi-window batch evidence while keeping provider data
+isolated. Deterministic strategy replay, costs, leakage controls, and genuine
+out-of-sample promotion review remain later gates.
