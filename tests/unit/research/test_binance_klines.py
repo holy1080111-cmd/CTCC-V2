@@ -36,15 +36,30 @@ def coordinates() -> BinanceKlineCoordinates:
     )
 
 
-def kline_rows(*, invalid_high_at: int | None = None) -> list[str]:
+def kline_rows(
+    *,
+    invalid_high_at: int | None = None,
+    zero_volume_at: int | None = None,
+    negative_volume_at: int | None = None,
+) -> list[str]:
     start = 1_704_067_200_000
     rows: list[str] = []
     for index in range(1440):
         open_time = start + index * 60_000
         high = "99" if index == invalid_high_at else "102"
+        if index == zero_volume_at:
+            volume, quote_volume = "0", "0"
+            taker_volume, taker_quote_volume = "0", "0"
+        elif index == negative_volume_at:
+            volume, quote_volume = "-1", "-101"
+            taker_volume, taker_quote_volume = "0", "0"
+        else:
+            volume, quote_volume = "2", "201"
+            taker_volume, taker_quote_volume = "1", "100.5"
         rows.append(
-            f"{open_time},100,{high},99,101,2,"
-            f"{open_time + 59_999},201,10,1,100.5,0"
+            f"{open_time},100,{high},99,101,{volume},"
+            f"{open_time + 59_999},{quote_volume},10,{taker_volume},"
+            f"{taker_quote_volume},0"
         )
     return rows
 
@@ -152,6 +167,60 @@ def test_complete_binance_day_passes_generic_and_provider_quality(
     assert evidence.passed is True
     assert evidence.promotion_eligible is False
     assert evidence.execution_authority is False
+
+
+def test_zero_volume_minute_is_valid_for_binance_futures(
+    tmp_path: Path,
+) -> None:
+    value = coordinates()
+    payload = archive_payload(value, rows=kline_rows(zero_volume_at=14))
+    identity, request, receipt = contracts(value, payload)
+    stage(tmp_path, value.relative_path, payload)
+
+    manifest, generic, provider, evidence = profile_binance_kline_archive(
+        value,
+        identity,
+        request,
+        receipt,
+        tmp_path,
+        generated_at=NOW,
+    )
+
+    assert manifest.positive_numeric_fields == (
+        "open",
+        "high",
+        "low",
+        "close",
+    )
+    assert generic.nonpositive_numeric_rows == 0
+    assert generic.passed is True
+    assert provider.invalid_volume_rows == 0
+    assert provider.passed is True
+    assert evidence.passed is True
+
+
+def test_negative_volume_remains_a_hard_provider_failure(
+    tmp_path: Path,
+) -> None:
+    value = coordinates()
+    payload = archive_payload(value, rows=kline_rows(negative_volume_at=14))
+    identity, request, receipt = contracts(value, payload)
+    stage(tmp_path, value.relative_path, payload)
+
+    _, generic, provider, evidence = profile_binance_kline_archive(
+        value,
+        identity,
+        request,
+        receipt,
+        tmp_path,
+        generated_at=NOW,
+    )
+
+    assert generic.passed is True
+    assert provider.invalid_volume_rows == 1
+    assert "invalid_volume_rows" in provider.failure_codes
+    assert provider.passed is False
+    assert evidence.passed is False
 
 
 @pytest.mark.parametrize(

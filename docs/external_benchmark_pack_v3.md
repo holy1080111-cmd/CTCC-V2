@@ -110,6 +110,13 @@ generic quality, Binance quality, final evidence, and daily-summary JSON. The
 verified ZIP remains under its exact provider-relative path. Final acceptance
 is recorded at:
 
+Price fields remain strictly positive. Binance futures may legitimately
+publish a complete minute with zero traded volume, so volume is checked as
+nonnegative by the provider-specific profile. Negative volume, invalid OHLC,
+missing minutes, duplicate timestamps, and interval defects remain hard
+failures. This prevents the generic strictly-positive price rule from
+rejecting a structurally valid zero-volume candle.
+
 ```text
 evidence/binance-reference-batch-v1-evidence.json
 ```

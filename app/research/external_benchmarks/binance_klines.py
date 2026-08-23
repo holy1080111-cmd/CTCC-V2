@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import csv
-from datetime import datetime, time, timedelta, timezone
+from datetime import datetime, time, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Literal
@@ -396,7 +396,11 @@ def profile_binance_kline_archive(
         fields=KLINE_FIELDS,
         required_fields=KLINE_FIELDS,
         key_fields=("open_time",),
-        positive_numeric_fields=("open", "high", "low", "close", "volume"),
+        # Prices are strictly positive. A completed one-minute candle may
+        # legitimately have zero traded volume, so volume is validated as
+        # nonnegative by the Binance-specific quality checks below instead of
+        # being misclassified by the generic strictly-positive rule.
+        positive_numeric_fields=("open", "high", "low", "close"),
         instrument_ids=(coordinates.instrument_id,),
         intended_uses=(
             IntendedUse.DATA_QUALITY_REFERENCE,
