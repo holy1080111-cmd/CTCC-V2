@@ -28,6 +28,8 @@ class DemoSoakSession(UUIDPrimaryKeyMixin, Base):
     blocked_runs: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     error_runs: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     consecutive_errors: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    equity_basis: Mapped[str | None] = mapped_column(String(40))
+    equity_currency: Mapped[str | None] = mapped_column(String(16))
     starting_equity: Mapped[Decimal | None] = mapped_column(Numeric(38, 18))
     latest_equity: Mapped[Decimal | None] = mapped_column(Numeric(38, 18))
     session_pnl: Mapped[Decimal] = mapped_column(

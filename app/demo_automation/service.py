@@ -195,6 +195,7 @@ class SafeDemoAutomation:
             demo_writes_enabled=self.settings.okx_demo_allow_order_writes,
             armed=bool(self._state["armed"]),
             running=self.running,
+            run_in_progress=self._run_lock.locked(),
             emergency_stop=bool(self._state["emergency_stop"]),
             locked=bool(self._state["locked"]),
             lock_reasons=list(self._state["lock_reasons"]),

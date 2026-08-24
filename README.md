@@ -61,6 +61,10 @@ For Demo automation, attached TP/SL parameters or order-detail echoes are not
 treated as proof of protection. CTCC requires the active pending Algo returned
 by OKX to match its unique protection client ID, instrument, mark-trigger
 prices, and covered size, and repeats that check on later reconciliations.
+The runtime watchdog refreshes automation tracking after its exchange
+reconciliation round-trip. Only an actively running submission receives the
+bounded reconciliation grace; genuine untracked exposure outside that window,
+or exposure that remains untracked after expiry, still engages Emergency Stop.
 
 ## Persistence
 
@@ -75,12 +79,14 @@ Migration `0013` stores attributed rolling realized-PnL events and a separate
 non-daily equity high-water mark for weekly-loss and drawdown backstops.
 Migration `0014` separates explicitly based Demo strategy equity from OKX
 multi-asset account `totalEq`; legacy snapshots remain unbased and are excluded
-from reliability validation rather than being backfilled.
+from reliability validation rather than being backfilled. Migration `0015`
+applies the same explicit equity identity to controlled execute-soak loss
+limits and persists its basis and currency with every soak session.
 
 Expected migration after upgrade:
 
 ```text
-0014 (head)
+0015 (head)
 ```
 
 ## Reviewed Demo and public-data universe

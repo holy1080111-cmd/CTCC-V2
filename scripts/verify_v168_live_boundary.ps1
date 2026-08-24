@@ -129,7 +129,7 @@ Invoke-NativeStep "Alembic exact revision" {
     $revisionProbe = @'
 import subprocess
 
-expected = "0014 (head)"
+expected = "0015 (head)"
 heads = subprocess.check_output(
     ["alembic", "heads"],
     text=True,
@@ -140,7 +140,7 @@ current = subprocess.check_output(
 ).strip().splitlines()[-1]
 assert heads == expected, (heads, expected)
 assert current == expected, (current, expected)
-print("ALEMBIC_REVISION=0014")
+print("ALEMBIC_REVISION=0015")
 '@
     $revisionProbe | docker compose exec -T api python -
 }
@@ -218,5 +218,5 @@ $head = (git rev-parse HEAD).Trim()
 $health = (docker inspect --format '{{.State.Health.Status}}' ctcc-v2-api).Trim()
 Write-Host "V168_LIVE_BOUNDARY_VERIFIED=1"
 Write-Host "HEAD=$head"
-Write-Host "ALEMBIC_HEAD=0014"
+Write-Host "ALEMBIC_HEAD=0015"
 Write-Host "API_HEALTH=$health"

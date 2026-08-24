@@ -265,6 +265,7 @@ class DemoAutomationStatus(BaseModel):
     demo_writes_enabled: bool
     armed: bool
     running: bool
+    run_in_progress: bool = False
     emergency_stop: bool
     locked: bool
     lock_reasons: list[str] = Field(default_factory=list)

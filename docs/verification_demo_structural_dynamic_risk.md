@@ -61,7 +61,7 @@ powershell -NoProfile -ExecutionPolicy Bypass `
   -File .\scripts\verify_v168_live_boundary.ps1
 ```
 
-The script must pass Docker health, migration/current head `0014`, schema drift,
+The script must pass Docker health, migration/current head `0015`, schema drift,
 targeted tests, PostgreSQL integration, full regression, whitespace, and the
 canonical manifest. A source-only pass is not a substitute.
 

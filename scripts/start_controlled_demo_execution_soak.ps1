@@ -47,6 +47,12 @@ try {
     if ($preflight.ready -ne $true) {
         throw "Execute-soak preflight is blocked: $($preflight.blockers -join ', ')"
     }
+    if ($null -eq $preflight.risk_equity -or
+        [decimal]$preflight.risk_equity -le 0 -or
+        [string]::IsNullOrWhiteSpace([string]$preflight.equity_basis) -or
+        [string]::IsNullOrWhiteSpace([string]$preflight.equity_currency)) {
+        throw "Execute-soak preflight did not return a valid strategy equity identity."
+    }
 
     $body = @{
         execute = $true

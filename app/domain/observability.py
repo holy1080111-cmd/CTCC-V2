@@ -65,7 +65,12 @@ class DemoExecutionSoakPreflight(BaseModel):
     exchange_position_count: int = 0
     exchange_pending_order_count: int = 0
     exchange_algo_order_count: int = 0
+    # Account-wide totalEq remains diagnostic only. Execute-soak loss controls
+    # use the explicitly resolved strategy risk-equity basis below.
     total_equity: Decimal | None = None
+    risk_equity: Decimal | None = None
+    equity_basis: str | None = None
+    equity_currency: str | None = None
     require_flat_start: bool
     require_protection: bool
     auto_disarm: bool
@@ -92,6 +97,8 @@ class DemoSoakSessionView(BaseModel):
     blocked_runs: int = 0
     error_runs: int = 0
     consecutive_errors: int = 0
+    equity_basis: str | None = None
+    equity_currency: str | None = None
     starting_equity: Decimal | None = None
     latest_equity: Decimal | None = None
     session_pnl: Decimal = Decimal("0")
