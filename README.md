@@ -73,11 +73,14 @@ Migration `0012` records the exact equity basis used by Demo risk controls so
 an account-mode change cannot silently reuse an incompatible daily baseline.
 Migration `0013` stores attributed rolling realized-PnL events and a separate
 non-daily equity high-water mark for weekly-loss and drawdown backstops.
+Migration `0014` separates explicitly based Demo strategy equity from OKX
+multi-asset account `totalEq`; legacy snapshots remain unbased and are excluded
+from reliability validation rather than being backfilled.
 
 Expected migration after upgrade:
 
 ```text
-0013 (head)
+0014 (head)
 ```
 
 ## Reviewed Demo and public-data universe

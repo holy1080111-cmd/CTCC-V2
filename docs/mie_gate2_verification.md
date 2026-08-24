@@ -42,7 +42,7 @@ Acceptance requires:
 MIE_GATE2_VERIFIED=1
 MIE_GATE2_EXECUTION_AUTHORITY=0
 MIE_GATE2_RUNTIME_CONSUMERS=0
-ALEMBIC_HEAD=0013
+ALEMBIC_HEAD=0014
 API_HEALTH=healthy
 ```
 
@@ -53,11 +53,12 @@ test isolation is applied.
 
 The v1.6.8, MIE Gate 1, and MIE Gate 2 Docker verifiers all use the same safe
 Windows boundary: no `python -c` quote transport, host authority checks before
-container startup, literal probes piped to `python -`, exact `0013 (head)`, and
+container startup, literal probes piped to `python -`, exact `0014 (head)`, and
 both staged and unstaged whitespace checks.
 
 A canonical manifest pass and a clean reviewed worktree are mandatory before
-commit. Gate 2 adds no migration and may not advance Alembic beyond `0013`.
+commit. Gate 2 itself adds no migration; the reviewed repository head is now
+`0014` after the Demo performance-equity safety correction.
 
 ## Explicit exclusions
 

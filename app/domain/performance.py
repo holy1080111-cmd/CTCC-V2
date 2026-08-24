@@ -28,8 +28,14 @@ class DemoStrategyControlView(BaseModel):
 
 class DemoEquityPoint(BaseModel):
     captured_at: datetime
+    # Account-level USD equity remains visible for wallet-risk diagnostics.
     total_equity: Decimal
     available_equity: Decimal
+    # Only these explicitly based fields may drive strategy reliability.
+    performance_equity: Decimal | None = None
+    performance_available_equity: Decimal | None = None
+    equity_basis: str | None = None
+    equity_currency: str | None = None
     unrealized_pnl: Decimal = Decimal("0")
     position_count: int = 0
     pending_order_count: int = 0
@@ -54,6 +60,22 @@ class DemoOrderPerformanceSample(BaseModel):
     created_at: datetime | None = None
     updated_at: datetime | None = None
     raw: dict = Field(default_factory=dict)
+
+
+class DemoTradeAttribution(BaseModel):
+    event_id: str
+    instrument_id: str
+    closed_at: datetime
+    net_pnl: Decimal
+    strategy: str | None = None
+    direction: str | None = None
+    settlement_currency: str | None = None
+    reference_price: Decimal | None = None
+    entry_client_order_id: str | None = None
+    entry_exchange_order_id: str | None = None
+    protection_client_order_id: str | None = None
+    closing_order_ids: list[str] = Field(default_factory=list)
+    started_at: datetime | None = None
 
 
 class DemoStrategyPerformance(BaseModel):
@@ -88,9 +110,16 @@ class DemoPerformanceSummary(BaseModel):
     window_ended_at: datetime
     active_days: int = 0
     snapshot_count: int = 0
+    performance_snapshot_count: int = 0
+    excluded_snapshot_count: int = 0
+    performance_window_started_at: datetime | None = None
+    equity_basis: str | None = None
+    equity_currency: str | None = None
     order_count: int = 0
     filled_order_count: int = 0
     realized_trade_count: int = 0
+    attributed_realized_trade_count: int = 0
+    unattributed_realized_trade_count: int = 0
     wins: int = 0
     losses: int = 0
     breakeven: int = 0
@@ -110,6 +139,10 @@ class DemoPerformanceSummary(BaseModel):
     closing_equity: Decimal | None = None
     equity_change: Decimal | None = None
     max_drawdown_pct: Decimal = Decimal("0")
+    account_opening_equity: Decimal | None = None
+    account_closing_equity: Decimal | None = None
+    account_equity_change: Decimal | None = None
+    account_max_drawdown_pct: Decimal = Decimal("0")
     slippage_sample_count: int = 0
     average_adverse_slippage_bps: Decimal | None = None
     max_adverse_slippage_bps: Decimal | None = None
@@ -120,6 +153,11 @@ class DemoPerformanceSummary(BaseModel):
 
 class DemoDailyPerformanceReport(BaseModel):
     report_date: date
+    performance_window_started_at: datetime | None = None
+    equity_basis: str | None = None
+    equity_currency: str | None = None
+    performance_snapshot_count: int = 0
+    excluded_snapshot_count: int = 0
     opening_equity: Decimal | None = None
     closing_equity: Decimal | None = None
     net_equity_change: Decimal | None = None
@@ -131,6 +169,8 @@ class DemoDailyPerformanceReport(BaseModel):
     order_count: int = 0
     filled_order_count: int = 0
     realized_trade_count: int = 0
+    attributed_realized_trade_count: int = 0
+    unattributed_realized_trade_count: int = 0
     wins: int = 0
     losses: int = 0
     breakeven: int = 0
@@ -139,6 +179,10 @@ class DemoDailyPerformanceReport(BaseModel):
     average_adverse_slippage_bps: Decimal | None = None
     max_adverse_slippage_bps: Decimal | None = None
     max_drawdown_pct: Decimal = Decimal("0")
+    account_opening_equity: Decimal | None = None
+    account_closing_equity: Decimal | None = None
+    account_equity_change: Decimal | None = None
+    account_max_drawdown_pct: Decimal = Decimal("0")
     strategy_stats: list[DemoStrategyPerformance] = Field(default_factory=list)
     alerts: list[DemoPerformanceAlert] = Field(default_factory=list)
     generated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
@@ -149,13 +193,19 @@ class DemoReliabilityValidation(BaseModel):
     active_days: int
     minimum_active_days: int
     realized_trades: int
+    total_realized_trades: int = 0
+    unattributed_realized_trades: int = 0
     minimum_realized_trades: int
     average_adverse_slippage_bps: Decimal | None = None
     maximum_average_slippage_bps: Decimal
     profit_factor: Decimal | None = None
     minimum_profit_factor: Decimal
     max_drawdown_pct: Decimal
+    account_max_drawdown_pct: Decimal = Decimal("0")
     maximum_drawdown_pct: Decimal
+    equity_basis: str | None = None
+    performance_snapshot_count: int = 0
+    excluded_snapshot_count: int = 0
     data_coverage_ready: bool
     reliability_ready: bool
     blockers: list[str] = Field(default_factory=list)

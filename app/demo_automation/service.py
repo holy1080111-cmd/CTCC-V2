@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 from collections import deque
 from contextlib import suppress
-from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR, ROUND_DOWN
 import hashlib
@@ -39,7 +38,6 @@ from app.domain.demo_automation import (
 from app.domain.okx_demo import (
     DEMO_CONFIRMATION_PHRASE,
     OkxDemoAlgoOrderView,
-    OkxDemoBalanceSnapshot,
     OkxDemoLeverageRequest,
     OkxDemoOrderView,
     OkxDemoOrderRequest,
@@ -50,6 +48,7 @@ from app.domain.risk import AccountRiskState, RiskLimits
 from app.domain.strategy import StrategyDecision, TradeCandidate
 from app.exchange.okx.public_rest import OkxPublicRestClient
 from app.exchange.okx.symbols import to_instrument_id
+from app.okx_demo.equity import DemoRiskCapital, resolve_demo_risk_capital
 from app.okx_demo.service import OkxDemoService, okx_demo_service
 from app.risk import RiskService
 from app.strategies import StrategyService
@@ -58,14 +57,6 @@ logger = logging.getLogger(__name__)
 D = Decimal
 _AUTOMATION_SETTLEMENT_CURRENCY = "USDT"
 _EQUITY_BASIS_LOCK = "equity_basis_change_requires_flat_session"
-
-
-@dataclass(frozen=True)
-class _AutomationCapital:
-    risk_equity: Decimal
-    available_equity: Decimal
-    currency: str
-    basis: str
 
 
 class SafeDemoAutomation:
@@ -1872,51 +1863,12 @@ class SafeDemoAutomation:
     @staticmethod
     def _automation_capital(
         snapshot: OkxDemoReconcileResult,
-    ) -> tuple[_AutomationCapital | None, str]:
-        account_level = snapshot.account_config.account_level or ""
-        balance: OkxDemoBalanceSnapshot = snapshot.balance
-        if account_level == "2":
-            matches = [
-                item
-                for item in balance.details
-                if item.currency.upper() == _AUTOMATION_SETTLEMENT_CURRENCY
-            ]
-            if len(matches) != 1:
-                return None, "demo_settlement_currency_balance_unavailable"
-            detail = matches[0]
-            if detail.equity <= 0:
-                return None, "demo_settlement_currency_equity_exhausted"
-            return (
-                _AutomationCapital(
-                    risk_equity=detail.equity,
-                    available_equity=min(
-                        detail.equity,
-                        max(D("0"), detail.available_equity),
-                    ),
-                    currency=_AUTOMATION_SETTLEMENT_CURRENCY,
-                    basis=(
-                        "single_currency:"
-                        + _AUTOMATION_SETTLEMENT_CURRENCY
-                    ),
-                ),
-                "",
-            )
-        if account_level in {"3", "4"}:
-            if balance.adjusted_equity <= 0:
-                return None, "demo_account_adjusted_equity_unavailable"
-            return (
-                _AutomationCapital(
-                    risk_equity=balance.adjusted_equity,
-                    available_equity=min(
-                        balance.adjusted_equity,
-                        max(D("0"), balance.available_equity),
-                    ),
-                    currency="USD",
-                    basis="account_adjusted:USD",
-                ),
-                "",
-            )
-        return None, "unsupported_okx_demo_account_level"
+    ) -> tuple[DemoRiskCapital | None, str]:
+        return resolve_demo_risk_capital(
+            snapshot.account_config,
+            snapshot.balance,
+            settlement_currency=_AUTOMATION_SETTLEMENT_CURRENCY,
+        )
 
     @staticmethod
     def _portfolio_usage(
@@ -2036,15 +1988,17 @@ class SafeDemoAutomation:
         if not closed:
             return
 
-        outcomes: list[tuple[datetime, DemoAutomationActiveTrade, Decimal]] = []
+        outcomes: list[
+            tuple[datetime, DemoAutomationActiveTrade, Decimal, list[str]]
+        ] = []
         unknown: list[DemoAutomationActiveTrade] = []
         for trade in closed:
             outcome = self._closing_trade_outcome(trade, snapshot.recent_orders)
             if outcome is None:
                 unknown.append(trade)
             else:
-                closed_at, net_pnl = outcome
-                outcomes.append((closed_at, trade, net_pnl))
+                closed_at, net_pnl, closing_order_ids = outcome
+                outcomes.append((closed_at, trade, net_pnl, closing_order_ids))
 
         if unknown:
             self._state["armed"] = False
@@ -2060,8 +2014,15 @@ class SafeDemoAutomation:
             return
 
         cooldowns = dict(self._state.get("symbol_cooldowns") or {})
-        for closed_at, trade, net_pnl in sorted(outcomes, key=lambda item: item[0]):
-            self._record_realized_pnl_event(trade, closed_at, net_pnl)
+        for closed_at, trade, net_pnl, closing_order_ids in sorted(
+            outcomes, key=lambda item: item[0]
+        ):
+            self._record_realized_pnl_event(
+                trade,
+                closed_at,
+                net_pnl,
+                closing_order_ids=closing_order_ids,
+            )
             if closed_at.date() == self._state["session_date"]:
                 if net_pnl < 0:
                     self._state["consecutive_losses"] = (
@@ -2177,7 +2138,7 @@ class SafeDemoAutomation:
         cls,
         trade: DemoAutomationActiveTrade,
         orders: Iterable[OkxDemoOrderView],
-    ) -> tuple[datetime, Decimal] | None:
+    ) -> tuple[datetime, Decimal, list[str]] | None:
         matches: dict[str, tuple[datetime, Decimal]] = {}
         for order in orders:
             if order.instrument_id != trade.instrument_id:
@@ -2212,8 +2173,10 @@ class SafeDemoAutomation:
         if not matches:
             return None
         unique = list(matches.values())
-        return max(item[0] for item in unique), sum(
-            (item[1] for item in unique), D("0")
+        return (
+            max(item[0] for item in unique),
+            sum((item[1] for item in unique), D("0")),
+            sorted(matches),
         )
 
     def _record_realized_pnl_event(
@@ -2221,6 +2184,8 @@ class SafeDemoAutomation:
         trade: DemoAutomationActiveTrade,
         closed_at: datetime,
         net_pnl: Decimal,
+        *,
+        closing_order_ids: Iterable[str] = (),
     ) -> None:
         closed_utc = closed_at.astimezone(timezone.utc)
         event_id = hashlib.sha256(
@@ -2233,12 +2198,26 @@ class SafeDemoAutomation:
             ).encode("utf-8")
         ).hexdigest()
         events = self._normalize_realized_pnl_events()
-        if any(item["event_id"] == event_id for item in events):
-            return
+        events = [item for item in events if item["event_id"] != event_id]
         events.append(
             {
                 "event_id": event_id,
                 "instrument_id": trade.instrument_id,
+                "strategy": trade.strategy,
+                "direction": trade.direction,
+                "settlement_currency": trade.settlement_currency,
+                "reference_price": (
+                    str(trade.reference_price)
+                    if trade.reference_price is not None
+                    else None
+                ),
+                "entry_client_order_id": trade.client_order_id,
+                "entry_exchange_order_id": trade.exchange_order_id,
+                "protection_client_order_id": trade.protection_client_order_id,
+                "closing_order_ids": sorted(
+                    {str(value) for value in closing_order_ids if value}
+                ),
+                "started_at": trade.started_at.astimezone(timezone.utc).isoformat(),
                 "closed_at": closed_utc.isoformat(),
                 "net_pnl": str(net_pnl),
             }
@@ -2250,10 +2229,12 @@ class SafeDemoAutomation:
     def _normalize_realized_pnl_events(
         self,
         now: datetime | None = None,
-    ) -> list[dict[str, str]]:
+    ) -> list[dict[str, Any]]:
         reference = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-        cutoff = reference - timedelta(days=7)
-        normalized: dict[str, dict[str, str]] = {}
+        cutoff = reference - timedelta(
+            days=self.settings.okx_demo_performance_snapshot_retention_days
+        )
+        normalized: dict[str, dict[str, Any]] = {}
         raw_events = self._state.get("realized_pnl_events") or []
         if not isinstance(raw_events, list):
             raw_events = []
@@ -2271,12 +2252,46 @@ class SafeDemoAutomation:
                 net_pnl = D(str(raw.get("net_pnl")))
             except (ArithmeticError, ValueError):
                 continue
-            normalized[event_id] = {
+            event: dict[str, Any] = {
                 "event_id": event_id,
                 "instrument_id": instrument_id,
                 "closed_at": closed_at.isoformat(),
                 "net_pnl": str(net_pnl),
             }
+            for key in (
+                "strategy",
+                "direction",
+                "settlement_currency",
+                "entry_client_order_id",
+                "entry_exchange_order_id",
+                "protection_client_order_id",
+            ):
+                value = raw.get(key)
+                event[key] = str(value) if value not in (None, "") else None
+            reference_price = raw.get("reference_price")
+            try:
+                event["reference_price"] = (
+                    str(D(str(reference_price)))
+                    if reference_price not in (None, "")
+                    else None
+                )
+            except (ArithmeticError, ValueError):
+                event["reference_price"] = None
+            started_at = self._parse_datetime(raw.get("started_at"))
+            event["started_at"] = (
+                started_at.isoformat() if started_at is not None else None
+            )
+            raw_closing_ids = raw.get("closing_order_ids")
+            event["closing_order_ids"] = sorted(
+                {
+                    str(value)
+                    for value in (
+                        raw_closing_ids if isinstance(raw_closing_ids, list) else []
+                    )
+                    if value
+                }
+            )
+            normalized[event_id] = event
         events = sorted(
             normalized.values(), key=lambda item: (item["closed_at"], item["event_id"])
         )
@@ -2284,8 +2299,15 @@ class SafeDemoAutomation:
         return events
 
     def _rolling_realized_pnl(self, now: datetime | None = None) -> Decimal:
+        reference = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        cutoff = reference - timedelta(days=7)
         return sum(
-            (D(item["net_pnl"]) for item in self._normalize_realized_pnl_events(now)),
+            (
+                D(item["net_pnl"])
+                for item in self._normalize_realized_pnl_events(reference)
+                if (closed_at := self._parse_datetime(item["closed_at"])) is not None
+                and cutoff <= closed_at <= reference + timedelta(minutes=5)
+            ),
             D("0"),
         )
 

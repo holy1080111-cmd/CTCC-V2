@@ -2056,7 +2056,7 @@ async def test_150_usdt_structural_profile_uses_one_full_equity_margin_ceiling()
 
 
 @pytest.mark.asyncio
-async def test_rolling_seven_day_realized_pnl_prunes_old_and_deduplicates() -> None:
+async def test_rolling_seven_day_pnl_keeps_attribution_history_and_deduplicates() -> None:
     demo = FakeDemo()
     service = adaptive_service(demo, {"BTC-USDT-SWAP": 95})
     await service.recover()
@@ -2075,9 +2075,24 @@ async def test_rolling_seven_day_realized_pnl_prunes_old_and_deduplicates() -> N
             "net_pnl": "-999",
         }
     )
+    service._state["realized_pnl_events"].append(
+        {
+            "event_id": "very-old",
+            "instrument_id": "SOL-USDT-SWAP",
+            "closed_at": (now - timedelta(days=91)).isoformat(),
+            "net_pnl": "-9999",
+        }
+    )
 
     assert service._rolling_realized_pnl(now) == Decimal("-12")
-    assert len(service._state["realized_pnl_events"]) == 1
+    assert len(service._state["realized_pnl_events"]) == 2
+    event = next(
+        item
+        for item in service._state["realized_pnl_events"]
+        if item["net_pnl"] == "-12"
+    )
+    assert event["strategy"] == "trend_pullback"
+    assert event["entry_exchange_order_id"] == "order-BTC-USDT-SWAP"
 
 
 def test_closing_pnl_deduplicates_repeated_exchange_order_id() -> None:
@@ -2103,7 +2118,7 @@ def test_closing_pnl_deduplicates_repeated_exchange_order_id() -> None:
         [order, order.model_copy(deep=True)],
     )
 
-    assert outcome == (closed_at, Decimal("9"))
+    assert outcome == (closed_at, Decimal("9"), ["same-close-order"])
 
 
 @pytest.mark.asyncio

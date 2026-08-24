@@ -7,7 +7,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.database.models.demo_automation import DemoAutomationRun
+from app.database.models.demo_automation import DemoAutomationRun, DemoAutomationState
 from app.database.models.okx_demo import OkxDemoOrderState
 from app.database.models.performance import (
     DemoDailyPerformanceReport as DemoDailyPerformanceReportRow,
@@ -20,6 +20,7 @@ from app.domain.performance import (
     DemoEquityPoint,
     DemoOrderPerformanceSample,
     DemoStrategyControlView,
+    DemoTradeAttribution,
 )
 
 
@@ -33,6 +34,10 @@ class DemoPerformanceRepository:
         captured_at: datetime,
         total_equity: Decimal,
         available_equity: Decimal,
+        performance_equity: Decimal | None = None,
+        performance_available_equity: Decimal | None = None,
+        equity_basis: str | None = None,
+        equity_currency: str | None = None,
         unrealized_pnl: Decimal,
         position_count: int,
         pending_order_count: int,
@@ -48,6 +53,10 @@ class DemoPerformanceRepository:
                         captured_at=captured_at,
                         total_equity=total_equity,
                         available_equity=available_equity,
+                        performance_equity=performance_equity,
+                        performance_available_equity=performance_available_equity,
+                        equity_basis=equity_basis,
+                        equity_currency=equity_currency,
                         unrealized_pnl=unrealized_pnl,
                         position_count=position_count,
                         pending_order_count=pending_order_count,
@@ -81,6 +90,10 @@ class DemoPerformanceRepository:
                 captured_at=row.captured_at,
                 total_equity=row.total_equity,
                 available_equity=row.available_equity,
+                performance_equity=row.performance_equity,
+                performance_available_equity=row.performance_available_equity,
+                equity_basis=row.equity_basis,
+                equity_currency=row.equity_currency,
                 unrealized_pnl=row.unrealized_pnl,
                 position_count=row.position_count,
                 pending_order_count=row.pending_order_count,
@@ -142,6 +155,33 @@ class DemoPerformanceRepository:
             ).all()
         return [DemoAutomationRunResult.model_validate(row.result) for row in rows]
 
+    async def trade_attributions_between(
+        self,
+        start: datetime,
+        end: datetime,
+        *,
+        limit: int,
+    ) -> list[DemoTradeAttribution]:
+        async with self.session_factory() as session:
+            raw_events = await session.scalar(
+                select(DemoAutomationState.realized_pnl_events).where(
+                    DemoAutomationState.id == 1
+                )
+            )
+        values: list[DemoTradeAttribution] = []
+        for raw in raw_events or []:
+            try:
+                item = DemoTradeAttribution.model_validate(raw)
+            except (TypeError, ValueError):
+                continue
+            closed_at = item.closed_at
+            if closed_at.tzinfo is None:
+                closed_at = closed_at.replace(tzinfo=timezone.utc)
+                item = item.model_copy(update={"closed_at": closed_at})
+            if start <= closed_at < end:
+                values.append(item)
+        return sorted(values, key=lambda item: (item.closed_at, item.event_id))[:limit]
+
     async def strategy_controls(self) -> list[DemoStrategyControlView]:
         async with self.session_factory() as session:
             rows = (
@@ -198,6 +238,11 @@ class DemoPerformanceRepository:
     ) -> DemoDailyPerformanceReport:
         values = {
             "report_date": report.report_date,
+            "performance_window_started_at": report.performance_window_started_at,
+            "equity_basis": report.equity_basis,
+            "equity_currency": report.equity_currency,
+            "performance_snapshot_count": report.performance_snapshot_count,
+            "excluded_snapshot_count": report.excluded_snapshot_count,
             "opening_equity": report.opening_equity,
             "closing_equity": report.closing_equity,
             "net_equity_change": report.net_equity_change,
@@ -209,6 +254,8 @@ class DemoPerformanceRepository:
             "order_count": report.order_count,
             "filled_order_count": report.filled_order_count,
             "realized_trade_count": report.realized_trade_count,
+            "attributed_realized_trade_count": report.attributed_realized_trade_count,
+            "unattributed_realized_trade_count": report.unattributed_realized_trade_count,
             "wins": report.wins,
             "losses": report.losses,
             "breakeven": report.breakeven,
@@ -217,6 +264,10 @@ class DemoPerformanceRepository:
             "average_adverse_slippage_bps": report.average_adverse_slippage_bps,
             "max_adverse_slippage_bps": report.max_adverse_slippage_bps,
             "max_drawdown_pct": report.max_drawdown_pct,
+            "account_opening_equity": report.account_opening_equity,
+            "account_closing_equity": report.account_closing_equity,
+            "account_equity_change": report.account_equity_change,
+            "account_max_drawdown_pct": report.account_max_drawdown_pct,
             "strategy_stats": [item.model_dump(mode="json") for item in report.strategy_stats],
             "alerts": [item.model_dump(mode="json") for item in report.alerts],
             "generated_at": report.generated_at,
@@ -240,6 +291,11 @@ class DemoPerformanceRepository:
             return None
         return DemoDailyPerformanceReport(
             report_date=row.report_date,
+            performance_window_started_at=row.performance_window_started_at,
+            equity_basis=row.equity_basis,
+            equity_currency=row.equity_currency,
+            performance_snapshot_count=row.performance_snapshot_count,
+            excluded_snapshot_count=row.excluded_snapshot_count,
             opening_equity=row.opening_equity,
             closing_equity=row.closing_equity,
             net_equity_change=row.net_equity_change,
@@ -251,6 +307,8 @@ class DemoPerformanceRepository:
             order_count=row.order_count,
             filled_order_count=row.filled_order_count,
             realized_trade_count=row.realized_trade_count,
+            attributed_realized_trade_count=row.attributed_realized_trade_count,
+            unattributed_realized_trade_count=row.unattributed_realized_trade_count,
             wins=row.wins,
             losses=row.losses,
             breakeven=row.breakeven,
@@ -259,6 +317,10 @@ class DemoPerformanceRepository:
             average_adverse_slippage_bps=row.average_adverse_slippage_bps,
             max_adverse_slippage_bps=row.max_adverse_slippage_bps,
             max_drawdown_pct=row.max_drawdown_pct,
+            account_opening_equity=row.account_opening_equity,
+            account_closing_equity=row.account_closing_equity,
+            account_equity_change=row.account_equity_change,
+            account_max_drawdown_pct=row.account_max_drawdown_pct,
             strategy_stats=row.strategy_stats or [],
             alerts=row.alerts or [],
             generated_at=row.generated_at,

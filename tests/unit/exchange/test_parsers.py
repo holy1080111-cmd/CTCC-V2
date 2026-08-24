@@ -33,6 +33,7 @@ def test_parse_demo_balance_preserves_currency_available_equity() -> None:
                 {
                     "ccy": "USDT",
                     "eq": "4998.339000436543",
+                    "eqUsd": "4997.839166536499",
                     "availEq": "4998.339000436543",
                     "availBal": "4998.339000436543",
                     "cashBal": "4998.339000436543",
@@ -47,6 +48,7 @@ def test_parse_demo_balance_preserves_currency_available_equity() -> None:
     assert balance.details[0].available_equity == Decimal(
         "4998.339000436543"
     )
+    assert balance.details[0].equity_usd == Decimal("4997.839166536499")
 
 
 def test_parse_candle() -> None:
