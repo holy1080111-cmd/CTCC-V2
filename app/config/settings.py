@@ -210,6 +210,12 @@ class Settings(BaseSettings):
     okx_demo_scan_candle_limit: int = Field(default=250, ge=200, le=300)
     okx_demo_scan_max_snapshot_age_seconds: int = Field(default=30, ge=5, le=300)
     okx_demo_scan_max_entry_drift_bps: Decimal = Field(default=Decimal("30"), ge=1, le=500)
+    # Automated Demo entries use a price-bounded FOK order.  This cap is
+    # applied in addition to the candidate reward/risk boundary, so a fill
+    # must satisfy both limits.  It never authorizes writes by itself.
+    okx_demo_execution_max_adverse_slippage_bps: Decimal = Field(
+        default=Decimal("5"), ge=0, le=Decimal("50")
+    )
     okx_demo_trade_cooldown_seconds: int = Field(default=1800, ge=0, le=86_400)
     # Optional continuous Demo session. It removes the daily-loss, daily
     # trade-count, consecutive-loss, and post-close cooldown gates. Protected

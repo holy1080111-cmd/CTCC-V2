@@ -194,6 +194,24 @@ configuration field, but it is not enforced by the normal automation path when
 continuous mode is active. The controlled execute-soak retains its independent
 loss budget and submission cap.
 
+## Bounded execution quality
+
+Automation submits Demo entries as price-bounded `fok` orders. Before sizing,
+it derives the worst executable price that satisfies both the configured
+reward/risk floor and `OKX_DEMO_EXECUTION_MAX_ADVERSE_SLIPPAGE_BPS`, aligns that
+price conservatively to the instrument tick, and evaluates the risk engine at
+that worst price. Standard candidates enforce gross reward/risk; structural
+candidates enforce their configured cost-adjusted net reward/risk.
+
+A terminal canceled FOK with zero accumulated fill is a safe blocked outcome
+and does not create a tracked trade, but it still consumes one order submission
+allowance. Any partial or ambiguous fill, a fill past the price boundary,
+missing `avgPx`, below-floor reward/risk, or unconfirmed attached protection
+engages Emergency Stop while conservatively retaining the acknowledged exposure
+for operator reconciliation. CTCC does not automatically close that exposure.
+The stricter execution boundary can reduce fill rate and does not grant Demo or
+Live write authority.
+
 ## Safe configuration
 
 Keep all execution switches off while installing and testing. The following is
@@ -201,6 +219,7 @@ an example operator-reviewed Demo profile, not an instruction to enable it:
 
 ```env
 OKX_DEMO_SCORE_RISK_ENABLED=true
+OKX_DEMO_EXECUTION_MAX_ADVERSE_SLIPPAGE_BPS=5
 OKX_DEMO_MAX_OPEN_POSITIONS=3
 OKX_DEMO_MAX_TRADES_PER_DAY=6
 OKX_DEMO_DAILY_LOSS_LIMIT_PCT=0.01

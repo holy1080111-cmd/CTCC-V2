@@ -232,6 +232,11 @@ authority all remain absent.
   never substituted for exchange-attributed trade PnL, even for one position.
 - Execute soak requires a flat start, protection verification, a session loss
   budget, a submission cap, and automatic disarm.
+- Automated Demo entries use a tick-aligned, price-bounded FOK order sized at
+  the worst allowed fill. A zero-fill cancellation is blocked without exposure
+  but consumes one submission allowance; partial, ambiguous, out-of-boundary,
+  below-RR, or unprotected acknowledgements fail closed and retain any exchange
+  exposure for operator reconciliation.
 - Missing protection or untracked exposure engages emergency stop but does not
   silently close a position.
 - API remains single-worker because Arm and scheduler ownership are process-local.

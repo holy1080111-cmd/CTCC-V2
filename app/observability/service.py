@@ -229,6 +229,13 @@ class DemoObservabilityService:
             equity_currency=(
                 risk_capital.currency if risk_capital is not None else None
             ),
+            execution_order_type=automation.execution_order_type,
+            execution_max_adverse_slippage_bps=(
+                automation.execution_max_adverse_slippage_bps
+            ),
+            minimum_execution_risk_reward=(
+                automation.minimum_execution_risk_reward
+            ),
             require_flat_start=self.settings.okx_demo_execution_soak_require_flat_start,
             require_protection=self.settings.okx_demo_execution_soak_require_protection,
             auto_disarm=self.settings.okx_demo_execution_soak_auto_disarm,
@@ -459,7 +466,7 @@ class DemoObservabilityService:
                 submission_limit=submission_limit,
             )
             actual_submissions = sum(
-                result.outcome == "submitted" for result in run.results
+                result.order_submission_attempted for result in run.results
             )
             self._apply_run(run)
             await self._persist_soak()
@@ -788,10 +795,12 @@ class DemoObservabilityService:
         self._soak.completed_runs += 1
         self._soak.last_run_at = run.completed_at
         self._soak.last_outcome = outcomes[0] if len(outcomes) == 1 else ",".join(outcomes)[:40]
-        submitted_count = outcomes.count("submitted")
+        submitted_count = sum(
+            result.order_submission_attempted for result in run.results
+        )
         if submitted_count:
             # The legacy field name is retained in the persisted contract, but
-            # the value is an order-submission count rather than a run count.
+            # the value is an order-attempt count rather than a run count.
             self._soak.submitted_runs += submitted_count
         if "approved_dry_run" in outcome_set:
             self._soak.dry_run_runs += 1

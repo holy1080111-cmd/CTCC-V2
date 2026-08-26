@@ -113,6 +113,13 @@ class DemoAutomationActiveTrade(BaseModel):
     position_margin_cap_usdt: Decimal | None = Field(default=None, gt=0)
     capital_bucket_usdt: Decimal | None = Field(default=None, gt=0)
     reference_price: Decimal | None = Field(default=None, gt=0)
+    execution_order_type: Literal["fok"] | None = None
+    execution_limit_price: Decimal | None = Field(default=None, gt=0)
+    average_fill_price: Decimal | None = Field(default=None, gt=0)
+    actual_gross_risk_reward: Decimal | None = Field(default=None, gt=0)
+    actual_net_risk_reward: Decimal | None = Field(default=None, gt=0)
+    actual_enforced_risk_reward: Decimal | None = Field(default=None, gt=0)
+    adverse_fill_slippage_bps: Decimal | None = None
     stop_loss: Decimal | None = Field(default=None, gt=0)
     take_profit: Decimal | None = Field(default=None, gt=0)
     protection_model: Literal["atr", "structure"] = "atr"
@@ -203,6 +210,13 @@ class DemoAutomationSymbolResult(BaseModel):
     mathematical_validated_components: list[str] = Field(default_factory=list)
     mathematical_auxiliary_components: list[str] = Field(default_factory=list)
     reference_price: Decimal | None = None
+    execution_order_type: Literal["fok"] | None = None
+    execution_limit_price: Decimal | None = None
+    average_fill_price: Decimal | None = None
+    actual_gross_risk_reward: Decimal | None = None
+    actual_net_risk_reward: Decimal | None = None
+    actual_enforced_risk_reward: Decimal | None = None
+    adverse_fill_slippage_bps: Decimal | None = None
     stop_loss: Decimal | None = None
     take_profit: Decimal | None = None
     risk_reward: Decimal | None = None
@@ -232,6 +246,7 @@ class DemoAutomationSymbolResult(BaseModel):
     capital_bucket_usdt: Decimal | None = Field(default=None, gt=0)
     client_order_id: str | None = None
     exchange_order_id: str | None = None
+    order_submission_attempted: bool = False
     reason_codes: list[str] = Field(default_factory=list)
     detail: str
     generated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
@@ -272,6 +287,13 @@ class DemoAutomationStatus(BaseModel):
     configuration_blockers: list[str] = Field(default_factory=list)
     symbols: list[str]
     scan_interval_seconds: int
+    execution_order_type: Literal["fok"] = "fok"
+    execution_max_adverse_slippage_bps: Decimal = Field(
+        default=Decimal("5"), ge=0
+    )
+    minimum_execution_risk_reward: Decimal = Field(
+        default=Decimal("1.8"), gt=0
+    )
     max_trades_per_day: int
     daily_loss_limit_pct: Decimal
     max_consecutive_losses: int

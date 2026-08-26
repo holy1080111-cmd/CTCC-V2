@@ -1,7 +1,7 @@
 # CTCC-V2 Conversation Issue Audit
 
 This register reconciles the CTCC-V2 failures reported in operator
-conversations through 2026-08-14 against the current reviewed source tree. It
+conversations through 2026-08-25 against the current reviewed source tree. It
 separates source defects from host/operator failures so a command-line parsing
 mistake is not mistaken for trading correctness, and a passing unit test is not
 mistaken for predictive or economic validation.
@@ -21,7 +21,8 @@ mistaken for predictive or economic validation.
 | Mathematical gate tests had a missing `MathematicalConfirmation` name and an unsupported SOL fixture | focused and full hermetic regressions later passed; current unit suite retains the corrected cases | Closed |
 | 150 USDT / 2,000 USDT capital-bucket tests inherited unsafe host environment variables | `scripts/hermetic_pytest.py` removes deployment setting leakage; verifier regressions cover it | Closed |
 | Funding/mark updates could refresh one merged WebSocket timestamp and make an old last price or quote look fresh | realtime snapshots now carry independent last, quote, mark, and book receive times; execution checks the fields it actually consumes | Closed by field-freshness regressions |
-| Demo and Live market orders sized from last price rather than the executable side | long risk references use fresh ask and short risk references use fresh bid; symmetric regressions cover both sides | Closed |
+| Demo and Live entries sized from last price rather than the executable side | Demo uses fresh ask/bid plus a worst-fill FOK boundary; Live uses fresh ask/bid; symmetric regressions cover both directions | Closed |
+| A Demo long filled at 2,491.39 even though its stop/target implied only about 1.755 gross reward/risk, below the configured 1.8 floor | automation intersects the RR-derived price boundary with a configurable adverse-slippage cap, sizes at the worst allowed fill, submits FOK, and verifies terminal full fill, `accFillSz`, `avgPx`, actual RR, and protection; the incident geometry is a direct regression | Closed at deterministic execution-boundary level; future exchange fills remain external evidence |
 | Protection could be evaluated against last price while OKX was asked to trigger on mark | Demo/Live requests are mark-trigger only; execution uses side-specific bid/ask, bounds mark-to-quote basis, and rechecks both executable quote and mark inside the bracket | Closed at deterministic boundary level |
 | Live risk sizing ran before stop/target tick alignment | Live now aligns protection first, rebuilds reward/risk at the executable quote, then calls the risk engine | Closed |
 | Candle `ts` was treated as close time although OKX supplies interval start time | candle quality and analysis freshness now use `open timestamp + bar duration` | Closed |

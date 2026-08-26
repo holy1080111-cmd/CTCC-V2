@@ -49,6 +49,11 @@ class FakePrivate:
         self.pending_algo_client_id_override = None
         self.pending_algo_post_place_empty_calls = 0
         self.pending_algo_post_place_calls = 0
+        self.order_detail_calls = 0
+        self.order_states: list[str] = ["filled"]
+        self.order_fill_size = Decimal("0.1")
+        self.order_average_fill_price: Decimal | None = Decimal("100000")
+        self.order_average_fill_prices: list[Decimal | None] | None = None
 
     async def account_config(self):
         return [{"uid": "1", "acctLv": "2", "posMode": self.position_mode}]
@@ -97,18 +102,37 @@ class FakePrivate:
         return [{"ordId": "123", "clOrdId": payload["clOrdId"], "sCode": "0", "sMsg": ""}]
 
     async def order_detail(self, instrument_id, *, order_id=None, client_order_id=None):
+        self.order_detail_calls += 1
+        state = self.order_states[
+            min(self.order_detail_calls - 1, len(self.order_states) - 1)
+        ]
+        average_fill_price = (
+            self.order_average_fill_prices[
+                min(
+                    self.order_detail_calls - 1,
+                    len(self.order_average_fill_prices) - 1,
+                )
+            ]
+            if self.order_average_fill_prices
+            else self.order_average_fill_price
+        )
+        payload = self.placed_payload or {}
         return [{
             "ordId": order_id or "123",
-            "clOrdId": client_order_id or (self.placed_payload or {}).get("clOrdId", "CTCC1"),
+            "clOrdId": client_order_id or payload.get("clOrdId", "CTCC1"),
             "instId": instrument_id,
-            "side": (self.placed_payload or {}).get("side", "buy"),
-            "posSide": (self.placed_payload or {}).get("posSide", "net"),
-            "ordType": "market",
-            "state": "filled",
-            "sz": "0.1",
-            "accFillSz": "0.1",
-            "avgPx": "100000",
-            "px": "",
+            "side": payload.get("side", "buy"),
+            "posSide": payload.get("posSide", "net"),
+            "ordType": payload.get("ordType", "market"),
+            "state": state,
+            "sz": payload.get("sz", "0.1"),
+            "accFillSz": str(self.order_fill_size),
+            "avgPx": (
+                str(average_fill_price)
+                if average_fill_price is not None
+                else ""
+            ),
+            "px": payload.get("px", ""),
             "reduceOnly": "false",
             "cTime": "1785858062000",
             "uTime": "1785858063000",
@@ -233,6 +257,91 @@ async def test_place_long_maps_to_demo_buy_and_attached_protection() -> None:
     assert result.protection_confirmed is True
     assert result.protection_client_order_id == attached["attachAlgoClOrdId"]
     assert len(repository.orders) == 1
+
+
+@pytest.mark.asyncio
+async def test_place_fok_maps_price_bound_and_attached_protection() -> None:
+    private = FakePrivate()
+    service = OkxDemoService(private, FakePublic(), None, settings=settings())
+
+    result = await service.place_order(
+        request(order_type="fok", price=Decimal("100010"))
+    )
+
+    assert private.placed_payload["ordType"] == "fok"
+    assert private.placed_payload["px"] == "100010"
+    assert private.placed_payload["attachAlgoOrds"]
+    assert result.order is not None
+    assert result.order.order_type == "fok"
+    assert result.order.state == "filled"
+    assert result.protection_confirmed is True
+
+
+@pytest.mark.asyncio
+async def test_fok_order_detail_poll_waits_for_terminal_state() -> None:
+    private = FakePrivate()
+    private.order_states = ["live", "filled"]
+    service = OkxDemoService(
+        private,
+        FakePublic(),
+        None,
+        settings=settings(okx_demo_order_detail_poll_attempts=2),
+    )
+
+    result = await service.place_order(
+        request(order_type="fok", price=Decimal("100010"))
+    )
+
+    assert private.order_detail_calls == 2
+    assert result.order is not None
+    assert result.order.state == "filled"
+
+
+@pytest.mark.asyncio
+async def test_fok_order_detail_poll_waits_for_positive_average_fill_price() -> None:
+    private = FakePrivate()
+    private.order_states = ["filled", "filled"]
+    private.order_average_fill_prices = [None, Decimal("100000")]
+    service = OkxDemoService(
+        private,
+        FakePublic(),
+        None,
+        settings=settings(okx_demo_order_detail_poll_attempts=2),
+    )
+
+    result = await service.place_order(
+        request(order_type="fok", price=Decimal("100010"))
+    )
+
+    assert private.order_detail_calls == 2
+    assert result.order is not None
+    assert result.order.state == "filled"
+    assert result.order.average_fill_price == Decimal("100000")
+
+
+@pytest.mark.parametrize("terminal_state", ["canceled", "mmp_canceled"])
+@pytest.mark.asyncio
+async def test_zero_fill_fok_is_terminal_without_protection_poll(
+    terminal_state: str,
+) -> None:
+    private = FakePrivate()
+    private.order_states = [terminal_state]
+    private.order_fill_size = Decimal("0")
+    private.order_average_fill_price = None
+    service = OkxDemoService(private, FakePublic(), None, settings=settings())
+
+    result = await service.place_order(
+        request(order_type="fok", price=Decimal("100010"))
+    )
+
+    assert result.order is not None
+    assert result.order.state == terminal_state
+    assert result.order.accumulated_fill_size == 0
+    assert result.protection_confirmed is False
+    assert "fok_order_not_filled" in result.warnings
+    assert private.pending_algo_post_place_calls == 0
+
+
 
 
 @pytest.mark.asyncio

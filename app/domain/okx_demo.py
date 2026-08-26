@@ -152,7 +152,7 @@ class OkxDemoOrderRequest(BaseModel):
     direction: Literal["long", "short"]
     size: Decimal = Field(gt=0)
     margin_mode: Literal["cross", "isolated"] = "cross"
-    order_type: Literal["market", "limit"] = "market"
+    order_type: Literal["market", "limit", "fok"] = "market"
     price: Decimal | None = Field(default=None, gt=0)
     stop_loss: Decimal | None = Field(default=None, gt=0)
     take_profit: Decimal | None = Field(default=None, gt=0)
@@ -169,8 +169,8 @@ class OkxDemoOrderRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_order_shape(self) -> "OkxDemoOrderRequest":
-        if self.order_type == "limit" and self.price is None:
-            raise ValueError("price is required for limit orders")
+        if self.order_type in {"limit", "fok"} and self.price is None:
+            raise ValueError("price is required for limit and fok orders")
         if self.order_type == "market" and self.price is not None:
             raise ValueError("price must be omitted for market orders")
         if (self.stop_loss is None) != (self.take_profit is None):

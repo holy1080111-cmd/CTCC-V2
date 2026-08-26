@@ -72,6 +72,10 @@ class FakeDemo:
         include_acknowledgement: bool = True,
         leverage_acknowledged: bool = True,
         protection_confirmed: bool = True,
+        order_state: str = "filled",
+        average_fill_price: Decimal | None = None,
+        accumulated_fill_size: Decimal | None = None,
+        order_type_override: str | None = None,
     ) -> None:
         self.place_calls = []
         self.leverage_calls = []
@@ -85,6 +89,10 @@ class FakeDemo:
         self.include_acknowledgement = include_acknowledgement
         self.leverage_acknowledged = leverage_acknowledged
         self.protection_confirmed = protection_confirmed
+        self.order_state = order_state
+        self.average_fill_price = average_fill_price
+        self.accumulated_fill_size = accumulated_fill_size
+        self.order_type_override = order_type_override
         self.protection_present = True
         self.protection_by_instrument: dict[
             str, tuple[str, Decimal, Decimal]
@@ -205,9 +213,30 @@ class FakeDemo:
 
     async def place_order(self, request):
         self.place_calls.append(request)
-        self.positions.append(self._position(request.instrument_id, request.direction))
+        fill_size = (
+            self.accumulated_fill_size
+            if self.accumulated_fill_size is not None
+            else request.size
+            if self.order_state == "filled"
+            else Decimal("0")
+        )
+        fill_price = (
+            self.average_fill_price
+            if self.average_fill_price is not None
+            else request.price
+            if fill_size > 0
+            else None
+        )
+        if fill_size > 0:
+            self.positions.append(
+                self._position(request.instrument_id, request.direction)
+            )
         protection_client_order_id = fake_protection_id(request.instrument_id)
-        if request.stop_loss is not None and request.take_profit is not None:
+        if (
+            fill_size > 0
+            and request.stop_loss is not None
+            and request.take_profit is not None
+        ):
             self.protection_by_instrument[request.instrument_id] = (
                 protection_client_order_id,
                 request.stop_loss,
@@ -223,7 +252,22 @@ class FakeDemo:
                 if self.include_acknowledgement
                 else None
             ),
-            protection_confirmed=self.protection_confirmed,
+            order=OkxDemoOrderView(
+                order_id="123",
+                client_order_id=request.client_order_id,
+                instrument_id=request.instrument_id,
+                side="buy" if request.direction == "long" else "sell",
+                position_side=request.direction,
+                order_type=self.order_type_override or request.order_type,
+                state=self.order_state,
+                size=request.size,
+                accumulated_fill_size=fill_size,
+                price=request.price,
+                average_fill_price=fill_price,
+            ),
+            protection_confirmed=(
+                self.protection_confirmed if fill_size > 0 else False
+            ),
             protection_client_order_id=protection_client_order_id,
         )
 
@@ -236,11 +280,13 @@ class FakePublic:
         state: str = "live",
         settlement_currency: str = "USDT",
         returned_instrument_id: str | None = None,
+        tick_size: Decimal = Decimal("0.1"),
     ) -> None:
         self.instrument_type = instrument_type
         self.state = state
         self.settlement_currency = settlement_currency
         self.returned_instrument_id = returned_instrument_id
+        self.tick_size = tick_size
 
     async def instruments(self, instrument_id: str):
         returned_instrument_id = self.returned_instrument_id or instrument_id
@@ -250,7 +296,7 @@ class FakePublic:
                 instrument_id=returned_instrument_id,
                 instrument_type=self.instrument_type,
                 state=self.state,
-                tick_size=Decimal("0.1"),
+                tick_size=self.tick_size,
                 lot_size=Decimal("1"),
                 minimum_size=Decimal("1"),
                 contract_value=Decimal("1"),
@@ -327,20 +373,24 @@ def configured_settings(**updates) -> Settings:
 def candidate(
     *,
     score: int = 82,
+    entry: str = "100",
     stop_loss: str = "95",
     take_profit: str = "110",
     derivative_status: str = "confirmed",
     derivative_confidence: str = "0.80",
 ) -> TradeCandidate:
+    entry_price = Decimal(entry)
     return TradeCandidate(
         strategy="trend_pullback",
         direction="long",
         score=score,
-        entry=Decimal("100"),
+        entry=entry_price,
         stop_loss=Decimal(stop_loss),
         take_profit=Decimal(take_profit),
-        risk_reward=(Decimal(take_profit) - Decimal("100"))
-        / (Decimal("100") - Decimal(stop_loss)),
+        risk_reward=(
+            (Decimal(take_profit) - entry_price)
+            / (entry_price - Decimal(stop_loss))
+        ),
         invalidation="stop",
         expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
         reasons=["unit-test"],
@@ -501,7 +551,7 @@ async def test_dry_run_fails_closed_for_ineligible_instrument_metadata(
 
 
 @pytest.mark.asyncio
-async def test_demo_market_buy_uses_fresh_ask_as_risk_reference() -> None:
+async def test_demo_fok_buy_uses_fresh_ask_and_bounded_price() -> None:
     demo = FakeDemo()
     service = make_service(
         demo,
@@ -514,12 +564,19 @@ async def test_demo_market_buy_uses_fresh_ask_as_risk_reference() -> None:
 
     assert run.results[0].outcome == "submitted"
     assert run.results[0].reference_price == Decimal("100.2")
+    assert run.results[0].execution_order_type == "fok"
+    assert run.results[0].execution_limit_price == Decimal("100.2")
+    assert run.results[0].average_fill_price == Decimal("100.2")
+    assert run.results[0].actual_enforced_risk_reward is not None
+    assert run.results[0].actual_enforced_risk_reward >= Decimal("1.8")
     assert len(demo.place_calls) == 1
+    assert demo.place_calls[0].order_type == "fok"
+    assert demo.place_calls[0].price == Decimal("100.2")
     assert demo.place_calls[0].trigger_price_type == "mark"
 
 
 @pytest.mark.asyncio
-async def test_demo_market_sell_uses_fresh_bid_as_risk_reference() -> None:
+async def test_demo_fok_sell_uses_fresh_bid_and_bounded_price() -> None:
     demo = FakeDemo()
     short = candidate().model_copy(
         update={
@@ -541,8 +598,134 @@ async def test_demo_market_sell_uses_fresh_bid_as_risk_reference() -> None:
 
     assert run.results[0].outcome == "submitted"
     assert run.results[0].reference_price == Decimal("99.8")
+    assert run.results[0].execution_order_type == "fok"
+    assert run.results[0].execution_limit_price == Decimal("99.8")
+    assert run.results[0].average_fill_price == Decimal("99.8")
     assert len(demo.place_calls) == 1
     assert demo.place_calls[0].direction == "short"
+    assert demo.place_calls[0].order_type == "fok"
+    assert demo.place_calls[0].price == Decimal("99.8")
+
+
+@pytest.mark.asyncio
+async def test_zero_fill_fok_is_safe_block_without_active_trade() -> None:
+    demo = FakeDemo(
+        order_state="canceled",
+        accumulated_fill_size=Decimal("0"),
+    )
+    service = make_service(demo)
+    await service.recover()
+    await service.arm()
+
+    run = await service.run_once(execute=True)
+    status = await service.status()
+
+    assert run.results[0].outcome == "blocked"
+    assert run.results[0].detail == "bounded_fok_order_not_filled"
+    assert run.results[0].execution_order_type == "fok"
+    assert run.results[0].order_submission_attempted is True
+    assert len(demo.place_calls) == 1
+    assert status.emergency_stop is False
+    assert status.active_position_count == 0
+    assert status.trades_today == 0
+
+
+@pytest.mark.asyncio
+async def test_zero_fill_fok_consumes_per_run_submission_allowance() -> None:
+    demo = FakeDemo(
+        order_state="canceled",
+        accumulated_fill_size=Decimal("0"),
+    )
+    service = adaptive_service(
+        demo,
+        {
+            "BTC-USDT-SWAP": 90,
+            "ETH-USDT-SWAP": 95,
+        },
+    )
+    await service.recover()
+    await service.arm()
+
+    run = await service.run_once(execute=True, submission_limit=1)
+
+    assert len(demo.place_calls) == 1
+    assert run.results[0].detail == "bounded_fok_order_not_filled"
+    assert run.results[0].order_submission_attempted is True
+    assert run.results[1].detail == "run_submission_limit_reached"
+
+
+@pytest.mark.asyncio
+async def test_partial_fill_fok_fails_closed_and_preserves_tracked_exposure() -> None:
+    demo = FakeDemo(
+        order_state="canceled",
+        average_fill_price=Decimal("100"),
+        accumulated_fill_size=Decimal("0.5"),
+    )
+    service = make_service(demo)
+    await service.recover()
+    await service.arm()
+
+    run = await service.run_once(execute=True)
+    status = await service.status()
+
+    assert run.results[0].outcome == "error"
+    assert run.results[0].order_submission_attempted is True
+    assert (
+        run.results[0].detail
+        == "DemoAutomationSafetyError: okx_demo_fok_fill_unconfirmed"
+    )
+    assert status.emergency_stop is True
+    assert "post_submission_fok_fill_unconfirmed" in status.lock_reasons
+    assert status.active_position_count == 1
+
+
+@pytest.mark.asyncio
+async def test_incident_fill_above_rr_bound_fails_closed_with_protection() -> None:
+    demo = FakeDemo(average_fill_price=Decimal("2491.39"))
+    incident_candidate = candidate(
+        entry="2490",
+        stop_loss="2466.3",
+        take_profit="2535.43",
+    )
+    service = make_service(
+        demo,
+        strategy=FakeStrategy(incident_candidate),
+        market_hub=FakeHub(
+            last=Decimal("2490"),
+            bid=Decimal("2489.99"),
+            ask=Decimal("2490"),
+            mark=Decimal("2490"),
+        ),
+        public_client=FakePublic(tick_size=Decimal("0.01")),
+    )
+    await service.recover()
+    await service.arm()
+
+    run = await service.run_once(execute=True)
+    status = await service.status()
+
+    assert run.results[0].outcome == "error"
+    assert run.results[0].order_submission_attempted is True
+    assert (
+        run.results[0].detail
+        == "DemoAutomationSafetyError: okx_demo_execution_price_exceeds_limit"
+    )
+    assert len(demo.place_calls) == 1
+    assert demo.place_calls[0].order_type == "fok"
+    assert demo.place_calls[0].price == Decimal("2490.98")
+    assert status.emergency_stop is True
+    assert (
+        "post_submission_execution_price_exceeds_limit"
+        in status.lock_reasons
+    )
+    assert status.active_position_count == 1
+    active = status.active_trades[0]
+    assert active.protection_client_order_id == fake_protection_id(
+        "BTC-USDT-SWAP"
+    )
+    assert active.average_fill_price == Decimal("2491.39")
+    assert active.actual_enforced_risk_reward is not None
+    assert active.actual_enforced_risk_reward < Decimal("1.8")
 
 
 @pytest.mark.asyncio
@@ -2003,6 +2186,7 @@ async def test_structural_dynamic_demo_uses_isolated_20x_only_after_all_gates() 
     )
     assert status.structural_dynamic_leverage_enabled is True
     assert status.structural_margin_mode == "isolated"
+    assert status.minimum_execution_risk_reward == Decimal("2")
 
 
 @pytest.mark.asyncio

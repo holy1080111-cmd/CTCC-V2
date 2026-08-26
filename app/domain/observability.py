@@ -71,6 +71,13 @@ class DemoExecutionSoakPreflight(BaseModel):
     risk_equity: Decimal | None = None
     equity_basis: str | None = None
     equity_currency: str | None = None
+    execution_order_type: Literal["fok"] = "fok"
+    execution_max_adverse_slippage_bps: Decimal = Field(
+        default=Decimal("5"), ge=0
+    )
+    minimum_execution_risk_reward: Decimal = Field(
+        default=Decimal("1.8"), gt=0
+    )
     require_flat_start: bool
     require_protection: bool
     auto_disarm: bool

@@ -453,6 +453,18 @@ def test_demo_automation_defaults_to_disabled(monkeypatch) -> None:
     assert settings.okx_demo_automation_leverage == 1
     assert settings.okx_demo_max_trades_per_day == 3
     assert settings.okx_demo_continuous_session_enabled is False
+    assert settings.okx_demo_execution_max_adverse_slippage_bps == Decimal("5")
+
+
+@pytest.mark.parametrize("value", [Decimal("-0.01"), Decimal("50.01")])
+def test_demo_execution_adverse_slippage_boundary_is_bounded(
+    value: Decimal,
+) -> None:
+    with pytest.raises(ValidationError):
+        Settings(
+            _env_file=None,
+            okx_demo_execution_max_adverse_slippage_bps=value,
+        )
 
 
 def test_execute_soak_requires_demo_automation() -> None:

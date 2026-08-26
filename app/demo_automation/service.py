@@ -17,6 +17,12 @@ from app.demo_automation.capital_bucket import (
     build_demo_capital_bucket_plan,
     demo_position_notional_ceiling,
 )
+from app.demo_automation.execution_quality import (
+    adverse_fill_slippage_bps,
+    bounded_fok_execution_price,
+    candidate_at_execution_price,
+    execution_quality_at_price,
+)
 from app.demo_automation.risk_profile import (
     configured_score_risk_tiers,
     mathematical_adjusted_score,
@@ -202,6 +208,17 @@ class SafeDemoAutomation:
             configuration_blockers=self._configuration_blockers(),
             symbols=self.settings.okx_demo_scan_symbol_list,
             scan_interval_seconds=self.settings.okx_demo_scan_interval_seconds,
+            execution_order_type="fok",
+            execution_max_adverse_slippage_bps=D(
+                str(self.settings.okx_demo_execution_max_adverse_slippage_bps)
+            ),
+            minimum_execution_risk_reward=D(
+                str(
+                    self.settings.okx_demo_structural_min_net_risk_reward
+                    if self.settings.okx_demo_structural_dynamic_leverage_enabled
+                    else self.settings.strategy_min_risk_reward
+                )
+            ),
             max_trades_per_day=self.settings.okx_demo_max_trades_per_day,
             daily_loss_limit_pct=D(str(self.settings.okx_demo_daily_loss_limit_pct)),
             max_consecutive_losses=self.settings.okx_demo_automation_max_consecutive_losses,
@@ -574,7 +591,7 @@ class SafeDemoAutomation:
                             portfolio=shadow_portfolio,
                         )
                         results.append(result)
-                        if result.outcome == "submitted":
+                        if result.order_submission_attempted:
                             submitted_this_run += 1
                         if reservation is not None:
                             shadow_portfolio.append(reservation)
@@ -802,6 +819,7 @@ class SafeDemoAutomation:
     ) -> tuple[DemoAutomationSymbolResult, DemoAutomationActiveTrade | None]:
         instrument_id = strategy.instrument_id
         candidate = strategy.selected_candidate
+        order_submission_attempted = False
         if candidate is None:
             return (
                 DemoAutomationSymbolResult(
@@ -1012,6 +1030,51 @@ class SafeDemoAutomation:
                         None,
                     )
 
+            execution_boundary, execution_boundary_blocker = (
+                bounded_fok_execution_price(
+                    aligned_candidate,
+                    self.settings,
+                    reference_price=reference_price,
+                    tick_size=instrument.tick_size,
+                )
+            )
+            if execution_boundary is None:
+                return (
+                    self._candidate_result(
+                        strategy.symbol,
+                        instrument_id,
+                        aligned_candidate,
+                        outcome="blocked",
+                        reference_price=reference_price,
+                        detail=(
+                            execution_boundary_blocker
+                            or "bounded_fok_execution_price_unavailable"
+                        ),
+                    ),
+                    None,
+                )
+            sizing_candidate, sizing_blocker = candidate_at_execution_price(
+                aligned_candidate,
+                self.settings,
+                price=execution_boundary.limit_price,
+            )
+            if sizing_candidate is None:
+                return (
+                    self._candidate_result(
+                        strategy.symbol,
+                        instrument_id,
+                        aligned_candidate,
+                        outcome="blocked",
+                        reference_price=reference_price,
+                        execution_limit_price=execution_boundary.limit_price,
+                        detail=(
+                            sizing_blocker
+                            or "bounded_fok_execution_quality_unavailable"
+                        ),
+                    ),
+                    None,
+                )
+
             tier, requested_risk_pct, leverage, margin_cap_pct = self._risk_profile(
                 aligned_candidate.risk_score
                 if aligned_candidate.risk_score is not None
@@ -1079,7 +1142,7 @@ class SafeDemoAutomation:
                             None,
                         )
                     selection = select_structural_leverage(
-                        aligned_candidate,
+                        sizing_candidate,
                         tier.model_copy(update={"risk_pct": requested_risk_pct}),
                         self.settings,
                         account_equity=balance_equity,
@@ -1210,7 +1273,7 @@ class SafeDemoAutomation:
                 correlated_positions=len(portfolio),
             )
             risk = self.risk_service.evaluate(
-                aligned_candidate,
+                sizing_candidate,
                 account,
                 self._risk_limits(
                     risk_per_trade_pct=requested_risk_pct,
@@ -1276,21 +1339,27 @@ class SafeDemoAutomation:
                 )
 
             base_quantity = contracts * instrument.contract_value
-            notional = base_quantity * reference_price
+            sizing_notional_price = max(
+                reference_price,
+                execution_boundary.limit_price,
+            )
+            notional = base_quantity * sizing_notional_price
             estimated_margin = notional / D(leverage)
             estimated_margin_pct = estimated_margin / balance_equity
             estimated_price_stop_loss_amount = base_quantity * abs(
-                reference_price - stop_loss
+                execution_boundary.limit_price - stop_loss
             )
             estimated_cost_amount = (
-                notional * aligned_candidate.estimated_round_trip_cost_pct
+                notional * sizing_candidate.estimated_round_trip_cost_pct
             )
             estimated_stop_loss_amount = (
                 estimated_price_stop_loss_amount + estimated_cost_amount
             )
             estimated_stop_loss_pct = estimated_stop_loss_amount / balance_equity
             rounded_budget_detail: str | None = None
-            if self.settings.okx_demo_score_risk_enabled and (
+            if notional > max_notional:
+                rounded_budget_detail = "rounded_order_exceeds_notional_cap"
+            elif self.settings.okx_demo_score_risk_enabled and (
                 open_risk_pct + estimated_stop_loss_pct
                 > D(str(self.settings.okx_demo_portfolio_max_risk_pct))
             ):
@@ -1408,7 +1477,7 @@ class SafeDemoAutomation:
                 margin_allocation_pct=estimated_margin_pct,
                 estimated_margin=estimated_margin,
                 estimated_round_trip_cost_pct=(
-                    aligned_candidate.estimated_round_trip_cost_pct
+                    sizing_candidate.estimated_round_trip_cost_pct
                 ),
                 estimated_cost_amount=estimated_cost_amount,
                 position_margin_cap_usdt=position_margin_cap_usdt,
@@ -1418,41 +1487,43 @@ class SafeDemoAutomation:
                     else None
                 ),
                 reference_price=reference_price,
+                execution_order_type="fok",
+                execution_limit_price=execution_boundary.limit_price,
                 stop_loss=stop_loss,
                 take_profit=take_profit,
-                protection_model=aligned_candidate.protection_model,
+                protection_model=sizing_candidate.protection_model,
                 structure_timeframe=(
-                    aligned_candidate.structural_protection.timeframe
-                    if aligned_candidate.protection_model == "structure"
-                    and aligned_candidate.structural_protection is not None
+                    sizing_candidate.structural_protection.timeframe
+                    if sizing_candidate.protection_model == "structure"
+                    and sizing_candidate.structural_protection is not None
                     else None
                 ),
                 structure_source_closed_at=(
-                    aligned_candidate.structural_protection.source_closed_at
-                    if aligned_candidate.protection_model == "structure"
-                    and aligned_candidate.structural_protection is not None
+                    sizing_candidate.structural_protection.source_closed_at
+                    if sizing_candidate.protection_model == "structure"
+                    and sizing_candidate.structural_protection is not None
                     else None
                 ),
                 structure_stop_anchor=(
-                    aligned_candidate.structural_protection.stop_anchor
-                    if aligned_candidate.protection_model == "structure"
-                    and aligned_candidate.structural_protection is not None
+                    sizing_candidate.structural_protection.stop_anchor
+                    if sizing_candidate.protection_model == "structure"
+                    and sizing_candidate.structural_protection is not None
                     else None
                 ),
                 structure_target_anchor=(
-                    aligned_candidate.structural_protection.target_anchor
-                    if aligned_candidate.protection_model == "structure"
-                    and aligned_candidate.structural_protection is not None
+                    sizing_candidate.structural_protection.target_anchor
+                    if sizing_candidate.protection_model == "structure"
+                    and sizing_candidate.structural_protection is not None
                     else None
                 ),
                 structure_volatility_buffer=(
-                    aligned_candidate.structural_protection.volatility_buffer
-                    if aligned_candidate.protection_model == "structure"
-                    and aligned_candidate.structural_protection is not None
+                    sizing_candidate.structural_protection.volatility_buffer
+                    if sizing_candidate.protection_model == "structure"
+                    and sizing_candidate.structural_protection is not None
                     else None
                 ),
-                gross_risk_reward=aligned_candidate.gross_risk_reward,
-                net_risk_reward=aligned_candidate.net_risk_reward,
+                gross_risk_reward=sizing_candidate.gross_risk_reward,
+                net_risk_reward=sizing_candidate.net_risk_reward,
                 start_equity=balance_equity,
                 started_at=now,
             )
@@ -1461,9 +1532,10 @@ class SafeDemoAutomation:
                     self._candidate_result(
                         strategy.symbol,
                         instrument_id,
-                        aligned_candidate,
+                        sizing_candidate,
                         outcome="approved_dry_run",
                         reference_price=reference_price,
+                        execution_limit_price=execution_boundary.limit_price,
                         approved_base_quantity=base_quantity,
                         approved_contracts=contracts,
                         score_tier=tier,
@@ -1481,7 +1553,10 @@ class SafeDemoAutomation:
                             if bucket_plan is not None
                             else None
                         ),
-                        detail="risk_approved_demo_execution_disabled_for_this_run",
+                        detail=(
+                            "risk_approved_bounded_fok_demo_execution_"
+                            "disabled_for_this_run"
+                        ),
                     ),
                     reservation,
                 )
@@ -1498,7 +1573,7 @@ class SafeDemoAutomation:
                         instrument_id=instrument_id,
                         leverage=leverage,
                         margin_mode=margin_mode,
-                        direction=aligned_candidate.direction,
+                        direction=sizing_candidate.direction,
                         confirmation=DEMO_CONFIRMATION_PHRASE,
                     )
                 )
@@ -1510,13 +1585,15 @@ class SafeDemoAutomation:
                 self._engage_emergency("leverage_configuration_unconfirmed")
                 await self._persist_state(required=False)
                 raise
+            order_submission_attempted = True
             write = await self.demo_service.place_order(
                 OkxDemoOrderRequest(
                     instrument_id=instrument_id,
-                    direction=aligned_candidate.direction,
+                    direction=sizing_candidate.direction,
                     size=contracts,
                     margin_mode=margin_mode,
-                    order_type="market",
+                    order_type="fok",
+                    price=execution_boundary.limit_price,
                     stop_loss=stop_loss,
                     take_profit=take_profit,
                     trigger_price_type="mark",
@@ -1525,8 +1602,100 @@ class SafeDemoAutomation:
                 )
             )
             acknowledgement = write.acknowledgement
+            order = write.order
             exchange_order_id = (
                 acknowledgement.order_id if acknowledgement is not None else None
+            )
+            expiry = max(
+                sizing_candidate.expires_at,
+                now + timedelta(
+                    seconds=self._effective_trade_cooldown_seconds()
+                ),
+            )
+            known_zero_fill = (
+                write.acknowledged
+                and acknowledgement is not None
+                and bool(exchange_order_id)
+                and order is not None
+                and order.state.lower() in {"canceled", "mmp_canceled"}
+                and order.accumulated_fill_size == 0
+            )
+            if known_zero_fill:
+                try:
+                    await self._save_fingerprint(
+                        fingerprint,
+                        expiry,
+                        {
+                            "instrument_id": instrument_id,
+                            "strategy": sizing_candidate.strategy,
+                            "client_order_id": client_order_id,
+                            "exchange_order_id": exchange_order_id,
+                            "execution_order_type": "fok",
+                            "execution_limit_price": str(
+                                execution_boundary.limit_price
+                            ),
+                            "outcome": "not_filled",
+                        },
+                    )
+                except Exception:
+                    self._engage_emergency(
+                        "fok_no_fill_fingerprint_persistence_failed"
+                    )
+                    await self._persist_state(required=False)
+                    raise
+                return (
+                    self._candidate_result(
+                        strategy.symbol,
+                        instrument_id,
+                        sizing_candidate,
+                        outcome="blocked",
+                        reference_price=reference_price,
+                        execution_limit_price=execution_boundary.limit_price,
+                        approved_base_quantity=base_quantity,
+                        approved_contracts=contracts,
+                        score_tier=tier,
+                        selected_leverage=leverage,
+                        required_leverage=required_leverage,
+                        leverage_cap=leverage_cap,
+                        leverage_cap_reasons=leverage_cap_reasons,
+                        risk_budget_pct=requested_risk_pct,
+                        estimated_stop_loss_pct=estimated_stop_loss_pct,
+                        margin_allocation_pct=estimated_margin_pct,
+                        estimated_margin=estimated_margin,
+                        position_margin_cap_usdt=position_margin_cap_usdt,
+                        capital_bucket_usdt=(
+                            bucket_plan.configured_bucket_usdt
+                            if bucket_plan is not None
+                            else None
+                        ),
+                        client_order_id=client_order_id,
+                        exchange_order_id=exchange_order_id,
+                        order_submission_attempted=True,
+                        detail="bounded_fok_order_not_filled",
+                    ),
+                    None,
+                )
+
+            average_fill_price = (
+                order.average_fill_price if order is not None else None
+            )
+            fill_quality = (
+                execution_quality_at_price(
+                    sizing_candidate,
+                    self.settings,
+                    price=average_fill_price,
+                )
+                if average_fill_price is not None
+                else None
+            )
+            fill_slippage_bps = (
+                adverse_fill_slippage_bps(
+                    direction=sizing_candidate.direction,
+                    reference_price=reference_price,
+                    fill_price=average_fill_price,
+                )
+                if average_fill_price is not None
+                else None
             )
             reservation = reservation.model_copy(
                 update={
@@ -1535,16 +1704,27 @@ class SafeDemoAutomation:
                     "protection_client_order_id": (
                         write.protection_client_order_id
                     ),
+                    "average_fill_price": average_fill_price,
+                    "actual_gross_risk_reward": (
+                        fill_quality.gross_risk_reward
+                        if fill_quality is not None
+                        else None
+                    ),
+                    "actual_net_risk_reward": (
+                        fill_quality.net_risk_reward
+                        if fill_quality is not None
+                        else None
+                    ),
+                    "actual_enforced_risk_reward": (
+                        fill_quality.enforced_risk_reward
+                        if fill_quality is not None
+                        else None
+                    ),
+                    "adverse_fill_slippage_bps": fill_slippage_bps,
                 }
             )
             self._set_active_trade(reservation)
             self._state["trades_today"] = int(self._state["trades_today"]) + 1
-            expiry = max(
-                aligned_candidate.expires_at,
-                now + timedelta(
-                    seconds=self._effective_trade_cooldown_seconds()
-                ),
-            )
             state_persisted = False
             try:
                 await self._persist_state(required=True)
@@ -1562,6 +1742,57 @@ class SafeDemoAutomation:
                         "okx_demo_order_submission_acknowledgement_invalid"
                     )
                 if (
+                    order is None
+                    or order.order_type.lower() != "fok"
+                    or order.state.lower() != "filled"
+                    or order.accumulated_fill_size != contracts
+                    or average_fill_price is None
+                ):
+                    self._engage_emergency("post_submission_fok_fill_unconfirmed")
+                    await self._persist_state(required=False)
+                    raise DemoAutomationSafetyError(
+                        "okx_demo_fok_fill_unconfirmed"
+                    )
+                execution_price_outside_limit = (
+                    sizing_candidate.direction == "long"
+                    and average_fill_price > execution_boundary.limit_price
+                ) or (
+                    sizing_candidate.direction == "short"
+                    and average_fill_price < execution_boundary.limit_price
+                )
+                if execution_price_outside_limit:
+                    self._engage_emergency(
+                        "post_submission_execution_price_exceeds_limit"
+                    )
+                    await self._persist_state(required=False)
+                    raise DemoAutomationSafetyError(
+                        "okx_demo_execution_price_exceeds_limit"
+                    )
+                if (
+                    fill_quality is None
+                    or fill_quality.enforced_risk_reward
+                    < fill_quality.minimum_risk_reward
+                ):
+                    self._engage_emergency(
+                        "post_submission_execution_risk_reward_below_minimum"
+                    )
+                    await self._persist_state(required=False)
+                    raise DemoAutomationSafetyError(
+                        "okx_demo_execution_risk_reward_below_minimum"
+                    )
+                if (
+                    fill_slippage_bps is None
+                    or fill_slippage_bps
+                    > execution_boundary.max_adverse_slippage_bps
+                ):
+                    self._engage_emergency(
+                        "post_submission_adverse_fill_slippage_exceeds_limit"
+                    )
+                    await self._persist_state(required=False)
+                    raise DemoAutomationSafetyError(
+                        "okx_demo_adverse_fill_slippage_exceeds_limit"
+                    )
+                if (
                     self.settings.okx_demo_require_protection
                     and write.protection_confirmed is not True
                 ):
@@ -1577,8 +1808,18 @@ class SafeDemoAutomation:
                     expiry,
                     {
                         "instrument_id": instrument_id,
-                        "strategy": aligned_candidate.strategy,
+                        "strategy": sizing_candidate.strategy,
                         "client_order_id": client_order_id,
+                        "exchange_order_id": exchange_order_id,
+                        "execution_order_type": "fok",
+                        "execution_limit_price": str(
+                            execution_boundary.limit_price
+                        ),
+                        "average_fill_price": str(average_fill_price),
+                        "actual_enforced_risk_reward": str(
+                            fill_quality.enforced_risk_reward
+                        ),
+                        "adverse_fill_slippage_bps": str(fill_slippage_bps),
                     },
                 )
             except Exception:
@@ -1594,9 +1835,27 @@ class SafeDemoAutomation:
                 self._candidate_result(
                     strategy.symbol,
                     instrument_id,
-                    aligned_candidate,
+                    sizing_candidate,
                     outcome="submitted",
                     reference_price=reference_price,
+                    execution_limit_price=execution_boundary.limit_price,
+                    average_fill_price=average_fill_price,
+                    actual_gross_risk_reward=(
+                        fill_quality.gross_risk_reward
+                        if fill_quality is not None
+                        else None
+                    ),
+                    actual_net_risk_reward=(
+                        fill_quality.net_risk_reward
+                        if fill_quality is not None
+                        else None
+                    ),
+                    actual_enforced_risk_reward=(
+                        fill_quality.enforced_risk_reward
+                        if fill_quality is not None
+                        else None
+                    ),
+                    adverse_fill_slippage_bps=fill_slippage_bps,
                     approved_base_quantity=base_quantity,
                     approved_contracts=contracts,
                     score_tier=tier,
@@ -1616,7 +1875,8 @@ class SafeDemoAutomation:
                     ),
                     client_order_id=client_order_id,
                     exchange_order_id=exchange_order_id,
-                    detail="protected_okx_demo_market_order_submitted",
+                    order_submission_attempted=True,
+                    detail="protected_bounded_fok_order_filled",
                 ),
                 reservation,
             )
@@ -1627,6 +1887,7 @@ class SafeDemoAutomation:
                     symbol=raw_symbol,
                     instrument_id=instrument_id,
                     outcome="error",
+                    order_submission_attempted=order_submission_attempted,
                     detail=self._safe_error(exc),
                 ),
                 None,
@@ -2655,6 +2916,12 @@ class SafeDemoAutomation:
         outcome: str,
         reference_price: Decimal,
         detail: str,
+        execution_limit_price: Decimal | None = None,
+        average_fill_price: Decimal | None = None,
+        actual_gross_risk_reward: Decimal | None = None,
+        actual_net_risk_reward: Decimal | None = None,
+        actual_enforced_risk_reward: Decimal | None = None,
+        adverse_fill_slippage_bps: Decimal | None = None,
         approved_base_quantity: Decimal | None = None,
         approved_contracts: Decimal | None = None,
         score_tier: DemoAutomationRiskTier | None = None,
@@ -2670,6 +2937,7 @@ class SafeDemoAutomation:
         capital_bucket_usdt: Decimal | None = None,
         client_order_id: str | None = None,
         exchange_order_id: str | None = None,
+        order_submission_attempted: bool = False,
         reason_codes: list[str] | None = None,
     ) -> DemoAutomationSymbolResult:
         return DemoAutomationSymbolResult(
@@ -2730,6 +2998,15 @@ class SafeDemoAutomation:
                 else []
             ),
             reference_price=reference_price,
+            execution_order_type=(
+                "fok" if execution_limit_price is not None else None
+            ),
+            execution_limit_price=execution_limit_price,
+            average_fill_price=average_fill_price,
+            actual_gross_risk_reward=actual_gross_risk_reward,
+            actual_net_risk_reward=actual_net_risk_reward,
+            actual_enforced_risk_reward=actual_enforced_risk_reward,
+            adverse_fill_slippage_bps=adverse_fill_slippage_bps,
             stop_loss=candidate.stop_loss,
             take_profit=candidate.take_profit,
             risk_reward=candidate.risk_reward,
@@ -2794,6 +3071,7 @@ class SafeDemoAutomation:
             capital_bucket_usdt=capital_bucket_usdt,
             client_order_id=client_order_id,
             exchange_order_id=exchange_order_id,
+            order_submission_attempted=order_submission_attempted,
             reason_codes=reason_codes or [],
             detail=detail,
         )

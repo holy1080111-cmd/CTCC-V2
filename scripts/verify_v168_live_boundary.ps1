@@ -178,10 +178,13 @@ Invoke-NativeStep "Adaptive Demo portfolio targeted tests" {
         tests/unit/strategies/test_structural_protection.py `
         tests/unit/test_demo_capital_bucket.py `
         tests/unit/test_demo_automation_risk_profile.py `
+        tests/unit/test_demo_execution_quality.py `
         tests/unit/test_demo_structural_risk.py `
         tests/unit/test_risk_engine.py `
         tests/unit/test_demo_automation.py `
         tests/unit/test_observability.py `
+        tests/unit/test_okx_demo_models.py `
+        tests/unit/test_okx_demo_service.py `
         tests/unit/database/test_demo_adaptive_portfolio_models.py `
         tests/integration/test_demo_adaptive_portfolio_schema_integration.py
 }

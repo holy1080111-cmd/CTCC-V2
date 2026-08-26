@@ -26,10 +26,12 @@ class FakeAutomation:
         armed: bool = False,
         outcome: str = "approved_dry_run",
         submission_count: int = 1,
+        submission_attempted: bool | None = None,
     ) -> None:
         self.armed = armed
         self.outcome = outcome
         self.submission_count = submission_count
+        self.submission_attempted = submission_attempted
         self.runs: list[DemoAutomationRunResult] = []
         self.emergency = False
         self.locked = False
@@ -101,6 +103,14 @@ class FakeAutomation:
                         "BTC-USDT-SWAP" if index == 0 else "ETH-USDT-SWAP"
                     ),
                     outcome=outcome,
+                    order_submission_attempted=(
+                        execute
+                        and (
+                            self.submission_attempted
+                            if self.submission_attempted is not None
+                            else outcome == "submitted"
+                        )
+                    ),
                     detail="unit_test",
                 )
                 for index in range(
@@ -358,6 +368,9 @@ async def test_execute_preflight_separates_risk_equity_from_account_total() -> N
     assert result.risk_equity == Decimal("5000")
     assert result.equity_basis == "single_currency:USDT"
     assert result.equity_currency == "USDT"
+    assert result.execution_order_type == "fok"
+    assert result.execution_max_adverse_slippage_bps == Decimal("5")
+    assert result.minimum_execution_risk_reward == Decimal("1.8")
 
 
 @pytest.mark.asyncio
@@ -405,6 +418,41 @@ async def test_execute_soak_auto_disarms_after_clean_run() -> None:
     assert status.auto_disarmed is True
     assert automation.armed is False
     assert automation.disarm_calls == 1
+    assert automation.submission_limits == [1]
+
+
+@pytest.mark.asyncio
+async def test_zero_fill_attempt_consumes_execute_soak_submission_limit() -> None:
+    automation = FakeAutomation(
+        armed=True,
+        outcome="blocked",
+        submission_attempted=True,
+    )
+    service = DemoObservabilityService(
+        automation=automation,
+        settings=execute_settings(),
+        repository=None,
+        realtime_client=FakeRealtime(),
+        demo_service=FakeDemoService(exchange_snapshot()),
+    )
+    await service.recover()
+    await service.start_soak(
+        DemoSoakStartRequest(
+            execute=True,
+            duration_minutes=1,
+            interval_seconds=60,
+            max_runs=3,
+            confirmation="START_DEMO_SOAK_EXECUTE",
+        )
+    )
+
+    status = await wait_for_finished(service)
+
+    assert status.state == "completed"
+    assert status.stop_reason == "submission_limit_reached"
+    assert status.submitted_runs == 1
+    assert status.completed_runs == 1
+    assert automation.emergency_calls == 0
     assert automation.submission_limits == [1]
 
 

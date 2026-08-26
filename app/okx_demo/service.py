@@ -268,24 +268,32 @@ class OkxDemoService:
             if mark_price <= 0:
                 raise OkxDemoSafetyError("okx_demo_mark_price_invalid")
             reference_price = request.price
-            if reference_price is None:
+            if reference_price is None or request.order_type == "fok":
                 ticker = await self.public_client.ticker(request.instrument_id)
                 if ticker.bid <= 0 or ticker.ask <= 0 or ticker.bid > ticker.ask:
                     raise OkxDemoSafetyError(
                         "okx_demo_executable_quote_invalid"
                     )
-                reference_price = (
+                executable_quote = (
                     ticker.ask if request.direction == "long" else ticker.bid
                 )
                 basis_bps = (
-                    abs(mark_price - reference_price)
-                    / reference_price
+                    abs(mark_price - executable_quote)
+                    / executable_quote
                     * Decimal("10000")
                 )
                 if basis_bps > self.settings.okx_demo_scan_max_entry_drift_bps:
                     raise OkxDemoSafetyError(
                         "okx_demo_mark_execution_basis_exceeds_limit"
                     )
+                self._validate_protection(
+                    direction=request.direction,
+                    reference_price=executable_quote,
+                    stop_loss=request.stop_loss,
+                    take_profit=request.take_profit,
+                )
+                if reference_price is None:
+                    reference_price = executable_quote
             self._validate_protection(
                 direction=request.direction,
                 reference_price=reference_price,
@@ -335,6 +343,7 @@ class OkxDemoService:
                 request.instrument_id,
                 order_id=acknowledgement.order_id or None,
                 client_order_id=acknowledgement.client_order_id or client_order_id,
+                terminal_only=request.order_type == "fok",
             )
             warnings: list[str] = []
             if order is not None:
@@ -346,14 +355,24 @@ class OkxDemoService:
                 warnings.append("exchange_acknowledged_order_detail_not_yet_available")
             protection_confirmed: bool | None = None
             if request.stop_loss is not None and request.take_profit is not None:
-                protection_confirmed = await self._confirm_protection(
-                    request,
-                    protection_client_order_id,
+                no_fill_fok = (
+                    request.order_type == "fok"
+                    and order is not None
+                    and order.state.lower() in {"canceled", "mmp_canceled"}
+                    and order.accumulated_fill_size == 0
                 )
-                if not protection_confirmed:
-                    warnings.append(
-                        "exchange_acknowledged_but_protection_not_confirmed"
+                if no_fill_fok:
+                    protection_confirmed = False
+                    warnings.append("fok_order_not_filled")
+                else:
+                    protection_confirmed = await self._confirm_protection(
+                        request,
+                        protection_client_order_id,
                     )
+                    if not protection_confirmed:
+                        warnings.append(
+                            "exchange_acknowledged_but_protection_not_confirmed"
+                        )
             self._last_exchange_ok_at = datetime.now(timezone.utc)
             self._last_error = None
             return OkxDemoWriteResult(
@@ -565,7 +584,9 @@ class OkxDemoService:
         *,
         order_id: str | None,
         client_order_id: str | None,
+        terminal_only: bool = False,
     ) -> OkxDemoOrderView | None:
+        latest: OkxDemoOrderView | None = None
         for attempt in range(self.settings.okx_demo_order_detail_poll_attempts):
             try:
                 rows = await self.private_client.order_detail(
@@ -574,12 +595,20 @@ class OkxDemoService:
                     client_order_id=client_order_id if not order_id else None,
                 )
                 if rows:
-                    return parse_order(rows[0])
+                    latest = parse_order(rows[0])
+                    state = latest.state.lower()
+                    terminal_ready = state in {"canceled", "mmp_canceled"} or (
+                        state == "filled"
+                        and latest.average_fill_price is not None
+                        and latest.average_fill_price > 0
+                    )
+                    if not terminal_only or terminal_ready:
+                        return latest
             except OkxPrivateApiError:
                 pass
             if attempt + 1 < self.settings.okx_demo_order_detail_poll_attempts:
                 await asyncio.sleep(self.settings.okx_demo_order_detail_poll_delay_seconds)
-        return None
+        return latest
 
     async def _confirm_protection(
         self,

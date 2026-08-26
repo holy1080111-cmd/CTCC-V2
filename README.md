@@ -163,6 +163,23 @@ can produce smaller positions. In standard session mode, enabling the feature
 also requires the configured daily loss limit to be at least as large as the
 aggregate open-risk ceiling.
 
+Automated Demo entries are price-bounded `fok` orders, not unbounded market
+orders. CTCC derives the most adverse fill that can still satisfy the configured
+reward/risk floor, intersects it with
+`OKX_DEMO_EXECUTION_MAX_ADVERSE_SLIPPAGE_BPS` (5 bps by default), aligns the
+stricter result to the instrument tick, and sizes against that worst case. A
+long can fill only at or below its cap; a short can fill only at or above its
+floor. The complete order must fill inside the boundary or OKX cancels it.
+
+After acknowledgement, CTCC requires a terminal full-fill state, exact
+`accFillSz`, positive `avgPx`, confirmed attached mark-trigger TP/SL, and an
+actual fill reward/risk that still meets the configured floor. A clean zero-fill
+FOK is recorded as blocked with no active trade, but still consumes one order
+submission allowance. Partial, ambiguous, price-bound violating, or below-floor
+fills preserve any confirmed exchange protection and engage the safety lock;
+CTCC never silently closes acknowledged exposure. This stronger boundary
+deliberately trades fill rate for execution-quality safety.
+
 An additional disabled-by-default Demo capital-bucket gate can replace the
 percentage margin ceiling. With a verified USDT equity basis, an account at or
 below 2,000 USDT forms one full-equity slot; above 2,000 USDT, only complete
