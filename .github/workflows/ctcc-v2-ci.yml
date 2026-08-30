@@ -1,0 +1,154 @@
+name: CTCC V2 hermetic regression
+
+on:
+  push:
+    branches:
+      - main
+      - develop/v1.6.8
+  pull_request:
+    branches:
+      - main
+      - develop/v1.6.8
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ctcc-v2-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  regression:
+    name: Docker hermetic regression
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout reviewed source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify runner prerequisites
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          docker version
+          if ($LASTEXITCODE -ne 0) {
+            throw "Docker is unavailable."
+          }
+
+          docker compose version
+          if ($LASTEXITCODE -ne 0) {
+            throw "Docker Compose is unavailable."
+          }
+
+          Write-Host "POWERSHELL_VERSION=$($PSVersionTable.PSVersion)"
+          Write-Host "RUNNER_PREREQUISITES_VERIFIED=1"
+
+      - name: Create isolated no-exchange CI profile
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Copy-Item -LiteralPath ".env.example" -Destination ".env"
+
+          $safeSettings = [ordered]@{
+            ENVIRONMENT = "test"
+            TRADING_MODE = "analysis_only"
+            AUTO_TRADE = "false"
+            LIVE_TRADING = "false"
+            PAPER_AUTO_EXECUTION = "false"
+            OKX_WS_ENABLED = "false"
+            OKX_REST_BASE_URL = "https://openapi.okx.com"
+            OKX_LIVE_ENABLED = "false"
+            OKX_LIVE_ALLOW_ORDER_WRITES = "false"
+            OKX_LIVE_AUTO_RECONCILE_ON_START = "false"
+            OKX_LIVE_AUTO_EXECUTION = "false"
+            OKX_LIVE_REST_BASE_URL = "https://openapi.okx.com"
+            OKX_LIVE_API_KEY = ""
+            OKX_LIVE_API_SECRET = ""
+            OKX_LIVE_API_PASSPHRASE = ""
+            OKX_DEMO_ENABLED = "false"
+            OKX_DEMO_ALLOW_ORDER_WRITES = "false"
+            OKX_DEMO_AUTO_RECONCILE_ON_START = "false"
+            OKX_DEMO_AUTO_EXECUTION = "false"
+            OKX_DEMO_REST_BASE_URL = "https://openapi.okx.com"
+            OKX_DEMO_API_KEY = ""
+            OKX_DEMO_API_SECRET = ""
+            OKX_DEMO_API_PASSPHRASE = ""
+            OKX_DEMO_OBSERVABILITY_ENABLED = "false"
+            OKX_DEMO_SOAK_ENABLED = "false"
+            OKX_DEMO_SOAK_ALLOW_EXECUTE = "false"
+          }
+
+          $lines = @(Get-Content -LiteralPath ".env")
+
+          foreach ($entry in $safeSettings.GetEnumerator()) {
+            $pattern = "^$([regex]::Escape($entry.Key))="
+            $matches = @($lines | Where-Object { $_ -match $pattern })
+
+            if ($matches.Count -ne 1) {
+              throw "Expected exactly one .env.example key: $($entry.Key)"
+            }
+
+            $lines = @(
+              $lines | ForEach-Object {
+                if ($_ -match $pattern) {
+                  "$($entry.Key)=$($entry.Value)"
+                }
+                else {
+                  $_
+                }
+              }
+            )
+          }
+
+          [IO.File]::WriteAllLines(
+            (Join-Path $PWD ".env"),
+            $lines,
+            [Text.UTF8Encoding]::new($false)
+          )
+
+          $composeJson = docker compose config --format json | Out-String
+          if ($LASTEXITCODE -ne 0) {
+            throw "Docker Compose configuration failed."
+          }
+
+          $configuration = $composeJson | ConvertFrom-Json
+          $apiEnvironment = $configuration.services.api.environment
+
+          foreach ($entry in $safeSettings.GetEnumerator()) {
+            $property = $apiEnvironment.PSObject.Properties[$entry.Key]
+
+            if ($null -eq $property) {
+              throw "Resolved API environment omitted $($entry.Key)"
+            }
+
+            if ([string]$property.Value -cne [string]$entry.Value) {
+              throw "Resolved API environment mismatch for $($entry.Key)"
+            }
+          }
+
+          Write-Host "CI_OKX_RUNTIME_DISABLED=1"
+          Write-Host "CI_EXECUTION_AUTHORITY=0"
+          Write-Host "CI_ISOLATED_PROFILE_VERIFIED=1"
+
+      - name: Run complete CTCC verification
+        shell: pwsh
+        run: ./scripts/verify_v168_live_boundary.ps1
+
+      - name: Show container state after failure
+        if: failure()
+        shell: bash
+        run: |
+          docker compose ps --all || true
+          docker compose logs --no-color --tail 250 api postgres redis || true
+
+      - name: Remove ephemeral CI services
+        if: always()
+        shell: bash
+        run: docker compose down --volumes --remove-orphans

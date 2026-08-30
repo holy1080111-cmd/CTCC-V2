@@ -26,10 +26,17 @@ def evaluate_risk(
     reasons: list[str] = []
     now = datetime.now(timezone.utc)
     stop_distance = abs(candidate.entry - candidate.stop_loss)
+    cost_distance = candidate.entry * candidate.estimated_round_trip_cost_pct
+    effective_risk_distance = stop_distance + cost_distance
+    effective_score = (
+        candidate.risk_score
+        if candidate.risk_score is not None
+        else candidate.score
+    )
 
     if candidate.expires_at <= now:
         reasons.append("candidate_expired")
-    if candidate.score < limits.minimum_score:
+    if effective_score < limits.minimum_score:
         reasons.append("score_below_minimum")
     if candidate.risk_reward < limits.minimum_risk_reward:
         reasons.append("risk_reward_below_minimum")
@@ -52,7 +59,11 @@ def evaluate_risk(
 
     requested_risk = limits.risk_per_trade_pct
     risk_budget = account.equity * requested_risk
-    quantity_by_risk = D("0") if stop_distance <= 0 else risk_budget / stop_distance
+    quantity_by_risk = (
+        D("0")
+        if effective_risk_distance <= 0
+        else risk_budget / effective_risk_distance
+    )
     quantity_by_notional = limits.max_notional / candidate.entry
     quantity = min(quantity_by_risk, quantity_by_notional).quantize(QTY_QUANTUM, rounding=ROUND_DOWN)
 
@@ -61,7 +72,8 @@ def evaluate_risk(
         quantity = D("0")
 
     notional = (quantity * candidate.entry).quantize(MONEY_QUANTUM)
-    max_loss = (quantity * stop_distance).quantize(MONEY_QUANTUM)
+    estimated_cost = (quantity * cost_distance).quantize(MONEY_QUANTUM)
+    max_loss = (quantity * effective_risk_distance).quantize(MONEY_QUANTUM)
     approved_risk = (max_loss / account.equity).quantize(D("0.00000001")) if quantity > 0 else D("0")
 
     approved = not reasons and quantity > 0
@@ -74,5 +86,7 @@ def evaluate_risk(
         notional=notional if approved else D("0"),
         max_loss_amount=max_loss if approved else D("0"),
         stop_distance=stop_distance,
+        effective_risk_distance=effective_risk_distance,
+        estimated_cost_amount=estimated_cost if approved else D("0"),
         reason_codes=sorted(set(reasons)),
     )

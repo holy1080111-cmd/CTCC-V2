@@ -15,6 +15,7 @@ from app.domain.performance import (
     DemoEquityPoint,
     DemoOrderPerformanceSample,
     DemoStrategyControlView,
+    DemoTradeAttribution,
     StrategyControlRequest,
 )
 from app.performance.service import DemoPerformanceError, DemoPerformanceService
@@ -23,10 +24,19 @@ D = Decimal
 
 
 class FakeRepository:
-    def __init__(self, *, snapshots=None, orders=None, runs=None, controls=None) -> None:
+    def __init__(
+        self,
+        *,
+        snapshots=None,
+        orders=None,
+        runs=None,
+        attributions=None,
+        controls=None,
+    ) -> None:
         self.snapshots = snapshots or []
         self.orders = orders or []
         self.runs = runs or []
+        self.attributions = attributions or []
         self.controls = {item.strategy: item for item in (controls or [])}
         self.saved_report = None
 
@@ -42,6 +52,13 @@ class FakeRepository:
 
     async def automation_runs_between(self, start, end, *, limit):
         return [item for item in self.runs if start <= item.completed_at < end][:limit]
+
+    async def trade_attributions_between(self, start, end, *, limit):
+        return [
+            item
+            for item in self.attributions
+            if start <= item.closed_at < end
+        ][:limit]
 
     async def strategy_controls(self):
         return list(self.controls.values())
@@ -76,10 +93,19 @@ class FakeDemoService:
         now = datetime.now(timezone.utc)
         return SimpleNamespace(
             reconciled_at=now,
+            account_config=SimpleNamespace(account_level="2"),
             balance=SimpleNamespace(
                 total_equity=D("1000"),
                 available_equity=D("900"),
-                details=[SimpleNamespace(unrealized_pnl=D("5"))],
+                adjusted_equity=D("0"),
+                details=[
+                    SimpleNamespace(
+                        currency="USDT",
+                        equity=D("500"),
+                        available_equity=D("450"),
+                        unrealized_pnl=D("5"),
+                    )
+                ],
             ),
             positions=[object()],
             pending_orders=[],
@@ -108,16 +134,28 @@ def performance_data():
             captured_at=now - timedelta(days=2),
             total_equity=D("1000"),
             available_equity=D("1000"),
+            performance_equity=D("1000"),
+            performance_available_equity=D("1000"),
+            equity_basis="single_currency:USDT",
+            equity_currency="USDT",
         ),
         DemoEquityPoint(
             captured_at=now - timedelta(days=1),
             total_equity=D("900"),
             available_equity=D("900"),
+            performance_equity=D("900"),
+            performance_available_equity=D("900"),
+            equity_basis="single_currency:USDT",
+            equity_currency="USDT",
         ),
         DemoEquityPoint(
             captured_at=now - timedelta(hours=1),
             total_equity=D("1050"),
             available_equity=D("1050"),
+            performance_equity=D("1050"),
+            performance_available_equity=D("1050"),
+            equity_basis="single_currency:USDT",
+            equity_currency="USDT",
         ),
     ]
     orders = [
@@ -232,6 +270,10 @@ async def test_daily_report_is_persisted() -> None:
         captured_at=now,
         total_equity=D("1000"),
         available_equity=D("1000"),
+        performance_equity=D("1000"),
+        performance_available_equity=D("1000"),
+        equity_basis="single_currency:USDT",
+        equity_currency="USDT",
     )
     repo = FakeRepository(snapshots=[snapshot])
     service = DemoPerformanceService(settings=settings(), repository=repo)
@@ -289,6 +331,233 @@ async def test_capture_snapshot_is_read_only_reconcile() -> None:
     )
     point = await service.capture_snapshot()
     assert point.total_equity == D("1000")
+    assert point.performance_equity == D("500")
+    assert point.equity_basis == "single_currency:USDT"
     assert point.unrealized_pnl == D("5")
     assert point.position_count == 1
     assert point.algo_order_count == 1
+
+
+@pytest.mark.asyncio
+async def test_multi_asset_total_equity_drawdown_is_not_strategy_drawdown() -> None:
+    now = datetime.now(timezone.utc)
+    snapshots = [
+        DemoEquityPoint(
+            captured_at=now - timedelta(hours=2),
+            total_equity=D("98184.44"),
+            available_equity=D("0"),
+            performance_equity=D("5000"),
+            performance_available_equity=D("5000"),
+            equity_basis="single_currency:USDT",
+            equity_currency="USDT",
+        ),
+        DemoEquityPoint(
+            captured_at=now - timedelta(hours=1),
+            total_equity=D("95161.01"),
+            available_equity=D("0"),
+            performance_equity=D("5000"),
+            performance_available_equity=D("5000"),
+            equity_basis="single_currency:USDT",
+            equity_currency="USDT",
+        ),
+    ]
+    service = DemoPerformanceService(
+        settings=settings(),
+        repository=FakeRepository(snapshots=snapshots),
+    )
+
+    summary = await service.summary(30)
+
+    assert summary.opening_equity == D("5000")
+    assert summary.closing_equity == D("5000")
+    assert summary.max_drawdown_pct == D("0")
+    assert summary.account_opening_equity == D("98184.44")
+    assert summary.account_closing_equity == D("95161.01")
+    assert summary.account_max_drawdown_pct == D("3023.43") / D("98184.44")
+    assert "performance_drawdown_limit_exceeded" not in {
+        item.code for item in summary.alerts
+    }
+    assert "account_equity_drawdown_limit_exceeded" in {
+        item.code for item in summary.alerts
+    }
+
+
+@pytest.mark.asyncio
+async def test_legacy_unbased_snapshots_fail_closed_without_fake_backfill() -> None:
+    now = datetime.now(timezone.utc)
+    snapshot = DemoEquityPoint(
+        captured_at=now - timedelta(hours=1),
+        total_equity=D("95161.01"),
+        available_equity=D("0"),
+    )
+    service = DemoPerformanceService(
+        settings=settings(
+            okx_demo_performance_min_active_days=1,
+            okx_demo_performance_min_realized_trades=1,
+        ),
+        repository=FakeRepository(snapshots=[snapshot]),
+    )
+
+    validation = await service.validation(30)
+
+    assert validation.performance_snapshot_count == 0
+    assert validation.excluded_snapshot_count == 1
+    assert validation.data_coverage_ready is False
+    assert validation.reliability_ready is False
+    assert "performance_equity_unavailable" in validation.blockers
+
+
+@pytest.mark.asyncio
+async def test_durable_closing_order_attribution_reaches_strategy_stats() -> None:
+    now = datetime.now(timezone.utc)
+    snapshot = DemoEquityPoint(
+        captured_at=now - timedelta(hours=2),
+        total_equity=D("95000"),
+        available_equity=D("0"),
+        performance_equity=D("5000"),
+        performance_available_equity=D("5000"),
+        equity_basis="single_currency:USDT",
+        equity_currency="USDT",
+    )
+    order = DemoOrderPerformanceSample(
+        order_id="close-1",
+        instrument_id="BTC-USDT-SWAP",
+        side="sell",
+        state="filled",
+        size=D("1"),
+        filled_size=D("1"),
+        reduce_only=True,
+        updated_at=now - timedelta(hours=1),
+        raw={"pnl": "10", "fee": "-1"},
+    )
+    attribution = DemoTradeAttribution(
+        event_id="event-1",
+        instrument_id="BTC-USDT-SWAP",
+        strategy="trend_pullback",
+        reference_price=D("100"),
+        closing_order_ids=["close-1"],
+        closed_at=now - timedelta(hours=1),
+        net_pnl=D("9"),
+    )
+    service = DemoPerformanceService(
+        settings=settings(),
+        repository=FakeRepository(
+            snapshots=[snapshot],
+            orders=[order],
+            attributions=[attribution],
+        ),
+    )
+
+    summary = await service.summary(30)
+    stats = {item.strategy: item for item in summary.strategy_stats}
+
+    assert summary.attributed_realized_trade_count == 1
+    assert summary.unattributed_realized_trade_count == 0
+    assert stats["trend_pullback"].realized_trades == 1
+    assert "unattributed" not in stats
+
+
+@pytest.mark.asyncio
+async def test_equity_basis_change_restarts_the_performance_evidence_window() -> None:
+    now = datetime.now(timezone.utc)
+    snapshots = [
+        DemoEquityPoint(
+            captured_at=now - timedelta(days=2),
+            total_equity=D("90000"),
+            available_equity=D("0"),
+            performance_equity=D("5000"),
+            equity_basis="single_currency:USDT",
+            equity_currency="USDT",
+        ),
+        DemoEquityPoint(
+            captured_at=now - timedelta(days=1),
+            total_equity=D("91000"),
+            available_equity=D("0"),
+            performance_equity=D("5100"),
+            equity_basis="single_currency:USDT",
+            equity_currency="USDT",
+        ),
+        DemoEquityPoint(
+            captured_at=now - timedelta(hours=1),
+            total_equity=D("92000"),
+            available_equity=D("1000"),
+            performance_equity=D("80000"),
+            equity_basis="account_adjusted:USD",
+            equity_currency="USD",
+        ),
+    ]
+    old_order = DemoOrderPerformanceSample(
+        order_id="old-close",
+        instrument_id="BTC-USDT-SWAP",
+        side="sell",
+        state="filled",
+        size=D("1"),
+        filled_size=D("1"),
+        reduce_only=True,
+        updated_at=now - timedelta(hours=2),
+        raw={"pnl": "100"},
+    )
+    service = DemoPerformanceService(
+        settings=settings(),
+        repository=FakeRepository(snapshots=snapshots, orders=[old_order]),
+    )
+
+    summary = await service.summary(30)
+
+    assert summary.equity_basis == "account_adjusted:USD"
+    assert summary.performance_snapshot_count == 1
+    assert summary.excluded_snapshot_count == 2
+    assert summary.performance_window_started_at == snapshots[-1].captured_at
+    assert summary.opening_equity == D("80000")
+    assert summary.order_count == 0
+
+
+@pytest.mark.asyncio
+async def test_unattributed_realized_trade_cannot_satisfy_reliability_gate() -> None:
+    now = datetime.now(timezone.utc)
+    snapshots = [
+        DemoEquityPoint(
+            captured_at=now - timedelta(days=1),
+            total_equity=D("95000"),
+            available_equity=D("0"),
+            performance_equity=D("5000"),
+            equity_basis="single_currency:USDT",
+            equity_currency="USDT",
+        ),
+        DemoEquityPoint(
+            captured_at=now - timedelta(hours=1),
+            total_equity=D("95010"),
+            available_equity=D("0"),
+            performance_equity=D("5010"),
+            equity_basis="single_currency:USDT",
+            equity_currency="USDT",
+        ),
+    ]
+    order = DemoOrderPerformanceSample(
+        order_id="unknown-close",
+        instrument_id="BTC-USDT-SWAP",
+        side="sell",
+        state="filled",
+        size=D("1"),
+        filled_size=D("1"),
+        reduce_only=True,
+        updated_at=now - timedelta(hours=2),
+        raw={"pnl": "10"},
+    )
+    service = DemoPerformanceService(
+        settings=settings(
+            okx_demo_performance_min_active_days=1,
+            okx_demo_performance_min_realized_trades=1,
+        ),
+        repository=FakeRepository(snapshots=snapshots, orders=[order]),
+    )
+
+    validation = await service.validation(30)
+
+    assert validation.total_realized_trades == 1
+    assert validation.realized_trades == 0
+    assert validation.unattributed_realized_trades == 1
+    assert validation.data_coverage_ready is False
+    assert validation.reliability_ready is False
+    assert "insufficient_realized_trades" in validation.blockers
+    assert "unattributed_realized_trades" in validation.blockers

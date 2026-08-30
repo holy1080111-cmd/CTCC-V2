@@ -16,6 +16,15 @@ from app.database.models.okx_demo import (
     OkxDemoPositionState,
     OkxDemoSyncCheckpoint,
 )
+from app.database.models.okx_live import (
+    OkxLiveAccountConfigState,
+    OkxLiveAlgoOrderState,
+    OkxLiveBalanceState,
+    OkxLiveExecutionIntent,
+    OkxLiveOrderState,
+    OkxLivePositionState,
+    OkxLiveSyncCheckpoint,
+)
 from app.database.models.analysis import AnalysisRun, StrategyEvaluation, TimeframeAnalysis
 from app.database.models.persistence import (
     OrchestratorFingerprintState,
@@ -54,6 +63,9 @@ __all__ = [
     "OrchestratorRunState", "OrchestratorFingerprintState", "RecoveryCheckpoint",
     "OkxDemoBalanceState", "OkxDemoOrderState", "OkxDemoPositionState",
     "OkxDemoAlgoOrderState", "OkxDemoSyncCheckpoint",
+    "OkxLiveAccountConfigState", "OkxLiveBalanceState", "OkxLiveOrderState",
+    "OkxLivePositionState", "OkxLiveAlgoOrderState", "OkxLiveSyncCheckpoint",
+    "OkxLiveExecutionIntent",
     "DemoAutomationState", "DemoAutomationRun", "DemoAutomationFingerprint",
     "DemoObservabilityEvent", "DemoSoakSession",
     "DemoPerformanceSnapshot", "DemoStrategyControl", "DemoDailyPerformanceReport",

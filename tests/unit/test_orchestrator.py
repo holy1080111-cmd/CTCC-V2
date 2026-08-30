@@ -84,10 +84,12 @@ def decision(selected: TradeCandidate | None) -> StrategyDecision:
 
 
 def snapshot(*, age_seconds: int = 0) -> RealtimeSnapshot:
+    observed_at = datetime.now(timezone.utc) - timedelta(seconds=age_seconds)
     return RealtimeSnapshot(
         symbol="BTC-USDT-SWAP",
         last=Decimal("100"),
-        received_at=datetime.now(timezone.utc) - timedelta(seconds=age_seconds),
+        last_received_at=observed_at,
+        received_at=observed_at,
     )
 
 
@@ -147,6 +149,27 @@ async def test_stale_realtime_snapshot_blocks_execution() -> None:
         market_client=FakeClient(),
     )
     run = await service.run_once(execute=True)
+    assert run.results[0].outcome == "blocked"
+    assert run.results[0].detail == "realtime_snapshot_stale"
+    assert broker.account().open_positions == 0
+
+
+@pytest.mark.asyncio
+async def test_fresh_non_price_update_cannot_hide_stale_last_price() -> None:
+    stale = snapshot(age_seconds=120).model_copy(
+        update={"received_at": datetime.now(timezone.utc)}
+    )
+    broker = PaperBroker()
+    service = AutoPaperOrchestrator(
+        settings=settings(enabled=True),
+        strategy_service=FakeStrategyService(decision(candidate())),
+        broker=broker,
+        market_hub=FakeHub(stale),
+        market_client=FakeClient(),
+    )
+
+    run = await service.run_once(execute=True)
+
     assert run.results[0].outcome == "blocked"
     assert run.results[0].detail == "realtime_snapshot_stale"
     assert broker.account().open_positions == 0

@@ -85,3 +85,39 @@ def test_risk_rejects_expired_candidate():
     )
     assert result.decision == "rejected"
     assert "candidate_expired" in result.reason_codes
+
+
+def test_risk_uses_mathematically_capped_score_instead_of_raw_score():
+    result = evaluate_risk(
+        candidate(score=95, risk_score=70),
+        AccountRiskState(equity=Decimal("10000")),
+        RiskLimits(minimum_score=72),
+    )
+
+    assert result.decision == "rejected"
+    assert "score_below_minimum" in result.reason_codes
+
+
+def test_risk_sizing_includes_round_trip_execution_costs() -> None:
+    result = evaluate_risk(
+        candidate(
+            entry=Decimal("100"),
+            stop_loss=Decimal("99"),
+            take_profit=Decimal("103"),
+            risk_reward=Decimal("2.636363636363636363636363636"),
+            estimated_round_trip_cost_pct=Decimal("0.001"),
+        ),
+        AccountRiskState(equity=Decimal("1000")),
+        RiskLimits(
+            risk_per_trade_pct=Decimal("0.01"),
+            max_notional=Decimal("10000"),
+            minimum_risk_reward=Decimal("2"),
+        ),
+    )
+
+    assert result.decision == "approved"
+    assert result.stop_distance == Decimal("1")
+    assert result.effective_risk_distance == Decimal("1.100")
+    assert result.approved_quantity == Decimal("9.09090909")
+    assert result.estimated_cost_amount == Decimal("0.90909091")
+    assert result.max_loss_amount == Decimal("10.00000000")

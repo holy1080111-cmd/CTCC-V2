@@ -43,6 +43,8 @@ class OkxDemoAccountConfig(BaseModel):
 class OkxDemoBalanceDetail(BaseModel):
     currency: str
     equity: Decimal
+    equity_usd: Decimal | None = None
+    available_equity: Decimal
     cash_balance: Decimal
     available_balance: Decimal
     frozen_balance: Decimal
@@ -126,6 +128,8 @@ class OkxDemoWriteResult(BaseModel):
     acknowledged: bool
     acknowledgement: OkxDemoOrderAcknowledgement | None = None
     order: OkxDemoOrderView | None = None
+    protection_confirmed: bool | None = None
+    protection_client_order_id: str | None = None
     exchange_data: list[dict[str, Any]] = Field(default_factory=list)
     reconciled: bool = False
     warnings: list[str] = Field(default_factory=list)
@@ -148,11 +152,13 @@ class OkxDemoOrderRequest(BaseModel):
     direction: Literal["long", "short"]
     size: Decimal = Field(gt=0)
     margin_mode: Literal["cross", "isolated"] = "cross"
-    order_type: Literal["market", "limit"] = "market"
+    order_type: Literal["market", "limit", "fok"] = "market"
     price: Decimal | None = Field(default=None, gt=0)
     stop_loss: Decimal | None = Field(default=None, gt=0)
     take_profit: Decimal | None = Field(default=None, gt=0)
-    trigger_price_type: Literal["last", "mark", "index"] = "mark"
+    # CTCC validates protection against the same public price source it asks
+    # OKX to use.  The reviewed Demo/Live boundary is mark-trigger only.
+    trigger_price_type: Literal["mark"] = "mark"
     client_order_id: str | None = Field(
         default=None,
         min_length=4,
@@ -163,8 +169,8 @@ class OkxDemoOrderRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_order_shape(self) -> "OkxDemoOrderRequest":
-        if self.order_type == "limit" and self.price is None:
-            raise ValueError("price is required for limit orders")
+        if self.order_type in {"limit", "fok"} and self.price is None:
+            raise ValueError("price is required for limit and fok orders")
         if self.order_type == "market" and self.price is not None:
             raise ValueError("price must be omitted for market orders")
         if (self.stop_loss is None) != (self.take_profit is None):

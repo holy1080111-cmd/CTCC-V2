@@ -26,6 +26,7 @@ def parse_instrument(row: dict[str, Any]) -> InstrumentInfo:
         minimum_size=decimal_value(row["minSz"]),
         contract_value=decimal_value(row.get("ctVal")) if row.get("ctVal") else None,
         contract_currency=row.get("ctValCcy") or None,
+        settlement_currency=row.get("settleCcy") or None,
     )
 
 

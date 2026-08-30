@@ -37,12 +37,12 @@ def build_signature(
     return base64.b64encode(digest).decode("ascii")
 
 
-class OkxPrivateRestClient:
-    """Authenticated OKX Demo REST client.
+class _OkxPrivateRestClientBase:
+    """Authenticated OKX private REST transport shared by fixed environments.
 
-    Every request includes x-simulated-trading: 1. Read requests have bounded
-    retries; write requests are never automatically retried to avoid duplicate
-    orders after ambiguous network failures.
+    Environment-specific subclasses supply credentials and headers. Read requests
+    have bounded retries; write requests are never automatically retried to avoid
+    duplicate orders after ambiguous network failures.
     """
 
     def __init__(
@@ -57,13 +57,24 @@ class OkxPrivateRestClient:
         self._clock = clock or (lambda: datetime.now(timezone.utc))
 
     def _credentials(self) -> tuple[str, str, str]:
-        if not self.settings.okx_demo_credentials_configured:
-            raise OkxPrivateApiError("OKX Demo credentials are not configured", code="credentials_missing")
-        return (
-            self.settings.okx_demo_api_key.get_secret_value(),
-            self.settings.okx_demo_api_secret.get_secret_value(),
-            self.settings.okx_demo_api_passphrase.get_secret_value(),
-        )
+        raise NotImplementedError
+
+    def _rest_base_url(self) -> str:
+        raise NotImplementedError
+
+    def _timeout_seconds(self) -> float:
+        raise NotImplementedError
+
+    def _read_max_retries(self) -> int:
+        raise NotImplementedError
+
+    def _extra_headers(self) -> dict[str, str]:
+        return {}
+
+    def _request_extra_headers(
+        self, *, method: str, path: str, write: bool
+    ) -> dict[str, str]:
+        return {}
 
     def _headers(self, *, method: str, request_path: str, body: str) -> dict[str, str]:
         api_key, api_secret, passphrase = self._credentials()
@@ -75,7 +86,7 @@ class OkxPrivateRestClient:
             body=body,
             secret=api_secret,
         )
-        return {
+        headers = {
             "Content-Type": "application/json",
             "Accept": "application/json",
             "User-Agent": f"CTCC-V2/{self.settings.app_version}",
@@ -83,8 +94,9 @@ class OkxPrivateRestClient:
             "OK-ACCESS-SIGN": signature,
             "OK-ACCESS-PASSPHRASE": passphrase,
             "OK-ACCESS-TIMESTAMP": timestamp,
-            "x-simulated-trading": "1",
         }
+        headers.update(self._extra_headers())
+        return headers
 
     async def _request(
         self,
@@ -101,10 +113,10 @@ class OkxPrivateRestClient:
 
         own_client = self._external_client is None
         client = self._external_client or httpx.AsyncClient(
-            base_url=self.settings.okx_demo_rest_base_url,
-            timeout=httpx.Timeout(self.settings.okx_demo_timeout_seconds),
+            base_url=self._rest_base_url(),
+            timeout=httpx.Timeout(self._timeout_seconds()),
         )
-        attempts = 1 if write else self.settings.okx_demo_read_max_retries + 1
+        attempts = 1 if write else self._read_max_retries() + 1
         last_error: Exception | None = None
         try:
             for attempt in range(attempts):
@@ -117,6 +129,13 @@ class OkxPrivateRestClient:
                         request_path=request_path,
                         body=body_text,
                     )
+                    headers.update(
+                        self._request_extra_headers(
+                            method=method.upper(),
+                            path=path,
+                            write=write,
+                        )
+                    )
                     response = await client.request(
                         method.upper(),
                         request_path,
@@ -125,8 +144,12 @@ class OkxPrivateRestClient:
                     )
                     response.raise_for_status()
                     payload = response.json()
+                    response_shape_code = "ambiguous_response" if write else None
                     if not isinstance(payload, dict):
-                        raise OkxPrivateApiError("OKX private API returned a non-object response")
+                        raise OkxPrivateApiError(
+                            "OKX private API returned a non-object response",
+                            code=response_shape_code,
+                        )
                     code = str(payload.get("code", ""))
                     if code != "0":
                         raise OkxPrivateApiError(
@@ -136,11 +159,22 @@ class OkxPrivateRestClient:
                         )
                     data = payload.get("data")
                     if not isinstance(data, list):
-                        raise OkxPrivateApiError("OKX private API returned non-list data")
+                        raise OkxPrivateApiError(
+                            "OKX private API returned non-list data",
+                            code=response_shape_code,
+                        )
                     typed_data = [dict(item) for item in data if isinstance(item, dict)]
                     if len(typed_data) != len(data):
-                        raise OkxPrivateApiError("OKX private API returned invalid data items")
+                        raise OkxPrivateApiError(
+                            "OKX private API returned invalid data items",
+                            code=response_shape_code,
+                        )
                     if write:
+                        if not typed_data:
+                            raise OkxPrivateApiError(
+                                "OKX private API returned empty write data",
+                                code="ambiguous_response",
+                            )
                         for item in typed_data:
                             item_code = str(item.get("sCode", "0") or "0")
                             if item_code != "0":
@@ -196,7 +230,7 @@ class OkxPrivateRestClient:
         return await self._request(
             "GET",
             "/api/v5/trade/orders-algo-pending",
-            params={"ordType": "conditional", "instId": instrument_id},
+            params={"ordType": "conditional,oco", "instId": instrument_id},
         )
 
     async def order_detail(
@@ -212,6 +246,33 @@ class OkxPrivateRestClient:
             params={"instId": instrument_id, "ordId": order_id, "clOrdId": client_order_id},
         )
 
+    async def max_order_size(
+        self,
+        instrument_id: str,
+        *,
+        margin_mode: str,
+        price: str | None = None,
+        leverage: str | None = None,
+    ) -> list[dict[str, Any]]:
+        return await self._request(
+            "GET",
+            "/api/v5/account/max-size",
+            params={
+                "instId": instrument_id,
+                "tdMode": margin_mode,
+                "px": price,
+                "leverage": leverage,
+            },
+        )
+
+    async def order_precheck(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
+        return await self._request(
+            "POST",
+            "/api/v5/trade/order-precheck",
+            body=payload,
+            write=True,
+        )
+
     async def place_order(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
         return await self._request("POST", "/api/v5/trade/order", body=payload, write=True)
 
@@ -223,3 +284,165 @@ class OkxPrivateRestClient:
 
     async def set_leverage(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
         return await self._request("POST", "/api/v5/account/set-leverage", body=payload, write=True)
+
+    async def cancel_all_after(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
+        return await self._request(
+            "POST",
+            "/api/v5/trade/cancel-all-after",
+            body=payload,
+            write=True,
+        )
+
+
+class OkxDemoPrivateRestClient(_OkxPrivateRestClientBase):
+    """Authenticated OKX Demo REST client with simulation permanently enabled."""
+
+    def _credentials(self) -> tuple[str, str, str]:
+        if not self.settings.okx_demo_credentials_configured:
+            raise OkxPrivateApiError(
+                "OKX Demo credentials are not configured",
+                code="credentials_missing",
+            )
+        return (
+            self.settings.okx_demo_api_key.get_secret_value(),
+            self.settings.okx_demo_api_secret.get_secret_value(),
+            self.settings.okx_demo_api_passphrase.get_secret_value(),
+        )
+
+    def _rest_base_url(self) -> str:
+        return self.settings.okx_demo_rest_base_url
+
+    def _timeout_seconds(self) -> float:
+        return self.settings.okx_demo_timeout_seconds
+
+    def _read_max_retries(self) -> int:
+        return self.settings.okx_demo_read_max_retries
+
+    def _extra_headers(self) -> dict[str, str]:
+        return {"x-simulated-trading": "1"}
+
+
+class OkxLivePrivateRestClient(_OkxPrivateRestClientBase):
+    """Authenticated OKX Production REST client with writes hard-blocked."""
+
+    def _credentials(self) -> tuple[str, str, str]:
+        if not self.settings.okx_live_credentials_configured:
+            raise OkxPrivateApiError(
+                "OKX Live credentials are not configured",
+                code="credentials_missing",
+            )
+        return (
+            self.settings.okx_live_api_key.get_secret_value(),
+            self.settings.okx_live_api_secret.get_secret_value(),
+            self.settings.okx_live_api_passphrase.get_secret_value(),
+        )
+
+    def _rest_base_url(self) -> str:
+        return self.settings.okx_live_rest_base_url
+
+    def _timeout_seconds(self) -> float:
+        return self.settings.okx_live_timeout_seconds
+
+    def _read_max_retries(self) -> int:
+        return self.settings.okx_live_read_max_retries
+
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        body: dict[str, Any] | None = None,
+        write: bool = False,
+    ) -> list[dict[str, Any]]:
+        if write or method.upper() != "GET":
+            raise OkxPrivateApiError(
+                "OKX Live write operations are disabled",
+                code="live_writes_disabled",
+            )
+        return await super()._request(
+            method,
+            path,
+            params=params,
+            body=body,
+            write=False,
+        )
+
+
+class OkxLiveExecutionRestClient(_OkxPrivateRestClientBase):
+    """Production write transport reachable only through explicit Live gates.
+
+    This class never sets the simulated-trading header and never retries a
+    write. The separate read-only Live client remains permanently unable to
+    send non-GET requests.
+    """
+
+    def _credentials(self) -> tuple[str, str, str]:
+        if not self.settings.okx_live_credentials_configured:
+            raise OkxPrivateApiError(
+                "OKX Live credentials are not configured",
+                code="credentials_missing",
+            )
+        return (
+            self.settings.okx_live_api_key.get_secret_value(),
+            self.settings.okx_live_api_secret.get_secret_value(),
+            self.settings.okx_live_api_passphrase.get_secret_value(),
+        )
+
+    def _rest_base_url(self) -> str:
+        return self.settings.okx_live_rest_base_url
+
+    def _timeout_seconds(self) -> float:
+        return self.settings.okx_live_timeout_seconds
+
+    def _read_max_retries(self) -> int:
+        return self.settings.okx_live_read_max_retries
+
+    def _request_extra_headers(
+        self, *, method: str, path: str, write: bool
+    ) -> dict[str, str]:
+        if write and method == "POST" and path == "/api/v5/trade/order":
+            now = self._clock()
+            if now.tzinfo is None:
+                now = now.replace(tzinfo=timezone.utc)
+            expiry = int(now.astimezone(timezone.utc).timestamp() * 1000)
+            expiry += self.settings.okx_live_order_expiry_milliseconds
+            return {"expTime": str(expiry)}
+        return {}
+
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        body: dict[str, Any] | None = None,
+        write: bool = False,
+    ) -> list[dict[str, Any]]:
+        if write or method.upper() != "GET":
+            if not (
+                self.settings.environment == "production"
+                and self.settings.trading_mode == "live"
+                and self.settings.okx_live_enabled
+                and self.settings.live_trading
+                and self.settings.okx_live_allow_order_writes
+                and self.settings.web_concurrency == 1
+            ):
+                raise OkxPrivateApiError(
+                    "OKX Live execution transport is not enabled",
+                    code="live_execution_not_enabled",
+                )
+            return await super()._request(
+                method,
+                path,
+                params=params,
+                body=body,
+                write=True,
+            )
+        return await super()._request(
+            method,
+            path,
+            params=params,
+            body=body,
+            write=False,
+        )

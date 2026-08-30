@@ -26,6 +26,7 @@ from app.domain.okx_demo import (
     OkxDemoOrderView,
     OkxDemoPositionView,
 )
+from app.okx_demo.equity import resolve_demo_risk_capital
 
 
 class OkxDemoRepository:
@@ -55,6 +56,10 @@ class OkxDemoRepository:
         deduped_algo_orders = {
             item.algo_order_id: item for item in algo_orders if item.algo_order_id
         }
+        performance_capital, performance_blocker = resolve_demo_risk_capital(
+            account_config,
+            balance,
+        )
 
         async with self.session_factory() as session:
             async with session.begin():
@@ -155,6 +160,26 @@ class OkxDemoRepository:
                         captured_at=balance.captured_at,
                         total_equity=balance.total_equity,
                         available_equity=balance.available_equity,
+                        performance_equity=(
+                            performance_capital.risk_equity
+                            if performance_capital is not None
+                            else None
+                        ),
+                        performance_available_equity=(
+                            performance_capital.available_equity
+                            if performance_capital is not None
+                            else None
+                        ),
+                        equity_basis=(
+                            performance_capital.basis
+                            if performance_capital is not None
+                            else None
+                        ),
+                        equity_currency=(
+                            performance_capital.currency
+                            if performance_capital is not None
+                            else None
+                        ),
                         unrealized_pnl=unrealized_pnl,
                         position_count=len(deduped_positions),
                         pending_order_count=len([
@@ -165,6 +190,10 @@ class OkxDemoRepository:
                         details={
                             "source": "okx_demo_reconcile",
                             "position_mode": account_config.position_mode,
+                            "account_level": account_config.account_level,
+                            "performance_equity_blocker": (
+                                performance_blocker or None
+                            ),
                         },
                     )
                 )

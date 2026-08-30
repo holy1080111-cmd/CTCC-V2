@@ -15,6 +15,32 @@
 - v1.3 Demo soak and observability
 - v1.4 Controlled Demo execution soak
 - v1.5 Demo reliability and performance validation
+- v1.6.8 Isolated OKX Live reads, real-position execution gates, and one-shot automation
+- Adaptive Demo portfolio gate: score-tiered leverage/risk/margin, multiple
+  instruments, aggregate caps, shared causal mathematical fusion, robust state,
+  prequential conformal coverage validation, auxiliary-score isolation, and
+  three-stop UTC lock (operator acceptance pending)
+- v1.7.0 MIE rearchitecture:
+  - Gate 0 rebaseline and validation registry completed in isolated verification
+  - Gate 1 immutable shadow contracts and legacy evidence adapter frozen after
+    Windows Docker/PostgreSQL acceptance
+  - Gate 2 deterministic statistics, signal, dynamics, momentum, and confirmed
+    geometry feature core is shadow-only pending operator acceptance
+  - later Gates remain shadow-only until independently frozen
+- External Benchmark Pack:
+  - Gate v1 immutable source/dataset/result contracts, artifact verification,
+    strict quality profiling, and deterministic formula parity
+  - Gate v2 operator-only, pre-hashed HTTPS acquisition with reviewed-host
+    redirects, byte/media limits, atomic no-clobber placement, and ZIP safety
+  - Gate v2.1 official Binance BTCUSDT 2024-01-01 identity preparation,
+    operator-confirmed bounded acquisition, canonical one-minute parsing, and
+    strict 1,440-row provider-quality evidence
+  - Gate v3 frozen BTCUSDT/ETHUSDT development, validation, and retrospective
+    holdout windows; 180 exact daily artifacts, 259,200 expected minute rows,
+    and descriptive partition evidence with no strategy or cost evaluation
+  - no runtime consumer, model promotion, database write, or execution authority
+  - later gates add deterministic replay, execution calibration, and
+    independently reviewed OOS validation
 - v2.0 Final acceptance
 
 ## v1.0 completed
@@ -64,3 +90,39 @@
 - Authenticated operator enable/disable controls for future candidate selection
 - Reliability evidence gates for active days, realized trades, slippage, profit factor, and drawdown
 - Automatic strategy disabling and live-money execution remain unavailable
+
+## v1.6.8 implementation complete; operator acceptance pending
+
+- Dedicated production REST transport with Demo header structurally absent
+- Account capability validation and one-way identity pinning
+- Atomic Live PostgreSQL mirror and durable execution-intent idempotency
+- Production-only write settings, process-local expiring Arm, one submission, and auto-disarm
+- Protected market-order precheck, contract/notional/leverage caps, bounded polling, and reconciliation
+- Explicit cancel, close, leverage, Emergency Stop, and clear-stop flows
+- One-shot strategy/risk automation that can write only through the Live service
+- Disabled-by-default continuous Demo eligibility can skip daily loss,
+  trade-count, consecutive-loss, and cooldown locks while retaining per-order
+  protection, weekly-loss/drawdown, capital/portfolio, and execution boundaries
+- Disabled-by-default structural Demo risk uses confirmed swing brackets,
+  cost-adjusted net RR, isolated margin, and downward-only 3–20x leverage;
+  migration 0013 persists true rolling close evidence and a non-daily high-water
+  mark
+- Remaining acceptance: local PostgreSQL migration/regression and staged real-account read/micro-order evidence
+
+## v1.7.0 MIE Gate 0/1/2
+
+- Gate 0 records the canonical v1.6.8 commit, migration 0012, 282-file
+  manifest, fail-safe flags, and the current mathematical validation registry.
+- Gate 1 extracts immutable Evidence, ProbabilityForecast, RegimeSnapshot,
+  ModelHealth, DecisionCandidate, and MieShadowTrace contracts.
+- The legacy mathematical adapter preserves causal/prequential/auxiliary
+  distinctions and assigns one shared dependency group.
+- Directional candidates require positive net EV and every logic check, but
+  remain shadow-only and contain no order geometry.
+- Gate 1 has no execution-side imports and does not change the legacy strategy,
+  Demo, or Live paths.
+- Gate 2 adds strict confirmed-bar inputs, deterministic replay/provenance, and
+  five pure feature families without connecting MIE to an existing runtime
+  caller.
+- Gate 2 makes no predictive or profitability claim and adds no migration,
+  probability model, decision, risk sizing, API, or exchange authority.

@@ -13,6 +13,8 @@ COPY app ./app
 COPY migrations ./migrations
 COPY alembic.ini ./
 COPY tests ./tests
+COPY scripts ./scripts
+COPY docs ./docs
 
 RUN pip install --upgrade pip && pip install ".[test]"
 

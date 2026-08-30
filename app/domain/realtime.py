@@ -19,6 +19,13 @@ class RealtimeSnapshot(BaseModel):
     bid: Decimal | None = None
     ask: Decimal | None = None
     mark_price: Decimal | None = None
+    # Execution-relevant fields need independent receive timestamps.  A fresh
+    # funding/open-interest event must never make an old price or quote appear
+    # fresh merely because all channels share one merged snapshot.
+    last_received_at: datetime | None = None
+    quote_received_at: datetime | None = None
+    mark_price_received_at: datetime | None = None
+    book_received_at: datetime | None = None
     funding_rate: Decimal | None = None
     next_funding_time: datetime | None = None
     open_interest: Decimal | None = None

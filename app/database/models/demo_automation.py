@@ -18,8 +18,10 @@ class DemoAutomationState(Base):
     locked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     lock_reasons: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
     session_date: Mapped[date] = mapped_column(Date, nullable=False)
+    equity_basis: Mapped[str | None] = mapped_column(String(40))
     baseline_equity: Mapped[Decimal | None] = mapped_column(Numeric(28, 10))
     peak_equity: Mapped[Decimal | None] = mapped_column(Numeric(28, 10))
+    risk_peak_equity: Mapped[Decimal | None] = mapped_column(Numeric(28, 10))
     daily_pnl: Mapped[Decimal] = mapped_column(Numeric(28, 10), nullable=False, default=Decimal("0"))
     trades_today: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     consecutive_losses: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -27,6 +29,15 @@ class DemoAutomationState(Base):
     active_client_order_id: Mapped[str | None] = mapped_column(String(32))
     active_start_equity: Mapped[Decimal | None] = mapped_column(Numeric(28, 10))
     active_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    active_trades: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )
+    symbol_cooldowns: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )
+    realized_pnl_events: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False, default=list
+    )
     last_trade_closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

@@ -48,7 +48,6 @@ $body = @{
     duration_minutes = 1
     interval_seconds = 5
     max_runs = 1
-    symbols = @("BTC-USDT-SWAP", "ETH-USDT-SWAP")
     confirmation = "START_DEMO_SOAK_OBSERVE"
 } | ConvertTo-Json
 

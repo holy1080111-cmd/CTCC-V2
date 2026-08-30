@@ -24,6 +24,8 @@ from app.domain.okx_demo import (
     OkxDemoWriteResult,
 )
 from app.exchange.okx.errors import OkxPrivateApiError, OkxPublicApiError
+from app.exchange.okx.leverage import leverage_response_matches
+from app.exchange.okx.private_api import OkxPrivateApiClient
 from app.exchange.okx.private_parsers import (
     parse_account_config,
     parse_algo_order,
@@ -31,7 +33,7 @@ from app.exchange.okx.private_parsers import (
     parse_order,
     parse_position,
 )
-from app.exchange.okx.private_rest import OkxPrivateRestClient
+from app.exchange.okx.private_rest import OkxDemoPrivateRestClient
 from app.exchange.okx.public_rest import OkxPublicRestClient
 from app.okx_demo import OkxDemoSafetyError, OkxDemoUnavailableError
 
@@ -41,7 +43,7 @@ class OkxDemoService:
 
     def __init__(
         self,
-        private_client: OkxPrivateRestClient,
+        private_client: OkxPrivateApiClient,
         public_client: OkxPublicRestClient,
         repository: OkxDemoRepository | None,
         *,
@@ -239,14 +241,19 @@ class OkxDemoService:
             self._validate_price_alignment(request.stop_loss, instrument.tick_size, "stop_loss")
             self._validate_price_alignment(request.take_profit, instrument.tick_size, "take_profit")
 
-            current_positions, pending_orders = await asyncio.gather(
+            current_positions, pending_orders, pending_algo_orders = await asyncio.gather(
                 self.positions(),
                 self.pending_orders(request.instrument_id),
+                self.pending_algo_orders(request.instrument_id),
             )
             if any(item.instrument_id == request.instrument_id for item in current_positions):
                 raise OkxDemoSafetyError("position_already_open_for_instrument")
             if pending_orders:
                 raise OkxDemoSafetyError("pending_order_already_exists_for_instrument")
+            if pending_algo_orders:
+                raise OkxDemoSafetyError(
+                    "pending_algo_order_already_exists_for_instrument"
+                )
             if len(current_positions) >= self.settings.okx_demo_max_open_positions:
                 raise OkxDemoSafetyError("okx_demo_max_open_positions_reached")
 
@@ -255,19 +262,54 @@ class OkxDemoService:
             ):
                 raise OkxDemoSafetyError("protected_order_required")
 
+            mark_price = await self.public_client.mark_price(
+                request.instrument_id
+            )
+            if mark_price <= 0:
+                raise OkxDemoSafetyError("okx_demo_mark_price_invalid")
             reference_price = request.price
-            if reference_price is None:
+            if reference_price is None or request.order_type == "fok":
                 ticker = await self.public_client.ticker(request.instrument_id)
-                reference_price = ticker.last
+                if ticker.bid <= 0 or ticker.ask <= 0 or ticker.bid > ticker.ask:
+                    raise OkxDemoSafetyError(
+                        "okx_demo_executable_quote_invalid"
+                    )
+                executable_quote = (
+                    ticker.ask if request.direction == "long" else ticker.bid
+                )
+                basis_bps = (
+                    abs(mark_price - executable_quote)
+                    / executable_quote
+                    * Decimal("10000")
+                )
+                if basis_bps > self.settings.okx_demo_scan_max_entry_drift_bps:
+                    raise OkxDemoSafetyError(
+                        "okx_demo_mark_execution_basis_exceeds_limit"
+                    )
+                self._validate_protection(
+                    direction=request.direction,
+                    reference_price=executable_quote,
+                    stop_loss=request.stop_loss,
+                    take_profit=request.take_profit,
+                )
+                if reference_price is None:
+                    reference_price = executable_quote
             self._validate_protection(
                 direction=request.direction,
                 reference_price=reference_price,
                 stop_loss=request.stop_loss,
                 take_profit=request.take_profit,
             )
+            self._validate_protection(
+                direction=request.direction,
+                reference_price=mark_price,
+                stop_loss=request.stop_loss,
+                take_profit=request.take_profit,
+            )
 
             position_side = self._position_side(account_config, request.direction)
             client_order_id = request.client_order_id or self._client_id("CTCC")
+            protection_client_order_id: str | None = None
             side = "buy" if request.direction == "long" else "sell"
             payload: dict[str, object] = {
                 "instId": request.instrument_id,
@@ -282,9 +324,10 @@ class OkxDemoService:
             if request.price is not None:
                 payload["px"] = self._decimal_text(request.price)
             if request.stop_loss is not None and request.take_profit is not None:
+                protection_client_order_id = self._client_id("CTCCA")
                 payload["attachAlgoOrds"] = [
                     {
-                        "attachAlgoClOrdId": self._client_id("CTCCA"),
+                        "attachAlgoClOrdId": protection_client_order_id,
                         "tpTriggerPx": self._decimal_text(request.take_profit),
                         "tpOrdPx": "-1",
                         "tpTriggerPxType": request.trigger_price_type,
@@ -300,6 +343,7 @@ class OkxDemoService:
                 request.instrument_id,
                 order_id=acknowledgement.order_id or None,
                 client_order_id=acknowledgement.client_order_id or client_order_id,
+                terminal_only=request.order_type == "fok",
             )
             warnings: list[str] = []
             if order is not None:
@@ -309,6 +353,26 @@ class OkxDemoService:
                     warnings.append("exchange_acknowledged_but_local_order_mirror_failed")
             else:
                 warnings.append("exchange_acknowledged_order_detail_not_yet_available")
+            protection_confirmed: bool | None = None
+            if request.stop_loss is not None and request.take_profit is not None:
+                no_fill_fok = (
+                    request.order_type == "fok"
+                    and order is not None
+                    and order.state.lower() in {"canceled", "mmp_canceled"}
+                    and order.accumulated_fill_size == 0
+                )
+                if no_fill_fok:
+                    protection_confirmed = False
+                    warnings.append("fok_order_not_filled")
+                else:
+                    protection_confirmed = await self._confirm_protection(
+                        request,
+                        protection_client_order_id,
+                    )
+                    if not protection_confirmed:
+                        warnings.append(
+                            "exchange_acknowledged_but_protection_not_confirmed"
+                        )
             self._last_exchange_ok_at = datetime.now(timezone.utc)
             self._last_error = None
             return OkxDemoWriteResult(
@@ -316,6 +380,8 @@ class OkxDemoService:
                 acknowledged=True,
                 acknowledgement=acknowledgement,
                 order=order,
+                protection_confirmed=protection_confirmed,
+                protection_client_order_id=protection_client_order_id,
                 exchange_data=exchange_data,
                 reconciled=False,
                 warnings=warnings,
@@ -406,6 +472,21 @@ class OkxDemoService:
                     raise OkxDemoSafetyError("direction_required_for_long_short_position_mode")
                 payload["posSide"] = request.direction
             exchange_data = await self.private_client.set_leverage(payload)
+            expected_position_side = (
+                request.direction
+                if config.position_mode == "long_short_mode"
+                else "net"
+            )
+            if not leverage_response_matches(
+                exchange_data,
+                instrument_id=request.instrument_id,
+                margin_mode=request.margin_mode,
+                leverage=request.leverage,
+                position_side=expected_position_side,
+            ):
+                raise OkxDemoSafetyError(
+                    "okx_demo_leverage_exchange_response_mismatch"
+                )
             return OkxDemoWriteResult(
                 action="set_leverage",
                 acknowledged=True,
@@ -503,7 +584,9 @@ class OkxDemoService:
         *,
         order_id: str | None,
         client_order_id: str | None,
+        terminal_only: bool = False,
     ) -> OkxDemoOrderView | None:
+        latest: OkxDemoOrderView | None = None
         for attempt in range(self.settings.okx_demo_order_detail_poll_attempts):
             try:
                 rows = await self.private_client.order_detail(
@@ -512,12 +595,83 @@ class OkxDemoService:
                     client_order_id=client_order_id if not order_id else None,
                 )
                 if rows:
-                    return parse_order(rows[0])
+                    latest = parse_order(rows[0])
+                    state = latest.state.lower()
+                    terminal_ready = state in {"canceled", "mmp_canceled"} or (
+                        state == "filled"
+                        and latest.average_fill_price is not None
+                        and latest.average_fill_price > 0
+                    )
+                    if not terminal_only or terminal_ready:
+                        return latest
             except OkxPrivateApiError:
                 pass
             if attempt + 1 < self.settings.okx_demo_order_detail_poll_attempts:
                 await asyncio.sleep(self.settings.okx_demo_order_detail_poll_delay_seconds)
-        return None
+        return latest
+
+    async def _confirm_protection(
+        self,
+        request: OkxDemoOrderRequest,
+        protection_client_order_id: str,
+    ) -> bool:
+        if request.stop_loss is None or request.take_profit is None:
+            return not self.settings.okx_demo_require_protection
+        for attempt in range(self.settings.okx_demo_order_detail_poll_attempts):
+            try:
+                rows = await self.private_client.pending_algo_orders(
+                    request.instrument_id
+                )
+            except Exception:
+                rows = []
+            if self._protection_rows_match(
+                rows,
+                request,
+                protection_client_order_id,
+            ):
+                return True
+            if attempt + 1 < self.settings.okx_demo_order_detail_poll_attempts:
+                await asyncio.sleep(
+                    self.settings.okx_demo_order_detail_poll_delay_seconds
+                )
+        return False
+
+    @staticmethod
+    def _protection_rows_match(
+        rows: list[dict[str, object]],
+        request: OkxDemoOrderRequest,
+        protection_client_order_id: str,
+    ) -> bool:
+        if request.stop_loss is None or request.take_profit is None:
+            return False
+        for row in rows:
+            if str(row.get("instId") or "") != request.instrument_id:
+                continue
+            row_client_id = str(
+                row.get("algoClOrdId") or row.get("attachAlgoClOrdId") or ""
+            )
+            if row_client_id != protection_client_order_id:
+                continue
+            try:
+                stop_loss = Decimal(str(row.get("slTriggerPx") or ""))
+                take_profit = Decimal(str(row.get("tpTriggerPx") or ""))
+                protected_size = Decimal(str(row.get("sz") or ""))
+            except Exception:
+                continue
+            if (
+                stop_loss != request.stop_loss
+                or take_profit != request.take_profit
+                or protected_size <= 0
+            ):
+                continue
+            stop_type = str(row.get("slTriggerPxType") or "")
+            take_type = str(row.get("tpTriggerPxType") or "")
+            if (
+                stop_type == request.trigger_price_type
+                and take_type == request.trigger_price_type
+            ):
+                return True
+        return False
 
     async def _persist_orders(self, orders: list[OkxDemoOrderView], *, action: str) -> None:
         if self.repository is not None:
@@ -574,7 +728,7 @@ else:
     repository = None
 
 okx_demo_service = OkxDemoService(
-    OkxPrivateRestClient(settings=settings),
+    OkxDemoPrivateRestClient(settings=settings),
     OkxPublicRestClient(),
     repository,
     settings=settings,

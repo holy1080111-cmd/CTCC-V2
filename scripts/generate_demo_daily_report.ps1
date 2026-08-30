@@ -28,7 +28,7 @@ finally {
 $headers = @{ "X-CTCC-Token" = $token }
 
 $report = Invoke-RestMethod `
-    -Uri "$baseUrl/api/demo-performance/daily/$ReportDate?refresh=true" `
+    -Uri "$baseUrl/api/demo-performance/daily/${ReportDate}?refresh=true" `
     -Headers $headers
 
 New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null

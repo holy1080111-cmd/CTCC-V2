@@ -7,7 +7,7 @@ def test_liveness() -> None:
     with TestClient(app) as client:
         response = client.get("/liveness")
     assert response.status_code == 200
-    assert response.json()["version"] == "1.5.0"
+    assert response.json()["version"] == "1.6.8"
 
 
 def test_capabilities_are_honest() -> None:
@@ -29,7 +29,9 @@ def test_capabilities_are_honest() -> None:
     assert "okx_demo_execute_soak_protection_verification" in body["completed"]
     assert "okx_demo_daily_performance_reports" in body["completed"]
     assert "okx_demo_operator_strategy_controls" in body["completed"]
-    assert "live_execution" in body["not_yet_available"]
+    assert "live_execution" in body["completed"]
+    assert "okx_live_protected_real_position_execution" in body["completed"]
+    assert "okx_live_real_account_operator_acceptance" in body["not_yet_available"]
 
 
 def test_lifecycle_transition_map() -> None:
@@ -63,7 +65,18 @@ def test_okx_demo_status_never_exposes_credentials() -> None:
 def test_okx_demo_private_routes_require_ctcc_token() -> None:
     with TestClient(app) as client:
         response = client.post("/api/okx-demo/connectivity-check")
-    assert response.status_code in {401, 503}
+        assert response.status_code in {401, 503}
+
+
+def test_okx_live_routes_require_ctcc_token_including_status() -> None:
+    with TestClient(app) as client:
+        for path in (
+            "/api/okx-live/status",
+            "/api/okx-live/balance",
+            "/api/okx-live/automation/status",
+        ):
+            response = client.get(path)
+            assert response.status_code in {401, 503}
 
 
 def test_demo_automation_routes_require_ctcc_token() -> None:

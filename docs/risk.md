@@ -12,3 +12,10 @@ Position size is the lower of:
 - configured maximum notional divided by entry price.
 
 Approval only produces a `RiskDecision`. Paper and exchange brokers remain unavailable.
+
+The optional Demo continuous-session adapter supplies zero daily realized loss
+and zero consecutive losses to this generic engine, so those two entry stops
+are not enforced in that mode. It still supplies the observed loss to the
+weekly-loss check and the actual peak equity to the drawdown check. Position
+stops, portfolio limits, and exchange execution safety are outside this pure
+decision function and remain mandatory.

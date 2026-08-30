@@ -12,6 +12,7 @@ from app.api.routers.observability import (
     router as observability_router,
 )
 from app.api.routers.okx_demo import router as okx_demo_router
+from app.api.routers.okx_live import router as okx_live_router
 from app.api.routers.orchestrator import (
     router as orchestrator_router,
 )
@@ -34,6 +35,7 @@ _child_routers = (
     realtime_router,
     recovery_router,
     okx_demo_router,
+    okx_live_router,
     demo_automation_router,
     observability_router,
     performance_router,

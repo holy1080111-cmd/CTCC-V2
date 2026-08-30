@@ -37,6 +37,17 @@ class RealtimeMarketHub:
                 updates["best_bids"] = [RealtimeBookLevel(**level) for level in event["bids"]]
             if "asks" in event:
                 updates["best_asks"] = [RealtimeBookLevel(**level) for level in event["asks"]]
+            if event.get("last") is not None:
+                updates["last_received_at"] = now
+            # A single-sided partial update cannot certify the opposite side
+            # of the executable quote.  The merged quote becomes fresh only
+            # when the same event carries both sides.
+            if event.get("bid") is not None and event.get("ask") is not None:
+                updates["quote_received_at"] = now
+            if event.get("mark_price") is not None:
+                updates["mark_price_received_at"] = now
+            if "bids" in event or "asks" in event:
+                updates["book_received_at"] = now
             updates["received_at"] = now
             updates["sequence"] = current.sequence + 1
             snapshot = current.model_copy(update=updates)

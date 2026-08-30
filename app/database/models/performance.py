@@ -19,6 +19,12 @@ class DemoPerformanceSnapshot(UUIDPrimaryKeyMixin, Base):
     )
     total_equity: Mapped[Decimal] = mapped_column(Numeric(38, 18), nullable=False)
     available_equity: Mapped[Decimal] = mapped_column(Numeric(38, 18), nullable=False)
+    performance_equity: Mapped[Decimal | None] = mapped_column(Numeric(38, 18))
+    performance_available_equity: Mapped[Decimal | None] = mapped_column(
+        Numeric(38, 18)
+    )
+    equity_basis: Mapped[str | None] = mapped_column(String(40))
+    equity_currency: Mapped[str | None] = mapped_column(String(16))
     unrealized_pnl: Mapped[Decimal] = mapped_column(
         Numeric(38, 18), nullable=False, default=Decimal("0")
     )
@@ -48,6 +54,17 @@ class DemoDailyPerformanceReport(Base):
     __tablename__ = "demo_daily_performance_reports"
 
     report_date: Mapped[date] = mapped_column(Date, primary_key=True)
+    performance_window_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    equity_basis: Mapped[str | None] = mapped_column(String(40))
+    equity_currency: Mapped[str | None] = mapped_column(String(16))
+    performance_snapshot_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    excluded_snapshot_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
     opening_equity: Mapped[Decimal | None] = mapped_column(Numeric(38, 18))
     closing_equity: Mapped[Decimal | None] = mapped_column(Numeric(38, 18))
     net_equity_change: Mapped[Decimal | None] = mapped_column(Numeric(38, 18))
@@ -69,6 +86,12 @@ class DemoDailyPerformanceReport(Base):
     order_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     filled_order_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     realized_trade_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    attributed_realized_trade_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    unattributed_realized_trade_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
     wins: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     losses: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     breakeven: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -77,6 +100,12 @@ class DemoDailyPerformanceReport(Base):
     average_adverse_slippage_bps: Mapped[Decimal | None] = mapped_column(Numeric(18, 8))
     max_adverse_slippage_bps: Mapped[Decimal | None] = mapped_column(Numeric(18, 8))
     max_drawdown_pct: Mapped[Decimal] = mapped_column(
+        Numeric(18, 12), nullable=False, default=Decimal("0")
+    )
+    account_opening_equity: Mapped[Decimal | None] = mapped_column(Numeric(38, 18))
+    account_closing_equity: Mapped[Decimal | None] = mapped_column(Numeric(38, 18))
+    account_equity_change: Mapped[Decimal | None] = mapped_column(Numeric(38, 18))
+    account_max_drawdown_pct: Mapped[Decimal] = mapped_column(
         Numeric(18, 12), nullable=False, default=Decimal("0")
     )
     strategy_stats: Mapped[list[dict[str, Any]]] = mapped_column(

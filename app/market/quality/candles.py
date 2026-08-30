@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from app.domain.market import Candle, DataQualityReport, MarketDataIssue
 
@@ -8,6 +8,20 @@ BAR_SECONDS: dict[str, int] = {
     "1H": 3600,
     "4H": 14400,
 }
+
+
+def candle_closed_at(candle: Candle, bar: str) -> datetime:
+    """Return the actual close time for an OKX candle.
+
+    OKX supplies the interval opening timestamp in ``ts`` even when ``confirm``
+    says the candle is closed.  Keeping this conversion in one place prevents
+    audit fields and freshness checks from mislabeling the opening time as the
+    close time.
+    """
+
+    if bar not in BAR_SECONDS:
+        raise ValueError(f"unsupported bar: {bar}")
+    return candle.timestamp + timedelta(seconds=BAR_SECONDS[bar])
 
 
 def inspect_candles(candles: list[Candle], bar: str) -> DataQualityReport:
@@ -49,7 +63,7 @@ def inspect_candles(candles: list[Candle], bar: str) -> DataQualityReport:
             break
 
     if confirmed:
-        age = datetime.now(timezone.utc) - confirmed[-1].timestamp
+        age = datetime.now(timezone.utc) - candle_closed_at(confirmed[-1], bar)
         if age.total_seconds() > interval * 3:
             issues.append(
                 MarketDataIssue(
