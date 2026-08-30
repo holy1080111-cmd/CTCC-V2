@@ -63,12 +63,12 @@ jobs:
             LIVE_TRADING = "false"
             PAPER_AUTO_EXECUTION = "false"
             OKX_WS_ENABLED = "false"
-            OKX_REST_BASE_URL = "http://127.0.0.1:9"
+            OKX_REST_BASE_URL = "https://openapi.okx.com"
             OKX_LIVE_ENABLED = "false"
             OKX_LIVE_ALLOW_ORDER_WRITES = "false"
             OKX_LIVE_AUTO_RECONCILE_ON_START = "false"
             OKX_LIVE_AUTO_EXECUTION = "false"
-            OKX_LIVE_REST_BASE_URL = "http://127.0.0.1:9"
+            OKX_LIVE_REST_BASE_URL = "https://openapi.okx.com"
             OKX_LIVE_API_KEY = ""
             OKX_LIVE_API_SECRET = ""
             OKX_LIVE_API_PASSPHRASE = ""
@@ -76,7 +76,7 @@ jobs:
             OKX_DEMO_ALLOW_ORDER_WRITES = "false"
             OKX_DEMO_AUTO_RECONCILE_ON_START = "false"
             OKX_DEMO_AUTO_EXECUTION = "false"
-            OKX_DEMO_REST_BASE_URL = "http://127.0.0.1:9"
+            OKX_DEMO_REST_BASE_URL = "https://openapi.okx.com"
             OKX_DEMO_API_KEY = ""
             OKX_DEMO_API_SECRET = ""
             OKX_DEMO_API_PASSPHRASE = ""
@@ -133,7 +133,7 @@ jobs:
             }
           }
 
-          Write-Host "CI_OKX_NETWORK_DISABLED=1"
+          Write-Host "CI_OKX_RUNTIME_DISABLED=1"
           Write-Host "CI_EXECUTION_AUTHORITY=0"
           Write-Host "CI_ISOLATED_PROFILE_VERIFIED=1"
 
