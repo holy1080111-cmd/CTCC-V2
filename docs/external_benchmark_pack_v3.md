@@ -1,5 +1,15 @@
 # CTCC-V2 External Benchmark Pack v3
 
+## Current source-acceptance record
+
+On 2026-09-01, `scripts/verify_external_benchmark_pack.ps1` passed from
+reviewed commit `e0e427411d3eb77ae2d908793777a184dc8d7053` with Alembic `0016`, a
+healthy API, schema drift zero, the targeted synthetic/reference-flow matrix,
+the full hermetic regression, and the 392-file canonical manifest. It reported
+all Pack v1-v3 source gates verified with zero runtime consumers and zero
+execution authority. The real 180-artifact public batch probe was not run and
+is not implied by this source acceptance.
+
 ## Decision
 
 Gate v3 turns the single-day Binance reference probe into one frozen,

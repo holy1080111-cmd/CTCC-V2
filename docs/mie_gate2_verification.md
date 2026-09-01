@@ -3,6 +3,14 @@
 Gate 2 is accepted only if its deterministic source checks and the operator's
 Windows Docker/PostgreSQL gate both pass from the same reviewed tree.
 
+## Current acceptance record
+
+On 2026-09-01, `scripts/verify_mie_gate2.ps1` passed from reviewed commit
+`e0e427411d3eb77ae2d908793777a184dc8d7053` with Alembic `0016`, a healthy
+API, schema drift zero, the targeted MIE matrix, the full hermetic regression,
+and the 392-file canonical manifest. The verifier reported
+`MIE_GATE2_EXECUTION_AUTHORITY=0` and `MIE_GATE2_RUNTIME_CONSUMERS=0`.
+
 ## Targeted evidence
 
 The Gate 2 test matrix must cover:
