@@ -123,13 +123,40 @@ class OkxLiveAlgoOrderState(Base):
 
 class OkxLiveSyncCheckpoint(Base):
     __tablename__ = "okx_live_sync_checkpoints"
-    __table_args__ = (CheckConstraint("id = 1", name="singleton_id"),)
+    __table_args__ = (
+        CheckConstraint("id = 1", name="singleton_id"),
+        CheckConstraint(
+            "(NOT safety_latched AND safety_latch_code IS NULL AND "
+            "safety_latched_at IS NULL) OR "
+            "(safety_latched AND safety_latch_code IS NOT NULL AND "
+            "safety_latched_at IS NOT NULL)",
+            name="safety_latch_pair",
+        ),
+        CheckConstraint(
+            "safety_latch_version >= 0", name="safety_latch_version_nonnegative"
+        ),
+        CheckConstraint(
+            "safety_latch_code IS NULL OR "
+            "safety_latch_code ~ '^[a-z0-9_]{1,80}$'",
+            name="safety_latch_code_safe",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     order_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     position_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     algo_order_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    safety_latched: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    safety_latch_code: Mapped[str | None] = mapped_column(String(80))
+    safety_latch_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    safety_latched_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
     details: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     last_error: Mapped[str | None] = mapped_column(String(250))
     reconciled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -151,6 +178,31 @@ class OkxLiveExecutionIntent(Base):
             "status IN ('reserved','acknowledged','confirmed','ambiguous','rejected')",
             name="status_allowed",
         ),
+        CheckConstraint(
+            "(operator_reconciled_at IS NULL AND operator_resolution_code IS NULL) "
+            "OR (operator_reconciled_at IS NOT NULL AND "
+            "operator_resolution_code IS NOT NULL)",
+            name="operator_resolution_pair",
+        ),
+        CheckConstraint(
+            "operator_resolution_code IS NULL OR "
+            "(status IN ('reserved','acknowledged','ambiguous') AND "
+            "operator_resolution_code = "
+            "'operator_confirmed_flat_exchange_state')",
+            name="operator_resolution_allowed",
+        ),
+        CheckConstraint(
+            "(protection_client_order_id IS NULL AND "
+            "expected_protection_size IS NULL AND expected_stop_loss IS NULL "
+            "AND expected_take_profit IS NULL AND "
+            "expected_trigger_price_type IS NULL) OR "
+            "(action = 'place_order' AND protection_client_order_id IS NOT NULL "
+            "AND expected_protection_size IS NOT NULL "
+            "AND expected_stop_loss IS NOT NULL "
+            "AND expected_take_profit IS NOT NULL "
+            "AND expected_trigger_price_type IS NOT NULL)",
+            name="protection_expectation_complete",
+        ),
     )
 
     idempotency_key: Mapped[str] = mapped_column(String(32), primary_key=True)
@@ -160,7 +212,20 @@ class OkxLiveExecutionIntent(Base):
     instrument_id: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
     client_order_id: Mapped[str | None] = mapped_column(String(32), index=True)
     exchange_order_id: Mapped[str | None] = mapped_column(String(100), index=True)
+    protection_client_order_id: Mapped[str | None] = mapped_column(
+        String(32), unique=True
+    )
+    expected_protection_size: Mapped[Decimal | None] = mapped_column(
+        Numeric(28, 10)
+    )
+    expected_stop_loss: Mapped[Decimal | None] = mapped_column(Numeric(28, 10))
+    expected_take_profit: Mapped[Decimal | None] = mapped_column(Numeric(28, 10))
+    expected_trigger_price_type: Mapped[str | None] = mapped_column(String(16))
     detail_codes: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    operator_reconciled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    operator_resolution_code: Mapped[str | None] = mapped_column(String(80))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

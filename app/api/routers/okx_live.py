@@ -20,6 +20,7 @@ from app.domain.okx_live import (
     OkxLiveCloseRequest,
     OkxLiveDisarmRequest,
     OkxLiveEmergencyStopRequest,
+    OkxLiveIntentResolutionExpectation,
     OkxLiveLeverageRequest,
     OkxLiveOrderRequest,
     OkxLiveOrderSummary,
@@ -196,9 +197,20 @@ async def emergency_stop(request: OkxLiveEmergencyStopRequest) -> OkxLiveStatus:
 
 @router.post("/clear-emergency-stop", response_model=OkxLiveStatus)
 async def clear_emergency_stop(request: OkxLiveClearStopRequest) -> OkxLiveStatus:
-    del request
     try:
-        return await okx_live_service.clear_emergency_stop()
+        return await okx_live_service.clear_emergency_stop(request)
+    except Exception as exc:
+        raise _http_error(exc) from exc
+
+
+@router.get(
+    "/execution-intents/unresolved",
+    response_model=list[OkxLiveIntentResolutionExpectation],
+)
+async def unresolved_execution_intents(
+) -> list[OkxLiveIntentResolutionExpectation]:
+    try:
+        return await okx_live_service.unresolved_intent_expectations()
     except Exception as exc:
         raise _http_error(exc) from exc
 

@@ -169,4 +169,11 @@ def test_repository_public_api_has_no_exchange_write_operations() -> None:
         if not name.startswith("_")
     }
 
-    assert public_async_methods == {"mark_failure", "mirror_status", "sync_snapshot"}
+    assert public_async_methods == {
+        "clear_safety_latch",
+        "engage_safety_latch",
+        "mark_failure",
+        "mirror_status",
+        "safety_latch_status",
+        "sync_snapshot",
+    }

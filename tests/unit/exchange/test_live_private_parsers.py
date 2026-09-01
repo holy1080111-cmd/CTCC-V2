@@ -133,14 +133,26 @@ def test_live_read_parsers_keep_exchange_identifiers_and_numeric_precision() -> 
         {
             "algoId": "live-algo-1",
             "algoClOrdId": "ctcclivealgo1",
+            "instType": "SWAP",
             "instId": "BTC-USDT-SWAP",
             "ordType": "conditional",
             "state": "live",
             "side": "sell",
             "posSide": "net",
+            "tdMode": "cross",
+            "reduceOnly": "true",
+            "closeFraction": "0",
             "sz": "0.01",
+            "actualSz": "0",
             "tpTriggerPx": "66000",
+            "tpTriggerPxType": "mark",
+            "tpOrdPx": "-1",
             "slTriggerPx": "62000",
+            "slTriggerPxType": "mark",
+            "slOrdPx": "-1",
+            "amendPxOnTriggerType": "0",
+            "failCode": "",
+            "triggerTime": "",
         }
     )
 
@@ -149,4 +161,14 @@ def test_live_read_parsers_keep_exchange_identifiers_and_numeric_precision() -> 
     assert order.order_id == "live-order-1"
     assert order.price == Decimal("64000.1")
     assert algo.algo_order_id == "live-algo-1"
+    assert algo.instrument_type == "SWAP"
+    assert algo.margin_mode == "cross"
+    assert algo.reduce_only is True
+    assert algo.actual_size == Decimal("0")
+    assert algo.take_profit_trigger_price_type == "mark"
+    assert algo.take_profit_order_price == Decimal("-1")
     assert algo.stop_loss_trigger_price == Decimal("62000")
+    assert algo.stop_loss_trigger_price_type == "mark"
+    assert algo.stop_loss_order_price == Decimal("-1")
+    assert algo.failure_code is None
+    assert algo.trigger_time is None

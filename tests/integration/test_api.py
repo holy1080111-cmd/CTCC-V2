@@ -7,7 +7,7 @@ def test_liveness() -> None:
     with TestClient(app) as client:
         response = client.get("/liveness")
     assert response.status_code == 200
-    assert response.json()["version"] == "1.6.8"
+    assert response.json()["version"] == "1.6.9"
 
 
 def test_capabilities_are_honest() -> None:

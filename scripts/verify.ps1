@@ -3,7 +3,7 @@ Set-StrictMode -Version Latest
 
 $boundaryScript = Join-Path $PSScriptRoot "verify_v168_live_boundary.ps1"
 & $boundaryScript
-if (-not $?) { throw "v1.6.8 Live boundary verification failed" }
+if (-not $?) { throw "v1.6.9 Live boundary verification failed" }
 
 Write-Host "Checking liveness..."
 Invoke-RestMethod http://127.0.0.1:8100/liveness | ConvertTo-Json
@@ -22,4 +22,4 @@ Invoke-RestMethod http://127.0.0.1:8100/api/okx-demo/status | ConvertTo-Json -De
 
 Write-Host "Checking Demo performance summary authentication separately with verify_demo_performance.ps1..."
 
-Write-Host "CTCC V2 v1.6.8 local platform verification completed."
+Write-Host "CTCC V2 v1.6.9 local platform verification completed."

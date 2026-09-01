@@ -1,4 +1,4 @@
-# CTCC V2 architecture — v1.6.8
+# CTCC V2 architecture — v1.6.9
 
 ## Execution boundaries
 
@@ -73,10 +73,11 @@ The OKX Live boundary is isolated from Demo and Paper:
 authenticated production read
 → capability and account-identity pinning
 → PostgreSQL Live mirror
+→ versioned durable safety latch and unresolved-intent gate
 → process-local short-lived Arm
-→ durable idempotency intent
+→ exact durable idempotency and protection intent
 → single protected production order
-→ exchange reconciliation and automatic disarm
+→ exact active-Algo reconciliation and automatic disarm
 ```
 
 The controlled execute-soak layer supervises the explicitly armed Demo

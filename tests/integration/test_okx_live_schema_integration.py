@@ -71,6 +71,26 @@ async def test_okx_live_mirror_schema_is_isolated_and_fail_closed() -> None:
                     "okx_live_execution_intents"
                 )
             )
+            intent_checks = await connection.run_sync(
+                lambda sync_connection: inspect(
+                    sync_connection
+                ).get_check_constraints("okx_live_execution_intents")
+            )
+            intent_uniques = await connection.run_sync(
+                lambda sync_connection: inspect(
+                    sync_connection
+                ).get_unique_constraints("okx_live_execution_intents")
+            )
+            checkpoint_columns = await connection.run_sync(
+                lambda sync_connection: inspect(sync_connection).get_columns(
+                    "okx_live_sync_checkpoints"
+                )
+            )
+            checkpoint_checks = await connection.run_sync(
+                lambda sync_connection: inspect(
+                    sync_connection
+                ).get_check_constraints("okx_live_sync_checkpoints")
+            )
 
         assert LIVE_TABLES <= table_names
         assert DEMO_TABLES <= table_names
@@ -107,7 +127,39 @@ async def test_okx_live_mirror_schema_is_isolated_and_fail_closed() -> None:
             "action",
             "status",
             "detail_codes",
+            "operator_reconciled_at",
+            "operator_resolution_code",
+            "protection_client_order_id",
+            "expected_protection_size",
+            "expected_stop_loss",
+            "expected_take_profit",
+            "expected_trigger_price_type",
         } <= intent_column_names
+        intent_check_names = {item["name"] for item in intent_checks}
+        assert {
+            "ck_okx_live_execution_intents_operator_resolution_pair",
+            "ck_okx_live_execution_intents_operator_resolution_allowed",
+            "ck_okx_live_execution_intents_protection_expectation_complete",
+        } <= intent_check_names
+        assert any(
+            item.get("column_names") == ["protection_client_order_id"]
+            for item in intent_uniques
+        )
+        checkpoint_column_names = {
+            column["name"] for column in checkpoint_columns
+        }
+        assert {
+            "safety_latched",
+            "safety_latch_code",
+            "safety_latch_version",
+            "safety_latched_at",
+        } <= checkpoint_column_names
+        checkpoint_check_names = {item["name"] for item in checkpoint_checks}
+        assert {
+            "ck_okx_live_sync_checkpoints_safety_latch_pair",
+            "ck_okx_live_sync_checkpoints_safety_latch_version_nonnegative",
+            "ck_okx_live_sync_checkpoints_safety_latch_code_safe",
+        } <= checkpoint_check_names
         assert {
             "request",
             "payload",

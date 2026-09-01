@@ -16,6 +16,7 @@
 - v1.4 Controlled Demo execution soak
 - v1.5 Demo reliability and performance validation
 - v1.6.8 Isolated OKX Live reads, real-position execution gates, and one-shot automation
+- v1.6.9 Durable Live safety latch, exact protection, and scoped restart recovery
 - Adaptive Demo portfolio gate: score-tiered leverage/risk/margin, multiple
   instruments, aggregate caps, shared causal mathematical fusion, robust state,
   prequential conformal coverage validation, auxiliary-score isolation, and
@@ -91,7 +92,7 @@
 - Reliability evidence gates for active days, realized trades, slippage, profit factor, and drawdown
 - Automatic strategy disabling and live-money execution remain unavailable
 
-## v1.6.8 implementation complete; operator acceptance pending
+## v1.6.8/v1.6.9 implementation complete; operator acceptance pending
 
 - Dedicated production REST transport with Demo header structurally absent
 - Account capability validation and one-way identity pinning
@@ -99,6 +100,12 @@
 - Production-only write settings, process-local expiring Arm, one submission, and auto-disarm
 - Protected market-order precheck, contract/notional/leverage caps, bounded polling, and reconciliation
 - Explicit cancel, close, leverage, Emergency Stop, and clear-stop flows
+- Versioned PostgreSQL safety latch that survives API restarts
+- Exact pending-Algo protection identity, geometry, coverage, and bounded
+  propagation confirmation
+- Scoped unresolved-intent recovery with repeated stable-flat exchange checks
+  and compare-and-set latch clearing
+- Zero-fill cancellation confirmation and serialized leverage rechecks
 - One-shot strategy/risk automation that can write only through the Live service
 - Disabled-by-default continuous Demo eligibility can skip daily loss,
   trade-count, consecutive-loss, and cooldown locks while retaining per-order
