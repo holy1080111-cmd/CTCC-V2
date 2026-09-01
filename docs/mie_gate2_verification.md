@@ -42,7 +42,7 @@ Acceptance requires:
 MIE_GATE2_VERIFIED=1
 MIE_GATE2_EXECUTION_AUTHORITY=0
 MIE_GATE2_RUNTIME_CONSUMERS=0
-ALEMBIC_HEAD=0015
+ALEMBIC_HEAD=0016
 API_HEALTH=healthy
 ```
 
@@ -53,12 +53,13 @@ test isolation is applied.
 
 The v1.6.8, MIE Gate 1, and MIE Gate 2 Docker verifiers all use the same safe
 Windows boundary: no `python -c` quote transport, host authority checks before
-container startup, literal probes piped to `python -`, exact `0015 (head)`, and
+container startup, literal probes piped to `python -`, exact `0016 (head)`, and
 both staged and unstaged whitespace checks.
 
 A canonical manifest pass and a clean reviewed worktree are mandatory before
-commit. Gate 2 itself adds no migration; the reviewed repository head is now
-`0015` after the controlled Demo soak-equity safety correction.
+commit. Gate 2 itself adds no migration. Its historical evidence remains frozen;
+the current cross-gate verifier now revalidates it at repository head `0016`,
+which adds the durable Live safety latch without granting MIE runtime authority.
 
 ## Explicit exclusions
 

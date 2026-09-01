@@ -92,7 +92,7 @@
 - Reliability evidence gates for active days, realized trades, slippage, profit factor, and drawdown
 - Automatic strategy disabling and live-money execution remain unavailable
 
-## v1.6.8/v1.6.9 implementation complete; operator acceptance pending
+## v1.6.8/v1.6.9 implementation and local acceptance complete; exchange evidence pending
 
 - Dedicated production REST transport with Demo header structurally absent
 - Account capability validation and one-way identity pinning
@@ -114,7 +114,13 @@
   cost-adjusted net RR, isolated margin, and downward-only 3–20x leverage;
   migration 0013 persists true rolling close evidence and a non-daily high-water
   mark
-- Remaining acceptance: local PostgreSQL migration/regression and staged real-account read/micro-order evidence
+- Local acceptance completed on 2026-09-01: PostgreSQL `0015 -> 0016 ->
+  0015 -> 0016`, schema-drift detection, healthy Docker API/Redis/PostgreSQL,
+  full hermetic regression, canonical manifest, and GitHub CI all passed from
+  the reviewed v1.6.9 tree.
+- Remaining real-money acceptance is deliberately external: a separately
+  authorized, operator-controlled read-only account check and protected
+  micro-order evidence. No verifier or release step may arm or submit it.
 
 ## v1.7.0 MIE Gate 0/1/2
 

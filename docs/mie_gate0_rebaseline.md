@@ -16,11 +16,13 @@ not grant Demo or Live execution authority.
 - Reconstruction source: the frozen v1.6.8 bundle plus the verified Gate 8 and
   Gate 8B changes retained in the handoff workspace.
 
-The GitHub connector available to this verification environment has no
-installed account, so it cannot independently read the private repository.
-The canonical commit above therefore remains operator evidence. The isolated
-reconstruction is accepted only for contract-only development and local
-regression; it is not evidence for a Live promotion.
+At the 2026-08-12 freeze, the GitHub connector available to the verification
+environment had no installed account and could not independently read the
+private repository. The canonical commit above therefore remains the operator
+evidence for that historical freeze. On 2026-09-01 the repository was
+intentionally changed to public and the current connector independently
+verified `visibility=public`; that later access change does not retroactively
+alter the frozen Gate 0 evidence or authorize a Live promotion.
 
 ## Runtime evidence
 

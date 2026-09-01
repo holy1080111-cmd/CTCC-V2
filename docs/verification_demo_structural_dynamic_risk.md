@@ -44,7 +44,7 @@ fixed at 2,000 USDT, exchange leverage-response mismatch, stale quote versus
 fresh mark, excessive mark/quote basis, tick-aligned Live risk recomputation,
 and protection acknowledgement failure without an automatic close.
 
-## Operator Docker/PostgreSQL acceptance still required
+## Current Docker/PostgreSQL revalidation
 
 Run with every execution-authority switch disabled. Read-only score risk,
 capital buckets, continuous-session analysis, and structural dynamic risk may
@@ -61,9 +61,13 @@ powershell -NoProfile -ExecutionPolicy Bypass `
   -File .\scripts\verify_v168_live_boundary.ps1
 ```
 
-The script must pass Docker health, migration/current head `0015`, schema drift,
+The script must pass Docker health, migration/current head `0016`, schema drift,
 targeted tests, PostgreSQL integration, full regression, whitespace, and the
 canonical manifest. A source-only pass is not a substitute.
+
+This gate's historical `0013` evidence remains unchanged. The reviewed v1.6.9
+tree was revalidated on 2026-09-01 at `0016` with all execution-authority
+switches disabled; future source changes must run the same command again.
 
 After the code gate passes, configure the structural dependencies but keep
 `OKX_DEMO_ALLOW_ORDER_WRITES=false` and `OKX_DEMO_AUTO_EXECUTION=false`, rebuild,
