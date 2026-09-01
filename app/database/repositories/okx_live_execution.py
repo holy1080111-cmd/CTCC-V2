@@ -14,6 +14,7 @@ from app.domain.okx_live import (
     LiveIntentAction,
     LiveIntentStatus,
     OkxLiveExecutionIntentView,
+    OkxLiveIntentResolutionExpectation,
 )
 
 
@@ -42,6 +43,10 @@ _TRANSITIONS: dict[str, frozenset[str]] = {
     "rejected": frozenset(),
 }
 _EXECUTION_ADVISORY_LOCK_ID = 1680010
+_UNRESOLVED_STATUSES = frozenset({"reserved", "acknowledged", "ambiguous"})
+OKX_LIVE_FLAT_EXCHANGE_RESOLUTION_CODE = (
+    "operator_confirmed_flat_exchange_state"
+)
 
 
 class OkxLiveExecutionRepository:
@@ -90,7 +95,36 @@ class OkxLiveExecutionRepository:
         action: LiveIntentAction,
         instrument_id: str,
         client_order_id: str | None = None,
+        protection_client_order_id: str | None = None,
+        expected_protection_size=None,
+        expected_stop_loss=None,
+        expected_take_profit=None,
+        expected_trigger_price_type: str | None = None,
     ) -> OkxLiveExecutionIntentView:
+        protection_values = (
+            protection_client_order_id,
+            expected_protection_size,
+            expected_stop_loss,
+            expected_take_profit,
+            expected_trigger_price_type,
+        )
+        protection_complete = all(item is not None for item in protection_values)
+        if action == "place_order":
+            if (
+                not protection_complete
+                or not str(protection_client_order_id).startswith("CTCCA")
+                or expected_protection_size <= 0
+                or expected_stop_loss <= 0
+                or expected_take_profit <= 0
+                or expected_trigger_price_type != "mark"
+            ):
+                raise OkxLiveExecutionRepositoryError(
+                    "okx_live_protection_expectation_invalid"
+                )
+        elif any(item is not None for item in protection_values):
+            raise OkxLiveExecutionRepositoryError(
+                "okx_live_protection_expectation_not_allowed"
+            )
         now = datetime.now(timezone.utc)
         values = {
             "idempotency_key": idempotency_key,
@@ -100,7 +134,14 @@ class OkxLiveExecutionRepository:
             "instrument_id": instrument_id,
             "client_order_id": client_order_id,
             "exchange_order_id": None,
+            "protection_client_order_id": protection_client_order_id,
+            "expected_protection_size": expected_protection_size,
+            "expected_stop_loss": expected_stop_loss,
+            "expected_take_profit": expected_take_profit,
+            "expected_trigger_price_type": expected_trigger_price_type,
             "detail_codes": [],
+            "operator_reconciled_at": None,
+            "operator_resolution_code": None,
             "created_at": now,
             "updated_at": now,
         }
@@ -130,6 +171,14 @@ class OkxLiveExecutionRepository:
                         or row.action != action
                         or row.instrument_id != instrument_id
                         or row.client_order_id != client_order_id
+                        or row.protection_client_order_id
+                        != protection_client_order_id
+                        or row.expected_protection_size
+                        != expected_protection_size
+                        or row.expected_stop_loss != expected_stop_loss
+                        or row.expected_take_profit != expected_take_profit
+                        or row.expected_trigger_price_type
+                        != expected_trigger_price_type
                     ):
                         raise OkxLiveExecutionIntentConflict(
                             "okx_live_idempotency_key_payload_mismatch"
@@ -179,6 +228,122 @@ class OkxLiveExecutionRepository:
             row = await session.get(OkxLiveExecutionIntent, idempotency_key)
         return None if row is None else self._view(row)
 
+    async def load_unresolved_intents(
+        self, *, limit: int = 100
+    ) -> list[OkxLiveExecutionIntentView]:
+        if not 1 <= limit <= 1000:
+            raise OkxLiveExecutionRepositoryError(
+                "okx_live_execution_intent_limit_invalid"
+            )
+        async with self.session_factory() as session:
+            rows = (
+                await session.scalars(
+                    select(OkxLiveExecutionIntent)
+                    .where(
+                        OkxLiveExecutionIntent.status.in_(_UNRESOLVED_STATUSES),
+                        OkxLiveExecutionIntent.operator_reconciled_at.is_(None),
+                    )
+                    .order_by(
+                        OkxLiveExecutionIntent.created_at,
+                        OkxLiveExecutionIntent.idempotency_key,
+                    )
+                    .limit(limit)
+                )
+            ).all()
+        return [self._view(row) for row in rows]
+
+    async def load_protection_intents(
+        self, *, limit: int = 1000
+    ) -> list[OkxLiveExecutionIntentView]:
+        if not 1 <= limit <= 1000:
+            raise OkxLiveExecutionRepositoryError(
+                "okx_live_execution_intent_limit_invalid"
+            )
+        async with self.session_factory() as session:
+            rows = (
+                await session.scalars(
+                    select(OkxLiveExecutionIntent)
+                    .where(
+                        OkxLiveExecutionIntent.action == "place_order",
+                        OkxLiveExecutionIntent.status != "rejected",
+                        OkxLiveExecutionIntent.protection_client_order_id.is_not(
+                            None
+                        ),
+                    )
+                    .order_by(
+                        OkxLiveExecutionIntent.created_at.desc(),
+                        OkxLiveExecutionIntent.idempotency_key,
+                    )
+                    .limit(limit)
+                )
+            ).all()
+        return [self._view(row) for row in rows]
+
+    async def mark_unresolved_intents_operator_reconciled(
+        self,
+        *,
+        expectations: list[OkxLiveIntentResolutionExpectation],
+        reconciled_at: datetime,
+        resolution_code: str,
+    ) -> int:
+        if resolution_code != OKX_LIVE_FLAT_EXCHANGE_RESOLUTION_CODE:
+            raise OkxLiveExecutionRepositoryError(
+                "okx_live_operator_resolution_code_invalid"
+            )
+        when = reconciled_at
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        when = when.astimezone(timezone.utc)
+        async with self.session_factory() as session:
+            async with session.begin():
+                rows = (
+                    await session.scalars(
+                        select(OkxLiveExecutionIntent)
+                        .where(
+                            OkxLiveExecutionIntent.status.in_(
+                                _UNRESOLVED_STATUSES
+                            ),
+                            OkxLiveExecutionIntent.operator_reconciled_at.is_(
+                                None
+                            ),
+                        )
+                        .order_by(
+                            OkxLiveExecutionIntent.created_at,
+                            OkxLiveExecutionIntent.idempotency_key,
+                        )
+                        .with_for_update()
+                    )
+                ).all()
+                expected_by_key = {
+                    item.idempotency_key: item for item in expectations
+                }
+                actual_keys = {row.idempotency_key for row in rows}
+                if actual_keys != set(expected_by_key):
+                    raise OkxLiveExecutionIntentConflict(
+                        "okx_live_unresolved_intent_set_changed"
+                    )
+                for row in rows:
+                    expected = expected_by_key[row.idempotency_key]
+                    if (
+                        row.status != expected.status
+                        or self._utc(row.updated_at)
+                        != self._utc(expected.updated_at)
+                    ):
+                        raise OkxLiveExecutionIntentConflict(
+                            "okx_live_unresolved_intent_changed"
+                        )
+                    row.operator_reconciled_at = when
+                    row.operator_resolution_code = resolution_code
+                    row.updated_at = when
+                await session.flush()
+                return len(rows)
+
+    @staticmethod
+    def _utc(value: datetime) -> datetime:
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+
     @staticmethod
     def _safe_detail_codes(values: list[str]) -> list[str]:
         safe = sorted({item.strip().lower() for item in values if _SAFE_CODE.fullmatch(item.strip().lower())})
@@ -194,7 +359,14 @@ class OkxLiveExecutionRepository:
             instrument_id=row.instrument_id,
             client_order_id=row.client_order_id,
             exchange_order_id=row.exchange_order_id,
+            protection_client_order_id=row.protection_client_order_id,
+            expected_protection_size=row.expected_protection_size,
+            expected_stop_loss=row.expected_stop_loss,
+            expected_take_profit=row.expected_take_profit,
+            expected_trigger_price_type=row.expected_trigger_price_type,
             detail_codes=list(row.detail_codes or []),
+            operator_reconciled_at=row.operator_reconciled_at,
+            operator_resolution_code=row.operator_resolution_code,
             created_at=row.created_at,
             updated_at=row.updated_at,
         )

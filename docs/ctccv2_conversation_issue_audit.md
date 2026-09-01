@@ -45,6 +45,7 @@ mistaken for predictive or economic validation.
 | PowerShell stripped quotes from `python -c`, producing `expected = 0013` | all three authoritative Docker verifiers pipe literal here-string probes to `python -`; a source regression forbids `python -c` | Closed by this audit patch |
 | A verifier checked write authority only after starting containers | all three authoritative verifiers resolve Compose flags and fail before Docker build/start, then check running `Settings` again | Closed by this audit patch |
 | Only the unstaged diff received whitespace validation | authoritative verifiers check both unstaged and staged diffs | Closed by this audit patch |
+| The GitHub connector could not inspect the private repository | the repository was intentionally changed to public on 2026-09-01 and the connector now returns `visibility=public` with repository access | Closed externally; repository is intentionally public |
 | A local control-center overlay aggregated six independently timed endpoints | the overlay is preserved only as operator evidence and is not promoted; the canonical dashboard snapshot remains the sole multi-source UI contract | Rejected from runtime by design |
 | `[decimal]::Abs` failed in an ad-hoc PowerShell probe | no repository script uses that invalid method; use `[math]::Abs([decimal]$value)` in operator-only probes | Conversation command, not source defect |
 
@@ -87,10 +88,6 @@ rewrite the operator's `.env`.
   pending-Algo/TP/SL
   confirmation, reconciliation, restart behavior, and incident rollback
   evidence. None of those steps is authorized by this audit.
-- The connected GitHub application must be granted access to the private
-  `holy1080111-cmd/CTCC-V2` repository before remote issue/PR state can be
-  independently audited through the connector.
-
 ## Acceptance rule
 
 No item moves from pending to closed merely because code exists. Closure needs

@@ -6,12 +6,15 @@ from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from app.config.settings import get_settings
+from app.database.alembic_config import escape_alembic_config_value
 from app.database.base import Base
 import app.database.models  # noqa: F401 - registers all ORM tables
 
 config = context.config
 settings = get_settings()
-config.set_main_option("sqlalchemy.url", settings.database_url)
+config.set_main_option(
+    "sqlalchemy.url", escape_alembic_config_value(settings.database_url)
+)
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)

@@ -6,6 +6,7 @@ from app.database.models.okx_live import (
     OkxLiveExecutionIntent,
     OkxLiveOrderState,
     OkxLivePositionState,
+    OkxLiveSyncCheckpoint,
 )
 
 
@@ -95,7 +96,14 @@ def test_live_execution_intent_stores_only_hashes_ids_and_safe_codes() -> None:
         "instrument_id",
         "client_order_id",
         "exchange_order_id",
+        "protection_client_order_id",
+        "expected_protection_size",
+        "expected_stop_loss",
+        "expected_take_profit",
+        "expected_trigger_price_type",
         "detail_codes",
+        "operator_reconciled_at",
+        "operator_resolution_code",
     } <= columns
     assert {
         "request",
@@ -106,3 +114,21 @@ def test_live_execution_intent_stores_only_hashes_ids_and_safe_codes() -> None:
         "passphrase",
         "uid",
     }.isdisjoint(columns)
+
+
+def test_live_safety_latch_schema_is_versioned_and_constrained() -> None:
+    table = OkxLiveSyncCheckpoint.__table__
+    columns = set(table.c.keys())
+    constraint_names = {item.name for item in table.constraints}
+
+    assert {
+        "safety_latched",
+        "safety_latch_code",
+        "safety_latch_version",
+        "safety_latched_at",
+    } <= columns
+    assert {
+        "ck_okx_live_sync_checkpoints_safety_latch_pair",
+        "ck_okx_live_sync_checkpoints_safety_latch_version_nonnegative",
+        "ck_okx_live_sync_checkpoints_safety_latch_code_safe",
+    } <= constraint_names

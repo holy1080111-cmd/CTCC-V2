@@ -107,12 +107,13 @@ Acceptance requires:
 ```text
 MIE_GATE1_VERIFIED=1
 MIE_EXECUTION_AUTHORITY=0
-ALEMBIC_HEAD=0015
+ALEMBIC_HEAD=0016
 API_HEALTH=healthy
 ```
 
-Gate 1 is frozen only at the operator-verified canonical history; this report
-does not promote any later Gate.
+Gate 1 is frozen only at the operator-verified canonical history; the current
+verifier revalidates that boundary at repository head `0016` and does not
+promote any later Gate.
 
 ## Explicit exclusions
 

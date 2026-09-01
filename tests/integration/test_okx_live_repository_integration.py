@@ -25,6 +25,7 @@ from app.database.models.okx_live import (
 from app.database.repositories.okx_live import (
     OkxLiveAccountIdentityError,
     OkxLiveRepository,
+    OkxLiveSafetyLatchConflict,
     fingerprint_account_identifier,
 )
 from app.domain.okx_live import (
@@ -188,6 +189,12 @@ async def test_live_repository_is_atomic_account_pinned_and_rollback_isolated() 
                 assert first_status.algo_order_count == 1
                 assert first_status.last_error is None
 
+                latched = await repository.engage_safety_latch(
+                    "integration_safety_event"
+                )
+                assert latched.latched is True
+                assert latched.version == 1
+
                 async with Session() as session:
                     account_state = await session.get(OkxLiveAccountConfigState, 1)
                     assert account_state is not None
@@ -210,6 +217,11 @@ async def test_live_repository_is_atomic_account_pinned_and_rollback_isolated() 
                 assert second_status.order_count == 2
                 assert second_status.position_count == 0
                 assert second_status.algo_order_count == 0
+                assert second_status.safety_latched is True
+                assert second_status.safety_latch_code == (
+                    "integration_safety_event"
+                )
+                assert second_status.safety_latch_version == 1
 
                 async with Session() as session:
                     stored_orders = list(
@@ -271,7 +283,21 @@ async def test_live_repository_is_atomic_account_pinned_and_rollback_isolated() 
                 assert failed_status.last_error == "okx_live_reconcile_failed"
                 assert failed_status.last_reconciled_at == second_status.last_reconciled_at
                 assert failed_status.details["status"] == "error"
+                assert failed_status.safety_latched is True
+                assert failed_status.safety_latch_version == 1
                 assert "must-never-be-persisted" not in repr(failed_status)
+                relatched = await repository.engage_safety_latch(
+                    "newer_integration_safety_event"
+                )
+                assert relatched.version == 2
+                with pytest.raises(OkxLiveSafetyLatchConflict):
+                    await repository.clear_safety_latch(expected_version=1)
+                cleared = await repository.clear_safety_latch(
+                    expected_version=2
+                )
+                assert cleared.latched is False
+                assert cleared.code is None
+                assert cleared.version == 3
                 assert outer_transaction.is_active
             finally:
                 if outer_transaction.is_active:

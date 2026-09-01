@@ -36,6 +36,12 @@ def _bool_value(value: Any) -> bool:
     return str(value).lower() == "true"
 
 
+def _bool_or_none(value: Any) -> bool | None:
+    if value in (None, ""):
+        return None
+    return _bool_value(value)
+
+
 def _datetime_from_ms(value: Any) -> datetime | None:
     if value in (None, "", "0", 0):
         return None
@@ -149,14 +155,26 @@ def parse_live_algo_order(row: dict[str, Any]) -> OkxLiveAlgoOrderView:
     return OkxLiveAlgoOrderView(
         algo_order_id=str(row.get("algoId") or ""),
         client_algo_order_id=row.get("algoClOrdId") or None,
+        instrument_type=row.get("instType") or None,
         instrument_id=str(row.get("instId") or ""),
         order_type=str(row.get("ordType") or ""),
         state=str(row.get("state") or ""),
         side=row.get("side") or None,
         position_side=row.get("posSide") or None,
+        margin_mode=row.get("tdMode") or None,
+        reduce_only=_bool_or_none(row.get("reduceOnly")),
+        close_fraction=_decimal_or_none(row.get("closeFraction")),
         size=_decimal_or_zero(row.get("sz")),
+        actual_size=_decimal_or_zero(row.get("actualSz")),
         take_profit_trigger_price=_decimal_or_none(row.get("tpTriggerPx")),
+        take_profit_trigger_price_type=row.get("tpTriggerPxType") or None,
+        take_profit_order_price=_decimal_or_none(row.get("tpOrdPx")),
         stop_loss_trigger_price=_decimal_or_none(row.get("slTriggerPx")),
+        stop_loss_trigger_price_type=row.get("slTriggerPxType") or None,
+        stop_loss_order_price=_decimal_or_none(row.get("slOrdPx")),
+        amend_price_on_trigger_type=row.get("amendPxOnTriggerType") or None,
+        failure_code=row.get("failCode") or None,
+        trigger_time=_datetime_from_ms(row.get("triggerTime")),
         created_at=_datetime_from_ms(row.get("cTime")),
         updated_at=_datetime_from_ms(row.get("uTime")),
         raw=dict(row),

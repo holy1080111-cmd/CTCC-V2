@@ -1,4 +1,4 @@
-# CTCC V2 v1.6.8 — Controlled OKX Live Execution
+# CTCC V2 v1.6.9 — Durable OKX Live Recovery
 
 CTCC V2 now has an isolated OKX production boundary that can reconcile and,
 only after explicit multi-stage authorization, operate real OKX SWAP positions.
@@ -81,12 +81,14 @@ Migration `0014` separates explicitly based Demo strategy equity from OKX
 multi-asset account `totalEq`; legacy snapshots remain unbased and are excluded
 from reliability validation rather than being backfilled. Migration `0015`
 applies the same explicit equity identity to controlled execute-soak loss
-limits and persists its basis and currency with every soak session.
+limits and persists its basis and currency with every soak session. Migration
+`0016` persists exact Live protection expectations, operator-reviewed intent
+resolution, and a versioned safety latch that survives API restarts.
 
 Expected migration after upgrade:
 
 ```text
-0015 (head)
+0016 (head)
 ```
 
 ## Reviewed Demo and public-data universe
@@ -289,6 +291,7 @@ GET  /api/okx-live/positions
 GET  /api/okx-live/orders/pending
 GET  /api/okx-live/algo-orders/pending
 GET  /api/okx-live/order-detail
+GET  /api/okx-live/execution-intents/unresolved
 POST /api/okx-live/reconcile
 
 POST /api/okx-live/arm
@@ -312,7 +315,26 @@ silently replace the original mirror.
 
 ## Upgrade and test
 
-Keep the PostgreSQL volume:
+Create the local secret file before the first start. `.env` is intentionally
+not committed:
+
+```powershell
+Copy-Item .env.example .env
+```
+
+Set `POSTGRES_PASSWORD` and the password component of `DATABASE_URL` to the same
+value. Percent-encode reserved URL characters in `DATABASE_URL`; do not encode
+the standalone `POSTGRES_PASSWORD` value.
+
+Back up the PostgreSQL volume before stopping or rebuilding services:
+
+```powershell
+cd C:\CTCC-V2
+powershell -ExecutionPolicy Bypass -File .\scripts\backup.ps1
+```
+
+Keep the generated backup outside the container lifecycle and verify that it is
+non-empty before continuing. Then keep the PostgreSQL volume during upgrade:
 
 Before running this regression gate, keep every Paper, Demo, and Live
 write/automation switch disabled. The packaged script enforces that preflight
@@ -322,6 +344,7 @@ and runs pytest under an additional test-only environment override.
 cd C:\CTCC-V2
 docker compose down
 docker compose up -d --build
+Invoke-RestMethod http://127.0.0.1:8100/readiness
 docker compose exec -T api alembic heads
 docker compose exec -T api alembic current 2>&1
 docker compose exec -T api alembic check
@@ -353,6 +376,12 @@ powershell -ExecutionPolicy Bypass `
 
 Do not use `docker compose down -v` during an upgrade.
 
+The expected Alembic head and current revision are both `0016`. A healthy
+container alone is not sufficient deployment evidence: `/readiness` and all
+three Alembic commands above must also succeed. See the
+[v1.6.9 Live operator runbook](docs/live_execution_v1.6.9.md) for rollback and
+durable Emergency Stop recovery.
+
 PowerShell 5.1 may render Alembic INFO lines written to stderr as
 `NativeCommandError` when `$ErrorActionPreference = "Stop"`. Capture the native
 exit code and combined output; do not interpret the INFO line alone as a failed
@@ -380,7 +409,7 @@ Do not jump directly from installation to automation:
    `run_okx_live_automation_once.ps1`. Scheduled automation remains separately
    armed and process-local.
 
-See [docs/live_execution_v1.6.8.md](docs/live_execution_v1.6.8.md) for the exact
+See [docs/live_execution_v1.6.9.md](docs/live_execution_v1.6.9.md) for the exact
 configuration and runbook.
 
 ## Existing Demo and Paper systems

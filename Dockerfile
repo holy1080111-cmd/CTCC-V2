@@ -9,6 +9,7 @@ WORKDIR /app
 RUN addgroup --system ctcc && adduser --system --ingroup ctcc ctcc
 
 COPY pyproject.toml ./
+COPY .github ./.github
 COPY app ./app
 COPY migrations ./migrations
 COPY alembic.ini ./
@@ -21,4 +22,4 @@ RUN pip install --upgrade pip && pip install ".[test]"
 USER ctcc
 EXPOSE 8000
 
-CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1"]
+CMD ["sh", "-c", "alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1"]

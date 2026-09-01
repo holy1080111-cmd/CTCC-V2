@@ -9,6 +9,7 @@ backups/
 .env.*
 !.env.example
 .venv/
+*.egg-info/
 .mypy_cache/
 .ruff_cache/
 .coverage

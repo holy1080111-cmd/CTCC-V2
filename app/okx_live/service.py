@@ -14,6 +14,7 @@ from app.database.repositories.okx_live import (
     OkxLiveRepository,
 )
 from app.database.repositories.okx_live_execution import (
+    OKX_LIVE_FLAT_EXCHANGE_RESOLUTION_CODE,
     OkxLiveExecutionIntentConflict,
     OkxLiveExecutionIntentReplay,
     OkxLiveExecutionAuthorityBusy,
@@ -30,7 +31,10 @@ from app.domain.okx_live import (
     OkxLiveBalanceSnapshot,
     OkxLiveBalanceSummary,
     OkxLiveCancelRequest,
+    OkxLiveClearStopRequest,
     OkxLiveCloseRequest,
+    OkxLiveExecutionIntentView,
+    OkxLiveIntentResolutionExpectation,
     OkxLiveLeverageRequest,
     OkxLiveMirrorStatus,
     OkxLiveOrderAcknowledgement,
@@ -62,7 +66,9 @@ D = Decimal
 Clock = Callable[[], datetime]
 Sleeper = Callable[[float], Awaitable[None]]
 _FINAL_ORDER_STATES = frozenset({"filled", "canceled", "mmp_canceled"})
-_OPEN_ORDER_STATES = frozenset({"live", "partially_filled", "effective"})
+_CANCEL_CONFIRMED_STATES = frozenset({"canceled", "mmp_canceled"})
+_ACTIVE_PROTECTION_ALGO_STATES = frozenset({"live"})
+_PROTECTION_CLIENT_ID_PREFIX = "CTCCA"
 
 
 class OkxLiveService:
@@ -99,13 +105,29 @@ class OkxLiveService:
         self._submissions = 0
         self._emergency_stop = False
         self._automation_running = False
+        self._unresolved_intent_count = 0
+        self._safety_latch_code: str | None = None
+        self._safety_latch_version = 0
         self._last_capability = None
         self._last_exchange_ok_at: datetime | None = None
         self._last_error: str | None = None
 
     async def status(self) -> OkxLiveStatus:
         mirror = await self._mirror_status()
+        self._safety_latch_version = mirror.safety_latch_version
+        if mirror.safety_latched:
+            self._safety_latch_code = mirror.safety_latch_code
+            self._engage_emergency_stop(
+                mirror.safety_latch_code or "okx_live_safety_latch_engaged"
+            )
         blockers = self._configuration_blockers(self._last_capability)
+        if self._unresolved_intent_count:
+            blockers = sorted(
+                {
+                    *blockers,
+                    "okx_live_unresolved_execution_intents",
+                }
+            )
         read_blockers = {
             "okx_live_disabled",
             "trading_mode_not_live",
@@ -157,6 +179,9 @@ class OkxLiveService:
             submissions=self._submissions,
             max_submissions=self.settings.okx_live_max_submissions_per_arm,
             automation_running=self._automation_running,
+            unresolved_intent_count=self._unresolved_intent_count,
+            safety_latch_code=self._safety_latch_code,
+            safety_latch_version=self._safety_latch_version,
             last_error=self._last_error,
         )
 
@@ -243,7 +268,9 @@ class OkxLiveService:
         self._record_success()
         return value
 
-    async def reconcile(self) -> OkxLiveReconcileResult:
+    async def reconcile(
+        self, *, enforce_protection: bool = True
+    ) -> OkxLiveReconcileResult:
         self._ensure_read_ready()
         try:
             config = await self.account_config()
@@ -280,7 +307,7 @@ class OkxLiveService:
             reconciled_at = self._now()
             self._last_exchange_ok_at = reconciled_at
             self._last_error = None
-            return OkxLiveReconcileResult(
+            result = OkxLiveReconcileResult(
                 account_config=config,
                 balance=balance,
                 positions=positions,
@@ -290,6 +317,16 @@ class OkxLiveService:
                 persisted=persisted,
                 reconciled_at=reconciled_at,
             )
+            if (
+                enforce_protection
+                and
+                self.settings.okx_live_require_protection
+                and not await self._reconciled_positions_protected(result)
+            ):
+                await self._engage_persistent_emergency_stop(
+                    "live_position_protection_not_confirmed"
+                )
+            return result
         except Exception as exc:
             self._record_error(exc)
             if self.mirror_repository is not None:
@@ -303,21 +340,23 @@ class OkxLiveService:
 
     async def arm(self, request: OkxLiveArmRequest) -> OkxLiveStatus:
         self._ensure_write_configuration()
-        if self._emergency_stop:
-            raise OkxLiveSafetyError("okx_live_emergency_stop_must_be_cleared")
         if request.duration_seconds > self.settings.okx_live_arm_ttl_seconds:
             raise OkxLiveSafetyError("okx_live_arm_duration_exceeds_configured_ttl")
         if self._write_lock.locked():
             raise OkxLiveBusyError("okx_live_write_in_progress")
-        snapshot = await self.reconcile()
-        self._validate_write_capability(snapshot.account_config)
-        self._ensure_flat(snapshot, action="arm")
-        if snapshot.balance.total_equity <= 0:
-            raise OkxLiveSafetyError("okx_live_equity_not_positive")
-        self._baseline_equity = snapshot.balance.total_equity
-        self._submissions = 0
-        self._armed_until = self._now() + timedelta(seconds=request.duration_seconds)
-        self._last_error = None
+        async with self._execution_guard():
+            snapshot = await self.reconcile()
+            self._validate_write_capability(snapshot.account_config)
+            self._ensure_flat(snapshot, action="arm")
+            await self._assert_execution_safe()
+            if snapshot.balance.total_equity <= 0:
+                raise OkxLiveSafetyError("okx_live_equity_not_positive")
+            self._baseline_equity = snapshot.balance.total_equity
+            self._submissions = 0
+            self._armed_until = self._now() + timedelta(
+                seconds=request.duration_seconds
+            )
+            self._last_error = None
         return await self.status()
 
     async def disarm(self) -> OkxLiveStatus:
@@ -325,16 +364,197 @@ class OkxLiveService:
         return await self.status()
 
     async def emergency_stop(self) -> OkxLiveStatus:
-        self._engage_emergency_stop("operator_emergency_stop")
+        await self._engage_persistent_emergency_stop("operator_emergency_stop")
         return await self.status()
 
-    async def clear_emergency_stop(self) -> OkxLiveStatus:
-        snapshot = await self.reconcile()
-        self._ensure_flat(snapshot, action="clear_emergency_stop")
-        self._emergency_stop = False
-        self._last_error = None
-        self._disarm_local()
+    async def unresolved_intent_expectations(
+        self,
+    ) -> list[OkxLiveIntentResolutionExpectation]:
+        repository = self.execution_repository
+        if repository is None:
+            raise OkxLiveUnavailableError(
+                "okx_live_execution_persistence_unavailable"
+            )
+        try:
+            unresolved = await repository.load_unresolved_intents(limit=1000)
+        except Exception as exc:
+            raise OkxLiveUnavailableError(
+                "okx_live_intent_recovery_unavailable"
+            ) from exc
+        if len(unresolved) > 100:
+            raise OkxLiveSafetyError("okx_live_unresolved_intent_limit_exceeded")
+        self._unresolved_intent_count = len(unresolved)
+        return [self._intent_expectation(item) for item in unresolved]
+
+    async def clear_emergency_stop(
+        self, request: OkxLiveClearStopRequest
+    ) -> OkxLiveStatus:
+        async with self._execution_guard():
+            repository = self.execution_repository
+            mirror_repository = self.mirror_repository
+            if repository is None or mirror_repository is None:
+                self._engage_emergency_stop(
+                    "okx_live_intent_recovery_unavailable"
+                )
+                raise OkxLiveSafetyError(
+                    "okx_live_execution_persistence_unavailable"
+                )
+            try:
+                latch_state = await mirror_repository.safety_latch_status()
+                unresolved = await repository.load_unresolved_intents(limit=1000)
+                expected = request.expected_unresolved_intents
+                if not self._intent_expectations_match(unresolved, expected):
+                    raise OkxLiveSafetyError(
+                        "okx_live_unresolved_intent_expectation_mismatch"
+                    )
+                last_snapshot = await self._stable_flat_recovery_check(
+                    unresolved
+                )
+                await repository.mark_unresolved_intents_operator_reconciled(
+                    expectations=expected,
+                    reconciled_at=last_snapshot.reconciled_at,
+                    resolution_code=(
+                        OKX_LIVE_FLAT_EXCHANGE_RESOLUTION_CODE
+                    ),
+                )
+                remaining = await repository.load_unresolved_intents(limit=1000)
+                if remaining:
+                    raise OkxLiveSafetyError(
+                        "okx_live_unresolved_intents_remain_after_resolution"
+                    )
+                if latch_state.latched:
+                    cleared = await mirror_repository.clear_safety_latch(
+                        expected_version=latch_state.version
+                    )
+                    self._safety_latch_version = cleared.version
+                else:
+                    current_latch = await mirror_repository.safety_latch_status()
+                    if (
+                        current_latch.latched
+                        or current_latch.version != latch_state.version
+                    ):
+                        raise OkxLiveSafetyError(
+                            "okx_live_safety_latch_changed_during_clear"
+                        )
+                    self._safety_latch_version = current_latch.version
+                self._safety_latch_code = None
+            except Exception as exc:
+                self._engage_emergency_stop(
+                    "okx_live_intent_recovery_persist_failed"
+                )
+                if isinstance(exc, OkxLiveSafetyError):
+                    raise
+                raise OkxLiveUnavailableError(
+                    "okx_live_intent_recovery_persist_failed"
+                ) from exc
+            self._unresolved_intent_count = 0
+            self._emergency_stop = False
+            self._last_error = None
+            self._disarm_local()
         return await self.status()
+
+    async def _stable_flat_recovery_check(
+        self, unresolved: list[OkxLiveExecutionIntentView]
+    ) -> OkxLiveReconcileResult:
+        account_identity: tuple[str | None, str | None] | None = None
+        order_observations: dict[str, str] | None = None
+        last_snapshot: OkxLiveReconcileResult | None = None
+        for attempt in range(self.settings.okx_live_recovery_flat_poll_attempts):
+            snapshot = await self.reconcile(enforce_protection=False)
+            self._ensure_flat(snapshot, action="clear_emergency_stop")
+            current_identity = (
+                snapshot.account_config.uid,
+                snapshot.account_config.main_uid,
+            )
+            if account_identity is None:
+                account_identity = current_identity
+            elif current_identity != account_identity:
+                raise OkxLiveSafetyError(
+                    "okx_live_account_identity_changed_during_recovery"
+                )
+            current_orders = await self._recovery_order_observations(unresolved)
+            if order_observations is None:
+                order_observations = current_orders
+            elif current_orders != order_observations:
+                raise OkxLiveSafetyError(
+                    "okx_live_order_state_changed_during_recovery"
+                )
+            last_snapshot = snapshot
+            if attempt + 1 < self.settings.okx_live_recovery_flat_poll_attempts:
+                await self._sleep(
+                    self.settings.okx_live_recovery_flat_poll_delay_seconds
+                )
+        if last_snapshot is None:
+            raise OkxLiveUnavailableError(
+                "okx_live_stable_flat_recovery_unavailable"
+            )
+        return last_snapshot
+
+    async def _recovery_order_observations(
+        self, unresolved: list[OkxLiveExecutionIntentView]
+    ) -> dict[str, str]:
+        observations: dict[str, str] = {}
+        for intent in unresolved:
+            if intent.action not in {"place_order", "cancel_order"}:
+                continue
+            order_id = intent.exchange_order_id
+            client_order_id = None if order_id else intent.client_order_id
+            if order_id is None and client_order_id is None:
+                observations[intent.idempotency_key] = "not_submitted"
+                continue
+            rows = await self.read_client.order_detail(
+                intent.instrument_id,
+                order_id=order_id,
+                client_order_id=client_order_id,
+            )
+            if not rows:
+                observations[intent.idempotency_key] = "not_found"
+                continue
+            if len(rows) != 1:
+                raise OkxLiveSafetyError(
+                    "okx_live_recovery_order_detail_ambiguous"
+                )
+            order = parse_live_order(rows[0])
+            if not self._order_identity_matches(
+                order,
+                instrument_id=intent.instrument_id,
+                order_id=order_id,
+                client_order_id=client_order_id,
+            ):
+                raise OkxLiveSafetyError(
+                    "okx_live_recovery_order_identity_mismatch"
+                )
+            if order.state not in _FINAL_ORDER_STATES:
+                raise OkxLiveSafetyError(
+                    "okx_live_recovery_order_not_final"
+                )
+            observations[intent.idempotency_key] = (
+                f"{order.state}:{self._decimal_text(order.accumulated_fill_size)}"
+            )
+        return observations
+
+    @staticmethod
+    def _intent_expectation(
+        intent: OkxLiveExecutionIntentView,
+    ) -> OkxLiveIntentResolutionExpectation:
+        return OkxLiveIntentResolutionExpectation(
+            idempotency_key=intent.idempotency_key,
+            status=intent.status,
+            updated_at=intent.updated_at,
+        )
+
+    @classmethod
+    def _intent_expectations_match(
+        cls,
+        unresolved: list[OkxLiveExecutionIntentView],
+        expectations: list[OkxLiveIntentResolutionExpectation],
+    ) -> bool:
+        actual = {
+            item.idempotency_key: cls._intent_expectation(item)
+            for item in unresolved
+        }
+        expected = {item.idempotency_key: item for item in expectations}
+        return actual == expected
 
     async def place_order(self, request: OkxLiveOrderRequest) -> OkxLiveWriteResult:
         self._ensure_write_configuration()
@@ -343,11 +563,12 @@ class OkxLiveService:
         if self._write_lock.locked():
             raise OkxLiveBusyError("okx_live_write_in_progress")
         async with self._execution_guard():
+            await self._assert_execution_safe()
             self._require_armed()
             snapshot = await self.reconcile()
             self._validate_write_capability(snapshot.account_config)
             self._ensure_flat(snapshot, action="place_order")
-            self._enforce_session_loss(snapshot.balance.total_equity)
+            await self._enforce_session_loss(snapshot.balance.total_equity)
             instrument, reference_price = await self._validate_order_market(
                 request
             )
@@ -372,6 +593,13 @@ class OkxLiveService:
                 action="place_order",
                 instrument_id=request.instrument_id,
                 client_order_id=request.client_order_id,
+                protection_client_order_id=self._protection_client_order_id(
+                    request.client_order_id
+                ),
+                expected_protection_size=request.size,
+                expected_stop_loss=request.stop_loss,
+                expected_take_profit=request.take_profit,
+                expected_trigger_price_type=request.trigger_price_type,
             )
 
             stage = "order_precheck"
@@ -417,7 +645,7 @@ class OkxLiveService:
                     final_snapshot,
                     action="place_order_final_check",
                 )
-                self._enforce_session_loss(
+                await self._enforce_session_loss(
                     final_snapshot.balance.total_equity
                 )
                 stage = "final_market_recheck"
@@ -429,6 +657,8 @@ class OkxLiveService:
                     instrument,
                     final_reference_price,
                 )
+                await self._assert_safety_latch_clear()
+                self._require_armed()
                 stage = "place_order"
                 exchange_data = await self._execution().place_order(payload)
             except Exception as exc:
@@ -467,25 +697,38 @@ class OkxLiveService:
                 ),
             )
             warnings: list[str] = []
-            reconciled = False
-            post_snapshot: OkxLiveReconcileResult | None = None
-            try:
-                post_snapshot = await self.reconcile()
-                reconciled = True
-            except Exception:
+            post_snapshot = await self._poll_post_order_snapshot(
+                request,
+                self._protection_client_order_id(request.client_order_id),
+            )
+            reconciled = post_snapshot is not None
+            if not reconciled:
                 warnings.append("post_order_reconcile_failed")
 
             protection_confirmed = self._protection_confirmed(
-                order, post_snapshot, request.instrument_id
+                post_snapshot,
+                request,
+                self._protection_client_order_id(request.client_order_id),
+            )
+            isolated_protected_exposure = self._post_order_exposure_confirmed(
+                post_snapshot,
+                request,
+                self._protection_client_order_id(request.client_order_id),
             )
             exposure_present = self._exposure_present(
                 post_snapshot, request.instrument_id
+            )
+            clean_flat = (
+                post_snapshot is not None
+                and not any(item.size != 0 for item in post_snapshot.positions)
+                and not post_snapshot.pending_orders
+                and not post_snapshot.pending_algo_orders
             )
             final_confirmed = (
                 order is not None
                 and reconciled
                 and order.state in _FINAL_ORDER_STATES
-                and (not exposure_present or protection_confirmed)
+                and (clean_flat or isolated_protected_exposure)
             )
             if order is None:
                 warnings.append("order_detail_not_confirmed")
@@ -493,12 +736,24 @@ class OkxLiveService:
                 warnings.append("order_final_state_not_confirmed")
             if post_snapshot is None:
                 warnings.append("post_order_exchange_state_unavailable")
-                self._engage_emergency_stop("post_order_reconcile_unavailable")
-            elif not protection_confirmed and exposure_present:
-                warnings.append("protection_not_confirmed_for_live_exposure")
-                self._engage_emergency_stop("live_position_protection_not_confirmed")
+                await self._engage_persistent_emergency_stop(
+                    "post_order_reconcile_unavailable"
+                )
+            elif exposure_present and not isolated_protected_exposure:
+                warnings.append(
+                    "post_order_state_not_isolated_or_exactly_protected"
+                )
+                if not protection_confirmed:
+                    warnings.append(
+                        "protection_not_confirmed_for_live_exposure"
+                    )
+                await self._engage_persistent_emergency_stop(
+                    "live_position_protection_not_confirmed"
+                )
             if not final_confirmed and not self._emergency_stop:
-                self._engage_emergency_stop("live_order_final_state_unconfirmed")
+                await self._engage_persistent_emergency_stop(
+                    "live_order_final_state_unconfirmed"
+                )
 
             await self._update_intent_or_stop(
                 request.client_order_id,
@@ -567,10 +822,17 @@ class OkxLiveService:
                 order_id=request.order_id or acknowledgement.order_id or None,
                 client_order_id=request.client_order_id,
             )
-            confirmed = order is not None and order.state in _FINAL_ORDER_STATES
+            fill_detected = (
+                order is not None and order.accumulated_fill_size > 0
+            )
+            confirmed = (
+                order is not None
+                and order.state in _CANCEL_CONFIRMED_STATES
+                and not fill_detected
+            )
             warnings = []
-            if order is not None and order.state == "filled":
-                warnings.append("order_filled_before_cancel_confirmation")
+            if fill_detected:
+                warnings.append("order_partially_filled_before_cancel_confirmation")
             if not confirmed:
                 warnings.append("cancel_final_state_not_confirmed")
                 self._engage_emergency_stop("cancel_final_state_unconfirmed")
@@ -581,9 +843,13 @@ class OkxLiveService:
                 status="confirmed" if confirmed else "ambiguous",
                 exchange_order_id=acknowledgement.order_id or request.order_id,
                 detail_codes=[
-                    "cancel_final_state_confirmed"
-                    if confirmed
-                    else "cancel_final_state_unconfirmed"
+                    (
+                        "cancel_final_state_confirmed"
+                        if confirmed
+                        else "cancel_fill_detected"
+                        if fill_detected
+                        else "cancel_final_state_unconfirmed"
+                    )
                 ],
             )
             return OkxLiveWriteResult(
@@ -695,9 +961,14 @@ class OkxLiveService:
         if request.leverage > self.settings.okx_live_max_leverage:
             raise OkxLiveSafetyError("requested_leverage_exceeds_live_safety_cap")
         async with self._execution_guard():
-            config = await self.account_config()
-            self._validate_write_capability(config)
-            position_side = self._position_side(config, request.direction)
+            await self._assert_execution_safe()
+            self._require_armed()
+            snapshot = await self.reconcile()
+            self._validate_write_capability(snapshot.account_config)
+            self._ensure_flat(snapshot, action="set_leverage")
+            position_side = self._position_side(
+                snapshot.account_config, request.direction
+            )
             payload: dict[str, object] = {
                 "instId": request.instrument_id,
                 "lever": str(request.leverage),
@@ -712,6 +983,8 @@ class OkxLiveService:
                 instrument_id=request.instrument_id,
             )
             try:
+                await self._assert_safety_latch_clear()
+                self._require_armed()
                 leverage_data = await self._execution().set_leverage(payload)
                 if not leverage_response_matches(
                     leverage_data,
@@ -751,12 +1024,22 @@ class OkxLiveService:
 
     async def startup(self) -> None:
         self._disarm_local()
-        if not self.settings.okx_live_auto_reconcile_on_start:
-            return
-        try:
-            await self.reconcile()
-        except Exception:
-            pass
+        if self.settings.okx_live_auto_reconcile_on_start:
+            try:
+                await self.reconcile()
+            except Exception:
+                pass
+        if (
+            self.settings.okx_live_enabled
+            and (
+                self.settings.live_trading
+                or self.settings.okx_live_allow_order_writes
+            )
+        ):
+            try:
+                await self._assert_execution_safe()
+            except (OkxLiveSafetyError, OkxLiveUnavailableError):
+                pass
 
     async def shutdown(self) -> None:
         self._disarm_local()
@@ -868,6 +1151,9 @@ class OkxLiveService:
             "sz": self._decimal_text(request.size),
             "attachAlgoOrds": [
                 {
+                    "attachAlgoClOrdId": self._protection_client_order_id(
+                        request.client_order_id
+                    ),
                     "tpTriggerPx": self._decimal_text(request.take_profit),
                     "tpOrdPx": "-1",
                     "tpTriggerPxType": request.trigger_price_type,
@@ -996,13 +1282,15 @@ class OkxLiveService:
         if snapshot.pending_algo_orders:
             raise OkxLiveSafetyError(f"okx_live_algo_orders_block_{action}")
 
-    def _enforce_session_loss(self, equity: Decimal) -> None:
+    async def _enforce_session_loss(self, equity: Decimal) -> None:
         baseline = self._baseline_equity
         if baseline is None or baseline <= 0:
             raise OkxLiveSafetyError("okx_live_arm_baseline_missing")
         loss = max(D("0"), baseline - equity)
         if loss / baseline >= self.settings.okx_live_session_loss_limit_pct:
-            self._engage_emergency_stop("okx_live_session_loss_limit_reached")
+            await self._engage_persistent_emergency_stop(
+                "okx_live_session_loss_limit_reached"
+            )
             raise OkxLiveSafetyError("okx_live_session_loss_limit_reached")
 
     @staticmethod
@@ -1033,7 +1321,17 @@ class OkxLiveService:
                     client_order_id=client_order_id if not order_id else None,
                 )
                 if rows:
-                    last_observed = parse_live_order(rows[0])
+                    observed = parse_live_order(rows[0])
+                    if not self._order_identity_matches(
+                        observed,
+                        instrument_id=instrument_id,
+                        order_id=order_id,
+                        client_order_id=client_order_id,
+                    ):
+                        raise OkxLiveUnavailableError(
+                            "okx_live_order_detail_identity_mismatch"
+                        )
+                    last_observed = observed
                     if last_observed.state in _FINAL_ORDER_STATES:
                         return last_observed
             except Exception:
@@ -1044,28 +1342,258 @@ class OkxLiveService:
                 )
         return last_observed
 
+    async def _poll_post_order_snapshot(
+        self,
+        request: OkxLiveOrderRequest,
+        protection_client_order_id: str,
+    ) -> OkxLiveReconcileResult | None:
+        last_snapshot: OkxLiveReconcileResult | None = None
+        for attempt in range(self.settings.okx_live_order_detail_poll_attempts):
+            try:
+                last_snapshot = await self.reconcile(enforce_protection=False)
+                exposure_present = self._exposure_present(
+                    last_snapshot, request.instrument_id
+                )
+                clean_flat = (
+                    not any(item.size != 0 for item in last_snapshot.positions)
+                    and not last_snapshot.pending_orders
+                    and not last_snapshot.pending_algo_orders
+                )
+                if clean_flat or (
+                    exposure_present
+                    and self._post_order_exposure_confirmed(
+                        last_snapshot,
+                        request,
+                        protection_client_order_id,
+                    )
+                ):
+                    return last_snapshot
+            except Exception:
+                pass
+            if attempt + 1 < self.settings.okx_live_order_detail_poll_attempts:
+                await self._sleep(
+                    self.settings.okx_live_order_detail_poll_delay_seconds
+                )
+        return last_snapshot
+
     @staticmethod
-    def _protection_confirmed(
-        order: OkxLiveOrderView | None,
-        snapshot: OkxLiveReconcileResult | None,
+    def _order_identity_matches(
+        order: OkxLiveOrderView,
+        *,
         instrument_id: str,
+        order_id: str | None,
+        client_order_id: str | None,
     ) -> bool:
-        if order is not None:
-            for item in order.attached_algo_orders:
-                if item.get("tpTriggerPx") not in (None, "") and item.get(
-                    "slTriggerPx"
-                ) not in (None, ""):
-                    return True
+        if order.instrument_id != instrument_id:
+            return False
+        if order_id is not None:
+            return order.order_id == order_id
+        return (
+            client_order_id is not None
+            and order.client_order_id == client_order_id
+        )
+
+    @classmethod
+    def _protection_confirmed(
+        cls,
+        snapshot: OkxLiveReconcileResult | None,
+        request: OkxLiveOrderRequest,
+        protection_client_order_id: str,
+    ) -> bool:
         if snapshot is None:
             return False
-        for item in snapshot.pending_algo_orders:
-            if (
-                item.instrument_id == instrument_id
-                and item.take_profit_trigger_price is not None
-                and item.stop_loss_trigger_price is not None
-            ):
-                return True
-        return False
+        matching_positions = [
+            item
+            for item in snapshot.positions
+            if item.instrument_id == request.instrument_id and item.size != 0
+        ]
+        if len(matching_positions) != 1:
+            return False
+        position = matching_positions[0]
+        if position.margin_mode != request.margin_mode:
+            return False
+        is_long = cls._position_is_long(position)
+        if is_long != (request.direction == "long"):
+            return False
+        return cls._exact_protection_match_count(
+            snapshot.pending_algo_orders,
+            position,
+            protection_client_order_id=protection_client_order_id,
+            expected_size=request.size,
+            expected_stop_loss=request.stop_loss,
+            expected_take_profit=request.take_profit,
+            expected_trigger_price_type=request.trigger_price_type,
+        ) == 1
+
+    @classmethod
+    def _post_order_exposure_confirmed(
+        cls,
+        snapshot: OkxLiveReconcileResult | None,
+        request: OkxLiveOrderRequest,
+        protection_client_order_id: str,
+    ) -> bool:
+        if snapshot is None or snapshot.pending_orders:
+            return False
+        positions = [item for item in snapshot.positions if item.size != 0]
+        if len(positions) != 1 or len(snapshot.pending_algo_orders) != 1:
+            return False
+        return cls._protection_confirmed(
+            snapshot,
+            request,
+            protection_client_order_id,
+        )
+
+    async def _reconciled_positions_protected(
+        self, snapshot: OkxLiveReconcileResult
+    ) -> bool:
+        positions = [item for item in snapshot.positions if item.size != 0]
+        if not positions:
+            return True
+        if (
+            snapshot.pending_orders
+            or len(snapshot.pending_algo_orders) != len(positions)
+        ):
+            return False
+        repository = self.execution_repository
+        if repository is None:
+            return False
+        try:
+            intents = await repository.load_protection_intents()
+        except Exception:
+            return False
+        if len({item.algo_order_id for item in snapshot.pending_algo_orders}) != len(
+            snapshot.pending_algo_orders
+        ):
+            return False
+        for position in positions:
+            matching_intents = [
+                intent
+                for intent in intents
+                if self._intent_protects_position(snapshot, position, intent)
+            ]
+            if len(matching_intents) != 1:
+                return False
+        return True
+
+    @classmethod
+    def _intent_protects_position(
+        cls,
+        snapshot: OkxLiveReconcileResult,
+        position: OkxLivePositionView,
+        intent: OkxLiveExecutionIntentView,
+    ) -> bool:
+        if (
+            intent.instrument_id != position.instrument_id
+            or intent.protection_client_order_id is None
+            or intent.expected_protection_size is None
+            or intent.expected_stop_loss is None
+            or intent.expected_take_profit is None
+            or intent.expected_trigger_price_type is None
+        ):
+            return False
+        return cls._exact_protection_match_count(
+            snapshot.pending_algo_orders,
+            position,
+            protection_client_order_id=intent.protection_client_order_id,
+            expected_size=intent.expected_protection_size,
+            expected_stop_loss=intent.expected_stop_loss,
+            expected_take_profit=intent.expected_take_profit,
+            expected_trigger_price_type=intent.expected_trigger_price_type,
+        ) == 1
+
+    @classmethod
+    def _exact_protection_match_count(
+        cls,
+        algo_orders: list[OkxLiveAlgoOrderView],
+        position: OkxLivePositionView,
+        *,
+        protection_client_order_id: str,
+        expected_size: Decimal,
+        expected_stop_loss: Decimal,
+        expected_take_profit: Decimal,
+        expected_trigger_price_type: str,
+    ) -> int:
+        candidates = [
+            item
+            for item in algo_orders
+            if item.client_algo_order_id == protection_client_order_id
+        ]
+        if len(candidates) != 1:
+            return 0
+        item = candidates[0]
+        return int(
+            cls._algo_protects_position(
+                item,
+                position,
+                expected_size=expected_size,
+                expected_stop_loss=expected_stop_loss,
+                expected_take_profit=expected_take_profit,
+                expected_trigger_price_type=expected_trigger_price_type,
+            )
+        )
+
+    @classmethod
+    def _algo_protects_position(
+        cls,
+        item: OkxLiveAlgoOrderView,
+        position: OkxLivePositionView,
+        *,
+        expected_size: Decimal,
+        expected_stop_loss: Decimal,
+        expected_take_profit: Decimal,
+        expected_trigger_price_type: str,
+    ) -> bool:
+        position_size = abs(position.size)
+        if not (
+            item.algo_order_id
+            and item.instrument_type == "SWAP"
+            and item.instrument_id == position.instrument_id
+            and item.order_type == "oco"
+            and item.state.lower() in _ACTIVE_PROTECTION_ALGO_STATES
+            and item.position_side == position.position_side
+            and item.margin_mode is not None
+            and item.margin_mode == position.margin_mode
+            and item.take_profit_trigger_price == expected_take_profit
+            and item.stop_loss_trigger_price == expected_stop_loss
+            and item.take_profit_trigger_price_type
+            == expected_trigger_price_type
+            and item.stop_loss_trigger_price_type
+            == expected_trigger_price_type
+            and item.take_profit_order_price == D("-1")
+            and item.stop_loss_order_price == D("-1")
+            and position_size > 0
+            and position_size <= item.size <= expected_size
+            and item.actual_size == 0
+            and item.trigger_time is None
+            and item.failure_code is None
+            and item.close_fraction in (None, D("0"))
+            and item.amend_price_on_trigger_type in (None, "0")
+        ):
+            return False
+        is_long = cls._position_is_long(position)
+        if item.side != ("sell" if is_long else "buy"):
+            return False
+        if position.position_side == "net" and item.reduce_only is not True:
+            return False
+        if is_long:
+            return expected_stop_loss < expected_take_profit
+        return expected_take_profit < expected_stop_loss
+
+    @staticmethod
+    def _position_is_long(position: OkxLivePositionView) -> bool:
+        if position.position_side == "long":
+            return True
+        if position.position_side == "short":
+            return False
+        if position.position_side == "net" and position.size != 0:
+            return position.size > 0
+        raise OkxLiveSafetyError("okx_live_position_side_invalid")
+
+    @staticmethod
+    def _protection_client_order_id(client_order_id: str) -> str:
+        if not client_order_id.startswith("CTCCL"):
+            raise OkxLiveSafetyError("okx_live_client_order_id_prefix_invalid")
+        return f"{_PROTECTION_CLIENT_ID_PREFIX}{client_order_id[5:]}"[:32]
 
     @staticmethod
     def _exposure_present(
@@ -1092,8 +1620,62 @@ class OkxLiveService:
             raise OkxLiveSafetyError("okx_live_execution_persistence_unavailable")
         try:
             await repository.reserve_intent(**kwargs)
+            await self._refresh_unresolved_intent_count()
         except (OkxLiveExecutionIntentConflict, OkxLiveExecutionIntentReplay) as exc:
             raise OkxLiveSafetyError(str(exc)) from exc
+
+    async def _assert_execution_safe(self) -> None:
+        await self._assert_safety_latch_clear()
+        await self._assert_no_unresolved_intents()
+        if self._emergency_stop:
+            raise OkxLiveSafetyError("okx_live_emergency_stop_must_be_cleared")
+
+    async def _assert_safety_latch_clear(self) -> None:
+        repository = self.mirror_repository
+        if repository is None:
+            self._engage_emergency_stop("okx_live_safety_latch_unavailable")
+            raise OkxLiveUnavailableError("okx_live_safety_latch_unavailable")
+        try:
+            state = await repository.safety_latch_status()
+        except Exception as exc:
+            self._engage_emergency_stop("okx_live_safety_latch_unavailable")
+            raise OkxLiveUnavailableError(
+                "okx_live_safety_latch_unavailable"
+            ) from exc
+        self._safety_latch_version = state.version
+        self._safety_latch_code = state.code
+        if state.latched:
+            self._engage_emergency_stop(
+                state.code or "okx_live_safety_latch_engaged"
+            )
+            raise OkxLiveSafetyError("okx_live_safety_latch_engaged")
+
+    async def _assert_no_unresolved_intents(self) -> None:
+        repository = self.execution_repository
+        if repository is None:
+            self._engage_emergency_stop(
+                "okx_live_intent_recovery_unavailable"
+            )
+            raise OkxLiveUnavailableError(
+                "okx_live_intent_recovery_unavailable"
+            )
+        try:
+            unresolved = await repository.load_unresolved_intents(limit=1000)
+        except Exception as exc:
+            self._engage_emergency_stop(
+                "okx_live_intent_recovery_unavailable"
+            )
+            raise OkxLiveUnavailableError(
+                "okx_live_intent_recovery_unavailable"
+            ) from exc
+        self._unresolved_intent_count = len(unresolved)
+        if unresolved:
+            self._engage_emergency_stop(
+                "okx_live_unresolved_execution_intents"
+            )
+            raise OkxLiveSafetyError(
+                "okx_live_unresolved_execution_intents"
+            )
 
     @asynccontextmanager
     async def _execution_guard(self) -> AsyncIterator[None]:
@@ -1114,6 +1696,21 @@ class OkxLiveService:
         if repository is None:
             raise OkxLiveSafetyError("okx_live_execution_persistence_unavailable")
         await repository.update_intent(idempotency_key, **kwargs)
+        await self._refresh_unresolved_intent_count()
+
+    async def _refresh_unresolved_intent_count(self) -> None:
+        repository = self.execution_repository
+        if repository is None:
+            self._engage_emergency_stop("okx_live_intent_recovery_unavailable")
+            raise OkxLiveUnavailableError("okx_live_intent_recovery_unavailable")
+        try:
+            unresolved = await repository.load_unresolved_intents(limit=1000)
+        except Exception as exc:
+            self._engage_emergency_stop("okx_live_intent_recovery_unavailable")
+            raise OkxLiveUnavailableError(
+                "okx_live_intent_recovery_unavailable"
+            ) from exc
+        self._unresolved_intent_count = len(unresolved)
 
     async def _update_intent_or_stop(
         self,
@@ -1228,6 +1825,22 @@ class OkxLiveService:
         self._emergency_stop = True
         self._last_error = code[:250]
         self._disarm_local(keep_submission_count=True)
+
+    async def _engage_persistent_emergency_stop(self, code: str) -> None:
+        self._engage_emergency_stop(code)
+        repository = self.mirror_repository
+        if repository is None:
+            raise OkxLiveUnavailableError(
+                "okx_live_safety_latch_persist_failed"
+            )
+        try:
+            state = await repository.engage_safety_latch(code)
+        except Exception as exc:
+            raise OkxLiveUnavailableError(
+                "okx_live_safety_latch_persist_failed"
+            ) from exc
+        self._safety_latch_code = state.code
+        self._safety_latch_version = state.version
 
     def _now(self) -> datetime:
         value = self._clock()

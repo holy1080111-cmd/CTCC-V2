@@ -56,7 +56,7 @@ class Settings(BaseSettings):
     )
 
     app_name: str = "CTCC V2"
-    app_version: str = "1.6.8"
+    app_version: str = "1.6.9"
     environment: Literal["development", "test", "production"] = "development"
     log_level: str = "INFO"
 
@@ -151,6 +151,10 @@ class Settings(BaseSettings):
     okx_live_auto_reconcile_on_start: bool = False
     okx_live_order_detail_poll_attempts: int = Field(default=5, ge=1, le=10)
     okx_live_order_detail_poll_delay_seconds: float = Field(default=0.5, ge=0, le=5)
+    okx_live_recovery_flat_poll_attempts: int = Field(default=3, ge=2, le=10)
+    okx_live_recovery_flat_poll_delay_seconds: float = Field(
+        default=2.0, ge=0, le=10
+    )
     okx_live_order_expiry_milliseconds: int = Field(
         default=5000, ge=1000, le=10000
     )
@@ -163,7 +167,7 @@ class Settings(BaseSettings):
     )
     okx_live_cancel_all_after_seconds: int = Field(default=30, ge=10, le=120)
     okx_live_order_tag: str = Field(
-        default="CTCCV168",
+        default="CTCCV169",
         min_length=1,
         max_length=16,
         pattern=r"^[A-Za-z0-9]+$",
@@ -570,6 +574,11 @@ class Settings(BaseSettings):
                 raise ValueError("OKX_LIVE_MAX_SUBMISSIONS_PER_ARM must equal 1")
             if self.okx_live_max_open_positions != 1:
                 raise ValueError("OKX_LIVE_MAX_OPEN_POSITIONS must equal 1")
+            if self.okx_live_recovery_flat_poll_delay_seconds < 0.5:
+                raise ValueError(
+                    "OKX_LIVE_RECOVERY_FLAT_POLL_DELAY_SECONDS must be at least "
+                    "0.5 when Live writes are enabled"
+                )
 
         if self.okx_live_auto_reconcile_on_start:
             if self.trading_mode != "live" or not self.okx_live_enabled:

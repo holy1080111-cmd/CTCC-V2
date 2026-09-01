@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import hashlib
+import re
 from typing import Any
 
 from sqlalchemy import delete, func, select
@@ -23,11 +24,13 @@ from app.domain.okx_live import (
     OkxLiveMirrorStatus,
     OkxLiveOrderView,
     OkxLivePositionView,
+    OkxLiveSafetyLatchState,
 )
 
 
 _ACCOUNT_FINGERPRINT_NAMESPACE = "ctcc-okx-live-account-v1:"
 _GENERIC_FAILURE_CODE = "okx_live_reconcile_failed"
+_SAFE_LATCH_CODE = re.compile(r"^[a-z0-9_]{1,80}$")
 _ALLOWED_FAILURE_CODES = frozenset(
     {
         _GENERIC_FAILURE_CODE,
@@ -49,6 +52,10 @@ class OkxLiveRepositoryError(RuntimeError):
 
 
 class OkxLiveAccountIdentityError(OkxLiveRepositoryError):
+    pass
+
+
+class OkxLiveSafetyLatchConflict(OkxLiveRepositoryError):
     pass
 
 
@@ -195,6 +202,98 @@ class OkxLiveRepository:
                     )
                 )
 
+    async def engage_safety_latch(self, code: str) -> OkxLiveSafetyLatchState:
+        normalized = (code or "").strip().lower()
+        if _SAFE_LATCH_CODE.fullmatch(normalized) is None:
+            raise OkxLiveRepositoryError("okx_live_safety_latch_code_invalid")
+        now = datetime.now(timezone.utc)
+        async with self.session_factory() as session:
+            async with session.begin():
+                values = {
+                    "id": 1,
+                    "status": "safety_latched",
+                    "order_count": 0,
+                    "position_count": 0,
+                    "algo_order_count": 0,
+                    "safety_latched": True,
+                    "safety_latch_code": normalized,
+                    "safety_latch_version": 1,
+                    "safety_latched_at": now,
+                    "details": {},
+                    "last_error": normalized,
+                    "reconciled_at": None,
+                    "updated_at": now,
+                }
+                statement = pg_insert(OkxLiveSyncCheckpoint).values(**values)
+                await session.execute(
+                    statement.on_conflict_do_update(
+                        index_elements=[OkxLiveSyncCheckpoint.id],
+                        set_={
+                            "safety_latched": True,
+                            "safety_latch_code": normalized,
+                            "safety_latch_version": (
+                                OkxLiveSyncCheckpoint.safety_latch_version + 1
+                            ),
+                            "safety_latched_at": now,
+                            "updated_at": now,
+                        },
+                    )
+                )
+                checkpoint = await session.scalar(
+                    select(OkxLiveSyncCheckpoint)
+                    .where(OkxLiveSyncCheckpoint.id == 1)
+                    .with_for_update()
+                )
+                if checkpoint is None:
+                    raise OkxLiveRepositoryError(
+                        "okx_live_safety_latch_checkpoint_unavailable"
+                    )
+                return self._latch_state(checkpoint)
+
+    async def clear_safety_latch(
+        self, *, expected_version: int
+    ) -> OkxLiveSafetyLatchState:
+        now = datetime.now(timezone.utc)
+        async with self.session_factory() as session:
+            async with session.begin():
+                checkpoint = await session.scalar(
+                    select(OkxLiveSyncCheckpoint)
+                    .where(OkxLiveSyncCheckpoint.id == 1)
+                    .with_for_update()
+                )
+                if checkpoint is None:
+                    raise OkxLiveRepositoryError(
+                        "okx_live_safety_latch_checkpoint_unavailable"
+                    )
+                if (
+                    not checkpoint.safety_latched
+                    or checkpoint.safety_latch_version != expected_version
+                ):
+                    raise OkxLiveSafetyLatchConflict(
+                        "okx_live_safety_latch_changed_during_clear"
+                    )
+                checkpoint.safety_latched = False
+                previous_code = checkpoint.safety_latch_code
+                checkpoint.safety_latch_code = None
+                checkpoint.safety_latch_version += 1
+                checkpoint.safety_latched_at = None
+                if checkpoint.last_error == previous_code:
+                    checkpoint.last_error = None
+                if checkpoint.status == "safety_latched":
+                    checkpoint.status = "not_reconciled"
+                checkpoint.updated_at = now
+                await session.flush()
+                return self._latch_state(checkpoint)
+
+    async def safety_latch_status(self) -> OkxLiveSafetyLatchState:
+        async with self.session_factory() as session:
+            checkpoint = await session.get(OkxLiveSyncCheckpoint, 1)
+        if checkpoint is None:
+            raise OkxLiveRepositoryError(
+                "okx_live_safety_latch_checkpoint_unavailable"
+            )
+        return self._latch_state(checkpoint)
+
     async def mirror_status(self) -> OkxLiveMirrorStatus:
         async with self.session_factory() as session:
             checkpoint = await session.get(OkxLiveSyncCheckpoint, 1)
@@ -222,6 +321,9 @@ class OkxLiveRepository:
         )
         details = dict(checkpoint.details or {})
         details["status"] = checkpoint.status
+        details["safety_latched"] = checkpoint.safety_latched
+        details["safety_latch_code"] = checkpoint.safety_latch_code
+        details["safety_latch_version"] = checkpoint.safety_latch_version
         return OkxLiveMirrorStatus(
             available=available,
             order_count=order_count,
@@ -229,7 +331,21 @@ class OkxLiveRepository:
             algo_order_count=algo_order_count,
             last_reconciled_at=checkpoint.reconciled_at,
             last_error=checkpoint.last_error,
+            safety_latched=checkpoint.safety_latched,
+            safety_latch_code=checkpoint.safety_latch_code,
+            safety_latch_version=checkpoint.safety_latch_version,
             details=details,
+        )
+
+    @staticmethod
+    def _latch_state(
+        checkpoint: OkxLiveSyncCheckpoint,
+    ) -> OkxLiveSafetyLatchState:
+        return OkxLiveSafetyLatchState(
+            latched=checkpoint.safety_latched,
+            code=checkpoint.safety_latch_code,
+            version=checkpoint.safety_latch_version,
+            latched_at=checkpoint.safety_latched_at,
         )
 
     async def _pin_account_identity(
