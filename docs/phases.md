@@ -26,7 +26,8 @@
   - Gate 1 immutable shadow contracts and legacy evidence adapter frozen after
     Windows Docker/PostgreSQL acceptance
   - Gate 2 deterministic statistics, signal, dynamics, momentum, and confirmed
-    geometry feature core is shadow-only pending operator acceptance
+    geometry feature core passed Windows Docker/PostgreSQL acceptance on
+    2026-09-01 and remains shadow-only
   - later Gates remain shadow-only until independently frozen
 - External Benchmark Pack:
   - Gate v1 immutable source/dataset/result contracts, artifact verification,
@@ -39,6 +40,8 @@
   - Gate v3 frozen BTCUSDT/ETHUSDT development, validation, and retrospective
     holdout windows; 180 exact daily artifacts, 259,200 expected minute rows,
     and descriptive partition evidence with no strategy or cost evaluation
+  - source acceptance for Gates v1-v3 passed on 2026-09-01 at Alembic `0016`;
+    the real 180-artifact reference-only batch probe remains unrun
   - no runtime consumer, model promotion, database write, or execution authority
   - later gates add deterministic replay, execution calibration, and
     independently reviewed OOS validation
@@ -139,3 +142,14 @@
   caller.
 - Gate 2 makes no predictive or profitability claim and adds no migration,
   probability model, decision, risk sizing, API, or exchange authority.
+
+## Next stage
+
+- The frozen v1.7.0 Gate 3 plan is documented in
+  `docs/mie_gate3_plan.md`.
+- Gate 3 is offline and shadow-only. It may add replay, outcome, calibration,
+  baseline, cost, uncertainty, and immutable evidence contracts, but it may not
+  add a runtime consumer or any Demo/Live authority.
+- Gate 4 runtime-shadow work is blocked until Gate 3 has a preregistered,
+  independently reviewed out-of-sample artifact. Demo and real-money promotion
+  remain separate evidence gates.
