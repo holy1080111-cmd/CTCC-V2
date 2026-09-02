@@ -1,7 +1,6 @@
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 
-
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "manifest.py"
 SPEC = spec_from_file_location("ctcc_manifest", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
@@ -34,6 +33,16 @@ def test_manifest_normalizes_alembic_mako_line_endings(tmp_path: Path) -> None:
     template.write_bytes(b"revision = ${repr(up_revision)}\n")
 
     assert manifest.canonical_digest(template) == first_digest
+
+
+def test_manifest_normalizes_json_line_endings(tmp_path: Path) -> None:
+    receipt = tmp_path / "receipt.json"
+    receipt.write_bytes(b'{"execution_authority":false}\r\n')
+    first_digest = manifest.canonical_digest(receipt)
+
+    receipt.write_bytes(b'{"execution_authority":false}\n')
+
+    assert manifest.canonical_digest(receipt) == first_digest
 
 
 def test_manifest_excludes_secrets_build_products_and_archives(tmp_path: Path) -> None:

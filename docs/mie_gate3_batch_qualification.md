@@ -68,6 +68,13 @@ Docker Gate:
 The only emitted warning was the pre-existing Starlette `TestClient`
 deprecation.
 
+The first deployment manifest check then exposed that `.json` had not been in
+the canonical text-suffix set: Git's Windows checkout converted the receipt to
+CRLF while the reviewed workspace retained LF. The manifest now normalizes
+JSON newlines and has a direct cross-platform regression. This affected only
+source-byte verification; the receipt's parsed contract, external data,
+runtime, and authority state did not change.
+
 ## Fail-closed holdout status
 
 The batch probe emitted operator-visible descriptive summaries for every

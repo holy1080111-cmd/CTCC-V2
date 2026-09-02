@@ -40,7 +40,7 @@ mistaken for predictive or economic validation.
 | Patch failed because the base tree or line context differed | final installers pin exact parent/tree/hash and stop without partial commit | Closed in delivery workflow |
 | Source, image, and container differed | rebuild plus canonical source manifest and same-tree verification are mandatory | Closed in verification workflow |
 | Docker image omitted `scripts/manifest.py` | Docker source packaging and full regression now include manifest tests | Closed |
-| Manifest failed on scratch helpers or CRLF differences | canonical manifest excludes non-source artifacts and normalizes text newlines | Closed |
+| Manifest failed on scratch helpers or CRLF differences, including JSON evidence receipts after a Windows checkout | canonical manifest excludes non-source artifacts and normalizes source text, including `.json`; Python, Mako, and JSON newline regressions cover the cross-platform digest | Closed |
 | PowerShell 5.1 treated Alembic stderr INFO as `NativeCommandError` | native steps temporarily use `ErrorActionPreference=Continue`, capture output, and decide by exit code | Closed |
 | PowerShell stripped quotes from `python -c`, producing `expected = 0013` | all three authoritative Docker verifiers pipe literal here-string probes to `python -`; a source regression forbids `python -c` | Closed by this audit patch |
 | A verifier checked write authority only after starting containers | all three authoritative verifiers resolve Compose flags and fail before Docker build/start, then check running `Settings` again | Closed by this audit patch |
