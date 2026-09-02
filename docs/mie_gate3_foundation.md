@@ -103,13 +103,20 @@ read or executed.
 The foundation does not complete Gate 3 market evidence. The following remain
 separate, explicit, reviewable operations:
 
-1. verify the pinned 180 public artifacts and 259,200 expected rows;
-2. freeze and commit the real preregistration before reading the holdout;
-3. execute the real replay exactly once against that frozen holdout;
+1. verify the pinned 180 public artifacts and 259,200 expected rows — completed
+   2026-09-02 and recorded in `docs/mie_gate3_batch_qualification.md`;
+2. freeze and commit the candidate and real preregistration before accessing a
+   fresh unread holdout;
+3. execute the real replay exactly once against that newly sealed holdout;
 4. independently review leakage, exclusions, trials, uncertainty, calibration,
    costs, provenance, and the canonical artifact hash;
 5. decide whether the evidence fails closed, remains `computational`, or may be
    attested at most `predictive_oos`.
+
+The completed v3 probe exposed descriptive summaries for its retrospective
+holdout before candidate preregistration. Its qualification contract therefore
+sets `predictive_oos_eligible=false`. It may support pipeline rehearsal but not
+predictive promotion.
 
 None of these steps needs or permits an exchange order. Gate 4 remains blocked
 until an independently reviewed real artifact exists.

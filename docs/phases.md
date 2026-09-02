@@ -45,7 +45,8 @@
     holdout windows; 180 exact daily artifacts, 259,200 expected minute rows,
     and descriptive partition evidence with no strategy or cost evaluation
   - source acceptance for Gates v1-v3 passed on 2026-09-01 at Alembic `0016`;
-    the real 180-artifact reference-only batch probe remains unrun
+    the real 180-artifact reference-only batch probe passed on 2026-09-02 with
+    259,200 rows and a fail-closed exposed-holdout qualification receipt
   - no runtime consumer, model promotion, database write, or execution authority
   - later gates add deterministic replay, execution calibration, and
     independently reviewed OOS validation
@@ -155,9 +156,11 @@
 
 - The frozen Gate 3 plan and implemented foundation are documented in
   `docs/mie_gate3_plan.md` and `docs/mie_gate3_foundation.md`.
-- Gate 3 remains offline and shadow-only. The real 180-artifact probe,
-  preregistration, single holdout replay, and independent evidence review are
-  still pending; the current maximum claim is `computational`.
+- Gate 3 remains offline and shadow-only. The real 180-artifact data-quality
+  probe is complete; candidate preregistration, a fresh unread holdout, the
+  single replay, and independent evidence review remain pending. The exposed
+  retrospective partition is rehearsal-only and the current maximum claim is
+  `computational`.
 - Gate 4 runtime-shadow work is blocked until Gate 3 has a preregistered,
   independently reviewed out-of-sample artifact. Demo and real-money promotion
   remain separate evidence gates.

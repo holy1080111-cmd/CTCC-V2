@@ -355,12 +355,14 @@ try {
     $boundaryProbe = @'
 from app.mie.validation import (
     ForwardDirectionLabel,
+    Gate3DatasetQualification,
     Gate3EvidenceArtifact,
     Gate3Preregistration,
     PointInTimeReplaySnapshot,
 )
 
 for contract_type in (
+    Gate3DatasetQualification,
     Gate3Preregistration,
     Gate3EvidenceArtifact,
     PointInTimeReplaySnapshot,
@@ -381,6 +383,7 @@ print("MIE_GATE3_CONTRACT_EXECUTION_AUTHORITY=0")
     docker compose @composeArguments exec -T api python scripts/hermetic_pytest.py `
         -q -p no:cacheprovider `
         tests/unit/mie/test_gate3_contracts.py `
+        tests/unit/mie/test_gate3_qualification.py `
         tests/unit/mie/test_gate3_replay.py `
         tests/unit/mie/test_gate3_splits.py `
         tests/unit/mie/test_gate3_metrics.py `
@@ -388,6 +391,13 @@ print("MIE_GATE3_CONTRACT_EXECUTION_AUTHORITY=0")
         tests/unit/mie/test_package_boundary.py
     if ($LASTEXITCODE -ne 0) {
         throw "MIE Gate 3 foundation tests failed (exit=$LASTEXITCODE)"
+    }
+
+    Write-Host "== MIE Gate 3 public batch qualification receipt =="
+    docker compose @composeArguments exec -T api python `
+        scripts/verify_mie_gate3_batch_qualification.py
+    if ($LASTEXITCODE -ne 0) {
+        throw "MIE Gate 3 batch qualification failed (exit=$LASTEXITCODE)"
     }
 }
 finally {
