@@ -358,12 +358,18 @@ from app.mie.validation import (
     Gate3DatasetQualification,
     Gate3EvidenceArtifact,
     Gate3Preregistration,
+    Gate3ProspectiveHoldoutReceipt,
+    Gate3ProspectivePreregistration,
     PointInTimeReplaySnapshot,
+    ProspectiveHoldoutSpec,
 )
 
 for contract_type in (
     Gate3DatasetQualification,
     Gate3Preregistration,
+    Gate3ProspectivePreregistration,
+    Gate3ProspectiveHoldoutReceipt,
+    ProspectiveHoldoutSpec,
     Gate3EvidenceArtifact,
     PointInTimeReplaySnapshot,
     ForwardDirectionLabel,
@@ -383,6 +389,7 @@ print("MIE_GATE3_CONTRACT_EXECUTION_AUTHORITY=0")
     docker compose @composeArguments exec -T api python scripts/hermetic_pytest.py `
         -q -p no:cacheprovider `
         tests/unit/mie/test_gate3_contracts.py `
+        tests/unit/mie/test_gate3_prospective.py `
         tests/unit/mie/test_gate3_qualification.py `
         tests/unit/mie/test_gate3_replay.py `
         tests/unit/mie/test_gate3_splits.py `
