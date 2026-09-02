@@ -47,6 +47,27 @@ python scripts/verify_mie_gate3_batch_qualification.py `
   --dataset-root <outside-repository-dataset-root>
 ```
 
+## Acceptance record
+
+On 2026-09-02, implementation commit
+`2f45cc34d1e9455ae3f35f6247fe5285194118bc` passed the isolated Windows
+Docker Gate:
+
+- all 180 outside-repository ZIPs were rehashed and matched the committed
+  qualification, including the 11,146,413-byte total;
+- 125 Gate 2/MIE targeted tests, 763 full regression tests, and 61 Gate 3
+  foundation/qualification/boundary tests passed;
+- Alembic head/current/schema drift passed at `0016`, API health was
+  `healthy`, and the canonical manifest passed with 414 files;
+- runtime containers had an internal-only network, no host API port, cleared
+  proxies, empty exchange credentials, zero runtime consumers, and zero
+  execution authority;
+- the isolated containers, network, volumes, and image were removed after the
+  run; the separately deployed stack was not reused or stopped.
+
+The only emitted warning was the pre-existing Starlette `TestClient`
+deprecation.
+
 ## Fail-closed holdout status
 
 The batch probe emitted operator-visible descriptive summaries for every
