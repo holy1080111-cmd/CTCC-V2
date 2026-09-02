@@ -278,6 +278,13 @@ or execution authority, and it makes no predictive or profitability claim.
 See `docs/mie_gate2_mathematical_features.md` and
 `docs/mie_gate2_verification.md`.
 
+Gate 3 now has an offline engineering foundation for strict preregistration and
+evidence contracts, point-in-time fixture replay, purged walk-forward splits,
+probability metrics, baselines, uncertainty, trial correction, and descriptive
+costs. It still has zero runtime consumers and zero execution authority. No real
+holdout has been read, so its current claim remains `computational`; see
+`docs/mie_gate3_foundation.md` and `docs/mie_gate3_plan.md`.
+
 ## Authenticated Live API
 
 Every `/api/okx-live/*` endpoint, including status, requires `X-CTCC-Token`.

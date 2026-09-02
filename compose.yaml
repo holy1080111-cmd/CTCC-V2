@@ -3,11 +3,11 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: ctcc-v2-api
+    container_name: ${CTCC_API_CONTAINER_NAME:-ctcc-v2-api}
     env_file:
-      - .env
+      - ${CTCC_ENV_FILE:-.env}
     ports:
-      - "127.0.0.1:8100:8000"
+      - "127.0.0.1:${CTCC_API_HOST_PORT:-8100}:8000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -30,7 +30,7 @@ services:
 
   postgres:
     image: postgres:17-alpine
-    container_name: ctcc-v2-postgres
+    container_name: ${CTCC_POSTGRES_CONTAINER_NAME:-ctcc-v2-postgres}
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-ctcc}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ctcc_dev_password}
@@ -51,7 +51,7 @@ services:
 
   redis:
     image: redis:8-alpine
-    container_name: ctcc-v2-redis
+    container_name: ${CTCC_REDIS_CONTAINER_NAME:-ctcc-v2-redis}
     command: ["redis-server", "--appendonly", "yes"]
     volumes:
       - ctcc_v2_redis_data:/data

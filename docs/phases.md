@@ -28,6 +28,10 @@
   - Gate 2 deterministic statistics, signal, dynamics, momentum, and confirmed
     geometry feature core passed Windows Docker/PostgreSQL acceptance on
     2026-09-01 and remains shadow-only
+  - Gate 3 automation-safe offline validation foundation implements strict
+    preregistration/evidence contracts, point-in-time fixture replay,
+    purged/embargoed folds, baselines, calibration, uncertainty, trial
+    correction, and descriptive costs; its current claim remains computational
   - later Gates remain shadow-only until independently frozen
 - External Benchmark Pack:
   - Gate v1 immutable source/dataset/result contracts, artifact verification,
@@ -125,7 +129,7 @@
   authorized, operator-controlled read-only account check and protected
   micro-order evidence. No verifier or release step may arm or submit it.
 
-## v1.7.0 MIE Gate 0/1/2
+## v1.7.0 MIE Gate 0/1/2 and Gate 3 foundation
 
 - Gate 0 records the canonical v1.6.8 commit, migration 0012, 282-file
   manifest, fail-safe flags, and the current mathematical validation registry.
@@ -142,14 +146,18 @@
   caller.
 - Gate 2 makes no predictive or profitability claim and adds no migration,
   probability model, decision, risk sizing, API, or exchange authority.
+- Gate 3's automation-safe foundation is implemented without a runtime caller.
+  It machine-binds candidate/trial identity, baselines, confidence intervals,
+  reliability samples, Holm correction, costs, reviewer metadata, and canonical
+  provenance, but no real holdout has been read.
 
 ## Next stage
 
-- The frozen v1.7.0 Gate 3 plan is documented in
-  `docs/mie_gate3_plan.md`.
-- Gate 3 is offline and shadow-only. It may add replay, outcome, calibration,
-  baseline, cost, uncertainty, and immutable evidence contracts, but it may not
-  add a runtime consumer or any Demo/Live authority.
+- The frozen Gate 3 plan and implemented foundation are documented in
+  `docs/mie_gate3_plan.md` and `docs/mie_gate3_foundation.md`.
+- Gate 3 remains offline and shadow-only. The real 180-artifact probe,
+  preregistration, single holdout replay, and independent evidence review are
+  still pending; the current maximum claim is `computational`.
 - Gate 4 runtime-shadow work is blocked until Gate 3 has a preregistered,
   independently reviewed out-of-sample artifact. Demo and real-money promotion
   remain separate evidence gates.
