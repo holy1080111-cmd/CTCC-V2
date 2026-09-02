@@ -100,9 +100,27 @@ def test_docker_verifiers_are_safe_on_windows_powershell(
 
     assert host_preflight < container_start
     assert "python -c" not in source
-    assert "$authorityProbe | docker compose exec -T api python -" in source
-    assert "$revisionProbe | docker compose exec -T api python -" in source
-    assert "git diff --cached --check" in source
+    assert any(
+        command in source
+        for command in (
+            "$authorityProbe | docker compose exec -T api python -",
+            "$authorityProbe | docker compose @composeArguments exec -T api python -",
+        )
+    )
+    assert any(
+        command in source
+        for command in (
+            "$revisionProbe | docker compose exec -T api python -",
+            "$revisionProbe | docker compose @composeArguments exec -T api python -",
+        )
+    )
+    assert any(
+        command in source
+        for command in (
+            "git diff --cached --check",
+            "git -C $sourceRoot diff --cached --check",
+        )
+    )
     for setting_name in (
         "AUTO_TRADE",
         "PAPER_AUTO_EXECUTION",
@@ -114,3 +132,58 @@ def test_docker_verifiers_are_safe_on_windows_powershell(
         "OKX_DEMO_SOAK_ALLOW_EXECUTE",
     ):
         assert setting_name in source
+
+
+def test_gate3_foundation_verifier_is_isolated_and_offline() -> None:
+    source = (
+        ROOT / "scripts" / "verify_mie_gate3_foundation.ps1"
+    ).read_text(encoding="utf-8")
+    assert "[Guid]::NewGuid()" in source
+    assert "Get-Location" not in source
+    assert '"--project-directory"' in source
+    assert '"--env-file"' in source
+    assert "docker compose @composeArguments down --volumes --remove-orphans" in source
+    assert "MIE_GATE3_NO_PUBLISHED_PORTS=1" in source
+    assert "MIE_GATE3_INTERNAL_NETWORK=1" in source
+    assert "MIE_GATE3_ISOLATED_VOLUMES=1" in source
+    assert "MIE_GATE3_EXTERNAL_CONNECTORS_DISABLED=1" in source
+    assert "MIE_GATE3_EXCHANGE_CREDENTIALS=0" in source
+    assert "MIE_GATE3_RUNTIME_PROXIES_DISABLED=1" in source
+    assert "[Environment]::SetEnvironmentVariable" in source
+    assert "$savedEnvironment" in source
+    compose_path = ROOT / "compose.yaml"
+    if compose_path.is_file():
+        compose = compose_path.read_text(encoding="utf-8")
+        override = (
+            ROOT / "config" / "mie_gate3.compose.yaml"
+        ).read_text(encoding="utf-8")
+        profile = (
+            ROOT / "config" / "mie_gate3_offline.env.example"
+        ).read_text(encoding="utf-8")
+
+        assert "container_name: ${CTCC_API_CONTAINER_NAME:-ctcc-v2-api}" in compose
+        assert "ports: !reset []" in override
+        assert "internal: true" in override
+        assert "POSTGRES_PASSWORD: ctcc_dev_password" in override
+        assert 'HTTP_PROXY: ""' in override
+        assert 'NO_PROXY: "*"' in override
+        for setting_name in (
+            "AUTO_TRADE",
+            "LIVE_TRADING",
+            "OKX_WS_ENABLED",
+            "PAPER_AUTO_TICKS",
+            "PAPER_AUTO_EXECUTION",
+            "OKX_LIVE_ENABLED",
+            "OKX_LIVE_ALLOW_ORDER_WRITES",
+            "OKX_LIVE_AUTO_RECONCILE_ON_START",
+            "OKX_LIVE_AUTO_EXECUTION",
+            "OKX_DEMO_ENABLED",
+            "OKX_DEMO_ALLOW_ORDER_WRITES",
+            "OKX_DEMO_AUTO_RECONCILE_ON_START",
+            "OKX_DEMO_AUTO_EXECUTION",
+            "OKX_DEMO_CONTINUOUS_SESSION_ENABLED",
+            "OKX_DEMO_OBSERVABILITY_ENABLED",
+            "OKX_DEMO_SOAK_ENABLED",
+            "OKX_DEMO_SOAK_ALLOW_EXECUTE",
+        ):
+            assert f"{setting_name}=false" in profile

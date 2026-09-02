@@ -6,17 +6,26 @@ from pathlib import Path
 from app.config.settings import Settings
 from app.mie.contracts import DecisionCandidate, MieShadowTrace
 from app.mie.features import MathematicalFeatureSnapshot
+from app.mie.validation import (
+    ForwardDirectionLabel,
+    Gate3EvidenceArtifact,
+    Gate3Preregistration,
+    PointInTimeBar,
+    PointInTimeReplaySnapshot,
+)
 
 
 MIE_ROOT = Path(__file__).resolve().parents[3] / "app" / "mie"
 APP_ROOT = MIE_ROOT.parent
 FORBIDDEN_IMPORT_PREFIXES = (
+    "app.api",
     "app.demo_automation",
     "app.exchange",
     "app.execution",
     "app.okx_demo",
     "app.okx_live",
     "app.paper",
+    "app.risk",
 )
 FORBIDDEN_RELATIVE_ROOTS = {
     prefix.removeprefix("app.").split(".", 1)[0]
@@ -99,6 +108,22 @@ def test_mie_decision_and_trace_have_no_order_geometry() -> None:
     assert forbidden_fields.isdisjoint(DecisionCandidate.model_fields)
     assert forbidden_fields.isdisjoint(MieShadowTrace.model_fields)
     assert forbidden_fields.isdisjoint(MathematicalFeatureSnapshot.model_fields)
+    assert forbidden_fields.isdisjoint(Gate3Preregistration.model_fields)
+    assert forbidden_fields.isdisjoint(Gate3EvidenceArtifact.model_fields)
+    assert forbidden_fields.isdisjoint(PointInTimeBar.model_fields)
+    assert forbidden_fields.isdisjoint(PointInTimeReplaySnapshot.model_fields)
+    assert forbidden_fields.isdisjoint(ForwardDirectionLabel.model_fields)
+
+
+def test_gate3_contracts_are_structurally_zero_authority() -> None:
+    for contract_type in (
+        Gate3Preregistration,
+        Gate3EvidenceArtifact,
+        PointInTimeReplaySnapshot,
+        ForwardDirectionLabel,
+    ):
+        assert contract_type.model_fields["runtime_consumers"].default == 0
+        assert contract_type.model_fields["execution_authority"].default is False
 
 
 def test_mie_does_not_change_fail_safe_runtime_defaults() -> None:

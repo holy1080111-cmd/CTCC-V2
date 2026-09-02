@@ -12,6 +12,19 @@ out-of-sample predictive information beyond simple baselines. A deterministic
 implementation or an attractive retrospective chart is not sufficient. Gate 3
 does not itself authorize a decision gate or claim economic value.
 
+## Current implementation status
+
+The automation-safe engineering foundation is implemented and documented in
+`docs/mie_gate3_foundation.md`. Contracts, canonical artifacts, point-in-time
+fixture replay, purged/embargoed folds, probability metrics, baselines,
+bootstrap uncertainty, Holm correction, and descriptive cost calculations are
+covered by hermetic tests and a zero-authority verifier.
+
+This is not real Gate 3 evidence. No 180-artifact batch, holdout read, fitted
+candidate result, or promotion review has been executed. The current claim
+therefore remains `computational`, with zero runtime consumers and zero
+execution authority.
+
 ## Work packages
 
 1. Freeze contracts for dataset identity, bar construction, outcome labels,

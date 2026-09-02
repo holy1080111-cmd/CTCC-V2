@@ -1,0 +1,33 @@
+services:
+  api:
+    ports: !reset []
+    restart: "no"
+    environment:
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      ALL_PROXY: ""
+      FTP_PROXY: ""
+      SOCKS_PROXY: ""
+      WS_PROXY: ""
+      WSS_PROXY: ""
+      http_proxy: ""
+      https_proxy: ""
+      all_proxy: ""
+      ftp_proxy: ""
+      socks_proxy: ""
+      ws_proxy: ""
+      wss_proxy: ""
+      NO_PROXY: "*"
+      no_proxy: "*"
+  postgres:
+    restart: "no"
+    environment:
+      POSTGRES_USER: ctcc
+      POSTGRES_PASSWORD: ctcc_dev_password
+      POSTGRES_DB: ctcc
+  redis:
+    restart: "no"
+
+networks:
+  default:
+    internal: true
