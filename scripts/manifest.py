@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-from pathlib import Path
 import sys
-
+from pathlib import Path
 
 TEXT_SUFFIXES = {
     ".example",
     ".ini",
+    ".json",
     ".mako",
     ".md",
     ".ps1",
