@@ -76,6 +76,28 @@ MIE_GATE3_EXECUTION_AUTHORITY=0
 ALEMBIC_HEAD=0016
 ```
 
+## Acceptance record
+
+On 2026-09-02, implementation commit
+`78bcb9ce52ebadb3c4849605603f7a3586aa86eb` passed the Windows Docker
+foundation gate with Docker Compose v5.3.1:
+
+- 119 Gate 2/MIE targeted tests passed;
+- 757 repository regression tests passed;
+- 55 Gate 3 foundation and package-boundary tests passed;
+- Alembic head/current/schema-drift checks passed at `0016`;
+- the canonical manifest passed with 409 files;
+- rendered and runtime isolation proved unique containers, network and volumes,
+  no published API port, an internal-only runtime network, cleared proxies,
+  empty exchange credentials, zero execution authority, and zero runtime
+  consumers;
+- the run removed its isolated containers, network, volumes, and image, while
+  the separately deployed `ctcc-v2-*` services remained healthy.
+
+The only emitted warning was the pre-existing Starlette `TestClient`
+deprecation. No real holdout, Demo account, Live account, or exchange order was
+read or executed.
+
 ## Evidence still pending
 
 The foundation does not complete Gate 3 market evidence. The following remain
