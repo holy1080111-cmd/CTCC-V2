@@ -11,8 +11,11 @@ from app.mie.validation import (
     Gate3DatasetQualification,
     Gate3EvidenceArtifact,
     Gate3Preregistration,
+    Gate3ProspectiveHoldoutReceipt,
+    Gate3ProspectivePreregistration,
     PointInTimeBar,
     PointInTimeReplaySnapshot,
+    ProspectiveHoldoutSpec,
 )
 
 MIE_ROOT = Path(__file__).resolve().parents[3] / "app" / "mie"
@@ -106,6 +109,9 @@ def test_mie_decision_and_trace_have_no_order_geometry() -> None:
     assert forbidden_fields.isdisjoint(MieShadowTrace.model_fields)
     assert forbidden_fields.isdisjoint(MathematicalFeatureSnapshot.model_fields)
     assert forbidden_fields.isdisjoint(Gate3Preregistration.model_fields)
+    assert forbidden_fields.isdisjoint(Gate3ProspectivePreregistration.model_fields)
+    assert forbidden_fields.isdisjoint(Gate3ProspectiveHoldoutReceipt.model_fields)
+    assert forbidden_fields.isdisjoint(ProspectiveHoldoutSpec.model_fields)
     assert forbidden_fields.isdisjoint(Gate3DatasetQualification.model_fields)
     assert forbidden_fields.isdisjoint(Gate3EvidenceArtifact.model_fields)
     assert forbidden_fields.isdisjoint(PointInTimeBar.model_fields)
@@ -117,6 +123,9 @@ def test_gate3_contracts_are_structurally_zero_authority() -> None:
     for contract_type in (
         Gate3DatasetQualification,
         Gate3Preregistration,
+        Gate3ProspectivePreregistration,
+        Gate3ProspectiveHoldoutReceipt,
+        ProspectiveHoldoutSpec,
         Gate3EvidenceArtifact,
         PointInTimeReplaySnapshot,
         ForwardDirectionLabel,

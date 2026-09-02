@@ -14,6 +14,10 @@ from app.mie.validation.contracts import (
     Gate3EvidenceArtifact,
     Gate3Preregistration,
 )
+from app.mie.validation.prospective import (
+    Gate3ProspectiveHoldoutReceipt,
+    Gate3ProspectivePreregistration,
+)
 
 TGate3 = TypeVar("TGate3", bound=Gate3Contract)
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -74,6 +78,28 @@ def freeze_evidence_artifact(
     )
 
 
+def freeze_prospective_preregistration(
+    preregistration: Gate3ProspectivePreregistration,
+) -> FrozenGate3Artifact[Gate3ProspectivePreregistration]:
+    """Freeze candidate/protocol bytes before a future holdout begins."""
+
+    return _freeze(
+        preregistration,
+        contract_type=Gate3ProspectivePreregistration,
+    )
+
+
+def freeze_prospective_holdout_receipt(
+    receipt: Gate3ProspectiveHoldoutReceipt,
+) -> FrozenGate3Artifact[Gate3ProspectiveHoldoutReceipt]:
+    """Freeze a post-acquisition receipt without evaluating the holdout."""
+
+    return _freeze(
+        receipt,
+        contract_type=Gate3ProspectiveHoldoutReceipt,
+    )
+
+
 def _verify(
     payload: bytes,
     *,
@@ -119,4 +145,28 @@ def verify_evidence_artifact(
         payload,
         expected_sha256=expected_sha256,
         contract_type=Gate3EvidenceArtifact,
+    )
+
+
+def verify_prospective_preregistration(
+    payload: bytes,
+    *,
+    expected_sha256: str,
+) -> Gate3ProspectivePreregistration:
+    return _verify(
+        payload,
+        expected_sha256=expected_sha256,
+        contract_type=Gate3ProspectivePreregistration,
+    )
+
+
+def verify_prospective_holdout_receipt(
+    payload: bytes,
+    *,
+    expected_sha256: str,
+) -> Gate3ProspectiveHoldoutReceipt:
+    return _verify(
+        payload,
+        expected_sha256=expected_sha256,
+        contract_type=Gate3ProspectiveHoldoutReceipt,
     )

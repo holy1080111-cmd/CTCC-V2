@@ -27,6 +27,12 @@ the partition is ineligible for a `predictive_oos` claim and may only rehearse
 the replay pipeline at the `computational` level. No fitted candidate result or
 promotion review has been executed.
 
+The prospective-seal machinery is now implemented and documented in
+`docs/mie_gate3_prospective_holdout.md`. It freezes candidate/protocol choices
+before a future window and makes any early, exposed, changed-candidate, hash,
+coordinate, artifact-count, or row-count mismatch ineligible. No real future
+window or candidate has yet been sealed.
+
 ## Work packages
 
 1. Freeze contracts for dataset identity, bar construction, outcome labels,
@@ -66,6 +72,8 @@ The completed data-qualification step was explicit and separately reviewed:
   identities and 259,200 expected rows — completed 2026-09-02;
 - bind its hashes and exposed-holdout state in a machine-verifiable,
   fail-closed qualification receipt — completed 2026-09-02.
+- implement canonical prospective preregistration and post-acquisition receipt
+  contracts, including fail-closed timing and eligibility rules — completed.
 
 The following evidence steps remain explicit and separately reviewable:
 
