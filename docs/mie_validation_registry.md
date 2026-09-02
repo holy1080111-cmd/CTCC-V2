@@ -38,11 +38,11 @@ No evidence level grants exchange-write authority.
 | MIE endpoint dynamics | causal; exact legacy characterization | `mie.price_path.shared` | shadow only in Gate 2 | OOS information gain and net EV beyond legacy |
 | MIE normalized momentum | computational/causal implementation | `mie.price_path.shared` | shadow only | OOS incremental value after costs and dependency correction |
 | MIE confirmed geometry | causal confirmation; auxiliary market claim | `mie.price_path.shared` | shadow only | objective labels and OOS incremental value after costs |
-| MIE Gate 3 offline validation foundation | computational contracts and synthetic leakage verification | offline committed fixtures | shadow-only calculation tooling | frozen public dataset probe, preregistered real holdout replay, independent OOS review |
+| MIE Gate 3 offline validation foundation | computational contracts, synthetic leakage verification, and fail-closed real-batch qualification | offline fixtures plus hash-bound public reference data | shadow-only calculation tooling | preregistered candidate, fresh unread holdout replay, and independent OOS review |
 | external public dataset manifest and quality profile | computational identity and data-quality checks | external provider artifact | calculation reference only | canonical parsers, point-in-time replay, OOS economics and independent review |
 | pre-hashed external artifact acquisition receipt | transport identity and archive-metadata safety | reviewed provider host | offline calculation reference only | canonical parsing, semantic validation, point-in-time replay, OOS economics and independent review |
 | published external benchmark record | reported or reproducible reference, not CTCC validation | external project/dataset | calculation reference only | identical data/cost/trial protocol and independent CTCC reproduction |
-| Binance BTCUSDT 1m public archive | computational data-quality reference | external provider archive | isolated reference only | real operator probe, frozen replay partitions, leakage/cost/OOS validation, and independent promotion review |
+| Binance BTCUSDT/ETHUSDT 1m public batch | computational data-quality reference; 180/180 artifacts and 259,200 rows verified | external provider archives | isolated reference and pipeline rehearsal only | fresh unread holdout, preregistered replay, leakage/cost/OOS validation, and independent promotion review |
 
 All five Gate 2 families consume the same confirmed OHLCV path and therefore
 share the `mie.price_path.shared` dependency group in later evidence adapters.

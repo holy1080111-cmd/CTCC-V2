@@ -1,6 +1,6 @@
 # CTCC-V2 External Benchmark Pack v3
 
-## Current source-acceptance record
+## Current acceptance record
 
 On 2026-09-01, `scripts/verify_external_benchmark_pack.ps1` passed from
 reviewed commit `e0e427411d3eb77ae2d908793777a184dc8d7053` with Alembic `0016`, a
@@ -9,6 +9,20 @@ the full hermetic regression, and the 392-file canonical manifest. It reported
 all Pack v1-v3 source gates verified with zero runtime consumers and zero
 execution authority. The real 180-artifact public batch probe was not run and
 is not implied by this source acceptance.
+
+On 2026-09-02, the real reference-only probe then completed from reviewed
+commit `1e23b252757f9c4f66e5574374ae19085171c633`. All 180 ZIPs, 11,146,413
+bytes, 259,200 minute rows, six partition summaries, and zero partition
+overlaps passed. The final outside-repository evidence file has SHA-256
+`aa06c4c5587c67dd363e691001304f8cb2f9d74bca35ddf08bf7dbc3e1c40d7a`.
+The fail-closed qualification and exact hash chain are recorded in
+`docs/mie_gate3_batch_qualification.md`.
+
+The probe exposed descriptive summaries for the retrospective holdout before
+a candidate was preregistered. That partition is therefore not eligible to
+support a later `predictive_oos` claim; it remains a computational pipeline
+rehearsal input. No strategy, costs, runtime consumer, account read, or order
+was involved.
 
 ## Decision
 
@@ -120,16 +134,16 @@ generic quality, Binance quality, final evidence, and daily-summary JSON. The
 verified ZIP remains under its exact provider-relative path. Final acceptance
 is recorded at:
 
+```text
+evidence/binance-reference-batch-v1-evidence.json
+```
+
 Price fields remain strictly positive. Binance futures may legitimately
 publish a complete minute with zero traded volume, so volume is checked as
 nonnegative by the provider-specific profile. Negative volume, invalid OHLC,
 missing minutes, duplicate timestamps, and interval defects remain hard
 failures. This prevents the generic strictly-positive price rule from
 rejecting a structurally valid zero-volume candle.
-
-```text
-evidence/binance-reference-batch-v1-evidence.json
-```
 
 The final contract requires 180 completed unique requests, 259,200 minute
 rows, six partition summaries, zero partition overlap, zero runtime consumers,
@@ -190,10 +204,12 @@ REAL_ORDER_TESTED=0
 
 ## What must come next
 
-Gate v3 is a data and descriptive-evidence gate. A later gate must add a
-canonical replay dataset, declare the strategy and parameter selection before
-reading holdout results, model fees/funding/spread/slippage, validate event-time
-alignment and leakage, report walk-forward out-of-sample uncertainty, and
-compare against simple benchmarks. Only a separately reviewed promotion gate
-may make validated evidence available to decision logic; no research gate can
-grant exchange-write authority.
+Gate v3 is now accepted as a data and descriptive-evidence gate. Gate 3 must
+still add a canonical replay dataset, freeze strategy and parameter selection,
+model fees/funding/spread/slippage, validate event-time alignment and leakage,
+report walk-forward uncertainty, and compare against simple benchmarks. The
+exposed retrospective partition can rehearse that pipeline only at the
+`computational` level. A `predictive_oos` attempt requires a fresh unread
+holdout whose candidate and preregistration predate access. Only a separately
+reviewed promotion gate may make validated evidence available to decision
+logic; no research gate can grant exchange-write authority.

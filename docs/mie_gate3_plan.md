@@ -15,15 +15,17 @@ does not itself authorize a decision gate or claim economic value.
 ## Current implementation status
 
 The automation-safe engineering foundation is implemented and documented in
-`docs/mie_gate3_foundation.md`. Contracts, canonical artifacts, point-in-time
-fixture replay, purged/embargoed folds, probability metrics, baselines,
-bootstrap uncertainty, Holm correction, and descriptive cost calculations are
-covered by hermetic tests and a zero-authority verifier.
+`docs/mie_gate3_foundation.md`. The 180-artifact public batch also completed
+on 2026-09-02 and is bound by the fail-closed receipt documented in
+`docs/mie_gate3_batch_qualification.md`: 180 artifacts, 259,200 minute rows,
+six summaries, and zero overlaps passed with no strategy, costs, runtime
+consumer, or execution authority.
 
-This is not real Gate 3 evidence. No 180-artifact batch, holdout read, fitted
-candidate result, or promotion review has been executed. The current claim
-therefore remains `computational`, with zero runtime consumers and zero
-execution authority.
+The probe exposed a descriptive summary of its retrospective holdout before a
+candidate was preregistered. Candidate design did not predate that access, so
+the partition is ineligible for a `predictive_oos` claim and may only rehearse
+the replay pipeline at the `computational` level. No fitted candidate result or
+promotion review has been executed.
 
 ## Work packages
 
@@ -58,12 +60,18 @@ The following work may be automated without market or exchange authority:
   packages;
 - hermetic CI, manifest generation, and schema-drift verification.
 
-The following evidence steps remain explicit and separately reviewable:
+The completed data-qualification step was explicit and separately reviewed:
 
 - run the 180-artifact public reference-only batch probe and verify its pinned
-  identities and 259,200 expected rows;
-- commit the preregistration before reading holdout results;
-- execute the real replay once against the frozen holdout;
+  identities and 259,200 expected rows — completed 2026-09-02;
+- bind its hashes and exposed-holdout state in a machine-verifiable,
+  fail-closed qualification receipt — completed 2026-09-02.
+
+The following evidence steps remain explicit and separately reviewable:
+
+- freeze the candidate, parameters, costs, trials, and preregistration before
+  any access to a fresh holdout;
+- execute the real replay once against that newly sealed holdout;
 - independently review leakage, trial accounting, uncertainty, and costs;
 - decide whether the maximum validation claim is still `computational`, can
   become `predictive_oos`, or fails closed.
@@ -77,7 +85,9 @@ Gate 3 is complete only when all of the following are true:
 - every input row and derived bar has point-in-time provenance;
 - replay is byte-for-byte deterministic from the same manifest and plan;
 - purge and embargo cover the largest feature and label dependency windows;
-- the holdout is untouched until the preregistration hash is frozen;
+- the holdout is untouched until the preregistration hash is frozen; the v3
+  retrospective partition no longer meets this criterion and cannot support
+  the predictive acceptance path;
 - all baselines, metrics, confidence intervals, costs, and trials are reported;
 - invalid/missing data and non-finite calculations fail closed;
 - an immutable evidence artifact passes schema and hash verification;
