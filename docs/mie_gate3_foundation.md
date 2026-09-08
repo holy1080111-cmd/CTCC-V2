@@ -30,6 +30,14 @@ value.
   trial/configuration, require every declared baseline, holdout metrics,
   confidence intervals, sample counts, reliability bins, exact ECE, all trial
   results, corrected p-values, costs, and independent review.
+- a prospective preregistration seal that fixes candidate/trial/cost choices,
+  future coordinates, expected files/rows, publication lag, and first permitted
+  access before the first holdout event;
+- a post-acquisition receipt that binds exact data identity back to that seal
+  and denies predictive eligibility after early access, summary exposure,
+  incomplete verification, candidate changes, or any identity/count mismatch.
+- distinct candidate and baseline identifiers in both preregistration
+  schemas, preventing a shared ID from collapsing metric coverage.
 
 The cost calculator remains descriptive/computational. It consumes normalized
 shadow exposures, applies a frozen observation/funding cadence, and has no
@@ -105,12 +113,20 @@ separate, explicit, reviewable operations:
 
 1. verify the pinned 180 public artifacts and 259,200 expected rows — completed
    2026-09-02 and recorded in `docs/mie_gate3_batch_qualification.md`;
-2. freeze and commit the candidate and real preregistration before accessing a
-   fresh unread holdout;
-3. execute the real replay exactly once against that newly sealed holdout;
-4. independently review leakage, exclusions, trials, uncertainty, calibration,
+2. implement the prospective seal/receipt schemas needed to enforce candidate
+   freeze before holdout access — completed;
+3. qualify row-level availability and implement an offline archive adapter;
+   archive publication/observation timestamps alone are insufficient;
+4. build/select the candidate and freeze a real seal before the chosen future
+   window begins;
+5. after the window and declared publication lag, acquire it without exposing
+   summaries and freeze the matching receipt;
+6. implement and verify the prospective seal/receipt-to-evaluated-evidence
+   link; the current evidence artifact still uses retrospective preregistration;
+7. execute the real replay exactly once against that newly sealed holdout;
+8. independently review leakage, exclusions, trials, uncertainty, calibration,
    costs, provenance, and the canonical artifact hash;
-5. decide whether the evidence fails closed, remains `computational`, or may be
+9. decide whether the evidence fails closed, remains `computational`, or may be
    attested at most `predictive_oos`.
 
 The completed v3 probe exposed descriptive summaries for its retrospective

@@ -31,7 +31,8 @@
   - Gate 3 automation-safe offline validation foundation implements strict
     preregistration/evidence contracts, point-in-time fixture replay,
     purged/embargoed folds, baselines, calibration, uncertainty, trial
-    correction, and descriptive costs; its current claim remains computational
+    correction, descriptive costs, and a prospective future-holdout
+    seal/receipt state machine; its current claim remains computational
   - later Gates remain shadow-only until independently frozen
 - External Benchmark Pack:
   - Gate v1 immutable source/dataset/result contracts, artifact verification,
@@ -150,17 +151,22 @@
 - Gate 3's automation-safe foundation is implemented without a runtime caller.
   It machine-binds candidate/trial identity, baselines, confidence intervals,
   reliability samples, Holm correction, costs, reviewer metadata, and canonical
-  provenance, but no real holdout has been read.
+  provenance, but no real strategy holdout evaluation has been performed. The
+  later public-batch quality probe did expose retrospective-holdout summaries.
 
 ## Next stage
 
 - The frozen Gate 3 plan and implemented foundation are documented in
   `docs/mie_gate3_plan.md` and `docs/mie_gate3_foundation.md`.
 - Gate 3 remains offline and shadow-only. The real 180-artifact data-quality
-  probe is complete; candidate preregistration, a fresh unread holdout, the
-  single replay, and independent evidence review remain pending. The exposed
-  retrospective partition is rehearsal-only and the current maximum claim is
-  `computational`.
+  probe and prospective seal/receipt machinery are complete; a real frozen
+  candidate/seal, fresh unread holdout, the single replay, and independent
+  evidence review remain pending. The exposed retrospective partition is
+  rehearsal-only and the current maximum claim is `computational`.
+- The 2026-09-08 review identified prerequisites before real candidate
+  evaluation: row-level availability qualification, an offline archive replay
+  adapter, and an evaluated-evidence contract linking the prospective seal and
+  acquisition receipt. Archive timestamps do not prove historical row receipt.
 - Gate 4 runtime-shadow work is blocked until Gate 3 has a preregistered,
   independently reviewed out-of-sample artifact. Demo and real-money promotion
   remain separate evidence gates.

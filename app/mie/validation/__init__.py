@@ -5,8 +5,12 @@ from app.mie.validation.artifact import (
     FrozenGate3Artifact,
     freeze_evidence_artifact,
     freeze_preregistration,
+    freeze_prospective_holdout_receipt,
+    freeze_prospective_preregistration,
     verify_evidence_artifact,
     verify_preregistration,
+    verify_prospective_holdout_receipt,
+    verify_prospective_preregistration,
 )
 from app.mie.validation.contracts import (
     BarConstruction,
@@ -66,6 +70,14 @@ from app.mie.validation.metrics import (
 from app.mie.validation.metrics import (
     ReliabilityBin as CalculatedReliabilityBin,
 )
+from app.mie.validation.prospective import (
+    DevelopmentValidationSplit,
+    Gate3ProspectiveHoldoutReceipt,
+    Gate3ProspectivePreregistration,
+    ProspectiveAccessOutcome,
+    ProspectiveHoldoutSpec,
+    ProspectiveHoldoutState,
+)
 from app.mie.validation.qualification import (
     Gate3DatasetQualification,
     HoldoutAccessState,
@@ -99,6 +111,7 @@ __all__ = [
     "CostedObservation",
     "DatasetIdentity",
     "DatasetPartition",
+    "DevelopmentValidationSplit",
     "EvaluationPlan",
     "ExclusionSummary",
     "FeatureSpec",
@@ -112,6 +125,8 @@ __all__ = [
     "Gate3EvidenceArtifact",
     "Gate3Metric",
     "Gate3Preregistration",
+    "Gate3ProspectiveHoldoutReceipt",
+    "Gate3ProspectivePreregistration",
     "HoldoutAccessState",
     "MetricEstimate",
     "MultipleTestingCorrection",
@@ -121,6 +136,9 @@ __all__ = [
     "PointInTimeBar",
     "PointInTimeReplaySnapshot",
     "ProbabilityMetrics",
+    "ProspectiveAccessOutcome",
+    "ProspectiveHoldoutSpec",
+    "ProspectiveHoldoutState",
     "PurgedWalkForwardFold",
     "PurgedWalkForwardSplit",
     "ReliabilityBin",
@@ -141,6 +159,8 @@ __all__ = [
     "forward_direction_label",
     "freeze_evidence_artifact",
     "freeze_preregistration",
+    "freeze_prospective_holdout_receipt",
+    "freeze_prospective_preregistration",
     "frozen_legacy_score_baseline",
     "holm_bonferroni",
     "log_loss",
@@ -154,4 +174,6 @@ __all__ = [
     "replay_features_walk_forward",
     "verify_evidence_artifact",
     "verify_preregistration",
+    "verify_prospective_holdout_receipt",
+    "verify_prospective_preregistration",
 ]
