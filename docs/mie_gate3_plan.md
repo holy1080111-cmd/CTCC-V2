@@ -33,6 +33,33 @@ before a future window and makes any early, exposed, changed-candidate, hash,
 coordinate, artifact-count, or row-count mismatch ineligible. No real future
 window or candidate has yet been sealed.
 
+## Next implementation prerequisites (2026-09-08 review)
+
+The archive batch has event open/close timestamps and artifact-level
+publication, observation, and retrieval timestamps, but no historical
+per-row first-receipt evidence. Its archive-level `point_in_time_safe` flag
+does not establish row-level replay availability. No Binance archive to
+`PointInTimeBar` adapter currently exists.
+
+Before candidate fitting or a real seal:
+
+1. Add an immutable availability-provenance contract separating measured
+   receipt, archive observation, and assumed bar-close availability. Bind
+   archive, receipt, and row hashes; deny predictive eligibility for assumed
+   historical availability.
+2. Build a pure offline adapter with synthetic archive fixtures. Preserve
+   source timestamps, normalize inclusive close timestamps to end-exclusive
+   bar boundaries, and test late/missing/duplicate rows, hash changes,
+   aggregation boundaries, and development/validation partition isolation.
+3. Establish a qualified input source before claiming point-in-time replay;
+   never substitute bar close for an unrecorded historical receipt time.
+
+The prospective evaluation path also needs an evidence contract that binds
+both the original seal and its acquisition receipt. The existing
+`Gate3EvidenceArtifact` accepts the retrospective preregistration only.
+Simply accepting either schema would not verify the two-stage provenance
+chain. This integration must pass before a real prospective evaluation.
+
 ## Work packages
 
 1. Freeze contracts for dataset identity, bar construction, outcome labels,

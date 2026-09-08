@@ -225,6 +225,9 @@ class Gate3ProspectivePreregistration(Gate3Contract):
     def validate_baselines(
         cls, value: tuple[BaselineSpec, ...]
     ) -> tuple[BaselineSpec, ...]:
+        baseline_ids = tuple(item.baseline_id for item in value)
+        if len(baseline_ids) != len(set(baseline_ids)):
+            raise ValueError("baseline ids must be unique")
         kinds = tuple(item.kind for item in value)
         if len(kinds) != len(set(kinds)):
             raise ValueError("baseline kinds must be unique")
@@ -236,6 +239,11 @@ class Gate3ProspectivePreregistration(Gate3Contract):
 
     @model_validator(mode="after")
     def validate_preregistration(self) -> Gate3ProspectivePreregistration:
+        if any(
+            item.baseline_id == self.candidate.candidate_id
+            for item in self.baselines
+        ):
+            raise ValueError("candidate id must differ from every baseline id")
         if self.training_dataset.frozen_at > self.created_at:
             raise ValueError("training dataset must be frozen before preregistration")
         if any(item.frozen_at > self.created_at for item in self.baselines):

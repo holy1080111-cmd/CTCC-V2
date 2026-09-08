@@ -319,6 +319,18 @@ def test_preregistration_is_canonical_immutable_and_zero_authority() -> None:
         Gate3Preregistration.model_validate(payload)
 
 
+def test_preregistration_rejects_colliding_evaluation_subject_ids() -> None:
+    payload = valid_preregistration().model_dump()
+    payload["baselines"][1]["baseline_id"] = payload["baselines"][0]["baseline_id"]
+    with pytest.raises(ValidationError, match="baseline ids must be unique"):
+        Gate3Preregistration.model_validate(payload)
+
+    payload = valid_preregistration().model_dump()
+    payload["baselines"][0]["baseline_id"] = payload["candidate"]["candidate_id"]
+    with pytest.raises(ValidationError, match="candidate id must differ"):
+        Gate3Preregistration.model_validate(payload)
+
+
 def test_canonical_decimal_hash_is_exact_across_ambient_contexts() -> None:
     value = D("123456789012345678901234567890.123450000")
     parameter = FrozenParameter(name="exact:decimal", value=value)

@@ -33,6 +33,8 @@ has `schema_version=ctcc.mie.gate3.prospective_holdout_receipt.v1`.
 - The preregistration timestamp must precede the first holdout event.
 - The candidate must select exactly one declared frozen trial and use the same
   configuration hash.
+- Baseline IDs must be unique and must differ from the candidate ID, so
+  evidence requirements cannot collapse distinct evaluation subjects.
 - Training data and the validation window must end outside the declared
   holdout embargo.
 - Feature, label, cost, purge, embargo, and holdout durations must align to the
@@ -78,14 +80,22 @@ acquisition receipt never evaluates a strategy or authorizes an order.
 
 ## Remaining evidence work
 
-1. Build and validate a deterministic candidate using only declared past
+1. Qualify row-level availability provenance and implement the offline replay
+   adapter. Archive publication/observation timestamps do not prove when each
+   historical bar was first observable. Assumed bar-close availability must
+   remain computational-only.
+2. Build and validate a deterministic candidate using only declared past
    development/validation data.
-2. Commit its exact source/configuration hashes and a real prospective seal
+3. Commit its exact source/configuration hashes and a real prospective seal
    before the chosen future window starts.
-3. After the window and publication lag, use a no-summary acquisition path and
+4. After the window and publication lag, use a no-summary acquisition path and
    freeze the matching receipt.
-4. Run the one declared holdout evaluation, construct the evidence artifact,
+5. Implement an evaluated-evidence contract that verifies both the original
+   prospective seal hash and the acquisition receipt. The existing
+   `Gate3EvidenceArtifact` accepts only the original preregistration contract;
+   it is not yet an end-to-end prospective evidence path.
+6. Run the one declared holdout evaluation, construct the evidence artifact,
    and obtain independent leakage/trial/uncertainty/cost review.
 
-Until all four steps pass, Gate 4 remains blocked and no decision or execution
+Until all six steps pass, Gate 4 remains blocked and no decision or execution
 authority changes.

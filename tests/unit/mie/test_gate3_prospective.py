@@ -239,6 +239,18 @@ def test_prospective_seal_is_canonical_immutable_and_zero_authority() -> None:
         freeze_prospective_preregistration(tampered)
 
 
+def test_prospective_seal_rejects_colliding_evaluation_subject_ids() -> None:
+    payload = valid_prospective_preregistration().model_dump()
+    payload["baselines"][1]["baseline_id"] = payload["baselines"][0]["baseline_id"]
+    with pytest.raises(ValidationError, match="baseline ids must be unique"):
+        Gate3ProspectivePreregistration.model_validate(payload)
+
+    payload = valid_prospective_preregistration().model_dump()
+    payload["baselines"][0]["baseline_id"] = payload["candidate"]["candidate_id"]
+    with pytest.raises(ValidationError, match="candidate id must differ"):
+        Gate3ProspectivePreregistration.model_validate(payload)
+
+
 def test_prospective_seal_must_predate_holdout_and_respect_embargo() -> None:
     payload = valid_prospective_preregistration().model_dump()
     payload["created_at"] = HOLDOUT_START

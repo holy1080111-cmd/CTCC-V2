@@ -151,7 +151,8 @@
 - Gate 3's automation-safe foundation is implemented without a runtime caller.
   It machine-binds candidate/trial identity, baselines, confidence intervals,
   reliability samples, Holm correction, costs, reviewer metadata, and canonical
-  provenance, but no real holdout has been read.
+  provenance, but no real strategy holdout evaluation has been performed. The
+  later public-batch quality probe did expose retrospective-holdout summaries.
 
 ## Next stage
 
@@ -162,6 +163,10 @@
   candidate/seal, fresh unread holdout, the single replay, and independent
   evidence review remain pending. The exposed retrospective partition is
   rehearsal-only and the current maximum claim is `computational`.
+- The 2026-09-08 review identified prerequisites before real candidate
+  evaluation: row-level availability qualification, an offline archive replay
+  adapter, and an evaluated-evidence contract linking the prospective seal and
+  acquisition receipt. Archive timestamps do not prove historical row receipt.
 - Gate 4 runtime-shadow work is blocked until Gate 3 has a preregistered,
   independently reviewed out-of-sample artifact. Demo and real-money promotion
   remain separate evidence gates.
