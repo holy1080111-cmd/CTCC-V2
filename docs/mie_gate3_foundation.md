@@ -38,6 +38,9 @@ value.
   incomplete verification, candidate changes, or any identity/count mismatch.
 - distinct candidate and baseline identifiers in both preregistration
   schemas, preventing a shared ID from collapsing metric coverage.
+- computational-only availability attestations and a bytes-only daily archive
+  rehearsal adapter with conservative retrieval-time replay. See
+  `docs/mie_gate3_archive_rehearsal.md`; this is not historical receipt proof.
 
 The cost calculator remains descriptive/computational. It consumes normalized
 shadow exposures, applies a frozen observation/funding cadence, and has no
@@ -115,8 +118,9 @@ separate, explicit, reviewable operations:
    2026-09-02 and recorded in `docs/mie_gate3_batch_qualification.md`;
 2. implement the prospective seal/receipt schemas needed to enforce candidate
    freeze before holdout access — completed;
-3. qualify row-level availability and implement an offline archive adapter;
-   archive publication/observation timestamps alone are insufficient;
+3. qualify row-level availability and integrate real acquisition provenance;
+   the single-day synthetic archive adapter is implemented, but archive
+   publication/observation timestamps alone are insufficient;
 4. build/select the candidate and freeze a real seal before the chosen future
    window begins;
 5. after the window and declared publication lag, acquire it without exposing

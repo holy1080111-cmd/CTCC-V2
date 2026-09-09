@@ -167,6 +167,10 @@
   evaluation: row-level availability qualification, an offline archive replay
   adapter, and an evaluated-evidence contract linking the prospective seal and
   acquisition receipt. Archive timestamps do not prove historical row receipt.
+- Availability contracts and a single-day bytes-only archive rehearsal now
+  enforce conservative retrieval-time visibility with synthetic tests. They
+  remain computational-only; real acquisition-chain qualification, batch
+  integration, candidate fitting, and prospective evidence are still pending.
 - Gate 4 runtime-shadow work is blocked until Gate 3 has a preregistered,
   independently reviewed out-of-sample artifact. Demo and real-money promotion
   remain separate evidence gates.

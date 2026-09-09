@@ -9,6 +9,11 @@ from typing import Generic, TypeVar
 
 from pydantic import ValidationError
 
+from app.mie.validation.archive_replay import (
+    ArchiveReplayDataset,
+    validate_archive_replay_source,
+)
+from app.mie.validation.availability import ArchiveObservationReceipt
 from app.mie.validation.contracts import (
     Gate3Contract,
     Gate3EvidenceArtifact,
@@ -65,6 +70,28 @@ def freeze_preregistration(
         preregistration,
         contract_type=Gate3Preregistration,
     )
+
+
+def freeze_archive_observation_receipt(
+    receipt: ArchiveObservationReceipt,
+) -> FrozenGate3Artifact[ArchiveObservationReceipt]:
+    """Freeze an offline observation attestation, not historical receipt proof."""
+
+    return _freeze(receipt, contract_type=ArchiveObservationReceipt)
+
+
+def freeze_archive_replay_dataset(
+    dataset: ArchiveReplayDataset,
+    *,
+    archive_bytes: bytes,
+) -> FrozenGate3Artifact[ArchiveReplayDataset]:
+    """Freeze a computational-only archive rehearsal with row provenance."""
+
+    try:
+        validated = validate_archive_replay_source(dataset, archive_bytes=archive_bytes)
+    except ValueError as exc:
+        raise ArtifactVerificationError("archive source revalidation failed") from exc
+    return _freeze(validated, contract_type=ArchiveReplayDataset)
 
 
 def freeze_evidence_artifact(
@@ -134,6 +161,35 @@ def verify_preregistration(
         expected_sha256=expected_sha256,
         contract_type=Gate3Preregistration,
     )
+
+
+def verify_archive_observation_receipt(
+    payload: bytes,
+    *,
+    expected_sha256: str,
+) -> ArchiveObservationReceipt:
+    return _verify(
+        payload,
+        expected_sha256=expected_sha256,
+        contract_type=ArchiveObservationReceipt,
+    )
+
+
+def verify_archive_replay_dataset(
+    payload: bytes,
+    *,
+    expected_sha256: str,
+    archive_bytes: bytes,
+) -> ArchiveReplayDataset:
+    contract = _verify(
+        payload,
+        expected_sha256=expected_sha256,
+        contract_type=ArchiveReplayDataset,
+    )
+    try:
+        return validate_archive_replay_source(contract, archive_bytes=archive_bytes)
+    except ValueError as exc:
+        raise ArtifactVerificationError("archive source revalidation failed") from exc
 
 
 def verify_evidence_artifact(

@@ -38,19 +38,25 @@ window or candidate has yet been sealed.
 The archive batch has event open/close timestamps and artifact-level
 publication, observation, and retrieval timestamps, but no historical
 per-row first-receipt evidence. Its archive-level `point_in_time_safe` flag
-does not establish row-level replay availability. No Binance archive to
-`PointInTimeBar` adapter currently exists.
+does not establish row-level replay availability. The synthetic archive
+rehearsal adapter in `docs/mie_gate3_archive_rehearsal.md` now converts one
+complete daily archive with conservative retrieval-time availability. It
+does not establish historical first-receipt evidence or verify the real
+external acquisition chain.
 
 Before candidate fitting or a real seal:
 
-1. Add an immutable availability-provenance contract separating measured
+1. Implement an immutable availability-provenance contract separating measured
    receipt, archive observation, and assumed bar-close availability. Bind
    archive, receipt, and row hashes; deny predictive eligibility for assumed
-   historical availability.
+   historical availability — computational contracts and synthetic tests
+   implemented; independent source qualification remains pending.
 2. Build a pure offline adapter with synthetic archive fixtures. Preserve
    source timestamps, normalize inclusive close timestamps to end-exclusive
    bar boundaries, and test late/missing/duplicate rows, hash changes,
-   aggregation boundaries, and development/validation partition isolation.
+   aggregation boundaries, and development/validation partition isolation —
+   single-day, development/validation-only rehearsal implemented; real batch
+   integration and independently qualified timing remain pending.
 3. Establish a qualified input source before claiming point-in-time replay;
    never substitute bar close for an unrecorded historical receipt time.
 
