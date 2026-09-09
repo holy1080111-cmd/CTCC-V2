@@ -1,16 +1,30 @@
 """Offline, shadow-only MIE Gate 3 validation toolkit."""
 
+from app.mie.validation.archive_replay import (
+    ArchiveReplayDataset,
+    conservative_archive_rows,
+    load_binance_archive_rehearsal,
+)
 from app.mie.validation.artifact import (
     ArtifactVerificationError,
     FrozenGate3Artifact,
+    freeze_archive_observation_receipt,
+    freeze_archive_replay_dataset,
     freeze_evidence_artifact,
     freeze_preregistration,
     freeze_prospective_holdout_receipt,
     freeze_prospective_preregistration,
+    verify_archive_observation_receipt,
+    verify_archive_replay_dataset,
     verify_evidence_artifact,
     verify_preregistration,
     verify_prospective_holdout_receipt,
     verify_prospective_preregistration,
+)
+from app.mie.validation.availability import (
+    ArchiveObservationReceipt,
+    AvailabilityBasis,
+    AvailabilityProvenance,
 )
 from app.mie.validation.contracts import (
     BarConstruction,
@@ -99,7 +113,11 @@ from app.mie.validation.splits import (
 
 __all__ = [
     "AdjustedPValue",
+    "ArchiveObservationReceipt",
+    "ArchiveReplayDataset",
     "ArtifactVerificationError",
+    "AvailabilityBasis",
+    "AvailabilityProvenance",
     "BarConstruction",
     "BaselineKind",
     "BaselineSpec",
@@ -152,17 +170,21 @@ __all__ = [
     "assert_no_temporal_leakage",
     "brier_loss_values",
     "brier_score",
+    "conservative_archive_rows",
     "constant_prevalence_baseline",
     "constant_probability_baseline",
     "evaluate_costed_return_path",
     "expected_calibration_error",
     "forward_direction_label",
+    "freeze_archive_observation_receipt",
+    "freeze_archive_replay_dataset",
     "freeze_evidence_artifact",
     "freeze_preregistration",
     "freeze_prospective_holdout_receipt",
     "freeze_prospective_preregistration",
     "frozen_legacy_score_baseline",
     "holm_bonferroni",
+    "load_binance_archive_rehearsal",
     "log_loss",
     "log_loss_values",
     "moving_block_bootstrap_interval",
@@ -172,6 +194,8 @@ __all__ = [
     "reliability_bins",
     "replay_features_at",
     "replay_features_walk_forward",
+    "verify_archive_observation_receipt",
+    "verify_archive_replay_dataset",
     "verify_evidence_artifact",
     "verify_preregistration",
     "verify_prospective_holdout_receipt",

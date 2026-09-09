@@ -7,6 +7,9 @@ from app.config.settings import Settings
 from app.mie.contracts import DecisionCandidate, MieShadowTrace
 from app.mie.features import MathematicalFeatureSnapshot
 from app.mie.validation import (
+    ArchiveObservationReceipt,
+    ArchiveReplayDataset,
+    AvailabilityProvenance,
     ForwardDirectionLabel,
     Gate3DatasetQualification,
     Gate3EvidenceArtifact,
@@ -117,10 +120,16 @@ def test_mie_decision_and_trace_have_no_order_geometry() -> None:
     assert forbidden_fields.isdisjoint(PointInTimeBar.model_fields)
     assert forbidden_fields.isdisjoint(PointInTimeReplaySnapshot.model_fields)
     assert forbidden_fields.isdisjoint(ForwardDirectionLabel.model_fields)
+    assert forbidden_fields.isdisjoint(ArchiveObservationReceipt.model_fields)
+    assert forbidden_fields.isdisjoint(ArchiveReplayDataset.model_fields)
+    assert forbidden_fields.isdisjoint(AvailabilityProvenance.model_fields)
 
 
 def test_gate3_contracts_are_structurally_zero_authority() -> None:
     for contract_type in (
+        ArchiveObservationReceipt,
+        ArchiveReplayDataset,
+        AvailabilityProvenance,
         Gate3DatasetQualification,
         Gate3Preregistration,
         Gate3ProspectivePreregistration,
@@ -132,6 +141,15 @@ def test_gate3_contracts_are_structurally_zero_authority() -> None:
     ):
         assert contract_type.model_fields["runtime_consumers"].default == 0
         assert contract_type.model_fields["execution_authority"].default is False
+
+
+def test_archive_rehearsal_cannot_attest_predictive_eligibility() -> None:
+    for contract_type in (
+        ArchiveObservationReceipt,
+        ArchiveReplayDataset,
+        AvailabilityProvenance,
+    ):
+        assert contract_type.model_fields["predictive_oos_eligible"].default is False
 
 
 def test_mie_does_not_change_fail_safe_runtime_defaults() -> None:

@@ -389,6 +389,9 @@ print("MIE_GATE3_CONTRACT_EXECUTION_AUTHORITY=0")
     docker compose @composeArguments exec -T api python scripts/hermetic_pytest.py `
         -q -p no:cacheprovider `
         tests/unit/mie/test_gate3_contracts.py `
+        tests/unit/mie/test_gate3_availability.py `
+        tests/unit/mie/test_gate3_archive_replay.py `
+        tests/unit/mie/test_gate3_archive_artifacts.py `
         tests/unit/mie/test_gate3_prospective.py `
         tests/unit/mie/test_gate3_qualification.py `
         tests/unit/mie/test_gate3_replay.py `
