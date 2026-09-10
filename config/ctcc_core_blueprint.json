@@ -1,0 +1,118 @@
+{
+  "schema_version": "ctcc.core.blueprint.v1",
+  "source_context": {
+    "project": "123",
+    "conversation_title": "CTCC 開發進度",
+    "conversation_id": "6a94fbd0-34e4-83ee-979c-519b5ecb1c66",
+    "timezone": "Asia/Taipei",
+    "requested_discussion_date": "2026-09-09",
+    "included_from": "2026-09-09T22:51:21+08:00",
+    "included_through": "2026-09-10T00:28:49+08:00",
+    "crossed_midnight": true,
+    "source_turn_ids": [
+      "14a15ffb-a54c-451b-9587-c6182df7c27b",
+      "36fb032b-a2d1-4638-a335-6a347ba95dc0",
+      "77f009b5-65f5-49b2-8b65-3b84c09e9cea",
+      "fc40732d-c470-4161-a2a2-b7ccbf8ce345",
+      "92a5f90b-877b-453b-9cbf-699c0a5e89d1",
+      "dae23b91-9e59-4bb9-9cdd-7682f34d6619",
+      "8e66d93c-227a-4caa-b6dd-6021f9f64952",
+      "f9fd84f4-a95e-4859-97fb-91968df47874",
+      "eeabfba5-422f-48eb-b825-485ce616ec60",
+      "62c5c640-7739-42a7-89d0-6802d15125d0"
+    ]
+  },
+  "authority": {
+    "status": "design_only_not_runtime_configuration",
+    "runtime_consumers": 0,
+    "execution_authority": false,
+    "auto_arm": false,
+    "auto_promotion": false,
+    "enable_demo_writes": false,
+    "enable_live_writes": false
+  },
+  "strategy_families": [
+    {"id": "trend_momentum", "label": "Trend / Momentum", "status": "existing_components_not_a_qualified_family"},
+    {"id": "structure_smc", "label": "Structure / SMC", "status": "existing_components_not_a_qualified_family"},
+    {"id": "mean_reversion", "label": "Mean Reversion", "status": "existing_components_not_a_qualified_family"},
+    {"id": "statistical_arbitrage", "label": "Statistical Arbitrage", "status": "research_planned"},
+    {"id": "funding_basis", "label": "Funding / Basis", "status": "research_planned"},
+    {"id": "market_making", "label": "Market Making", "status": "research_planned_separate_execution_review"}
+  ],
+  "regime_route_contract": {
+    "namespace": "design_taxonomy_not_mie_market_regime_enum",
+    "validated_mapper_required": true,
+    "unknown_policy": "no_trade",
+    "transition_policy": "no_trade"
+  },
+  "regime_routes": [
+    {"regime": "trend", "families": ["trend_momentum", "structure_smc"], "policy": "qualified_candidates_only"},
+    {"regime": "range", "families": ["mean_reversion", "statistical_arbitrage"], "policy": "qualified_candidates_only"},
+    {"regime": "high_volatility", "families": ["structure_smc", "trend_momentum"], "policy": "reduce_or_veto_only"},
+    {"regime": "risk_off", "families": [], "policy": "no_trade"},
+    {"regime": "funding_dislocation", "families": ["funding_basis"], "policy": "qualified_candidates_only"},
+    {"regime": "low_volatility_liquid", "families": ["market_making"], "policy": "separate_execution_gate_required"}
+  ],
+  "advisory_boundary": {
+    "mathematical_actions": ["retain", "downgrade", "veto"],
+    "ai_rl_actions": ["rank", "downgrade", "veto"],
+    "ranking_scope": "already_eligible_candidates_only",
+    "may_increase_score": false,
+    "may_increase_risk": false,
+    "may_increase_leverage": false,
+    "may_change_protection": false,
+    "may_submit_orders": false
+  },
+  "external_evidence": {
+    "requested_scope": ["system", "logic", "performance", "workflow"],
+    "author_namespace": "external_evidence",
+    "ctcc_namespace": "ctcc_validation",
+    "author_claims_are_ctcc_results": false,
+    "missing_values": "null_with_reason_not_zero_or_guessed",
+    "tiers": {
+      "E0": "author_claim_only",
+      "E1": "backtest_report_available",
+      "E2": "trade_records_available_for_recalculation",
+      "E3": "code_and_inputs_available_for_reproduction",
+      "E4": "out_of_sample_method_and_evidence_available",
+      "E5": "forward_or_paper_records_available",
+      "E6": "live_record_available_for_independent_verification"
+    },
+    "tier_is_verification": false,
+    "ctcc_e_label": "separately_recomputed_ctcc_evidence_not_automatic_promotion",
+    "pack_files": ["strategy_profile.json", "logic.yaml", "performance.json", "source_manifest.json", "ctcc_comparison.json"],
+    "optional_raw_file": "trades.csv",
+    "required_provenance": ["original_source_url", "author", "retrieved_at", "artifact_sha256", "license_status", "test_type", "market", "timeframe", "sample_window", "metric_definition", "cost_assumptions"],
+    "research_leads": [
+      {"name": "KA-MATS", "original_source_url": null, "verified": false, "metrics": null, "missing_reason": "original_source_not_retrievable_from_chat_citations"},
+      {"name": "Adaptive Regime Switch Pro", "original_source_url": null, "verified": false, "metrics": null, "missing_reason": "original_source_not_retrievable_from_chat_citations"},
+      {"name": "RL Tradingbot 2", "original_source_url": null, "verified": false, "metrics": null, "missing_reason": "original_source_not_retrievable_from_chat_citations"},
+      {"name": "Crypto Statistical Arbitrage", "original_source_url": null, "verified": false, "metrics": null, "missing_reason": "original_source_not_retrievable_from_chat_citations"},
+      {"name": "NORN WEAVE", "original_source_url": null, "verified": false, "metrics": null, "missing_reason": "original_source_not_retrievable_from_chat_citations"},
+      {"name": "ETH Momentum Breakout", "original_source_url": null, "verified": false, "metrics": null, "missing_reason": "original_source_not_retrievable_from_chat_citations"}
+    ]
+  },
+  "validation_tracks": {
+    "existing_demo": {
+      "goal": "continuous_signal_driven_forward_test",
+      "daily_forced_trade_count": null,
+      "continuous_is_unlimited_authority": false,
+      "startup_status": "not_activated_by_this_blueprint",
+      "required_controls": ["verified_isolation_and_runtime", "separate_demo_credentials", "read_only_preflight", "explicit_arm", "per_run_submission_cap", "protection", "reconciliation", "weekly_loss", "drawdown", "portfolio_limits", "idempotency", "emergency_stop"]
+    },
+    "mie": {
+      "mode": "offline_shadow_only",
+      "current_claim": "computational",
+      "runtime_consumers": 0,
+      "execution_authority": false,
+      "exposed_retrospective_holdout_predictive_eligible": false
+    }
+  },
+  "performance_requirements": ["trade_win_rate_with_denominator", "sample_count", "test_type", "net_pnl", "profit_factor", "net_expectancy", "average_win_loss", "max_drawdown", "fees", "funding", "spread", "slippage", "consecutive_losses", "regime_attribution", "strategy_family_attribution"],
+  "market_making_metrics": ["spread_capture", "inventory_pnl", "adverse_selection", "fill_quality"],
+  "sample_counts_are_not_sufficiency_guarantees": true,
+  "portfolio_research_backlog": ["correlation_risk", "regime_risk", "strategy_family_risk", "model_health"],
+  "promotion_sequence": ["source_qualification", "local_reproduction", "leakage_checks", "development_validation", "frozen_candidate_and_protocol", "fresh_holdout", "independent_oos_review", "cost_adjusted_evidence", "separately_authorized_demo_forward", "champion_challenger_review", "soak", "separately_authorized_live_canary", "final_acceptance"],
+  "safety_kernel_is_sole_execution_authority": true,
+  "safety_kernel_term": "existing_controlled_execution_boundaries_not_a_new_single_module"
+}

@@ -847,185 +847,220 @@ class Gate3EvidenceArtifact(Gate3Contract):
             raise ValueError("dataset provenance hash mismatch")
         if provenance.source_tree_sha256 != preregistration.source_tree_sha256:
             raise ValueError("source tree provenance hash mismatch")
-        if self.executed_trial_count != (
-            preregistration.evaluation.trials.declared_trial_count
-        ):
-            raise ValueError("executed trial count must match preregistration")
-        declared_trial_ids = tuple(
-            item.trial_id for item in preregistration.evaluation.trials.trials
+        _validate_evaluation_results(
+            candidate=preregistration.candidate,
+            baselines=preregistration.baselines,
+            evaluation=preregistration.evaluation,
+            metric_estimates=self.metric_estimates,
+            reliability_bins=self.reliability_bins,
+            trial_results=self.trial_results,
+            executed_trial_count=self.executed_trial_count,
+            costs_applied=self.costs_applied,
+            reviewer=self.reviewer,
+            generated_at=provenance.generated_at,
+            validation_claim=self.validation_claim,
+            holdout_partition=DatasetPartition.RETROSPECTIVE_HOLDOUT,
         )
-        if tuple(item.trial_id for item in self.trial_results) != declared_trial_ids:
-            raise ValueError("trial results must cover every frozen trial")
-        ranked_trials = sorted(
-            self.trial_results,
-            key=lambda item: (item.raw_p_value, item.trial_id),
-        )
-        adjusted_by_id: dict[str, Decimal] = {}
-        with localcontext() as context:
-            context.prec = DECIMAL_PRECISION
-            running_maximum = Decimal(0)
-            trial_count = len(ranked_trials)
-            for rank, item in enumerate(ranked_trials):
-                adjusted = min(
-                    Decimal(1),
-                    item.raw_p_value * Decimal(trial_count - rank),
+        return self
+
+
+def _validate_evaluation_results(
+    *,
+    candidate: CandidateSpec,
+    baselines: tuple[BaselineSpec, ...],
+    evaluation: EvaluationPlan,
+    metric_estimates: tuple[MetricEstimate, ...],
+    reliability_bins: tuple[ReliabilityBin, ...],
+    trial_results: tuple[TrialTestResult, ...],
+    executed_trial_count: int,
+    costs_applied: bool,
+    reviewer: ReviewerMetadata,
+    generated_at: datetime,
+    validation_claim: Gate3Claim,
+    holdout_partition: DatasetPartition | str,
+) -> None:
+    """Validate frozen evaluation results independently of seal provenance."""
+
+    if executed_trial_count != (
+        evaluation.trials.declared_trial_count
+    ):
+        raise ValueError("executed trial count must match preregistration")
+    declared_trial_ids = tuple(
+        item.trial_id for item in evaluation.trials.trials
+    )
+    if tuple(item.trial_id for item in trial_results) != declared_trial_ids:
+        raise ValueError("trial results must cover every frozen trial")
+    ranked_trials = sorted(
+        trial_results,
+        key=lambda item: (item.raw_p_value, item.trial_id),
+    )
+    adjusted_by_id: dict[str, Decimal] = {}
+    with localcontext() as context:
+        context.prec = DECIMAL_PRECISION
+        running_maximum = Decimal(0)
+        trial_count = len(ranked_trials)
+        for rank, item in enumerate(ranked_trials):
+            adjusted = min(
+                Decimal(1),
+                item.raw_p_value * Decimal(trial_count - rank),
+            )
+            running_maximum = max(running_maximum, adjusted)
+            adjusted_by_id[item.trial_id] = running_maximum
+    alpha = evaluation.uncertainty.familywise_alpha
+    if any(
+        item.adjusted_p_value != adjusted_by_id[item.trial_id]
+        or item.rejected != (adjusted_by_id[item.trial_id] <= alpha)
+        for item in trial_results
+    ):
+        raise ValueError("trial results disagree with frozen Holm correction")
+    if reviewer.reviewed_at < generated_at:
+        raise ValueError("review cannot precede artifact generation")
+
+    expected_subjects = {
+        candidate.candidate_id,
+        *(item.baseline_id for item in baselines),
+    }
+    actual_subjects = {item.subject_id for item in metric_estimates}
+    if not actual_subjects.issubset(expected_subjects):
+        raise ValueError("evidence contains an undeclared evaluation subject")
+
+    grouped_metrics: dict[
+        tuple[DatasetPartition | str, str], list[MetricEstimate]
+    ] = {}
+    for item in metric_estimates:
+        grouped_metrics.setdefault(
+            (item.partition, item.subject_id), []
+        ).append(item)
+    grouped_bins: dict[
+        tuple[DatasetPartition | str, str], list[ReliabilityBin]
+    ] = {}
+    for item in reliability_bins:
+        grouped_bins.setdefault(
+            (item.partition, item.subject_id), []
+        ).append(item)
+    if not set(grouped_bins).issubset(set(grouped_metrics)):
+        raise ValueError("reliability bins lack matching subject metrics")
+
+    for identity, estimates in grouped_metrics.items():
+        sample_counts = {item.sample_count for item in estimates}
+        if len(sample_counts) != 1:
+            raise ValueError("subject metric sample counts disagree")
+        bins = grouped_bins.get(identity)
+        if bins is not None:
+            bin_count = evaluation.reliability_bin_count
+            if len(bins) != bin_count:
+                raise ValueError(
+                    "reliability bin count must match preregistration"
                 )
-                running_maximum = max(running_maximum, adjusted)
-                adjusted_by_id[item.trial_id] = running_maximum
-        alpha = preregistration.evaluation.uncertainty.familywise_alpha
-        if any(
-            item.adjusted_p_value != adjusted_by_id[item.trial_id]
-            or item.rejected != (adjusted_by_id[item.trial_id] <= alpha)
-            for item in self.trial_results
-        ):
-            raise ValueError("trial results disagree with frozen Holm correction")
-        if self.reviewer.reviewed_at < provenance.generated_at:
-            raise ValueError("review cannot precede artifact generation")
-
-        expected_subjects = {
-            preregistration.candidate.candidate_id,
-            *(item.baseline_id for item in preregistration.baselines),
-        }
-        actual_subjects = {item.subject_id for item in self.metric_estimates}
-        if not actual_subjects.issubset(expected_subjects):
-            raise ValueError("evidence contains an undeclared evaluation subject")
-
-        grouped_metrics: dict[
-            tuple[DatasetPartition, str], list[MetricEstimate]
-        ] = {}
-        for item in self.metric_estimates:
-            grouped_metrics.setdefault(
-                (item.partition, item.subject_id), []
-            ).append(item)
-        grouped_bins: dict[
-            tuple[DatasetPartition, str], list[ReliabilityBin]
-        ] = {}
-        for item in self.reliability_bins:
-            grouped_bins.setdefault(
-                (item.partition, item.subject_id), []
-            ).append(item)
-        if not set(grouped_bins).issubset(set(grouped_metrics)):
-            raise ValueError("reliability bins lack matching subject metrics")
-
-        for identity, estimates in grouped_metrics.items():
-            sample_counts = {item.sample_count for item in estimates}
-            if len(sample_counts) != 1:
-                raise ValueError("subject metric sample counts disagree")
-            bins = grouped_bins.get(identity)
-            if bins is not None:
-                bin_count = preregistration.evaluation.reliability_bin_count
-                if len(bins) != bin_count:
-                    raise ValueError(
-                        "reliability bin count must match preregistration"
-                    )
-                sample_count = next(iter(sample_counts))
-                if sum(item.sample_count for item in bins) != sample_count:
-                    raise ValueError(
-                        "reliability samples must match subject metrics"
-                    )
-                denominator = Decimal(bin_count)
-                for index, item in enumerate(bins):
-                    expected_lower = Decimal(index) / denominator
-                    expected_upper = Decimal(index + 1) / denominator
-                    if (
-                        item.lower_bound != expected_lower
-                        or item.upper_bound != expected_upper
-                    ):
-                        raise ValueError(
-                            "reliability bins must use frozen equal widths"
-                        )
-                    if (
-                        index < bin_count - 1
-                        and item.mean_prediction is not None
-                        and item.mean_prediction >= item.upper_bound
-                    ):
-                        raise ValueError(
-                            "non-final reliability bins are upper-exclusive"
-                        )
+            sample_count = next(iter(sample_counts))
+            if sum(item.sample_count for item in bins) != sample_count:
+                raise ValueError(
+                    "reliability samples must match subject metrics"
+                )
+            denominator = Decimal(bin_count)
+            for index, item in enumerate(bins):
                 with localcontext() as context:
                     context.prec = DECIMAL_PRECISION
-                    expected_ece = sum(
-                        (
-                            Decimal(item.sample_count)
-                            / Decimal(sample_count)
-                            * abs(
-                                item.mean_prediction
-                                - item.observed_frequency
-                            )
-                            for item in bins
-                            if item.sample_count
-                            and item.mean_prediction is not None
-                            and item.observed_frequency is not None
-                        ),
-                        Decimal(0),
-                    )
-                reported_ece = next(
-                    (
-                        item.value
-                        for item in estimates
-                        if item.metric
-                        == Gate3Metric.EXPECTED_CALIBRATION_ERROR
-                    ),
-                    None,
-                )
-                if reported_ece is not None and reported_ece != expected_ece:
-                    raise ValueError(
-                        "reported calibration error disagrees with bins"
-                    )
-
-        if self.validation_claim == Gate3Claim.PREDICTIVE_OOS:
-            review_checks = (
-                self.reviewer.independent,
-                self.reviewer.leakage_review_passed,
-                self.reviewer.trial_accounting_review_passed,
-                self.reviewer.uncertainty_review_passed,
-                self.reviewer.cost_review_passed,
-            )
-            if not all(review_checks):
-                raise ValueError("predictive OOS claim requires independent review")
-            if not self.costs_applied:
-                raise ValueError("cost-free evidence is descriptive only")
-            if any(not item.cost_inclusive for item in self.metric_estimates):
-                raise ValueError("predictive OOS metrics must be cost inclusive")
-            selected_result = next(
-                item
-                for item in self.trial_results
-                if item.trial_id == preregistration.candidate.selected_trial_id
-            )
-            if not selected_result.rejected:
-                raise ValueError(
-                    "predictive OOS candidate must pass frozen trial correction"
-                )
-            holdout = DatasetPartition.RETROSPECTIVE_HOLDOUT
-            for subject_id in sorted(expected_subjects):
-                identity = (holdout, subject_id)
-                estimates = grouped_metrics.get(identity)
-                if estimates is None:
-                    raise ValueError(
-                        "predictive OOS evidence is missing a declared subject"
-                    )
-                expected_metrics = (
-                    CANDIDATE_ESTIMATE_METRICS
-                    if subject_id == preregistration.candidate.candidate_id
-                    else PROBABILITY_ESTIMATE_METRICS
-                )
-                if {item.metric for item in estimates} != expected_metrics:
-                    raise ValueError(
-                        "predictive OOS subject metrics are incomplete"
-                    )
-                if any(
-                    item.metric != Gate3Metric.SAMPLE_COUNT
-                    and (
-                        item.confidence_lower is None
-                        or item.confidence_upper is None
-                    )
-                    for item in estimates
+                    expected_lower = Decimal(index) / denominator
+                    expected_upper = Decimal(index + 1) / denominator
+                if (
+                    item.lower_bound != expected_lower
+                    or item.upper_bound != expected_upper
                 ):
                     raise ValueError(
-                        "predictive OOS metrics require confidence intervals"
+                        "reliability bins must use frozen equal widths"
                     )
-                if identity not in grouped_bins:
+                if (
+                    index < bin_count - 1
+                    and item.mean_prediction is not None
+                    and item.mean_prediction >= item.upper_bound
+                ):
                     raise ValueError(
-                        "predictive OOS reliability bins are incomplete"
+                        "non-final reliability bins are upper-exclusive"
                     )
-        return self
+            with localcontext() as context:
+                context.prec = DECIMAL_PRECISION
+                expected_ece = sum(
+                    (
+                        Decimal(item.sample_count)
+                        / Decimal(sample_count)
+                        * abs(
+                            item.mean_prediction
+                            - item.observed_frequency
+                        )
+                        for item in bins
+                        if item.sample_count
+                        and item.mean_prediction is not None
+                        and item.observed_frequency is not None
+                    ),
+                    Decimal(0),
+                )
+            reported_ece = next(
+                (
+                    item.value
+                    for item in estimates
+                    if item.metric
+                    == Gate3Metric.EXPECTED_CALIBRATION_ERROR
+                ),
+                None,
+            )
+            if reported_ece is not None and reported_ece != expected_ece:
+                raise ValueError(
+                    "reported calibration error disagrees with bins"
+                )
+
+    if validation_claim == Gate3Claim.PREDICTIVE_OOS:
+        review_checks = (
+            reviewer.independent,
+            reviewer.leakage_review_passed,
+            reviewer.trial_accounting_review_passed,
+            reviewer.uncertainty_review_passed,
+            reviewer.cost_review_passed,
+        )
+        if not all(review_checks):
+            raise ValueError("predictive OOS claim requires independent review")
+        if not costs_applied:
+            raise ValueError("cost-free evidence is descriptive only")
+        if any(not item.cost_inclusive for item in metric_estimates):
+            raise ValueError("predictive OOS metrics must be cost inclusive")
+        selected_result = next(
+            item
+            for item in trial_results
+            if item.trial_id == candidate.selected_trial_id
+        )
+        if not selected_result.rejected:
+            raise ValueError(
+                "predictive OOS candidate must pass frozen trial correction"
+            )
+        holdout = holdout_partition
+        for subject_id in sorted(expected_subjects):
+            identity = (holdout, subject_id)
+            estimates = grouped_metrics.get(identity)
+            if estimates is None:
+                raise ValueError(
+                    "predictive OOS evidence is missing a declared subject"
+                )
+            expected_metrics = (
+                CANDIDATE_ESTIMATE_METRICS
+                if subject_id == candidate.candidate_id
+                else PROBABILITY_ESTIMATE_METRICS
+            )
+            if {item.metric for item in estimates} != expected_metrics:
+                raise ValueError(
+                    "predictive OOS subject metrics are incomplete"
+                )
+            if any(
+                item.metric != Gate3Metric.SAMPLE_COUNT
+                and (
+                    item.confidence_lower is None
+                    or item.confidence_upper is None
+                )
+                for item in estimates
+            ):
+                raise ValueError(
+                    "predictive OOS metrics require confidence intervals"
+                )
+            if identity not in grouped_bins:
+                raise ValueError(
+                    "predictive OOS reliability bins are incomplete"
+                )

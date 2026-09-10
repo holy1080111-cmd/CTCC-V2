@@ -90,12 +90,14 @@ acquisition receipt never evaluates a strategy or authorizes an order.
    before the chosen future window starts.
 4. After the window and publication lag, use a no-summary acquisition path and
    freeze the matching receipt.
-5. Implement an evaluated-evidence contract that verifies both the original
-   prospective seal hash and the acquisition receipt. The existing
-   `Gate3EvidenceArtifact` accepts only the original preregistration contract;
-   it is not yet an end-to-end prospective evidence path.
+5. Bind evaluated evidence to the original seal and acquisition receipt — the
+   computational-only engineering contract and synthetic tests are implemented
+   in `docs/mie_gate3_prospective_evidence.md`. External seal/receipt pins are
+   mandatory; actual row-level source qualification and predictive evidence
+   remain pending. `Gate3EvidenceArtifact` stays retrospective-only.
 6. Run the one declared holdout evaluation, construct the evidence artifact,
    and obtain independent leakage/trial/uncertainty/cost review.
 
-Until all six steps pass, Gate 4 remains blocked and no decision or execution
-authority changes.
+Until all evidence steps pass, Gate 4 remains blocked and no decision or
+execution authority changes. Completing step 5's synthetic contract does not
+substitute for any of the real evidence steps.

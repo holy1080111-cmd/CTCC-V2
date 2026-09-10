@@ -151,6 +151,12 @@ def test_gate3_foundation_verifier_is_isolated_and_offline() -> None:
     assert "MIE_GATE3_RUNTIME_PROXIES_DISABLED=1" in source
     assert "[Environment]::SetEnvironmentVariable" in source
     assert "$savedEnvironment" in source
+    assert "Gate3ProspectiveEvidenceArtifact" in source
+    assert "tests/unit/mie/test_gate3_prospective_evidence.py" in source
+    assert "ArchiveBatchPlan" in source
+    assert "ArchiveBatchManifest" in source
+    assert "tests/unit/mie/test_gate3_archive_batch_plan.py" in source
+    assert "tests/unit/mie/test_gate3_archive_batch_artifacts.py" in source
     compose_path = ROOT / "compose.yaml"
     if compose_path.is_file():
         compose = compose_path.read_text(encoding="utf-8")

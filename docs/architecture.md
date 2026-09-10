@@ -1,5 +1,16 @@
 # CTCC V2 architecture — v1.6.9
 
+## Unified core specification
+
+The 123-project design discussion from 2026-09-09 and its after-midnight
+continuation is consolidated in [the CTCC core master](ctcc_core_master.md),
+with a machine-readable design-only blueprint in
+`config/ctcc_core_blueprint.json`. It records six strategy families, qualified
+regime routing, downward-only AI/RL advice, separately attributed external
+evidence, and distinct existing-Demo/MIE validation tracks. This target design
+does not change the runtime boundaries below, import research into execution,
+or activate Demo/Live settings.
+
 ## Execution boundaries
 
 ```text

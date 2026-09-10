@@ -55,16 +55,23 @@ Before candidate fitting or a real seal:
    source timestamps, normalize inclusive close timestamps to end-exclusive
    bar boundaries, and test late/missing/duplicate rows, hash changes,
    aggregation boundaries, and development/validation partition isolation —
-   single-day, development/validation-only rehearsal implemented; real batch
-   integration and independently qualified timing remain pending.
+   single-day rehearsal and pinned development/validation batch contracts
+   implemented with synthetic inputs. Batch coordinates are validated before
+   ZIP parsing; original-byte reconstruction is mandatory for manifest
+   freeze/verify and conservative conversion. See
+   `docs/mie_gate3_archive_batch.md`. Real batch integration and independently
+   qualified timing remain pending.
 3. Establish a qualified input source before claiming point-in-time replay;
    never substitute bar close for an unrecorded historical receipt time.
 
-The prospective evaluation path also needs an evidence contract that binds
-both the original seal and its acquisition receipt. The existing
-`Gate3EvidenceArtifact` accepts the retrospective preregistration only.
-Simply accepting either schema would not verify the two-stage provenance
-chain. This integration must pass before a real prospective evaluation.
+The prospective evaluation path now has a distinct computational-only evidence
+contract binding the original seal, its acquisition receipt, holdout dataset,
+and complete common-cohort report. Freeze/verify require independently retained
+seal and receipt hash pins; details are in
+`docs/mie_gate3_prospective_evidence.md`. The existing `Gate3EvidenceArtifact`
+remains retrospective-only. This synthetic engineering integration does not
+qualify row-level availability, authenticate real acquisition, or enable a
+prospective predictive claim; those evidence steps remain pending.
 
 ## Work packages
 
@@ -107,6 +114,9 @@ The completed data-qualification step was explicit and separately reviewed:
   fail-closed qualification receipt — completed 2026-09-02.
 - implement canonical prospective preregistration and post-acquisition receipt
   contracts, including fail-closed timing and eligibility rules — completed.
+- bind prospective seal/receipt/report with external hash pins, complete common
+  cohort accounting, and computational-only authority — synthetic contracts
+  and adversarial regression tests implemented; real evidence remains pending.
 
 The following evidence steps remain explicit and separately reviewable:
 

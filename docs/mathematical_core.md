@@ -4,6 +4,10 @@ The mathematical core joins analysis evidence into one read-only, auditable
 contract. It cannot place an order, add strategy points, move protection, arm
 automation, or enable Demo or Live writes.
 
+The broader six-family/AI-RL target in [the core master](ctcc_core_master.md)
+preserves this downward-only boundary. Its strategy research requirements are
+not new mathematical weights, validated probabilities, or execution settings.
+
 ## Inputs and causality
 
 Only confirmed past candles from 4H, 1H, 15m, and 5m are accepted. The

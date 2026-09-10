@@ -156,6 +156,12 @@
 
 ## Next stage
 
+- The 2026-09-09 discussion in project 123, including its continuation after
+  midnight Taipei time, is integrated in [the core master specification](ctcc_core_master.md)
+  and `config/ctcc_core_blueprint.json`. Six strategy families, regime routing,
+  downward-only advisers, external evidence packs, and separate Demo/MIE
+  validation tracks are design requirements, not newly qualified runtime
+  strategies or an instruction to enable execution.
 - The frozen Gate 3 plan and implemented foundation are documented in
   `docs/mie_gate3_plan.md` and `docs/mie_gate3_foundation.md`.
 - Gate 3 remains offline and shadow-only. The real 180-artifact data-quality
@@ -167,10 +173,15 @@
   evaluation: row-level availability qualification, an offline archive replay
   adapter, and an evaluated-evidence contract linking the prospective seal and
   acquisition receipt. Archive timestamps do not prove historical row receipt.
-- Availability contracts and a single-day bytes-only archive rehearsal now
-  enforce conservative retrieval-time visibility with synthetic tests. They
-  remain computational-only; real acquisition-chain qualification, batch
-  integration, candidate fitting, and prospective evidence are still pending.
+- Availability contracts, the single-day bytes-only archive rehearsal, and
+  pinned development/validation batch contracts now enforce conservative
+  retrieval-time visibility and exact calendar membership with synthetic
+  tests. Prospective evidence contracts separately bind the seal, acquisition
+  receipt, and common-cohort report to independently retained hashes. All
+  remain computational-only; commit-specific release/CI records establish
+  publication status separately. Real acquisition-chain qualification, batch integration, candidate fitting, and
+  prospective evaluated evidence are still pending. Neither the blueprint nor
+  these tests establishes Docker health, deployment, or fresh OOS acceptance.
 - Gate 4 runtime-shadow work is blocked until Gate 3 has a preregistered,
   independently reviewed out-of-sample artifact. Demo and real-money promotion
   remain separate evidence gates.

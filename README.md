@@ -1,5 +1,9 @@
 # CTCC V2 v1.6.9 — Durable OKX Live Recovery
 
+Core planning index: [CTCC core master — 123 project discussion](docs/ctcc_core_master.md).
+This separates the integrated target design from implemented, validated, and
+deployed capability; it does not enable trading.
+
 CTCC V2 now has an isolated OKX production boundary that can reconcile and,
 only after explicit multi-stage authorization, operate real OKX SWAP positions.
 Paper and OKX Demo remain separate systems and cannot be enabled together with

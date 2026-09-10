@@ -354,10 +354,13 @@ try {
     Write-Host "== MIE Gate 3 offline foundation boundary =="
     $boundaryProbe = @'
 from app.mie.validation import (
+    ArchiveBatchManifest,
+    ArchiveBatchPlan,
     ForwardDirectionLabel,
     Gate3DatasetQualification,
     Gate3EvidenceArtifact,
     Gate3Preregistration,
+    Gate3ProspectiveEvidenceArtifact,
     Gate3ProspectiveHoldoutReceipt,
     Gate3ProspectivePreregistration,
     PointInTimeReplaySnapshot,
@@ -365,11 +368,14 @@ from app.mie.validation import (
 )
 
 for contract_type in (
+    ArchiveBatchManifest,
+    ArchiveBatchPlan,
     Gate3DatasetQualification,
     Gate3Preregistration,
     Gate3ProspectivePreregistration,
     Gate3ProspectiveHoldoutReceipt,
     ProspectiveHoldoutSpec,
+    Gate3ProspectiveEvidenceArtifact,
     Gate3EvidenceArtifact,
     PointInTimeReplaySnapshot,
     ForwardDirectionLabel,
@@ -392,7 +398,10 @@ print("MIE_GATE3_CONTRACT_EXECUTION_AUTHORITY=0")
         tests/unit/mie/test_gate3_availability.py `
         tests/unit/mie/test_gate3_archive_replay.py `
         tests/unit/mie/test_gate3_archive_artifacts.py `
+        tests/unit/mie/test_gate3_archive_batch_plan.py `
+        tests/unit/mie/test_gate3_archive_batch_artifacts.py `
         tests/unit/mie/test_gate3_prospective.py `
+        tests/unit/mie/test_gate3_prospective_evidence.py `
         tests/unit/mie/test_gate3_qualification.py `
         tests/unit/mie/test_gate3_replay.py `
         tests/unit/mie/test_gate3_splits.py `

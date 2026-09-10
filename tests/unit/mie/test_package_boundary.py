@@ -7,6 +7,8 @@ from app.config.settings import Settings
 from app.mie.contracts import DecisionCandidate, MieShadowTrace
 from app.mie.features import MathematicalFeatureSnapshot
 from app.mie.validation import (
+    ArchiveBatchManifest,
+    ArchiveBatchPlan,
     ArchiveObservationReceipt,
     ArchiveReplayDataset,
     AvailabilityProvenance,
@@ -14,6 +16,7 @@ from app.mie.validation import (
     Gate3DatasetQualification,
     Gate3EvidenceArtifact,
     Gate3Preregistration,
+    Gate3ProspectiveEvidenceArtifact,
     Gate3ProspectiveHoldoutReceipt,
     Gate3ProspectivePreregistration,
     PointInTimeBar,
@@ -114,6 +117,7 @@ def test_mie_decision_and_trace_have_no_order_geometry() -> None:
     assert forbidden_fields.isdisjoint(Gate3Preregistration.model_fields)
     assert forbidden_fields.isdisjoint(Gate3ProspectivePreregistration.model_fields)
     assert forbidden_fields.isdisjoint(Gate3ProspectiveHoldoutReceipt.model_fields)
+    assert forbidden_fields.isdisjoint(Gate3ProspectiveEvidenceArtifact.model_fields)
     assert forbidden_fields.isdisjoint(ProspectiveHoldoutSpec.model_fields)
     assert forbidden_fields.isdisjoint(Gate3DatasetQualification.model_fields)
     assert forbidden_fields.isdisjoint(Gate3EvidenceArtifact.model_fields)
@@ -122,11 +126,15 @@ def test_mie_decision_and_trace_have_no_order_geometry() -> None:
     assert forbidden_fields.isdisjoint(ForwardDirectionLabel.model_fields)
     assert forbidden_fields.isdisjoint(ArchiveObservationReceipt.model_fields)
     assert forbidden_fields.isdisjoint(ArchiveReplayDataset.model_fields)
+    assert forbidden_fields.isdisjoint(ArchiveBatchPlan.model_fields)
+    assert forbidden_fields.isdisjoint(ArchiveBatchManifest.model_fields)
     assert forbidden_fields.isdisjoint(AvailabilityProvenance.model_fields)
 
 
 def test_gate3_contracts_are_structurally_zero_authority() -> None:
     for contract_type in (
+        ArchiveBatchManifest,
+        ArchiveBatchPlan,
         ArchiveObservationReceipt,
         ArchiveReplayDataset,
         AvailabilityProvenance,
@@ -134,6 +142,7 @@ def test_gate3_contracts_are_structurally_zero_authority() -> None:
         Gate3Preregistration,
         Gate3ProspectivePreregistration,
         Gate3ProspectiveHoldoutReceipt,
+        Gate3ProspectiveEvidenceArtifact,
         ProspectiveHoldoutSpec,
         Gate3EvidenceArtifact,
         PointInTimeReplaySnapshot,
@@ -145,9 +154,12 @@ def test_gate3_contracts_are_structurally_zero_authority() -> None:
 
 def test_archive_rehearsal_cannot_attest_predictive_eligibility() -> None:
     for contract_type in (
+        ArchiveBatchManifest,
+        ArchiveBatchPlan,
         ArchiveObservationReceipt,
         ArchiveReplayDataset,
         AvailabilityProvenance,
+        Gate3ProspectiveEvidenceArtifact,
     ):
         assert contract_type.model_fields["predictive_oos_eligible"].default is False
 

@@ -20,6 +20,9 @@ predictive result or a historical first-receipt dataset.
   labels, not a verified split plan: the loader cannot detect a holdout day
   falsely labelled development. No real batch may use this attestation alone
   as proof of partition eligibility.
+  The separate [pinned batch adapter](mie_gate3_archive_batch.md) now checks
+  exact development/validation calendar coordinates against an external plan
+  hash before parsing any ZIP. It does not independently qualify acquisition.
 - The loader checks ZIP safety and size, exact member identity, all numeric
   fields, OHLC/volume geometry, and the full ordered minute sequence. Binance
   inclusive close timestamps become end-exclusive feature-bar boundaries;
@@ -59,15 +62,15 @@ hash/count/time/member mismatches, malformed numerics, archive hazards,
 partition rejection, tampering, conservative cutoff rejection, and canonical
 round trips.
 
-This is a deliberately narrow input adapter. It does not yet verify the
-external acquisition receipt chain, join multiple daily archives, fit a
-candidate, evaluate calibration, seal a real future window, or generate
-prospective evaluated evidence. The existing 180-artifact batch still lacks
-historical per-row first-receipt proof and its exposed retrospective holdout
-remains permanently computational-only.
+This remains a deliberately narrow single-day input adapter. Separate
+computational modules now bind multiple archives to a pinned calendar plan
+and link a prospective seal/receipt/report. Neither authenticates the external
+acquisition chain, fits a real candidate, or supplies real prospective
+evaluated evidence. The existing 180-artifact batch still lacks historical
+per-row first-receipt proof and its exposed retrospective holdout remains
+permanently computational-only.
 
-Next: establish an independently qualified observation source and bind the
-input to a reviewed, frozen development/validation batch plan (not just a
-caller-supplied label), then candidate fitting and the separate
-prospective seal/receipt-to-evidence integration. Gate 4 stays blocked until
-the full real evidence and independent review requirements pass.
+Next: establish an independently qualified observation source and use a
+reviewed development/validation batch plan for actual inputs, then candidate
+fitting and real prospective evidence. Gate 4 stays blocked until the full
+real evidence and independent review requirements pass.

@@ -16,6 +16,8 @@ COPY alembic.ini ./
 COPY tests ./tests
 COPY scripts ./scripts
 COPY docs ./docs
+COPY README.md Dockerfile ./
+COPY config/ctcc_core_blueprint.json ./config/ctcc_core_blueprint.json
 
 RUN pip install --upgrade pip && pip install ".[test]"
 

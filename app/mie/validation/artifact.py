@@ -9,6 +9,11 @@ from typing import Generic, TypeVar
 
 from pydantic import ValidationError
 
+from app.mie.validation.archive_batch import (
+    ArchiveBatchManifest,
+    ArchiveBatchPlan,
+    validate_archive_batch_source,
+)
 from app.mie.validation.archive_replay import (
     ArchiveReplayDataset,
     validate_archive_replay_source,
@@ -23,6 +28,7 @@ from app.mie.validation.prospective import (
     Gate3ProspectiveHoldoutReceipt,
     Gate3ProspectivePreregistration,
 )
+from app.mie.validation.prospective_evidence import Gate3ProspectiveEvidenceArtifact
 
 TGate3 = TypeVar("TGate3", bound=Gate3Contract)
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -45,9 +51,7 @@ def _freeze(
     contract_type: type[TGate3],
 ) -> FrozenGate3Artifact[TGate3]:
     try:
-        validated = contract_type.model_validate(
-            contract.model_dump(mode="python")
-        )
+        validated = contract_type.model_validate(contract.model_dump(mode="python"))
     except (ValidationError, ValueError) as exc:
         raise ArtifactVerificationError(
             "artifact contract revalidation failed"
@@ -135,9 +139,7 @@ def _verify(
 ) -> TGate3:
     if not isinstance(payload, bytes) or not payload:
         raise ArtifactVerificationError("artifact payload must be non-empty bytes")
-    if not isinstance(expected_sha256, str) or not SHA256_RE.fullmatch(
-        expected_sha256
-    ):
+    if not isinstance(expected_sha256, str) or not SHA256_RE.fullmatch(expected_sha256):
         raise ArtifactVerificationError("expected artifact SHA256 is invalid")
     actual_sha256 = hashlib.sha256(payload).hexdigest()
     if actual_sha256 != expected_sha256:
@@ -226,3 +228,133 @@ def verify_prospective_holdout_receipt(
         expected_sha256=expected_sha256,
         contract_type=Gate3ProspectiveHoldoutReceipt,
     )
+
+
+def _verify_prospective_evidence_pins(
+    artifact: Gate3ProspectiveEvidenceArtifact,
+    *,
+    expected_preregistration_sha256: str,
+    expected_holdout_receipt_sha256: str,
+) -> None:
+    for label, expected, actual in (
+        (
+            "seal",
+            expected_preregistration_sha256,
+            artifact.preregistration.canonical_sha256(),
+        ),
+        (
+            "receipt",
+            expected_holdout_receipt_sha256,
+            artifact.holdout_receipt.canonical_sha256(),
+        ),
+    ):
+        if not isinstance(expected, str) or not SHA256_RE.fullmatch(expected):
+            raise ArtifactVerificationError(
+                f"expected prospective {label} SHA256 is invalid"
+            )
+        if expected != actual:
+            raise ArtifactVerificationError(
+                f"trusted prospective {label} SHA256 mismatch"
+            )
+
+
+def freeze_prospective_evidence_artifact(
+    artifact: Gate3ProspectiveEvidenceArtifact,
+    *,
+    expected_preregistration_sha256: str,
+    expected_holdout_receipt_sha256: str,
+) -> FrozenGate3Artifact[Gate3ProspectiveEvidenceArtifact]:
+    """Freeze a report against independently retained seal and receipt digests."""
+
+    frozen = _freeze(artifact, contract_type=Gate3ProspectiveEvidenceArtifact)
+    _verify_prospective_evidence_pins(
+        frozen.contract,
+        expected_preregistration_sha256=expected_preregistration_sha256,
+        expected_holdout_receipt_sha256=expected_holdout_receipt_sha256,
+    )
+    return frozen
+
+
+def verify_prospective_evidence_artifact(
+    payload: bytes,
+    *,
+    expected_sha256: str,
+    expected_preregistration_sha256: str,
+    expected_holdout_receipt_sha256: str,
+) -> Gate3ProspectiveEvidenceArtifact:
+    """Verify bytes and both prior-stage pins; embedded self-hashes are insufficient."""
+
+    artifact = _verify(
+        payload,
+        expected_sha256=expected_sha256,
+        contract_type=Gate3ProspectiveEvidenceArtifact,
+    )
+    _verify_prospective_evidence_pins(
+        artifact,
+        expected_preregistration_sha256=expected_preregistration_sha256,
+        expected_holdout_receipt_sha256=expected_holdout_receipt_sha256,
+    )
+    return artifact
+
+
+def freeze_archive_batch_plan(
+    plan: ArchiveBatchPlan,
+) -> FrozenGate3Artifact[ArchiveBatchPlan]:
+    """Freeze calendar choices; retain the returned digest independently."""
+
+    return _freeze(plan, contract_type=ArchiveBatchPlan)
+
+
+def verify_archive_batch_plan(
+    payload: bytes,
+    *,
+    expected_sha256: str,
+) -> ArchiveBatchPlan:
+    return _verify(
+        payload, expected_sha256=expected_sha256, contract_type=ArchiveBatchPlan
+    )
+
+
+def freeze_archive_batch_manifest(
+    manifest: ArchiveBatchManifest,
+    *,
+    archive_bytes: tuple[bytes, ...],
+    expected_plan_sha256: str,
+) -> FrozenGate3Artifact[ArchiveBatchManifest]:
+    """Freeze only after every original archive agrees with the pinned plan."""
+
+    try:
+        validated = validate_archive_batch_source(
+            manifest,
+            archive_bytes=archive_bytes,
+            expected_plan_sha256=expected_plan_sha256,
+        )
+    except ValueError as exc:
+        raise ArtifactVerificationError(
+            "batch original source revalidation failed"
+        ) from exc
+    return _freeze(validated, contract_type=ArchiveBatchManifest)
+
+
+def verify_archive_batch_manifest(
+    payload: bytes,
+    *,
+    expected_sha256: str,
+    archive_bytes: tuple[bytes, ...],
+    expected_plan_sha256: str,
+) -> ArchiveBatchManifest:
+    manifest = _verify(
+        payload,
+        expected_sha256=expected_sha256,
+        contract_type=ArchiveBatchManifest,
+    )
+    try:
+        return validate_archive_batch_source(
+            manifest,
+            archive_bytes=archive_bytes,
+            expected_plan_sha256=expected_plan_sha256,
+        )
+    except ValueError as exc:
+        raise ArtifactVerificationError(
+            "batch original source revalidation failed"
+        ) from exc
