@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import ast
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
 from app.config.settings import Settings
 from app.research.external_benchmarks import (
+    REFERENCE_SOURCE_CATALOG,
     BinanceBatchEvidence,
     BinanceBatchPlan,
     BinanceBatchPreparation,
@@ -15,9 +16,8 @@ from app.research.external_benchmarks import (
     BinanceDailyMarketSummary,
     BinanceKlineEvidence,
     BinanceKlineQualityReport,
-    BinancePublicArtifactIdentity,
     BinancePartitionMarketSummary,
-    REFERENCE_SOURCE_CATALOG,
+    BinancePublicArtifactIdentity,
     DatasetQualityReport,
     ExternalArtifactAcquisitionReceipt,
     ExternalArtifactAcquisitionRequest,
@@ -26,13 +26,13 @@ from app.research.external_benchmarks import (
     PublishedBenchmarkRecord,
     ReferenceMetricBundle,
     reference_source,
+    strategy_evidence,
     validate_manifest_source,
     validate_published_benchmark_source,
 )
 from tests.unit.research.helpers import trade_manifest
 
-
-NOW = datetime(2026, 1, 2, tzinfo=timezone.utc)
+NOW = datetime(2026, 1, 2, tzinfo=UTC)
 
 
 RESEARCH_ROOT = Path(__file__).resolve().parents[3] / "app" / "research"
@@ -68,10 +68,7 @@ def imported_names(node: ast.AST) -> tuple[str, ...]:
     module = node.module or ""
     return tuple(
         [module]
-        + [
-            f"{module}.{alias.name}" if module else alias.name
-            for alias in node.names
-        ]
+        + [f"{module}.{alias.name}" if module else alias.name for alias in node.names]
     )
 
 
@@ -85,9 +82,7 @@ def test_external_benchmark_network_import_is_isolated_from_execution() -> None:
                 if relative in NETWORK_ACQUISITION_MODULES and name == "httpx":
                     continue
                 if name.startswith(FORBIDDEN_IMPORT_PREFIXES):
-                    violations.append(
-                        f"{relative}:{node.lineno}:{name}"
-                    )
+                    violations.append(f"{relative}:{node.lineno}:{name}")
     assert violations == []
 
 
@@ -207,7 +202,68 @@ def test_external_benchmarks_do_not_change_fail_safe_runtime_defaults() -> None:
     assert settings.okx_demo_soak_allow_execute is False
 
 
-def test_network_acquisition_is_get_only_and_never_follows_redirects_implicitly() -> None:
+def test_strategy_intake_contracts_have_no_execution_or_validation_authority() -> None:
+    forbidden = {
+        "order_id",
+        "client_order_id",
+        "contracts",
+        "quantity",
+        "leverage",
+        "margin",
+        "position_size",
+        "write_authority",
+        "exchange_payload",
+    }
+    for model in (
+        strategy_evidence.StrategyProfile,
+        strategy_evidence.PassiveLogic,
+        strategy_evidence.SourceAssertion,
+        strategy_evidence.AuthorMetric,
+        strategy_evidence.MetricWindow,
+        strategy_evidence.CostContext,
+        strategy_evidence.CtccValidation,
+        strategy_evidence.StrategyEvidencePack,
+    ):
+        assert forbidden.isdisjoint(model.model_fields)
+        assert model.model_fields["runtime_consumers"].default == 0
+        assert model.model_fields["execution_authority"].default is False
+        assert model.model_fields["promotion_eligible"].default is False
+        assert model.model_fields["reference_only"].default is True
+    pack = strategy_evidence.StrategyEvidencePack
+    assert pack.model_fields["predictive_eligible"].default is False
+    assert pack.model_fields["source_authenticity_verified"].default is False
+    assert (
+        strategy_evidence.CtccValidation.model_fields["status"].default
+        == "not_performed"
+    )
+
+
+def test_strategy_intake_has_no_file_network_or_dynamic_code_loader() -> None:
+    source = RESEARCH_ROOT / "external_benchmarks" / "strategy_evidence.py"
+    tree = ast.parse(source.read_text(encoding="utf-8-sig"))
+    forbidden_modules = (
+        "pathlib",
+        "os",
+        "httpx",
+        "requests",
+        "socket",
+        "subprocess",
+        "urllib",
+        "yaml",
+        "pickle",
+        "importlib",
+    )
+    for node in ast.walk(tree):
+        assert not any(
+            name.startswith(forbidden_modules) for name in imported_names(node)
+        )
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            assert node.func.id not in {"open", "eval", "exec", "compile", "__import__"}
+
+
+def test_network_acquisition_is_get_only_and_never_follows_redirects_implicitly() -> (
+    None
+):
     combined_literals: set[str] = set()
     for relative in NETWORK_ACQUISITION_MODULES:
         source = (RESEARCH_ROOT / relative).read_text(encoding="utf-8")

@@ -179,9 +179,15 @@
   tests. Prospective evidence contracts separately bind the seal, acquisition
   receipt, and common-cohort report to independently retained hashes. All
   remain computational-only; commit-specific release/CI records establish
-  publication status separately. Real acquisition-chain qualification, batch integration, candidate fitting, and
+  publication status separately. Real acquisition-chain qualification, batch
+  integration, candidate fitting, and
   prospective evaluated evidence are still pending. Neither the blueprint nor
   these tests establishes Docker health, deployment, or fresh OOS acceptance.
 - Gate 4 runtime-shadow work is blocked until Gate 3 has a preregistered,
   independently reviewed out-of-sample artifact. Demo and real-money promotion
   remain separate evidence gates.
+- The strategy-evidence intake now has immutable, strict, declaration-only
+  metadata contracts and canonical byte/hash validation. E0–E6 material claims
+  remain separate from author metric context and the fixed not-performed CTCC
+  comparison. It does not assemble real files, fetch sources, execute YAML/code,
+  or reproduce performance. See [the intake boundary](strategy_evidence_intake.md).

@@ -96,7 +96,9 @@ research/external_strategies/<strategy_id>/
   trades.csv                  # 原作者確有公開時才加入
 ```
 
-本次只將此結構納入規格，未建立假的逐筆交易或成果包。
+此結構已有第一版[離線 metadata 輸入合約](strategy_evidence_intake.md)，
+能檢查未知欄位原因、材料聲明、作者績效上下文與零權限邊界；仍未建立
+實體五檔案、逐筆交易或完成來源驗證。
 `external_evidence` 保存作者材料；`ctcc_validation` 保存 CTCC 自己重算、
 OOS、Demo 的結果。兩者不可混用。
 
@@ -146,7 +148,8 @@ reconciliation／Emergency Stop 防線。此次整理不修改 Settings 或部�
 1. 完成本機既有 Gate 3 證據鏈與批次 plan-binding 測試、manifest、發行審查。
 2. 取得獨立來源／row availability 證據，再完成真實批次與計畫連結。
 3. 建外部 Strategy Evidence Pack 的輸入規格與來源審查；先從可重現且
-   license 明確的候選開始，不以聊天績效或最高勝率挑選。
+   license 明確的候選開始，不以聊天績效或最高勝率挑選。第一版純 metadata
+   合約已實作；真實來源／license 審查、原始檔案綁定與重算仍待完成。
 4. 在過去 development/validation 內建立 frozen candidate，記錄所有 trials、
    costs、purge/embargo，完成真正未曝光 holdout 與獨立 OOS review。
 5. 另外驗證 EV、correlation/family risk 與 regime routing；經獨立 Gate 審查

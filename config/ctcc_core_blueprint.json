@@ -64,6 +64,8 @@
     "may_submit_orders": false
   },
   "external_evidence": {
+    "metadata_intake_status": "strict_offline_declarations_only",
+    "source_bytes_verified_by_intake": false,
     "requested_scope": ["system", "logic", "performance", "workflow"],
     "author_namespace": "external_evidence",
     "ctcc_namespace": "ctcc_validation",

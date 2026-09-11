@@ -9,6 +9,12 @@ from uuid import UUID
 
 import pytest
 
+from app.research.external_benchmarks.strategy_evidence import (
+    PACK_FILE_ROLES,
+    EvidenceAvailability,
+    StrategyFamily,
+)
+
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -137,6 +143,17 @@ def test_external_material_cannot_become_ctcc_evidence_by_relabeling(blueprint) 
     } <= set(evidence["required_provenance"])
     assert len(evidence["pack_files"]) == len(set(evidence["pack_files"])) == 5
     assert evidence["optional_raw_file"] == "trades.csv"
+
+
+def test_strategy_intake_taxonomy_and_roles_match_the_core_design(blueprint) -> None:
+    evidence = blueprint["external_evidence"]
+    assert evidence["metadata_intake_status"] == "strict_offline_declarations_only"
+    assert evidence["source_bytes_verified_by_intake"] is False
+    assert {family.value for family in StrategyFamily} == {
+        family["id"] for family in blueprint["strategy_families"]
+    }
+    assert {tier.value for tier in EvidenceAvailability} == set(evidence["tiers"])
+    assert tuple(evidence["pack_files"]) == PACK_FILE_ROLES
 
 
 def test_chat_only_leads_have_no_imported_performance_claims(blueprint) -> None:
