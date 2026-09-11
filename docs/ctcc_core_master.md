@@ -18,7 +18,10 @@ Demo/Live service、automation、risk 與 observability，並非宣稱已新增�
 驗收狀態記錄於 [Entry qualification implementation](entry_qualification_implementation.md)。
 此新增規格採 12 Gate 與圖後 Execution Recheck；截至 2026-09-12 已推進
 資料模型、策略必要條件、保守路由、來源事件／時間／進場區域、多時間框架
-SL/TP 選擇及成本／帳戶組合風險離線引擎，正接續同源證據圖與完整 Gate 鏈。
+SL/TP 選擇及成本／帳戶組合風險離線引擎。同源四時間框架＋摘要產圖、
+來源綁定與不覆寫證據存檔已實作，20 張合成案例圖已目視檢查；平台驗收
+與 Windows 目錄權限限制另見 [證據模組](trade_evidence.md)。正接續補齊
+獨立行情來源時間戳、實際 Gate 協調器與圖後重檢所需的可信資料。
 新資格鏈尚未接入 Demo，不能據此宣稱自動下單或
 整體驗收完成；最新測試與未完成項目以該施工紀錄為準。
 

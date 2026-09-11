@@ -1,6 +1,6 @@
 # Same-candidate evidence packet
 
-Implementation in progress, 2026-09-12. This is step 10 of the
+Offline Linux implementation verified at `021183f`, 2026-09-12. This is step 10 of the
 [Notion construction specification](https://app.notion.com/p/3d832165a6888173bfb1df896604fc7c),
 after the source/structure/economics/portfolio checkpoint `6e2a00c`.
 No renderer result is an order permit, a completed twelve-gate engine or a
@@ -110,9 +110,13 @@ synthetic presentation claims, not an actual gate-engine integration result.
 The cancel case shows a captured price outside the zone **before** rendering;
 it is not the still-pending post-render price-movement cancellation scenario.
 
-Verify source mutation, identity/geometry mismatch, typed-copy tampering, bounded
-inputs, all five PNGs, deterministic same-runtime output, exact image hashes,
-publication conflicts/crashes/races and platform-specific path defenses. Inspect
-each generated timeframe and summary visually, including long/short and blocked
-or missing-evidence cases. Synthetic fixtures demonstrate engineering behavior;
-they do not count as real shadow observations, Demo trades or strategy outcomes.
+The 371 new passing Linux cases cover source mutation, identity/geometry mismatch,
+typed-copy tampering, bounded inputs, PNG decoding, deterministic same-runtime
+output, exact image hashes, publication conflicts/crashes/races and POSIX path
+defenses. The complete immutable-source regression for `021183f` passed 3061
+tests, with 10 Windows-only skips and 5 existing/expected warnings. Alembic was
+0016 with no schema drift, and all 473 source manifest entries matched. Native
+Windows acceptance remains limited as described above. Synthetic fixtures
+demonstrate engineering behavior; they do not count as real shadow observations,
+Demo trades or strategy outcomes. Actual G12 integration, fresh post-render
+recheck and all downstream runtime acceptance remain separate pending work.

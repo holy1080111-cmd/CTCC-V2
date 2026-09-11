@@ -303,6 +303,51 @@ are not exchange submissions. No flags, deployment files or live services were
 changed. Nine existing strategy files also contain owned formatting-only changes,
 verified by Python AST comparison against the previous checkpoint.
 
+A subsequent zero-score regression also preserves an explicit effective risk
+score of zero instead of falling back to the raw score. Only `None` retains the
+legacy fallback. This closes a high-leverage reopening path after a downgrade;
+it does not recalibrate scores, change leverage settings, or deploy the repair.
+
+## Same-source evidence and next runtime boundary
+
+The [evidence module](trade_evidence.md) now prepares a source-bound immutable
+snapshot, returns five deterministic PNGs and canonical JSON, and publishes an
+exact read-back-verified packet without overwriting an existing report. Twenty
+synthetic visual examples were inspected across long, short, missing-trigger and
+out-of-zone cases. Their gate records remain explicitly unverified presentation
+claims; neither rendering nor publication grants execution authority. Native
+Windows full-chain publication is blocked by this host's ancestor access rights;
+the checks remain fail-closed, with Linux acceptance recorded separately.
+
+The next implementation is a pure ordered G1–G11 coordinator, G12 verification
+against the same run and actual packet, then a separate post-render recheck.
+Input gate booleans or a constructible receipt cannot stand in for those checks.
+The first failure terminates the prefix; later RR/score cannot repair it.
+
+Read-only code inspection identified concrete runtime prerequisites:
+
+- Preserve independent ticker, mark and funding response `ts`, request start and
+  receive times. Existing public REST convenience methods discard mark/funding
+  timestamps; next settlement time is not a funding observation timestamp. A
+  separate [public-only collector](quote_collection.md) is implemented without
+  runtime wiring; its focused and source-to-publication boundary tests are
+  verified separately from the actual G1–G12 coordinator.
+- Rebuild quality, indicators and analysis from one raw snapshot under explicit
+  time and policy, rather than ambient settings/wall clock or caller flags.
+- Keep conservative regime exclusions until source-derived historical transition
+  admission exists; current event extraction alone does not establish it.
+- Collect complete account/history/reservations, persistent loss streak and peak
+  window. Recent order history is not a complete realized-cost/PnL ledger.
+- After publication, fetch genuinely new executable data and validate original
+  event identity plus the intervening confirmed candle history. Do not replace
+  the original trigger with a freshly detected one or reset its expiry.
+- Test executable-reference/worst-executable net RR separately from the fixed
+  candidate RR. A worse quote inside the zone can still fail economics. Preserve
+  entry/SL/TP; do not reuse the legacy candidate-repricing helper.
+- Step 13 still requires durable pre-submit intent, account lock and atomic
+  reservation/event consumption before any exchange write. Unknown submit
+  outcomes must retain risk and must not trigger automatic resubmission.
+
 ## Ordered remaining implementation
 
 The source's order is retained; writing tests alongside each change does not
@@ -318,13 +363,13 @@ replace the final acceptance stages. Do not wire a partial chain into Demo.
 | 7 | Zone provenance, executable quote, expiry/drift/location evaluation | Offline engine implemented; 339 unit + 64 source-chain tests passed |
 | 8 | Evaluate all legal 15m/1H/4H SL/TP brackets, noise/liquidity rejection | Offline shared selector implemented; 97 new structural tests passed |
 | 9 | Cost-adjusted economics and complete portfolio/Demo authority | Offline evaluators implemented; 75 economics + 357 portfolio + 48 source-to-risk tests passed, trusted runtime collector pending |
-| 10 | Same-OHLC/report five charts and evidence packet | Pending |
+| 10 | Same-OHLC/report five charts and evidence packet | Source-bound preparation, renderer and no-clobber publisher implemented; 20 synthetic PNGs inspected; platform acceptance and limitations in trade_evidence.md |
 | 11 | Actual 12 gate evaluators, measured values and fail codes | Record contract only; engine pending |
 | 12 | Fresh executable quote after evidence, cancel stale old candidate | Pending |
 | 13 | Guard every SafeDemoAutomation submit route | Pending |
 | 14 | Post-submit durable Notion outbox, retry without duplicate orders | Pending |
 | 15 | Same-report realized forensics, MFE/MAE/R and evidence-based attribution | Pending |
-| 16–18 | Unit, full regression and isolated Docker hermetic acceptance | 67be58f: 2,107 full tests, 0016/no drift, 456-file manifest and matching GitHub CI passed; steps 8–9 require their own checkpoint |
+| 16–18 | Unit, full regression and isolated Docker hermetic acceptance | 6e2a00c: 2684 full passes and matching CI; 021183f: 3061 full passes, 10 Windows-only skips, 0016/no drift, 473-file manifest; later changes require their own checkpoint |
 | 19–20 | Genuine old/new shadow and isolated Demo soak with sufficient samples | Not started; zero collected samples |
 | 21 | Final audit and the four requested reproducible evidence examples | Pending |
 

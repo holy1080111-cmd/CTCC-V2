@@ -713,8 +713,9 @@ def _png(canvas, snapshot, filename):
 def _render_evidence(snapshot: EvidenceSnapshot) -> Mapping[str, bytes]:
     """Revalidate copied source evidence, then return exactly five PNGs and JSON.
 
-    The caller publishes atomically and separately verifies G12/recheck. This
-    function never updates a gate or adds a completion timestamp to the report.
+    The caller publishes with a report-last logical completion marker and
+    separately verifies G12/recheck; the six files are not one atomic filesystem
+    transaction. This function never updates a gate or adds a completion timestamp.
     """
     checked = validate_snapshot(snapshot)
     report = {
