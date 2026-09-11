@@ -1,7 +1,8 @@
 # Entry qualification and evidence implementation
 
-Status: source-bound event, timing and location engines; structural selection in
-progress. The new qualification pipeline is not wired into trading or deployed.
+Status: source-bound event, timing, location, structural selection and explicit
+economics/portfolio engines. The new qualification pipeline is not wired into
+trading or deployed; evidence rendering and actual all-gate orchestration follow.
 Updated 2026-09-12.
 
 Source: [CTCC complete construction specification](https://app.notion.com/p/3d832165a6888173bfb1df896604fc7c),
@@ -223,6 +224,66 @@ post-render fresh fetch, execution, outbox or forensics. The conservative router
 still blocks event-dependent families until their full historical regime
 transition policy and trusted pre-score integration are complete.
 
+## Structural selection and independent economics/portfolio risk
+
+The source-qualified selector re-extracts the recorded event from the same OHLC
+and analysis, recomputes ATR and structure, and compares every stop × target in a
+bounded universe across 15m/1H/4H. It retains the last three confirmed pivots per
+side and timeframe, current known OB/FVG zones, actual thesis invalidation and
+observed equal-pivot pools. Missing measured objectives and unobserved non-pivot
+liquidity are disclosed, not invented. Corresponding FVG invalidation is used
+only when its strategy, formation, timeframe and bounds match the event.
+
+Stops must invalidate the actual thesis and clear the explicit ATR/noise and
+liquidity constraints. Buffers include observed spread, expected slippage and
+the actual tick. A nearer opposing structural barrier rejects a farther target.
+Only valid brackets are ranked: greatest ATR-normalized noise clearance, then
+net RR, then stable anchor IDs. All alternatives and eight explicit policy inputs
+remain in the audit. Cost/minimum-RR changes cannot move entry or shrink a stop.
+These engineering rules are not calibrated superiority of any timeframe.
+
+The legacy geometry API delegates to that shared enumeration but remains an
+incomplete proposal: it lacks raw-source, tick, fee, funding and event evidence.
+The new source-qualified API does not promote legacy output into qualification.
+Its dedicated 97-test suite includes the source → timing/location chain, robust
+1H versus weak 15m cases, nearer target obstacles, timezone equivalence, fabricated
+ATR and event mutations, and no SL shrink under higher costs or RR requirements.
+
+`economics.py` requires an explicit fee/slippage/funding policy and independently
+fresh bid/ask/mark/funding evidence. Adverse funding is projected over the explicit
+holding periods; favorable funding never becomes a credit. Observed spread is
+an additional conservative monetary allowance. Cost per base unit rounds upward
+once to 20 decimal places before net RR and portfolio calculations. An adversarial
+tiny-price case caught a repeating spread-bps conversion creating a phantom cost
+quantum; direct monetary spread addition fixes it. A pass cannot repair timing,
+location or protection. Score, leverage and continuous-mode bypasses are absent.
+
+`portfolio.py` checks fixed contracts and leverage against complete scoped source
+claims: balances, positions, deduplicated exchange/local pending reservations,
+realized history with prior loss-streak state, and a policy-pinned drawdown window.
+It requires linear base-value contract metadata and a common settlement currency.
+Exact rational arithmetic checks size/lot/leverage, daily UTC and rolling-seven-day
+losses, drawdown, consecutive losses, per-trade and aggregate risk, margin, open
+counts, same-direction and correlated counts **and notional exposure**. Limits
+include existing + pending + proposed risk; no candidate parameter is adjusted.
+Demo must be enabled/armed, writes allowed, simulated header correct and emergency
+stop clear; all three Live flags must be false. These are checked snapshots, not
+instructions that enable the flags or grant execution authority.
+
+Every account source stamp explicitly identifies the Demo environment. All
+positions, pending records and the new instrument must assign one consistent
+correlation group per instrument, including instruments other than the candidate.
+The focused suites pass 75 economics, 357 portfolio and 48 same-candidate
+source-to-risk integration tests. These remain offline independent evaluators,
+not a completed twelve-gate orchestrator.
+
+The future trusted collector still must establish actual source/environment
+identity, page completeness, account-wide history, persistent peak/streak state,
+consistent correlation classification and pending-order reconciliation. A digest
+or `complete=true` alone is not that proof. Atomic reservation and post-render
+recheck remain separate runtime requirements. All current tests use synthetic
+data; they are neither shadow observations nor new-pipeline Demo trades.
+
 ## Existing Demo safety repairs (not deployed)
 
 Known safety defects were repaired alongside these offline modules, without
@@ -255,22 +316,24 @@ replace the final acceptance stages. Do not wire a partial chain into Demo.
 | 5 | Deterministic regime router before strategy evaluation/selection | Conservative snapshot routing implemented; event-dependent families fail closed pending step 6 |
 | 6 | Actual trigger event, per-strategy timing, WAIT/CANCEL semantics | Offline engine implemented; 76 source, 145 timing and 25 event-contract tests passed |
 | 7 | Zone provenance, executable quote, expiry/drift/location evaluation | Offline engine implemented; 339 unit + 64 source-chain tests passed |
-| 8 | Evaluate all legal 15m/1H/4H SL/TP brackets, noise/liquidity rejection | Refactor in progress; new checkpoint not yet accepted |
-| 9 | Cost-adjusted economics and complete portfolio/Demo authority | Pending integration |
+| 8 | Evaluate all legal 15m/1H/4H SL/TP brackets, noise/liquidity rejection | Offline shared selector implemented; 97 new structural tests passed |
+| 9 | Cost-adjusted economics and complete portfolio/Demo authority | Offline evaluators implemented; 75 economics + 357 portfolio + 48 source-to-risk tests passed, trusted runtime collector pending |
 | 10 | Same-OHLC/report five charts and evidence packet | Pending |
 | 11 | Actual 12 gate evaluators, measured values and fail codes | Record contract only; engine pending |
 | 12 | Fresh executable quote after evidence, cancel stale old candidate | Pending |
 | 13 | Guard every SafeDemoAutomation submit route | Pending |
 | 14 | Post-submit durable Notion outbox, retry without duplicate orders | Pending |
 | 15 | Same-report realized forensics, MFE/MAE/R and evidence-based attribution | Pending |
-| 16–18 | Unit, full regression and isolated Docker hermetic acceptance | Latest route checkpoint: 1,370 full tests passed; foundation CI passed; rerun per later phase, not whole-project completion |
+| 16–18 | Unit, full regression and isolated Docker hermetic acceptance | 67be58f: 2,107 full tests, 0016/no drift, 456-file manifest and matching GitHub CI passed; steps 8–9 require their own checkpoint |
 | 19–20 | Genuine old/new shadow and isolated Demo soak with sufficient samples | Not started; zero collected samples |
 | 21 | Final audit and the four requested reproducible evidence examples | Pending |
 
-Latest published full regression before this checkpoint:
+Earlier published full regression:
 [regime routing acceptance](evidence/regime_routing_20260911.md).
 New source/timing/location checkpoint:
 [entry engine acceptance](evidence/entry_engines_20260912.md).
+Structural/economics/portfolio checkpoint:
+[structure and risk acceptance](evidence/structure_risk_20260912.md).
 
 ## Dependencies and unresolved decisions
 

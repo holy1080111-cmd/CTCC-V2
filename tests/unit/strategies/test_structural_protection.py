@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
 from app.domain.analysis import (
@@ -22,7 +22,7 @@ def _view(
     return TimeframeAnalysis(
         timeframe=timeframe,
         candle_count=250,
-        last_closed_at=datetime(2026, 8, 12, 8, 0, tzinfo=timezone.utc),
+        last_closed_at=datetime(2026, 8, 12, 8, 0, tzinfo=UTC),
         close=D("100"),
         data_quality_ok=True,
         indicators=IndicatorSnapshot(atr14=D(atr)),
@@ -49,11 +49,11 @@ def _analysis(view: TimeframeAnalysis) -> MultiTimeframeAnalysis:
         alignment_score=0,
         trade_ready=True,
         timeframe_analyses={view.timeframe: view},
-        generated_at=datetime(2026, 8, 12, 8, 1, tzinfo=timezone.utc),
+        generated_at=datetime(2026, 8, 12, 8, 1, tzinfo=UTC),
     )
 
 
-def test_long_uses_nearest_confirmed_support_and_resistance() -> None:
+def test_long_ranks_all_stops_but_cannot_skip_nearer_target() -> None:
     plan = structural_protection_geometry(
         _analysis(
             _view(
@@ -68,12 +68,14 @@ def test_long_uses_nearest_confirmed_support_and_resistance() -> None:
 
     assert plan is not None
     assert plan.timeframe == "15m"
-    assert plan.stop_anchor == D("98")
+    # Shared conservative ranking prefers greater structural/noise clearance,
+    # not the nearest stop; the nearer opposing target remains a hard barrier.
+    assert plan.stop_anchor == D("95")
     assert plan.target_anchor == D("103")
     assert plan.volatility_buffer == D("0.25")
-    assert plan.stop_loss == D("97.75")
+    assert plan.stop_loss == D("94.75")
     assert plan.take_profit == D("103")
-    assert plan.source_closed_at < datetime(2026, 8, 12, 8, 1, tzinfo=timezone.utc)
+    assert plan.source_closed_at < datetime(2026, 8, 12, 8, 1, tzinfo=UTC)
 
 
 def test_short_geometry_is_exact_mirror() -> None:
@@ -90,9 +92,9 @@ def test_short_geometry_is_exact_mirror() -> None:
     )
 
     assert plan is not None
-    assert plan.stop_anchor == D("102")
+    assert plan.stop_anchor == D("106")
     assert plan.target_anchor == D("97")
-    assert plan.stop_loss == D("102.25")
+    assert plan.stop_loss == D("106.25")
     assert plan.take_profit == D("97")
 
 

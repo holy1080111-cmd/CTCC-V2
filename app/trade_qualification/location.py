@@ -177,6 +177,50 @@ def _basis_price(value: str) -> Decimal:
     return parsed
 
 
+def inspect_executable_quote(
+    quote: ExecutableQuote | None,
+    *,
+    current_time: datetime,
+    max_quote_age_seconds: int,
+) -> tuple[ExecutableQuote | None, str]:
+    """Shared quote integrity/freshness check, without caller identity authority.
+
+    Consumers must also match the returned report/instrument to their own
+    trusted source. Receipt freshness never substitutes for component freshness.
+    """
+    try:
+        now = _utc(current_time)
+    except _INVALID:
+        return None, "current_time_invalid"
+    if (
+        type(max_quote_age_seconds) is not int
+        or not 1 <= max_quote_age_seconds <= 86400
+    ):
+        return None, "quote_age_limit_invalid"
+    if quote is None:
+        return None, "executable_quote_missing"
+    try:
+        checked = _revalidate(quote, ExecutableQuote)
+    except _INVALID:
+        return None, "executable_quote_invalid"
+    if checked.bid > checked.ask:
+        return None, "quote_geometry_invalid"
+    components = (checked.quote_time, checked.mark_time, checked.funding_time)
+    if (
+        any(value > now or value > checked.received_at for value in components)
+        or checked.received_at > now
+        or (
+            checked.request_started_at is not None
+            and checked.request_started_at > checked.received_at
+        )
+    ):
+        return None, "quote_timestamp_invalid"
+    max_age = timedelta(seconds=max_quote_age_seconds)
+    if any(now - value > max_age for value in (*components, checked.received_at)):
+        return None, "quote_stale"
+    return checked, "passed"
+
+
 def _ticks(value: Decimal, tick: Decimal, *, ceiling: bool) -> int:
     # Integer ratios avoid a rounded repeating quotient moving a boundary onto
     # an invalid tick. All operands were bounded before reaching this helper.
@@ -421,29 +465,14 @@ def evaluate_location(
             "candidate_entry_invalid",
             "Candidate entry must be an exact finite positive price.",
         )
-    if checked_quote.bid > checked_quote.ask:
-        return result("quote_geometry_invalid", "Bid cannot exceed ask.")
-    components = (
-        checked_quote.quote_time,
-        checked_quote.mark_time,
-        checked_quote.funding_time,
+    _, quote_code = inspect_executable_quote(
+        checked_quote,
+        current_time=now,
+        max_quote_age_seconds=max_quote_age_seconds,
     )
-    if (
-        any(value > now or value > checked_quote.received_at for value in components)
-        or checked_quote.received_at > now
-        or (
-            checked_quote.request_started_at is not None
-            and checked_quote.request_started_at > checked_quote.received_at
-        )
-    ):
+    if quote_code != "passed":
         return result(
-            "quote_timestamp_invalid",
-            "Quote component chronology is invalid or in the future.",
-        )
-    max_age = timedelta(seconds=max_quote_age_seconds)
-    if any(now - value > max_age for value in (*components, checked_quote.received_at)):
-        return result(
-            "quote_stale", "Each quote component must remain within its own age limit."
+            quote_code, "Quote geometry or independent component freshness failed."
         )
     if now < checked_zone.created_at:
         return result("entry_zone_not_open", "The source entry zone has not opened.")
