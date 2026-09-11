@@ -36,6 +36,25 @@ class StrategyService:
             minimum_risk_reward=Decimal(str(settings.strategy_min_risk_reward)),
         )
         evaluations = [evaluator(context) for evaluator in STRATEGIES]
+        # Evaluator/model_copy output cannot override a failed setup gate.
+        # Rebuild codes from components as well as the declared failure list.
+        for index, evaluation in enumerate(evaluations):
+            required_failures = sorted(
+                set(evaluation.required_failures)
+                | {
+                    component.code
+                    for component in evaluation.score_components
+                    if component.required and not component.passed
+                }
+            )
+            if required_failures:
+                evaluations[index] = evaluation.model_copy(
+                    update={
+                        "eligible": False,
+                        "candidate": None,
+                        "required_failures": required_failures,
+                    }
+                )
         disabled = disabled_strategies or set()
         if disabled:
             evaluations = [
@@ -78,7 +97,10 @@ class StrategyService:
             else item
             for item in evaluations
         ]
-        eligible = [item for item in evaluations if item.eligible and item.candidate is not None]
+        eligible = [
+            item for item in evaluations
+            if item.eligible and not item.required_failures and item.candidate is not None
+        ]
         def selection_key(item):
             candidate = item.candidate
             if candidate is None:

@@ -36,6 +36,7 @@ class Condition:
     passed: bool
     detail: str
     veto: bool = False
+    required: bool = False
 
 
 def _q(value: Decimal) -> Decimal:
@@ -101,6 +102,9 @@ def evaluate_conditions(
     ratio = D(str(earned)) / D(str(total))
     passed = [item.label for item in conditions if item.passed]
     failed = [item.label for item in conditions if not item.passed]
+    required_failures = sorted(
+        {item.code for item in conditions if item.required and not item.passed}
+    )
     vetoes = [item.detail for item in conditions if item.veto and not item.passed]
     vetoes.extend(extra_vetoes or [])
     components = [
@@ -111,10 +115,16 @@ def evaluate_conditions(
             maximum=item.maximum,
             passed=item.passed,
             detail=item.detail,
+            required=item.required,
         )
         for item in conditions
     ]
-    eligible = score >= ctx.minimum_score and not vetoes and direction in {"long", "short"}
+    eligible = (
+        score >= ctx.minimum_score
+        and not required_failures
+        and not vetoes
+        and direction in {"long", "short"}
+    )
     candidate = None
     if eligible:
         candidate = build_candidate(
@@ -133,6 +143,7 @@ def evaluate_conditions(
         score=score,
         passed_conditions=passed,
         failed_conditions=failed,
+        required_failures=required_failures,
         vetoes=sorted(set(vetoes)),
         score_components=components,
         candidate=candidate,

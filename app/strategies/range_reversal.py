@@ -20,10 +20,10 @@ def _direction(ctx: StrategyContext) -> str:
 def evaluate(ctx: StrategyContext):
     direction = _direction(ctx)
     conditions = [
-        Condition("range_regime", "Market regime is range", 30, "range" in ctx.analysis.regime, "market is not classified as range"),
-        Condition("range_edge", "15m price is near a range edge", 25, direction != "neutral", "price is not near support or resistance"),
-        Condition("5m_turn", "5m momentum turns from the edge", 20, momentum_matches(ctx.tf("5m"), direction), "5m reversal momentum is missing"),
+        Condition("range_regime", "Market regime is range", 30, "range" in ctx.analysis.regime, "market is not classified as range", required=True),
+        Condition("range_edge", "15m price is near a range edge", 25, direction != "neutral", "price is not near support or resistance", required=True),
+        Condition("5m_turn", "5m momentum turns from the edge", 20, momentum_matches(ctx.tf("5m"), direction), "5m reversal momentum is missing", required=True),
         Condition("normal_vol", "15m volatility is not high/extreme", 15, ctx.tf("15m").volatility in {"low", "normal"}, "range reversal blocked by high volatility", veto=True),
-        Condition("quality", "Data quality passes", 10, all(v.data_quality_ok for v in ctx.analysis.timeframe_analyses.values()), "data quality failed", veto=True),
+        Condition("quality", "Data quality passes", 10, all(v.data_quality_ok for v in ctx.analysis.timeframe_analyses.values()), "data quality failed", veto=True, required=True),
     ]
     return evaluate_conditions(ctx, NAME, direction, conditions, common_vetoes(ctx, direction))

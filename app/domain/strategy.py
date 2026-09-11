@@ -130,6 +130,7 @@ class ScoreComponent(BaseModel):
     maximum: int
     passed: bool
     detail: str
+    required: bool = False
 
 
 class TradeCandidate(BaseModel):
@@ -192,6 +193,7 @@ class StrategyEvaluation(BaseModel):
     score: int = Field(ge=0, le=100)
     passed_conditions: list[str] = Field(default_factory=list)
     failed_conditions: list[str] = Field(default_factory=list)
+    required_failures: list[str] = Field(default_factory=list)
     vetoes: list[str] = Field(default_factory=list)
     score_components: list[ScoreComponent] = Field(default_factory=list)
     candidate: TradeCandidate | None = None

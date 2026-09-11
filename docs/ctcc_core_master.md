@@ -14,6 +14,11 @@ Blueprint 沒有 runtime consumer，不會啟動 Demo／Live、自動 Arm 或提
 Demo/Live service、automation、risk 與 observability，並非宣稱已新增一個
 集中式、同名的 Python 模組。
 
+2026-09-11 使用者另提供 Notion 的進場資格／證據閉環規格，後續施工與
+驗收狀態記錄於 [Entry qualification implementation](entry_qualification_implementation.md)。
+此新增規格採 12 Gate 與圖後 Execution Recheck；目前僅推進離線資料模型與
+策略必要條件，不表示已接入 Demo、自動下單或完成整體驗收。
+
 ## 1. 核心方向與保留邊界
 
 123 專案作為 CTCC 的研究、設計、外部參考與驗證總索引。CTCC 的目標是

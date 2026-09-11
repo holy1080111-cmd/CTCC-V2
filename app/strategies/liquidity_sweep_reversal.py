@@ -18,10 +18,10 @@ def _sweep(ctx: StrategyContext, direction: str) -> bool:
 def evaluate(ctx: StrategyContext):
     direction = "long" if ctx.tf("15m").structure.choch == "up" else "short" if ctx.tf("15m").structure.choch == "down" else "neutral"
     conditions = [
-        Condition("15m_sweep", "15m liquidity sweep is reclaimed", 30, _sweep(ctx, direction), "no reclaim after a liquidity sweep"),
-        Condition("15m_choch", "15m CHoCH confirms reversal", 25, choch_matches(ctx.tf("15m"), direction), "15m CHoCH is missing"),
-        Condition("5m_momentum", "5m momentum confirms reversal", 20, momentum_matches(ctx.tf("5m"), direction), "5m momentum has not confirmed"),
+        Condition("15m_sweep", "15m liquidity sweep is reclaimed", 30, _sweep(ctx, direction), "no reclaim after a liquidity sweep", required=True),
+        Condition("15m_choch", "15m CHoCH confirms reversal", 25, choch_matches(ctx.tf("15m"), direction), "15m CHoCH is missing", required=True),
+        Condition("5m_momentum", "5m momentum confirms reversal", 20, momentum_matches(ctx.tf("5m"), direction), "5m momentum has not confirmed", required=True),
         Condition("not_extreme", "5m volatility is not extreme", 15, ctx.tf("5m").volatility != "extreme", "5m volatility is extreme", veto=True),
-        Condition("quality", "Data quality passes", 10, all(v.data_quality_ok for v in ctx.analysis.timeframe_analyses.values()), "data quality failed", veto=True),
+        Condition("quality", "Data quality passes", 10, all(v.data_quality_ok for v in ctx.analysis.timeframe_analyses.values()), "data quality failed", veto=True, required=True),
     ]
     return evaluate_conditions(ctx, NAME, direction, conditions, common_vetoes(ctx, direction))

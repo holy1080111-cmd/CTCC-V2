@@ -1,5 +1,10 @@
 # Frozen implementation sequence
 
+Latest user-supplied construction track: [entry qualification and evidence](entry_qualification_implementation.md)
+(2026-09-11). Its domain foundation and strategy hard-gate work are local-only;
+regime/timing/location engines, evidence, final recheck, outbox, forensics and
+Demo acceptance remain separately tracked. MIE/research authority is unchanged.
+
 - v0.1 Foundation
 - v0.2 Transaction Core and database schema
 - v0.3 OKX public REST market data and data quality
