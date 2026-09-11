@@ -1,13 +1,18 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
 from app.analysis import AnalysisService
 from app.config.settings import get_settings
-from app.domain.strategy import StrategyDecision
+from app.domain.strategy import (
+    RegimeRoutingEvidence,
+    StrategyDecision,
+    StrategyEvaluation,
+)
 from app.market.service import MarketDataService
 from app.strategies.base import StrategyContext
 from app.strategies.mathematical_confirmation import mathematical_score_cap
-from app.strategies.registry import STRATEGIES
+from app.strategies.regime import RouteDecision, route_regime
+from app.strategies.registry import STRATEGY_EVALUATORS
 
 
 class StrategyService:
@@ -35,7 +40,47 @@ class StrategyService:
             minimum_score=settings.strategy_min_score,
             minimum_risk_reward=Decimal(str(settings.strategy_min_risk_reward)),
         )
-        evaluations = [evaluator(context) for evaluator in STRATEGIES]
+        route = route_regime(analysis)
+        allowed = (
+            set(route.allowed_strategies)
+            if route.decision == RouteDecision.ALLOW_SCORING
+            else set()
+        )
+        evaluations = []
+        for name, evaluator in STRATEGY_EVALUATORS.items():
+            if name not in allowed:
+                # Zero is a non-scored audit placeholder, not a computed score.
+                evaluations.append(
+                    StrategyEvaluation(
+                        strategy=name,
+                        direction="neutral",
+                        eligible=False,
+                        completion_ratio=Decimal(0),
+                        score=0,
+                        scoring_performed=False,
+                        vetoes=["regime_not_permitted"],
+                    )
+                )
+                continue
+            evaluation = evaluator(context)
+            if evaluation.strategy != name or (
+                evaluation.candidate is not None
+                and (
+                    evaluation.candidate.strategy != name
+                    or evaluation.candidate.direction != evaluation.direction
+                )
+            ):
+                evaluation = evaluation.model_copy(
+                    update={
+                        "strategy": name,
+                        "eligible": False,
+                        "candidate": None,
+                        "vetoes": sorted(
+                            set([*evaluation.vetoes, "strategy_identity_mismatch"])
+                        ),
+                    }
+                )
+            evaluations.append(evaluation)
         # Evaluator/model_copy output cannot override a failed setup gate.
         # Rebuild codes from components as well as the declared failure list.
         for index, evaluation in enumerate(evaluations):
@@ -62,7 +107,9 @@ class StrategyService:
                     update={
                         "eligible": False,
                         "candidate": None,
-                        "vetoes": sorted(set([*item.vetoes, "strategy_disabled_by_operator"])),
+                        "vetoes": sorted(
+                            set([*item.vetoes, "strategy_disabled_by_operator"])
+                        ),
                     }
                 )
                 if item.strategy in disabled
@@ -98,9 +145,16 @@ class StrategyService:
             for item in evaluations
         ]
         eligible = [
-            item for item in evaluations
-            if item.eligible and not item.required_failures and item.candidate is not None
+            item
+            for item in evaluations
+            if item.eligible
+            and item.scoring_performed
+            and item.strategy in allowed
+            and not item.vetoes
+            and not item.required_failures
+            and item.candidate is not None
         ]
+
         def selection_key(item):
             candidate = item.candidate
             if candidate is None:
@@ -130,6 +184,8 @@ class StrategyService:
             default=None,
         )
         blockers = list(analysis.blockers)
+        if route.decision == RouteDecision.NO_TRADE:
+            blockers.extend(route.fail_codes)
         if disabled:
             blockers.extend(f"strategy_disabled:{name}" for name in sorted(disabled))
         if selected is None:
@@ -143,6 +199,15 @@ class StrategyService:
             minimum_score=settings.strategy_min_score,
             evaluations=evaluations,
             blockers=sorted(set(blockers)),
-            generated_at=datetime.now(timezone.utc),
+            regime_route=RegimeRoutingEvidence(
+                regime=route.regime,
+                decision=route.decision.value,
+                allowed_strategies=route.allowed_strategies,
+                reasons=route.reasons,
+                fail_codes=route.fail_codes,
+                snapshot_basis=route.snapshot_basis,
+                snapshot_sha256=route.snapshot_sha256,
+            ),
+            generated_at=datetime.now(UTC),
             version=settings.app_version,
         )

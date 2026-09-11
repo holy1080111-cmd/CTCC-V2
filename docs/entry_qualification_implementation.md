@@ -1,6 +1,7 @@
 # Entry qualification and evidence implementation
 
-Status: foundation in progress, not deployed. Updated 2026-09-11.
+Status: qualification foundation and conservative regime routing, not deployed.
+Updated 2026-09-11.
 
 Source: [CTCC complete construction specification](https://app.notion.com/p/3d832165a6888173bfb1df896604fc7c),
 edited 2026-09-11 11:02:22 UTC. The user's directly supplied, newer specification
@@ -8,12 +9,10 @@ defines 12 gates plus a final execution recheck; it takes precedence over the
 older eight-gate outline in its parent and sibling pages.
 
 Progress: [Notion implementation plan](https://app.notion.com/p/3d832165a68881b3981cd9692986f031).
-The plan was created and read back successfully, but a subsequent targeted
-progress update was denied by this session's approval policy. Its checkboxes
-therefore remain at the initial planning state; this local document and the
-acceptance report carry later verified progress. No alternate write route was
-used. Notion's first rendering also removed a backslash from the deployment
-path in that plan; the actual preserved deployment path is `C:/CTCC-V2`.
+An initial targeted update was denied under the earlier restricted session.
+After the user changed permissions, ordinary connector updates succeeded and
+were read back, including the foundation's full regression and CI results.
+The deployment path in the plan was also corrected to `C:/CTCC-V2`.
 This is an addition to the [123-project core](ctcc_core_master.md), not permission
 to promote research E0–E6 or MIE computational evidence into execution.
 
@@ -23,8 +22,10 @@ The requested feature branch is `develop/v1.7-entry-qualification-evidence`.
 Its local base is `9ef040251bdd5dc7d4792c6093690874716dbab0`, following core
 integration `21b89a0`. Remote main `d3f206a` is an ancestor. The two unpublished
 local milestones were preserved instead of switching to an older main and
-discarding that integration. GitHub write access was refused by this session;
-local commits are not remote publication, CI acceptance, or deployment.
+discarding that integration. After the permission change, the feature branch
+was pushed through `e9902cc`; its Docker CI succeeded. See the
+[verified foundation checkpoint](evidence/entry_qualification_foundation_20260911.md).
+Publication and CI do not imply a main-branch merge or deployment.
 
 Only the workspace checkout is being edited. No deployment directory, existing
 container, account, firewall, credential, or trading flag is changed. The initial
@@ -109,6 +110,49 @@ New API-domain fields also do not establish database persistence: the ORM
 `StrategyEvaluation` is a different model, and its JSONB `score_breakdown`
 integration must be assessed before durable evidence is claimed.
 
+## Pre-score regime routing
+
+`app/strategies/regime.py` derives a deterministic route from the existing
+four-timeframe analysis snapshot and rechecks its legacy classification. It
+does not accept a new caller-declared regime as permission. The route retains
+the classification basis and a SHA-256 of the validated complete snapshot.
+Missing, malformed, non-finite, conflicting-quality or mismatched snapshot
+evidence fails closed. Existing risk/unknown blockers are not erased.
+
+The named evaluator registry allows `StrategyService` to filter before calling
+any scorer. Excluded strategies retain an audit row with
+`scoring_performed=false`, no candidate and `regime_not_permitted`; its zero
+score is only a placeholder. Returned evaluator/candidate identities must match
+the routed strategy. Required failures, vetoes, operator disables and downward
+mathematical ranking still apply. The API exposes a frozen `regime_route`; this is not
+yet durable same-report evidence or a complete entry-qualification gate.
+
+| Snapshot regime | Strategies allowed to reach their existing gates |
+| --- | --- |
+| Trend | Directionally permitted trend pullback, breakout continuation, FVG return, order-block return; pullback also requires 1H permission |
+| Range | Range reversal, only with neutral HTFs and an intact 15m support/close/resistance bracket |
+| Expansion | Breakout continuation only, with current 15m high volatility, BOS and HTF permission |
+| Compression | None; await a confirmed event |
+| HighVolatility, RiskOff, Unknown | None |
+
+This is deliberately a snapshot-only conservative policy, not a claim that
+all six/eight strategy families have complete event routing. Prior compression
+is absent, so volatility-expansion scoring remains blocked. Sweep/reclaim and
+range-to-structural-reversal chronology are also absent, so liquidity-sweep and
+structural-reversal scoring remain blocked. The current structure engine cannot
+generate 1H CHoCH with a neutral 1H trend; a synthetic contradictory snapshot
+must not pretend that route is implemented. Step 6 must add actual event/history
+evidence before these families can be admitted. Exclusion codes on an otherwise
+allowed route describe blocked families, not a veto of every allowed family.
+
+For range routing only, the legacy `multi_timeframe_not_aligned` blocker is not
+a universal reversal veto; its original value stays in the audit and decision.
+This change neither deletes downstream safety checks nor turns `trade_ready`
+into execution authority. Current candle freshness, cross-source consistency,
+trigger age, executable quote, entry location and the full twelve-gate chain
+remain separate unfinished evaluations. Snapshot hashing proves identity of
+the recorded inputs, not authenticity or freshness of external market data.
+
 ## Ordered remaining implementation
 
 The source's order is retained; writing tests alongside each change does not
@@ -119,7 +163,7 @@ replace the final acceptance stages. Do not wire a partial chain into Demo.
 | 1–2 | Workspace/safety preflight, preserve changes, create exact branch | Complete; existing deployment read-only |
 | 3 | Qualification/zone/trigger/gate domain and consistency tests | Implemented locally |
 | 4 | Required predicates for all eight strategies, stable failures, selection guard | Implemented; 65 targeted tests passed |
-| 5 | Deterministic regime router before strategy evaluation/selection | Pending |
+| 5 | Deterministic regime router before strategy evaluation/selection | Conservative snapshot routing implemented; event-dependent families fail closed pending step 6 |
 | 6 | Actual trigger event, per-strategy timing, WAIT/CANCEL semantics | Pending |
 | 7 | Zone provenance, executable quote, expiry/drift/location evaluation | Contract only; engine pending |
 | 8 | Evaluate all legal 15m/1H/4H SL/TP brackets, noise/liquidity rejection | Pending; legacy first-complete behavior remains |
@@ -130,18 +174,22 @@ replace the final acceptance stages. Do not wire a partial chain into Demo.
 | 13 | Guard every SafeDemoAutomation submit route | Pending |
 | 14 | Post-submit durable Notion outbox, retry without duplicate orders | Pending |
 | 15 | Same-report realized forensics, MFE/MAE/R and evidence-based attribution | Pending |
-| 16–18 | Unit, full regression and isolated Docker hermetic acceptance | Partial local tests; platform blockers remain |
+| 16–18 | Unit, full regression and isolated Docker hermetic acceptance | Latest route checkpoint: 1,370 full tests passed; foundation CI passed; rerun per later phase, not whole-project completion |
 | 19–20 | Genuine old/new shadow and isolated Demo soak with sufficient samples | Not started; zero collected samples |
 | 21 | Final audit and the four requested reproducible evidence examples | Pending |
+
+Latest execution evidence: [regime routing acceptance](evidence/regime_routing_20260911.md).
 
 ## Dependencies and unresolved decisions
 
 - Docker CLI/engine became readable after the user's permission change; the
   existing deployment is running Demo. New-feature isolation and acceptance
   are separate requirements. Do not rebuild/restart the deployment as a test.
-- The previous full-unit attempt had two Windows symlink fixture failures due
-  to WinError 1314. These tests are not skipped, weakened or claimed passing.
-- GitHub publication and protected-branch Docker CI are not completed.
+- The previous Windows full-unit attempt had two symlink fixture failures due
+  to WinError 1314. Both ran successfully in the complete isolated Linux suite;
+  no tests were skipped or weakened and no Windows host privileges were changed.
+- The foundation feature branch is published with successful Docker CI. Main
+  remains protected and the new chain is not deployed.
 - Existing Continuous Demo risk bypass settings must not silently waive the
   new portfolio chain. Existing score-tier leverage is not score calibration.
 - Reversal HTF permission must be strategy-specific, not a universal 4H=1H

@@ -368,7 +368,10 @@ async def test_service_rejects_forged_eligibility_even_when_failure_list_is_clea
         def analyze_snapshot(self, snapshot):
             return ctx.analysis
 
-    monkeypatch.setattr("app.strategies.service.STRATEGIES", (lambda context: forged,))
+    monkeypatch.setattr(
+        "app.strategies.service.STRATEGY_EVALUATORS",
+        {"trend_pullback": lambda context: forged},
+    )
     monkeypatch.setattr(
         "app.strategies.service.get_settings", lambda: Settings(_env_file=None)
     )

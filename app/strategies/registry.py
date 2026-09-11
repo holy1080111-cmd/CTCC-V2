@@ -1,4 +1,5 @@
 from collections.abc import Callable
+from types import MappingProxyType
 
 from app.domain.strategy import StrategyEvaluation
 from app.strategies.base import StrategyContext
@@ -17,7 +18,9 @@ from app.strategies.structure_reversal import evaluate as evaluate_structure_rev
 from app.strategies.trend_pullback import NAME as TREND_PULLBACK_NAME
 from app.strategies.trend_pullback import evaluate as evaluate_trend_pullback
 from app.strategies.volatility_expansion import NAME as VOLATILITY_EXPANSION_NAME
-from app.strategies.volatility_expansion import evaluate as evaluate_volatility_expansion
+from app.strategies.volatility_expansion import (
+    evaluate as evaluate_volatility_expansion,
+)
 
 Evaluator = Callable[[StrategyContext], StrategyEvaluation]
 
@@ -41,4 +44,9 @@ STRATEGY_NAMES: tuple[str, ...] = (
     RANGE_NAME,
     STRUCTURE_REVERSAL_NAME,
     VOLATILITY_EXPANSION_NAME,
+)
+
+# Names must be known before an evaluator runs: routing is a pre-score gate.
+STRATEGY_EVALUATORS = MappingProxyType(
+    dict(zip(STRATEGY_NAMES, STRATEGIES, strict=True))
 )

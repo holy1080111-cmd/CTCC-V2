@@ -2,7 +2,9 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from app.trade_qualification.models import MarketRegime
 
 Direction = Literal["long", "short", "neutral"]
 
@@ -72,8 +74,7 @@ class MathematicalConfirmation(BaseModel):
         ):
             raise ValueError("high grade requires high-confidence core geometry")
         if self.risk_grade == "medium" and (
-            self.confidence < Decimal("0.35")
-            or self.reliability < Decimal("0.45")
+            self.confidence < Decimal("0.35") or self.reliability < Decimal("0.45")
         ):
             raise ValueError("medium grade requires sufficient core reliability")
         return self
@@ -158,30 +159,47 @@ class TradeCandidate(BaseModel):
 
     @model_validator(mode="after")
     def validate_geometry(self) -> "TradeCandidate":
-        if self.direction == "long" and not (self.stop_loss < self.entry < self.take_profit):
+        if self.direction == "long" and not (
+            self.stop_loss < self.entry < self.take_profit
+        ):
             raise ValueError("long candidate requires stop_loss < entry < take_profit")
-        if self.direction == "short" and not (self.take_profit < self.entry < self.stop_loss):
+        if self.direction == "short" and not (
+            self.take_profit < self.entry < self.stop_loss
+        ):
             raise ValueError("short candidate requires take_profit < entry < stop_loss")
         if self.risk_reward <= 0:
             raise ValueError("risk_reward must be positive")
         if self.protection_model == "structure":
             geometry = self.structural_protection
             if geometry is None:
-                raise ValueError("structural protection model requires structural geometry")
+                raise ValueError(
+                    "structural protection model requires structural geometry"
+                )
             if self.direction == "long" and not (
-                self.stop_loss < geometry.stop_anchor < self.entry
-                < self.take_profit <= geometry.target_anchor
+                self.stop_loss
+                < geometry.stop_anchor
+                < self.entry
+                < self.take_profit
+                <= geometry.target_anchor
             ):
                 raise ValueError("candidate prices exceed long structural anchors")
             if self.direction == "short" and not (
-                geometry.target_anchor <= self.take_profit < self.entry
-                < geometry.stop_anchor < self.stop_loss
+                geometry.target_anchor
+                <= self.take_profit
+                < self.entry
+                < geometry.stop_anchor
+                < self.stop_loss
             ):
                 raise ValueError("candidate prices exceed short structural anchors")
             if geometry.source_closed_at >= self.expires_at:
                 raise ValueError("structural source must predate candidate expiry")
-        if self.net_risk_reward is not None and self.risk_reward != self.net_risk_reward:
-            raise ValueError("risk_reward must equal net_risk_reward when net RR is set")
+        if (
+            self.net_risk_reward is not None
+            and self.risk_reward != self.net_risk_reward
+        ):
+            raise ValueError(
+                "risk_reward must equal net_risk_reward when net RR is set"
+            )
         return self
 
 
@@ -191,12 +209,28 @@ class StrategyEvaluation(BaseModel):
     eligible: bool
     completion_ratio: Decimal = Field(ge=0, le=1)
     score: int = Field(ge=0, le=100)
+    scoring_performed: bool = True
     passed_conditions: list[str] = Field(default_factory=list)
     failed_conditions: list[str] = Field(default_factory=list)
     required_failures: list[str] = Field(default_factory=list)
     vetoes: list[str] = Field(default_factory=list)
     score_components: list[ScoreComponent] = Field(default_factory=list)
     candidate: TradeCandidate | None = None
+
+
+class RegimeRoutingEvidence(BaseModel):
+    """Snapshot-only routing audit, never entry or execution authorization."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    regime: MarketRegime
+    decision: Literal["allow_scoring", "no_trade"]
+    allowed_strategies: tuple[str, ...]
+    reasons: tuple[str, ...]
+    fail_codes: tuple[str, ...]
+    snapshot_basis: tuple[tuple[str, str], ...]
+    snapshot_sha256: str | None
+    execution_authority: Literal[False] = False
 
 
 class StrategyDecision(BaseModel):
@@ -208,5 +242,6 @@ class StrategyDecision(BaseModel):
     minimum_score: int
     evaluations: list[StrategyEvaluation]
     blockers: list[str] = Field(default_factory=list)
+    regime_route: RegimeRoutingEvidence | None = None
     generated_at: datetime
     version: str = "1.0.0"
