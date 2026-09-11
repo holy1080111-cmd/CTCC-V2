@@ -319,6 +319,12 @@ claims; neither rendering nor publication grants execution authority. Native
 Windows full-chain publication is blocked by this host's ancestor access rights;
 the checks remain fail-closed, with Linux acceptance recorded separately.
 
+The [explicit-clock data increment](data_qualification.md) now supplies a pure
+G1 evaluator and replay boundary, with recomputed quality/analysis, separate public
+quote provenance and a mandatory trusted-adapter WS reference contract. It also
+compares unchanged candidate economics with the sampled executable reference,
+without repricing or granting authority. The real WS adapter remains unconnected.
+
 The next implementation is a pure ordered G1–G11 coordinator, G12 verification
 against the same run and actual packet, then a separate post-render recheck.
 Input gate booleans or a constructible receipt cannot stand in for those checks.
@@ -364,8 +370,8 @@ replace the final acceptance stages. Do not wire a partial chain into Demo.
 | 8 | Evaluate all legal 15m/1H/4H SL/TP brackets, noise/liquidity rejection | Offline shared selector implemented; 97 new structural tests passed |
 | 9 | Cost-adjusted economics and complete portfolio/Demo authority | Offline evaluators implemented; 75 economics + 357 portfolio + 48 source-to-risk tests passed, trusted runtime collector pending |
 | 10 | Same-OHLC/report five charts and evidence packet | Source-bound preparation, renderer and no-clobber publisher implemented; 20 synthetic PNGs inspected; platform acceptance and limitations in trade_evidence.md |
-| 11 | Actual 12 gate evaluators, measured values and fail codes | Record contract only; engine pending |
-| 12 | Fresh executable quote after evidence, cancel stale old candidate | Pending |
+| 11 | Actual 12 gate evaluators, measured values and fail codes | Pure G1 evaluator and source replay implemented; full ordered coordinator/G12 and trusted runtime sources pending |
+| 12 | Fresh executable quote after evidence, cancel stale old candidate | Post-publication location contract and candidate/executable economics comparison implemented; complete recheck pending |
 | 13 | Guard every SafeDemoAutomation submit route | Pending |
 | 14 | Post-submit durable Notion outbox, retry without duplicate orders | Pending |
 | 15 | Same-report realized forensics, MFE/MAE/R and evidence-based attribution | Pending |

@@ -156,6 +156,11 @@ reconciliation／Emergency Stop 防線。此次整理不修改 Settings 或部�
 
 ## 6. 開發順序與接受條件
 
+進場鏈在 d0ff9b7 後新增明確時間的 G1 資料重算與結果重播，以及原候選／
+最新可成交價的成本風報比分離比較，詳見 [資料關卡契約](data_qualification.md)。
+這仍是離線模組：WS 來源 adapter、完整 12 關卡、圖後期間事件重檢與原子風險
+保留未完成，不授予交易權限；不可沿用上一版 Docker／CI 成功宣稱新版本已驗。
+
 1. 完成本機既有 Gate 3 證據鏈與批次 plan-binding 測試、manifest、發行審查。
 2. 取得獨立來源／row availability 證據，再完成真實批次與計畫連結。
 3. 建外部 Strategy Evidence Pack 的輸入規格與來源審查；先從可重現且
