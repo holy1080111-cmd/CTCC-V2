@@ -12,6 +12,7 @@ __pycache__/
 pytest-of-root/
 backups/
 reports/
+artifacts/
 *.patch
 *.dump
 *.log

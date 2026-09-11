@@ -98,7 +98,11 @@ def apply_cost_adjusted_reward_risk(
 
 def _twenty_x_reasons(candidate: TradeCandidate, settings: Settings) -> list[str]:
     reasons: list[str] = []
-    effective_score = candidate.risk_score or candidate.score
+    # Zero is an explicit downward risk score, not missing evidence. Do not
+    # replace it with a high raw score and reopen the legacy extreme tier.
+    effective_score = (
+        candidate.score if candidate.risk_score is None else candidate.risk_score
+    )
     if effective_score < settings.okx_demo_structural_score_extreme_min:
         reasons.append("effective_score_below_20x_threshold")
     math = candidate.mathematical_confirmation

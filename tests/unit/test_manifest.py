@@ -56,3 +56,13 @@ def test_manifest_excludes_secrets_build_products_and_archives(tmp_path: Path) -
     entries = manifest.build_manifest(tmp_path)
 
     assert entries.keys() == {"app.py"}
+
+
+def test_runtime_trade_evidence_is_not_part_of_the_source_release(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text("pass\n", encoding="utf-8")
+    packet = tmp_path / "artifacts" / "trade_evidence" / "synthetic-report"
+    packet.mkdir(parents=True)
+    (packet / "report.json").write_text('{"synthetic": true}', encoding="utf-8")
+    (packet / "summary.png").write_bytes(b"synthetic-png-not-a-real-trade")
+
+    assert manifest.build_manifest(tmp_path).keys() == {"app.py"}

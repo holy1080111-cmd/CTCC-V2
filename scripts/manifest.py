@@ -29,6 +29,7 @@ EXCLUDED_DIRECTORIES = {
     ".vscode",
     "__pycache__",
     "backups",
+    "artifacts",
     "htmlcov",
     "node_modules",
     "pytest-of-root",

@@ -204,6 +204,44 @@ def test_20x_is_capped_to_10x_when_mathematics_is_not_high_grade() -> None:
     assert "mathematical_grade_below_20x_threshold" in selection.cap_reasons
 
 
+@pytest.mark.parametrize("risk_score", [0, 1, 75, 97])
+def test_downward_risk_score_never_falls_back_to_raw_99(risk_score) -> None:
+    settings = structural_settings()
+    base = finalized_candidate()
+    candidate = TradeCandidate.model_validate(
+        base.model_dump() | {"risk_score": risk_score}
+    )
+    selection = select_structural_leverage(
+        candidate,
+        score_risk_tier(99, settings),
+        settings,
+        account_equity=D("150"),
+        position_margin_cap=D("150"),
+    )
+
+    assert candidate.score == 99 and candidate.risk_score == risk_score
+    assert selection.twenty_x_eligible is False
+    assert selection.leverage_cap == selection.selected_leverage == 10
+    assert "effective_score_below_20x_threshold" in selection.cap_reasons
+
+
+def test_only_absent_risk_score_preserves_legacy_raw_score_fallback() -> None:
+    settings = structural_settings()
+    candidate = TradeCandidate.model_validate(
+        finalized_candidate().model_dump() | {"risk_score": None}
+    )
+    selection = select_structural_leverage(
+        candidate,
+        score_risk_tier(99, settings),
+        settings,
+        account_equity=D("150"),
+        position_margin_cap=D("150"),
+    )
+
+    assert selection.twenty_x_eligible is True
+    assert selection.selected_leverage == 20
+
+
 def test_net_reward_below_configured_minimum_fails_closed() -> None:
     settings = structural_settings(okx_demo_structural_min_net_risk_reward=D("4"))
     candidate = candidate_with_structural_prices(

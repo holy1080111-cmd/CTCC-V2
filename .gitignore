@@ -4,6 +4,7 @@ __pycache__/
 .pytest_cache/
 /pytest-of-root/
 backups/
+/artifacts/
 *.dump
 *.zip
 .env.*
