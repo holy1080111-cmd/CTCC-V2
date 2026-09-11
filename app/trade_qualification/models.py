@@ -10,7 +10,7 @@ model inputs for validated reconstruction; never trust ``model_copy(update=)``.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Context, Decimal, InvalidOperation, localcontext
 from enum import StrEnum
 from types import MappingProxyType
@@ -48,7 +48,9 @@ class QualificationModel(BaseModel):
 def require_aware(value: datetime) -> datetime:
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError("qualification timestamps must be timezone-aware")
-    return value
+    # Equal tzinfo objects otherwise use local wall time for Python arithmetic
+    # and comparisons, which is not causal across a daylight-saving clock fold.
+    return value.astimezone(UTC)
 
 
 class MarketRegime(StrEnum):
@@ -114,6 +116,12 @@ _PASSED_STATES = (
 
 class EntryZone(QualificationModel):
     report_id: ReportId
+    # Legacy records may omit provenance, but the actual location evaluator
+    # rejects that absence. Free-form zone_source remains human-readable audit
+    # text, never the instrument/direction identity boundary.
+    instrument_id: Text | None = None
+    direction: Literal["long", "short"] | None = None
+    source_sha256: Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")] | None = None
     zone_low: Price
     zone_high: Price
     zone_type: Text
@@ -372,7 +380,7 @@ class EntryQualificationResult(QualificationModel):
             return (
                 abs(self.reference_price - self.candidate_entry)
                 / self.candidate_entry
-                * Decimal("10000")
+                * Decimal(10000)
             )
 
     @computed_field

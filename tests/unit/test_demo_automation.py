@@ -1,3 +1,5 @@
+import asyncio
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -107,8 +109,8 @@ class FakeDemo:
     def _position(instrument_id: str, direction: str) -> OkxDemoPositionView:
         return OkxDemoPositionView(
             instrument_id=instrument_id,
-            position_side=direction,
-            size=Decimal("1"),
+            position_side="net",
+            size=Decimal(1) if direction == "long" else Decimal(-1),
             available_size=Decimal("1"),
             unrealized_pnl=Decimal("0"),
         )
@@ -160,7 +162,7 @@ class FakeDemo:
                         instrument_id=position.instrument_id,
                         order_type="oco",
                         state="live",
-                        side="sell",
+                        side="sell" if position.size > 0 else "buy",
                         position_side=position.position_side,
                         size=abs(position.size),
                         take_profit_trigger_price=take_profit,
@@ -175,6 +177,7 @@ class FakeDemo:
             account_config=OkxDemoAccountConfig(
                 account_level=self.account_level,
                 position_mode="net_mode",
+                raw={"posMode": "net_mode"},
             ),
             balance=OkxDemoBalanceSnapshot(
                 total_equity=self.equity + self.other_asset_equity,
@@ -211,7 +214,9 @@ class FakeDemo:
             acknowledged=self.leverage_acknowledged,
         )
 
-    async def place_order(self, request):
+    async def place_order(self, request, *, before_submit=None):
+        if before_submit is not None:
+            before_submit()
         self.place_calls.append(request)
         fill_size = (
             self.accumulated_fill_size
@@ -2085,6 +2090,284 @@ async def test_unconfirmed_leverage_stops_before_any_demo_order() -> None:
     assert demo.place_calls == []
     assert status.emergency_stop is True
     assert "leverage_configuration_unconfirmed" in status.lock_reasons
+
+
+class MemoryAutomationRepository:
+    """Detached local persistence fixture; no database connection is opened."""
+
+    def __init__(self) -> None:
+        self.state = None
+        self.fingerprints = {}
+        self.runs = []
+        self.fail_writes = False
+
+    async def load_state(self):
+        return deepcopy(self.state)
+
+    async def save_state(self, state):
+        if self.fail_writes:
+            raise RuntimeError("synthetic persistence unavailable")
+        self.state = deepcopy(state)
+
+    async def load_runs(self, limit):
+        return deepcopy(self.runs[-limit:])
+
+    async def save_run(self, run, *, history_limit):
+        if self.fail_writes:
+            raise RuntimeError("synthetic persistence unavailable")
+        self.runs.append(run.model_copy(deep=True))
+
+    async def cleanup_fingerprints(self, now):
+        self.fingerprints = {
+            key: value for key, value in self.fingerprints.items()
+            if value[0] > now
+        }
+
+    async def fingerprint_exists(self, fingerprint, now):
+        value = self.fingerprints.get(fingerprint)
+        return value is not None and value[0] > now
+
+    async def save_fingerprint(self, fingerprint, expires_at, details):
+        if self.fail_writes:
+            raise RuntimeError("synthetic persistence unavailable")
+        self.fingerprints[fingerprint] = (expires_at, deepcopy(details))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [TimeoutError, RuntimeError])
+async def test_direct_submit_error_retains_possible_exposure_and_stops_other_symbols(failure):
+    class AcceptedWithoutResponse(FakeDemo):
+        async def place_order(self, request, *, before_submit=None):
+            await super().place_order(request, before_submit=before_submit)
+            raise failure("synthetic response unavailable after write")
+
+    demo = AcceptedWithoutResponse()
+    service = adaptive_service(demo, {"BTC-USDT-SWAP": 95, "ETH-USDT-SWAP": 90})
+    repository = MemoryAutomationRepository()
+    service.repository = repository
+    await service.recover()
+    await service.arm()
+
+    run = await service.run_once(execute=True)
+    status = await service.status()
+
+    assert len(demo.place_calls) == 1
+    assert len(demo.positions) == 1  # No automatic close or pretend-flat recovery.
+    assert run.results[0].outcome == "error"
+    assert run.results[0].order_submission_attempted is True
+    assert run.results[1].outcome == "locked"
+    assert status.emergency_stop is True and status.armed is False
+    assert "order_submission_outcome_unconfirmed" in status.lock_reasons
+    assert status.active_position_count == 1 and status.trades_today == 1
+    pending = service._active_trades()[0]
+    assert pending.client_order_id == demo.place_calls[0].client_order_id
+    assert pending.contracts == demo.place_calls[0].size
+    assert pending.estimated_stop_loss_amount > 0
+    assert pending.exchange_order_id is None
+    assert pending.protection_client_order_id is None
+    assert len(repository.fingerprints) == 1
+    assert next(iter(repository.fingerprints.values()))[1]["outcome"] == "unconfirmed"
+
+    # Recovery may retain uncertainty, but may neither re-arm nor resend it.
+    restarted = adaptive_service(demo, {"BTC-USDT-SWAP": 95})
+    restarted.repository = repository
+    await restarted.recover()
+    recovered = await restarted.status()
+    assert recovered.emergency_stop is True and recovered.armed is False
+    assert recovered.active_position_count == 1
+    assert restarted._active_trades()[0].client_order_id == pending.client_order_id
+    with pytest.raises(DemoAutomationSafetyError):
+        await restarted.arm()
+    with pytest.raises(DemoAutomationSafetyError):
+        await restarted.run_once(execute=True)
+    assert len(demo.place_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_submit_with_failed_persistence_still_stops_in_memory():
+    repository = MemoryAutomationRepository()
+
+    class AcceptedWithoutResponse(FakeDemo):
+        async def place_order(self, request, *, before_submit=None):
+            await super().place_order(request, before_submit=before_submit)
+            repository.fail_writes = True
+            raise TimeoutError("synthetic timeout")
+
+    demo = AcceptedWithoutResponse()
+    service = adaptive_service(demo, {"BTC-USDT-SWAP": 95, "ETH-USDT-SWAP": 90})
+    service.repository = repository
+    await service.recover()
+    await service.arm()
+    run = await service.run_once(execute=True)
+    status = await service.status()
+    assert len(demo.place_calls) == 1
+    assert run.results[1].outcome == "locked"
+    assert status.emergency_stop is True and status.active_position_count == 1
+    assert "order_submission_outcome_unconfirmed" in status.lock_reasons
+    assert "post_submission_fingerprint_persistence_failed" in status.lock_reasons
+    assert len(service._fingerprints) == 1
+
+
+@pytest.mark.asyncio
+async def test_cancellation_after_submit_preserves_uncertainty_before_propagating():
+    class CancelledAfterWrite(FakeDemo):
+        async def place_order(self, request, *, before_submit=None):
+            await super().place_order(request, before_submit=before_submit)
+            raise asyncio.CancelledError
+
+    demo = CancelledAfterWrite()
+    service = adaptive_service(demo, {"BTC-USDT-SWAP": 95, "ETH-USDT-SWAP": 90})
+    service.repository = MemoryAutomationRepository()
+    await service.recover()
+    await service.arm()
+    with pytest.raises(asyncio.CancelledError):
+        await service.run_once(execute=True)
+    status = await service.status()
+    assert len(demo.place_calls) == 1
+    assert status.emergency_stop is True and status.armed is False
+    assert status.active_position_count == 1
+    assert service.repository.state["active_trades"]
+    assert len(service.repository.fingerprints) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["leverage", "order_preflight"])
+@pytest.mark.parametrize("action", ["disarm", "emergency_stop", "disable_writes"])
+async def test_manual_run_rechecks_authority_after_async_preflight(phase, action):
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    class SuspendedDemo(FakeDemo):
+        async def set_leverage(self, request):
+            result = await super().set_leverage(request)
+            if phase == "leverage":
+                entered.set()
+                await release.wait()
+            return result
+
+        async def place_order(self, request, *, before_submit=None):
+            if phase == "order_preflight":
+                entered.set()
+                await release.wait()
+            return await super().place_order(request, before_submit=before_submit)
+
+    demo = SuspendedDemo()
+    service = adaptive_service(demo, {"BTC-USDT-SWAP": 95, "ETH-USDT-SWAP": 90})
+    await service.recover()
+    await service.arm()
+    task = asyncio.create_task(service.run_once(execute=True))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=2)
+        if action == "disable_writes":
+            service.settings.okx_demo_allow_order_writes = False
+        else:
+            await getattr(service, action)()
+        release.set()
+        run = await asyncio.wait_for(task, timeout=2)
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+    assert len(demo.leverage_calls) == 1
+    assert demo.place_calls == []
+    assert run.results[0].order_submission_attempted is False
+    assert (await service.status()).active_position_count == 0
+    assert service._state["trades_today"] == 0
+
+
+@pytest.mark.asyncio
+async def test_definite_preflight_rejection_is_not_reported_as_possible_submission():
+    class RejectedPreflight(FakeDemo):
+        async def place_order(self, request, *, before_submit=None):
+            raise DemoAutomationSafetyError("synthetic preflight rejected before POST")
+
+    demo = RejectedPreflight()
+    service = adaptive_service(demo, {"BTC-USDT-SWAP": 95})
+    await service.recover()
+    await service.arm()
+    run = await service.run_once(execute=True)
+    status = await service.status()
+    assert run.results[0].order_submission_attempted is False
+    assert status.active_position_count == 0 and status.emergency_stop is False
+    assert demo.place_calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["net_mode", "long_short_mode"])
+@pytest.mark.parametrize("direction", ["long", "short"])
+async def test_continuous_protection_uses_exact_position_mode_and_side(mode, direction):
+    demo = FakeDemo()
+    instrument_id = "BTC-USDT-SWAP"
+    demo.positions = [demo._position(instrument_id, direction)]
+    stop = Decimal(95) if direction == "long" else Decimal(105)
+    take = Decimal(110) if direction == "long" else Decimal(90)
+    demo.protection_by_instrument[instrument_id] = (
+        fake_protection_id(instrument_id), stop, take
+    )
+    service = make_service(demo)
+    snapshot = await demo.reconcile()
+    snapshot.account_config.position_mode = mode
+    snapshot.account_config.raw["posMode"] = mode
+    expected = "net" if mode == "net_mode" else direction
+    snapshot.positions[0].position_side = expected
+    if mode == "long_short_mode":
+        snapshot.positions[0].size = abs(snapshot.positions[0].size)
+    snapshot.pending_algo_orders[0].position_side = expected
+    payload = tracked_trade(instrument_id, started_at=snapshot.reconciled_at).model_dump()
+    payload.update(direction=direction, stop_loss=stop, take_profit=take)
+    trade = DemoAutomationActiveTrade.model_validate(payload)
+    assert service._active_protection_violation(snapshot, [trade]) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "fault",
+    ["partial", "oversized", "duplicate", "wrong_side", "missing_side",
+     "wrong_pos_side", "missing_pos_side", "wrong_instrument", "wrong_id",
+     "unknown_mode", "missing_raw_mode", "empty_raw_mode", "raw_mode_mismatch",
+     "conflicting_client_id", "position_mode_mismatch", "direction_mismatch", "nan_size"],
+)
+async def test_continuous_protection_cannot_accept_weaker_or_conflicting_rows(fault):
+    demo = FakeDemo(exposed=True)
+    service = make_service(demo)
+    snapshot = await demo.reconcile()
+    trade = tracked_trade("BTC-USDT-SWAP", started_at=snapshot.reconciled_at)
+    algo = snapshot.pending_algo_orders[0]
+    if fault == "partial":
+        algo.size = Decimal("0.5")
+    elif fault == "oversized":
+        algo.size = Decimal(2)
+    elif fault == "duplicate":
+        snapshot.pending_algo_orders.append(algo.model_copy(deep=True))
+    elif fault in {"wrong_side", "missing_side"}:
+        algo.side = "buy" if fault == "wrong_side" else None
+    elif fault in {"wrong_pos_side", "missing_pos_side"}:
+        algo.position_side = "long" if fault == "wrong_pos_side" else None
+    elif fault == "wrong_instrument":
+        algo.instrument_id = "ETH-USDT-SWAP"
+    elif fault == "wrong_id":
+        algo.client_algo_order_id = "OTHERID"
+    elif fault == "unknown_mode":
+        snapshot.account_config.position_mode = "unreported"
+    elif fault == "missing_raw_mode":
+        snapshot.account_config.raw.clear()
+    elif fault == "empty_raw_mode":
+        snapshot.account_config.raw["posMode"] = ""
+    elif fault == "raw_mode_mismatch":
+        snapshot.account_config.raw["posMode"] = "long_short_mode"
+    elif fault == "conflicting_client_id":
+        algo.raw["attachAlgoClOrdId"] = "OTHERID"
+    elif fault == "position_mode_mismatch":
+        snapshot.positions[0].position_side = "long"
+    elif fault == "direction_mismatch":
+        snapshot.positions[0].size = Decimal(-1)
+    else:
+        algo.size = Decimal("NaN")
+    assert service._active_protection_violation(snapshot, [trade]) == (
+        "tracked_position_protection_missing_or_mismatched"
+    )
 
 
 @pytest.mark.asyncio

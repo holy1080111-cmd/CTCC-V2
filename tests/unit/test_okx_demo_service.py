@@ -6,7 +6,11 @@ from pydantic import ValidationError
 
 from app.config.settings import Settings
 from app.domain.market import InstrumentInfo, Ticker
-from app.domain.okx_demo import OkxDemoLeverageRequest, OkxDemoOrderRequest
+from app.domain.okx_demo import (
+    OkxDemoCloseRequest,
+    OkxDemoLeverageRequest,
+    OkxDemoOrderRequest,
+)
 from app.okx_demo import OkxDemoSafetyError
 from app.okx_demo.service import OkxDemoService
 
@@ -43,10 +47,14 @@ class FakePrivate:
         self._pending_orders = pending_orders or []
         self._pending_algos = pending_algos or []
         self.placed_payload = None
+        self.closed_payload = None
         self.leverage_response_override = None
         self.include_order_protection = True
         self.confirm_pending_protection = True
         self.pending_algo_client_id_override = None
+        self.pending_algo_row_overrides: dict[str, object] = {}
+        self.pending_algo_missing_fields: tuple[str, ...] = ()
+        self.pending_algo_duplicate_row_overrides: dict[str, object] | None = None
         self.pending_algo_post_place_empty_calls = 0
         self.pending_algo_post_place_calls = 0
         self.order_detail_calls = 0
@@ -81,7 +89,7 @@ class FakePrivate:
         ):
             return []
         attached = self.placed_payload.get("attachAlgoOrds", [])[0]
-        return [{
+        row = {
             "algoId": "algo-123",
             "algoClOrdId": (
                 self.pending_algo_client_id_override
@@ -91,11 +99,20 @@ class FakePrivate:
             "ordType": "oco",
             "state": "live",
             "sz": self.placed_payload["sz"],
+            "side": "sell" if self.placed_payload["side"] == "buy" else "buy",
+            "posSide": self.placed_payload["posSide"],
             "slTriggerPx": attached["slTriggerPx"],
             "tpTriggerPx": attached["tpTriggerPx"],
             "slTriggerPxType": attached["slTriggerPxType"],
             "tpTriggerPxType": attached["tpTriggerPxType"],
-        }]
+        }
+        row.update(self.pending_algo_row_overrides)
+        for field in self.pending_algo_missing_fields:
+            row.pop(field, None)
+        rows = [row]
+        if self.pending_algo_duplicate_row_overrides is not None:
+            rows.append({**row, **self.pending_algo_duplicate_row_overrides})
+        return rows
 
     async def place_order(self, payload):
         self.placed_payload = payload
@@ -147,6 +164,7 @@ class FakePrivate:
         return [{"ordId": payload.get("ordId", "123"), "clOrdId": payload.get("clOrdId", ""), "sCode": "0", "sMsg": ""}]
 
     async def close_position(self, payload):
+        self.closed_payload = payload
         return [{"instId": payload["instId"], "posSide": payload["posSide"]}]
 
     async def set_leverage(self, payload):
@@ -260,6 +278,66 @@ async def test_place_long_maps_to_demo_buy_and_attached_protection() -> None:
 
 
 @pytest.mark.asyncio
+async def test_before_submit_callback_can_block_write_after_preflight() -> None:
+    preflight_complete = False
+
+    class PreflightPublic(FakePublic):
+        async def ticker(self, instrument_id):
+            nonlocal preflight_complete
+            result = await super().ticker(instrument_id)
+            preflight_complete = True
+            return result
+
+    private = FakePrivate()
+    service = OkxDemoService(private, PreflightPublic(), None, settings=settings())
+
+    def reject_submit() -> None:
+        assert preflight_complete is True
+        assert private.placed_payload is None
+        raise OkxDemoSafetyError("automation_disarmed_during_preflight")
+
+    with pytest.raises(OkxDemoSafetyError, match="automation_disarmed_during_preflight"):
+        await service.place_order(request(), before_submit=reject_submit)
+
+    assert private.placed_payload is None
+    assert private.order_detail_calls == 0
+    assert private.pending_algo_post_place_calls == 0
+
+    private.position_rows = [{
+        "instId": "BTC-USDT-SWAP", "posSide": "net", "pos": "0.1", "availPos": "0.1",
+        "avgPx": "100000", "markPx": "100000", "upl": "0", "lever": "3", "mgnMode": "cross",
+    }]
+    close_result = await service.close_position(OkxDemoCloseRequest(
+        instrument_id="BTC-USDT-SWAP", confirmation="OKX_DEMO_ONLY",
+    ))
+
+    assert close_result.acknowledged is True
+    assert private.closed_payload["instId"] == "BTC-USDT-SWAP"
+    assert private.closed_payload["posSide"] == "net"
+
+
+@pytest.mark.asyncio
+async def test_before_submit_callback_runs_once_immediately_before_write() -> None:
+    events: list[str] = []
+
+    class SubmissionPrivate(FakePrivate):
+        async def place_order(self, payload):
+            events.append("write")
+            return await super().place_order(payload)
+
+    private = SubmissionPrivate()
+    service = OkxDemoService(private, FakePublic(), None, settings=settings())
+
+    result = await service.place_order(
+        request(), before_submit=lambda: events.append("before_submit"),
+    )
+
+    assert events == ["before_submit", "write"]
+    assert result.acknowledged is True
+    assert result.protection_confirmed is True
+
+
+@pytest.mark.asyncio
 async def test_place_fok_maps_price_bound_and_attached_protection() -> None:
     private = FakePrivate()
     service = OkxDemoService(private, FakePublic(), None, settings=settings())
@@ -275,6 +353,41 @@ async def test_place_fok_maps_price_bound_and_attached_protection() -> None:
     assert result.order.order_type == "fok"
     assert result.order.state == "filled"
     assert result.protection_confirmed is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("order_type", ["market", "limit", "fok"])
+@pytest.mark.parametrize("disable", ["writes", "enabled", "mode"])
+async def test_manual_entry_rechecks_authority_after_last_preflight_await(
+    order_type, disable,
+) -> None:
+    config = settings()
+
+    class RevokingPublic(FakePublic):
+        async def mark_price(self, instrument_id):
+            result = await super().mark_price(instrument_id)
+            if disable == "writes":
+                config.okx_demo_allow_order_writes = False
+            elif disable == "enabled":
+                config.okx_demo_enabled = False
+            else:
+                config.trading_mode = "analysis_only"
+            return result
+
+    private = FakePrivate()
+    service = OkxDemoService(private, RevokingPublic(), None, settings=config)
+    callbacks = []
+    with pytest.raises(OkxDemoSafetyError):
+        await service.place_order(
+            request(
+                order_type=order_type,
+                price=None if order_type == "market" else Decimal("100010"),
+            ),
+            before_submit=lambda: callbacks.append("submission_started"),
+        )
+    assert private.placed_payload is None
+    assert private.order_detail_calls == 0
+    assert callbacks == []
 
 
 @pytest.mark.asyncio
@@ -394,6 +507,109 @@ async def test_protection_confirmation_requires_exact_unique_client_id() -> None
     assert result.protection_confirmed is False
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("sz", "0.01"),
+        ("sz", "0.2"),
+        ("sz", "0"),
+        ("sz", "-0.1"),
+        ("sz", "NaN"),
+        ("sz", "Infinity"),
+        ("sz", "invalid"),
+        ("side", "buy"),
+        ("posSide", "long"),
+        ("posSide", "short"),
+        ("attachAlgoClOrdId", "CONFLICTINGPROTECTIONID"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_protection_confirmation_rejects_mismatched_protection(
+    field: str, value: str,
+) -> None:
+    private = FakePrivate()
+    private.pending_algo_row_overrides = {field: value}
+    service = OkxDemoService(private, FakePublic(), None, settings=settings())
+
+    result = await service.place_order(request())
+
+    assert result.acknowledged is True
+    assert result.protection_confirmed is False
+    assert "exchange_acknowledged_but_protection_not_confirmed" in result.warnings
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "algoClOrdId", "instId", "sz", "side", "posSide", "slTriggerPx",
+        "tpTriggerPx", "slTriggerPxType", "tpTriggerPxType",
+    ],
+)
+@pytest.mark.parametrize("missing", [True, False], ids=["missing", "empty"])
+@pytest.mark.asyncio
+async def test_protection_confirmation_requires_complete_exchange_evidence(
+    field: str, missing: bool,
+) -> None:
+    private = FakePrivate()
+    if missing:
+        private.pending_algo_missing_fields = (field,)
+    else:
+        private.pending_algo_row_overrides = {field: ""}
+    service = OkxDemoService(private, FakePublic(), None, settings=settings())
+
+    result = await service.place_order(request())
+
+    assert result.acknowledged is True
+    assert result.protection_confirmed is False
+    assert "exchange_acknowledged_but_protection_not_confirmed" in result.warnings
+
+
+@pytest.mark.parametrize(
+    "duplicate_updates",
+    [{}, {"sz": "0.01"}, {"side": "buy"}, {"instId": "ETH-USDT-SWAP"}],
+)
+@pytest.mark.asyncio
+async def test_protection_confirmation_rejects_duplicate_client_id(
+    duplicate_updates: dict[str, object],
+) -> None:
+    private = FakePrivate()
+    private.pending_algo_duplicate_row_overrides = duplicate_updates
+    service = OkxDemoService(private, FakePublic(), None, settings=settings())
+
+    result = await service.place_order(request())
+
+    assert result.acknowledged is True
+    assert result.protection_confirmed is False
+    assert "exchange_acknowledged_but_protection_not_confirmed" in result.warnings
+
+
+@pytest.mark.parametrize("position_mode", ["net_mode", "long_short_mode"])
+@pytest.mark.parametrize("direction", ["long", "short"])
+@pytest.mark.parametrize("matching_position_side", [True, False])
+@pytest.mark.asyncio
+async def test_protection_confirmation_uses_exchange_account_position_mode(
+    position_mode: str, direction: str, matching_position_side: bool,
+) -> None:
+    private = FakePrivate(position_mode=position_mode)
+    expected_position_side = "net" if position_mode == "net_mode" else direction
+    if not matching_position_side:
+        private.pending_algo_row_overrides = {
+            "posSide": direction if position_mode == "net_mode" else "net",
+        }
+    service = OkxDemoService(private, FakePublic(), None, settings=settings())
+    prices = (
+        {"stop_loss": Decimal(102000), "take_profit": Decimal(99000)}
+        if direction == "short"
+        else {}
+    )
+
+    result = await service.place_order(request(direction=direction, **prices))
+
+    assert private.placed_payload["posSide"] == expected_position_side
+    assert result.acknowledged is True
+    assert result.protection_confirmed is matching_position_side
+
+
 @pytest.mark.asyncio
 async def test_protection_confirmation_uses_bounded_pending_algo_poll() -> None:
     private = FakePrivate()
@@ -418,6 +634,29 @@ async def test_long_short_mode_uses_direction_as_position_side() -> None:
     await service.place_order(request(direction="short", stop_loss=Decimal("102000"), take_profit=Decimal("99000")))
     assert private.placed_payload["side"] == "sell"
     assert private.placed_payload["posSide"] == "short"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "account_row",
+    [{}, {"posMode": None}, {"posMode": ""}, {"posMode": "unknown_mode"}],
+)
+async def test_place_rejects_unknown_or_missing_account_position_mode(
+    account_row: dict[str, object],
+) -> None:
+    class UnknownModePrivate(FakePrivate):
+        async def account_config(self):
+            return [account_row]
+
+    private = UnknownModePrivate()
+    service = OkxDemoService(private, FakePublic(), None, settings=settings())
+
+    with pytest.raises(OkxDemoSafetyError, match="unsupported_okx_position_mode"):
+        await service.place_order(request())
+
+    assert private.placed_payload is None
+    assert private.order_detail_calls == 0
+    assert private.pending_algo_post_place_calls == 0
 
 
 @pytest.mark.asyncio

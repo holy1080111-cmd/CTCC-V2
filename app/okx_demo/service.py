@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from uuid import uuid4
 
 from app.config.settings import Settings, get_settings
@@ -230,11 +231,21 @@ class OkxDemoService:
                         pass
                 raise
 
-    async def place_order(self, request: OkxDemoOrderRequest) -> OkxDemoWriteResult:
+    async def place_order(
+        self,
+        request: OkxDemoOrderRequest,
+        *,
+        before_submit: Callable[[], None] | None = None,
+    ) -> OkxDemoWriteResult:
         self._ensure_write_ready()
         self._ensure_symbol(request.instrument_id)
         async with self._lock:
             account_config = await self.account_config()
+            if (
+                account_config.raw.get("posMode") not in {"net_mode", "long_short_mode"}
+                or account_config.raw.get("posMode") != account_config.position_mode
+            ):
+                raise OkxDemoSafetyError("unsupported_okx_position_mode")
             instrument = await self._instrument(request.instrument_id)
             self._validate_size(request.size, instrument.minimum_size, instrument.lot_size)
             self._validate_price_alignment(request.price, instrument.tick_size, "order_price")
@@ -337,6 +348,13 @@ class OkxDemoService:
                     }
                 ]
 
+            # Manual and automation entry paths share this last-await boundary.
+            # A preflight that started with authority must not retain it after
+            # settings or the symbol allowlist change while network IO waits.
+            self._ensure_write_ready()
+            self._ensure_symbol(request.instrument_id)
+            if before_submit is not None:
+                before_submit()
             exchange_data = await self.private_client.place_order(payload)
             acknowledgement = self._ack(exchange_data)
             order = await self._poll_order(
@@ -368,6 +386,7 @@ class OkxDemoService:
                     protection_confirmed = await self._confirm_protection(
                         request,
                         protection_client_order_id,
+                        expected_position_side=position_side,
                     )
                     if not protection_confirmed:
                         warnings.append(
@@ -614,6 +633,8 @@ class OkxDemoService:
         self,
         request: OkxDemoOrderRequest,
         protection_client_order_id: str,
+        *,
+        expected_position_side: str,
     ) -> bool:
         if request.stop_loss is None or request.take_profit is None:
             return not self.settings.okx_demo_require_protection
@@ -628,6 +649,7 @@ class OkxDemoService:
                 rows,
                 request,
                 protection_client_order_id,
+                expected_position_side=expected_position_side,
             ):
                 return True
             if attempt + 1 < self.settings.okx_demo_order_detail_poll_attempts:
@@ -641,37 +663,50 @@ class OkxDemoService:
         rows: list[dict[str, object]],
         request: OkxDemoOrderRequest,
         protection_client_order_id: str,
+        *,
+        expected_position_side: str,
     ) -> bool:
-        if request.stop_loss is None or request.take_profit is None:
+        if (
+            request.stop_loss is None
+            or request.take_profit is None
+            or not protection_client_order_id
+        ):
             return False
-        for row in rows:
-            if str(row.get("instId") or "") != request.instrument_id:
-                continue
-            row_client_id = str(
-                row.get("algoClOrdId") or row.get("attachAlgoClOrdId") or ""
-            )
-            if row_client_id != protection_client_order_id:
-                continue
-            try:
-                stop_loss = Decimal(str(row.get("slTriggerPx") or ""))
-                take_profit = Decimal(str(row.get("tpTriggerPx") or ""))
-                protected_size = Decimal(str(row.get("sz") or ""))
-            except Exception:
-                continue
-            if (
-                stop_loss != request.stop_loss
-                or take_profit != request.take_profit
-                or protected_size <= 0
-            ):
-                continue
-            stop_type = str(row.get("slTriggerPxType") or "")
-            take_type = str(row.get("tpTriggerPxType") or "")
-            if (
-                stop_type == request.trigger_price_type
-                and take_type == request.trigger_price_type
-            ):
-                return True
-        return False
+        matching_rows = [
+            row
+            for row in rows
+            if protection_client_order_id
+            in (row.get("algoClOrdId"), row.get("attachAlgoClOrdId"))
+        ]
+        if len(matching_rows) != 1:
+            return False
+        row = matching_rows[0]
+        if any(
+            row.get(key) and row[key] != protection_client_order_id
+            for key in ("algoClOrdId", "attachAlgoClOrdId")
+        ):
+            return False
+        expected_side = "sell" if request.direction == "long" else "buy"
+        if (
+            row.get("instId") != request.instrument_id
+            or row.get("side") != expected_side
+            or row.get("posSide") != expected_position_side
+        ):
+            return False
+        try:
+            stop_loss = Decimal(str(row.get("slTriggerPx") or ""))
+            take_profit = Decimal(str(row.get("tpTriggerPx") or ""))
+            protected_size = Decimal(str(row.get("sz") or ""))
+        except InvalidOperation:
+            return False
+        return (
+            all(value.is_finite() for value in (stop_loss, take_profit, protected_size))
+            and stop_loss == request.stop_loss
+            and take_profit == request.take_profit
+            and protected_size == request.size
+            and row.get("slTriggerPxType") == request.trigger_price_type
+            and row.get("tpTriggerPxType") == request.trigger_price_type
+        )
 
     async def _persist_orders(self, orders: list[OkxDemoOrderView], *, action: str) -> None:
         if self.repository is not None:

@@ -1567,6 +1567,7 @@ class SafeDemoAutomation:
                 if self.settings.okx_demo_structural_dynamic_leverage_enabled
                 else "cross"
             )
+            self._ensure_execute_ready()
             try:
                 leverage_write = await self.demo_service.set_leverage(
                     OkxDemoLeverageRequest(
@@ -1585,32 +1586,72 @@ class SafeDemoAutomation:
                 self._engage_emergency("leverage_configuration_unconfirmed")
                 await self._persist_state(required=False)
                 raise
-            order_submission_attempted = True
-            write = await self.demo_service.place_order(
-                OkxDemoOrderRequest(
-                    instrument_id=instrument_id,
-                    direction=sizing_candidate.direction,
-                    size=contracts,
-                    margin_mode=margin_mode,
-                    order_type="fok",
-                    price=execution_boundary.limit_price,
-                    stop_loss=stop_loss,
-                    take_profit=take_profit,
-                    trigger_price_type="mark",
-                    client_order_id=client_order_id,
-                    confirmation=DEMO_CONFIRMATION_PHRASE,
-                )
-            )
-            acknowledgement = write.acknowledgement
-            order = write.order
-            exchange_order_id = (
-                acknowledgement.order_id if acknowledgement is not None else None
-            )
+            # Manual runs are not scheduler tasks: disarming during either
+            # leverage configuration or the downstream preflight must still
+            # veto the actual POST. The callback runs after its final await.
+            self._ensure_execute_ready()
+
+            def before_submit() -> None:
+                nonlocal order_submission_attempted
+                self._ensure_execute_ready()
+                order_submission_attempted = True
+
             expiry = max(
                 sizing_candidate.expires_at,
                 now + timedelta(
                     seconds=self._effective_trade_cooldown_seconds()
                 ),
+            )
+            try:
+                write = await self.demo_service.place_order(
+                    OkxDemoOrderRequest(
+                        instrument_id=instrument_id,
+                        direction=sizing_candidate.direction,
+                        size=contracts,
+                        margin_mode=margin_mode,
+                        order_type="fok",
+                        price=execution_boundary.limit_price,
+                        stop_loss=stop_loss,
+                        take_profit=take_profit,
+                        trigger_price_type="mark",
+                        client_order_id=client_order_id,
+                        confirmation=DEMO_CONFIRMATION_PHRASE,
+                    ),
+                    before_submit=before_submit,
+                )
+            except (Exception, asyncio.CancelledError):
+                if order_submission_attempted:
+                    # A transport error or cancellation cannot establish that
+                    # OKX did not accept the order. Preserve possible exposure
+                    # and stop every later symbol; never retry or auto-close.
+                    uncertain = reservation.model_copy(
+                        update={"client_order_id": client_order_id}
+                    )
+                    self._set_active_trade(uncertain)
+                    self._state["trades_today"] = int(self._state["trades_today"]) + 1
+                    self._engage_emergency("order_submission_outcome_unconfirmed")
+                    await self._persist_state(required=False)
+                    try:
+                        await self._save_fingerprint(
+                            fingerprint,
+                            expiry,
+                            {
+                                "instrument_id": instrument_id,
+                                "strategy": sizing_candidate.strategy,
+                                "client_order_id": client_order_id,
+                                "execution_order_type": "fok",
+                                "execution_limit_price": str(execution_boundary.limit_price),
+                                "outcome": "unconfirmed",
+                            },
+                        )
+                    except Exception:  # noqa: BLE001 - retain the original uncertain-write error.
+                        self._engage_emergency("post_submission_fingerprint_persistence_failed")
+                        await self._persist_state(required=False)
+                raise
+            acknowledgement = write.acknowledgement
+            order = write.order
+            exchange_order_id = (
+                acknowledgement.order_id if acknowledgement is not None else None
             )
             known_zero_fill = (
                 write.acknowledged
@@ -2313,10 +2354,27 @@ class SafeDemoAutomation:
             trade = tracked.get(position.instrument_id)
             if trade is None:
                 continue
+            mode = snapshot.account_config.position_mode
+            expected_position_side = (
+                "net" if mode == "net_mode"
+                else trade.direction if mode == "long_short_mode"
+                else None
+            )
+            if (
+                snapshot.account_config.raw.get("posMode") != mode
+                or expected_position_side is None
+                or position.position_side != expected_position_side
+                or (
+                    mode == "net_mode"
+                    and ("long" if position.size > 0 else "short") != trade.direction
+                )
+            ):
+                return "tracked_position_protection_missing_or_mismatched"
             if not self._active_trade_has_matching_protection(
                 trade,
                 abs(position.size),
                 pending,
+                expected_position_side=expected_position_side,
             ):
                 return "tracked_position_protection_missing_or_mismatched"
         return None
@@ -2326,31 +2384,44 @@ class SafeDemoAutomation:
         trade: DemoAutomationActiveTrade,
         position_size: Decimal,
         pending: Iterable[OkxDemoAlgoOrderView],
+        *,
+        expected_position_side: str,
     ) -> bool:
         if (
             not trade.protection_client_order_id
+            or trade.direction not in {"long", "short"}
+            or expected_position_side not in {"net", trade.direction}
             or trade.stop_loss is None
             or trade.take_profit is None
+            or not position_size.is_finite()
             or position_size <= 0
         ):
             return False
-        for algo in pending:
-            if (
-                algo.instrument_id != trade.instrument_id
-                or algo.client_algo_order_id
-                != trade.protection_client_order_id
-                or algo.stop_loss_trigger_price != trade.stop_loss
-                or algo.take_profit_trigger_price != trade.take_profit
-                or algo.size < position_size
-            ):
-                continue
-            if (
-                str(algo.raw.get("slTriggerPxType") or "") != "mark"
-                or str(algo.raw.get("tpTriggerPxType") or "") != "mark"
-            ):
-                continue
-            return True
-        return False
+        matches = [
+            algo for algo in pending
+            if algo.client_algo_order_id == trade.protection_client_order_id
+        ]
+        if len(matches) != 1:
+            return False
+        algo = matches[0]
+        if any(
+            algo.raw.get(key) and algo.raw[key] != trade.protection_client_order_id
+            for key in ("algoClOrdId", "attachAlgoClOrdId")
+        ):
+            return False
+        prices = (algo.size, algo.stop_loss_trigger_price, algo.take_profit_trigger_price)
+        if any(value is None or not value.is_finite() for value in prices):
+            return False
+        return (
+            algo.instrument_id == trade.instrument_id
+            and algo.side == ("sell" if trade.direction == "long" else "buy")
+            and algo.position_side == expected_position_side
+            and algo.stop_loss_trigger_price == trade.stop_loss
+            and algo.take_profit_trigger_price == trade.take_profit
+            and algo.size == position_size
+            and algo.raw.get("slTriggerPxType") == "mark"
+            and algo.raw.get("tpTriggerPxType") == "mark"
+        )
 
     def _refresh_active_trade_estimates(
         self,
@@ -2637,6 +2708,7 @@ class SafeDemoAutomation:
                     "exchange_position_limit_exceeded",
                     "isolated_margin_mode_mismatch",
                     "multiple_positions_per_instrument_detected",
+                    "order_submission_outcome_unconfirmed",
                     "portfolio_state_invalid",
                     "post_submission_acknowledgement_invalid",
                     "post_submission_fingerprint_persistence_failed",

@@ -43,7 +43,9 @@ def _q(value: Decimal) -> Decimal:
     return value.quantize(D("0.00000001"), rounding=ROUND_HALF_UP)
 
 
-def atr_distance(ctx: StrategyContext, timeframe: str = "15m", multiplier: Decimal = D("1.5")) -> Decimal:
+def atr_distance(
+    ctx: StrategyContext, timeframe: str = "15m", multiplier: Decimal = D("1.5")
+) -> Decimal:
     atr = ctx.tf(timeframe).indicators.atr14
     fallback = ctx.price * D("0.005")
     return max(fallback, (atr or fallback) * multiplier)
@@ -78,9 +80,7 @@ def build_candidate(
         reasons=reasons,
         counter_evidence=counter_evidence,
         derivative_confirmation=derivative_confirmation(ctx.analysis, direction),
-        mathematical_confirmation=mathematical_confirmation(
-            ctx.analysis, direction
-        ),
+        mathematical_confirmation=mathematical_confirmation(ctx.analysis, direction),
         structural_protection=structural_protection_geometry(
             ctx.analysis,
             direction=direction,

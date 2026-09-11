@@ -1,7 +1,8 @@
 # Entry qualification and evidence implementation
 
-Status: qualification foundation and conservative regime routing, not deployed.
-Updated 2026-09-11.
+Status: source-bound event, timing and location engines; structural selection in
+progress. The new qualification pipeline is not wired into trading or deployed.
+Updated 2026-09-12.
 
 Source: [CTCC complete construction specification](https://app.notion.com/p/3d832165a6888173bfb1df896604fc7c),
 edited 2026-09-11 11:02:22 UTC. The user's directly supplied, newer specification
@@ -72,10 +73,14 @@ evaluators, evidence renderer, quote acquisition and execution authority checks
 are separate tasks below. A model's frozen setting is not a security boundary
 against arbitrary Python code; consumers must validate their own trusted inputs.
 
-The forthcoming timing/location engines must use strategy-specific events and
-policies. An unexpired 20-minute legacy candidate alone cannot establish entry
-timeliness. The initial zone contract requires both candidate and reference
-prices inside the explicit zone; no unspecified tolerance is invented.
+The timing/location engines now use strategy-specific source setups and closed
+events. An unexpired 20-minute legacy candidate alone cannot establish entry
+timeliness. Both candidate and executable reference must remain inside the
+source-derived zone; no unspecified tolerance is invented. Optional typed zone
+provenance keeps legacy contract records readable, but the actual location
+evaluator rejects missing instrument, direction or source digest. UTC-normalized
+qualification timestamps prevent repeated local wall clocks from reversing
+causality during a daylight-saving transition.
 
 ## Strategy hard conditions
 
@@ -153,6 +158,90 @@ trigger age, executable quote, entry location and the full twelve-gate chain
 remain separate unfinished evaluations. Snapshot hashing proves identity of
 the recorded inputs, not authenticity or freshness of external market data.
 
+## Source events, timing and entry location
+
+`event_models.py`, `events.py`, `timing.py` and `location.py` contain pure,
+unregistered evaluators. The source extractor copies and validates all four
+timeframes, candle ordering/grid/geometry/confirmation, instrument identity,
+capture chronology and quality contradictions. A canonical market-plus-analysis
+digest pins the recorded inputs; it is not exchange authentication or evidence
+that historical data was available earlier than its recorded capture.
+
+The eight native setup recognizers cover directional EMA pullback, confirmed
+swing break, piercing/reclaim with co-confirmed reversal structure, first FVG
+return, first OB retest, range-edge reclaim, opposed-trend structure break, and
+observed low-to-high volatility expansion. All require a subsequent confirmed
+5m momentum false-to-true transition. Missing indicator history is unknown, not
+false. Same-close OHLC cannot prove intrabar ordering. Confirmed subsequent
+bars from **any** timeframe that reach the thesis invalidation cancel the event;
+larger bars spanning the setup do not establish after-setup ordering.
+
+Closed-event engineering policies, not calibrated trading thresholds:
+
+| Strategy | Maximum subsequent 5m bars | Maximum setup-to-trigger age |
+| --- | --- | --- |
+| trend_pullback | 2 | 60 minutes |
+| breakout_continuation | 1 | 30 minutes |
+| liquidity_sweep_reversal | 1 | 30 minutes |
+| fvg_return | 2 | 240 minutes |
+| order_block_return | 2 | 240 minutes |
+| range_reversal | 1 | 30 minutes |
+| structure_reversal | 2 | 120 minutes |
+| volatility_expansion | 1 | 60 minutes |
+
+The earliest original trigger, policy or candidate deadline is exclusive.
+Missing setup/trigger means WAIT; expiry, invalidation, consumed event, late setup
+or an already extended impulse means CANCEL. At least 0.5 of the original
+trigger-to-thesis risk in favorable movement counts as extended. This is a
+conservative uncalibrated engineering guard. Intrabar and retracement re-entry
+are disabled. Event identity includes instrument, strategy, direction and the
+actual UTC trigger time/type/price, but not report name or renewed expiry. The
+pure timing evaluator still requires a later durable event-consumption ledger.
+
+Entry zones use explicit source bands and actual instrument tick metadata.
+A zero-width break/reclaim level may only expand to its already recorded setup
+candle close, not an invented percentage band. EMA/ATR precision remains intact
+until integer-ratio tick rounding narrows the zone; invalidation is never moved
+to fit a candidate. Decimal20 invalidation encoding retains and exactly checks
+its original value and directional rounding provenance. A zone containing no
+valid executable tick fails closed.
+
+Location requires matching typed instrument/direction/report identity and a
+source digest. It verifies bid/ask/mark/funding/receipt chronology and freshness,
+uses ask for long and bid for short, rejects either quote side or mark touching
+invalidation, and checks the unchanged candidate, source zone, expiry and drift.
+The opposite quote side need not be inside the entry zone, but cannot cross the
+invalidation. Funding time means a source observation/update, never next funding
+settlement time or a fabricated receipt timestamp. The quote's hash pins the full
+record. A trusted collector and pipeline must still bind that record to actual
+observations; neither a typed field nor a caller-declared digest is authority.
+
+The location suite has 339 tests and the eight-strategy long/short integration
+has 64 (403 passed together). These are synthetic OHLC/quote fixtures, not Demo
+trades or measured strategy performance. They do not complete G1–G12, rendering,
+post-render fresh fetch, execution, outbox or forensics. The conservative router
+still blocks event-dependent families until their full historical regime
+transition policy and trusted pre-score integration are complete.
+
+## Existing Demo safety repairs (not deployed)
+
+Known safety defects were repaired alongside these offline modules, without
+wiring a partial qualification chain into trading. Automation rechecks armed /
+emergency / settings after leverage IO and again at the internal last-await
+submit callback. Manual market/limit/FOK opening paths also recheck Demo settings
+and the symbol allowlist immediately before POST. A possibly submitted order
+that times out, fails ambiguously or is cancelled retains possible exposure and
+its fingerprint, engages emergency stop and is never automatically resubmitted.
+Persistence is best effort here; durable pre-submit intent remains step 13.
+
+Initial and ongoing protection confirmation requires a unique client ID, exact
+covered quantity, instrument, opposite side, actual net/hedged position mode,
+matching SL/TP and mark triggers. Missing raw position-mode evidence is rejected.
+The combined existing Demo suites have 182 passing tests. These mocked writes
+are not exchange submissions. No flags, deployment files or live services were
+changed. Nine existing strategy files also contain owned formatting-only changes,
+verified by Python AST comparison against the previous checkpoint.
+
 ## Ordered remaining implementation
 
 The source's order is retained; writing tests alongside each change does not
@@ -164,9 +253,9 @@ replace the final acceptance stages. Do not wire a partial chain into Demo.
 | 3 | Qualification/zone/trigger/gate domain and consistency tests | Implemented locally |
 | 4 | Required predicates for all eight strategies, stable failures, selection guard | Implemented; 65 targeted tests passed |
 | 5 | Deterministic regime router before strategy evaluation/selection | Conservative snapshot routing implemented; event-dependent families fail closed pending step 6 |
-| 6 | Actual trigger event, per-strategy timing, WAIT/CANCEL semantics | Pending |
-| 7 | Zone provenance, executable quote, expiry/drift/location evaluation | Contract only; engine pending |
-| 8 | Evaluate all legal 15m/1H/4H SL/TP brackets, noise/liquidity rejection | Pending; legacy first-complete behavior remains |
+| 6 | Actual trigger event, per-strategy timing, WAIT/CANCEL semantics | Offline engine implemented; 76 source, 145 timing and 25 event-contract tests passed |
+| 7 | Zone provenance, executable quote, expiry/drift/location evaluation | Offline engine implemented; 339 unit + 64 source-chain tests passed |
+| 8 | Evaluate all legal 15m/1H/4H SL/TP brackets, noise/liquidity rejection | Refactor in progress; new checkpoint not yet accepted |
 | 9 | Cost-adjusted economics and complete portfolio/Demo authority | Pending integration |
 | 10 | Same-OHLC/report five charts and evidence packet | Pending |
 | 11 | Actual 12 gate evaluators, measured values and fail codes | Record contract only; engine pending |
@@ -178,7 +267,10 @@ replace the final acceptance stages. Do not wire a partial chain into Demo.
 | 19–20 | Genuine old/new shadow and isolated Demo soak with sufficient samples | Not started; zero collected samples |
 | 21 | Final audit and the four requested reproducible evidence examples | Pending |
 
-Latest execution evidence: [regime routing acceptance](evidence/regime_routing_20260911.md).
+Latest published full regression before this checkpoint:
+[regime routing acceptance](evidence/regime_routing_20260911.md).
+New source/timing/location checkpoint:
+[entry engine acceptance](evidence/entry_engines_20260912.md).
 
 ## Dependencies and unresolved decisions
 
