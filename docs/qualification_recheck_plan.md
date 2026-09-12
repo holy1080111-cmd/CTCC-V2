@@ -1,7 +1,9 @@
 # 完整 Execution Recheck：下一步可執行實作計劃
 
-狀態：**待實作的依賴審查，不是 recheck 完成證明**。以本輪已封存的
-`7c7e9b5` 原始碼核對依賴；本計劃不啟用交易或修改部署。
+狀態：**R1–R4 離線計算／recorded-only 組合正在驗收，R5–R7 runtime 未完成**。
+原依賴審查以 `7c7e9b5` 為基準；新增介面與限制見
+[recorded-only recheck](recorded_recheck.md)。這不是完整 recheck 完成證明，
+本計劃不啟用交易或修改部署。
 G1–G12 的來源封存／平台測試／CI 已獨立記錄於
 [驗收紀錄](evidence/qualification_pipeline_20260912.md)，不等於以下 R1–R7 已實作。
 
@@ -27,7 +29,12 @@ G1–G12 的來源封存／平台測試／CI 已獨立記錄於
 [data qualification](data_qualification.md)；它不是尚待重寫的公式，
 也不能被單獨的 PASS 說成完整 Execution Recheck。
 
-## 2. 分階段交付順序（建議新增檔名，不代表已建立）
+## 2. 分階段交付順序（保留原需求與尚缺的 runtime 邊界）
+
+本輪新增原事實鎖定、current G1–G4、四 TF 連續性、固定保護、雙情境當前
+風控與 recorded-only 組合。這些離線元件不能代替 R5 的真實來源認證、
+R6 的原子預留或 R7 的本次 one-shot 續行。以下各 R 的完整交付要求仍保留；
+來源封存和實際測試結果另記，不把純子檢查的 PASS 升級為交易權限。
 
 ### R1 — 固定原始交易論點的純合約
 
@@ -108,6 +115,29 @@ loss history／peak window、instrument units、correlation group 及獨立 Demo
 對缺 page、未知空集合、stale/mixed account、Live stamp、sequence gaps 一律拒絕。
 明確保存收集截止點／reconciliation revision，各資料請求必須由本次屏障後啟動。
 時間戳／hash／`complete=True` 本身不構成真實來源認證。
+
+本輪只讀 adapter 盤點已對照實際程式，確認不能直接沿用的接點：
+
+- [public WS receive](../app/exchange/okx/public_ws.py) 的 `_consume` 收到 raw
+  frame 後才 parse／送 handler；新適配器須在 merge 前保存同一 ticker frame
+  與接收時間。[RealtimeMarketHub.apply](../app/market/realtime.py) 的合併
+  `exchange_timestamp` 可由其他頻道更新，不能拿它配舊 bid/ask 生成新 WS 證據。
+- [MarketDataService.snapshot](../app/market/service.py) 預設 100 bars、整批
+  receipt，仍缺每 TF raw response／request-start／receive／complete 與分頁鏈。
+- [private REST read methods](../app/exchange/okx/private_rest.py) 的 pending／
+  order-history／algo pending 都是單次 GET；[reconcile](../app/okx_demo/service.py)
+  並行取六項、history 固定 100，沒有同帳戶完整頁鏈與統一 revision。
+- [private parsers](../app/exchange/okx/private_parsers.py) 的缺數值補零與
+  `parse_balance` 缺 `uTime` 補現在時間，不可用於新來源完整性合約。
+- [mirror repository](../app/database/repositories/okx_demo.py) 的去重、置換
+  snapshot 和 `reconciled` checkpoint，不等於所有 exchange pending 與本地
+  uncertain/in-flight 風險的完整、revision-bound 聯集，也不提供持久 peak／
+  窗前 loss-streak seed。未知資料必須維持未知，不能以空集合／零填補。
+
+最小安全下一步為獨立 bounded raw WS ticker receipt 的解析／重建驗證，再接
+保留每頁／每 TF 時鐘的 OHLC collector。純 parser 仍不宣稱真實 websocket IO；
+帳戶需完整分頁、同域 revision、本地風險聯集及持久 history/peak checkpoint。
+此盤點沒有讀取憑證值、呼叫帳戶 API、修改舊 parser 或變更既有部署。
 
 ### R6 — Durable account lock + event/risk reservation
 

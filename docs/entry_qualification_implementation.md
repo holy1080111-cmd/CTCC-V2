@@ -369,8 +369,11 @@ The source's order is retained; writing tests alongside each change does not
 replace the final acceptance stages. Do not wire a partial chain into Demo.
 The [execution-recheck implementation plan](qualification_recheck_plan.md)
 breaks the next boundary into R1–R7 with concrete APIs, missing adapters/locking,
-and ten required adversarial acceptance groups. It is a plan, not implemented
-recheck or permission to append the final qualifying PASS.
+and ten required adversarial acceptance groups. The new
+[recorded-only R1–R4 calculations](recorded_recheck.md) implement the offline
+source/continuation/fixed-protection/current-risk composition; trusted adapters,
+atomic reservation and current-invocation G12 runtime admission remain unbuilt.
+Neither the plan nor a passing offline assessment permits the final qualifying PASS.
 
 | Steps | Work and acceptance | Status |
 | --- | --- | --- |
@@ -384,7 +387,7 @@ recheck or permission to append the final qualifying PASS.
 | 9 | Cost-adjusted economics and complete portfolio/Demo authority | Offline evaluators implemented; 75 economics + 357 portfolio + 48 source-to-risk tests passed, trusted runtime collector pending |
 | 10 | Same-OHLC/report five charts and evidence packet | Source-bound preparation, renderer and no-clobber publisher implemented; 20 synthetic PNGs inspected; platform acceptance and limitations in trade_evidence.md |
 | 11 | Actual 12 gate evaluators, measured values and fail codes | G1–G11 actual evaluation/replay and G12 source-bound one-shot publication implemented; exact checkpoint/platform acceptance recorded separately, trusted runtime sources still required |
-| 12 | Fresh executable quote after evidence, cancel stale old candidate | Post-publication location contract and candidate/executable economics comparison implemented; complete recheck pending |
+| 12 | Fresh executable quote after evidence, cancel stale old candidate | Recorded-only original replay, current conditions, continuation, fixed bracket and two current-risk scenarios implemented; immutable-source acceptance tracked separately; trusted full recheck/reservation pending |
 | 13 | Guard every SafeDemoAutomation submit route | Pending |
 | 14 | Post-submit durable Notion outbox, retry without duplicate orders | Pending |
 | 15 | Same-report realized forensics, MFE/MAE/R and evidence-based attribution | Pending |
