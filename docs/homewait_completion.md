@@ -42,6 +42,10 @@ state 不觸發回呼、帳戶 sample 的多來源時間需因果一致。精確
 5. 與上述驗收一致的部署、真 old/new Shadow、受控 Demo soak、四項真實例證與
    最終稽核。新流程真實樣本仍為 0／0，不以合成結果推論 edge 或獲利。
 
-既有部署保持 `d984753`／DB0016；新 migration0017只在隔離測試資料庫驗證。
+本輪開工依據的部署紀錄為 `d984753`／DB0016；收尾唯讀查驗已發現另一個使用者
+要求的重啟任務將現行服務切到 `a2e3b84`／DB0017，API 於 12:44:56 UTC 重建。
+13:36:50 UTC 三服務 healthy、Demo armed/running、local tracked positions=0；
+Live 四旗標 false。本輪沒有執行該切換，新元件 `1a116e6` 尚未部署。
+該任務的未成交 FOK 收單測試不是新 Gate 管線的 Shadow／Demo soak 樣本。
 3／5／8／10／20 動態槓桿上限與既有風險設定不由本輪改寫；保持 Live 禁用。
 本輪施工 checkpoint 可封存，但全案與 Notion 第 5、11–15、19–21 步不勾 Done。
