@@ -8,6 +8,10 @@ Exact checkpoint/platform results are recorded in the
 The new qualification
 pipeline is not wired into trading or deployed; the complete post-render recheck,
 trusted runtime adapters and durable execution safety remain unfinished.
+The next R5 increment adds [bounded public source captures](public_market_capture.md)
+without a legacy snapshot bridge, account completeness or order authority.
+The user-selected [dynamic leverage restoration](demo_dynamic_leverage_restore.md)
+is a separately validated, pending rollout; existing positions are not modified.
 Updated 2026-09-12.
 
 Source: [CTCC complete construction specification](https://app.notion.com/p/3d832165a6888173bfb1df896604fc7c),

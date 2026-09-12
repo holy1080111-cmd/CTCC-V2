@@ -9,8 +9,9 @@ https://www.okx.com/docs-v5/log_en/#2023-11-22
 https://app.okx.com/docs-v5/en/#public-data-websocket-funding-rate-channel
 
 Client transport/TLS and the injected UTC clock are trusted runtime dependencies,
-not externally verifiable attestations. Environment proxies are disabled, but
-an explicitly injected transport's TLS/proxy configuration is not attested.
+not externally verifiable attestations. Known HTTPX proxy, mount and transport
+retry configurations are rejected. An injected transport's actual behavior and
+TLS configuration are still dependencies, not authenticated evidence.
 No network call occurs on import. The
 collector sends three fixed GETs only; tests use httpx.MockTransport exclusively.
 An initially cookie-free client may receive anonymous server cookies. They are
@@ -30,6 +31,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Annotated, Literal
 
+import httpcore
 import httpx
 from pydantic import (
     Field,
@@ -40,7 +42,7 @@ from pydantic import (
 )
 
 from app.trade_qualification.event_models import Digest
-from app.trade_qualification.location import ExecutableQuote, _revalidate
+from app.trade_qualification.location import ExecutableQuote
 from app.trade_qualification.models import QualificationModel, ReportId, require_aware
 
 BASE_URL = "https://www.okx.com"
@@ -118,6 +120,7 @@ class EndpointObservation(QualificationModel):
 
     @model_validator(mode="after")
     def consistent_source(self):
+        _observation_preflight(self)
         if (self.role, self.endpoint) not in ENDPOINTS:
             raise ValueError("endpoint_role_mismatch")
         expected_params = (("instId", self.instrument_id),)
@@ -179,6 +182,7 @@ class CollectedQuote(QualificationModel):
 
     @model_validator(mode="after")
     def consistent_capture(self):
+        _capture_preflight(self)
         if tuple(item.role for item in self.provenance) != (
             "ticker",
             "mark",
@@ -386,25 +390,96 @@ def _bundle_sha(quote, provenance, policy, barrier, completed):
 def validate_collected_quote(value: CollectedQuote) -> CollectedQuote:
     """Revalidate every byte-derived value; hashes cannot authenticate a client."""
     try:
-        if type(value) is not CollectedQuote:
-            raise QuoteCollectionError("collected_quote_type_invalid")
-        if type(value.provenance) is not tuple or len(value.provenance) != 3:
-            raise QuoteCollectionError("provenance_cardinality_invalid")
-        _revalidate(value.quote, ExecutableQuote)
-        _revalidate(value.policy, QuoteCollectionPolicy)
-        for item in value.provenance:
-            _observation_preflight(item)
-            _revalidate(item, EndpointObservation)
-        return _revalidate(value, CollectedQuote)
-    except (ValueError, TypeError, AttributeError, KeyError, RecursionError):
+        _capture_preflight(value)
+        # No serializer is allowed to turn an invalid raw value into a valid
+        # field before validation. The complete, bounded tree is checked above.
+        raw = dict(value.__dict__)
+        raw["quote"] = dict(value.quote.__dict__)
+        raw["policy"] = dict(value.policy.__dict__)
+        raw["provenance"] = tuple(dict(item.__dict__) for item in value.provenance)
+        return CollectedQuote.model_validate(raw, strict=True)
+    except (
+        ValueError,
+        TypeError,
+        AttributeError,
+        KeyError,
+        ArithmeticError,
+        RecursionError,
+    ):
         raise QuoteCollectionError("collected_quote_invalid") from None
+
+
+def _model_preflight(value, expected):
+    if type(value) is not expected:
+        raise ValueError("quote_record_type_invalid")
+    if set(value.__dict__) != set(expected.model_fields) or value.__pydantic_extra__:
+        raise ValueError("quote_record_fields_invalid")
+
+
+def _text_preflight(value, limit):
+    if type(value) is not str or not 0 < len(value) <= limit:
+        raise ValueError("quote_record_text_invalid")
+
+
+def _int_preflight(value, minimum, maximum):
+    if type(value) is not int or not minimum <= value <= maximum:
+        raise ValueError("quote_record_integer_invalid")
+
+
+def _decimal_preflight(value):
+    if type(value) is not Decimal or not value.is_finite():
+        raise ValueError("quote_record_decimal_invalid")
+    parts = value.as_tuple()
+    if len(parts.digits) > 40 or not -20 <= parts.exponent <= 40:
+        raise ValueError("quote_record_decimal_bounds_invalid")
+
+
+def _policy_preflight(value):
+    _model_preflight(value, QuoteCollectionPolicy)
+    for name, minimum, maximum in (
+        ("max_age_seconds", 1, 60),
+        ("request_timeout_seconds", 1, 5),
+        ("batch_timeout_seconds", 1, 15),
+        ("max_response_bytes", 1024, MAX_RESPONSE_BYTES),
+    ):
+        _int_preflight(value.__dict__[name], minimum, maximum)
+
+
+def _quote_preflight(value):
+    _model_preflight(value, ExecutableQuote)
+    for name, limit in (("report_id", 96), ("instrument_id", 512), ("source", 4)):
+        _text_preflight(value.__dict__[name], limit)
+    for name in ("bid", "ask", "mark_price", "bid_size", "ask_size", "funding_rate"):
+        _decimal_preflight(value.__dict__[name])
+    for name in ("quote_time", "mark_time", "funding_time", "received_at"):
+        _utc(value.__dict__[name])
+    if value.request_started_at is not None:
+        _utc(value.request_started_at)
+
+
+def _capture_preflight(value):
+    _model_preflight(value, CollectedQuote)
+    _text_preflight(value.bundle_sha256, 64)
+    _text_preflight(value.size_unit, 16)
+    for name in ("execution_authority", "source_authenticity_verified"):
+        part = value.__dict__[name]
+        if type(part) is not bool or part is not False:
+            raise ValueError("collector_cannot_grant_authority")
+    _utc(value.completed_at)
+    if value.barrier_completed_at is not None:
+        _utc(value.barrier_completed_at)
+    _policy_preflight(value.policy)
+    _quote_preflight(value.quote)
+    if type(value.provenance) is not tuple or len(value.provenance) != 3:
+        raise QuoteCollectionError("provenance_cardinality_invalid")
+    for item in value.provenance:
+        _observation_preflight(item)
 
 
 def _observation_preflight(item):
     # Reject dirty model_copy payloads before model_dump can consume an iterator
     # or amplify arbitrarily large nested values. Schema validation still follows.
-    if type(item) is not EndpointObservation:
-        raise QuoteCollectionError("observation_type_invalid")
+    _model_preflight(item, EndpointObservation)
     if type(item.parameters) is not tuple or not 1 <= len(item.parameters) <= 2:
         raise QuoteCollectionError("parameters_shape_invalid")
     for pair in item.parameters:
@@ -419,6 +494,9 @@ def _observation_preflight(item):
         or not 0 < len(item.canonical_json) <= MAX_RESPONSE_BYTES
     ):
         raise QuoteCollectionError("observation_body_shape_invalid")
+    _int_preflight(item.body_size_bytes, 1, MAX_RESPONSE_BYTES)
+    for name in ("request_started_at", "received_at", "completed_at", "source_time"):
+        _utc(item.__dict__[name])
     for name in (
         "role",
         "method",
@@ -452,6 +530,19 @@ def _public_client(client, *, require_empty_cookies=True):
         or any(client.event_hooks.values())
     ):
         raise QuoteCollectionError("public_client_not_isolated")
+    # A caller-supplied HTTPX transport can otherwise retry or use a proxy even
+    # with trust_env=False. Check configuration before any send, without reading
+    # credential-bearing URLs. MockTransport remains an explicit test dependency.
+    transport = client._transport
+    if any(value is not None for value in client._mounts.values()) or type(
+        transport
+    ) not in (httpx.AsyncHTTPTransport, httpx.MockTransport):
+        raise QuoteCollectionError("public_client_transport_not_isolated")
+    if type(transport) is httpx.AsyncHTTPTransport:
+        if type(transport._pool) is not httpcore.AsyncConnectionPool:
+            raise QuoteCollectionError("public_client_transport_not_isolated")
+        if type(transport._pool._retries) is not int or transport._pool._retries != 0:
+            raise QuoteCollectionError("public_client_transport_retries_forbidden")
 
 
 async def _close_response(response, *, pending_cancel=False):
@@ -603,7 +694,12 @@ async def collect_executable_quote(
 ) -> CollectedQuote:
     """Capture three public observations once. No retry, fallback, or authority."""
     try:
-        checked_policy = _revalidate(policy, QuoteCollectionPolicy)
+        _policy_preflight(policy)
+        checked_policy = QuoteCollectionPolicy.model_validate(
+            dict(policy.__dict__), strict=True
+        )
+        if type(report_id) is not str:
+            raise ValueError("report_id_invalid")
         report = TypeAdapter(ReportId).validate_python(report_id, strict=True)
         if type(instrument_id) is not str or _INST.fullmatch(instrument_id) is None:
             raise QuoteCollectionError("instrument_id_invalid")

@@ -6,6 +6,12 @@
 本計劃不啟用交易或修改部署。
 本輪 R1–R4 的精確來源與平台结果見
 [recorded recheck 驗收](evidence/qualification_recorded_recheck_20260912.md)。
+後續 R5 公開 OHLC／WS／books／OI／並行資料包增量見
+[公開資料收集](public_market_capture.md)，仍不是完整帳戶或 runtime 完成。
+使用者已選定的 [動態槓桿恢復計劃](demo_dynamic_leverage_restore.md) 另外追蹤；
+設定驗證與實際部署切換不混算。
+帳戶來源的分頁／同帳戶／history／peak 及 local uncertain 缺口已整理成
+[下一個帳戶來源 checkpoint 計劃](qualification_account_source_plan.md)，僅設計、未實作。
 G1–G12 的來源封存／平台測試／CI 已獨立記錄於
 [驗收紀錄](evidence/qualification_pipeline_20260912.md)，不等於以下 R1–R7 的完整 runtime 交付。
 
@@ -166,10 +172,13 @@ loss history／peak window、instrument units、correlation group 及獨立 Demo
   uncertain/in-flight 風險的完整、revision-bound 聯集，也不提供持久 peak／
   窗前 loss-streak seed。未知資料必須維持未知，不能以空集合／零填補。
 
-最小安全下一步為獨立 bounded raw WS ticker receipt 的解析／重建驗證，再接
-保留每頁／每 TF 時鐘的 OHLC collector。純 parser 仍不宣稱真實 websocket IO；
-帳戶需完整分頁、同域 revision、本地風險聯集及持久 history/peak checkpoint。
-此盤點沒有讀取憑證值、呼叫帳戶 API、修改舊 parser 或變更既有部署。
+本增量已新增獨立 bounded WS ticker receipt／owned socket、逐頁逐 TF OHLC、
+books／OI 與並行公開資料包，詳細邊界及分開保留的真實診斷見
+[公開資料收集](public_market_capture.md)。完整公開資料包的真實診斷仍被拒絕，
+不能由 synthetic tests 或單獨 WS 成功推論來源時鐘已校準或 R5 完成。
+下一 checkpoint 為版本化市場單位 bridge，以及帳戶完整分頁、同域 revision、
+本地風險聯集及持久 history/peak，見[帳戶來源計劃](qualification_account_source_plan.md)。
+此盤點與公開診斷沒有讀取憑證值、呼叫帳戶 API、修改舊 parser 或變更既有部署。
 
 ### R6 — Durable account lock + event/risk reservation（未完成）
 

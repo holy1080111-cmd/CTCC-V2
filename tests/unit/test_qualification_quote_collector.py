@@ -10,7 +10,7 @@ from decimal import ROUND_UP, Context, Decimal, Inexact, localcontext
 
 import httpx
 import pytest
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError, model_serializer
 
 from app.trade_qualification import quote_collector as module
 from app.trade_qualification.quote_collector import (
@@ -981,3 +981,334 @@ def test_collector_does_not_import_private_clients_settings_or_order_runtime():
             assert not (node.module or "").startswith(forbidden)
     assert module.ENDPOINTS == ENDPOINTS
     assert len(ENDPOINTS) == 3
+
+
+def serializer_trap(serialized, touched):
+    class Trap(BaseModel):
+        @model_serializer
+        def render(self):
+            touched.append("serializer")
+            return serialized
+
+    return Trap()
+
+
+def replace_record_field(result, level, field, replacement):
+    if level == "capture":
+        return result.model_copy(update={field: replacement})
+    original = (
+        result.provenance[0] if level == "observation" else getattr(result, level)
+    )
+    changed = original.model_copy(update={field: replacement})
+    if level == "observation":
+        return result.model_copy(
+            update={"provenance": (changed, *result.provenance[1:])}
+        )
+    return result.model_copy(update={level: changed})
+
+
+_RECORD_FIELDS = tuple(
+    (level, field)
+    for level, kind in (
+        ("capture", CollectedQuote),
+        ("policy", QuoteCollectionPolicy),
+        ("quote", module.ExecutableQuote),
+        ("observation", module.EndpointObservation),
+    )
+    for field in kind.model_fields
+)
+
+
+@pytest.mark.parametrize("level,field", _RECORD_FIELDS)
+async def test_every_raw_field_rejects_serializer_trap_before_any_dump(
+    level, field, monkeypatch
+):
+    result, _ = await capture()
+    original = (
+        result
+        if level == "capture"
+        else result.provenance[0]
+        if level == "observation"
+        else getattr(result, level)
+    )
+    raw = original.__dict__[field]
+    if isinstance(raw, BaseModel):
+        raw = raw.model_dump(mode="python", round_trip=True)
+    touched = []
+    forged = replace_record_field(result, level, field, serializer_trap(raw, touched))
+
+    def forbidden_dump(*args, **kwargs):
+        pytest.fail("raw preflight must reject before any model serializer")
+
+    for kind in (
+        CollectedQuote,
+        QuoteCollectionPolicy,
+        module.ExecutableQuote,
+        module.EndpointObservation,
+    ):
+        monkeypatch.setattr(kind, "model_dump", forbidden_dump)
+    with pytest.raises(QuoteCollectionError, match="^collected_quote_invalid$"):
+        validate_collected_quote(forged)
+    assert touched == []
+
+
+@pytest.mark.parametrize("field", tuple(QuoteCollectionPolicy.model_fields))
+async def test_policy_serializer_cannot_turn_bad_raw_value_into_number_before_io(
+    field, monkeypatch
+):
+    touched, requests = [], []
+    clock = Clock()
+    bad = POLICY.model_copy(
+        update={field: serializer_trap(getattr(POLICY, field), touched)}
+    )
+
+    def forbidden_dump(*args, **kwargs):
+        pytest.fail("policy model_dump must not run on raw values")
+
+    monkeypatch.setattr(QuoteCollectionPolicy, "model_dump", forbidden_dump)
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: requests.append(request)),
+        trust_env=False,
+    ) as client:
+        with pytest.raises(
+            QuoteCollectionError, match="^public_quote_capture_invalid$"
+        ):
+            await collect_executable_quote(
+                client=client,
+                clock=clock,
+                report_id=REPORT,
+                instrument_id=INSTRUMENT,
+                policy=bad,
+            )
+    assert touched == requests == []
+    assert clock.calls == 0
+
+
+@pytest.mark.parametrize("field", tuple(QuoteCollectionPolicy.model_fields))
+@pytest.mark.parametrize("kind", ["bool", "float", "text", "iterator", "int_subclass"])
+async def test_policy_values_are_exact_ints_without_coercion_or_iteration(field, kind):
+    touched, requests = [], []
+    original = getattr(POLICY, field)
+
+    def iterator():
+        touched.append("iterated")
+        yield original
+
+    class IntSubclass(int):
+        def __int__(self):
+            touched.append("coerced")
+            return original
+
+    replacement = {
+        "bool": True,
+        "float": float(original),
+        "text": str(original),
+        "iterator": iterator(),
+        "int_subclass": IntSubclass(original),
+    }[kind]
+    clock = Clock()
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: requests.append(request)),
+        trust_env=False,
+    ) as client:
+        with pytest.raises(QuoteCollectionError):
+            await collect_executable_quote(
+                client=client,
+                clock=clock,
+                report_id=REPORT,
+                instrument_id=INSTRUMENT,
+                policy=POLICY.model_copy(update={field: replacement}),
+            )
+    assert requests == touched == []
+    assert clock.calls == 0
+
+
+@pytest.mark.parametrize("level", ["capture", "policy", "quote", "observation"])
+async def test_model_subclasses_and_hidden_fields_rejected_before_serializer(level):
+    result, _ = await capture()
+    original = (
+        result
+        if level == "capture"
+        else result.provenance[0]
+        if level == "observation"
+        else getattr(result, level)
+    )
+    touched = []
+    kind = type(original)
+
+    class Subclass(kind):
+        @model_serializer
+        def render(self):
+            touched.append("subclass_serializer")
+            return original.model_dump(mode="python", round_trip=True)
+
+    replacements = (
+        Subclass.model_construct(**original.__dict__),
+        original.model_copy(update={"hidden": serializer_trap(None, touched)}),
+    )
+    for replacement in replacements:
+        if level == "capture":
+            forged = replacement
+        elif level == "observation":
+            forged = result.model_copy(
+                update={"provenance": (replacement, *result.provenance[1:])}
+            )
+        else:
+            forged = result.model_copy(update={level: replacement})
+        with pytest.raises(QuoteCollectionError):
+            validate_collected_quote(forged)
+    assert touched == []
+
+
+@pytest.mark.parametrize("level", ["capture", "policy", "quote", "observation"])
+async def test_removed_fields_are_rejected_before_default_filling(level):
+    result, _ = await capture()
+    original = (
+        result
+        if level == "capture"
+        else result.provenance[0]
+        if level == "observation"
+        else getattr(result, level)
+    )
+    field = {
+        "capture": "execution_authority",
+        "policy": "request_timeout_seconds",
+        "quote": "request_started_at",
+        "observation": "method",
+    }[level]
+    replacement = original.model_copy()
+    del replacement.__dict__[field]
+    if level == "capture":
+        forged = replacement
+    elif level == "observation":
+        forged = result.model_copy(
+            update={"provenance": (replacement, *result.provenance[1:])}
+        )
+    else:
+        forged = result.model_copy(update={level: replacement})
+    with pytest.raises(QuoteCollectionError):
+        validate_collected_quote(forged)
+
+
+@pytest.mark.parametrize(
+    "level,field",
+    [
+        ("policy", "max_age_seconds"),
+        ("quote", "bid"),
+        ("quote", "quote_time"),
+        ("observation", "completed_at"),
+        ("capture", "execution_authority"),
+    ],
+)
+async def test_unknown_objects_are_rejected_without_any_attribute_access(level, field):
+    result, _ = await capture()
+    touched = []
+
+    class NoAccess:
+        def __getattribute__(self, name):
+            touched.append(name)
+            raise AssertionError("untrusted object must not be inspected")
+
+    forged = replace_record_field(result, level, field, NoAccess())
+    with pytest.raises(QuoteCollectionError):
+        validate_collected_quote(forged)
+    assert touched == []
+
+
+@pytest.mark.parametrize(
+    "field", ["bid", "ask", "mark_price", "bid_size", "ask_size", "funding_rate"]
+)
+@pytest.mark.parametrize(
+    "bad",
+    [
+        D("sNaN"),
+        D("Infinity"),
+        D("1e1000000"),
+        D("1e-1000000"),
+        D("1." + "1" * 100),
+        100.0,
+        True,
+    ],
+)
+async def test_quote_scalars_bounded_before_hash_serialization(field, bad, monkeypatch):
+    result, _ = await capture()
+    forged = replace_record_field(result, "quote", field, bad)
+
+    def forbidden_dump(*args, **kwargs):
+        pytest.fail("invalid quote scalar reached model_dump")
+
+    monkeypatch.setattr(module.ExecutableQuote, "model_dump", forbidden_dump)
+    with pytest.raises(QuoteCollectionError):
+        validate_collected_quote(forged)
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["proxy", "mounted", "transport_proxy", "transport_retries", "custom_transport"],
+)
+async def test_known_http_proxy_retry_and_custom_transports_denied_before_send(
+    case, monkeypatch
+):
+    calls, sent = [], []
+    transport = httpx.MockTransport(lambda request: calls.append(request))
+    options = {"transport": transport, "trust_env": False}
+    if case == "proxy":
+        options["proxy"] = "http://example.invalid:8080"
+    elif case == "mounted":
+        options["mounts"] = {"https://": transport}
+    elif case == "transport_proxy":
+        options["transport"] = httpx.AsyncHTTPTransport(
+            proxy="http://example.invalid:8080"
+        )
+    elif case == "transport_retries":
+        options["transport"] = httpx.AsyncHTTPTransport(retries=2)
+    else:
+
+        class CustomTransport(httpx.AsyncBaseTransport):
+            async def handle_async_request(self, request):
+                calls.append(request)
+                raise AssertionError("unexpected transport IO")
+
+        options["transport"] = CustomTransport()
+
+    async def forbidden_send(*args, **kwargs):
+        sent.append(True)
+        raise AssertionError("client preflight must reject before send")
+
+    async with httpx.AsyncClient(**options) as client:
+        monkeypatch.setattr(client, "send", forbidden_send)
+        clock = Clock()
+        with pytest.raises(QuoteCollectionError, match="^public_client_transport_"):
+            await collect_executable_quote(
+                client=client,
+                clock=clock,
+                report_id=REPORT,
+                instrument_id=INSTRUMENT,
+                policy=POLICY,
+            )
+        assert clock.calls == 0
+    assert calls == sent == []
+
+
+async def test_default_plain_http_transport_preflight_is_allowed_without_io():
+    async with httpx.AsyncClient(trust_env=False) as client:
+        module._public_client(client)
+
+
+async def test_preflight_keeps_existing_frozen_hash_and_json_bytes_unchanged():
+    result, _ = await capture()
+    assert (
+        result.bundle_sha256
+        == "013364377fc74ae8f2649de6e650a242abe15413f76724c4d272a4fcdf32be26"
+    )
+    assert len(result.model_dump_json(round_trip=True).encode()) == 3882
+    checked = validate_collected_quote(result)
+    assert checked.model_dump_json(round_trip=True) == result.model_dump_json(
+        round_trip=True
+    )
+    assert (
+        CollectedQuote.model_validate_json(
+            result.model_dump_json(round_trip=True), strict=True
+        )
+        == result
+    )
