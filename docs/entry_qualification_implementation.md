@@ -3,7 +3,9 @@
 Status: source-bound G1–G11 evaluation/replay and one-shot G12 evidence
 orchestration implemented locally, retaining the original candidate and bracket.
 Exact checkpoint/platform results are recorded in the
-[acceptance record](evidence/qualification_pipeline_20260912.md). The new qualification
+[G1–G12 acceptance record](evidence/qualification_pipeline_20260912.md) and
+[recorded-only recheck checkpoint](evidence/qualification_recorded_recheck_20260912.md).
+The new qualification
 pipeline is not wired into trading or deployed; the complete post-render recheck,
 trusted runtime adapters and durable execution safety remain unfinished.
 Updated 2026-09-12.
@@ -159,8 +161,10 @@ a universal reversal veto; its original value stays in the audit and decision.
 This change neither deletes downstream safety checks nor turns `trade_ready`
 into execution authority. Current candle freshness, cross-source consistency,
 trigger age, executable quote, entry location and the full twelve-gate chain
-remain separate unfinished evaluations. Snapshot hashing proves identity of
-the recorded inputs, not authenticity or freshness of external market data.
+are separate evaluations, not services supplied by the router. Their offline
+evaluators and composition are now implemented and accepted at the checkpoints
+below; trusted runtime source/account wiring remains unfinished. Snapshot hashing
+proves identity of recorded inputs, not authenticity or freshness of external data.
 
 ## Source events, timing and entry location
 
@@ -391,7 +395,7 @@ Neither the plan nor a passing offline assessment permits the final qualifying P
 | 13 | Guard every SafeDemoAutomation submit route | Pending |
 | 14 | Post-submit durable Notion outbox, retry without duplicate orders | Pending |
 | 15 | Same-report realized forensics, MFE/MAE/R and evidence-based attribution | Pending |
-| 16–18 | Unit, full regression and isolated Docker hermetic acceptance | 7c7e9b5: 4420 full Linux passes, 16 Windows-only skips, 0016/no drift, 503-file manifest and matching CI; frozen Windows 2898 expanded plus 384 evidence-scope passes; remaining implementation still requires new acceptance |
+| 16–18 | Unit, full regression and isolated Docker hermetic acceptance | bf6c334: 5765 full Linux passes / 16 Windows-only skips, 0016/no drift, 522-file manifest; frozen Windows 4624 scoped passes / 11 POSIX-only skips, native publication confirmed separately; matching CI 34668676319 passed; remaining runtime work still requires its own acceptance |
 | 19–20 | Genuine old/new shadow and isolated Demo soak with sufficient samples | Not started; zero collected samples |
 | 21 | Final audit and the four requested reproducible evidence examples | Pending |
 

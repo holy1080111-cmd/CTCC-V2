@@ -96,7 +96,10 @@ permission-denial result is logged separately and never called a successful
 publication. Platform receipts must inspect which native outcome occurred.
 Working-source tests and frozen-source full/platform/CI acceptance are distinct;
 the exact committed source receipt in `reports/entry-acceptance-20260912` records
-the latter when it has actually finished. Reports and real public diagnostic
+the latter when it has actually finished. The public
+[checkpoint record](evidence/qualification_recorded_recheck_20260912.md) separates
+code-source acceptance from any subsequent documentation-only commit.
+Reports and real public diagnostic
 packets are excluded from public Git, the manifest and the Docker context.
 
 No existing deployment, trading flag, OS clock or ACL is changed by this
