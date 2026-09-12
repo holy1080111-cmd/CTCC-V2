@@ -215,7 +215,11 @@ class StreamCoverage(_BoundEvidence):
 
 
 class PriceInterval(_BoundEvidence):
-    """Declared complete OHLC interval. No interpolation/clipping at fills."""
+    """Complete [start, end) OHLC; terminal fill marks are evaluated separately.
+
+    No interpolation/clipping at fills. A fill exactly at end can be the next
+    observed trade price, outside the preceding half-open interval's extrema.
+    """
 
     started_at: datetime
     ended_at: datetime
@@ -712,10 +716,17 @@ def _path_excursions(packet, states, fill_complete):
                 (sign * q * unit * (Fraction(mark) - p) for q, p in lots), Fraction(0)
             )
             favorable, adverse = max(favorable, pnl), max(adverse, -pnl)
-    # Realized-only PnL is not total trade equity while inventory remains open.
-    if not states[-1][2]:
-        favorable = max(favorable, states[-1][1])
-        adverse = max(adverse, -states[-1][1])
+    # A terminal fill is an observed price point after the last half-open bar.
+    # Partial exits (or scale-ins) still leave inventory: mark the entire state,
+    # not just realized cash, and never discard that known terminal excursion.
+    if states[-1][0] == end:
+        _, realized, lots = states[-1]
+        mark = Fraction(packet.fills[-1].price)
+        terminal = realized + sum(
+            (sign * q * unit * (mark - price) for q, price in lots), Fraction(0)
+        )
+        favorable = max(favorable, terminal)
+        adverse = max(adverse, -terminal)
     return favorable, adverse, None
 
 
@@ -891,15 +902,13 @@ def analyze_trade(
             reason,
         )
     metrics["gross_realized_pnl"] = _metric(
-        realized if fill_complete and exits else None,
+        realized if fill_complete else None,
         currency,
-        known_fills or "no_exit_fill",
+        known_fills,
     )
     net = None
-    if (
-        fill_complete
-        and exits
-        and all(metrics[key].value is not None for key in ("fees", "funding"))
+    if fill_complete and all(
+        metrics[key].value is not None for key in ("fees", "funding")
     ):
         net = realized + sum(
             (Fraction(flow.amount) for flow in packet.cashflows), Fraction(0)

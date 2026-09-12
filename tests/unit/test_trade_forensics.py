@@ -243,6 +243,113 @@ def test_partial_close_has_realized_cash_but_no_final_pnl(direction):
     assert not result.metrics_complete
 
 
+@pytest.mark.parametrize("direction", ("long", "short"))
+def test_entry_only_has_known_zero_realized_and_paid_cash_but_no_final_pnl(direction):
+    packet, pin = fixture(direction, closed=False)
+    entries = packet.fills[:2]
+    cashflows = tuple(flow for flow in packet.cashflows if flow.fill_id != "fill_2")
+    result = run(
+        packet.model_copy(update={"fills": entries, "cashflows": cashflows}), pin
+    )
+    assert result.position_status == "partially_open"
+    assert result.exit_contracts.value == 0 and result.remaining_contracts.value == 10
+    assert result.gross_realized_pnl.value == 0
+    assert result.gross_realized_pnl.numerator == "0"
+    assert result.fees.value == D("-.10") and result.funding.value == D(".02")
+    assert result.net_cash_pnl_to_date.value == D("-.08")
+    assert (
+        result.pnl.value is None and result.pnl.unknown_reason == "position_not_closed"
+    )
+    assert result.exit_price.value is None and not result.metrics_complete
+    assert validate_forensics(result, expected_candidate_sha256=pin) == result
+
+
+@pytest.mark.parametrize("direction", ("long", "short"))
+@pytest.mark.parametrize("missing", ("fills", "fees", "funding"))
+def test_entry_only_does_not_infer_unknown_ledger_as_zero(direction, missing):
+    packet, pin = fixture(direction, closed=False)
+    coverage = tuple(
+        item.model_copy(update={"status": "unknown", "reason": "capture incomplete"})
+        if item.stream == missing
+        else item
+        for item in packet.coverage
+    )
+    result = run(
+        packet.model_copy(
+            update={
+                "fills": packet.fills[:2],
+                "cashflows": tuple(
+                    flow for flow in packet.cashflows if flow.fill_id != "fill_2"
+                ),
+                "coverage": coverage,
+            }
+        ),
+        pin,
+    )
+    assert result.net_cash_pnl_to_date.value is None and result.pnl.value is None
+    if missing == "fills":
+        assert result.gross_realized_pnl.value is None
+    else:
+        assert result.gross_realized_pnl.value == 0
+
+
+@pytest.mark.parametrize(
+    "direction,terminal_price,terminal_equity",
+    (
+        ("long", "200", "98.8"),
+        ("long", "1", "-100.2"),
+        ("short", "200", "-101.2"),
+        ("short", "1", "97.8"),
+    ),
+)
+def test_terminal_partial_exit_marks_remaining_inventory_for_cash_excursions(
+    direction, terminal_price, terminal_equity
+):
+    packet, pin = fixture(direction, closed=False)
+    observed = at(30)
+    fills = tuple(
+        fill.model_copy(
+            update={
+                "recorded_at": observed,
+                **({"price": D(terminal_price)} if fill.role == "exit" else {}),
+            }
+        )
+        for fill in packet.fills
+    )
+    rows = tuple(
+        row.model_copy(update={"recorded_at": observed}) for row in packet.path[:2]
+    )
+    flows = tuple(
+        flow.model_copy(update={"recorded_at": observed})
+        for flow in packet.cashflows
+        if flow.occurred_at <= observed
+    )
+    coverage = tuple(
+        item.model_copy(update={"recorded_at": observed, "ended_at": observed})
+        for item in packet.coverage
+    )
+    packet = packet.model_copy(
+        update={
+            "fills": fills,
+            "cashflows": flows,
+            "path": rows,
+            "coverage": coverage,
+            "observed_at": observed,
+        }
+    )
+    result = run(packet, pin)
+    equity = D(terminal_equity)
+    assert result.remaining_contracts.value == 5 and result.pnl.value is None
+    assert result.mfe.value == max(D("5.8"), equity)
+    assert result.mae.value == max(D("1.2"), -equity)
+    assert result.max_favorable_r.value == result.mfe.value / D(5)
+    assert result.max_adverse_r.value == result.mae.value / D(5)
+    if direction == "long" and terminal_price == "200":
+        assert result.gross_realized_pnl.value == D("49.8")
+        assert result.mfe.value == D("98.8")
+    assert validate_forensics(result, expected_candidate_sha256=pin) == result
+
+
 def test_repeating_ratios_keep_exact_operands_and_hostile_context(trade):
     packet, pin = trade
     expected = run(packet, pin)

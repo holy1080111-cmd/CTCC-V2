@@ -39,6 +39,14 @@ retained SHA256, a same-session `DemoAccountCredentials` and the actual precedin
 barrier time. A diagnostic barrier must never be labelled an actual G12 barrier.
 The returned packet must pass canonical freezing/replay before it is returned.
 
+`AccountCollectionError` preserves the existing outer error code. Its optional
+immutable `diagnostic` contains only a fixed stage, stream/page index and reviewed
+local `capture_reason`. Only the real parse/replay/freeze boundaries may supply
+it. Unknown, secret-bearing, hidden or non-exact exceptions do not expose their
+contents; no body, provider message, account ID, headers or traceback is included.
+The original 09:49 UTC read-only diagnostic was rejected without a packet and is
+retained separately; the coarse error alone does not identify the failing source.
+
 Successful collection still returns `records_verified_incomplete_account`:
 `account_complete`, `source_authenticity_verified` and `execution_authority` remain
 false. Complete ingestion history, seed/peak, non-SWAP scope, same-time account
@@ -75,6 +83,15 @@ automatically provision a REST token or destination pins inside the CTCC process
 An actual post-submit producer, configured runtime adapter and worker lifecycle
 are still needed before marking automatic Notion reporting complete.
 
+The existing CTCC report data source
+`cbbdc739-2723-4e07-a5d7-7d4d1395658e` (database
+`13d5e61fce534184a42e0b01c4f372d3`) now has three additional rich-text fields:
+`Outbox Envelope SHA256`, `Outbox Payload SHA256`, `Outbox Metadata JSON`.
+Readback verified 46 original property definitions unchanged and 49 total.
+No existing trade rows were edited. The existing title is `報告名稱`; the
+runtime property-ID pins must still be read through the reviewed REST connection,
+not guessed from display names. No automatic delivery is claimed by this schema edit.
+
 ## Trade forensics
 
 `app.trade_evidence.forensics` is a pure, source-bound analyzer for linear,
@@ -102,10 +119,18 @@ and replayed through the verifier.
 
 ## Targeted validation before source freeze
 
-Final account collector/capture scope: 525 passed (234 new collector tests and
-291 existing raw-capture tests). The adapter and worker together passed 207 tests
+Initial account collector/capture scope: 525 passed. The final diagnostic increment
+passed 602 tests (311 collector tests and 291 unchanged raw-capture tests), including
+77 new static-diagnostic and secret/exception-injection cases.
+The adapter and worker together passed 207 tests
 on Windows, with two actual POSIX filesystem workflows reserved for Linux.
-Forensics passed 202 synthetic tests. These scopes are separate from the 252-test
+Forensics initially passed 202 synthetic tests. Independent review reproduced
+missing entry-only cash accounting and a terminal partial-exit excursion error;
+the fixes passed 214 tests. Complete fills now establish zero realized gross
+before any exit, while known entry fees/funding still affect cash-to-date. Final
+PnL remains unknown until flat. Price intervals are explicitly half-open, and a
+terminal fill marks all remaining inventory for gross cash excursions.
+These scopes are separate from the 252-test
 Demo service scope and do not constitute a full regression or genuine samples.
 All nine new Python module/test files pass Ruff check and format check.
 

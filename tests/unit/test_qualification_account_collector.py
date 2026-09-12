@@ -10,7 +10,7 @@ import inspect
 import ssl
 import time
 import traceback
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, fields
 from datetime import datetime, timedelta, timezone, tzinfo
 
 import httpx
@@ -1402,4 +1402,553 @@ async def test_synchronous_clock_delay_cannot_send_after_native_deadline(
         await harness.collect(selected=plan(**{bound: 1}), clock=delayed_clock)
     assert clock.calls == 2
     assert harness.factory_calls == 1 and harness.requests == []
+    harness.assert_closed()
+
+
+def assert_diagnostic(error, *, stage, stream=None, page_index=None, reason):
+    assert type(error) is module.AccountCollectionError
+    assert error.args == ("account_records_invalid",)
+    assert error.__cause__ is None and error.__context__ is None
+    diagnostic = error.diagnostic
+    assert type(diagnostic) is module.AccountCollectionDiagnostic
+    assert diagnostic.stage == stage
+    assert diagnostic.stream == stream
+    assert diagnostic.page_index == page_index
+    assert diagnostic.capture_reason == reason
+    assert tuple(field.name for field in fields(diagnostic)) == (
+        "stage",
+        "stream",
+        "page_index",
+        "capture_reason",
+    )
+    assert not hasattr(diagnostic, "__dict__")
+    assert_secret_free(repr(diagnostic))
+    assert_secret_free(repr(error))
+    assert "700001" not in repr(diagnostic) and "700000" not in repr(diagnostic)
+    return diagnostic
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "case,reason",
+    [
+        ("uid", "account_identity_mismatch"),
+        ("main_uid", "account_identity_mismatch"),
+        ("mode", "account_mode_unsupported"),
+        ("code", "response_envelope_invalid"),
+        ("extra_envelope", "response_envelope_fields_invalid"),
+        ("json_number", "json_number_invalid"),
+        ("json_float", "json_number_invalid"),
+        ("secret_field", "secret_field_forbidden"),
+        ("duplicate_json_key", "duplicate_json_key"),
+        ("malformed_json", "response_json_invalid"),
+    ],
+)
+async def test_real_parser_failure_has_bounded_static_diagnostic(
+    monkeypatch, case, reason
+):
+    value = row("config_before")
+    if case == "uid":
+        value["uid"] = "700002"
+    elif case == "main_uid":
+        value["mainUid"] = "700003"
+    elif case == "mode":
+        value["posMode"] = "unsupported"
+    elif case == "json_number":
+        value["customValue"] = 17
+    elif case == "json_float":
+        value["customValue"] = 1.5
+    elif case == "secret_field":
+        value["apiKey"] = "foreign-response-secret-marker"
+    body = wire([value])
+    if case == "code":
+        body = wire([value], code="51000", msg="foreign-response-message-marker")
+    elif case == "extra_envelope":
+        body = wire([value], extra="foreign-response-extra-marker")
+    elif case == "duplicate_json_key":
+        body = b'{"code":"0","code":"0","msg":"","data":[]}'
+    elif case == "malformed_json":
+        body = b'{"code":"0",'
+    harness = Harness(monkeypatch, change=lambda *args: body)
+    with pytest.raises(module.AccountCollectionError) as error:
+        await harness.collect()
+    assert_diagnostic(
+        error.value,
+        stage="parse_observation",
+        stream="config_before",
+        page_index=0,
+        reason=reason,
+    )
+    assert len(harness.requests) == 1
+    assert "foreign-response" not in repr(error.value.diagnostic)
+    assert "foreign-response" not in "".join(traceback.format_exception(error.value))
+    harness.assert_closed()
+
+
+@pytest.mark.asyncio
+async def test_parser_diagnostic_identifies_later_stream_and_exact_page(monkeypatch):
+    harness = Harness(
+        monkeypatch,
+        pages={
+            "orders_pending": [
+                [row("orders_pending", "900")],
+                [row("orders_pending", "900")],
+                [],
+            ]
+        },
+    )
+    with pytest.raises(module.AccountCollectionError) as error:
+        await harness.collect()
+    assert_diagnostic(
+        error.value,
+        stage="parse_observation",
+        stream="orders_pending",
+        page_index=1,
+        reason="source_cursor_not_exclusive",
+    )
+    assert len(harness.requests) == 6
+    harness.assert_closed()
+
+
+@pytest.mark.asyncio
+async def test_real_config_change_is_diagnosed_at_verify_not_last_parser(monkeypatch):
+    harness = Harness(
+        monkeypatch,
+        change=lambda stream, index, data: (
+            [row(stream, posMode="long_short_mode")]
+            if stream == "config_after"
+            else None
+        ),
+    )
+    with pytest.raises(module.AccountCollectionError) as error:
+        await harness.collect()
+    assert_diagnostic(
+        error.value, stage="verify_records", reason="account_mode_changed"
+    )
+    assert len(harness.requests) == 21
+    harness.assert_closed()
+
+
+@pytest.mark.asyncio
+async def test_real_serialized_packet_limit_is_diagnosed_at_freeze(monkeypatch):
+    harness = Harness(monkeypatch)
+    selected = plan(max_response_bytes=1024, max_total_bytes=4096)
+    monkeypatch.setattr(capture_api, "MAX_PACKET_BYTES", 8192)
+    with pytest.raises(module.AccountCollectionError) as error:
+        await harness.collect(selected=selected)
+    assert_diagnostic(error.value, stage="freeze_packet", reason="packet_bytes_limit")
+    assert len(harness.requests) == 21
+    harness.assert_closed()
+
+
+@pytest.mark.asyncio
+async def test_diagnostic_and_error_diagnostic_property_are_immutable(monkeypatch):
+    harness = Harness(monkeypatch, change=lambda *args: wire([], code="51000"))
+    with pytest.raises(module.AccountCollectionError) as error:
+        await harness.collect()
+    diagnostic = assert_diagnostic(
+        error.value,
+        stage="parse_observation",
+        stream="config_before",
+        page_index=0,
+        reason="response_envelope_invalid",
+    )
+    for field in ("stage", "stream", "page_index", "capture_reason"):
+        with pytest.raises(FrozenInstanceError):
+            setattr(diagnostic, field, "replacement")
+    with pytest.raises((AttributeError, TypeError)):
+        diagnostic.response_body = b"hidden"
+    with pytest.raises(AttributeError):
+        error.value.diagnostic = None
+    assert error.value.diagnostic is diagnostic
+    assert not hasattr(diagnostic, "response_body")
+    harness.assert_closed()
+
+
+DIAGNOSTIC_STAGES = (
+    ("parse_demo_account_observation", "parse_observation", "config_before", 0),
+    ("verify_demo_account_records", "verify_records", None, None),
+    ("freeze_demo_account_packet", "freeze_packet", None, None),
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("function,stage,stream,page", DIAGNOSTIC_STAGES)
+async def test_capture_diagnostic_is_attached_only_by_actual_api_boundary(
+    monkeypatch, function, stage, stream, page
+):
+    harness = Harness(monkeypatch)
+    calls = []
+
+    def fail_at_boundary(*args, **kwargs):
+        calls.append(True)
+        raise capture_api.AccountCaptureError("record_type_invalid")
+
+    monkeypatch.setattr(capture_api, function, fail_at_boundary)
+    with pytest.raises(module.AccountCollectionError) as error:
+        await harness.collect()
+    assert_diagnostic(
+        error.value,
+        stage=stage,
+        stream=stream,
+        page_index=page,
+        reason="record_type_invalid",
+    )
+    assert calls == [True]
+    assert len(harness.requests) == (1 if stream else 21)
+    harness.assert_closed()
+
+
+@pytest.mark.asyncio
+async def test_verify_failure_nested_inside_freeze_stays_freeze_stage(monkeypatch):
+    harness = Harness(monkeypatch)
+    original = capture_api.verify_demo_account_records
+    calls = []
+
+    def fail_only_freeze_replay(*args, **kwargs):
+        calls.append(True)
+        if len(calls) == 2:
+            raise capture_api.AccountCaptureError("observation_replay_mismatch")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(
+        capture_api, "verify_demo_account_records", fail_only_freeze_replay
+    )
+    with pytest.raises(module.AccountCollectionError) as error:
+        await harness.collect()
+    assert_diagnostic(
+        error.value, stage="freeze_packet", reason="observation_replay_mismatch"
+    )
+    assert calls == [True, True]
+    harness.assert_closed()
+
+
+def dirty_capture_error(case):
+    if case == "empty_args":
+        return capture_api.AccountCaptureError()
+    if case == "multiple_args":
+        return capture_api.AccountCaptureError("record_type_invalid", API_SECRET)
+    if case == "secret_arg":
+        return capture_api.AccountCaptureError(API_SECRET)
+    if case == "unknown_arg":
+        return capture_api.AccountCaptureError("unreviewed_remote_code")
+    if case == "opaque_arg":
+        return capture_api.AccountCaptureError(Opaque())
+    if case == "list_arg":
+        return capture_api.AccountCaptureError(["record_type_invalid"])
+    if case == "bool_arg":
+        return capture_api.AccountCaptureError(True)
+    error = capture_api.AccountCaptureError("record_type_invalid")
+    if case == "notes":
+        error.add_note(API_SECRET)
+    elif case == "opaque_notes":
+        error.__dict__["__notes__"] = Opaque()
+    elif case == "hidden_secret":
+        error.__dict__["response_body"] = API_SECRET
+    elif case == "hidden_opaque":
+        error.__dict__["unsafe"] = Opaque()
+    elif case == "hidden_opaque_key":
+        # Exact dictionary with a non-text key must not be traversed or repr'd.
+        error.__dict__[17] = Opaque()
+    else:
+        raise AssertionError("unknown synthetic dirty-error case")
+    return error
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("function,stage,stream,page", DIAGNOSTIC_STAGES)
+@pytest.mark.parametrize(
+    "case",
+    [
+        "empty_args",
+        "multiple_args",
+        "secret_arg",
+        "unknown_arg",
+        "opaque_arg",
+        "list_arg",
+        "bool_arg",
+        "notes",
+        "opaque_notes",
+        "hidden_secret",
+        "hidden_opaque",
+        "hidden_opaque_key",
+    ],
+)
+async def test_exact_but_impure_capture_error_reason_becomes_unknown_without_callbacks(
+    monkeypatch, function, stage, stream, page, case
+):
+    harness = Harness(monkeypatch)
+    unsafe_error = dirty_capture_error(case)
+
+    def fail_at_boundary(*args, **kwargs):
+        raise unsafe_error
+
+    monkeypatch.setattr(capture_api, function, fail_at_boundary)
+    with pytest.raises(module.AccountCollectionError) as error:
+        await harness.collect()
+    assert_diagnostic(
+        error.value, stage=stage, stream=stream, page_index=page, reason="unknown"
+    )
+    assert "unreviewed_remote_code" not in repr(error.value.diagnostic)
+    assert "response_body" not in repr(error.value.diagnostic)
+    assert_secret_free("".join(traceback.format_exception(error.value)))
+    harness.assert_closed()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("function,stage,stream,page", DIAGNOSTIC_STAGES)
+async def test_capture_error_subclass_has_no_diagnostic_and_no_attribute_execution(
+    monkeypatch, function, stage, stream, page
+):
+    class ErrorTrap(capture_api.AccountCaptureError):
+        def __getattribute__(self, name):
+            FORBIDDEN_CALLS.append("capture error subclass attribute")
+            raise AssertionError("error subclass attribute executed")
+
+        def __str__(self):
+            FORBIDDEN_CALLS.append("capture error subclass string")
+            raise AssertionError("error subclass string executed")
+
+    unsafe_error = ErrorTrap("record_type_invalid")
+    harness = Harness(monkeypatch)
+
+    def fail_at_boundary(*args, **kwargs):
+        raise unsafe_error
+
+    monkeypatch.setattr(capture_api, function, fail_at_boundary)
+    with pytest.raises(module.AccountCollectionError) as error:
+        await harness.collect()
+    assert error.value.args == ("account_records_invalid",)
+    assert error.value.diagnostic is None
+    assert error.value.__cause__ is None and error.value.__context__ is None
+    harness.assert_closed()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["api_key", "api_secret", "passphrase"])
+async def test_allowlisted_reason_containing_real_secret_is_reduced_to_unknown(
+    monkeypatch, field
+):
+    harness = Harness(monkeypatch)
+
+    def fail_at_boundary(*args, **kwargs):
+        raise capture_api.AccountCaptureError("account_identity_mismatch")
+
+    monkeypatch.setattr(capture_api, "parse_demo_account_observation", fail_at_boundary)
+    with pytest.raises(module.AccountCollectionError) as error:
+        await harness.collect(supplied=credentials(**{field: "identity"}))
+    assert_diagnostic(
+        error.value,
+        stage="parse_observation",
+        stream="config_before",
+        page_index=0,
+        reason="unknown",
+    )
+    assert "identity" not in repr(error.value.diagnostic)
+    harness.assert_closed()
+
+
+@pytest.mark.asyncio
+async def test_issued_signature_cannot_become_a_capture_reason(monkeypatch):
+    harness = Harness(monkeypatch)
+
+    def fail_at_boundary(*args, **kwargs):
+        raise capture_api.AccountCaptureError(
+            harness.requests[0].headers["OK-ACCESS-SIGN"]
+        )
+
+    monkeypatch.setattr(capture_api, "verify_demo_account_records", fail_at_boundary)
+    with pytest.raises(module.AccountCollectionError) as error:
+        await harness.collect()
+    assert_diagnostic(error.value, stage="verify_records", reason="unknown")
+    assert harness.requests[0].headers["OK-ACCESS-SIGN"] not in repr(
+        error.value.diagnostic
+    )
+    harness.assert_closed()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("at", [0, 2, 64])
+async def test_capture_error_from_clock_has_no_parser_diagnostic(monkeypatch, at):
+    harness = Harness(monkeypatch)
+    clock = Clock()
+
+    def external_clock():
+        if clock.calls == at:
+            raise capture_api.AccountCaptureError("account_identity_mismatch")
+        return clock()
+
+    with pytest.raises(module.AccountCollectionError) as error:
+        await harness.collect(clock=external_clock)
+    assert error.value.args == ("account_records_invalid",)
+    assert error.value.diagnostic is None
+    assert error.value.__cause__ is None and error.value.__context__ is None
+    harness.assert_closed()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "source", ["http_status", "http_transport", "credentials", "secret_echo"]
+)
+async def test_non_capture_failures_do_not_claim_capture_diagnostic(
+    monkeypatch, source
+):
+    options = {}
+    if source == "http_status":
+        options["status"] = 401
+    elif source == "http_transport":
+        options["handler_error"] = httpx.ReadError(API_SECRET)
+    elif source == "secret_echo":
+        options["change"] = lambda stream, index, data: [row(stream, label=API_SECRET)]
+    harness = Harness(monkeypatch, **options)
+    with pytest.raises(module.AccountCollectionError) as error:
+        await harness.collect(
+            supplied=credentials(session_binding_id="other-session")
+            if source == "credentials"
+            else credentials()
+        )
+    assert error.value.diagnostic is None
+    assert error.value.__cause__ is None and error.value.__context__ is None
+    harness.assert_closed()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("function,stage,stream,page", DIAGNOSTIC_STAGES)
+async def test_reason_string_subclass_is_not_hashed_compared_or_stringified(
+    monkeypatch, function, stage, stream, page
+):
+    class StringTrap(str):
+        def __eq__(self, other):
+            FORBIDDEN_CALLS.append("reason string equality")
+            raise AssertionError("string equality executed")
+
+        def __hash__(self):
+            FORBIDDEN_CALLS.append("reason string hash")
+            raise AssertionError("string hash executed")
+
+        def __str__(self):
+            FORBIDDEN_CALLS.append("reason string conversion")
+            raise AssertionError("string conversion executed")
+
+    unsafe_error = capture_api.AccountCaptureError(StringTrap("record_type_invalid"))
+    harness = Harness(monkeypatch)
+
+    def fail_at_boundary(*args, **kwargs):
+        raise unsafe_error
+
+    monkeypatch.setattr(capture_api, function, fail_at_boundary)
+    with pytest.raises(module.AccountCollectionError) as error:
+        await harness.collect()
+    assert_diagnostic(
+        error.value, stage=stage, stream=stream, page_index=page, reason="unknown"
+    )
+    harness.assert_closed()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("function,stage,stream,page", DIAGNOSTIC_STAGES)
+async def test_exception_metadata_dictionary_subclass_is_never_evaluated(
+    monkeypatch, function, stage, stream, page
+):
+    class DictTrap(dict):
+        def __bool__(self):
+            FORBIDDEN_CALLS.append("exception metadata truthiness")
+            raise AssertionError("metadata truthiness executed")
+
+        def __iter__(self):
+            FORBIDDEN_CALLS.append("exception metadata iteration")
+            raise AssertionError("metadata iteration executed")
+
+    unsafe_error = capture_api.AccountCaptureError("record_type_invalid")
+    unsafe_error.__dict__ = DictTrap()
+    harness = Harness(monkeypatch)
+
+    def fail_at_boundary(*args, **kwargs):
+        raise unsafe_error
+
+    monkeypatch.setattr(capture_api, function, fail_at_boundary)
+    with pytest.raises(module.AccountCollectionError) as error:
+        await harness.collect()
+    assert_diagnostic(
+        error.value, stage=stage, stream=stream, page_index=page, reason="unknown"
+    )
+    harness.assert_closed()
+
+
+@pytest.mark.asyncio
+async def test_cleanup_failure_does_not_keep_a_stale_parser_diagnostic(monkeypatch):
+    def configure(client):
+        original = client.aclose
+
+        async def failing_close():
+            await original()
+            raise RuntimeError(API_SECRET)
+
+        client.aclose = failing_close
+
+    harness = Harness(
+        monkeypatch,
+        configure_client=configure,
+        change=lambda *args: wire([], code="51000"),
+    )
+    with pytest.raises(module.AccountCollectionError) as error:
+        await harness.collect()
+    assert error.value.args == ("cleanup_failed",)
+    assert error.value.diagnostic is None
+    assert error.value.__cause__ is None and error.value.__context__ is None
+    harness.assert_closed()
+
+
+@pytest.mark.asyncio
+async def test_clock_cannot_supply_its_own_diagnostic_via_collection_error(monkeypatch):
+    harness = Harness(monkeypatch)
+    external = module.AccountCollectionDiagnostic(
+        stage="parse_observation",
+        stream="config_before",
+        page_index=0,
+        capture_reason="account_identity_mismatch",
+    )
+
+    def untrusted_clock():
+        raise module.AccountCollectionError(
+            "account_records_invalid", diagnostic=external
+        )
+
+    with pytest.raises(module.AccountCollectionError) as error:
+        await harness.collect(clock=untrusted_clock)
+    assert error.value.args == ("account_records_invalid",)
+    assert error.value.diagnostic is None
+    assert error.value.__cause__ is None and error.value.__context__ is None
+    assert harness.factory_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_oversized_reason_is_rejected_by_schema_and_unknown_at_capture_boundary(
+    monkeypatch,
+):
+    oversized = "untrusted-reason-" * 65536
+    with pytest.raises(ValueError, match="^diagnostic_invalid$"):
+        module.AccountCollectionDiagnostic(
+            stage="parse_observation",
+            stream="config_before",
+            page_index=0,
+            capture_reason=oversized,
+        )
+    harness = Harness(monkeypatch)
+
+    def fail_at_boundary(*args, **kwargs):
+        raise capture_api.AccountCaptureError(oversized)
+
+    monkeypatch.setattr(capture_api, "parse_demo_account_observation", fail_at_boundary)
+    with pytest.raises(module.AccountCollectionError) as error:
+        await harness.collect()
+    diagnostic = assert_diagnostic(
+        error.value,
+        stage="parse_observation",
+        stream="config_before",
+        page_index=0,
+        reason="unknown",
+    )
+    assert len(repr(diagnostic)) < 256
+    assert "untrusted-reason" not in repr(diagnostic)
     harness.assert_closed()

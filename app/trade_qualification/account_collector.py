@@ -31,6 +31,7 @@ import ssl
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from typing import Literal
 
 import httpcore
 import httpx
@@ -80,10 +81,180 @@ _ERROR_CODES = frozenset(
         "account_capture_invalid",
     }
 )
+# Explicit reviewed vocabulary, never derived from response keys, exception text,
+# source introspection or an external provider's error message. New capture codes
+# intentionally remain unknown until reviewed here.
+_CAPTURE_REASONS = frozenset(
+    {
+        "account_capture_invalid",
+        "clock_invalid",
+        "plan_history_window_invalid",
+        "history_window_requires_milliseconds",
+        "account_capture_cannot_grant_authority",
+        "record_traversal_limit",
+        "record_fields_invalid",
+        "record_sequence_limit",
+        "record_text_limit",
+        "record_bytes_limit",
+        "record_decimal_invalid",
+        "record_integer_limit",
+        "record_scalar_invalid",
+        "record_type_invalid",
+        "record_invalid",
+        "external_plan_pin_invalid",
+        "external_plan_pin_mismatch",
+        "stream_invalid",
+        "cursor_invalid",
+        "cursor_not_supported",
+        "duplicate_json_key",
+        "json_number_invalid",
+        "json_traversal_limit",
+        "json_object_limit",
+        "json_key_limit",
+        "secret_field_forbidden",
+        "json_array_limit",
+        "json_text_limit",
+        "json_unicode_invalid",
+        "json_scalar_invalid",
+        "response_bytes_invalid",
+        "packet_bytes_invalid",
+        "canonical_bytes_limit",
+        "response_json_invalid",
+        "packet_json_invalid",
+        "source_identity_field_invalid",
+        "source_identifier_invalid",
+        "source_timestamp_invalid",
+        "source_decimal_invalid",
+        "source_row_invalid",
+        "account_identity_mismatch",
+        "account_mode_unsupported",
+        "source_inventory_invalid",
+        "duplicate_source_identity",
+        "history_instrument_scope_mismatch",
+        "position_side_invalid",
+        "margin_mode_invalid",
+        "order_side_invalid",
+        "order_state_invalid",
+        "algo_query_scope_mismatch",
+        "algo_state_invalid",
+        "future_source_timestamp",
+        "source_lifecycle_reversed",
+        "source_quantity_negative",
+        "filled_quantity_exceeds_order",
+        "history_row_outside_query",
+        "page_index_invalid",
+        "receipt_pin_invalid",
+        "page_chain_metadata_invalid",
+        "nonpaginated_page_invalid",
+        "identity_receipt_required",
+        "request_clock_invalid",
+        "request_deadline_exceeded",
+        "response_envelope_invalid",
+        "response_envelope_fields_invalid",
+        "response_row_limit",
+        "response_cardinality_invalid",
+        "source_cursor_order_invalid",
+        "source_cursor_not_exclusive",
+        "observation_replay_mismatch",
+        "inventory_page_count_invalid",
+        "inventory_bytes_limit",
+        "inventory_order_invalid",
+        "cross_request_clock_reversed",
+        "identity_chain_mismatch",
+        "batch_deadline_exceeded",
+        "inventory_stream_missing_or_limit",
+        "nonpaginated_inventory_duplicate",
+        "empty_terminal_page_required",
+        "page_index_gap",
+        "page_after_terminal",
+        "page_chain_mismatch",
+        "duplicate_or_conflicting_page_identity",
+        "conflicting_algo_type_identity",
+        "account_mode_changed",
+        "inventory_rows_limit",
+        "packet_replay_mismatch",
+        "packet_bytes_limit",
+        "external_packet_pin_invalid",
+        "external_packet_pin_mismatch",
+        "packet_noncanonical",
+        "packet_schema_invalid",
+    }
+)
+_DIAGNOSTIC_STAGES = frozenset({"parse_observation", "verify_records", "freeze_packet"})
+
+
+@dataclass(frozen=True, slots=True)
+class AccountCollectionDiagnostic:
+    """Only bounded local metadata; never response details or authority evidence."""
+
+    stage: Literal["parse_observation", "verify_records", "freeze_packet"]
+    stream: capture.Stream | None
+    page_index: int | None
+    capture_reason: str
+
+    def __post_init__(self):
+        if (
+            type(self.stage) is not str
+            or not 1 <= len(self.stage) <= 20
+            or self.stage not in _DIAGNOSTIC_STAGES
+            or type(self.capture_reason) is not str
+            or not 1 <= len(self.capture_reason) <= 96
+            or self.capture_reason not in _CAPTURE_REASONS | {"unknown"}
+        ):
+            raise ValueError("diagnostic_invalid")
+        if self.stage == "parse_observation":
+            if (
+                type(self.stream) is not str
+                or not 1 <= len(self.stream) <= 32
+                or self.stream not in capture.STREAMS
+                or type(self.page_index) is not int
+                or not 0 <= self.page_index < 64
+            ):
+                raise ValueError("diagnostic_invalid")
+        elif self.stream is not None or self.page_index is not None:
+            raise ValueError("diagnostic_invalid")
 
 
 class AccountCollectionError(ValueError):
     """Fixed local codes only; never carry HTTP messages, headers or raw bodies."""
+
+    __slots__ = ("_diagnostic",)
+
+    def __init__(self, *args, diagnostic: AccountCollectionDiagnostic | None = None):
+        if (
+            diagnostic is not None
+            and type(diagnostic) is not AccountCollectionDiagnostic
+        ):
+            raise ValueError("diagnostic_invalid")
+        super().__init__(*args)
+        self._diagnostic = diagnostic
+
+    @property
+    def diagnostic(self) -> AccountCollectionDiagnostic | None:
+        return self._diagnostic
+
+
+def _capture_diagnostic(error, *, stage, stream, page_index, secret_tokens):
+    # Called only inside the three actual capture API exception boundaries. The
+    # caller excludes subclasses first, so accessing native exception slots cannot
+    # invoke a foreign __getattribute__, __str__, __eq__ or __hash__ callback.
+    reason = "unknown"
+    arguments = object.__getattribute__(error, "args")
+    fields = object.__getattribute__(error, "__dict__")
+    if (
+        type(fields) is dict
+        and not fields
+        and type(arguments) is tuple
+        and len(arguments) == 1
+        and type(arguments[0]) is str
+        and 1 <= len(arguments[0]) <= 96
+        and arguments[0] in _CAPTURE_REASONS
+        and not any(token in arguments[0] for token in secret_tokens)
+    ):
+        reason = arguments[0]
+    return AccountCollectionDiagnostic(
+        stage=stage, stream=stream, page_index=page_index, capture_reason=reason
+    )
 
 
 @dataclass(frozen=True, slots=True, repr=False, eq=False)
@@ -361,20 +532,32 @@ async def _page(
         raise AccountCollectionError("response_length_mismatch")
     raw = bytes(body)
     _no_secrets(raw, secret_tokens)
-    observation = capture.parse_demo_account_observation(
-        raw,
-        plan=plan,
-        expected_plan_sha256=pin,
-        stream=stream,
-        request_started_at=started,
-        headers_received_at=received,
-        body_completed_at=completed,
-        barrier_completed_at=barrier,
-        page_index=page_index,
-        after=after,
-        previous_page_sha256=previous_sha,
-        identity_receipt_sha256=identity,
-    )
+    try:
+        observation = capture.parse_demo_account_observation(
+            raw,
+            plan=plan,
+            expected_plan_sha256=pin,
+            stream=stream,
+            request_started_at=started,
+            headers_received_at=received,
+            body_completed_at=completed,
+            barrier_completed_at=barrier,
+            page_index=page_index,
+            after=after,
+            previous_page_sha256=previous_sha,
+            identity_receipt_sha256=identity,
+        )
+    except capture.AccountCaptureError as exc:
+        if type(exc) is not capture.AccountCaptureError:
+            raise
+        # A diagnostic is an internal rejection result, never a partial receipt.
+        return _capture_diagnostic(
+            exc,
+            stage="parse_observation",
+            stream=stream,
+            page_index=page_index,
+            secret_tokens=secret_tokens,
+        )
     _no_secret_json(observation.canonical_json, secret_tokens)
     return observation
 
@@ -395,6 +578,7 @@ async def collect_demo_account_records(
     before returning; its clock is checked but does not overwrite raw receipt time.
     """
     error = None
+    diagnostic = None
     interrupted = False
     try:
         selected = capture._checked_plan(plan, expected_plan_sha256)
@@ -462,6 +646,9 @@ async def collect_demo_account_records(
                             secret_tokens=secret_tokens,
                             wall_deadline=wall_started + selected.max_batch_seconds,
                         )
+                        if type(item) is AccountCollectionDiagnostic:
+                            diagnostic = item
+                            raise AccountCollectionError("account_records_invalid")
                         rows += len(item.rows)
                         total_bytes += item.body_size_bytes
                         if rows > selected.max_total_rows:
@@ -485,19 +672,41 @@ async def collect_demo_account_records(
                 # be hidden in an earlier retained page under an innocuous key.
                 for item in observations:
                     _no_secret_json(item.canonical_json, secret_tokens)
-                packet = capture.verify_demo_account_records(
-                    tuple(observations),
-                    plan=selected,
-                    expected_plan_sha256=expected_plan_sha256,
-                    barrier_completed_at=barrier,
-                )
+                try:
+                    packet = capture.verify_demo_account_records(
+                        tuple(observations),
+                        plan=selected,
+                        expected_plan_sha256=expected_plan_sha256,
+                        barrier_completed_at=barrier,
+                    )
+                except capture.AccountCaptureError as exc:
+                    if type(exc) is capture.AccountCaptureError:
+                        diagnostic = _capture_diagnostic(
+                            exc,
+                            stage="verify_records",
+                            stream=None,
+                            page_index=None,
+                            secret_tokens=secret_tokens,
+                        )
+                    raise
                 # The retained raw/canonical/derived views can expand beyond the
                 # raw-byte budget. Require the existing canonical artifact bound,
                 # too; do not return a packet that cannot be frozen and replayed.
-                capture.freeze_demo_account_packet(
-                    packet,
-                    expected_plan_sha256=expected_plan_sha256,
-                )
+                try:
+                    capture.freeze_demo_account_packet(
+                        packet,
+                        expected_plan_sha256=expected_plan_sha256,
+                    )
+                except capture.AccountCaptureError as exc:
+                    if type(exc) is capture.AccountCaptureError:
+                        diagnostic = _capture_diagnostic(
+                            exc,
+                            stage="freeze_packet",
+                            stream=None,
+                            page_index=None,
+                            secret_tokens=secret_tokens,
+                        )
+                    raise
         except asyncio.CancelledError:
             cancelled = True
             raise
@@ -530,4 +739,6 @@ async def collect_demo_account_records(
     # Outside except: no implicit HTTP exception chain containing auth headers.
     if interrupted:
         raise asyncio.CancelledError
-    raise AccountCollectionError(error)
+    raise AccountCollectionError(
+        error, diagnostic=diagnostic if error == "account_records_invalid" else None
+    )
