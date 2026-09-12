@@ -4,7 +4,7 @@ from typing import Any
 import httpx
 
 from app.config.settings import get_settings
-from app.domain.market import Candle, InstrumentInfo, OrderBook, Ticker
+from app.domain.market import Candle, InstrumentInfo, OrderBook, SwapTickerV2, Ticker
 from app.exchange.okx.errors import OkxPublicApiError
 from app.exchange.okx.parsers import (
     decimal_value,
@@ -69,7 +69,7 @@ class OkxPublicRestClient:
         )
         return [parse_instrument(row) for row in rows]
 
-    async def ticker(self, instrument_id: str) -> Ticker:
+    async def ticker(self, instrument_id: str) -> Ticker | SwapTickerV2:
         rows = await self._request("/api/v5/market/ticker", {"instId": instrument_id})
         if not rows:
             raise OkxPublicApiError("ticker returned no data")
@@ -100,7 +100,9 @@ class OkxPublicRestClient:
         if not rows:
             raise OkxPublicApiError("funding rate returned no data")
         row = rows[0]
-        next_time = utc_from_ms(row["nextFundingTime"]) if row.get("nextFundingTime") else None
+        next_time = (
+            utc_from_ms(row["nextFundingTime"]) if row.get("nextFundingTime") else None
+        )
         return decimal_value(row.get("fundingRate")), next_time
 
     async def open_interest(self, instrument_id: str) -> tuple[Any, Any]:

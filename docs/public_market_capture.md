@@ -51,10 +51,19 @@ SWAP 的 bid／ask size、book size、OHLC vol、ticker vol24h、OI oi 以合約
 OHLC volCcy、ticker volCcy24h、OI oiCcy 以本位幣計；OHLC volCcyQuote 是報價幣，
 可選 oiUsd 是 USD。原始資料不把 missing OI 當 0，合法明示零 OI 可保留。
 
-現有 `Ticker.volume_quote_24h` 被舊 parser 填入 SWAP `volCcy24h`，命名／單位不符。
-本增量因此不直接建舊 `MarketSnapshot`，也不以 0 或 last×base 推估填值。
-後續 bridge 必須版本化／表達未知 quote volume、保留明確 base volume、調整
-parser／G1 非負檢查及既有 source-hash／JSON 回放相容性，然後才可接 G1。
+舊 `Ticker.volume_quote_24h` 曾被 parser 填入 SWAP `volCcy24h`，命名／單位不符。
+2026-09-12 後續開發增量加入獨立 `SwapTickerV2`：必要 schema ID
+`okx-swap-ticker-v2`、`volume_contracts_24h`、`volume_currency_24h`，以及明確
+`volume_quote_24h=None`。新 SWAP parser 要求原始欄位，拒絕 missing／空值／
+非有限數值，不以 0 或 last×base 推估。Spot／歷史 v1 DTO 原序列化鍵保持不變；
+混入新版欄位或未知 schema 不能被 union replay 靜默丟棄。
+
+`market_bridge.public_market_snapshot` 在任何 serialization 前完整重驗原始
+packet 與外部 bundle pin，產生新的 domain copy；`qualify_public_market` 再執行
+真正 G1，沒有 caller analysis／PASS。完整 packet 應與 G1 evidence 一併保存，
+bundle pin 不認證來源。僅有最低 bid／ask 的 packet 不足以構建完整行情，會拒絕。
+G1 的 v2 單位與 hash／JSON replay 已納入合成測試，歷史 v1 source golden hash
+保持不變。這是開發實作，不是已部署 runtime；來源認證與交易權限仍 false。
 
 ## 單次公開 WS 診斷
 

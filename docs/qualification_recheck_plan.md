@@ -1,6 +1,11 @@
 # 完整 Execution Recheck：下一步可執行實作計劃
 
 狀態：**R1–R4 離線計算／recorded-only 組合已實作；封存來源驗收另記，R5–R7 runtime 未完成**。
+
+2026-09-12 後續 [runtime 基礎增量](runtime_foundations.md) 已加入版本化 SWAP
+market→G1 bridge、bytes-only 帳戶頁鏈驗證、0017 持久 event/risk journal 及本地
+Notion outbox 原語。各元件仍是無來源／帳戶認證與下單權限的開發元件；以下
+R5–R7 的完整 runtime 要求與未完成狀態不因此改為 Done，驗收結果見該增量文件。
 原依賴審查以 `7c7e9b5` 為基準；新增介面與限制見
 [recorded-only recheck](recorded_recheck.md)。這不是完整 recheck 完成證明，
 本計劃不啟用交易或修改部署。

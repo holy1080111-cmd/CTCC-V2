@@ -2,7 +2,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class InstrumentInfo(BaseModel):
@@ -31,6 +31,8 @@ class Candle(BaseModel):
 
 
 class Ticker(BaseModel):
+    # Preserve historical v1 keys/hashes; never discard v2 units on replay.
+    model_config = ConfigDict(extra="forbid")
     instrument_id: str
     last: Decimal
     bid: Decimal
@@ -50,8 +52,41 @@ class Ticker(BaseModel):
 
     @property
     def spread_pct(self) -> Decimal:
-        midpoint = (self.ask + self.bid) / Decimal("2")
-        return Decimal("0") if midpoint <= 0 else self.spread / midpoint * Decimal("100")
+        midpoint = (self.ask + self.bid) / Decimal(2)
+        return Decimal(0) if midpoint <= 0 else self.spread / midpoint * Decimal(100)
+
+
+class SwapTickerV2(BaseModel):
+    """Explicit OKX SWAP units. Quote turnover is unknown, not estimated.
+
+    A mandatory schema ID prevents unversioned JSON from silently changing the
+    meaning of historical evidence. This DTO itself grants no source trust.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    schema_version: Literal["okx-swap-ticker-v2"]
+    instrument_id: str = Field(pattern=r"^[A-Z0-9]+-[A-Z0-9]+-SWAP$")
+    last: Decimal
+    bid: Decimal
+    ask: Decimal
+    bid_size: Decimal
+    ask_size: Decimal
+    open_24h: Decimal
+    high_24h: Decimal
+    low_24h: Decimal
+    volume_contracts_24h: Decimal = Field(ge=0, allow_inf_nan=False)
+    volume_currency_24h: Decimal = Field(ge=0, allow_inf_nan=False)
+    volume_quote_24h: None = None
+    timestamp: datetime
+
+    @property
+    def spread(self) -> Decimal:
+        return self.ask - self.bid
+
+    @property
+    def spread_pct(self) -> Decimal:
+        midpoint = (self.ask + self.bid) / Decimal(2)
+        return Decimal(0) if midpoint <= 0 else self.spread / midpoint * Decimal(100)
 
 
 class OrderBookLevel(BaseModel):
@@ -85,7 +120,7 @@ class DataQualityReport(BaseModel):
 class MarketSnapshot(BaseModel):
     symbol: str
     instrument_id: str
-    ticker: Ticker
+    ticker: Ticker | SwapTickerV2
     mark_price: Decimal
     funding_rate: Decimal
     next_funding_time: datetime | None

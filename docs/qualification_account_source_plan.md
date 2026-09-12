@@ -1,8 +1,29 @@
 # R5 Demo 帳戶來源計畫
 
-狀態：**僅設計／未實作，2026-09-12。不是帳戶 collector 驗收，也不是 R5、R6 或 R7 完成。**
+狀態：**bytes-only 原始回應與頁鏈驗證已實作，2026-09-12；可信 transport／完整帳戶 materializer 未實作。不是帳戶 collector 驗收，也不是 R5、R6 或 R7 完成。**
 
-本文件只依本機程式契約與 OKX 官方文件盤點；沒有讀取憑證或帳戶資料、呼叫 private API、開啟寫入、建立風險保留或下單。API 名稱均為提案，尚不可 import。公開行情增量見 [公開資料收集](public_market_capture.md)；主進度見 [Execution Recheck 計畫](qualification_recheck_plan.md)。
+本文件依本機程式契約與 OKX 官方文件盤點；此開發增量沒有讀取憑證或帳戶資料、呼叫 private API 或下單。下列來源設計仍保留，實際可 import 的離線 API 範圍見新增實作狀態；其餘 collector／materializer 仍為提案。公開行情增量見 [公開資料收集](public_market_capture.md)；主進度見 [Execution Recheck 計畫](qualification_recheck_plan.md)。
+
+## 新增實作狀態：不把頁鏈完整誤稱帳戶完整
+
+`app.trade_qualification.account_capture` 已提供 `DemoAccountCapturePlan`、
+`plan_sha256`、`account_request`、`parse_demo_account_observation`、
+`verify_demo_account_records`、`freeze_demo_account_packet`、
+`verify_demo_account_packet`。只接受合成／外部提供的 bounded bytes，沒有 transport、
+signer、設定、wall clock、資料庫或送單依賴。13 個固定 streams 涵蓋前後 config、
+account-position-risk、balance、全部 positions／普通 pending、四類 algo、
+SWAP fills history、全部 bills archive、SWAP orders history archive。
+
+每條分頁鏈須明確空白 terminal、ID exclusive cursor、完整 raw／canonical pins、
+exact UID／mainUid／session／config receipt 綁定、publication barrier 及全部 request
+時鐘。freeze／replay 前先重驗 exact nested types，再從原始 bytes 重建；未知欄位、
+source time 與 history seed 不填 0 或 now。独立交叉審查後單元 291 項通過，擴大回歸另記。
+
+有效 packet 仍只能是 `records_verified_incomplete_account`；`account_complete`、
+`source_authenticity_verified`、`execution_authority` 固定 false。必留缺口包括
+進階商品範圍、非 SWAP 歷史、保留期／ingestion watermark、seed／peak、同時點
+完整性、本機 uncertain ledger、規格／相關性、保護與成本映射。完整 R5 驗收仍待
+上述獨立證據與可信 transport／materializer，不能直接接成 G11 complete snapshot。
 
 ## 1. 本輪可做的最小下一步
 

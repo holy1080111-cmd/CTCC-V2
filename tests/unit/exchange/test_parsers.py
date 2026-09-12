@@ -59,7 +59,7 @@ def test_parse_candle() -> None:
 
 def test_parse_ticker_spread() -> None:
     ticker = parse_ticker({
-        "instId": "BTC-USDT-SWAP", "last": "100", "bidPx": "99", "askPx": "101",
+        "instType": "SWAP", "instId": "BTC-USDT-SWAP", "last": "100", "bidPx": "99", "askPx": "101",
         "bidSz": "2", "askSz": "3", "open24h": "90", "high24h": "110",
         "low24h": "80", "vol24h": "1000", "volCcy24h": "100000", "ts": "1750000000000"
     })

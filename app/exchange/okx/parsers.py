@@ -1,12 +1,20 @@
-from datetime import datetime, timezone
+import re
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
-from app.domain.market import Candle, InstrumentInfo, OrderBook, OrderBookLevel, Ticker
+from app.domain.market import (
+    Candle,
+    InstrumentInfo,
+    OrderBook,
+    OrderBookLevel,
+    SwapTickerV2,
+    Ticker,
+)
 
 
 def utc_from_ms(value: str | int) -> datetime:
-    return datetime.fromtimestamp(int(value) / 1000, tz=timezone.utc)
+    return datetime.fromtimestamp(int(value) / 1000, tz=UTC)
 
 
 def decimal_value(value: Any, default: str = "0") -> Decimal:
@@ -46,7 +54,48 @@ def parse_candle(row: list[str]) -> Candle:
     )
 
 
-def parse_ticker(row: dict[str, Any]) -> Ticker:
+def parse_swap_ticker_v2(row: dict[str, Any]) -> SwapTickerV2:
+    """Keep derivative contracts and base-currency volume distinct.
+
+    https://app.okx.com/docs-v5/en/#order-book-trading-market-data-get-ticker
+    No quote turnover is supplied by this endpoint for derivatives.
+    """
+    if type(row) is not dict or row.get("instType") != "SWAP":
+        raise ValueError("swap_ticker_identity_invalid")
+
+    def number(field: str) -> Decimal:
+        raw = row.get(field)
+        if (
+            type(raw) is not str
+            or re.fullmatch(r"[0-9]{1,40}(?:\.[0-9]{1,40})?", raw) is None
+        ):
+            raise ValueError("swap_ticker_decimal_invalid")
+        return Decimal(raw)
+
+    raw_ts = row.get("ts")
+    if type(raw_ts) is not str or re.fullmatch(r"[0-9]{13}", raw_ts) is None:
+        raise ValueError("swap_ticker_timestamp_invalid")
+    return SwapTickerV2(
+        schema_version="okx-swap-ticker-v2",
+        instrument_id=row["instId"],
+        last=number("last"),
+        bid=number("bidPx"),
+        ask=number("askPx"),
+        bid_size=number("bidSz"),
+        ask_size=number("askSz"),
+        open_24h=number("open24h"),
+        high_24h=number("high24h"),
+        low_24h=number("low24h"),
+        volume_contracts_24h=number("vol24h"),
+        volume_currency_24h=number("volCcy24h"),
+        timestamp=datetime(1970, 1, 1, tzinfo=UTC)
+        + timedelta(milliseconds=int(raw_ts)),
+    )
+
+
+def parse_ticker(row: dict[str, Any]) -> Ticker | SwapTickerV2:
+    if row.get("instType") == "SWAP" or str(row.get("instId", "")).endswith("-SWAP"):
+        return parse_swap_ticker_v2(row)
     return Ticker(
         instrument_id=row["instId"],
         last=decimal_value(row["last"]),

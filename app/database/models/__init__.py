@@ -53,6 +53,11 @@ from app.database.models.trading import (
     TradeCandidate,
     TradeLifecycle,
 )
+from app.database.models.qualification_ledger import (
+    QualificationAccountScope,
+    QualificationReservation,
+    QualificationReservationTransition,
+)
 
 __all__ = [
     "AccountSnapshot", "AnalysisRun", "AuditLog", "ConfigurationVersion", "Fill",
@@ -69,4 +74,5 @@ __all__ = [
     "DemoAutomationState", "DemoAutomationRun", "DemoAutomationFingerprint",
     "DemoObservabilityEvent", "DemoSoakSession",
     "DemoPerformanceSnapshot", "DemoStrategyControl", "DemoDailyPerformanceReport",
+    "QualificationAccountScope", "QualificationReservation", "QualificationReservationTransition",
 ]

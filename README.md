@@ -88,11 +88,16 @@ applies the same explicit equity identity to controlled execute-soak loss
 limits and persists its basis and currency with every soak session. Migration
 `0016` persists exact Live protection expectations, operator-reviewed intent
 resolution, and a versioned safety latch that survives API restarts.
+Migration `0017` adds isolated Demo qualification account scopes, immutable
+event/risk reservations and append-only transitions. These are offline journal
+primitives, not source authentication, runtime admission or order authority.
+The running d984753 deployment remains on `0016` until separately upgraded;
+development-source schema changes are not deployed by running unit tests.
 
 Expected migration after upgrade:
 
 ```text
-0016 (head)
+0017 (head)
 ```
 
 ## Reviewed Demo and public-data universe
@@ -387,7 +392,8 @@ powershell -ExecutionPolicy Bypass `
 
 Do not use `docker compose down -v` during an upgrade.
 
-The expected Alembic head and current revision are both `0016`. A healthy
+For this development source after an authorized upgrade, the expected Alembic
+head and current revision are both `0017`. A healthy
 container alone is not sufficient deployment evidence: `/readiness` and all
 three Alembic commands above must also succeed. See the
 [v1.6.9 Live operator runbook](docs/live_execution_v1.6.9.md) for rollback and

@@ -27,7 +27,14 @@ from pydantic import (
 
 from app.analysis.service import analyze_snapshot_at
 from app.domain.analysis import MultiTimeframeAnalysis
-from app.domain.market import Candle, MarketSnapshot, OrderBook, OrderBookLevel, Ticker
+from app.domain.market import (
+    Candle,
+    MarketSnapshot,
+    OrderBook,
+    OrderBookLevel,
+    SwapTickerV2,
+    Ticker,
+)
 from app.exchange.okx.symbols import to_canonical_symbol
 from app.market.quality.candles import BAR_SECONDS, candle_closed_at, inspect_candles_at
 from app.trade_qualification.event_models import Digest
@@ -55,7 +62,14 @@ TIMEFRAMES = ("4H", "1H", "15m", "5m")
 MAX_SOURCE_BYTES = 8 * 1024 * 1024
 Bps = Annotated[Decimal, Field(ge=0, le=1000, max_digits=30, decimal_places=20)]
 _INVALID = (ValueError, TypeError, AttributeError, OverflowError, DecimalException)
-_MARKET_MODELS = (MarketSnapshot, Candle, Ticker, OrderBook, OrderBookLevel)
+_MARKET_MODELS = (
+    MarketSnapshot,
+    Candle,
+    Ticker,
+    SwapTickerV2,
+    OrderBook,
+    OrderBookLevel,
+)
 
 
 def _utc(value):
@@ -327,6 +341,12 @@ def _bounded_scalars(value, expected):
 
 def _validate_market_quotes(market):
     ticker, book = market.ticker, market.order_book
+    # Quote turnover is unknown in v2, not zero or the base-currency quantity.
+    ticker_volumes = (
+        (ticker.volume_contracts_24h, ticker.volume_currency_24h)
+        if type(ticker) is SwapTickerV2
+        else (ticker.volume_24h, ticker.volume_quote_24h)
+    )
     if not all(
         _positive_price(getattr(ticker, name))
         for name in (
@@ -345,8 +365,7 @@ def _validate_market_quotes(market):
         raise ValueError("invalid ticker geometry")
     if (
         min(
-            ticker.volume_24h,
-            ticker.volume_quote_24h,
+            *ticker_volumes,
             market.open_interest_contracts,
             market.open_interest_currency,
         )

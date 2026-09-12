@@ -181,7 +181,7 @@ Invoke-NativeStep "Alembic exact revision" {
     $revisionProbe = @'
 import subprocess
 
-expected = "0016 (head)"
+expected = "0017 (head)"
 heads = subprocess.check_output(
     ["alembic", "heads"],
     text=True,
@@ -192,7 +192,7 @@ current = subprocess.check_output(
 ).strip().splitlines()[-1]
 assert heads == expected, (heads, expected)
 assert current == expected, (current, expected)
-print("ALEMBIC_REVISION=0016")
+print("ALEMBIC_REVISION=0017")
 '@
     $revisionProbe | docker compose @composeArguments exec -T api python -
 }
@@ -234,5 +234,5 @@ Write-Host "MIE_GATE2_VERIFIED=1"
 Write-Host "MIE_GATE2_EXECUTION_AUTHORITY=0"
 Write-Host "MIE_GATE2_RUNTIME_CONSUMERS=0"
 Write-Host "HEAD=$head"
-Write-Host "ALEMBIC_HEAD=0016"
+Write-Host "ALEMBIC_HEAD=0017"
 Write-Host "API_HEALTH=$health"
