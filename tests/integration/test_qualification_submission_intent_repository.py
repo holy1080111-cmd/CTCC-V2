@@ -41,9 +41,9 @@ async def test_atomic_consume_intent_committed_and_independent_restart_readback(
     async with database[1]() as session:
         rows = (
             await session.scalars(
-                select(QualificationReservationTransition).filter_by(
-                    reservation_id=reserved.reservation_id
-                )
+                select(QualificationReservationTransition)
+                .filter_by(reservation_id=reserved.reservation_id)
+                .order_by(QualificationReservationTransition.state_revision)
             )
         ).all()
         assert len(rows) == 2
