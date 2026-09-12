@@ -6,6 +6,7 @@ from app.strategies.base import (
     common_vetoes,
     evaluate_conditions,
 )
+from app.strategies.conditions import StrategyConditionSet
 from app.strategies.helpers import momentum_matches, trend_matches
 
 NAME = "order_block_return"
@@ -26,7 +27,7 @@ def _at_directional_block(ctx: StrategyContext, direction: str) -> bool:
     return False
 
 
-def evaluate(ctx: StrategyContext):
+def conditions(ctx: StrategyContext) -> StrategyConditionSet:
     direction = ctx.analysis.overall_bias
     conditions = [
         Condition(
@@ -70,6 +71,15 @@ def evaluate(ctx: StrategyContext):
             required=True,
         ),
     ]
+    return StrategyConditionSet(NAME, direction, tuple(conditions))
+
+
+def evaluate(ctx: StrategyContext):
+    assessment = conditions(ctx)
     return evaluate_conditions(
-        ctx, NAME, direction, conditions, common_vetoes(ctx, direction)
+        ctx,
+        NAME,
+        assessment.direction,
+        list(assessment.items),
+        common_vetoes(ctx, assessment.direction),
     )

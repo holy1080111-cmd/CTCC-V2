@@ -1,8 +1,9 @@
 # Entry qualification and evidence implementation
 
-Status: source-bound event, timing, location, structural selection and explicit
-economics/portfolio engines. The new qualification pipeline is not wired into
-trading or deployed; evidence rendering and actual all-gate orchestration follow.
+Status: source-bound event, timing, location, structural selection, explicit
+economics/portfolio and evidence modules, plus a real ordered G1–G7 prefix.
+The new qualification pipeline is not wired into trading or deployed; complete
+G8–G12 orchestration and the full post-render recheck remain unfinished.
 Updated 2026-09-12.
 
 Source: [CTCC complete construction specification](https://app.notion.com/p/3d832165a6888173bfb1df896604fc7c),
@@ -370,7 +371,7 @@ replace the final acceptance stages. Do not wire a partial chain into Demo.
 | 8 | Evaluate all legal 15m/1H/4H SL/TP brackets, noise/liquidity rejection | Offline shared selector implemented; 97 new structural tests passed |
 | 9 | Cost-adjusted economics and complete portfolio/Demo authority | Offline evaluators implemented; 75 economics + 357 portfolio + 48 source-to-risk tests passed, trusted runtime collector pending |
 | 10 | Same-OHLC/report five charts and evidence packet | Source-bound preparation, renderer and no-clobber publisher implemented; 20 synthetic PNGs inspected; platform acceptance and limitations in trade_evidence.md |
-| 11 | Actual 12 gate evaluators, measured values and fail codes | Pure G1 evaluator and source replay implemented; full ordered coordinator/G12 and trusted runtime sources pending |
+| 11 | Actual 12 gate evaluators, measured values and fail codes | Actual G1–G7 ordered prefix, pure eight-strategy conditions and full-prefix replay implemented locally; G8–G12 orchestration and trusted runtime sources pending |
 | 12 | Fresh executable quote after evidence, cancel stale old candidate | Post-publication location contract and candidate/executable economics comparison implemented; complete recheck pending |
 | 13 | Guard every SafeDemoAutomation submit route | Pending |
 | 14 | Post-submit durable Notion outbox, retry without duplicate orders | Pending |
@@ -387,6 +388,15 @@ Structural/economics/portfolio checkpoint:
 [structure and risk acceptance](evidence/structure_risk_20260912.md).
 
 ## Dependencies and unresolved decisions
+
+- Latest increment: [ordered G1–G7 contract](qualification_prefix.md), with
+  2443 Windows pure-unit passes. The initially restricted session blocked Docker,
+  GitHub and Notion writes; the user's later environment-permission update
+  restored ordinary Docker and GitHub access before source freeze. This
+  checkpoint and its previously local parent `6d87530` require their own frozen
+  Linux/CI acceptance and synchronization; see their exact local receipts.
+  Historical access below is not a fresh service-health check. No denied route
+  was bypassed and no runtime deployment is implied by publication.
 
 - Docker CLI/engine became readable after the user's permission change; the
   existing deployment is running Demo. New-feature isolation and acceptance

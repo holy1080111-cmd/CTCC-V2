@@ -161,6 +161,12 @@ reconciliation／Emergency Stop 防線。此次整理不修改 Settings 或部�
 這仍是離線模組：WS 來源 adapter、完整 12 關卡、圖後期間事件重檢與原子風險
 保留未完成，不授予交易權限；不可沿用上一版 Docker／CI 成功宣稱新版本已驗。
 
+接續本機 `6d87530`，已將 G1–G7 串成依序執行、首次失敗即停止的
+離線前綴，並抽出八策略共用純條件、固定原始 candidate entry，加入完整輸入
+重播核對。詳見 [七關卡串接契約](qualification_prefix.md)。七關全過仍然
+`qualified=false`；G8–G12 串接、完整圖後重檢、Demo／outbox／forensics
+與真實樣本驗收仍未完成。本輪本機檢驗不等於部署或 GitHub／Notion 已同步。
+
 1. 完成本機既有 Gate 3 證據鏈與批次 plan-binding 測試、manifest、發行審查。
 2. 取得獨立來源／row availability 證據，再完成真實批次與計畫連結。
 3. 建外部 Strategy Evidence Pack 的輸入規格與來源審查；先從可重現且

@@ -1,10 +1,12 @@
 from decimal import Decimal
+
 from app.strategies.base import (
     Condition,
     StrategyContext,
     common_vetoes,
     evaluate_conditions,
 )
+from app.strategies.conditions import StrategyConditionSet
 from app.strategies.helpers import choch_matches, momentum_matches
 
 NAME = "liquidity_sweep_reversal"
@@ -25,7 +27,7 @@ def _sweep(ctx: StrategyContext, direction: str) -> bool:
     return False
 
 
-def evaluate(ctx: StrategyContext):
+def conditions(ctx: StrategyContext) -> StrategyConditionSet:
     direction = (
         "long"
         if ctx.tf("15m").structure.choch == "up"
@@ -76,6 +78,15 @@ def evaluate(ctx: StrategyContext):
             required=True,
         ),
     ]
+    return StrategyConditionSet(NAME, direction, tuple(conditions))
+
+
+def evaluate(ctx: StrategyContext):
+    assessment = conditions(ctx)
     return evaluate_conditions(
-        ctx, NAME, direction, conditions, common_vetoes(ctx, direction)
+        ctx,
+        NAME,
+        assessment.direction,
+        list(assessment.items),
+        common_vetoes(ctx, assessment.direction),
     )
