@@ -69,14 +69,30 @@ ExecutableQuote preflight 型別回歸及測試 quote-age 120 超出既有 60 �
 涵蓋雙 worker、重啟、鎖後到期、晚期 clock／quote／account stale 回滾、
 去重／duplicate self 拒絕、disarm、flat 對帳、journal rollback 與 SQL 不可變性。
 另本機 ledger/current-risk/origin 範圍 311 passed（55.46 秒），彼此重疊不相加。
-未改 evaluator 上限或略過失敗。完整隔離驗收仍待固定來源後執行，不沿用
-d984753 的完整回歸計數。
+未改 evaluator 上限或略過失敗。固定來源 `138083d` 的完整 Linux 回歸為
+7,519 passed／17 skipped／5 warnings（1,117.59 秒）。此結果只屬於 Git tree
+`6d3b6d91ac8c98b70952f5f04b7d89f32238c7cf`，不沿用 d984753 的計數，
+也不轉移給後續修補。測試前後確認隔離 DB 為 `0017`、Alembic 無 drift，
+552 檔 manifest 均通過；完整 harness 最終成功退出。
 
-完整驗收將使用 Git tree archive 的唯讀 `/workspace` mount，外部逐 Git blob
+完整驗收使用 Git tree archive 的唯讀 `/workspace` mount，外部逐 Git blob
 核對 archive／解出來源，再驗 canonical manifest；container 內以外部 pin 核對
 manifest 與逐檔內容，不把列印 tree ID 當獨立 Git tree 證明。image
 `sha256:aa3593afabeeeb272983fa3f52a55c73774a90a2b9170ca8f723f1ad371df616`
 只提供既有 Python／相依套件 runtime；不是本輪新建 image，也不是部署驗收。
+
+另有獨立後續修補：新 reservation quote 接點先用 exact type identity 驗證
+14 個 scalar／metadata／標準時區，再進共用驗證，避免拒絕髒資料前先呼叫
+外來物件的 `__class__`／metaclass／時區 callback；不宣稱舊共用 engine
+全面 callback-free。此修補的 Windows ledger/current-risk/origin 範圍為
+377 passed／2 skipped（59.01 秒）；兩項為本機缺 ZoneInfo 系統資料庫的
+正常時區案例。Linux follow-up 的 ledger/current-risk/origin／真 PostgreSQL
+整合範圍另有 401 passed（147.20 秒），包含全部正常 ZoneInfo 案例；
+這是兩個程式／測試檔修補後的局部回歸，不算入上述固定來源完整結果。
+
+本輪 GitHub create-blob 寫入被 403 拒絕，installation 清單為空。新版本僅有
+本機 commit／ZIP／已驗 bundle 備份，未推送、沒有同版 CI；沒有切換憑證或
+改用其他寫入方式繞過授權。Notion 核心及既有計畫分開記錄已實作與未接線項目。
 
 下一依賴仍是可信 source clock／account materialization、本次 G12→fresh recheck
 →reservation 的 one-shot runtime、全部 Demo submit/protection 路徑、真 Notion

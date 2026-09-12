@@ -1,8 +1,9 @@
 """Pure ledger coverage/replay tests; synthetic account claims are not authority."""
 
-from datetime import timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone, tzinfo
 from decimal import Context, Decimal, Inexact, localcontext
 from fractions import Fraction
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import pytest
 from pydantic import create_model, model_serializer
@@ -257,3 +258,216 @@ def test_duplicate_pending_rejected_before_storage_and_before_self_removal(fixtu
         validate_claims(claims, fixture.now)
     with pytest.raises(QualificationLedgerError, match="duplicate_claimed_reservation"):
         QualificationLedgerRepository._without_self(claims, None)
+
+
+@pytest.mark.parametrize("field", tuple(module._QUOTE_SCALARS))
+def test_quote_opaque_class_property_never_runs(fixture, field):
+    calls = []
+
+    class Opaque:
+        @property
+        def __class__(self):
+            calls.append("class")
+            return object
+
+    quote = fixture.request.quote.model_copy(update={field: Opaque()})
+    request = fixture.request.model_copy(update={"quote": quote})
+    with pytest.raises(QualificationLedgerError, match="exact_quote_scalars_required"):
+        checked(request, ReservationRequest)
+    assert calls == []
+
+
+def test_quote_foreign_metaclass_is_not_hashed_compared_or_inspected(fixture):
+    calls = []
+
+    class ForeignMeta(type):
+        def __hash__(cls):
+            calls.append("hash")
+            return 0
+
+        def __eq__(cls, other):
+            calls.append("equality")
+            return False
+
+        def __getattribute__(cls, name):
+            calls.append("class_attribute")
+            return super().__getattribute__(name)
+
+    class Opaque(metaclass=ForeignMeta):
+        @property
+        def __class__(self):
+            calls.append("instance_class")
+            return object
+
+    quote = fixture.request.quote.model_copy(update={"bid": Opaque()})
+    request = fixture.request.model_copy(update={"quote": quote})
+    calls.clear()
+    with pytest.raises(QualificationLedgerError, match="exact_quote_scalars_required"):
+        checked(request, ReservationRequest)
+    assert calls == []
+
+
+@pytest.mark.parametrize("field", ("report_id", "bid", "quote_time"))
+def test_quote_scalar_subclass_rejected_without_callback(fixture, field):
+    calls = []
+
+    class ForeignStr(str):
+        @property
+        def __class__(self):
+            calls.append("str_class")
+            return str
+
+    class ForeignDecimal(Decimal):
+        def is_finite(self):
+            calls.append("is_finite")
+            return True
+
+    class ForeignDatetime(datetime):
+        @property
+        def tzinfo(self):
+            calls.append("tzinfo")
+            return UTC
+
+    values = {
+        "report_id": ForeignStr("synthetic"),
+        "bid": ForeignDecimal("1"),
+        "quote_time": ForeignDatetime(2026, 1, 1, tzinfo=UTC),
+    }
+    quote = fixture.request.quote.model_copy(update={field: values[field]})
+    request = fixture.request.model_copy(update={"quote": quote})
+    calls.clear()
+    with pytest.raises(QualificationLedgerError, match="exact_quote_scalars_required"):
+        checked(request, ReservationRequest)
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        "quote_time",
+        "mark_time",
+        "funding_time",
+        "received_at",
+        "request_started_at",
+    ),
+)
+def test_quote_foreign_timezone_rejected_before_offset_or_metaclass_callback(
+    fixture, field
+):
+    calls = []
+
+    class ZoneMeta(type):
+        def __hash__(cls):
+            calls.append("zone_type_hash")
+            return 0
+
+        def __eq__(cls, other):
+            calls.append("zone_type_equality")
+            return False
+
+    class ForeignZone(tzinfo, metaclass=ZoneMeta):
+        def utcoffset(self, at):
+            calls.append("utcoffset")
+            return timedelta(0)
+
+        def dst(self, at):
+            calls.append("dst")
+            return timedelta(0)
+
+        def tzname(self, at):
+            calls.append("tzname")
+            return "untrusted"
+
+    clock = getattr(fixture.request.quote, field).replace(tzinfo=ForeignZone())
+    quote = fixture.request.quote.model_copy(update={field: clock})
+    request = fixture.request.model_copy(update={"quote": quote})
+    calls.clear()
+    with pytest.raises(QualificationLedgerError, match="exact_quote_timezone_required"):
+        checked(request, ReservationRequest)
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    (
+        "__pydantic_extra__",
+        "__pydantic_private__",
+        "__pydantic_fields_set__",
+        "__dict__",
+    ),
+)
+def test_quote_hidden_metadata_is_rejected_without_truthiness_or_iteration(
+    fixture, metadata
+):
+    calls = []
+
+    class Opaque:
+        def __bool__(self):
+            calls.append("bool")
+            return False
+
+        def __iter__(self):
+            calls.append("iter")
+            return iter(())
+
+        @property
+        def __class__(self):
+            calls.append("class")
+            return object
+
+    class ForeignDict(dict):
+        def __iter__(self):
+            calls.append("dict_iter")
+            return super().__iter__()
+
+        def items(self):
+            calls.append("items")
+            return super().items()
+
+        def __len__(self):
+            calls.append("len")
+            return super().__len__()
+
+    quote = fixture.request.quote.model_copy()
+    value = ForeignDict(quote.__dict__) if metadata == "__dict__" else Opaque()
+    object.__setattr__(quote, metadata, value)
+    request = fixture.request.model_copy(update={"quote": quote})
+    calls.clear()
+    with pytest.raises(QualificationLedgerError, match="dirty_quote_contract"):
+        checked(request, ReservationRequest)
+    assert calls == []
+
+
+@pytest.mark.parametrize("zone_kind", ("fixed_offset", "zoneinfo"))
+def test_quote_standard_timezones_preserve_utc_normalized_roundtrip(fixture, zone_kind):
+    if zone_kind == "fixed_offset":
+        zone = timezone(timedelta(hours=8))
+    else:
+        try:
+            zone = ZoneInfo("UTC")
+        except ZoneInfoNotFoundError:
+            pytest.skip("system ZoneInfo database unavailable")
+    changes = {
+        name: getattr(fixture.request.quote, name).astimezone(zone)
+        for name, expected in module._QUOTE_SCALARS.items()
+        if expected is datetime
+    }
+    request = fixture.request.model_copy(
+        update={
+            "quote": fixture.request.quote.model_copy(update=changes),
+        }
+    )
+    result = checked(request, ReservationRequest)
+    assert result == fixture.request
+    assert decode(canonical(result), ReservationRequest) == fixture.request
+
+
+@pytest.mark.parametrize("value", ("NaN", "sNaN", "Infinity", "-Infinity", "1e999"))
+def test_quote_exact_decimal_still_requires_finite_bounded_value(fixture, value):
+    request = fixture.request.model_copy(
+        update={
+            "quote": fixture.request.quote.model_copy(update={"bid": D(value)}),
+        }
+    )
+    with pytest.raises(ValueError):
+        checked(request, ReservationRequest)

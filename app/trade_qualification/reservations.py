@@ -7,10 +7,11 @@ Expiry never releases a hold. Only explicit newer confirmed-flat claims do.
 
 import hashlib
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from fractions import Fraction
 from typing import Annotated, Literal
+from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -193,6 +194,65 @@ _MODELS = {
 }
 
 
+_QUOTE_SCALARS = {
+    "report_id": str,
+    "instrument_id": str,
+    "source": str,
+    "bid": Decimal,
+    "ask": Decimal,
+    "mark_price": Decimal,
+    "bid_size": Decimal,
+    "ask_size": Decimal,
+    "funding_rate": Decimal,
+    "quote_time": datetime,
+    "mark_time": datetime,
+    "funding_time": datetime,
+    "received_at": datetime,
+    "request_started_at": datetime,
+}
+
+
+def _quote_scalar_guard(quote):
+    """This new quote junction rejects opaque callbacks before shared helpers.
+
+    ``isinstance`` can consult a foreign object's ``__class__`` property. Type
+    sets/membership can also invoke its metaclass equality/hash. Use identities
+    only, including for timezone implementations before any utcoffset call.
+    This is NOT a callback-free guarantee for unrelated pre-existing helpers.
+    """
+    try:
+        raw = object.__getattribute__(quote, "__dict__")
+        extra = object.__getattribute__(quote, "__pydantic_extra__")
+        private = object.__getattribute__(quote, "__pydantic_private__")
+        fields = object.__getattribute__(quote, "__pydantic_fields_set__")
+    except AttributeError:
+        raise QualificationLedgerError("dirty_quote_contract") from None
+    if (
+        type(raw) is not dict
+        or len(raw) != len(_QUOTE_SCALARS)
+        or extra is not None
+        or private is not None
+        or type(fields) is not set
+        or len(fields) > len(_QUOTE_SCALARS)
+    ):
+        raise QualificationLedgerError("dirty_quote_contract")
+    for name in fields:
+        if type(name) is not str or name not in _QUOTE_SCALARS:
+            raise QualificationLedgerError("dirty_quote_contract")
+    for name, part in raw.items():
+        if type(name) is not str or name not in _QUOTE_SCALARS:
+            raise QualificationLedgerError("dirty_quote_contract")
+        if name == "request_started_at" and part is None:
+            continue
+        expected = _QUOTE_SCALARS[name]
+        if type(part) is not expected:
+            raise QualificationLedgerError("exact_quote_scalars_required")
+        if expected is datetime:
+            zone = part.tzinfo
+            if type(zone) is not timezone and type(zone) is not ZoneInfo:
+                raise QualificationLedgerError("exact_quote_timezone_required")
+
+
 def checked(value, expected):
     """Context-specific exact class guards BEFORE serialization/revalidation."""
     if type(value) is not expected or expected not in _MODELS:
@@ -208,8 +268,7 @@ def checked(value, expected):
         elif child is RecheckOrigin:
             copy_recheck_origin(item)
         elif child is ExecutableQuote:
-            if any(isinstance(part, BaseModel) for part in item.__dict__.values()):
-                raise QualificationLedgerError("exact_quote_scalars_required")
+            _quote_scalar_guard(item)
             _preflight(item.__dict__)
             _revalidate(item, child)
         else:
