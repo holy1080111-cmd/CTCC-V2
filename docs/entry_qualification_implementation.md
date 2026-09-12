@@ -1,9 +1,10 @@
 # Entry qualification and evidence implementation
 
-Status: source-bound event, timing, location, structural selection, explicit
-economics/portfolio and evidence modules, plus a real ordered G1–G7 prefix.
-The new qualification pipeline is not wired into trading or deployed; complete
-G8–G12 orchestration and the full post-render recheck remain unfinished.
+Status: source-bound G1–G11 evaluation/replay and one-shot G12 evidence
+orchestration implemented locally, retaining the original candidate and bracket.
+This checkpoint still requires its own frozen acceptance. The new qualification
+pipeline is not wired into trading or deployed; the complete post-render recheck,
+trusted runtime adapters and durable execution safety remain unfinished.
 Updated 2026-09-12.
 
 Source: [CTCC complete construction specification](https://app.notion.com/p/3d832165a6888173bfb1df896604fc7c),
@@ -326,10 +327,13 @@ quote provenance and a mandatory trusted-adapter WS reference contract. It also
 compares unchanged candidate economics with the sampled executable reference,
 without repricing or granting authority. The real WS adapter remains unconnected.
 
-The next implementation is a pure ordered G1–G11 coordinator, G12 verification
-against the same run and actual packet, then a separate post-render recheck.
+The [G1–G11 coordinator](qualification_engine.md) now invokes actual source,
+structural, economics and portfolio evaluators in order. The
+[one-shot G12 coordinator](qualification_evidence_gate.md) replays that complete
+run, prepares/renders the same source and checks actual publication/readback.
 Input gate booleans or a constructible receipt cannot stand in for those checks.
-The first failure terminates the prefix; later RR/score cannot repair it.
+The first failure terminates the prefix; later RR/score cannot repair it. Twelve
+passing gates still cannot qualify entry without the separate full recheck.
 
 Read-only code inspection identified concrete runtime prerequisites:
 
@@ -371,12 +375,12 @@ replace the final acceptance stages. Do not wire a partial chain into Demo.
 | 8 | Evaluate all legal 15m/1H/4H SL/TP brackets, noise/liquidity rejection | Offline shared selector implemented; 97 new structural tests passed |
 | 9 | Cost-adjusted economics and complete portfolio/Demo authority | Offline evaluators implemented; 75 economics + 357 portfolio + 48 source-to-risk tests passed, trusted runtime collector pending |
 | 10 | Same-OHLC/report five charts and evidence packet | Source-bound preparation, renderer and no-clobber publisher implemented; 20 synthetic PNGs inspected; platform acceptance and limitations in trade_evidence.md |
-| 11 | Actual 12 gate evaluators, measured values and fail codes | Actual G1–G7 ordered prefix, pure eight-strategy conditions and full-prefix replay implemented locally; G8–G12 orchestration and trusted runtime sources pending |
+| 11 | Actual 12 gate evaluators, measured values and fail codes | G1–G11 actual evaluation/replay and G12 source-bound one-shot publication implemented locally; own frozen acceptance and trusted runtime sources remain required |
 | 12 | Fresh executable quote after evidence, cancel stale old candidate | Post-publication location contract and candidate/executable economics comparison implemented; complete recheck pending |
 | 13 | Guard every SafeDemoAutomation submit route | Pending |
 | 14 | Post-submit durable Notion outbox, retry without duplicate orders | Pending |
 | 15 | Same-report realized forensics, MFE/MAE/R and evidence-based attribution | Pending |
-| 16–18 | Unit, full regression and isolated Docker hermetic acceptance | 6e2a00c: 2684 full passes and matching CI; 021183f: 3061 full passes, 10 Windows-only skips, 0016/no drift, 473-file manifest; later changes require their own checkpoint |
+| 16–18 | Unit, full regression and isolated Docker hermetic acceptance | 667577d: 3963 full Linux passes, 10 Windows-only skips, 0016/no drift, 493-file manifest and matching CI; this G8–G12 increment requires its own checkpoint |
 | 19–20 | Genuine old/new shadow and isolated Demo soak with sufficient samples | Not started; zero collected samples |
 | 21 | Final audit and the four requested reproducible evidence examples | Pending |
 
@@ -389,14 +393,14 @@ Structural/economics/portfolio checkpoint:
 
 ## Dependencies and unresolved decisions
 
-- Latest increment: [ordered G1–G7 contract](qualification_prefix.md), with
-  2443 Windows pure-unit passes. The initially restricted session blocked Docker,
-  GitHub and Notion writes; the user's later environment-permission update
-  restored ordinary Docker and GitHub access before source freeze. This
-  checkpoint and its previously local parent `6d87530` require their own frozen
-  Linux/CI acceptance and synchronization; see their exact local receipts.
-  Historical access below is not a fresh service-health check. No denied route
-  was bypassed and no runtime deployment is implied by publication.
+- The [ordered G1–G7 checkpoint](qualification_prefix.md), `667577d`, and its
+  previously local parent `6d87530` were pushed and synchronized to Notion after
+  the user's permission update restored normal access. Frozen Windows pure-unit
+  acceptance was 2443 passed; frozen Linux was 3963 passed / 10 Windows-only
+  skipped / 5 warnings, with 493 manifest files and Alembic 0016/no drift.
+  Matching GitHub CI 34663276369 succeeded. The separate test project was removed,
+  retaining artifacts and all existing services. No denied route was bypassed.
+  The new G1–G11/G12 files must not borrow that earlier checkpoint's results.
 
 - Docker CLI/engine became readable after the user's permission change; the
   existing deployment is running Demo. New-feature isolation and acceptance

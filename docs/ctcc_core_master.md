@@ -164,8 +164,18 @@ reconciliation／Emergency Stop 防線。此次整理不修改 Settings 或部�
 接續本機 `6d87530`，已將 G1–G7 串成依序執行、首次失敗即停止的
 離線前綴，並抽出八策略共用純條件、固定原始 candidate entry，加入完整輸入
 重播核對。詳見 [七關卡串接契約](qualification_prefix.md)。七關全過仍然
-`qualified=false`；G8–G12 串接、完整圖後重檢、Demo／outbox／forensics
-與真實樣本驗收仍未完成。本輪本機檢驗不等於部署或 GitHub／Notion 已同步。
+`qualified=false`。此七關 checkpoint `667577d` 已推送並同步 Notion；封存
+Linux 回歸 3963 通過、10 項 Windows-only 跳過，對應 CI 成功，493 檔
+manifest、0016／無 drift；既有部署未改。後續變更不能沿用此版驗收。
+
+實作計畫再推進 [G1–G11 組合與重播](qualification_engine.md) 及
+[G12 一次性證據出版](qualification_evidence_gate.md)：從原始行情重新判定，
+結構選擇後固定 entry／SL／TP，完整成本再進帳戶風控；G12 重播全部輸入、
+產五圖與報告、核對實際六檔讀回及完成時間。舊 receipt、已存在報告或過期
+候選不能重新取得 G12 通過。十二關全過仍 `qualified=false`，來源與帳戶
+認證、原子風險保留、執行重查及下單權限仍 false。本輪新增內容須另做封存
+驗收；完整圖後重檢、可信 adapters、Demo／outbox／forensics 與真實樣本
+驗收仍未完成，不可將實作計畫全部勾 Done。
 
 1. 完成本機既有 Gate 3 證據鏈與批次 plan-binding 測試、manifest、發行審查。
 2. 取得獨立來源／row availability 證據，再完成真實批次與計畫連結。
