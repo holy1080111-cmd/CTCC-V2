@@ -2,7 +2,8 @@
 
 Status: source-bound G1–G11 evaluation/replay and one-shot G12 evidence
 orchestration implemented locally, retaining the original candidate and bracket.
-This checkpoint still requires its own frozen acceptance. The new qualification
+Exact checkpoint/platform results are recorded in the
+[acceptance record](evidence/qualification_pipeline_20260912.md). The new qualification
 pipeline is not wired into trading or deployed; the complete post-render recheck,
 trusted runtime adapters and durable execution safety remain unfinished.
 Updated 2026-09-12.
@@ -318,8 +319,11 @@ exact read-back-verified packet without overwriting an existing report. Twenty
 synthetic visual examples were inspected across long, short, missing-trigger and
 out-of-zone cases. Their gate records remain explicitly unverified presentation
 claims; neither rendering nor publication grants execution authority. Native
-Windows full-chain publication is blocked by this host's ancestor access rights;
-the checks remain fail-closed, with Linux acceptance recorded separately.
+Windows full-chain publication was blocked in the earlier restricted process.
+The main process's later permission-restored, frozen-source rerun successfully
+published both directions and passed the scoped evidence suite; restricted child
+process denials remain a separate result. Checks and ACLs were not weakened.
+Linux acceptance is recorded independently in the checkpoint record.
 
 The [explicit-clock data increment](data_qualification.md) now supplies a pure
 G1 evaluator and replay boundary, with recomputed quality/analysis, separate public
@@ -363,6 +367,10 @@ Read-only code inspection identified concrete runtime prerequisites:
 
 The source's order is retained; writing tests alongside each change does not
 replace the final acceptance stages. Do not wire a partial chain into Demo.
+The [execution-recheck implementation plan](qualification_recheck_plan.md)
+breaks the next boundary into R1–R7 with concrete APIs, missing adapters/locking,
+and ten required adversarial acceptance groups. It is a plan, not implemented
+recheck or permission to append the final qualifying PASS.
 
 | Steps | Work and acceptance | Status |
 | --- | --- | --- |
@@ -375,12 +383,12 @@ replace the final acceptance stages. Do not wire a partial chain into Demo.
 | 8 | Evaluate all legal 15m/1H/4H SL/TP brackets, noise/liquidity rejection | Offline shared selector implemented; 97 new structural tests passed |
 | 9 | Cost-adjusted economics and complete portfolio/Demo authority | Offline evaluators implemented; 75 economics + 357 portfolio + 48 source-to-risk tests passed, trusted runtime collector pending |
 | 10 | Same-OHLC/report five charts and evidence packet | Source-bound preparation, renderer and no-clobber publisher implemented; 20 synthetic PNGs inspected; platform acceptance and limitations in trade_evidence.md |
-| 11 | Actual 12 gate evaluators, measured values and fail codes | G1–G11 actual evaluation/replay and G12 source-bound one-shot publication implemented locally; own frozen acceptance and trusted runtime sources remain required |
+| 11 | Actual 12 gate evaluators, measured values and fail codes | G1–G11 actual evaluation/replay and G12 source-bound one-shot publication implemented; exact checkpoint/platform acceptance recorded separately, trusted runtime sources still required |
 | 12 | Fresh executable quote after evidence, cancel stale old candidate | Post-publication location contract and candidate/executable economics comparison implemented; complete recheck pending |
 | 13 | Guard every SafeDemoAutomation submit route | Pending |
 | 14 | Post-submit durable Notion outbox, retry without duplicate orders | Pending |
 | 15 | Same-report realized forensics, MFE/MAE/R and evidence-based attribution | Pending |
-| 16–18 | Unit, full regression and isolated Docker hermetic acceptance | 667577d: 3963 full Linux passes, 10 Windows-only skips, 0016/no drift, 493-file manifest and matching CI; this G8–G12 increment requires its own checkpoint |
+| 16–18 | Unit, full regression and isolated Docker hermetic acceptance | 7c7e9b5: 4420 full Linux passes, 16 Windows-only skips, 0016/no drift, 503-file manifest and matching CI; frozen Windows 2898 expanded plus 384 evidence-scope passes; remaining implementation still requires new acceptance |
 | 19–20 | Genuine old/new shadow and isolated Demo soak with sufficient samples | Not started; zero collected samples |
 | 21 | Final audit and the four requested reproducible evidence examples | Pending |
 

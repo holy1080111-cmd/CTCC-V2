@@ -173,9 +173,19 @@ manifest、0016／無 drift；既有部署未改。後續變更不能沿用此�
 結構選擇後固定 entry／SL／TP，完整成本再進帳戶風控；G12 重播全部輸入、
 產五圖與報告、核對實際六檔讀回及完成時間。舊 receipt、已存在報告或過期
 候選不能重新取得 G12 通過。十二關全過仍 `qualified=false`，來源與帳戶
-認證、原子風險保留、執行重查及下單權限仍 false。本輪新增內容須另做封存
-驗收；完整圖後重檢、可信 adapters、Demo／outbox／forensics 與真實樣本
+認證、原子風險保留、執行重查及下單權限仍 false。本輪 `7c7e9b5` 已另做
+[來源封存驗收](evidence/qualification_pipeline_20260912.md)：Linux 4420 通過、
+16 Windows-only 跳過，503 檔／0016／無 drift，對應 GitHub CI 成功。
+Windows 封存來源擴大單元 2898 通過，另證據範圍 384 通過；主程序更新權限
+後多、空原生 G12 真正完成六檔讀回，子程序先前拒絕是不同執行環境的結果，
+未放寬檔案安全檢查或修改 ACL。完整圖後重檢、可信 adapters、Demo／outbox／forensics 與真實樣本
 驗收仍未完成，不可將實作計畫全部勾 Done。
+
+下一步 [Execution Recheck 實作計劃](qualification_recheck_plan.md) 已拆成
+R1–R7 依賴順序及十組驗收：固定原論點、OHLC 延伸／原事件存活、固定 bracket
+重檢、重用雙情境成本、可信 adapters、原子風險／event 帳本、一次性圖後組合。
+不得把最新 snapshot 重新選出的事件或 SL／TP 當原候選續行，也不把計劃存在
+當成第 13 關已完成。
 
 1. 完成本機既有 Gate 3 證據鏈與批次 plan-binding 測試、manifest、發行審查。
 2. 取得獨立來源／row availability 證據，再完成真實批次與計畫連結。

@@ -76,14 +76,16 @@ publisher handle. File flush and report-last logical completion on Windows do no
 claim power-loss durability for directory metadata. See the
 [Microsoft CreateFileW sharing contract](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew).
 
-On this development host, opening the user-profile ancestor with the required
-access currently returns access denied. The full Windows publisher therefore
-fails closed before writing a PNG. Native primitive sharing/rename checks on a
-test-owned directory are separate evidence and do not establish that the complete
-ancestor chain can be opened. Do not weaken these checks, change ACLs automatically,
-or count platform-specific skips as Windows acceptance. The deployment target is
-validated independently in an isolated Linux container; native Windows end-to-end
-publication remains a known environmental blocker.
+The earlier restricted process on this development host could not open the
+user-profile ancestor with the required access, so publication correctly failed
+closed before writing a PNG. Native primitive sharing/rename checks alone were
+not evidence that the full ancestor chain could be opened. After the user's
+permission update, the main process independently reran frozen source `7c7e9b5`:
+both G12 long/short packets actually wrote and read back all six files, and the
+Windows evidence regression passed 384 cases with 3 POSIX-only skips. Restricted
+child processes still reported their real access denial. Do not conflate these
+execution contexts, weaken checks, change ACLs automatically or count skips as
+platform acceptance. See the [new acceptance record](evidence/qualification_pipeline_20260912.md).
 
 Actual publication/readback completion belongs in a separate immutable receipt,
 not a rewrite of the rendered report. A later execution recheck must fetch new
@@ -116,7 +118,9 @@ output, exact image hashes, publication conflicts/crashes/races and POSIX path
 defenses. The complete immutable-source regression for `021183f` passed 3061
 tests, with 10 Windows-only skips and 5 existing/expected warnings. Alembic was
 0016 with no schema drift, and all 473 source manifest entries matched. Native
-Windows acceptance remains limited as described above. Synthetic fixtures
+Windows acceptance for that historical checkpoint was limited as described above;
+the later source-pinned rerun has its own acceptance record. Synthetic fixtures
 demonstrate engineering behavior; they do not count as real shadow observations,
-Demo trades or strategy outcomes. Actual G12 integration, fresh post-render
-recheck and all downstream runtime acceptance remain separate pending work.
+Demo trades or strategy outcomes. The [actual G12 coordinator](qualification_evidence_gate.md)
+now connects real evaluation/replay to publication. Fresh post-render recheck and
+all downstream runtime acceptance remain separate pending work.

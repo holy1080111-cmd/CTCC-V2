@@ -69,8 +69,12 @@ not establish successful Windows full-chain publication.
 A further Windows test invokes the real renderer/publisher on an owned temporary
 root, without mocking the native pin. It requires either actual six-file readback
 or the specific permission-denied failure with no receipt and an untouched owned
-root; unrelated exceptions are failures, not skips. The current host still
-denies ancestor access, so successful native Windows publication remains unverified.
+root; unrelated exceptions are failures, not skips. The earlier restricted child
+process still denied ancestor access. The main process subsequently reran the
+exact frozen `7c7e9b5` source under the user's updated permissions: both long and
+short cases actually wrote and read back all six files. This is scoped native
+Windows success, not a claim that the earlier access denial never happened or
+that filesystem checks were weakened. See the [checkpoint acceptance](evidence/qualification_pipeline_20260912.md).
 Bounded error details preserve up to eight causal exception layers for diagnosis.
 
 Long and short examples are synthetic OHLC and fictional typed Demo-account
