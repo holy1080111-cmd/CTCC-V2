@@ -1,5 +1,9 @@
 # Demo runtime 基礎增量：實作不等於交易放行
 
+後續開發增量另見 [Demo completion adapters](completion_adapters.md)：帳戶 GET
+collector、Notion adapter／one-pass worker、交易事後分析及送單權限 await 邊界。
+下文保留原固定版本的驗證紀錄，不把舊完整測試數轉移至後續版本。
+
 2026-09-12 開發 checkpoint。既有 `d984753` Demo 服務持續運行；本頁的新元件
 尚未部署，也沒有修改交易憑證、Live 權限、風控預算或重新送出維護平倉。
 各元件的合成測試、真實 PostgreSQL 資料庫 transaction 測試與 Linux 檔案測試分開記錄。

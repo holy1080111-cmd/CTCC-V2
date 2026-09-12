@@ -1,6 +1,11 @@
 # R5 Demo 帳戶來源計畫
 
-狀態：**bytes-only 原始回應與頁鏈驗證已實作，2026-09-12；可信 transport／完整帳戶 materializer 未實作。不是帳戶 collector 驗收，也不是 R5、R6 或 R7 完成。**
+狀態：**bytes-only 原始回應與頁鏈驗證、固定 Demo GET collector 已實作，2026-09-12；完整帳戶 materializer／來源認證與 runtime 接線仍未完成。不是完整 R5、R6 或 R7 驗收。**
+
+後續 `account_collector` 已提供 owned HTTPS client、HMAC／Demo header、外部帳戶
+pin、完整固定頁鏈、有限時限、秘密 echo 拒絕及 freeze 重播；介面与明確未完邊界
+見 [completion adapters](completion_adapters.md)。下文 bytes-only 模組本身仍不含
+transport；原始來源設計與待驗規則保留，不把計畫／GET 成功當成完整風控快照。
 
 本文件依本機程式契約與 OKX 官方文件盤點；此開發增量沒有讀取憑證或帳戶資料、呼叫 private API 或下單。下列來源設計仍保留，實際可 import 的離線 API 範圍見新增實作狀態；其餘 collector／materializer 仍為提案。公開行情增量見 [公開資料收集](public_market_capture.md)；主進度見 [Execution Recheck 計畫](qualification_recheck_plan.md)。
 
@@ -32,7 +37,7 @@ source time 與 history seed 不填 0 或 now。独立交叉審查後單元 291 
 提議分三個明確邊界，依序驗收：
 
 1. `DemoAccountCapturePlan`、`DemoAccountObservation`、`DemoAccountPacket`：strict/frozen、原始 bytes、固定 GET 範圍、同帳戶綁定、逐頁時間與完整性缺口；不可帶 credential 值。
-2. `collect_demo_account_records(*, reader, clock, plan, expected_plan_sha256, barrier_completed_at)` 與 `verify_demo_account_records(...)`：前者未來才接經審查的 Demo read-only transport；後者重驗 plan pin、raw bytes、derived identity／query／頁鏈。成功只表示完成所要求的**擷取**，不是完整風控證據。
+2. `collect_demo_account_records(*, credentials, clock, plan, expected_plan_sha256, barrier_completed_at)` 與 `verify_demo_account_records(...)`：前者已改為模組自有固定 Demo GET transport，不接受外部 reader／URL／signer；後者重驗 plan pin、raw bytes、derived identity／query／頁鏈。成功只表示完成所要求的**擷取**，不是完整風控證據。
 3. `materialize_demo_portfolio_snapshot(packet, *, identity_pin, ledger_checkpoint, instrument_specs, correlation_registry, protection_evidence, policy)`：必須有下文全部證據才可產生既有 `PortfolioRiskSnapshot`；否則回 immutable incomplete result 與具體原因。不得猜零值或偷偷放寬既有風控 evaluator。
 
 每層 `execution_authority=False`；packet 的 raw/hash 自洽不等於 `source_authenticity_verified=True`。尚缺 trusted transport、完整性策略、持久帳本及實際來源驗收，故本文件不承諾第三層已可產出 complete snapshot。

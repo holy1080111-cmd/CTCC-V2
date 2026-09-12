@@ -240,6 +240,10 @@ class OkxDemoService:
         self._ensure_write_ready()
         self._ensure_symbol(request.instrument_id)
         async with self._lock:
+            # Acquiring the lock is an await: pre-lock authority may have been
+            # revoked while another write was in progress.
+            self._ensure_write_ready()
+            self._ensure_symbol(request.instrument_id)
             account_config = await self.account_config()
             if (
                 account_config.raw.get("posMode") not in {"net_mode", "long_short_mode"}
@@ -355,6 +359,17 @@ class OkxDemoService:
             self._ensure_symbol(request.instrument_id)
             if before_submit is not None:
                 before_submit()
+            # Policies may tighten during the final market read or synchronous
+            # automation callback. Keep this check immediately before submission.
+            self._ensure_write_ready()
+            self._ensure_symbol(request.instrument_id)
+            self._validate_size(request.size, instrument.minimum_size, instrument.lot_size)
+            if len(current_positions) >= self.settings.okx_demo_max_open_positions:
+                raise OkxDemoSafetyError("okx_demo_max_open_positions_reached")
+            if self.settings.okx_demo_require_protection and (
+                request.stop_loss is None or request.take_profit is None
+            ):
+                raise OkxDemoSafetyError("protected_order_required")
             exchange_data = await self.private_client.place_order(payload)
             acknowledgement = self._ack(exchange_data)
             order = await self._poll_order(
@@ -410,6 +425,8 @@ class OkxDemoService:
         self._ensure_write_ready()
         self._ensure_symbol(request.instrument_id)
         async with self._lock:
+            self._ensure_write_ready()
+            self._ensure_symbol(request.instrument_id)
             payload: dict[str, str] = {"instId": request.instrument_id}
             if request.order_id:
                 payload["ordId"] = request.order_id
@@ -442,6 +459,8 @@ class OkxDemoService:
         self._ensure_write_ready()
         self._ensure_symbol(request.instrument_id)
         async with self._lock:
+            self._ensure_write_ready()
+            self._ensure_symbol(request.instrument_id)
             config = await self.account_config()
             position_side = self._position_side(config, request.direction)
             positions = await self.positions(request.instrument_id)
@@ -455,6 +474,8 @@ class OkxDemoService:
                 "posSide": position_side,
                 "autoCxl": True,
             }
+            self._ensure_write_ready()
+            self._ensure_symbol(request.instrument_id)
             exchange_data = await self.private_client.close_position(payload)
 
         # Reconcile only after releasing the write lock. Exchange close requests
@@ -480,6 +501,10 @@ class OkxDemoService:
         if request.leverage > self.settings.okx_demo_max_leverage:
             raise OkxDemoSafetyError("requested_leverage_exceeds_demo_safety_cap")
         async with self._lock:
+            self._ensure_write_ready()
+            self._ensure_symbol(request.instrument_id)
+            if request.leverage > self.settings.okx_demo_max_leverage:
+                raise OkxDemoSafetyError("requested_leverage_exceeds_demo_safety_cap")
             config = await self.account_config()
             payload: dict[str, object] = {
                 "instId": request.instrument_id,
@@ -490,6 +515,10 @@ class OkxDemoService:
                 if request.direction is None:
                     raise OkxDemoSafetyError("direction_required_for_long_short_position_mode")
                 payload["posSide"] = request.direction
+            self._ensure_write_ready()
+            self._ensure_symbol(request.instrument_id)
+            if request.leverage > self.settings.okx_demo_max_leverage:
+                raise OkxDemoSafetyError("requested_leverage_exceeds_demo_safety_cap")
             exchange_data = await self.private_client.set_leverage(payload)
             expected_position_side = (
                 request.direction
