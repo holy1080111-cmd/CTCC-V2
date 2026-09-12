@@ -2,6 +2,13 @@
 
 狀態：**R1–R4 離線計算／recorded-only 組合已實作；封存來源驗收另記，R5–R7 runtime 未完成**。
 
+2026-09-12 追加 [本次 G12→owned 新來源→原候選重查](one_shot_capture.md) 與
+[帳戶映射](account_materializer.md)。這是未掛入 scheduler 的診斷接點：實際重播
+新 raw packet，但 account completeness／local authority 尚缺，不能進 reservation／
+submit。另完成 [post-submit 回報接點](post_submit_reporting.md) 與
+[歷史 regime sidecar](regime_event_admission.md)。完整工程／本人回家待辦見
+[本輪交付](homewait_completion.md)；以下原 R1–R7 交付條件仍保留。
+
 2026-09-12 後續 [runtime 基礎增量](runtime_foundations.md) 已加入版本化 SWAP
 market→G1 bridge、bytes-only 帳戶頁鏈驗證、0017 持久 event/risk journal 及本地
 Notion outbox 原語。各元件仍是無來源／帳戶認證與下單權限的開發元件；以下
