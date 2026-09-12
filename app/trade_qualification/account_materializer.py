@@ -21,7 +21,7 @@ from typing import Annotated, Literal
 from pydantic import ConfigDict, Field, field_validator
 
 from app.trade_qualification import account_capture as capture
-from app.trade_qualification import reservations
+from app.trade_qualification import account_consistency, reservations
 from app.trade_qualification.models import Price, QualificationModel
 from app.trade_qualification.portfolio import (
     Amount,
@@ -1186,6 +1186,10 @@ def materialize_demo_portfolio_snapshot(
     _scope(packet.plan.expected_uid, packet.plan.settlement_currency, inputs)
     records = _records(packet)
     gaps = set(packet.incomplete_reasons)
+    consistency = account_consistency._reconcile_verified_packet(
+        packet, expected_packet_sha256
+    )
+    gaps.update(consistency.blocking_reasons)
     specs = _instruments(inputs, packet.completed_at, gaps)
     config = records["config_before"][0][1]
     if config.get("acctLv") != "2":
@@ -1265,6 +1269,7 @@ def materialize_demo_portfolio_snapshot(
     )
     if (
         config.get("acctLv") == "2"
+        and not consistency.blocking_reasons
         and balance_reason is None
         and equity is not None
         and available is not None

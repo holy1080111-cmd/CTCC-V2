@@ -126,6 +126,7 @@ def source_pages(*, pending=True):
                         "instId": INSTRUMENT,
                         "instType": "SWAP",
                         "posSide": "net",
+                        "mgnMode": "cross",
                         "pos": "2",
                         "ccy": "USDT",
                     }

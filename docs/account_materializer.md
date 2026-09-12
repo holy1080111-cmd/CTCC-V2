@@ -51,6 +51,44 @@ peak 是原始有限 balance samples 的實際最大值及最早達峰時間；�
 
 ## 重播與 runtime 邊界
 
+### 新增：account anchor 跨來源反證檢查
+
+`app.trade_qualification.account_consistency.reconcile_recorded_account_sources`
+接受原 `DemoAccountPacket` 與外部 plan／packet SHA；先重播整份原始 packet，
+再產生 immutable `AccountConsistencyReport`，不接受 caller 傳入的成功 report。
+報告保留 anchor／balance／positions 的原始 receipt pins，逐项 finding 只列 field、
+inventory identity、缺漏或矛盾及兩側 receipt，不附原始私人數值。仍屬私人帳戶證據，
+不自動保存或發布。
+
+已檢查的必要条件：
+
+- anchor `balData` 與 balance `details` 的**全部幣別集合**相同，且結算幣存在；
+  各幣共同欄位 `eq` 以 exact Decimal 比較，缺值不當成 0 或彼此相等。
+  不拿頂層 USD `adjEq`／`totalEq` 去比 USDT，也不在 anchor 虛構或要求
+  balance-only 的 `cashBal`（[官方 anchor schema](https://www.okx.com/docs-v5#trading-account-rest-api-get-account-and-position-risk)
+  的 `balData` 是 `ccy`／`eq`／`disEq`）。
+- anchor `posData` 與 positions 的全部 `posId` inventory 相同，包含零量 row；
+  相同 ID 的 `instId`／`instType`／`posSide`／`mgnMode`／signed `pos` 必須一致。
+  不只比較 ID 和數量。anchor 若有 `ccy` 也須匹配，不猜該產品未提供的幣別。
+- anchor 必須有真實 raw `ts`，不得早於本次 publication barrier。
+  balance 頂層及每幣 `uTime`、position `cTime`／`uTime` 必須存在且不晚於 anchor。
+  更新較舊且未變動的 position 可以保留舊時間，不強迫改成同一 timestamp。
+  來源更新比 anchor 新代表不能聲稱同一 cutoff；不加容差或覆寫時間。
+
+materializer 在自身完成 raw replay 後執行同一檢查，將具體 blocking reasons
+加入既有 incomplete reasons。**任何缺漏或矛盾都不建立 snapshot**，即使其他
+supplemental ledger／history／peak 都可映射；已算出的逐 row mapping 仍可供調查。
+已完整提供官方 anchor balance／margin mode 等合成欄位且無 finding 的 recorded
+測試依然可以形成四個 `complete=False` stamps 的舊 DTO。
+
+這是必要的反證檢查，不是足夠的全帳戶證明：分次讀到相同數字仍可能有中間變動，
+沒有共同 exchange revision、可信 transport 認證、advanced／non-SWAP 全產品範圍、
+orders／fills／bills 的共同 cutoff、持久 history seed／peak 或 local ledger 真實性。
+空 findings 也固定保留 `source_authenticity_unverified`、
+`cross_source_atomicity_unverified` 與 account scope/history completeness 未驗證；
+所有 authority／complete flags 仍 false。16,384 findings 是工程資源界限，超過即拒絕，
+不是截斷後冒稱沒有問題，也不是已校準風險政策。沒有新 API 呼叫或送單。
+
 - `get_materialized_instrument(result, instrument_id)` 先 strict-copy／核對內部一致性，再抽已映射 spec；內部 hash 自洽不等於來源認證。
 - `verify_account_materialization(result, *, packet, expected_plan_sha256, expected_packet_sha256, inputs, expected_inputs_sha256=None)` 必須由原 packet 與 inputs 全部重新計算並比對。
 - `freeze_account_materialization(result, **replay_inputs)` 與 `verify_frozen_account_materialization(payload, *, expected_sha256, **replay_inputs)` 使用 canonical bytes、外部 SHA 與同樣完整重播；不能只拿一份自簽結果當成功。

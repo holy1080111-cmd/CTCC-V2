@@ -35,6 +35,10 @@ from app.trade_qualification.reservations import (
     validate_claims,
 )
 from app.trade_qualification.service import _plain
+from app.trade_qualification.submission_intent import (
+    build_submission_intent,
+    replay_submission_intent,
+)
 
 
 class QualificationLedgerRepository:
@@ -353,7 +357,9 @@ class QualificationLedgerRepository:
             )
         )
 
-    async def _transition(self, scope, key, *, expected_revision, target, claims=None):
+    async def _transition(
+        self, scope, key, *, expected_revision, target, claims=None, record_intent=False
+    ):
         scope = checked(scope, LedgerScope)
         if claims is not None:
             claims = checked(claims, AccountLedgerClaims)
@@ -430,19 +436,26 @@ class QualificationLedgerRepository:
             record.state = target
             record.state_revision += 1
             record.updated_at = now
+            receipt = self._receipt(record, row)
+            intent = (
+                build_submission_intent(request, receipt) if record_intent else None
+            )
             self._journal(
                 session,
                 record,
                 previous,
-                target,
+                "consumed_with_submit_intent" if record_intent else target,
                 now,
-                canonical(claims) if claims is not None else None,
+                intent.canonical_json
+                if intent is not None
+                else canonical(claims)
+                if claims is not None
+                else None,
             )
             await session.flush()
-            receipt = self._receipt(record, row)
             if target == "consumed":
                 self._late_guard(row, fresh_request, current)
-            return receipt
+            return intent if intent is not None else receipt
 
     @staticmethod
     def _without_self(claims, receipt):
@@ -482,6 +495,94 @@ class QualificationLedgerRepository:
         return await self._transition(
             scope, event_key, expected_revision=expected_revision, target="consumed"
         )
+
+    async def consume_with_submission_intent(
+        self, scope, event_key, *, expected_revision
+    ):
+        """Consume and record derived intent atomically; then independently read.
+
+        No order API is called. A commit/readback exception has an unknown
+        outcome; callers must inspect/reconcile, not consume or submit again.
+        The existing consume_once API is retained and cannot manufacture this
+        newer record retroactively.
+        """
+        intent = await self._transition(
+            scope,
+            event_key,
+            expected_revision=expected_revision,
+            target="consumed",
+            record_intent=True,
+        )
+        return await self.read_submission_intent(
+            scope, event_key, expected_sha256=intent.sha256
+        )
+
+    async def read_submission_intent(self, scope, event_key, *, expected_sha256):
+        """Historical committed readback only, never crash-recovery dispatch."""
+        scope = checked(scope, LedgerScope)
+        if (
+            type(expected_sha256) is not str
+            or len(expected_sha256) != 64
+            or any(char not in "0123456789abcdef" for char in expected_sha256)
+        ):
+            raise QualificationLedgerError("submit_intent_integrity_mismatch")
+        async with self.session_factory() as session, session.begin():
+            scope_row = await self._locked(session, scope)
+            record = await session.get(
+                QualificationReservation, reservation_id(scope, event_key)
+            )
+            if record is None:
+                raise QualificationLedgerError("ledger_reservation_missing")
+            entries = (
+                await session.scalars(
+                    select(QualificationReservationTransition)
+                    .filter_by(
+                        reservation_id=record.reservation_id, to_state="consumed"
+                    )
+                    .limit(2)
+                )
+            ).all()
+            if (
+                len(entries) != 1
+                or entries[0].reason_code != "consumed_with_submit_intent"
+                or entries[0].from_state != "reserved"
+                or entries[0].state_revision != 2
+                or entries[0].evidence_json is None
+            ):
+                raise QualificationLedgerError("submit_intent_missing")
+            entry = entries[0]
+            request = decode(record.request_json, ReservationRequest)
+            if digest(request) != record.request_sha256:
+                raise QualificationLedgerError("ledger_request_digest_mismatch")
+            intent, consumed = replay_submission_intent(
+                entry.evidence_json, request, expected_sha256=expected_sha256
+            )
+            current = self._receipt(record, scope_row)
+            if (
+                any(
+                    getattr(consumed, name) != getattr(current, name)
+                    for name in (
+                        "scope",
+                        "reservation_id",
+                        "original_event_key",
+                        "report_id",
+                        "instrument_id",
+                        "direction",
+                        "correlation_group",
+                        "request_sha256",
+                        "deadline",
+                    )
+                )
+                or consumed.created_at != current.created_at
+                or consumed.updated_at != require_aware(entry.occurred_at)
+                or consumed.coverage != current.coverage
+                or consumed.ledger_revision > current.ledger_revision
+                or consumed.account_revision > current.account_revision
+                or current.state == "reserved"
+                or consumed.state_revision > current.state_revision
+            ):
+                raise QualificationLedgerError("submit_intent_journal_mismatch")
+            return intent
 
     async def mark_uncertain(self, scope, event_key, *, expected_revision):
         return await self._transition(
