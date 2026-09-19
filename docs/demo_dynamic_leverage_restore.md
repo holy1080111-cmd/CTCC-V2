@@ -8,8 +8,28 @@
 risk 均為 0.005（每筆 0.5%），portfolio stop-risk 維持 0.01（1%）；不恢復舊
 1.5%–6% structural 風險或 10% portfolio 限額。現有 300 USDT margin bucket、
 60% portfolio margin 設定、SL／TP、成本、淨 RR 和 20x 品質門檻不放寬。
-但目前 bucket 分支未另行套用獨立 60% 總保證金硬閘，不能把保留設定冒稱
-新增防護；槓桿提高也可能用滿原本未用完的風險預算，並非實際損失不變的保證。
+2026-09-19 開發增量已把既有 `OKX_DEMO_PORTFOLIO_MAX_MARGIN_PCT` 硬閘套用到
+bucket 分支，60% 設定不再被略過。槓桿提高仍可能用滿原本未用完的風險預算，
+並非實際損失不變的保證。這是未部署的程式變更，不代表現有容器已切換。
+
+## Aggregate margin hard gate
+
+初始 sizing 同時取單筆 bucket、可用 USDT 與 aggregate 剩餘 margin 的上限。
+aggregate 使用同一筆 reconciled USDT risk equity 與已追蹤金額、同次 run 的
+預留金額計算；不累加以不同舊 equity 算出的百分比。合約 lot rounding 後再次
+驗總額，恰等於 cap 可接受，超過或額度耗盡不得新增曝險。已存在的超限部位
+觸發 EStop，不因部署而自動平倉或取消保護。
+
+設定槓桿的 await 後重新 reconciliation，檢查 equity basis、可用餘額及未追蹤
+曝險；ordinary pending 無法明確排除額外 margin 時拒絕。既定 contracts、entry、
+SL、TP 均不為通過此重查而修改。最後 `before_submit` 同步邊界重新讀目前 cap
+與本地持倉／uncertain 記錄，保留先前已知預留與較大新金額；cap 只可收緊，
+改設定或 await 期間加入新曝險不能繞過。缺損／衝突本地 inventory 保持拒絕。
+
+`test_demo_aggregate_margin.py` 覆蓋兩筆 300 USDT／1,000 USDT equity 恰達 60%、
+第三筆拒絕、無關資產不擴大 USDT basis、晚期 equity／available balance 下降、
+cap 收緊、新本地曝險與停用 score-risk flag 的繞過嘗試。這是既有 automation
+margin 邊界的測試；可信完整帳戶 R5、原子 R6／R7 與新資格入口仍須各自驗收。
 
 實際執行中的容器以獨立 subprocess 只建立 proposed Settings，已確認驗證通過；
 與原 Settings 真正不同的僅七欄：max leverage、structural enable、五級 risk。
@@ -55,3 +75,17 @@ armed、豁免這項檢查，或為了切換擅自平倉／調整既有槓桿／
    risk limits、所有保護與舊狀態一致。設定成功不等於已授權略過新進場資格。
 
 本文件是 rollout 計劃與狀態，不是新流程完整 Demo 驗收。
+# 2026-09-19 aggregate-margin review addendum
+
+The final automation margin callback rejects missing or zero local hold amounts and
+retains the larger captured/current hold. Its fresh post-leverage account check
+requires exact tracked contracts, side, leverage and margin mode plus matching
+active protection; unknown ordinary/algo exposure blocks. A mismatch or tightened
+final cap latches EStop without automatically closing exposure.
+
+[OKX positions](https://www.okx.com/docs-v5/en/#trading-account-rest-api-get-positions),
+reviewed 2026-09-19, defines cross `imr` in USD and isolated `margin` in `ccy`.
+The guard requires the same raw row's positive `usdPx` for a currency conversion;
+it never treats USD and USDT as equal or fills missing margin/FX with zero.
+This legacy guard is separate from still-required trusted account-source,
+qualification, durable reservation and intent acceptance.

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
@@ -10,8 +10,7 @@ from app.mie.validation.splits import (
     purged_walk_forward_folds,
 )
 
-
-START = datetime(2026, 1, 1, tzinfo=timezone.utc)
+START = datetime(2026, 1, 1, tzinfo=UTC)
 
 
 def hourly_timestamps(count: int) -> tuple[datetime, ...]:
@@ -58,8 +57,7 @@ def test_purged_walk_forward_is_deterministic_and_dependency_safe() -> None:
     )
     for fold in first:
         assert (
-            fold.training_end_at + timedelta(seconds=7_200)
-            < fold.validation_start_at
+            fold.training_end_at + timedelta(seconds=7_200) < fold.validation_start_at
         )
 
 

@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal, localcontext
 from enum import Enum, StrEnum
+from itertools import pairwise
 from typing import Annotated, Literal
 
 from pydantic import (
@@ -16,7 +17,6 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-
 
 SHA256_PATTERN = r"^[0-9a-f]{64}$"
 IDENTIFIER_PATTERN = r"^[a-z0-9]+(?:[._:-][a-z0-9]+)*$"
@@ -44,7 +44,7 @@ def require_utc(value: datetime, field_name: str) -> datetime:
 
 
 def _aligned_to_interval(value: datetime, interval_seconds: int) -> bool:
-    epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
+    epoch = datetime(1970, 1, 1, tzinfo=UTC)
     delta = value - epoch
     whole_seconds = delta.days * 86_400 + delta.seconds
     return delta.microseconds == 0 and whole_seconds % interval_seconds == 0
@@ -69,10 +69,8 @@ def _canonical_value(value: object) -> object:
     if isinstance(value, (tuple, list)):
         return [_canonical_value(item) for item in value]
     if isinstance(value, datetime):
-        utc_value = value.astimezone(timezone.utc)
-        return utc_value.isoformat(timespec="microseconds").replace(
-            "+00:00", "Z"
-        )
+        utc_value = value.astimezone(UTC)
+        return utc_value.isoformat(timespec="microseconds").replace("+00:00", "Z")
     if isinstance(value, Decimal):
         return _canonical_decimal(value)
     if isinstance(value, Enum):
@@ -169,9 +167,7 @@ ECONOMIC_ESTIMATE_METRICS = frozenset(
         Gate3Metric.TURNOVER,
     }
 )
-CANDIDATE_ESTIMATE_METRICS = (
-    PROBABILITY_ESTIMATE_METRICS | ECONOMIC_ESTIMATE_METRICS
-)
+CANDIDATE_ESTIMATE_METRICS = PROBABILITY_ESTIMATE_METRICS | ECONOMIC_ESTIMATE_METRICS
 
 
 class DatasetIdentity(Gate3Contract):
@@ -208,7 +204,7 @@ class DatasetIdentity(Gate3Contract):
         return value
 
     @model_validator(mode="after")
-    def validate_window(self) -> "DatasetIdentity":
+    def validate_window(self) -> DatasetIdentity:
         if self.last_event_at < self.first_event_at:
             raise ValueError("last event cannot precede first event")
         if self.frozen_at < self.last_event_at:
@@ -243,7 +239,7 @@ class OutcomeLabelSpec(Gate3Contract):
         return value
 
     @model_validator(mode="after")
-    def validate_dependency(self) -> "OutcomeLabelSpec":
+    def validate_dependency(self) -> OutcomeLabelSpec:
         if self.dependency_seconds < self.horizon_seconds:
             raise ValueError("label dependency must cover its horizon")
         return self
@@ -293,7 +289,7 @@ class PartitionWindow(Gate3Contract):
         return require_utc(value, info.field_name)
 
     @model_validator(mode="after")
-    def validate_window(self) -> "PartitionWindow":
+    def validate_window(self) -> PartitionWindow:
         if self.end_at <= self.start_at:
             raise ValueError("partition end must follow start")
         return self
@@ -309,7 +305,7 @@ class PurgedWalkForwardSplit(Gate3Contract):
     label_dependency_seconds: int = Field(ge=1)
 
     @model_validator(mode="after")
-    def validate_split(self) -> "PurgedWalkForwardSplit":
+    def validate_split(self) -> PurgedWalkForwardSplit:
         expected = (
             (self.development, DatasetPartition.DEVELOPMENT),
             (self.validation, DatasetPartition.VALIDATION),
@@ -416,9 +412,7 @@ class TrialRegistry(Gate3Contract):
 
     @field_validator("trials")
     @classmethod
-    def validate_trials(
-        cls, value: tuple[FrozenTrial, ...]
-    ) -> tuple[FrozenTrial, ...]:
+    def validate_trials(cls, value: tuple[FrozenTrial, ...]) -> tuple[FrozenTrial, ...]:
         trial_ids = tuple(item.trial_id for item in value)
         if len(trial_ids) != len(set(trial_ids)):
             raise ValueError("trial ids must be unique")
@@ -427,7 +421,7 @@ class TrialRegistry(Gate3Contract):
         return value
 
     @model_validator(mode="after")
-    def validate_count(self) -> "TrialRegistry":
+    def validate_count(self) -> TrialRegistry:
         if self.declared_trial_count != len(self.trials):
             raise ValueError("declared trial count must match trial ids")
         return self
@@ -479,9 +473,7 @@ class Gate3Preregistration(Gate3Contract):
     cost_model: CostModel
     evaluation: EvaluationPlan
     holdout_state: Literal["unread"] = "unread"
-    claim_ceiling: Literal[Gate3Claim.PREDICTIVE_OOS] = (
-        Gate3Claim.PREDICTIVE_OOS
-    )
+    claim_ceiling: Literal[Gate3Claim.PREDICTIVE_OOS] = Gate3Claim.PREDICTIVE_OOS
     authority: Literal["offline_shadow_only"] = "offline_shadow_only"
     runtime_consumers: Literal[0] = 0
     execution_authority: Literal[False] = False
@@ -521,28 +513,19 @@ class Gate3Preregistration(Gate3Contract):
         return value
 
     @model_validator(mode="after")
-    def validate_preregistration(self) -> "Gate3Preregistration":
+    def validate_preregistration(self) -> Gate3Preregistration:
         if any(
-            item.baseline_id == self.candidate.candidate_id
-            for item in self.baselines
+            item.baseline_id == self.candidate.candidate_id for item in self.baselines
         ):
             raise ValueError("candidate id must differ from every baseline id")
         if self.dataset.frozen_at > self.created_at:
             raise ValueError("dataset must be frozen before preregistration")
         if any(item.frozen_at > self.created_at for item in self.baselines):
             raise ValueError("baselines must be frozen before preregistration")
-        max_feature_dependency = max(
-            item.dependency_seconds for item in self.features
-        )
-        if (
-            self.split.max_feature_dependency_seconds
-            != max_feature_dependency
-        ):
+        max_feature_dependency = max(item.dependency_seconds for item in self.features)
+        if self.split.max_feature_dependency_seconds != max_feature_dependency:
             raise ValueError("split must record the largest feature dependency")
-        if (
-            self.split.label_dependency_seconds
-            != self.outcome_label.dependency_seconds
-        ):
+        if self.split.label_dependency_seconds != self.outcome_label.dependency_seconds:
             raise ValueError("split and outcome label dependency must agree")
         if self.split.development.start_at < self.dataset.first_event_at:
             raise ValueError("development window precedes the dataset")
@@ -580,9 +563,7 @@ class Gate3Preregistration(Gate3Contract):
             selected_trials[0].configuration_sha256
             != self.candidate.configuration_sha256
         ):
-            raise ValueError(
-                "candidate and selected trial configuration disagree"
-            )
+            raise ValueError("candidate and selected trial configuration disagree")
         return self
 
 
@@ -603,9 +584,7 @@ class ReplayProvenance(Gate3Contract):
     holdout_first_read_at: datetime
     generated_at: datetime
 
-    @field_validator(
-        "preregistered_at", "holdout_first_read_at", "generated_at"
-    )
+    @field_validator("preregistered_at", "holdout_first_read_at", "generated_at")
     @classmethod
     def validate_timestamps(cls, value: datetime, info) -> datetime:
         return require_utc(value, info.field_name)
@@ -623,7 +602,7 @@ class ReplayProvenance(Gate3Contract):
         return value
 
     @model_validator(mode="after")
-    def validate_timeline(self) -> "ReplayProvenance":
+    def validate_timeline(self) -> ReplayProvenance:
         if self.holdout_first_read_at <= self.preregistered_at:
             raise ValueError("holdout can only be read after preregistration")
         if self.generated_at < self.holdout_first_read_at:
@@ -649,22 +628,17 @@ class MetricEstimate(Gate3Contract):
         return value
 
     @model_validator(mode="after")
-    def validate_interval(self) -> "MetricEstimate":
+    def validate_interval(self) -> MetricEstimate:
         if self.metric == Gate3Metric.RELIABILITY_BINS:
             raise ValueError("reliability bins must use their structured contract")
-        if (
-            self.metric == Gate3Metric.SAMPLE_COUNT
-            and self.value != Decimal(self.sample_count)
+        if self.metric == Gate3Metric.SAMPLE_COUNT and self.value != Decimal(
+            self.sample_count
         ):
             raise ValueError("sample-count metric must equal its sample count")
         bounds = (self.confidence_lower, self.confidence_upper)
         if (bounds[0] is None) != (bounds[1] is None):
             raise ValueError("metric confidence bounds must be paired")
-        if (
-            bounds[0] is not None
-            and bounds[1] is not None
-            and bounds[0] > bounds[1]
-        ):
+        if bounds[0] is not None and bounds[1] is not None and bounds[0] > bounds[1]:
             raise ValueError("metric confidence bounds are reversed")
         if self.metric == Gate3Metric.SAMPLE_COUNT and bounds != (None, None):
             raise ValueError("sample-count metric cannot have confidence bounds")
@@ -691,7 +665,7 @@ class ReliabilityBin(Gate3Contract):
         return value
 
     @model_validator(mode="after")
-    def validate_bounds(self) -> "ReliabilityBin":
+    def validate_bounds(self) -> ReliabilityBin:
         if self.upper_bound <= self.lower_bound:
             raise ValueError("reliability bin upper bound must exceed lower bound")
         estimates = (self.mean_prediction, self.observed_frequency)
@@ -701,9 +675,7 @@ class ReliabilityBin(Gate3Contract):
             raise ValueError("non-empty reliability bins require estimates")
         if (
             self.mean_prediction is not None
-            and not self.lower_bound
-            <= self.mean_prediction
-            <= self.upper_bound
+            and not self.lower_bound <= self.mean_prediction <= self.upper_bound
         ):
             raise ValueError("mean prediction must lie inside its reliability bin")
         return self
@@ -746,9 +718,7 @@ class ReviewerMetadata(Gate3Contract):
 class Gate3EvidenceArtifact(Gate3Contract):
     """Self-contained immutable result with no runtime or trading authority."""
 
-    schema_version: Literal["ctcc.mie.gate3.evidence.v1"] = (
-        "ctcc.mie.gate3.evidence.v1"
-    )
+    schema_version: Literal["ctcc.mie.gate3.evidence.v1"] = "ctcc.mie.gate3.evidence.v1"
     artifact_id: Identifier
     preregistration: Gate3Preregistration
     provenance: ReplayProvenance
@@ -770,8 +740,7 @@ class Gate3EvidenceArtifact(Gate3Contract):
         cls, value: tuple[MetricEstimate, ...]
     ) -> tuple[MetricEstimate, ...]:
         identities = tuple(
-            (item.partition.value, item.subject_id, item.metric.value)
-            for item in value
+            (item.partition.value, item.subject_id, item.metric.value) for item in value
         )
         if len(identities) != len(set(identities)):
             raise ValueError("metric estimate identities must be unique")
@@ -799,7 +768,7 @@ class Gate3EvidenceArtifact(Gate3Contract):
                 raise ValueError(
                     "reliability bins must use contiguous canonical indexes"
                 )
-            for previous, current in zip(bins, bins[1:]):
+            for previous, current in pairwise(bins):
                 if previous.upper_bound != current.lower_bound:
                     raise ValueError("reliability bins must be contiguous")
             if bins[0].lower_bound != 0 or bins[-1].upper_bound != 1:
@@ -831,7 +800,7 @@ class Gate3EvidenceArtifact(Gate3Contract):
         return value
 
     @model_validator(mode="after")
-    def validate_artifact(self) -> "Gate3EvidenceArtifact":
+    def validate_artifact(self) -> Gate3EvidenceArtifact:
         preregistration = self.preregistration
         provenance = self.provenance
         if provenance.preregistration_sha256 != preregistration.canonical_sha256():
@@ -881,13 +850,9 @@ def _validate_evaluation_results(
 ) -> None:
     """Validate frozen evaluation results independently of seal provenance."""
 
-    if executed_trial_count != (
-        evaluation.trials.declared_trial_count
-    ):
+    if executed_trial_count != (evaluation.trials.declared_trial_count):
         raise ValueError("executed trial count must match preregistration")
-    declared_trial_ids = tuple(
-        item.trial_id for item in evaluation.trials.trials
-    )
+    declared_trial_ids = tuple(item.trial_id for item in evaluation.trials.trials)
     if tuple(item.trial_id for item in trial_results) != declared_trial_ids:
         raise ValueError("trial results must cover every frozen trial")
     ranked_trials = sorted(
@@ -924,20 +889,12 @@ def _validate_evaluation_results(
     if not actual_subjects.issubset(expected_subjects):
         raise ValueError("evidence contains an undeclared evaluation subject")
 
-    grouped_metrics: dict[
-        tuple[DatasetPartition | str, str], list[MetricEstimate]
-    ] = {}
+    grouped_metrics: dict[tuple[DatasetPartition | str, str], list[MetricEstimate]] = {}
     for item in metric_estimates:
-        grouped_metrics.setdefault(
-            (item.partition, item.subject_id), []
-        ).append(item)
-    grouped_bins: dict[
-        tuple[DatasetPartition | str, str], list[ReliabilityBin]
-    ] = {}
+        grouped_metrics.setdefault((item.partition, item.subject_id), []).append(item)
+    grouped_bins: dict[tuple[DatasetPartition | str, str], list[ReliabilityBin]] = {}
     for item in reliability_bins:
-        grouped_bins.setdefault(
-            (item.partition, item.subject_id), []
-        ).append(item)
+        grouped_bins.setdefault((item.partition, item.subject_id), []).append(item)
     if not set(grouped_bins).issubset(set(grouped_metrics)):
         raise ValueError("reliability bins lack matching subject metrics")
 
@@ -949,14 +906,10 @@ def _validate_evaluation_results(
         if bins is not None:
             bin_count = evaluation.reliability_bin_count
             if len(bins) != bin_count:
-                raise ValueError(
-                    "reliability bin count must match preregistration"
-                )
+                raise ValueError("reliability bin count must match preregistration")
             sample_count = next(iter(sample_counts))
             if sum(item.sample_count for item in bins) != sample_count:
-                raise ValueError(
-                    "reliability samples must match subject metrics"
-                )
+                raise ValueError("reliability samples must match subject metrics")
             denominator = Decimal(bin_count)
             for index, item in enumerate(bins):
                 with localcontext() as context:
@@ -967,27 +920,20 @@ def _validate_evaluation_results(
                     item.lower_bound != expected_lower
                     or item.upper_bound != expected_upper
                 ):
-                    raise ValueError(
-                        "reliability bins must use frozen equal widths"
-                    )
+                    raise ValueError("reliability bins must use frozen equal widths")
                 if (
                     index < bin_count - 1
                     and item.mean_prediction is not None
                     and item.mean_prediction >= item.upper_bound
                 ):
-                    raise ValueError(
-                        "non-final reliability bins are upper-exclusive"
-                    )
+                    raise ValueError("non-final reliability bins are upper-exclusive")
             with localcontext() as context:
                 context.prec = DECIMAL_PRECISION
                 expected_ece = sum(
                     (
                         Decimal(item.sample_count)
                         / Decimal(sample_count)
-                        * abs(
-                            item.mean_prediction
-                            - item.observed_frequency
-                        )
+                        * abs(item.mean_prediction - item.observed_frequency)
                         for item in bins
                         if item.sample_count
                         and item.mean_prediction is not None
@@ -999,15 +945,12 @@ def _validate_evaluation_results(
                 (
                     item.value
                     for item in estimates
-                    if item.metric
-                    == Gate3Metric.EXPECTED_CALIBRATION_ERROR
+                    if item.metric == Gate3Metric.EXPECTED_CALIBRATION_ERROR
                 ),
                 None,
             )
             if reported_ece is not None and reported_ece != expected_ece:
-                raise ValueError(
-                    "reported calibration error disagrees with bins"
-                )
+                raise ValueError("reported calibration error disagrees with bins")
 
     if validation_claim == Gate3Claim.PREDICTIVE_OOS:
         review_checks = (
@@ -1046,21 +989,12 @@ def _validate_evaluation_results(
                 else PROBABILITY_ESTIMATE_METRICS
             )
             if {item.metric for item in estimates} != expected_metrics:
-                raise ValueError(
-                    "predictive OOS subject metrics are incomplete"
-                )
+                raise ValueError("predictive OOS subject metrics are incomplete")
             if any(
                 item.metric != Gate3Metric.SAMPLE_COUNT
-                and (
-                    item.confidence_lower is None
-                    or item.confidence_upper is None
-                )
+                and (item.confidence_lower is None or item.confidence_upper is None)
                 for item in estimates
             ):
-                raise ValueError(
-                    "predictive OOS metrics require confidence intervals"
-                )
+                raise ValueError("predictive OOS metrics require confidence intervals")
             if identity not in grouped_bins:
-                raise ValueError(
-                    "predictive OOS reliability bins are incomplete"
-                )
+                raise ValueError("predictive OOS reliability bins are incomplete")

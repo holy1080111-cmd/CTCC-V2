@@ -32,9 +32,13 @@ async def run_once(request: OrchestratorRunRequest) -> OrchestratorRunResult:
             trigger="manual",
         )
     except OrchestratorBusyError as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from exc
     except OrchestratorConfigurationError as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from exc
 
 
 @router.post("/start", response_model=OrchestratorStatus)
@@ -42,7 +46,9 @@ async def start() -> OrchestratorStatus:
     try:
         return await auto_paper_orchestrator.start()
     except OrchestratorConfigurationError as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from exc
 
 
 @router.post("/stop", response_model=OrchestratorStatus)

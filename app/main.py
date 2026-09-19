@@ -1,5 +1,5 @@
-from contextlib import asynccontextmanager
 import logging
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
@@ -7,13 +7,13 @@ from app.api.router import api_router
 from app.config.settings import get_settings
 from app.core.logging import configure_logging
 from app.database.session import engine
+from app.demo_automation.runtime import safe_demo_automation
 from app.market.realtime_service import realtime_client
-from app.paper.service import paper_service
-from app.orchestrator.runtime import auto_paper_orchestrator
+from app.observability.runtime import demo_observability
 from app.okx_demo.service import okx_demo_service
 from app.okx_live.runtime import controlled_live_automation, okx_live_service
-from app.demo_automation.runtime import safe_demo_automation
-from app.observability.runtime import demo_observability
+from app.orchestrator.runtime import auto_paper_orchestrator
+from app.paper.service import paper_service
 
 configure_logging()
 logger = logging.getLogger(__name__)

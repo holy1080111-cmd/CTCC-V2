@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import UUID
 
 from sqlalchemy import select
@@ -74,7 +74,7 @@ class SqlAlchemyLifecycleRepository:
         model.state = target.value
         model.version += 1
         model.failure_code = failure_code
-        model.last_event_at = datetime.now(timezone.utc)
+        model.last_event_at = datetime.now(UTC)
         await self._session.flush()
         await self._session.refresh(model)
         return self._to_record(model)

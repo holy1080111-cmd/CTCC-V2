@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
-from decimal import Decimal
 import hashlib
 import json
-from typing import AsyncIterator, Awaitable, Callable
+import logging
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 
 from app.config.settings import Settings, get_settings
 from app.database.repositories.okx_live import (
@@ -15,9 +16,9 @@ from app.database.repositories.okx_live import (
 )
 from app.database.repositories.okx_live_execution import (
     OKX_LIVE_FLAT_EXCHANGE_RESOLUTION_CODE,
+    OkxLiveExecutionAuthorityBusy,
     OkxLiveExecutionIntentConflict,
     OkxLiveExecutionIntentReplay,
-    OkxLiveExecutionAuthorityBusy,
     OkxLiveExecutionRepository,
 )
 from app.domain.market import InstrumentInfo
@@ -61,6 +62,7 @@ from app.exchange.okx.private_api import OkxPrivateApiClient
 from app.exchange.okx.public_rest import OkxPublicRestClient
 from app.okx_live import OkxLiveBusyError, OkxLiveSafetyError, OkxLiveUnavailableError
 
+logger = logging.getLogger(__name__)
 
 D = Decimal
 Clock = Callable[[], datetime]
@@ -97,7 +99,7 @@ class OkxLiveService:
         self.public_client = public_client
         self.mirror_repository = mirror_repository
         self.execution_repository = execution_repository
-        self._clock = clock or (lambda: datetime.now(timezone.utc))
+        self._clock = clock or (lambda: datetime.now(UTC))
         self._sleep = sleeper or asyncio.sleep
         self._write_lock = asyncio.Lock()
         self._armed_until: datetime | None = None
@@ -319,8 +321,7 @@ class OkxLiveService:
             )
             if (
                 enforce_protection
-                and
-                self.settings.okx_live_require_protection
+                and self.settings.okx_live_require_protection
                 and not await self._reconciled_positions_protected(result)
             ):
                 await self._engage_persistent_emergency_stop(
@@ -334,8 +335,10 @@ class OkxLiveService:
                     await self.mirror_repository.mark_failure(
                         self._safe_failure_code(exc)
                     )
-                except Exception:
-                    pass
+                except Exception as observation_error:  # noqa: BLE001 - IO safety boundary retains failure status; arbitrary adapter errors must not grant authority.
+                    logger.warning(
+                        "auxiliary_io_failed kind=%s", type(observation_error).__name__
+                    )
             raise
 
     async def arm(self, request: OkxLiveArmRequest) -> OkxLiveStatus:
@@ -372,9 +375,7 @@ class OkxLiveService:
     ) -> list[OkxLiveIntentResolutionExpectation]:
         repository = self.execution_repository
         if repository is None:
-            raise OkxLiveUnavailableError(
-                "okx_live_execution_persistence_unavailable"
-            )
+            raise OkxLiveUnavailableError("okx_live_execution_persistence_unavailable")
         try:
             unresolved = await repository.load_unresolved_intents(limit=1000)
         except Exception as exc:
@@ -393,12 +394,8 @@ class OkxLiveService:
             repository = self.execution_repository
             mirror_repository = self.mirror_repository
             if repository is None or mirror_repository is None:
-                self._engage_emergency_stop(
-                    "okx_live_intent_recovery_unavailable"
-                )
-                raise OkxLiveSafetyError(
-                    "okx_live_execution_persistence_unavailable"
-                )
+                self._engage_emergency_stop("okx_live_intent_recovery_unavailable")
+                raise OkxLiveSafetyError("okx_live_execution_persistence_unavailable")
             try:
                 latch_state = await mirror_repository.safety_latch_status()
                 unresolved = await repository.load_unresolved_intents(limit=1000)
@@ -407,15 +404,11 @@ class OkxLiveService:
                     raise OkxLiveSafetyError(
                         "okx_live_unresolved_intent_expectation_mismatch"
                     )
-                last_snapshot = await self._stable_flat_recovery_check(
-                    unresolved
-                )
+                last_snapshot = await self._stable_flat_recovery_check(unresolved)
                 await repository.mark_unresolved_intents_operator_reconciled(
                     expectations=expected,
                     reconciled_at=last_snapshot.reconciled_at,
-                    resolution_code=(
-                        OKX_LIVE_FLAT_EXCHANGE_RESOLUTION_CODE
-                    ),
+                    resolution_code=(OKX_LIVE_FLAT_EXCHANGE_RESOLUTION_CODE),
                 )
                 remaining = await repository.load_unresolved_intents(limit=1000)
                 if remaining:
@@ -439,9 +432,7 @@ class OkxLiveService:
                     self._safety_latch_version = current_latch.version
                 self._safety_latch_code = None
             except Exception as exc:
-                self._engage_emergency_stop(
-                    "okx_live_intent_recovery_persist_failed"
-                )
+                self._engage_emergency_stop("okx_live_intent_recovery_persist_failed")
                 if isinstance(exc, OkxLiveSafetyError):
                     raise
                 raise OkxLiveUnavailableError(
@@ -476,18 +467,14 @@ class OkxLiveService:
             if order_observations is None:
                 order_observations = current_orders
             elif current_orders != order_observations:
-                raise OkxLiveSafetyError(
-                    "okx_live_order_state_changed_during_recovery"
-                )
+                raise OkxLiveSafetyError("okx_live_order_state_changed_during_recovery")
             last_snapshot = snapshot
             if attempt + 1 < self.settings.okx_live_recovery_flat_poll_attempts:
                 await self._sleep(
                     self.settings.okx_live_recovery_flat_poll_delay_seconds
                 )
         if last_snapshot is None:
-            raise OkxLiveUnavailableError(
-                "okx_live_stable_flat_recovery_unavailable"
-            )
+            raise OkxLiveUnavailableError("okx_live_stable_flat_recovery_unavailable")
         return last_snapshot
 
     async def _recovery_order_observations(
@@ -511,9 +498,7 @@ class OkxLiveService:
                 observations[intent.idempotency_key] = "not_found"
                 continue
             if len(rows) != 1:
-                raise OkxLiveSafetyError(
-                    "okx_live_recovery_order_detail_ambiguous"
-                )
+                raise OkxLiveSafetyError("okx_live_recovery_order_detail_ambiguous")
             order = parse_live_order(rows[0])
             if not self._order_identity_matches(
                 order,
@@ -521,13 +506,9 @@ class OkxLiveService:
                 order_id=order_id,
                 client_order_id=client_order_id,
             ):
-                raise OkxLiveSafetyError(
-                    "okx_live_recovery_order_identity_mismatch"
-                )
+                raise OkxLiveSafetyError("okx_live_recovery_order_identity_mismatch")
             if order.state not in _FINAL_ORDER_STATES:
-                raise OkxLiveSafetyError(
-                    "okx_live_recovery_order_not_final"
-                )
+                raise OkxLiveSafetyError("okx_live_recovery_order_not_final")
             observations[intent.idempotency_key] = (
                 f"{order.state}:{self._decimal_text(order.accumulated_fill_size)}"
             )
@@ -550,8 +531,7 @@ class OkxLiveService:
         expectations: list[OkxLiveIntentResolutionExpectation],
     ) -> bool:
         actual = {
-            item.idempotency_key: cls._intent_expectation(item)
-            for item in unresolved
+            item.idempotency_key: cls._intent_expectation(item) for item in unresolved
         }
         expected = {item.idempotency_key: item for item in expectations}
         return actual == expected
@@ -569,9 +549,7 @@ class OkxLiveService:
             self._validate_write_capability(snapshot.account_config)
             self._ensure_flat(snapshot, action="place_order")
             await self._enforce_session_loss(snapshot.balance.total_equity)
-            instrument, reference_price = await self._validate_order_market(
-                request
-            )
+            instrument, reference_price = await self._validate_order_market(request)
             position_side = self._position_side(
                 snapshot.account_config, request.direction
             )
@@ -632,9 +610,7 @@ class OkxLiveService:
                 stage = "cancel_all_after"
                 await self._execution().cancel_all_after(
                     {
-                        "timeOut": str(
-                            self.settings.okx_live_cancel_all_after_seconds
-                        ),
+                        "timeOut": str(self.settings.okx_live_cancel_all_after_seconds),
                         "tag": self.settings.okx_live_order_tag,
                     }
                 )
@@ -645,9 +621,7 @@ class OkxLiveService:
                     final_snapshot,
                     action="place_order_final_check",
                 )
-                await self._enforce_session_loss(
-                    final_snapshot.balance.total_equity
-                )
+                await self._enforce_session_loss(final_snapshot.balance.total_equity)
                 stage = "final_market_recheck"
                 final_reference_price = await self.public_client.mark_price(
                     request.instrument_id
@@ -740,13 +714,9 @@ class OkxLiveService:
                     "post_order_reconcile_unavailable"
                 )
             elif exposure_present and not isolated_protected_exposure:
-                warnings.append(
-                    "post_order_state_not_isolated_or_exactly_protected"
-                )
+                warnings.append("post_order_state_not_isolated_or_exactly_protected")
                 if not protection_confirmed:
-                    warnings.append(
-                        "protection_not_confirmed_for_live_exposure"
-                    )
+                    warnings.append("protection_not_confirmed_for_live_exposure")
                 await self._engage_persistent_emergency_stop(
                     "live_position_protection_not_confirmed"
                 )
@@ -822,9 +792,7 @@ class OkxLiveService:
                 order_id=request.order_id or acknowledgement.order_id or None,
                 client_order_id=request.client_order_id,
             )
-            fill_detected = (
-                order is not None and order.accumulated_fill_size > 0
-            )
+            fill_detected = order is not None and order.accumulated_fill_size > 0
             confirmed = (
                 order is not None
                 and order.state in _CANCEL_CONFIRMED_STATES
@@ -927,8 +895,10 @@ class OkxLiveService:
                     if not remaining:
                         confirmed = True
                         break
-                except Exception:
-                    pass
+                except Exception as observation_error:  # noqa: BLE001 - IO safety boundary retains failure status; arbitrary adapter errors must not grant authority.
+                    logger.warning(
+                        "auxiliary_io_failed kind=%s", type(observation_error).__name__
+                    )
                 if attempt + 1 < self.settings.okx_live_order_detail_poll_attempts:
                     await self._sleep(
                         self.settings.okx_live_order_detail_poll_delay_seconds
@@ -1027,14 +997,12 @@ class OkxLiveService:
         if self.settings.okx_live_auto_reconcile_on_start:
             try:
                 await self.reconcile()
-            except Exception:
-                pass
-        if (
-            self.settings.okx_live_enabled
-            and (
-                self.settings.live_trading
-                or self.settings.okx_live_allow_order_writes
-            )
+            except Exception as observation_error:  # noqa: BLE001 - IO safety boundary retains failure status; arbitrary adapter errors must not grant authority.
+                logger.warning(
+                    "auxiliary_io_failed kind=%s", type(observation_error).__name__
+                )
+        if self.settings.okx_live_enabled and (
+            self.settings.live_trading or self.settings.okx_live_allow_order_writes
         ):
             try:
                 await self._assert_execution_safe()
@@ -1334,8 +1302,10 @@ class OkxLiveService:
                     last_observed = observed
                     if last_observed.state in _FINAL_ORDER_STATES:
                         return last_observed
-            except Exception:
-                pass
+            except Exception as observation_error:  # noqa: BLE001 - IO safety boundary retains failure status; arbitrary adapter errors must not grant authority.
+                logger.warning(
+                    "auxiliary_io_failed kind=%s", type(observation_error).__name__
+                )
             if attempt + 1 < self.settings.okx_live_order_detail_poll_attempts:
                 await self._sleep(
                     self.settings.okx_live_order_detail_poll_delay_seconds
@@ -1368,8 +1338,10 @@ class OkxLiveService:
                     )
                 ):
                     return last_snapshot
-            except Exception:
-                pass
+            except Exception as observation_error:  # noqa: BLE001 - IO safety boundary retains failure status; arbitrary adapter errors must not grant authority.
+                logger.warning(
+                    "auxiliary_io_failed kind=%s", type(observation_error).__name__
+                )
             if attempt + 1 < self.settings.okx_live_order_detail_poll_attempts:
                 await self._sleep(
                     self.settings.okx_live_order_detail_poll_delay_seconds
@@ -1388,10 +1360,7 @@ class OkxLiveService:
             return False
         if order_id is not None:
             return order.order_id == order_id
-        return (
-            client_order_id is not None
-            and order.client_order_id == client_order_id
-        )
+        return client_order_id is not None and order.client_order_id == client_order_id
 
     @classmethod
     def _protection_confirmed(
@@ -1415,15 +1384,18 @@ class OkxLiveService:
         is_long = cls._position_is_long(position)
         if is_long != (request.direction == "long"):
             return False
-        return cls._exact_protection_match_count(
-            snapshot.pending_algo_orders,
-            position,
-            protection_client_order_id=protection_client_order_id,
-            expected_size=request.size,
-            expected_stop_loss=request.stop_loss,
-            expected_take_profit=request.take_profit,
-            expected_trigger_price_type=request.trigger_price_type,
-        ) == 1
+        return (
+            cls._exact_protection_match_count(
+                snapshot.pending_algo_orders,
+                position,
+                protection_client_order_id=protection_client_order_id,
+                expected_size=request.size,
+                expected_stop_loss=request.stop_loss,
+                expected_take_profit=request.take_profit,
+                expected_trigger_price_type=request.trigger_price_type,
+            )
+            == 1
+        )
 
     @classmethod
     def _post_order_exposure_confirmed(
@@ -1449,9 +1421,8 @@ class OkxLiveService:
         positions = [item for item in snapshot.positions if item.size != 0]
         if not positions:
             return True
-        if (
-            snapshot.pending_orders
-            or len(snapshot.pending_algo_orders) != len(positions)
+        if snapshot.pending_orders or len(snapshot.pending_algo_orders) != len(
+            positions
         ):
             return False
         repository = self.execution_repository
@@ -1459,7 +1430,7 @@ class OkxLiveService:
             return False
         try:
             intents = await repository.load_protection_intents()
-        except Exception:
+        except Exception:  # noqa: BLE001 - IO safety boundary retains failure status; arbitrary adapter errors must not grant authority.
             return False
         if len({item.algo_order_id for item in snapshot.pending_algo_orders}) != len(
             snapshot.pending_algo_orders
@@ -1491,15 +1462,18 @@ class OkxLiveService:
             or intent.expected_trigger_price_type is None
         ):
             return False
-        return cls._exact_protection_match_count(
-            snapshot.pending_algo_orders,
-            position,
-            protection_client_order_id=intent.protection_client_order_id,
-            expected_size=intent.expected_protection_size,
-            expected_stop_loss=intent.expected_stop_loss,
-            expected_take_profit=intent.expected_take_profit,
-            expected_trigger_price_type=intent.expected_trigger_price_type,
-        ) == 1
+        return (
+            cls._exact_protection_match_count(
+                snapshot.pending_algo_orders,
+                position,
+                protection_client_order_id=intent.protection_client_order_id,
+                expected_size=intent.expected_protection_size,
+                expected_stop_loss=intent.expected_stop_loss,
+                expected_take_profit=intent.expected_take_profit,
+                expected_trigger_price_type=intent.expected_trigger_price_type,
+            )
+            == 1
+        )
 
     @classmethod
     def _exact_protection_match_count(
@@ -1555,10 +1529,8 @@ class OkxLiveService:
             and item.margin_mode == position.margin_mode
             and item.take_profit_trigger_price == expected_take_profit
             and item.stop_loss_trigger_price == expected_stop_loss
-            and item.take_profit_trigger_price_type
-            == expected_trigger_price_type
-            and item.stop_loss_trigger_price_type
-            == expected_trigger_price_type
+            and item.take_profit_trigger_price_type == expected_trigger_price_type
+            and item.stop_loss_trigger_price_type == expected_trigger_price_type
             and item.take_profit_order_price == D("-1")
             and item.stop_loss_order_price == D("-1")
             and position_size > 0
@@ -1610,7 +1582,7 @@ class OkxLiveService:
         try:
             await self.reconcile()
             return True
-        except Exception:
+        except Exception:  # noqa: BLE001 - IO safety boundary retains failure status; arbitrary adapter errors must not grant authority.
             warnings.append("post_write_reconcile_failed")
             return False
 
@@ -1639,43 +1611,29 @@ class OkxLiveService:
             state = await repository.safety_latch_status()
         except Exception as exc:
             self._engage_emergency_stop("okx_live_safety_latch_unavailable")
-            raise OkxLiveUnavailableError(
-                "okx_live_safety_latch_unavailable"
-            ) from exc
+            raise OkxLiveUnavailableError("okx_live_safety_latch_unavailable") from exc
         self._safety_latch_version = state.version
         self._safety_latch_code = state.code
         if state.latched:
-            self._engage_emergency_stop(
-                state.code or "okx_live_safety_latch_engaged"
-            )
+            self._engage_emergency_stop(state.code or "okx_live_safety_latch_engaged")
             raise OkxLiveSafetyError("okx_live_safety_latch_engaged")
 
     async def _assert_no_unresolved_intents(self) -> None:
         repository = self.execution_repository
         if repository is None:
-            self._engage_emergency_stop(
-                "okx_live_intent_recovery_unavailable"
-            )
-            raise OkxLiveUnavailableError(
-                "okx_live_intent_recovery_unavailable"
-            )
+            self._engage_emergency_stop("okx_live_intent_recovery_unavailable")
+            raise OkxLiveUnavailableError("okx_live_intent_recovery_unavailable")
         try:
             unresolved = await repository.load_unresolved_intents(limit=1000)
         except Exception as exc:
-            self._engage_emergency_stop(
-                "okx_live_intent_recovery_unavailable"
-            )
+            self._engage_emergency_stop("okx_live_intent_recovery_unavailable")
             raise OkxLiveUnavailableError(
                 "okx_live_intent_recovery_unavailable"
             ) from exc
         self._unresolved_intent_count = len(unresolved)
         if unresolved:
-            self._engage_emergency_stop(
-                "okx_live_unresolved_execution_intents"
-            )
-            raise OkxLiveSafetyError(
-                "okx_live_unresolved_execution_intents"
-            )
+            self._engage_emergency_stop("okx_live_unresolved_execution_intents")
+            raise OkxLiveSafetyError("okx_live_unresolved_execution_intents")
 
     @asynccontextmanager
     async def _execution_guard(self) -> AsyncIterator[None]:
@@ -1767,11 +1725,9 @@ class OkxLiveService:
         *,
         stage: str,
     ) -> None:
-        ambiguous = (
-            not isinstance(exc, OkxPrivateApiError)
-            or getattr(exc, "code", None)
-            in {"transport_error", "ambiguous_response"}
-        )
+        ambiguous = not isinstance(exc, OkxPrivateApiError) or getattr(
+            exc, "code", None
+        ) in {"transport_error", "ambiguous_response"}
         status = "ambiguous" if ambiguous else "rejected"
         try:
             await self._update_intent(
@@ -1830,9 +1786,7 @@ class OkxLiveService:
         self._engage_emergency_stop(code)
         repository = self.mirror_repository
         if repository is None:
-            raise OkxLiveUnavailableError(
-                "okx_live_safety_latch_persist_failed"
-            )
+            raise OkxLiveUnavailableError("okx_live_safety_latch_persist_failed")
         try:
             state = await repository.engage_safety_latch(code)
         except Exception as exc:
@@ -1845,8 +1799,8 @@ class OkxLiveService:
     def _now(self) -> datetime:
         value = self._clock()
         if value.tzinfo is None:
-            value = value.replace(tzinfo=timezone.utc)
-        return value.astimezone(timezone.utc)
+            value = value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
 
     def _record_success(self) -> None:
         self._last_exchange_ok_at = self._now()
@@ -1878,7 +1832,7 @@ class OkxLiveService:
             return OkxLiveMirrorStatus(available=False)
         try:
             return await self.mirror_repository.mirror_status()
-        except Exception:
+        except Exception:  # noqa: BLE001 - IO safety boundary retains failure status; arbitrary adapter errors must not grant authority.
             return OkxLiveMirrorStatus(
                 available=False,
                 last_error="okx_live_mirror_status_unavailable",

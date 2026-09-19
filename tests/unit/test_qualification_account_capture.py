@@ -33,9 +33,19 @@ STREAMS = (
     "algo_oco",
     "algo_trigger",
     "algo_move_order_stop",
+    "algo_iceberg",
+    "algo_twap",
+    "algo_chase",
+    "algo_smart_iceberg",
+    "fills_recent",
     "fills_history",
+    "bills_recent",
     "bills_archive",
+    "orders_history_recent",
     "orders_history_archive",
+    "account_instruments",
+    "leverage_cross",
+    "leverage_isolated",
     "config_after",
 )
 CURSORS = {
@@ -44,8 +54,15 @@ CURSORS = {
     "algo_oco": "algoId",
     "algo_trigger": "algoId",
     "algo_move_order_stop": "algoId",
+    "algo_iceberg": "algoId",
+    "algo_twap": "algoId",
+    "algo_chase": "algoId",
+    "algo_smart_iceberg": "algoId",
+    "fills_recent": "billId",
     "fills_history": "billId",
+    "bills_recent": "billId",
     "bills_archive": "billId",
+    "orders_history_recent": "ordId",
     "orders_history_archive": "ordId",
 }
 
@@ -66,6 +83,7 @@ def plan(**changes):
             "expected_main_uid": MAIN_UID,
             "session_binding_id": "synthetic-private-session",
             "settlement_currency": "USDT",
+            "leverage_instrument_ids": (INSTRUMENT,),
             "history_start": NOW - timedelta(days=7),
             "history_end": NOW - timedelta(seconds=1),
             **changes,
@@ -95,6 +113,10 @@ def row(stream, identifier=None, **changes):
             "algo_oco": "920",
             "algo_trigger": "930",
             "algo_move_order_stop": "940",
+            "algo_iceberg": "950",
+            "algo_twap": "960",
+            "algo_chase": "970",
+            "algo_smart_iceberg": "980",
         }.get(stream, "900")
     common = {"instId": INSTRUMENT, "instType": "SWAP", "posSide": "net"}
     if stream in {"config_before", "config_after"}:
@@ -116,7 +138,11 @@ def row(stream, identifier=None, **changes):
             "cTime": ms(NOW - timedelta(hours=1)),
             "uTime": ms(),
         }
-    elif stream in {"orders_pending", "orders_history_archive"}:
+    elif stream in {
+        "orders_pending",
+        "orders_history_recent",
+        "orders_history_archive",
+    }:
         value = {
             **common,
             "ordId": identifier,
@@ -141,7 +167,7 @@ def row(stream, identifier=None, **changes):
             "tdMode": "cross",
             "cTime": ms(NOW - timedelta(hours=1)),
         }
-    elif stream == "fills_history":
+    elif stream in {"fills_recent", "fills_history"}:
         value = {
             **common,
             "billId": identifier,
@@ -155,7 +181,7 @@ def row(stream, identifier=None, **changes):
             "fillTime": ms(NOW - timedelta(seconds=3)),
             "ts": ms(),
         }
-    elif stream == "bills_archive":
+    elif stream in {"bills_recent", "bills_archive"}:
         value = {
             "billId": identifier,
             "ccy": "USDT",
@@ -167,6 +193,29 @@ def row(stream, identifier=None, **changes):
             "pnl": "0",
             "ts": ms(),
             "instId": "",
+        }
+    elif stream == "account_instruments":
+        value = {
+            "instId": INSTRUMENT,
+            "instType": "SWAP",
+            "ctType": "linear",
+            "baseCcy": "BTC",
+            "settleCcy": "USDT",
+            "ctValCcy": "BTC",
+            "ctVal": "0.01",
+            "ctMult": "1",
+            "lotSz": "0.1",
+            "minSz": "0.1",
+            "maxLmtSz": "1000",
+            "lever": "20",
+            "state": "live",
+        }
+    elif stream.startswith("leverage_"):
+        value = {
+            "instId": INSTRUMENT,
+            "mgnMode": stream.removeprefix("leverage_"),
+            "posSide": "net",
+            "lever": "3",
         }
     else:
         raise AssertionError(f"unknown synthetic stream: {stream}")
@@ -287,7 +336,8 @@ def test_requests_are_fixed_gets_and_current_account_requests_are_unfiltered(str
     assert request.origin == "https://www.okx.com"
     assert request.parameters == tuple(sorted(request.parameters))
     params = dict(request.parameters)
-    assert "instId" not in params and "ccy" not in params
+    assert "ccy" not in params
+    assert ("instId" in params) is stream.startswith("leverage_")
     assert "before" not in params
     if stream in {
         "config_before",
@@ -297,14 +347,26 @@ def test_requests_are_fixed_gets_and_current_account_requests_are_unfiltered(str
         "positions",
     }:
         assert not params
-    elif stream in {"fills_history", "orders_history_archive"}:
+    elif stream in {
+        "fills_recent",
+        "fills_history",
+        "orders_history_recent",
+        "orders_history_archive",
+    }:
         assert params["instType"] == "SWAP"
         assert params["begin"] == ms(plan().history_start)
         assert params["end"] == ms(plan().history_end)
-    elif stream == "bills_archive":
+    elif stream in {"bills_recent", "bills_archive"}:
         assert "instType" not in params
         assert params["begin"] == ms(plan().history_start)
         assert params["end"] == ms(plan().history_end)
+    elif stream == "account_instruments":
+        assert params == {"instType": "SWAP"}
+    elif stream.startswith("leverage_"):
+        assert params == {
+            "instId": INSTRUMENT,
+            "mgnMode": stream.removeprefix("leverage_"),
+        }
     else:
         assert "instType" not in params
     if stream.startswith("algo_"):
@@ -529,7 +591,7 @@ def test_full_thirteen_stream_capture_is_pinned_but_not_complete_account(packet)
 
 def test_explicit_first_empty_page_is_a_valid_chain_not_a_complete_account():
     result = verify(*records(empty=True))
-    assert len(result.observations) == 13
+    assert len(result.observations) == 23
     assert all(
         part.terminal and not part.rows and part.after is None
         for part in result.observations
@@ -537,6 +599,101 @@ def test_explicit_first_empty_page_is_a_valid_chain_not_a_complete_account():
     )
     assert result.account_complete is False
     assert "history_retention_unverified" in result.incomplete_reasons
+
+
+@pytest.mark.parametrize(
+    "stream", ["algo_iceberg", "algo_twap", "algo_chase", "algo_smart_iceberg"]
+)
+def test_current_algo_inventory_requires_each_scope_even_if_every_other_scope_empty(
+    stream,
+):
+    selected, observations = records(empty=True)
+    omitted = tuple(item for item in observations if item.request.stream != stream)
+    with pytest.raises(module.AccountCaptureError):
+        verify(selected, omitted)
+
+
+@pytest.mark.parametrize(
+    "stream", ["algo_iceberg", "algo_twap", "algo_chase", "algo_smart_iceberg"]
+)
+def test_advanced_algo_preserves_raw_quantity_without_inventing_attached_protection(
+    stream,
+):
+    observation = stream_observation(stream, [row(stream, sz="3.5", actualSz="1.5")])
+    source_row = observation.rows[0]
+    numbers = {item.path: item.value for item in source_row.numbers}
+    assert numbers["sz"] == Decimal("3.5")
+    assert numbers["actualSz"] == Decimal("1.5")
+    assert not {"slTriggerPx", "tpTriggerPx"} & set(source_row.missing_fields)
+    assert json.loads(source_row.canonical_json)["ordType"] == stream.removeprefix(
+        "algo_"
+    )
+
+
+def test_expanded_inventory_cannot_reuse_v1_plan_or_packet_identity():
+    with pytest.raises(ValidationError):
+        plan(capture_scope="all_current_and_swap_history")
+    packet = verify(*records(empty=True))
+    assert packet.schema_version == "ctcc.demo_account_capture.v2"
+    legacy = packet.model_copy(
+        update={"schema_version": "ctcc.demo_account_capture.v1"}
+    )
+    with pytest.raises(module.AccountCaptureError):
+        module.freeze_demo_account_packet(
+            legacy, expected_plan_sha256=packet.plan_sha256
+        )
+
+
+@pytest.mark.parametrize(
+    "stream,endpoint,cursor",
+    [
+        ("fills_recent", "/api/v5/trade/fills", "billId"),
+        ("bills_recent", "/api/v5/account/bills", "billId"),
+        ("orders_history_recent", "/api/v5/trade/orders-history", "ordId"),
+    ],
+)
+def test_recent_history_uses_endpoint_specific_cursor_and_original_time_window(
+    stream, endpoint, cursor
+):
+    request = module.account_request(plan(), stream, after="500")
+    assert request.endpoint == endpoint
+    assert dict(request.parameters)["after"] == "500"
+    assert dict(request.parameters)["begin"] == ms(plan().history_start)
+    assert dict(request.parameters)["end"] == ms(plan().history_end)
+    supplied = row(stream, "400")
+    assert supplied[cursor] == "400"
+    observed = stream_observation(stream, [supplied])
+    assert observed.rows[0].row_id == "400"
+    assert not observed.terminal
+
+
+@pytest.mark.parametrize(
+    "ids",
+    [(), (INSTRUMENT, INSTRUMENT), ("BTC-USDT",), ("BTC-USDT-SWAP,ETH-USDT-SWAP",)],
+)
+def test_leverage_scope_must_be_explicit_unique_and_swap_only(ids):
+    with pytest.raises(ValueError):
+        plan(leverage_instrument_ids=ids)
+
+
+def test_leverage_query_pins_both_margin_modes_and_all_instruments():
+    ids = (INSTRUMENT, "ETH-USDT-SWAP")
+    selected = plan(leverage_instrument_ids=ids)
+    for mode in ("cross", "isolated"):
+        request = module.account_request(selected, "leverage_" + mode)
+        assert request.endpoint == "/api/v5/account/leverage-info"
+        assert dict(request.parameters) == {"instId": ",".join(ids), "mgnMode": mode}
+    assert module.plan_sha256(selected) != module.plan_sha256(plan())
+
+
+@pytest.mark.parametrize(
+    "field,value", [("instId", "ETH-USDT-SWAP"), ("mgnMode", "cross"), ("posSide", "")]
+)
+def test_leverage_response_cannot_change_pinned_scope(field, value):
+    with pytest.raises(module.AccountCaptureError):
+        stream_observation(
+            "leverage_isolated", [row("leverage_isolated", **{field: value})]
+        )
 
 
 def test_real_multiple_page_receipts_allow_nonconsecutive_ids_not_missing_history_fabrication():
@@ -890,7 +1047,7 @@ def test_no_record_or_raw_data_changes_are_laundered_by_top_packet_rehash(packet
     "field,value",
     [
         ("max_pages_per_stream", 1),
-        ("max_total_pages", 13),
+        ("max_total_pages", 23),
         ("max_total_rows", 1),
         ("max_total_bytes", 1024),
     ],

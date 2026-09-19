@@ -41,7 +41,7 @@ class ValidationMetric(MieContract):
     value: Decimal
 
     @model_validator(mode="after")
-    def validate_value(self) -> "ValidationMetric":
+    def validate_value(self) -> ValidationMetric:
         if not self.value.is_finite():
             raise ValueError("validation metric must be finite")
         return self
@@ -71,14 +71,12 @@ class ValidationReference(MieContract):
         return require_utc(value, "issued_at")
 
     @model_validator(mode="after")
-    def validate_metrics(self) -> "ValidationReference":
+    def validate_metrics(self) -> ValidationReference:
         names = [metric.name for metric in self.metrics]
         if len(names) != len(set(names)):
             raise ValueError("validation metric names must be unique")
         return self
 
 
-def validation_at_least(
-    actual: ValidationLevel, required: ValidationLevel
-) -> bool:
+def validation_at_least(actual: ValidationLevel, required: ValidationLevel) -> bool:
     return VALIDATION_RANK[actual] >= VALIDATION_RANK[required]

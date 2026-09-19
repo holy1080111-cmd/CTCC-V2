@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import date, datetime, time, timedelta, timezone
+from collections.abc import Iterable
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
-from typing import Iterable
 
 from app.config.settings import Settings, get_settings
 from app.database.repositories.performance import DemoPerformanceRepository
@@ -82,9 +82,7 @@ class DemoPerformanceService:
                 else None
             ),
             equity_basis=(
-                performance_capital.basis
-                if performance_capital is not None
-                else None
+                performance_capital.basis if performance_capital is not None else None
             ),
             equity_currency=(
                 performance_capital.currency
@@ -103,7 +101,8 @@ class DemoPerformanceService:
         persisted: dict[str, DemoStrategyControlView] = {}
         if self.repository is not None:
             persisted = {
-                item.strategy: item for item in await self.repository.strategy_controls()
+                item.strategy: item
+                for item in await self.repository.strategy_controls()
             }
         return [
             persisted.get(name)
@@ -157,7 +156,7 @@ class DemoPerformanceService:
 
     async def summary(self, window_days: int | None = None) -> DemoPerformanceSummary:
         days = window_days or self.settings.okx_demo_performance_window_days
-        end = datetime.now(timezone.utc)
+        end = datetime.now(UTC)
         start = end - timedelta(days=days)
         return await self._summary_between(start, end, window_days=days)
 
@@ -168,7 +167,7 @@ class DemoPerformanceService:
             stored = await self.repository.daily_report(report_date)
             if stored is not None:
                 return stored
-        start = datetime.combine(report_date, time.min, tzinfo=timezone.utc)
+        start = datetime.combine(report_date, time.min, tzinfo=UTC)
         end = start + timedelta(days=1)
         summary = await self._summary_between(start, end, window_days=1)
         report = DemoDailyPerformanceReport(
@@ -189,9 +188,7 @@ class DemoPerformanceService:
             order_count=summary.order_count,
             filled_order_count=summary.filled_order_count,
             realized_trade_count=summary.realized_trade_count,
-            attributed_realized_trade_count=(
-                summary.attributed_realized_trade_count
-            ),
+            attributed_realized_trade_count=(summary.attributed_realized_trade_count),
             unattributed_realized_trade_count=(
                 summary.unattributed_realized_trade_count
             ),
@@ -222,7 +219,9 @@ class DemoPerformanceService:
         warnings: list[str] = []
         min_days = self.settings.okx_demo_performance_min_active_days
         min_trades = self.settings.okx_demo_performance_min_realized_trades
-        max_slippage = D(str(self.settings.okx_demo_performance_max_average_slippage_bps))
+        max_slippage = D(
+            str(self.settings.okx_demo_performance_max_average_slippage_bps)
+        )
         min_pf = D(str(self.settings.okx_demo_performance_min_profit_factor))
         max_dd = D(str(self.settings.okx_demo_performance_max_drawdown_pct))
 
@@ -283,9 +282,7 @@ class DemoPerformanceService:
             minimum_active_days=min_days,
             realized_trades=summary.attributed_realized_trade_count,
             total_realized_trades=summary.realized_trade_count,
-            unattributed_realized_trades=(
-                summary.unattributed_realized_trade_count
-            ),
+            unattributed_realized_trades=(summary.unattributed_realized_trade_count),
             minimum_realized_trades=min_trades,
             average_adverse_slippage_bps=summary.average_adverse_slippage_bps,
             maximum_average_slippage_bps=max_slippage,
@@ -315,9 +312,7 @@ class DemoPerformanceService:
         )
         performance_snapshots = self._performance_segment(snapshots)
         performance_start = (
-            performance_snapshots[0].captured_at
-            if performance_snapshots
-            else None
+            performance_snapshots[0].captured_at if performance_snapshots else None
         )
         if performance_start is not None:
             orders = await self.repository.orders_between(
@@ -364,8 +359,7 @@ class DemoPerformanceService:
         ]
         realized = [item for item, _ in realized_with_attribution]
         attributed_realized = sum(
-            attribution is not None
-            for _, attribution in realized_with_attribution
+            attribution is not None for _, attribution in realized_with_attribution
         )
         unattributed_realized = len(realized) - attributed_realized
         net_trade_values = [self._net_trade(item) for item in realized]
@@ -463,9 +457,7 @@ class DemoPerformanceService:
                     strategy=strategy,
                     enabled=control.enabled if control is not None else True,
                     submitted_orders=submitted_counts.get(strategy, 0),
-                    filled_orders=sum(
-                        item.filled_size > 0 for item, _ in bucket
-                    ),
+                    filled_orders=sum(item.filled_size > 0 for item, _ in bucket),
                     realized_trades=realized_count,
                     wins=strategy_wins,
                     losses=strategy_losses,
@@ -501,9 +493,7 @@ class DemoPerformanceService:
         account_opening = snapshots[0].total_equity if snapshots else None
         account_closing = snapshots[-1].total_equity if snapshots else None
         account_drawdown = self._max_drawdown(snapshots)
-        active_dates = {
-            item.captured_at.date() for item in performance_snapshots
-        }
+        active_dates = {item.captured_at.date() for item in performance_snapshots}
         active_dates.update(
             item.updated_at.date() for item in decorated if item.updated_at is not None
         )
@@ -520,9 +510,7 @@ class DemoPerformanceService:
             excluded_snapshot_count=len(snapshots) - len(performance_snapshots),
             performance_window_started_at=performance_start,
             equity_basis=(
-                performance_snapshots[0].equity_basis
-                if performance_snapshots
-                else None
+                performance_snapshots[0].equity_basis if performance_snapshots else None
             ),
             equity_currency=(
                 performance_snapshots[0].equity_currency
@@ -551,7 +539,9 @@ class DemoPerformanceService:
             expectancy=expectancy,
             opening_equity=opening,
             closing_equity=closing,
-            equity_change=(closing - opening) if opening is not None and closing is not None else None,
+            equity_change=(closing - opening)
+            if opening is not None and closing is not None
+            else None,
             max_drawdown_pct=drawdown,
             account_opening_equity=account_opening,
             account_closing_equity=account_closing,
@@ -616,17 +606,24 @@ class DemoPerformanceService:
                     threshold=str(self.settings.okx_demo_performance_min_active_days),
                 )
             )
-        if summary.realized_trade_count < self.settings.okx_demo_performance_min_realized_trades:
+        if (
+            summary.realized_trade_count
+            < self.settings.okx_demo_performance_min_realized_trades
+        ):
             alerts.append(
                 DemoPerformanceAlert(
                     severity="info",
                     code="insufficient_realized_trades",
                     message="The closed-trade sample is too small for performance conclusions.",
                     value=str(summary.realized_trade_count),
-                    threshold=str(self.settings.okx_demo_performance_min_realized_trades),
+                    threshold=str(
+                        self.settings.okx_demo_performance_min_realized_trades
+                    ),
                 )
             )
-        max_slippage = D(str(self.settings.okx_demo_performance_max_average_slippage_bps))
+        max_slippage = D(
+            str(self.settings.okx_demo_performance_max_average_slippage_bps)
+        )
         if (
             summary.average_adverse_slippage_bps is not None
             and summary.average_adverse_slippage_bps > max_slippage
@@ -674,7 +671,9 @@ class DemoPerformanceService:
                     value=str(summary.net_after_costs),
                 )
             )
-        review = [item.strategy for item in summary.strategy_stats if item.review_recommended]
+        review = [
+            item.strategy for item in summary.strategy_stats if item.review_recommended
+        ]
         if review:
             alerts.append(
                 DemoPerformanceAlert(
@@ -701,7 +700,9 @@ class DemoPerformanceService:
             raw, "pnl", "fillPnl", "realizedPnl"
         )
         closing_order = cls._is_closing_order(order)
-        realized_value = realized if present and (realized != 0 or closing_order) else None
+        realized_value = (
+            realized if present and (realized != 0 or closing_order) else None
+        )
         return order.model_copy(
             update={
                 "fee": fee_cost,
@@ -839,9 +840,7 @@ class DemoPerformanceService:
         maximum = D("0")
         for point in points:
             equity = (
-                point.performance_equity
-                if performance_equity
-                else point.total_equity
+                point.performance_equity if performance_equity else point.total_equity
             )
             if equity is None:
                 continue
@@ -862,9 +861,7 @@ class DemoPerformanceService:
         return None
 
     @classmethod
-    def _decimal_with_presence(
-        cls, raw: dict, *keys: str
-    ) -> tuple[Decimal, bool]:
+    def _decimal_with_presence(cls, raw: dict, *keys: str) -> tuple[Decimal, bool]:
         for key in keys:
             if key not in raw or raw.get(key) in (None, ""):
                 continue

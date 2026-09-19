@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from collections.abc import Callable
-from datetime import datetime, timezone
 import hashlib
 import os
-from pathlib import Path, PurePosixPath
 import tempfile
+from collections.abc import Callable
+from datetime import UTC, datetime
+from pathlib import Path, PurePosixPath
 from urllib.parse import urljoin, urlparse
 
 import httpx
@@ -22,7 +22,6 @@ from app.research.external_benchmarks.contracts import (
     ExternalArtifactAcquisitionRequest,
     require_utc,
 )
-
 
 Clock = Callable[[], datetime]
 REDIRECT_STATUS_CODES = {301, 302, 303, 307, 308}
@@ -57,8 +56,7 @@ def _validate_transport_url(
             "artifact URL must be query-free HTTPS on port 443"
         )
     if not any(
-        host == approved or host.endswith(f".{approved}")
-        for approved in approved_hosts
+        host == approved or host.endswith(f".{approved}") for approved in approved_hosts
     ):
         raise ExternalArtifactAcquisitionError(
             "artifact URL host is outside reviewed provider scope"
@@ -68,9 +66,7 @@ def _validate_transport_url(
 
 def _dataset_root(path: Path) -> Path:
     if path.is_symlink():
-        raise ExternalArtifactAcquisitionError(
-            "acquisition root cannot be a symlink"
-        )
+        raise ExternalArtifactAcquisitionError("acquisition root cannot be a symlink")
     try:
         resolved = path.resolve(strict=True)
     except OSError as exc:
@@ -214,7 +210,7 @@ async def acquire_external_artifact(
     )
     root = _dataset_root(dataset_root)
     destination = _destination(root, request.relative_path)
-    acquisition_clock = clock or (lambda: datetime.now(timezone.utc))
+    acquisition_clock = clock or (lambda: datetime.now(UTC))
     started_at = require_utc(
         acquisition_clock(),
         "retrieved_at",
@@ -277,10 +273,14 @@ async def acquire_external_artifact(
                         raise ExternalArtifactAcquisitionError(
                             f"artifact download failed with HTTP {response.status_code}"
                         )
-                    content_encoding = response.headers.get(
-                        "content-encoding",
-                        "identity",
-                    ).strip().lower()
+                    content_encoding = (
+                        response.headers.get(
+                            "content-encoding",
+                            "identity",
+                        )
+                        .strip()
+                        .lower()
+                    )
                     if content_encoding not in {"", "identity"}:
                         raise ExternalArtifactAcquisitionError(
                             "encoded artifact responses are not accepted"

@@ -9,7 +9,6 @@ from app.database.models.okx_live import (
     OkxLiveSyncCheckpoint,
 )
 
-
 LIVE_TABLES = {
     "okx_live_account_config_state",
     "okx_live_balance_state",

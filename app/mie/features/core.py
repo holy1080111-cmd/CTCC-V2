@@ -15,7 +15,7 @@ D = Decimal
 def mathematical_feature_snapshot(
     window: FeatureWindow,
     *,
-    signal_alpha: Decimal = D("0.25"),
+    signal_alpha: Decimal = D("0.25"),  # noqa: B008 - D constructs immutable exact Decimal values.
     dynamics_window: int = 21,
     momentum_fast_bars: int = 5,
     momentum_slow_bars: int = 20,
@@ -40,10 +40,7 @@ def mathematical_feature_snapshot(
         left_bars=pivot_left_bars,
         right_bars=pivot_right_bars,
     )
-    if any(
-        item is None
-        for item in (statistics, signal, dynamics, momentum, geometry)
-    ):
+    if any(item is None for item in (statistics, signal, dynamics, momentum, geometry)):
         return None
 
     assert statistics is not None

@@ -17,10 +17,7 @@ from scripts.verify_mie_gate3_batch_qualification import (
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 QUALIFICATION_PATH = (
-    PROJECT_ROOT
-    / "docs"
-    / "evidence"
-    / "mie_gate3_binance_batch_qualification_v1.json"
+    PROJECT_ROOT / "docs" / "evidence" / "mie_gate3_binance_batch_qualification_v1.json"
 )
 
 

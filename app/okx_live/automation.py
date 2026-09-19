@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import suppress
-from datetime import datetime, timedelta, timezone
-from decimal import Decimal, ROUND_CEILING, ROUND_DOWN, ROUND_FLOOR
 import hashlib
 import re
-from typing import Iterable
+from collections.abc import Iterable
+from contextlib import suppress
+from datetime import UTC, datetime, timedelta
+from decimal import ROUND_CEILING, ROUND_DOWN, ROUND_FLOOR, Decimal
 
 from app.config.settings import Settings, get_settings
 from app.domain.okx_live import (
@@ -26,7 +26,6 @@ from app.okx_live import OkxLiveBusyError, OkxLiveSafetyError
 from app.okx_live.service import OkxLiveService
 from app.risk import RiskService
 from app.strategies import StrategyService
-
 
 D = Decimal
 
@@ -52,6 +51,7 @@ class ControlledLiveAutomation:
         self.public_client = public_client or OkxPublicRestClient()
         if market_hub is None or market_client is None:
             if self.settings.environment == "test":
+
                 class _NullHub:
                     async def snapshot(self, _symbol: str):
                         return None
@@ -107,9 +107,7 @@ class ControlledLiveAutomation:
         if self.running:
             return await self.status()
         selected = list(
-            self.settings.okx_live_scan_symbol_list
-            if symbols is None
-            else symbols
+            self.settings.okx_live_scan_symbol_list if symbols is None else symbols
         )
         if not selected:
             raise OkxLiveSafetyError("okx_live_scan_symbols_empty")
@@ -119,9 +117,7 @@ class ControlledLiveAutomation:
             except ValueError as exc:
                 raise OkxLiveSafetyError("invalid_live_scan_symbol") from exc
             if instrument_id not in self.settings.okx_live_allowed_symbol_list:
-                raise OkxLiveSafetyError(
-                    "instrument_not_in_okx_live_allowlist"
-                )
+                raise OkxLiveSafetyError("instrument_not_in_okx_live_allowlist")
         self._scheduled_symbols = selected
         self._stop = asyncio.Event()
         self._task = asyncio.create_task(
@@ -154,7 +150,7 @@ class ControlledLiveAutomation:
         if execute:
             self._ensure_execute_ready()
         async with self._run_lock:
-            started = datetime.now(timezone.utc)
+            started = datetime.now(UTC)
             self._last_started_at = started
             results: list[OkxLiveAutomationSymbolResult] = []
             equity: Decimal | None = None
@@ -174,9 +170,7 @@ class ControlledLiveAutomation:
                         )
                     )
                 else:
-                    requested = list(
-                        symbols or self.settings.okx_live_scan_symbol_list
-                    )
+                    requested = list(symbols or self.settings.okx_live_scan_symbol_list)
                     for raw_symbol in requested:
                         result = await self._process_symbol(
                             raw_symbol,
@@ -187,7 +181,7 @@ class ControlledLiveAutomation:
                         if result.outcome == "submitted":
                             self._stop.set()
                             break
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - IO safety boundary retains failure status; arbitrary adapter errors must not grant authority.
                 self._last_error = self._safe_error(exc)
                 results.append(
                     OkxLiveAutomationSymbolResult(
@@ -196,7 +190,7 @@ class ControlledLiveAutomation:
                         detail=self._last_error,
                     )
                 )
-            completed = datetime.now(timezone.utc)
+            completed = datetime.now(UTC)
             self._last_completed_at = completed
             return OkxLiveAutomationRunResult(
                 trigger="scheduled" if trigger == "scheduled" else "manual",
@@ -338,9 +332,7 @@ class ControlledLiveAutomation:
                     approved_contracts=contracts,
                     detail="live_risk_approved_but_execution_not_requested",
                 )
-            client_order_id = "CTCCL" + self._fingerprint(
-                instrument_id, aligned
-            )[:27]
+            client_order_id = "CTCCL" + self._fingerprint(instrument_id, aligned)[:27]
             write = await self.live_service.place_order(
                 OkxLiveOrderRequest(
                     instrument_id=instrument_id,
@@ -365,13 +357,11 @@ class ControlledLiveAutomation:
                 approved_contracts=contracts,
                 client_order_id=client_order_id,
                 exchange_order_id=(
-                    write.acknowledgement.order_id
-                    if write.acknowledgement
-                    else None
+                    write.acknowledgement.order_id if write.acknowledgement else None
                 ),
                 detail="protected_okx_live_market_order_submitted",
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - IO safety boundary retains failure status; arbitrary adapter errors must not grant authority.
             return OkxLiveAutomationSymbolResult(
                 symbol=raw_symbol,
                 instrument_id=instrument_id,
@@ -407,9 +397,7 @@ class ControlledLiveAutomation:
         if require_realtime:
             if snapshot.quote_received_at is None:
                 return executable_quote, "realtime_quote_timestamp_missing"
-            quote_age = (
-                datetime.now(timezone.utc) - snapshot.quote_received_at
-            ).total_seconds()
+            quote_age = (datetime.now(UTC) - snapshot.quote_received_at).total_seconds()
             if quote_age > self.settings.okx_live_scan_max_snapshot_age_seconds:
                 return executable_quote, "realtime_executable_quote_stale"
             if (
@@ -425,7 +413,7 @@ class ControlledLiveAutomation:
             if snapshot.mark_price_received_at is None:
                 return executable_quote, "realtime_mark_price_timestamp_missing"
             mark_age = (
-                datetime.now(timezone.utc) - snapshot.mark_price_received_at
+                datetime.now(UTC) - snapshot.mark_price_received_at
             ).total_seconds()
             if mark_age > self.settings.okx_live_scan_max_snapshot_age_seconds:
                 return executable_quote, "realtime_mark_price_stale"
@@ -441,15 +429,11 @@ class ControlledLiveAutomation:
                 )
             if candidate.direction == "long":
                 mark_inside = (
-                    candidate.stop_loss
-                    < snapshot.mark_price
-                    < candidate.take_profit
+                    candidate.stop_loss < snapshot.mark_price < candidate.take_profit
                 )
             else:
                 mark_inside = (
-                    candidate.take_profit
-                    < snapshot.mark_price
-                    < candidate.stop_loss
+                    candidate.take_profit < snapshot.mark_price < candidate.stop_loss
                 )
             if not mark_inside:
                 return (
@@ -457,11 +441,7 @@ class ControlledLiveAutomation:
                     "mark_price_outside_live_protective_bounds",
                 )
 
-        drift = (
-            abs(executable_quote - candidate.entry)
-            / candidate.entry
-            * D("10000")
-        )
+        drift = abs(executable_quote - candidate.entry) / candidate.entry * D("10000")
         if drift > self.settings.okx_live_scan_max_entry_drift_bps:
             return executable_quote, "entry_price_drift_exceeds_live_limit"
         return executable_quote, None
@@ -500,13 +480,10 @@ class ControlledLiveAutomation:
             raw = base_quantity * reference / value
         else:
             return D("0"), "unsupported_contract_value_currency"
-        contracts = (
-            (raw / instrument.lot_size).to_integral_value(rounding=ROUND_DOWN)
-            * instrument.lot_size
-        )
-        contracts = min(
-            contracts, self.settings.okx_live_max_order_size_contracts
-        )
+        contracts = (raw / instrument.lot_size).to_integral_value(
+            rounding=ROUND_DOWN
+        ) * instrument.lot_size
+        contracts = min(contracts, self.settings.okx_live_max_order_size_contracts)
         if contracts < instrument.minimum_size or contracts <= 0:
             return contracts, "risk_sized_contracts_below_exchange_minimum"
         return contracts, None
@@ -561,9 +538,7 @@ class ControlledLiveAutomation:
         try:
             initial = self.settings.okx_live_scan_initial_delay_seconds
             if initial:
-                self._next_run_at = datetime.now(timezone.utc) + timedelta(
-                    seconds=initial
-                )
+                self._next_run_at = datetime.now(UTC) + timedelta(seconds=initial)
                 try:
                     await asyncio.wait_for(self._stop.wait(), timeout=initial)
                     return
@@ -580,9 +555,7 @@ class ControlledLiveAutomation:
                 if not self.live_service.arm_status().armed:
                     return
                 interval = self.settings.okx_live_scan_interval_seconds
-                self._next_run_at = datetime.now(timezone.utc) + timedelta(
-                    seconds=interval
-                )
+                self._next_run_at = datetime.now(UTC) + timedelta(seconds=interval)
                 try:
                     await asyncio.wait_for(self._stop.wait(), timeout=interval)
                 except TimeoutError:

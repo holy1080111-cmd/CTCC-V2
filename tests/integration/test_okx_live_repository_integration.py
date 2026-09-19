@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
@@ -38,8 +38,7 @@ from app.domain.okx_live import (
     OkxLivePositionView,
 )
 
-
-NOW = datetime(2026, 8, 9, 2, 3, 4, tzinfo=timezone.utc)
+NOW = datetime(2026, 8, 9, 2, 3, 4, tzinfo=UTC)
 LIVE_MODELS = (
     OkxLiveSyncCheckpoint,
     OkxLiveAlgoOrderState,
@@ -77,7 +76,7 @@ def balance(total: str) -> OkxLiveBalanceSnapshot:
     amount = Decimal(total)
     return OkxLiveBalanceSnapshot(
         total_equity=amount,
-        isolated_equity=Decimal("0"),
+        isolated_equity=Decimal(0),
         adjusted_equity=amount,
         available_equity=amount,
         details=[
@@ -86,8 +85,8 @@ def balance(total: str) -> OkxLiveBalanceSnapshot:
                 equity=amount,
                 cash_balance=amount,
                 available_balance=amount,
-                frozen_balance=Decimal("0"),
-                unrealized_pnl=Decimal("0"),
+                frozen_balance=Decimal(0),
+                unrealized_pnl=Decimal(0),
             )
         ],
         captured_at=NOW,
@@ -100,12 +99,12 @@ def position(position_id: str = "integration-position-1") -> OkxLivePositionView
         position_id=position_id,
         instrument_id="BTC-USDT-SWAP",
         position_side="net",
-        size=Decimal("1"),
-        available_size=Decimal("1"),
-        average_price=Decimal("60000"),
-        mark_price=Decimal("60100"),
-        unrealized_pnl=Decimal("100"),
-        leverage=Decimal("1"),
+        size=Decimal(1),
+        available_size=Decimal(1),
+        average_price=Decimal(60000),
+        mark_price=Decimal(60100),
+        unrealized_pnl=Decimal(100),
+        leverage=Decimal(1),
         margin_mode="cross",
         raw={"posId": position_id},
     )
@@ -120,9 +119,9 @@ def order(order_id: str) -> OkxLiveOrderView:
         position_side="net",
         order_type="market",
         state="filled",
-        size=Decimal("1"),
-        accumulated_fill_size=Decimal("1"),
-        average_fill_price=Decimal("60000"),
+        size=Decimal(1),
+        accumulated_fill_size=Decimal(1),
+        average_fill_price=Decimal(60000),
         raw={"ordId": order_id},
     )
 
@@ -136,8 +135,8 @@ def algo_order(algo_order_id: str = "integration-algo-1") -> OkxLiveAlgoOrderVie
         state="live",
         side="sell",
         position_side="net",
-        size=Decimal("1"),
-        stop_loss_trigger_price=Decimal("59000"),
+        size=Decimal(1),
+        stop_loss_trigger_price=Decimal(59000),
         raw={"algoId": algo_order_id},
     )
 
@@ -198,11 +197,13 @@ async def test_live_repository_is_atomic_account_pinned_and_rollback_isolated() 
                 async with Session() as session:
                     account_state = await session.get(OkxLiveAccountConfigState, 1)
                     assert account_state is not None
-                    assert account_state.uid_fingerprint == fingerprint_account_identifier(
-                        "integration-live-uid"
+                    assert (
+                        account_state.uid_fingerprint
+                        == fingerprint_account_identifier("integration-live-uid")
                     )
-                    assert account_state.main_uid_fingerprint == fingerprint_account_identifier(
-                        "integration-live-main-uid"
+                    assert (
+                        account_state.main_uid_fingerprint
+                        == fingerprint_account_identifier("integration-live-main-uid")
                     )
                     assert "integration-live-uid" not in repr(account_state.__dict__)
 
@@ -218,26 +219,30 @@ async def test_live_repository_is_atomic_account_pinned_and_rollback_isolated() 
                 assert second_status.position_count == 0
                 assert second_status.algo_order_count == 0
                 assert second_status.safety_latched is True
-                assert second_status.safety_latch_code == (
-                    "integration_safety_event"
-                )
+                assert second_status.safety_latch_code == ("integration_safety_event")
                 assert second_status.safety_latch_version == 1
 
                 async with Session() as session:
                     stored_orders = list(
                         await session.scalars(
-                            select(OkxLiveOrderState).order_by(OkxLiveOrderState.order_id)
+                            select(OkxLiveOrderState).order_by(
+                                OkxLiveOrderState.order_id
+                            )
                         )
                     )
                     assert [item.order_id for item in stored_orders] == [
                         "integration-order-1",
                         "integration-order-2",
                     ]
-                    assert {
-                        item.client_order_id for item in stored_orders
-                    } == {"reusable-client-order-id"}
-                    assert list(await session.scalars(select(OkxLivePositionState))) == []
-                    assert list(await session.scalars(select(OkxLiveAlgoOrderState))) == []
+                    assert {item.client_order_id for item in stored_orders} == {
+                        "reusable-client-order-id"
+                    }
+                    assert (
+                        list(await session.scalars(select(OkxLivePositionState))) == []
+                    )
+                    assert (
+                        list(await session.scalars(select(OkxLiveAlgoOrderState))) == []
+                    )
 
                 with pytest.raises(
                     OkxLiveAccountIdentityError,
@@ -257,10 +262,9 @@ async def test_live_repository_is_atomic_account_pinned_and_rollback_isolated() 
                 async with Session() as session:
                     stored_balance = await session.get(OkxLiveBalanceState, 1)
                     assert stored_balance is not None
-                    assert stored_balance.total_equity == Decimal("101")
+                    assert stored_balance.total_equity == Decimal(101)
                     assert (
-                        await session.get(OkxLiveOrderState, "must-not-persist")
-                        is None
+                        await session.get(OkxLiveOrderState, "must-not-persist") is None
                     )
                     assert (
                         await session.get(OkxLivePositionState, "must-not-persist")
@@ -281,7 +285,9 @@ async def test_live_repository_is_atomic_account_pinned_and_rollback_isolated() 
                 assert failed_status.position_count == 0
                 assert failed_status.algo_order_count == 0
                 assert failed_status.last_error == "okx_live_reconcile_failed"
-                assert failed_status.last_reconciled_at == second_status.last_reconciled_at
+                assert (
+                    failed_status.last_reconciled_at == second_status.last_reconciled_at
+                )
                 assert failed_status.details["status"] == "error"
                 assert failed_status.safety_latched is True
                 assert failed_status.safety_latch_version == 1
@@ -292,9 +298,7 @@ async def test_live_repository_is_atomic_account_pinned_and_rollback_isolated() 
                 assert relatched.version == 2
                 with pytest.raises(OkxLiveSafetyLatchConflict):
                     await repository.clear_safety_latch(expected_version=1)
-                cleared = await repository.clear_safety_latch(
-                    expected_version=2
-                )
+                cleared = await repository.clear_safety_latch(expected_version=2)
                 assert cleared.latched is False
                 assert cleared.code is None
                 assert cleared.version == 3

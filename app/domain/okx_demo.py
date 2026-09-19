@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
-
 
 DEMO_CONFIRMATION_PHRASE = "OKX_DEMO_ONLY"
 
@@ -57,7 +56,7 @@ class OkxDemoBalanceSnapshot(BaseModel):
     adjusted_equity: Decimal
     available_equity: Decimal
     details: list[OkxDemoBalanceDetail] = Field(default_factory=list)
-    captured_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    captured_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     raw: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -133,7 +132,7 @@ class OkxDemoWriteResult(BaseModel):
     exchange_data: list[dict[str, Any]] = Field(default_factory=list)
     reconciled: bool = False
     warnings: list[str] = Field(default_factory=list)
-    completed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    completed_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class OkxDemoReconcileResult(BaseModel):
@@ -144,7 +143,7 @@ class OkxDemoReconcileResult(BaseModel):
     recent_orders: list[OkxDemoOrderView]
     pending_algo_orders: list[OkxDemoAlgoOrderView]
     persisted: bool
-    reconciled_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    reconciled_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class OkxDemoOrderRequest(BaseModel):
@@ -168,7 +167,7 @@ class OkxDemoOrderRequest(BaseModel):
     confirmation: Literal[DEMO_CONFIRMATION_PHRASE]
 
     @model_validator(mode="after")
-    def validate_order_shape(self) -> "OkxDemoOrderRequest":
+    def validate_order_shape(self) -> OkxDemoOrderRequest:
         if self.order_type in {"limit", "fok"} and self.price is None:
             raise ValueError("price is required for limit and fok orders")
         if self.order_type == "market" and self.price is not None:
@@ -190,7 +189,7 @@ class OkxDemoCancelRequest(BaseModel):
     confirmation: Literal[DEMO_CONFIRMATION_PHRASE]
 
     @model_validator(mode="after")
-    def validate_identifier(self) -> "OkxDemoCancelRequest":
+    def validate_identifier(self) -> OkxDemoCancelRequest:
         if bool(self.order_id) == bool(self.client_order_id):
             raise ValueError("provide exactly one of order_id or client_order_id")
         return self

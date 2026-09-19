@@ -7,7 +7,6 @@ from sqlalchemy.pool import NullPool
 
 from app.config.settings import get_settings
 
-
 LIVE_TABLES = {
     "okx_live_account_config_state",
     "okx_live_balance_state",
@@ -72,14 +71,14 @@ async def test_okx_live_mirror_schema_is_isolated_and_fail_closed() -> None:
                 )
             )
             intent_checks = await connection.run_sync(
-                lambda sync_connection: inspect(
-                    sync_connection
-                ).get_check_constraints("okx_live_execution_intents")
+                lambda sync_connection: inspect(sync_connection).get_check_constraints(
+                    "okx_live_execution_intents"
+                )
             )
             intent_uniques = await connection.run_sync(
-                lambda sync_connection: inspect(
-                    sync_connection
-                ).get_unique_constraints("okx_live_execution_intents")
+                lambda sync_connection: inspect(sync_connection).get_unique_constraints(
+                    "okx_live_execution_intents"
+                )
             )
             checkpoint_columns = await connection.run_sync(
                 lambda sync_connection: inspect(sync_connection).get_columns(
@@ -87,9 +86,9 @@ async def test_okx_live_mirror_schema_is_isolated_and_fail_closed() -> None:
                 )
             )
             checkpoint_checks = await connection.run_sync(
-                lambda sync_connection: inspect(
-                    sync_connection
-                ).get_check_constraints("okx_live_sync_checkpoints")
+                lambda sync_connection: inspect(sync_connection).get_check_constraints(
+                    "okx_live_sync_checkpoints"
+                )
             )
 
         assert LIVE_TABLES <= table_names
@@ -112,7 +111,8 @@ async def test_okx_live_mirror_schema_is_isolated_and_fail_closed() -> None:
             for constraint in algo_uniques
         )
         assert any(
-            index.get("column_names") == ["client_order_id"] and not index.get("unique", False)
+            index.get("column_names") == ["client_order_id"]
+            and not index.get("unique", False)
             for index in order_indexes
         )
         assert any(
@@ -145,9 +145,7 @@ async def test_okx_live_mirror_schema_is_isolated_and_fail_closed() -> None:
             item.get("column_names") == ["protection_client_order_id"]
             for item in intent_uniques
         )
-        checkpoint_column_names = {
-            column["name"] for column in checkpoint_columns
-        }
+        checkpoint_column_names = {column["name"] for column in checkpoint_columns}
         assert {
             "safety_latched",
             "safety_latch_code",

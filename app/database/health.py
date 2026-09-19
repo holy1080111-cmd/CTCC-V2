@@ -11,5 +11,5 @@ async def check_database() -> tuple[bool, str]:
         return True, "database reachable"
     except SQLAlchemyError as exc:
         return False, f"database unavailable: {exc.__class__.__name__}"
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - IO safety boundary retains failure status; arbitrary adapter errors must not grant authority.
         return False, f"database unavailable: {exc.__class__.__name__}"

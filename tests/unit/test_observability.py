@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -46,7 +46,7 @@ class FakeAutomation:
 
     async def status(self) -> DemoAutomationStatus:
         self.status_calls += 1
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         return DemoAutomationStatus(
             capability_enabled=True,
             trading_mode="okx_demo",
@@ -84,9 +84,11 @@ class FakeAutomation:
         trigger="manual",
         submission_limit=None,
     ):
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         self.submission_limits.append(submission_limit)
-        outcome = "submitted" if execute and self.outcome == "submitted" else self.outcome
+        outcome = (
+            "submitted" if execute and self.outcome == "submitted" else self.outcome
+        )
         if execute and submission_limit == 0 and outcome == "submitted":
             outcome = "blocked"
         if execute and outcome == "submitted":
@@ -99,9 +101,7 @@ class FakeAutomation:
             results=[
                 DemoAutomationSymbolResult(
                     symbol=(symbols or ["BTC-USDT-SWAP"])[0],
-                    instrument_id=(
-                        "BTC-USDT-SWAP" if index == 0 else "ETH-USDT-SWAP"
-                    ),
+                    instrument_id=("BTC-USDT-SWAP" if index == 0 else "ETH-USDT-SWAP"),
                     outcome=outcome,
                     order_submission_attempted=(
                         execute
@@ -151,7 +151,7 @@ class FakeRealtime:
             symbols=["BTC-USDT-SWAP"],
             message_count=10,
             parse_error_count=self.parse_errors,
-            last_message_at=datetime.now(timezone.utc),
+            last_message_at=datetime.now(UTC),
             paper_auto_ticks=False,
         )
 
@@ -229,46 +229,46 @@ def exchange_snapshot(
 
 
 def settings(**updates) -> Settings:
-    values = dict(
-        environment="test",
-        okx_demo_observability_enabled=True,
-        okx_demo_soak_enabled=True,
-        okx_demo_soak_allow_execute=False,
-        okx_demo_soak_default_duration_minutes=1,
-        okx_demo_soak_max_duration_minutes=10,
-        okx_demo_soak_interval_seconds=1,
-        okx_demo_soak_max_runs=1,
-        okx_demo_observability_heartbeat_seconds=1,
-        okx_demo_observability_event_limit=50,
-    )
+    values = {
+        "environment": "test",
+        "okx_demo_observability_enabled": True,
+        "okx_demo_soak_enabled": True,
+        "okx_demo_soak_allow_execute": False,
+        "okx_demo_soak_default_duration_minutes": 1,
+        "okx_demo_soak_max_duration_minutes": 10,
+        "okx_demo_soak_interval_seconds": 1,
+        "okx_demo_soak_max_runs": 1,
+        "okx_demo_observability_heartbeat_seconds": 1,
+        "okx_demo_observability_event_limit": 50,
+    }
     values.update(updates)
     return Settings(_env_file=None, **values)
 
 
 def execute_settings(**updates) -> Settings:
-    values = dict(
-        environment="test",
-        trading_mode="okx_demo",
-        okx_demo_enabled=True,
-        okx_demo_allow_order_writes=True,
-        okx_demo_api_key="key",
-        okx_demo_api_secret="secret",
-        okx_demo_api_passphrase="pass",
-        okx_demo_auto_execution=True,
-        okx_ws_enabled=True,
-        okx_demo_soak_enabled=True,
-        okx_demo_soak_allow_execute=True,
-        okx_demo_soak_default_duration_minutes=1,
-        okx_demo_soak_max_duration_minutes=10,
-        okx_demo_soak_interval_seconds=60,
-        okx_demo_soak_max_runs=1,
-        okx_demo_execution_soak_max_submissions=1,
-        okx_demo_execution_soak_loss_limit_pct="0.0025",
-        okx_demo_execution_soak_reconcile_attempts=2,
-        okx_demo_execution_soak_reconcile_delay_seconds=0,
-        okx_demo_observability_heartbeat_seconds=1,
-        okx_demo_observability_event_limit=50,
-    )
+    values = {
+        "environment": "test",
+        "trading_mode": "okx_demo",
+        "okx_demo_enabled": True,
+        "okx_demo_allow_order_writes": True,
+        "okx_demo_api_key": "key",
+        "okx_demo_api_secret": "secret",
+        "okx_demo_api_passphrase": "pass",
+        "okx_demo_auto_execution": True,
+        "okx_ws_enabled": True,
+        "okx_demo_soak_enabled": True,
+        "okx_demo_soak_allow_execute": True,
+        "okx_demo_soak_default_duration_minutes": 1,
+        "okx_demo_soak_max_duration_minutes": 10,
+        "okx_demo_soak_interval_seconds": 60,
+        "okx_demo_soak_max_runs": 1,
+        "okx_demo_execution_soak_max_submissions": 1,
+        "okx_demo_execution_soak_loss_limit_pct": "0.0025",
+        "okx_demo_execution_soak_reconcile_attempts": 2,
+        "okx_demo_execution_soak_reconcile_delay_seconds": 0,
+        "okx_demo_observability_heartbeat_seconds": 1,
+        "okx_demo_observability_event_limit": 50,
+    }
     values.update(updates)
     return Settings(_env_file=None, **values)
 
@@ -364,12 +364,12 @@ async def test_execute_preflight_separates_risk_equity_from_account_total() -> N
     result = await service.execute_preflight()
 
     assert result.ready is True
-    assert result.total_equity == Decimal("97000")
-    assert result.risk_equity == Decimal("5000")
+    assert result.total_equity == Decimal(97000)
+    assert result.risk_equity == Decimal(5000)
     assert result.equity_basis == "single_currency:USDT"
     assert result.equity_currency == "USDT"
     assert result.execution_order_type == "fok"
-    assert result.execution_max_adverse_slippage_bps == Decimal("5")
+    assert result.execution_max_adverse_slippage_bps == Decimal(5)
     assert result.minimum_execution_risk_reward == Decimal("1.8")
 
 
@@ -584,9 +584,9 @@ async def test_execute_soak_loss_limit_safety_stops() -> None:
     assert status.safety_stop_reason == "execution_soak_loss_limit_reached"
     assert status.equity_basis == "single_currency:USDT"
     assert status.equity_currency == "USDT"
-    assert status.starting_equity == Decimal("5000")
-    assert status.latest_equity == Decimal("4980")
-    assert status.session_pnl == Decimal("-20")
+    assert status.starting_equity == Decimal(5000)
+    assert status.latest_equity == Decimal(4980)
+    assert status.session_pnl == Decimal(-20)
     assert automation.emergency_calls == 1
 
 
@@ -640,7 +640,9 @@ async def test_summary_reports_disconnected_websocket() -> None:
     await service.recover()
     summary = await service.summary()
     assert summary.status == "degraded"
-    assert "okx_public_websocket_disconnected" in {event.code for event in summary.alerts}
+    assert "okx_public_websocket_disconnected" in {
+        event.code for event in summary.alerts
+    }
 
 
 @pytest.mark.asyncio
@@ -736,8 +738,8 @@ async def test_runtime_watchdog_submission_grace_expires_fail_closed() -> None:
         for event in service._events
     )
 
-    service._runtime_exchange_grace_started_at = (
-        datetime.now(timezone.utc) - timedelta(seconds=6)
+    service._runtime_exchange_grace_started_at = datetime.now(UTC) - timedelta(
+        seconds=6
     )
     await service._refresh_runtime_exchange_safety()
 
@@ -772,8 +774,7 @@ async def test_runtime_watchdog_stops_unprotected_active_position() -> None:
     assert automation.locked is True
     assert automation.armed is False
     assert any(
-        event.code == "active_position_missing_protection"
-        for event in service._events
+        event.code == "active_position_missing_protection" for event in service._events
     )
 
 
@@ -803,7 +804,8 @@ async def test_runtime_watchdog_accepts_protected_active_position() -> None:
     assert automation.locked is False
     assert automation.armed is False
     assert not any(
-        event.code in {
+        event.code
+        in {
             "untracked_exchange_exposure_detected",
             "active_position_missing_protection",
             "exchange_exposure_symbol_mismatch",

@@ -20,11 +20,18 @@ class OkxDemoBalanceState(Base):
     isolated_equity: Mapped[Decimal] = mapped_column(Numeric(28, 10), nullable=False)
     adjusted_equity: Mapped[Decimal] = mapped_column(Numeric(28, 10), nullable=False)
     available_equity: Mapped[Decimal] = mapped_column(Numeric(28, 10), nullable=False)
-    details: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list)
+    details: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False, default=list
+    )
     raw: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
-    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    captured_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
     persisted_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
     )
 
 
@@ -39,16 +46,27 @@ class OkxDemoOrderState(Base):
     order_type: Mapped[str] = mapped_column(String(32), nullable=False)
     state: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     size: Mapped[Decimal] = mapped_column(Numeric(28, 10), nullable=False)
-    accumulated_fill_size: Mapped[Decimal] = mapped_column(Numeric(28, 10), nullable=False)
+    accumulated_fill_size: Mapped[Decimal] = mapped_column(
+        Numeric(28, 10), nullable=False
+    )
     price: Mapped[Decimal | None] = mapped_column(Numeric(28, 10))
     average_fill_price: Mapped[Decimal | None] = mapped_column(Numeric(28, 10))
     reduce_only: Mapped[bool] = mapped_column(nullable=False, default=False)
-    attached_algo_orders: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list)
+    attached_algo_orders: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False, default=list
+    )
     raw: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
-    exchange_created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    exchange_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    exchange_created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    exchange_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
     persisted_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
     )
 
 
@@ -67,10 +85,17 @@ class OkxDemoPositionState(Base):
     margin_mode: Mapped[str | None] = mapped_column(String(16))
     liquidation_price: Mapped[Decimal | None] = mapped_column(Numeric(28, 10))
     raw: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
-    exchange_created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    exchange_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    exchange_created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    exchange_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
     persisted_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
     )
 
 
@@ -88,10 +113,17 @@ class OkxDemoAlgoOrderState(Base):
     take_profit_trigger_price: Mapped[Decimal | None] = mapped_column(Numeric(28, 10))
     stop_loss_trigger_price: Mapped[Decimal | None] = mapped_column(Numeric(28, 10))
     raw: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
-    exchange_created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    exchange_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    exchange_created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    exchange_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
     persisted_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
     )
 
 
@@ -108,5 +140,8 @@ class OkxDemoSyncCheckpoint(Base):
     last_error: Mapped[str | None] = mapped_column(String(250))
     reconciled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
     )

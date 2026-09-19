@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from uuid import uuid4
 
@@ -37,6 +38,8 @@ from app.exchange.okx.private_parsers import (
 from app.exchange.okx.private_rest import OkxDemoPrivateRestClient
 from app.exchange.okx.public_rest import OkxPublicRestClient
 from app.okx_demo import OkxDemoSafetyError, OkxDemoUnavailableError
+
+logger = logging.getLogger(__name__)
 
 
 class OkxDemoService:
@@ -103,7 +106,7 @@ class OkxDemoService:
             if not balance_rows:
                 raise OkxDemoUnavailableError("okx_demo_balance_empty")
             parse_balance(balance_rows[0])
-            self._last_exchange_ok_at = datetime.now(timezone.utc)
+            self._last_exchange_ok_at = datetime.now(UTC)
             self._last_error = None
         except Exception as exc:
             self._record_error(exc)
@@ -115,7 +118,7 @@ class OkxDemoService:
         rows = await self.private_client.account_config()
         if not rows:
             raise OkxDemoUnavailableError("okx_demo_account_config_empty")
-        self._last_exchange_ok_at = datetime.now(timezone.utc)
+        self._last_exchange_ok_at = datetime.now(UTC)
         self._last_error = None
         return parse_account_config(rows[0])
 
@@ -124,34 +127,42 @@ class OkxDemoService:
         rows = await self.private_client.balance()
         if not rows:
             raise OkxDemoUnavailableError("okx_demo_balance_empty")
-        self._last_exchange_ok_at = datetime.now(timezone.utc)
+        self._last_exchange_ok_at = datetime.now(UTC)
         self._last_error = None
         return parse_balance(rows[0])
 
-    async def positions(self, instrument_id: str | None = None) -> list[OkxDemoPositionView]:
+    async def positions(
+        self, instrument_id: str | None = None
+    ) -> list[OkxDemoPositionView]:
         self._ensure_read_ready()
         if instrument_id is not None:
             self._ensure_symbol(instrument_id)
         rows = await self.private_client.positions(instrument_id)
-        self._last_exchange_ok_at = datetime.now(timezone.utc)
+        self._last_exchange_ok_at = datetime.now(UTC)
         self._last_error = None
-        return [item for item in (parse_position(row) for row in rows) if item.size != 0]
+        return [
+            item for item in (parse_position(row) for row in rows) if item.size != 0
+        ]
 
-    async def pending_orders(self, instrument_id: str | None = None) -> list[OkxDemoOrderView]:
+    async def pending_orders(
+        self, instrument_id: str | None = None
+    ) -> list[OkxDemoOrderView]:
         self._ensure_read_ready()
         if instrument_id is not None:
             self._ensure_symbol(instrument_id)
         rows = await self.private_client.pending_orders(instrument_id)
-        self._last_exchange_ok_at = datetime.now(timezone.utc)
+        self._last_exchange_ok_at = datetime.now(UTC)
         self._last_error = None
         return [parse_order(row) for row in rows if row.get("ordId")]
 
-    async def pending_algo_orders(self, instrument_id: str | None = None) -> list[OkxDemoAlgoOrderView]:
+    async def pending_algo_orders(
+        self, instrument_id: str | None = None
+    ) -> list[OkxDemoAlgoOrderView]:
         self._ensure_read_ready()
         if instrument_id is not None:
             self._ensure_symbol(instrument_id)
         rows = await self.private_client.pending_algo_orders(instrument_id)
-        self._last_exchange_ok_at = datetime.now(timezone.utc)
+        self._last_exchange_ok_at = datetime.now(UTC)
         self._last_error = None
         return [parse_algo_order(row) for row in rows if row.get("algoId")]
 
@@ -175,7 +186,7 @@ class OkxDemoService:
             raise OkxDemoUnavailableError("okx_demo_order_not_found")
         order = parse_order(rows[0])
         await self._persist_orders([order], action="okx_demo_order_detail_synced")
-        self._last_exchange_ok_at = datetime.now(timezone.utc)
+        self._last_exchange_ok_at = datetime.now(UTC)
         self._last_error = None
         return order
 
@@ -183,7 +194,14 @@ class OkxDemoService:
         self._ensure_read_ready()
         async with self._lock:
             try:
-                config_rows, balance_rows, position_rows, pending_rows, history_rows, algo_rows = await asyncio.gather(
+                (
+                    config_rows,
+                    balance_rows,
+                    position_rows,
+                    pending_rows,
+                    history_rows,
+                    algo_rows,
+                ) = await asyncio.gather(
                     self.private_client.account_config(),
                     self.private_client.balance(),
                     self.private_client.positions(),
@@ -192,15 +210,25 @@ class OkxDemoService:
                     self.private_client.pending_algo_orders(),
                 )
                 if not config_rows or not balance_rows:
-                    raise OkxDemoUnavailableError("okx_demo_reconcile_missing_account_data")
+                    raise OkxDemoUnavailableError(
+                        "okx_demo_reconcile_missing_account_data"
+                    )
                 account_config = parse_account_config(config_rows[0])
                 balance = parse_balance(balance_rows[0])
                 positions = [
-                    item for item in (parse_position(row) for row in position_rows) if item.size != 0
+                    item
+                    for item in (parse_position(row) for row in position_rows)
+                    if item.size != 0
                 ]
-                pending_orders = [parse_order(row) for row in pending_rows if row.get("ordId")]
-                recent_orders = [parse_order(row) for row in history_rows if row.get("ordId")]
-                algo_orders = [parse_algo_order(row) for row in algo_rows if row.get("algoId")]
+                pending_orders = [
+                    parse_order(row) for row in pending_rows if row.get("ordId")
+                ]
+                recent_orders = [
+                    parse_order(row) for row in history_rows if row.get("ordId")
+                ]
+                algo_orders = [
+                    parse_algo_order(row) for row in algo_rows if row.get("algoId")
+                ]
                 persisted = False
                 if self.repository is not None:
                     await self.repository.sync_snapshot(
@@ -211,7 +239,7 @@ class OkxDemoService:
                         algo_orders=algo_orders,
                     )
                     persisted = True
-                self._last_exchange_ok_at = datetime.now(timezone.utc)
+                self._last_exchange_ok_at = datetime.now(UTC)
                 self._last_error = None
                 return OkxDemoReconcileResult(
                     account_config=account_config,
@@ -227,8 +255,11 @@ class OkxDemoService:
                 if self.repository is not None:
                     try:
                         await self.repository.mark_failure(self._safe_error(exc))
-                    except Exception:
-                        pass
+                    except Exception as observation_error:  # noqa: BLE001 - IO safety boundary retains failure status; arbitrary adapter errors must not grant authority.
+                        logger.warning(
+                            "auxiliary_io_failed kind=%s",
+                            type(observation_error).__name__,
+                        )
                 raise
 
     async def place_order(
@@ -251,17 +282,32 @@ class OkxDemoService:
             ):
                 raise OkxDemoSafetyError("unsupported_okx_position_mode")
             instrument = await self._instrument(request.instrument_id)
-            self._validate_size(request.size, instrument.minimum_size, instrument.lot_size)
-            self._validate_price_alignment(request.price, instrument.tick_size, "order_price")
-            self._validate_price_alignment(request.stop_loss, instrument.tick_size, "stop_loss")
-            self._validate_price_alignment(request.take_profit, instrument.tick_size, "take_profit")
+            self._validate_size(
+                request.size, instrument.minimum_size, instrument.lot_size
+            )
+            self._validate_price_alignment(
+                request.price, instrument.tick_size, "order_price"
+            )
+            self._validate_price_alignment(
+                request.stop_loss, instrument.tick_size, "stop_loss"
+            )
+            self._validate_price_alignment(
+                request.take_profit, instrument.tick_size, "take_profit"
+            )
 
-            current_positions, pending_orders, pending_algo_orders = await asyncio.gather(
+            (
+                current_positions,
+                pending_orders,
+                pending_algo_orders,
+            ) = await asyncio.gather(
                 self.positions(),
                 self.pending_orders(request.instrument_id),
                 self.pending_algo_orders(request.instrument_id),
             )
-            if any(item.instrument_id == request.instrument_id for item in current_positions):
+            if any(
+                item.instrument_id == request.instrument_id
+                for item in current_positions
+            ):
                 raise OkxDemoSafetyError("position_already_open_for_instrument")
             if pending_orders:
                 raise OkxDemoSafetyError("pending_order_already_exists_for_instrument")
@@ -277,25 +323,21 @@ class OkxDemoService:
             ):
                 raise OkxDemoSafetyError("protected_order_required")
 
-            mark_price = await self.public_client.mark_price(
-                request.instrument_id
-            )
+            mark_price = await self.public_client.mark_price(request.instrument_id)
             if mark_price <= 0:
                 raise OkxDemoSafetyError("okx_demo_mark_price_invalid")
             reference_price = request.price
             if reference_price is None or request.order_type == "fok":
                 ticker = await self.public_client.ticker(request.instrument_id)
                 if ticker.bid <= 0 or ticker.ask <= 0 or ticker.bid > ticker.ask:
-                    raise OkxDemoSafetyError(
-                        "okx_demo_executable_quote_invalid"
-                    )
+                    raise OkxDemoSafetyError("okx_demo_executable_quote_invalid")
                 executable_quote = (
                     ticker.ask if request.direction == "long" else ticker.bid
                 )
                 basis_bps = (
                     abs(mark_price - executable_quote)
                     / executable_quote
-                    * Decimal("10000")
+                    * Decimal(10000)
                 )
                 if basis_bps > self.settings.okx_demo_scan_max_entry_drift_bps:
                     raise OkxDemoSafetyError(
@@ -363,7 +405,9 @@ class OkxDemoService:
             # automation callback. Keep this check immediately before submission.
             self._ensure_write_ready()
             self._ensure_symbol(request.instrument_id)
-            self._validate_size(request.size, instrument.minimum_size, instrument.lot_size)
+            self._validate_size(
+                request.size, instrument.minimum_size, instrument.lot_size
+            )
             if len(current_positions) >= self.settings.okx_demo_max_open_positions:
                 raise OkxDemoSafetyError("okx_demo_max_open_positions_reached")
             if self.settings.okx_demo_require_protection and (
@@ -382,8 +426,10 @@ class OkxDemoService:
             if order is not None:
                 try:
                     await self._persist_orders([order], action="okx_demo_order_placed")
-                except Exception:
-                    warnings.append("exchange_acknowledged_but_local_order_mirror_failed")
+                except Exception:  # noqa: BLE001 - IO safety boundary retains failure status; arbitrary adapter errors must not grant authority.
+                    warnings.append(
+                        "exchange_acknowledged_but_local_order_mirror_failed"
+                    )
             else:
                 warnings.append("exchange_acknowledged_order_detail_not_yet_available")
             protection_confirmed: bool | None = None
@@ -407,7 +453,7 @@ class OkxDemoService:
                         warnings.append(
                             "exchange_acknowledged_but_protection_not_confirmed"
                         )
-            self._last_exchange_ok_at = datetime.now(timezone.utc)
+            self._last_exchange_ok_at = datetime.now(UTC)
             self._last_error = None
             return OkxDemoWriteResult(
                 action="place_order",
@@ -437,14 +483,19 @@ class OkxDemoService:
             order = await self._poll_order(
                 request.instrument_id,
                 order_id=request.order_id or acknowledgement.order_id or None,
-                client_order_id=request.client_order_id or acknowledgement.client_order_id,
+                client_order_id=request.client_order_id
+                or acknowledgement.client_order_id,
             )
             warnings: list[str] = []
             if order is not None:
                 try:
-                    await self._persist_orders([order], action="okx_demo_order_cancelled")
-                except Exception:
-                    warnings.append("exchange_acknowledged_but_local_order_mirror_failed")
+                    await self._persist_orders(
+                        [order], action="okx_demo_order_cancelled"
+                    )
+                except Exception:  # noqa: BLE001 - IO safety boundary retains failure status; arbitrary adapter errors must not grant authority.
+                    warnings.append(
+                        "exchange_acknowledged_but_local_order_mirror_failed"
+                    )
             return OkxDemoWriteResult(
                 action="cancel_order",
                 acknowledged=True,
@@ -467,7 +518,9 @@ class OkxDemoService:
             if not positions:
                 raise OkxDemoSafetyError("no_open_position_for_instrument")
             if config.position_mode == "long_short_mode" and request.direction is None:
-                raise OkxDemoSafetyError("direction_required_for_long_short_position_mode")
+                raise OkxDemoSafetyError(
+                    "direction_required_for_long_short_position_mode"
+                )
             payload = {
                 "instId": request.instrument_id,
                 "mgnMode": request.margin_mode,
@@ -485,7 +538,7 @@ class OkxDemoService:
         try:
             await self.reconcile()
             reconciled = True
-        except Exception:
+        except Exception:  # noqa: BLE001 - IO safety boundary retains failure status; arbitrary adapter errors must not grant authority.
             warnings.append("close_acknowledged_but_reconcile_failed")
         return OkxDemoWriteResult(
             action="close_position",
@@ -513,7 +566,9 @@ class OkxDemoService:
             }
             if config.position_mode == "long_short_mode":
                 if request.direction is None:
-                    raise OkxDemoSafetyError("direction_required_for_long_short_position_mode")
+                    raise OkxDemoSafetyError(
+                        "direction_required_for_long_short_position_mode"
+                    )
                 payload["posSide"] = request.direction
             self._ensure_write_ready()
             self._ensure_symbol(request.instrument_id)
@@ -532,9 +587,7 @@ class OkxDemoService:
                 leverage=request.leverage,
                 position_side=expected_position_side,
             ):
-                raise OkxDemoSafetyError(
-                    "okx_demo_leverage_exchange_response_mismatch"
-                )
+                raise OkxDemoSafetyError("okx_demo_leverage_exchange_response_mismatch")
             return OkxDemoWriteResult(
                 action="set_leverage",
                 acknowledged=True,
@@ -547,10 +600,12 @@ class OkxDemoService:
             return
         try:
             await self.reconcile()
-        except Exception:
+        except Exception as observation_error:  # noqa: BLE001 - IO safety boundary retains failure status; arbitrary adapter errors must not grant authority.
             # Startup reconciliation is observable through /status; it must not
             # prevent the API from starting for manual diagnosis.
-            pass
+            logger.warning(
+                "auxiliary_io_failed kind=%s", type(observation_error).__name__
+            )
 
     def _ensure_read_ready(self) -> None:
         if not self.settings.okx_demo_enabled:
@@ -622,7 +677,9 @@ class OkxDemoService:
             return "net"
         if config.position_mode == "long_short_mode":
             if direction is None:
-                raise OkxDemoSafetyError("direction_required_for_long_short_position_mode")
+                raise OkxDemoSafetyError(
+                    "direction_required_for_long_short_position_mode"
+                )
             return direction
         raise OkxDemoSafetyError("unsupported_okx_position_mode")
 
@@ -655,7 +712,9 @@ class OkxDemoService:
             except OkxPrivateApiError:
                 pass
             if attempt + 1 < self.settings.okx_demo_order_detail_poll_attempts:
-                await asyncio.sleep(self.settings.okx_demo_order_detail_poll_delay_seconds)
+                await asyncio.sleep(
+                    self.settings.okx_demo_order_detail_poll_delay_seconds
+                )
         return latest
 
     async def _confirm_protection(
@@ -672,7 +731,7 @@ class OkxDemoService:
                 rows = await self.private_client.pending_algo_orders(
                     request.instrument_id
                 )
-            except Exception:
+            except Exception:  # noqa: BLE001 - IO safety boundary retains failure status; arbitrary adapter errors must not grant authority.
                 rows = []
             if self._protection_rows_match(
                 rows,
@@ -720,6 +779,8 @@ class OkxDemoService:
             row.get("instId") != request.instrument_id
             or row.get("side") != expected_side
             or row.get("posSide") != expected_position_side
+            or row.get("state") != "live"
+            or row.get("ordType") not in {"oco", "conditional"}
         ):
             return False
         try:
@@ -737,7 +798,9 @@ class OkxDemoService:
             and row.get("tpTriggerPxType") == request.trigger_price_type
         )
 
-    async def _persist_orders(self, orders: list[OkxDemoOrderView], *, action: str) -> None:
+    async def _persist_orders(
+        self, orders: list[OkxDemoOrderView], *, action: str
+    ) -> None:
         if self.repository is not None:
             await self.repository.upsert_orders(orders, action=action)
 
@@ -746,9 +809,11 @@ class OkxDemoService:
             return OkxDemoMirrorStatus(available=False)
         try:
             return await self.repository.mirror_status()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - IO safety boundary retains failure status; arbitrary adapter errors must not grant authority.
             self._record_error(exc)
-            return OkxDemoMirrorStatus(available=False, last_error=self._safe_error(exc))
+            return OkxDemoMirrorStatus(
+                available=False, last_error=self._safe_error(exc)
+            )
 
     @staticmethod
     def _ack(data: list[dict[str, object]]) -> OkxDemoOrderAcknowledgement:
@@ -764,7 +829,7 @@ class OkxDemoService:
 
     @staticmethod
     def _client_id(prefix: str) -> str:
-        stamp = datetime.now(timezone.utc).strftime("%y%m%d%H%M%S")
+        stamp = datetime.now(UTC).strftime("%y%m%d%H%M%S")
         return f"{prefix}{stamp}{uuid4().hex[:10]}"[:32]
 
     @staticmethod
@@ -779,8 +844,8 @@ class OkxDemoService:
     def _safe_error(exc: Exception) -> str:
         if isinstance(exc, (OkxPrivateApiError, OkxPublicApiError)):
             code = getattr(exc, "code", None)
-            return f"{exc.__class__.__name__}:{code or 'unknown'}:{str(exc)}"[:250]
-        return f"{exc.__class__.__name__}:{str(exc)}"[:250]
+            return f"{exc.__class__.__name__}:{code or 'unknown'}:{exc!s}"[:250]
+        return f"{exc.__class__.__name__}:{exc!s}"[:250]
 
 
 settings = get_settings()

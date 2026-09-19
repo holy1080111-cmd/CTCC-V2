@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+import hashlib
+import zipfile
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from io import BytesIO
 from pathlib import Path
-import hashlib
-import zipfile
 
 import pytest
 
@@ -19,9 +19,8 @@ from app.research.external_benchmarks import (
     profile_binance_kline_archive,
 )
 
-
-NOW = datetime(2026, 8, 17, 1, 2, 3, tzinfo=timezone.utc)
-LAST_MODIFIED = datetime(2024, 1, 2, 6, 7, 8, tzinfo=timezone.utc)
+NOW = datetime(2026, 8, 17, 1, 2, 3, tzinfo=UTC)
+LAST_MODIFIED = datetime(2024, 1, 2, 6, 7, 8, tzinfo=UTC)
 HEADER = (
     "open_time,open,high,low,close,volume,close_time,quote_volume,"
     "count,taker_buy_volume,taker_buy_quote_volume,ignore\n"
@@ -323,6 +322,4 @@ def test_profile_rejects_cross_contract_identity_tampering(
 
 
 def test_decimal_values_remain_exact_in_the_reference_parser() -> None:
-    assert Decimal("100.00000001") + Decimal("0.00000001") == Decimal(
-        "100.00000002"
-    )
+    assert Decimal("100.00000001") + Decimal("0.00000001") == Decimal("100.00000002")

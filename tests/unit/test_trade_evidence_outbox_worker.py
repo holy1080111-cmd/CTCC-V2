@@ -1,8 +1,8 @@
-"""Synthetic single-pass protocol proof, not Notion/account or Windows IO proof.
+"""Synthetic single-pass protocol proof with separately scoped native IO tests.
 
 MemoryBackend replaces only the outbox root context. The real outbox transition,
 hash-chain, recovery and dispatch APIs are used throughout successful workflows.
-Native POSIX coverage is marked explicitly; no ACL changes or runtime startup.
+Native journal tests run on the actual platform; no ACL changes or runtime startup.
 """
 
 import asyncio
@@ -612,11 +612,7 @@ async def test_relative_or_filesystem_root_rejects_before_io(memory, clock):
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(
-    os.name == "nt",
-    reason="Real POSIX storage and worker proof only; not Windows success evidence",
-)
-async def test_native_posix_worker_uses_real_journal_and_readback(tmp_path, clock):
+async def test_native_worker_uses_real_journal_and_readback(tmp_path, clock):
     root = tmp_path / "trusted-native-worker"
     root.mkdir()
     outbox.enqueue(root, payload(report_id=REPORT), clock=clock)

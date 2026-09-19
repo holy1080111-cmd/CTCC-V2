@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import Decimal, localcontext
-from typing import Sequence
+from itertools import pairwise
 
 D = Decimal
 _EPSILON = D("1e-30")
@@ -50,14 +51,15 @@ def _multiply(
 ) -> list[list[Decimal]]:
     transposed = _transpose(right)
     return [
-        [sum((a * b for a, b in zip(row, column, strict=True)), D("0")) for column in transposed]
+        [
+            sum((a * b for a, b in zip(row, column, strict=True)), D("0"))
+            for column in transposed
+        ]
         for row in left
     ]
 
 
-def _add(
-    left: list[list[Decimal]], right: list[list[Decimal]]
-) -> list[list[Decimal]]:
+def _add(left: list[list[Decimal]], right: list[list[Decimal]]) -> list[list[Decimal]]:
     return [
         [a + b for a, b in zip(left_row, right_row, strict=True)]
         for left_row, right_row in zip(left, right, strict=True)
@@ -94,9 +96,7 @@ def _joseph_update(
     )
     for row in range(3):
         for column in range(3):
-            covariance[row][column] += (
-                gain[row] * observation_variance * gain[column]
-            )
+            covariance[row][column] += gain[row] * observation_variance * gain[column]
 
     # Decimal round-off can create tiny asymmetry or negative diagonal noise.
     for row in range(3):
@@ -127,10 +127,7 @@ def causal_state_estimate(
     with localcontext() as context:
         context.prec = 50
         logs = [value.ln() for value in values]
-        returns = [
-            current - previous
-            for previous, current in zip(logs[:-1], logs[1:], strict=True)
-        ]
+        returns = [current - previous for previous, current in pairwise(logs)]
         median_return = _median(returns)
         deviations = [abs(value - median_return) for value in returns]
         mad_scale = _median(deviations) * D("1.4826")
@@ -199,13 +196,9 @@ def causal_state_estimate(
                 predicted_covariance[0][0] + effective_observation_variance
             )
             gain = [
-                predicted_covariance[row][0] / innovation_variance
-                for row in range(3)
+                predicted_covariance[row][0] / innovation_variance for row in range(3)
             ]
-            state = [
-                predicted_state[row] + gain[row] * innovation
-                for row in range(3)
-            ]
+            state = [predicted_state[row] + gain[row] * innovation for row in range(3)]
             covariance = _joseph_update(
                 predicted_covariance,
                 gain,
@@ -221,9 +214,7 @@ def causal_state_estimate(
 
         velocity_std = covariance[1][1].sqrt()
         acceleration_std = covariance[2][2].sqrt()
-        velocity_z = _clamp(
-            state[1] / max(velocity_std, _EPSILON), D("-20"), D("20")
-        )
+        velocity_z = _clamp(state[1] / max(velocity_std, _EPSILON), D("-20"), D("20"))
         acceleration_z = _clamp(
             state[2] / max(acceleration_std, _EPSILON), D("-20"), D("20")
         )
@@ -231,14 +222,12 @@ def causal_state_estimate(
 
         recent_shocks = shock_scores[-5:]
         weights = [D("0.0625"), D("0.0625"), D("0.125"), D("0.25"), D("0.50")]
-        active_weights = weights[-len(recent_shocks):]
+        active_weights = weights[-len(recent_shocks) :]
         weighted_shock = (
             sum(
                 (
                     weight * shock
-                    for weight, shock in zip(
-                        active_weights, recent_shocks, strict=True
-                    )
+                    for weight, shock in zip(active_weights, recent_shocks, strict=True)
                 ),
                 D("0"),
             )
@@ -252,12 +241,8 @@ def causal_state_estimate(
             D("1"),
         )
 
-        significance = _clamp(
-            (abs(velocity_z) - D("1")) / D("3"), D("0"), D("1")
-        )
-        confidence = _clamp(
-            significance * (D("1") - shock_score), D("0"), D("1")
-        )
+        significance = _clamp((abs(velocity_z) - D("1")) / D("3"), D("0"), D("1"))
+        confidence = _clamp(significance * (D("1") - shock_score), D("0"), D("1"))
         lower_velocity = state[1] - _CREDIBLE_Z * velocity_std
         upper_velocity = state[1] + _CREDIBLE_Z * velocity_std
         if lower_velocity > 0:

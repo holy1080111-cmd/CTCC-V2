@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections import deque
 from contextlib import suppress
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-import logging
 from typing import Any
 
 from app.config.settings import Settings, get_settings
@@ -59,6 +59,7 @@ class DemoObservabilityService:
 
         if realtime_client is None:
             if self.settings.environment == "test":
+
                 class _NullRealtime:
                     class _Status:
                         enabled = False
@@ -75,13 +76,15 @@ class DemoObservabilityService:
 
                 realtime_client = _NullRealtime()
             else:
-                from app.market.realtime_service import realtime_client as runtime_client
+                from app.market.realtime_service import (
+                    realtime_client as runtime_client,
+                )
 
                 realtime_client = runtime_client
         self.realtime_client = realtime_client
         self.demo_service = demo_service or getattr(automation, "demo_service", None)
 
-        self._process_started_at = datetime.now(timezone.utc)
+        self._process_started_at = datetime.now(UTC)
         self._last_heartbeat_at = self._process_started_at
         self._recovered = False
         self._monitor_task: asyncio.Task[None] | None = None
@@ -117,7 +120,9 @@ class DemoObservabilityService:
                     self._soak.auto_disarmed = True
                     await self.repository.update_session(self._soak)
             self._events = deque(
-                await self.repository.events(self.settings.okx_demo_observability_event_limit),
+                await self.repository.events(
+                    self.settings.okx_demo_observability_event_limit
+                ),
                 maxlen=self.settings.okx_demo_observability_event_limit,
             )
             if interrupted:
@@ -129,14 +134,14 @@ class DemoObservabilityService:
                 )
         elif self._soak.state == "running":
             self._soak.state = "interrupted"
-            self._soak.stopped_at = datetime.now(timezone.utc)
+            self._soak.stopped_at = datetime.now(UTC)
             self._soak.stop_reason = "api_process_restarted"
             self._soak.auto_disarmed = bool(self._soak.execute)
 
         realtime = self.realtime_client.status()
         self._last_parse_error_count = int(realtime.parse_error_count)
         self._recovered = True
-        self._last_heartbeat_at = datetime.now(timezone.utc)
+        self._last_heartbeat_at = datetime.now(UTC)
 
     async def start_monitoring(self) -> None:
         if not self.settings.okx_demo_observability_enabled or self.monitoring:
@@ -182,7 +187,7 @@ class DemoObservabilityService:
         else:
             try:
                 snapshot = await self.demo_service.reconcile()
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - IO safety boundary retains failure status; arbitrary adapter errors must not grant authority.
                 blockers.append("okx_demo_reconcile_failed:" + self._safe_error(exc))
 
         position_count = len(snapshot.positions) if snapshot is not None else 0
@@ -233,9 +238,7 @@ class DemoObservabilityService:
             execution_max_adverse_slippage_bps=(
                 automation.execution_max_adverse_slippage_bps
             ),
-            minimum_execution_risk_reward=(
-                automation.minimum_execution_risk_reward
-            ),
+            minimum_execution_risk_reward=(automation.minimum_execution_risk_reward),
             require_flat_start=self.settings.okx_demo_execution_soak_require_flat_start,
             require_protection=self.settings.okx_demo_execution_soak_require_protection,
             auto_disarm=self.settings.okx_demo_execution_soak_auto_disarm,
@@ -250,12 +253,21 @@ class DemoObservabilityService:
             if self.soak_running:
                 raise DemoObservabilityError("demo_soak_already_running")
 
-            duration = request.duration_minutes or self.settings.okx_demo_soak_default_duration_minutes
+            duration = (
+                request.duration_minutes
+                or self.settings.okx_demo_soak_default_duration_minutes
+            )
             if duration > self.settings.okx_demo_soak_max_duration_minutes:
-                raise DemoObservabilityError("demo_soak_duration_exceeds_configured_maximum")
-            interval = request.interval_seconds or self.settings.okx_demo_soak_interval_seconds
+                raise DemoObservabilityError(
+                    "demo_soak_duration_exceeds_configured_maximum"
+                )
+            interval = (
+                request.interval_seconds or self.settings.okx_demo_soak_interval_seconds
+            )
             if request.execute and interval < 60:
-                raise DemoObservabilityError("execute_soak_interval_must_be_at_least_60_seconds")
+                raise DemoObservabilityError(
+                    "execute_soak_interval_must_be_at_least_60_seconds"
+                )
             max_runs = request.max_runs or self.settings.okx_demo_soak_max_runs
             symbols = list(request.symbols or self.settings.okx_demo_scan_symbol_list)
             if not symbols:
@@ -274,7 +286,7 @@ class DemoObservabilityService:
                 equity_basis = preflight.equity_basis
                 equity_currency = preflight.equity_currency
 
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             session = DemoSoakSessionView(
                 state="running",
                 execute=request.execute,
@@ -312,7 +324,9 @@ class DemoObservabilityService:
                     "interval_seconds": interval,
                     "max_runs": max_runs,
                     "max_submissions": self._soak.max_submissions,
-                    "starting_equity": str(starting_equity) if starting_equity is not None else None,
+                    "starting_equity": str(starting_equity)
+                    if starting_equity is not None
+                    else None,
                     "equity_basis": equity_basis,
                     "equity_currency": equity_currency,
                     "symbols": symbols,
@@ -337,13 +351,15 @@ class DemoObservabilityService:
         return list(self._events)[:limit]
 
     async def metrics(self, window_hours: int = 24) -> DemoObservabilityMetrics:
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=window_hours)
+        cutoff = datetime.now(UTC) - timedelta(hours=window_hours)
         if self.repository is not None:
             selected = await self.repository.automation_runs_since(
                 cutoff, limit=self.settings.okx_demo_observability_metrics_run_limit
             )
         else:
-            runs = await self.automation.history(self.settings.okx_demo_automation_history_limit)
+            runs = await self.automation.history(
+                self.settings.okx_demo_automation_history_limit
+            )
             selected = [run for run in runs if run.completed_at >= cutoff]
         metrics = DemoObservabilityMetrics(window_hours=window_hours)
         metrics.total_runs = len(selected)
@@ -363,18 +379,26 @@ class DemoObservabilityService:
         return metrics
 
     async def summary(self, window_hours: int = 24) -> DemoObservabilitySummary:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         realtime = self.realtime_client.status()
         automation = await self.automation.status()
         metrics = await self.metrics(window_hours)
         self._update_runtime_counters(now, realtime)
         alerts = self._current_alerts(now, realtime, automation)
         severity = {event.severity for event in alerts}
-        status = "critical" if "critical" in severity else "degraded" if alerts else "healthy"
+        status = (
+            "critical"
+            if "critical" in severity
+            else "degraded"
+            if alerts
+            else "healthy"
+        )
         return DemoObservabilitySummary(
             status=status,
             process_started_at=self._process_started_at,
-            uptime_seconds=max(0, int((now - self._process_started_at).total_seconds())),
+            uptime_seconds=max(
+                0, int((now - self._process_started_at).total_seconds())
+            ),
             recovered=self._recovered,
             watchdog_running=self.monitoring,
             last_heartbeat_at=self._last_heartbeat_at,
@@ -399,8 +423,11 @@ class DemoObservabilityService:
     async def _soak_loop(self) -> None:
         try:
             while not self._soak_stop.is_set():
-                now = datetime.now(timezone.utc)
-                if self._soak.planned_end_at is not None and now >= self._soak.planned_end_at:
+                now = datetime.now(UTC)
+                if (
+                    self._soak.planned_end_at is not None
+                    and now >= self._soak.planned_end_at
+                ):
                     await self._finish_for_limit("duration_reached")
                     return
                 if self._soak.completed_runs >= self._soak.max_runs:
@@ -439,7 +466,7 @@ class DemoObservabilityService:
             self._soak_task = None
 
     async def _execute_soak_run(self) -> bool:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         try:
             if self._soak.execute:
                 if await self._refresh_execution_safety(stage="before_run"):
@@ -493,7 +520,10 @@ class DemoObservabilityService:
                     await self._finish_soak("completed", "submission_limit_reached")
                     return True
 
-            if self._soak.consecutive_errors >= self.settings.okx_demo_observability_error_threshold:
+            if (
+                self._soak.consecutive_errors
+                >= self.settings.okx_demo_observability_error_threshold
+            ):
                 if self._soak.execute:
                     await self._safety_stop(
                         "consecutive_error_threshold",
@@ -515,7 +545,7 @@ class DemoObservabilityService:
                     await self._finish_soak("error", "consecutive_error_threshold")
                 return True
             return False
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - IO safety boundary retains failure status; arbitrary adapter errors must not grant authority.
             self._soak.completed_runs += 1
             self._soak.error_runs += 1
             self._soak.consecutive_errors += 1
@@ -638,7 +668,10 @@ class DemoObservabilityService:
                 },
             )
 
-        if self._soak.active_position_count and self.settings.okx_demo_execution_soak_require_protection:
+        if (
+            self._soak.active_position_count
+            and self.settings.okx_demo_execution_soak_require_protection
+        ):
             position_ids = {item.instrument_id for item in snapshot.positions}
             missing_protection = {
                 instrument_id
@@ -752,7 +785,7 @@ class DemoObservabilityService:
             try:
                 if await self._refresh_execution_safety(stage="session_limit"):
                     return
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - IO safety boundary retains failure status; arbitrary adapter errors must not grant authority.
                 await self._safety_stop(
                     "session_limit_reconcile_failed", {"error": self._safe_error(exc)}
                 )
@@ -782,7 +815,7 @@ class DemoObservabilityService:
         if engage_stop:
             try:
                 await self.automation.emergency_stop()
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - IO safety boundary retains failure status; arbitrary adapter errors must not grant authority.
                 self._soak.last_error = (
                     reason + ";emergency_stop_failed:" + self._safe_error(exc)
                 )[:250]
@@ -794,7 +827,9 @@ class DemoObservabilityService:
         outcome_set = set(outcomes)
         self._soak.completed_runs += 1
         self._soak.last_run_at = run.completed_at
-        self._soak.last_outcome = outcomes[0] if len(outcomes) == 1 else ",".join(outcomes)[:40]
+        self._soak.last_outcome = (
+            outcomes[0] if len(outcomes) == 1 else ",".join(outcomes)[:40]
+        )
         submitted_count = sum(
             result.order_submission_attempted for result in run.results
         )
@@ -818,15 +853,17 @@ class DemoObservabilityService:
             self._soak.last_error = None
 
     async def _wait_with_heartbeat(self, seconds: int) -> bool:
-        deadline = datetime.now(timezone.utc) + timedelta(seconds=seconds)
+        deadline = datetime.now(UTC) + timedelta(seconds=seconds)
         heartbeat = max(1, self.settings.okx_demo_observability_heartbeat_seconds)
         while not self._soak_stop.is_set():
-            self._last_heartbeat_at = datetime.now(timezone.utc)
+            self._last_heartbeat_at = datetime.now(UTC)
             remaining = (deadline - self._last_heartbeat_at).total_seconds()
             if remaining <= 0:
                 return False
             try:
-                await asyncio.wait_for(self._soak_stop.wait(), timeout=min(heartbeat, remaining))
+                await asyncio.wait_for(
+                    self._soak_stop.wait(), timeout=min(heartbeat, remaining)
+                )
                 return True
             except TimeoutError:
                 continue
@@ -840,14 +877,16 @@ class DemoObservabilityService:
             try:
                 await self.automation.disarm()
                 self._soak.auto_disarmed = True
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - IO safety boundary retains failure status; arbitrary adapter errors must not grant authority.
                 self._soak.last_error = (
-                    (self._soak.last_error + ";") if self._soak.last_error else ""
-                ) + "auto_disarm_failed:" + self._safe_error(exc)
+                    ((self._soak.last_error + ";") if self._soak.last_error else "")
+                    + "auto_disarm_failed:"
+                    + self._safe_error(exc)
+                )
                 self._soak.last_error = self._soak.last_error[:250]
 
         self._soak.state = state
-        self._soak.stopped_at = datetime.now(timezone.utc)
+        self._soak.stopped_at = datetime.now(UTC)
         self._soak.stop_reason = reason
         await self._persist_soak()
         await self._emit(
@@ -891,11 +930,7 @@ class DemoObservabilityService:
         tracked_ids = {item.instrument_id for item in automation.active_trades}
         if not tracked_ids and automation.active_instrument_id:
             tracked_ids.add(automation.active_instrument_id)
-        has_exposure = bool(
-            positions
-            or pending_orders
-            or pending_algo_orders
-        )
+        has_exposure = bool(positions or pending_orders or pending_algo_orders)
         exposed_symbols = {
             item.instrument_id
             for item in [
@@ -932,9 +967,7 @@ class DemoObservabilityService:
                 missing_protection = {
                     position.instrument_id
                     for position in positions
-                    if not self._protection_present(
-                        snapshot, position.instrument_id
-                    )
+                    if not self._protection_present(snapshot, position.instrument_id)
                 }
                 if missing_protection:
                     reason = "active_position_missing_protection"
@@ -945,17 +978,13 @@ class DemoObservabilityService:
             self._runtime_exchange_grace_symbols = frozenset()
             return
 
-        grace_eligible = (
-            automation.run_in_progress
-            and reason
-            in {
-                "untracked_exchange_exposure_detected",
-                "exchange_exposure_symbol_mismatch",
-                "active_position_missing_protection",
-            }
-        )
+        grace_eligible = automation.run_in_progress and reason in {
+            "untracked_exchange_exposure_detected",
+            "exchange_exposure_symbol_mismatch",
+            "active_position_missing_protection",
+        }
         if grace_eligible:
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             symbols = frozenset(exposed_symbols)
             if (
                 self._runtime_exchange_grace_started_at is None
@@ -995,13 +1024,15 @@ class DemoObservabilityService:
     async def _monitor_loop(self) -> None:
         interval = max(1, self.settings.okx_demo_observability_heartbeat_seconds)
         while not self._monitor_stop.is_set():
-            self._last_heartbeat_at = datetime.now(timezone.utc)
+            self._last_heartbeat_at = datetime.now(UTC)
             try:
                 realtime = self.realtime_client.status()
                 await self._refresh_runtime_exchange_safety()
                 automation = await self.automation.status()
                 self._update_runtime_counters(self._last_heartbeat_at, realtime)
-                alerts = self._current_alerts(self._last_heartbeat_at, realtime, automation)
+                alerts = self._current_alerts(
+                    self._last_heartbeat_at, realtime, automation
+                )
                 current_codes = {event.code for event in alerts}
                 for event in alerts:
                     if event.code not in self._active_alert_codes:
@@ -1032,7 +1063,9 @@ class DemoObservabilityService:
             except TimeoutError:
                 continue
 
-    def _current_alerts(self, now, realtime, automation) -> list[DemoObservabilityEventView]:
+    def _current_alerts(
+        self, now, realtime, automation
+    ) -> list[DemoObservabilityEventView]:
         alerts: list[DemoObservabilityEventView] = []
         if realtime.enabled and not realtime.connected:
             alerts.append(
@@ -1046,8 +1079,11 @@ class DemoObservabilityService:
             )
         if (
             self._last_parse_error_at is not None
-            and now <= self._last_parse_error_at
-            + timedelta(seconds=self.settings.okx_demo_observability_stale_after_seconds)
+            and now
+            <= self._last_parse_error_at
+            + timedelta(
+                seconds=self.settings.okx_demo_observability_stale_after_seconds
+            )
         ):
             alerts.append(
                 DemoObservabilityEventView(
@@ -1094,14 +1130,15 @@ class DemoObservabilityService:
                     severity="warning",
                     code="demo_soak_not_cleanly_completed",
                     message="The latest Demo soak session did not complete cleanly.",
-                    details={"state": self._soak.state, "reason": self._soak.stop_reason},
+                    details={
+                        "state": self._soak.state,
+                        "reason": self._soak.stop_reason,
+                    },
                     observed_at=now,
                 )
             )
-        if (
-            self._recovered
-            and now > self._last_heartbeat_at
-            + timedelta(seconds=self.settings.okx_demo_observability_stale_after_seconds)
+        if self._recovered and now > self._last_heartbeat_at + timedelta(
+            seconds=self.settings.okx_demo_observability_stale_after_seconds
         ):
             alerts.append(
                 DemoObservabilityEventView(

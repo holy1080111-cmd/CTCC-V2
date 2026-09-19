@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from pathlib import Path
 import sys
+from pathlib import Path
 
 from app.research.external_benchmarks import (
     AcquisitionLimits,

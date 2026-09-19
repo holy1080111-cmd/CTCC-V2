@@ -15,7 +15,6 @@ from app.mie.contracts.validation import (
     validation_at_least,
 )
 
-
 _SUM_TOLERANCE = Decimal("1e-12")
 
 
@@ -32,9 +31,9 @@ class ProbabilityVector(MieContract):
     neutral: Decimal = Field(ge=0, le=1)
 
     @model_validator(mode="after")
-    def validate_total_probability(self) -> "ProbabilityVector":
+    def validate_total_probability(self) -> ProbabilityVector:
         total = self.long + self.short + self.neutral
-        if abs(total - Decimal("1")) > _SUM_TOLERANCE:
+        if abs(total - Decimal(1)) > _SUM_TOLERANCE:
             raise ValueError("forecast probabilities must sum to one")
         return self
 
@@ -72,16 +71,17 @@ class ProbabilityForecast(MieContract):
         return require_utc(value, info.field_name)
 
     @model_validator(mode="after")
-    def validate_forecast(self) -> "ProbabilityForecast":
+    def validate_forecast(self) -> ProbabilityForecast:
         if self.data_cutoff > self.as_of:
             raise ValueError("forecast cannot use data after as_of")
         if self.generated_at < self.as_of:
             raise ValueError("forecast cannot be generated before as_of")
         if len(self.evidence_ids) != len(set(self.evidence_ids)):
             raise ValueError("forecast evidence ids must be unique")
-        if validation_at_least(
-            self.validation_level, ValidationLevel.PREDICTIVE_OOS
-        ) and self.validation_reference is None:
+        if (
+            validation_at_least(self.validation_level, ValidationLevel.PREDICTIVE_OOS)
+            and self.validation_reference is None
+        ):
             raise ValueError(
                 "predictive forecast requires an external validation artifact"
             )
@@ -89,13 +89,9 @@ class ProbabilityForecast(MieContract):
             if not validation_at_least(
                 self.validation_level, ValidationLevel.PREQUENTIAL
             ):
-                raise ValueError(
-                    "calibrated forecast requires prequential validation"
-                )
+                raise ValueError("calibrated forecast requires prequential validation")
             if self.calibration_reference is None:
-                raise ValueError(
-                    "calibrated forecast requires a calibration artifact"
-                )
+                raise ValueError("calibrated forecast requires a calibration artifact")
         references = (
             ("validation", self.validation_reference),
             ("calibration", self.calibration_reference),
@@ -115,9 +111,7 @@ class ProbabilityForecast(MieContract):
                 if reference_name == "validation"
                 else ValidationLevel.PREQUENTIAL
             )
-            if not validation_at_least(
-                reference.attested_level, required_level
-            ):
+            if not validation_at_least(reference.attested_level, required_level):
                 raise ValueError(
                     f"{reference_name} artifact is below the forecast claim"
                 )

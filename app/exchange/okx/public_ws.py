@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import suppress
-from datetime import datetime, timezone
 import json
 import logging
-from typing import Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from contextlib import suppress
+from datetime import UTC, datetime
 
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed
@@ -24,7 +24,14 @@ class OkxPublicWebSocket:
     It uses public channels only and never authenticates or submits orders.
     """
 
-    CHANNELS = ("tickers", "mark-price", "funding-rate", "open-interest", "trades", "books5")
+    CHANNELS = (
+        "tickers",
+        "mark-price",
+        "funding-rate",
+        "open-interest",
+        "trades",
+        "books5",
+    )
 
     def __init__(self, settings: Settings, handler: EventHandler) -> None:
         self.settings = settings
@@ -88,7 +95,9 @@ class OkxPublicWebSocket:
         first_attempt = True
         while not self._stop.is_set():
             try:
-                async with asyncio.timeout(self.settings.okx_ws_connect_timeout_seconds):
+                async with asyncio.timeout(
+                    self.settings.okx_ws_connect_timeout_seconds
+                ):
                     websocket_context = connect(
                         self.settings.okx_ws_public_url,
                         ping_interval=20,
@@ -103,20 +112,26 @@ class OkxPublicWebSocket:
                     if not first_attempt:
                         self._reconnect_count += 1
                     first_attempt = False
-                    self._last_connected_at = datetime.now(timezone.utc)
+                    self._last_connected_at = datetime.now(UTC)
                     self._last_error = None
                     delay = self.settings.okx_ws_reconnect_initial_seconds
-                    await websocket.send(json.dumps({"op": "subscribe", "args": self.subscription_args()}))
+                    await websocket.send(
+                        json.dumps(
+                            {"op": "subscribe", "args": self.subscription_args()}
+                        )
+                    )
                     await self._consume(websocket)
                 finally:
                     self._connected = False
                     await websocket_context.__aexit__(None, None, None)
             except asyncio.CancelledError:
                 raise
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - IO safety boundary retains failure status; arbitrary adapter errors must not grant authority.
                 self._connected = False
                 self._last_error = f"{exc.__class__.__name__}: {exc}"
-                logger.warning("okx_ws_disconnected error=%s retry_in=%s", self._last_error, delay)
+                logger.warning(
+                    "okx_ws_disconnected error=%s retry_in=%s", self._last_error, delay
+                )
                 try:
                     await asyncio.wait_for(self._stop.wait(), timeout=delay)
                 except TimeoutError:
@@ -126,22 +141,32 @@ class OkxPublicWebSocket:
     async def _consume(self, websocket) -> None:
         while not self._stop.is_set():
             try:
-                raw = await asyncio.wait_for(websocket.recv(), timeout=self.settings.okx_ws_receive_timeout_seconds)
+                raw = await asyncio.wait_for(
+                    websocket.recv(),
+                    timeout=self.settings.okx_ws_receive_timeout_seconds,
+                )
             except TimeoutError:
                 await websocket.send("ping")
-                raw = await asyncio.wait_for(websocket.recv(), timeout=self.settings.okx_ws_ping_timeout_seconds)
+                raw = await asyncio.wait_for(
+                    websocket.recv(), timeout=self.settings.okx_ws_ping_timeout_seconds
+                )
             except ConnectionClosed:
                 return
 
             if raw == "pong":
                 continue
-            self._last_message_at = datetime.now(timezone.utc)
+            self._last_message_at = datetime.now(UTC)
             self._message_count += 1
             try:
                 payload = json.loads(raw)
                 for event in parse_public_message(payload):
                     await self.handler(event)
-            except (json.JSONDecodeError, OkxWsParseError, TypeError, ValueError) as exc:
+            except (
+                json.JSONDecodeError,
+                OkxWsParseError,
+                TypeError,
+                ValueError,
+            ) as exc:
                 self._parse_error_count += 1
                 self._last_error = f"{exc.__class__.__name__}: {exc}"
                 logger.exception("okx_ws_parse_error raw=%r", raw[:1000])

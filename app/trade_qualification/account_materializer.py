@@ -975,7 +975,72 @@ def _local_holds(inputs, specs, records, pending, projections, completed, gaps):
     return evidence.source
 
 
+def _history_union(records, streams, gaps):
+    """Keep raw receipts; coalesce only identical rows by endpoint identity."""
+    combined = {}
+    canonical = {}
+    for stream in streams:
+        for record, row, _ in records[stream]:
+            if (
+                record.row_id in canonical
+                and canonical[record.row_id] != record.canonical_json
+            ):
+                gaps.add("history_overlapping_source_conflict")
+                return None
+            canonical[record.row_id] = record.canonical_json
+            combined[record.row_id] = row
+    return combined
+
+
+def _account_metadata(records, packet, inputs, gaps):
+    """Check captured specifications and both pinned leverage query inventories."""
+    captured = {record.row_id: row for record, row, _ in records["account_instruments"]}
+    requested = set(packet.plan.leverage_instrument_ids)
+    exposed = {
+        row.get("instId")
+        for stream in (
+            "positions",
+            "orders_pending",
+            *(name for name in capture.STREAMS if name.startswith("algo_")),
+        )
+        for _, row, _ in records[stream]
+    }
+    if not requested <= set(captured) or not exposed <= requested:
+        gaps.add("account_metadata_instrument_coverage_incomplete")
+    for evidence in inputs.instruments:
+        supplied = _raw(evidence)
+        current = captured.get(supplied.get("instId"))
+        if current is None:
+            gaps.add("account_instrument_source_missing")
+            continue
+        if any(
+            supplied.get(key) != current.get(key)
+            for key in ("instType", "ctType", "settleCcy", "ctValCcy", "state")
+        ) or any(
+            _fraction(supplied.get(key)) != _fraction(current.get(key))
+            for key in ("ctVal", "ctMult", "lotSz", "minSz", "maxLmtSz", "lever")
+        ):
+            gaps.add("account_instrument_source_conflict")
+    mode = records["config_before"][0][1]["posMode"]
+    sides = {"net"} if mode == "net_mode" else {"long", "short"}
+    expected = {(name, side) for name in requested for side in sides}
+    for stream in ("leverage_cross", "leverage_isolated"):
+        rows = records[stream]
+        actual = {(row.get("instId"), row.get("posSide")) for _, row, _ in rows}
+        if actual != expected or any(
+            _fraction(row.get("lever"), positive=True) is None for _, row, _ in rows
+        ):
+            gaps.add("account_leverage_coverage_incomplete")
+
+
 def _history(inputs, records, specs, packet, gaps):
+    fills = _history_union(records, ("fills_recent", "fills_history"), gaps)
+    bills = _history_union(records, ("bills_recent", "bills_archive"), gaps)
+    orders = _history_union(
+        records, ("orders_history_recent", "orders_history_archive"), gaps
+    )
+    if fills is None or bills is None or orders is None:
+        return (), None
     evidence = inputs.history
     if evidence is None:
         gaps.add("history_grouping_and_seed_missing")
@@ -991,8 +1056,6 @@ def _history(inputs, records, specs, packet, gaps):
     ):
         gaps.add("history_recorded_window_invalid")
         return (), None
-    fills = {record.row_id: row for record, row, _ in records["fills_history"]}
-    bills = {record.row_id: row for record, row, _ in records["bills_archive"]}
     used_fills, used_funding, outcomes = set(), set(), []
     groups = sorted(evidence.groups, key=lambda item: item.sequence)
     if len({group.outcome_id for group in groups}) != len(groups):
@@ -1053,27 +1116,13 @@ def _history(inputs, records, specs, packet, gaps):
                 break
             net += pnl + fee
             previous_time = time
-        opened_at, closed_at = (
-            _time(selected[0]["fillTime"]),
-            _time(selected[-1]["fillTime"]),
-        )
-        for bill_id in group.funding_bill_ids:
-            row = bills[bill_id]
-            amount = _fraction(row.get("balChg"))
-            time = _time(row.get("ts"))
-            if (
-                bill_id in used_fills
-                or row.get("type") != "8"
-                or row.get("subType") not in {"173", "174"}
-                or row.get("ccy") != inputs.settlement_currency
-                or row.get("instId") != name
-                or amount is None
-                or time is None
-                or not opened_at <= time <= closed_at
-            ):
-                invalid = True
-                break
-            net += amount  # Funding cash movement once; never re-add bill fee/PnL.
+        closed_at = _time(selected[-1]["fillTime"])
+        if group.funding_bill_ids:
+            # A bill is evidence of a cash movement, not the accrual interval or
+            # its attribution to this holding. Preserve every raw bill receipt,
+            # but this recorded grouping has no independent accrual provenance.
+            gaps.add("funding_accrual_provenance_missing")
+            invalid = True
         if invalid or inventory != 0:
             gaps.add("closed_outcome_mapping_incomplete")
             continue
@@ -1186,6 +1235,9 @@ def materialize_demo_portfolio_snapshot(
     _scope(packet.plan.expected_uid, packet.plan.settlement_currency, inputs)
     records = _records(packet)
     gaps = set(packet.incomplete_reasons)
+    metadata_gaps = set()
+    _account_metadata(records, packet, inputs, metadata_gaps)
+    gaps.update(metadata_gaps)
     consistency = account_consistency._reconcile_verified_packet(
         packet, expected_packet_sha256
     )
@@ -1269,6 +1321,7 @@ def materialize_demo_portfolio_snapshot(
     )
     if (
         config.get("acctLv") == "2"
+        and not metadata_gaps
         and not consistency.blocking_reasons
         and balance_reason is None
         and equity is not None

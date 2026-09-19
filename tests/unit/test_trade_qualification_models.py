@@ -23,66 +23,66 @@ REPORT = "synthetic-qualification-001"
 
 
 def zone(**changes):
-    values = dict(
-        report_id=REPORT,
-        zone_low=D("99"),
-        zone_high=D("101"),
-        zone_type="synthetic_retest",
-        zone_source="synthetic closed candles",
-        created_at=NOW - timedelta(minutes=2),
-        expires_at=NOW + timedelta(minutes=1),
-        max_allowed_drift_bps=D("20"),
-        invalidation_price=D("95"),
-    )
+    values = {
+        "report_id": REPORT,
+        "zone_low": D("99"),
+        "zone_high": D("101"),
+        "zone_type": "synthetic_retest",
+        "zone_source": "synthetic closed candles",
+        "created_at": NOW - timedelta(minutes=2),
+        "expires_at": NOW + timedelta(minutes=1),
+        "max_allowed_drift_bps": D("20"),
+        "invalidation_price": D("95"),
+    }
     return EntryZone(**(values | changes))
 
 
 def trigger(**changes):
-    values = dict(
-        report_id=REPORT,
-        trigger_type="synthetic_reclaim",
-        trigger_time=NOW - timedelta(seconds=30),
-        trigger_price=D("100"),
-        expires_at=NOW + timedelta(seconds=30),
-    )
+    values = {
+        "report_id": REPORT,
+        "trigger_type": "synthetic_reclaim",
+        "trigger_time": NOW - timedelta(seconds=30),
+        "trigger_price": D("100"),
+        "expires_at": NOW + timedelta(seconds=30),
+    }
     return EntryTrigger(**(values | changes))
 
 
 def gate(gate_id, passed=True, code=None, **changes):
-    values = dict(
-        report_id=REPORT,
-        gate=gate_id,
-        passed=passed,
-        code=code or ("passed" if passed else "synthetic_failure"),
-        reason="Synthetic gate record, not real market evidence",
-        measured_values={"synthetic": True},
-    )
+    values = {
+        "report_id": REPORT,
+        "gate": gate_id,
+        "passed": passed,
+        "code": code or ("passed" if passed else "synthetic_failure"),
+        "reason": "Synthetic gate record, not real market evidence",
+        "measured_values": {"synthetic": True},
+    }
     return GateAssessment(**(values | changes))
 
 
 def inputs():
-    return dict(
-        report_id=REPORT,
-        symbol="BTC-USDT-SWAP",
-        strategy="trend_pullback",
-        direction="long",
-        evaluated_at=NOW,
-        raw_score=95,
-        effective_score=90,
-        market_regime=MarketRegime.TREND,
-        htf_bias="long",
-        setup_state="valid",
-        entry_timing_state="valid",
-        trigger=trigger(),
-        entry_zone=zone(),
-        candidate_entry=D("100"),
-        reference_price=D("100.1"),
-        stop_loss=D("95"),
-        take_profit=D("110"),
-        gross_rr=D("2"),
-        net_rr=D("1.8"),
-        gates=tuple(gate(item) for item in GATE_ORDER),
-    )
+    return {
+        "report_id": REPORT,
+        "symbol": "BTC-USDT-SWAP",
+        "strategy": "trend_pullback",
+        "direction": "long",
+        "evaluated_at": NOW,
+        "raw_score": 95,
+        "effective_score": 90,
+        "market_regime": MarketRegime.TREND,
+        "htf_bias": "long",
+        "setup_state": "valid",
+        "entry_timing_state": "valid",
+        "trigger": trigger(),
+        "entry_zone": zone(),
+        "candidate_entry": D("100"),
+        "reference_price": D("100.1"),
+        "stop_loss": D("95"),
+        "take_profit": D("110"),
+        "gross_rr": D("2"),
+        "net_rr": D("1.8"),
+        "gates": tuple(gate(item) for item in GATE_ORDER),
+    }
 
 
 def test_empty_chain_is_not_qualified_even_with_high_score_and_rr():
@@ -271,13 +271,13 @@ def test_short_geometry_is_direction_specific():
     result = EntryQualificationResult(
         **(
             inputs()
-            | dict(
-                direction="short",
-                htf_bias="short",
-                stop_loss=D("105"),
-                take_profit=D("90"),
-                entry_zone=zone(invalidation_price=D("105")),
-            )
+            | {
+                "direction": "short",
+                "htf_bias": "short",
+                "stop_loss": D("105"),
+                "take_profit": D("90"),
+                "entry_zone": zone(invalidation_price=D("105")),
+            }
         )
     )
     assert result.qualified
@@ -285,11 +285,11 @@ def test_short_geometry_is_direction_specific():
         EntryQualificationResult(
             **(
                 inputs()
-                | dict(
-                    direction="short",
-                    stop_loss=D("105"),
-                    take_profit=D("90"),
-                )
+                | {
+                    "direction": "short",
+                    "stop_loss": D("105"),
+                    "take_profit": D("90"),
+                }
             )
         )
 

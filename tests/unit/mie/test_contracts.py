@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -28,7 +28,7 @@ from app.mie.contracts import (
 )
 
 D = Decimal
-NOW = datetime(2026, 8, 12, 4, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 8, 12, 4, 0, tzinfo=UTC)
 CUTOFF = NOW - timedelta(seconds=1)
 HORIZON = ForecastHorizon(label="15m", seconds=900)
 SHA = "a" * 64
@@ -100,7 +100,7 @@ def test_evidence_rejects_future_data_and_non_utc_timestamps() -> None:
         Evidence.model_validate(payload)
 
     payload = evidence().model_dump()
-    payload["observed_at"] = datetime(2026, 8, 12, 4, 0)
+    payload["observed_at"] = datetime(2026, 8, 12, 4, 0)  # noqa: DTZ001 - Deliberately naive input verifies rejection, never accepted source time.
     with pytest.raises(ValidationError):
         Evidence.model_validate(payload)
 
@@ -395,9 +395,7 @@ def test_validation_artifact_cannot_support_a_higher_claim() -> None:
             reference=weak_reference,
         )
 
-    predictive_reference = validation_reference(
-        source="mie.probability.test"
-    )
+    predictive_reference = validation_reference(source="mie.probability.test")
     with pytest.raises(ValidationError, match="below the model health claim"):
         ModelHealth(
             model_id="mie.probability.test",

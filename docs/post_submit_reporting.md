@@ -137,6 +137,65 @@ not change ACLs, bypass handles or claim Windows publication success. Filesystem
 power-loss atomicity and resistance to malicious same-user writers are not
 promised.
 
+### Native Windows late publication denial
+
+The frozen `86ad7c1` Windows unit run on 2026-09-12/13 recorded 9,343 passed,
+27 skipped and 3 failed. Two failures were inability to create test symlinks
+(`WinError 1314`). The third exposed an overly broad **test assumption**: every
+`outbox_storage_permission_denied` was treated as an early ancestor-pin failure
+with no created artifacts. That original run remains failed; it is not relabeled
+as a pass by the later regression correction.
+
+Read-only examination and two new isolated native probes located the third
+failure after successful initial journal publication and readback. Publication of
+the root-level envelope failed at the existing `os.link` call with `WinError 32`
+(sharing violation). Exactly `<report_id>.state/00000001.json` remained; the
+`<report_id>.json` enqueue commit marker did not exist. No ACL, sharing flags,
+lease, storage implementation or retained journal was changed to force success.
+At that checkpoint this was an unavailable Windows publication path, **not a
+working native outbox**. The later native publisher change is described below;
+the original failed invocation and partial journal remain failed evidence.
+
+The native regression now distinguishes an actually observed ancestor/root pin
+denial (no artifact) from that specific late envelope-sharing denial. The late
+branch demands the exact freshly reconstructed initial journal bytes/hash chain,
+an absent commit marker, no unexpected files, rejection of same-report enqueue
+or rebuilt metadata, and no dispatch callback. Arbitrary residue, other failures,
+or damaged/mismatched journal content remain test failures. Fault-injection cases
+also cover pre-journal, post-journal, pre-marker and post-marker denial: a complete
+already-published marker can only be read/reconciled and identically enqueued
+locally, never interpreted as zero writes or a reason to repeat an exchange order.
+
+These tests verify fail-closed retention and diagnostic accuracy. They do not
+repair the root-level Windows sharing conflict, authorize deleting partial jobs,
+or establish successful native publication. A separately reviewed Windows storage
+design and native success acceptance were still needed at that checkpoint.
+
+### Same-directory Windows publication
+
+The root publisher continues to hold its exclusive add-file lease and every
+ancestor handle without delete sharing. `CreateHardLink`/`os.link` with full paths
+reopens the destination parent and conflicts with that lease. The publisher now
+uses the documented same-directory form of
+[FILE_LINK_INFORMATION](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/ns-ntifs-_file_link_information):
+the already open and fsynced source file handle, a null `RootDirectory`, and a
+validated single destination filename. `ReplaceIfExists` is false. It does not
+release pins, broaden sharing, change ACLs, follow a path alias, overwrite an
+existing target, or fall back after an unavailable native operation.
+
+The source handle stays open through link publication, preventing its private
+temporary file from being replaced between writing and linking. Cleanup removes
+only that invocation's temporary name; accepted journal files remain immutable.
+The logical envelope commit marker is still written last, and actual readback
+remains required. Windows directory metadata power-loss guarantees are unchanged.
+
+Native acceptance includes root-level no-clobber publication with its publisher
+lease held, a complete enqueue/claim/dispatch/delivery/readback cycle, two-worker
+fencing, and injected late envelope failure that retains the exact first journal
+and cannot dispatch. Passing injected failure checks alone is not native success.
+Exact new-source test results belong in the current acceptance record, not the
+historical frozen-source result above.
+
 Synthetic tests cover typed pin/identity/clock boundaries, JSON replay, acknowledged
 versus filled/protected state, unknown and rejected outcomes with no outbox IO,
 local idempotency/conflict/partial-readback failures, and the real outbox transition

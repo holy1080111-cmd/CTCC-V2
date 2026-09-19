@@ -4,9 +4,8 @@ from app.exchange.okx.private_rest import (
     OkxLivePrivateRestClient,
 )
 from app.exchange.okx.public_rest import OkxPublicRestClient
-from app.okx_live.service import OkxLiveService
 from app.okx_live.automation import ControlledLiveAutomation
-
+from app.okx_live.service import OkxLiveService
 
 settings = get_settings()
 

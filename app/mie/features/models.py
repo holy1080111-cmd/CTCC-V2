@@ -3,12 +3,12 @@ from __future__ import annotations
 import hashlib
 from datetime import datetime, timedelta
 from decimal import Decimal
+from itertools import pairwise
 from typing import Literal
 
 from pydantic import Field, field_validator, model_validator
 
 from app.mie.contracts._base import ForecastHorizon, MieContract, require_utc
-
 
 FeatureDirection = Literal["rising", "falling", "flat"]
 SwingKind = Literal["high", "low"]
@@ -31,7 +31,7 @@ class FeatureBar(MieContract):
         return require_utc(value, "closed_at")
 
     @model_validator(mode="after")
-    def validate_ohlc_geometry(self) -> "FeatureBar":
+    def validate_ohlc_geometry(self) -> FeatureBar:
         if self.high < max(self.open, self.close, self.low):
             raise ValueError("bar high is below an OHLC value")
         if self.low > min(self.open, self.close, self.high):
@@ -62,21 +62,14 @@ class FeatureWindow(MieContract):
         return require_utc(value, "as_of")
 
     @model_validator(mode="after")
-    def validate_causal_window(self) -> "FeatureWindow":
+    def validate_causal_window(self) -> FeatureWindow:
         timestamps = [bar.closed_at for bar in self.bars]
-        if any(
-            current <= previous
-            for previous, current in zip(
-                timestamps[:-1], timestamps[1:], strict=True
-            )
-        ):
+        if any(current <= previous for previous, current in pairwise(timestamps)):
             raise ValueError("feature bars must be strictly chronological")
         expected_step = timedelta(seconds=self.horizon.seconds)
         if any(
             current - previous != expected_step
-            for previous, current in zip(
-                timestamps[:-1], timestamps[1:], strict=True
-            )
+            for previous, current in pairwise(timestamps)
         ):
             raise ValueError("feature bars must match the declared horizon")
         if timestamps[-1] > self.as_of:
@@ -89,9 +82,7 @@ class FeatureWindow(MieContract):
 
     @property
     def provenance_sha256(self) -> str:
-        return hashlib.sha256(
-            self.model_dump_json().encode("utf-8")
-        ).hexdigest()
+        return hashlib.sha256(self.model_dump_json().encode("utf-8")).hexdigest()
 
 
 class StatisticsFeatures(MieContract):
@@ -141,7 +132,7 @@ class MomentumFeatures(MieContract):
     direction: FeatureDirection
 
     @model_validator(mode="after")
-    def validate_windows(self) -> "MomentumFeatures":
+    def validate_windows(self) -> MomentumFeatures:
         if self.fast_bars >= self.slow_bars:
             raise ValueError("fast momentum window must be below slow window")
         return self
@@ -160,7 +151,7 @@ class SwingPoint(MieContract):
         return require_utc(value, info.field_name)
 
     @model_validator(mode="after")
-    def validate_confirmation(self) -> "SwingPoint":
+    def validate_confirmation(self) -> SwingPoint:
         if self.confirmed_at < self.occurred_at:
             raise ValueError("swing confirmation cannot precede the pivot")
         return self
@@ -204,13 +195,11 @@ class MathematicalFeatureSnapshot(MieContract):
         return require_utc(value, info.field_name)
 
     @model_validator(mode="after")
-    def validate_snapshot_boundary(self) -> "MathematicalFeatureSnapshot":
+    def validate_snapshot_boundary(self) -> MathematicalFeatureSnapshot:
         if self.data_cutoff > self.as_of:
             raise ValueError("feature snapshot cannot use future data")
         return self
 
     @property
     def replay_sha256(self) -> str:
-        return hashlib.sha256(
-            self.model_dump_json().encode("utf-8")
-        ).hexdigest()
+        return hashlib.sha256(self.model_dump_json().encode("utf-8")).hexdigest()

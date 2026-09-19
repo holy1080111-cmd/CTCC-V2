@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
-import app.api.security as security
+from app.api import security
 
 
 @pytest.mark.asyncio

@@ -11,6 +11,7 @@ from app.database.models.qualification_ledger import QualificationReservationTra
 from app.database.repositories.qualification_ledger import QualificationLedgerRepository
 from app.trade_qualification.reservations import QualificationLedgerError
 from tests.integration import test_qualification_ledger_repository as fixtures
+from tests.unit.qualification_execution_binding_fixtures import execution_binding
 
 database = fixtures.database
 fixture = fixtures.fixture
@@ -29,6 +30,7 @@ async def test_atomic_consume_intent_committed_and_independent_restart_readback(
         reserved.scope, reserved.original_event_key, expected_revision=2
     )
     body = json.loads(result.canonical_json)
+    assert body["version"] == "ctcc-demo-submit-intent-v1"
     assert body["consumed_receipt"]["state"] == "consumed"
     assert body["consumed_receipt"]["ledger_revision"] == 3
     restarted = QualificationLedgerRepository(database[1], clock=clock)
@@ -159,3 +161,81 @@ async def test_uncertain_and_expired_intent_read_is_audit_only_and_hold_remains(
         await repo.consume_with_submission_intent(
             reserved.scope, reserved.original_event_key, expected_revision=4
         )
+
+
+@pytest.mark.parametrize("fixture", ("long", "short"), indirect=True)
+async def test_v2_exact_body_is_committed_with_consumption_and_replayed_after_restart(
+    database, fixture
+):
+    binding = execution_binding(fixture)
+    repo, clock = await initialize(database, fixture)
+    reserved = await repo.reserve(fixture.request)
+    result = await repo.consume_with_submission_intent(
+        reserved.scope,
+        reserved.original_event_key,
+        expected_revision=2,
+        execution_binding=binding,
+    )
+    body = json.loads(result.canonical_json)
+    assert body["version"] == "ctcc-demo-submit-intent-v2"
+    assert body["exchange_request"]["body"]["ordType"] == "fok"
+    assert body["exchange_request"]["body"]["tdMode"] == "isolated"
+    async with database[1]() as session:
+        row = await session.scalar(
+            select(QualificationReservationTransition).filter_by(
+                reservation_id=reserved.reservation_id, to_state="consumed"
+            )
+        )
+        assert row.evidence_json == result.canonical_json
+    clock.value = fixture.request.origin.deadline + timedelta(days=1)
+    restarted = QualificationLedgerRepository(database[1], clock=clock)
+    await restarted.mark_uncertain(
+        reserved.scope, reserved.original_event_key, expected_revision=3
+    )
+    again = await restarted.read_submission_intent(
+        reserved.scope, reserved.original_event_key, expected_sha256=result.sha256
+    )
+    assert (
+        again == result
+        and not again.execution_authority
+        and not again.order_retry_authority
+    )
+    state = await restarted.read_scope(reserved.scope)
+    assert state.active[0].state == "uncertain"
+    with pytest.raises(QualificationLedgerError, match="transition_denied"):
+        await restarted.consume_with_submission_intent(
+            reserved.scope,
+            reserved.original_event_key,
+            expected_revision=4,
+            execution_binding=binding,
+        )
+
+
+async def test_invalid_v2_binding_rolls_back_without_falling_back_to_legacy_intent(
+    database, fixture
+):
+    binding = execution_binding(fixture).model_copy(
+        update={"recheck_json": '{"passed":true}'}
+    )
+    repo, _ = await initialize(database, fixture)
+    reserved = await repo.reserve(fixture.request)
+    with pytest.raises(
+        QualificationLedgerError, match="submit_execution_binding_invalid"
+    ):
+        await repo.consume_with_submission_intent(
+            reserved.scope,
+            reserved.original_event_key,
+            expected_revision=2,
+            execution_binding=binding,
+        )
+    state = await repo.read_scope(reserved.scope)
+    assert state.active[0].state == "reserved" and state.ledger_revision == 2
+    async with database[1]() as session:
+        rows = (
+            await session.scalars(
+                select(QualificationReservationTransition).filter_by(
+                    reservation_id=reserved.reservation_id
+                )
+            )
+        ).all()
+        assert len(rows) == 1 and rows[0].to_state == "reserved"

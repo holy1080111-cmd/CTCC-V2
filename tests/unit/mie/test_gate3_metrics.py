@@ -19,7 +19,6 @@ from app.mie.validation.metrics import (
     reliability_bins,
 )
 
-
 D = Decimal
 
 
@@ -105,10 +104,13 @@ def test_prevalence_and_no_skill_baselines_are_frozen_out_of_sample() -> None:
     assert prevalence == (D("0.75"),) * 3
     assert no_skill_baseline(observation_count=3) == (D("0.5"),) * 3
     legacy = (D("0.1"), D("0.7"), D("0.6"))
-    assert frozen_legacy_score_baseline(
-        legacy,
-        expected_observation_count=3,
-    ) == legacy
+    assert (
+        frozen_legacy_score_baseline(
+            legacy,
+            expected_observation_count=3,
+        )
+        == legacy
+    )
 
     with pytest.raises(ValueError, match="does not match"):
         frozen_legacy_score_baseline(

@@ -25,7 +25,7 @@ def configured_score_risk_tiers(settings: Settings) -> list[DemoAutomationRiskTi
                 maximum_score=medium - 1,
                 risk_pct=settings.okx_demo_structural_low_risk_pct,
                 leverage=settings.okx_demo_structural_low_leverage_cap,
-                margin_allocation_pct=Decimal("1"),
+                margin_allocation_pct=Decimal(1),
             ),
             DemoAutomationRiskTier(
                 name="medium",
@@ -33,7 +33,7 @@ def configured_score_risk_tiers(settings: Settings) -> list[DemoAutomationRiskTi
                 maximum_score=high - 1,
                 risk_pct=settings.okx_demo_structural_medium_risk_pct,
                 leverage=settings.okx_demo_structural_medium_leverage_cap,
-                margin_allocation_pct=Decimal("1"),
+                margin_allocation_pct=Decimal(1),
             ),
             DemoAutomationRiskTier(
                 name="high",
@@ -41,7 +41,7 @@ def configured_score_risk_tiers(settings: Settings) -> list[DemoAutomationRiskTi
                 maximum_score=elite - 1,
                 risk_pct=settings.okx_demo_structural_high_risk_pct,
                 leverage=settings.okx_demo_structural_high_leverage_cap,
-                margin_allocation_pct=Decimal("1"),
+                margin_allocation_pct=Decimal(1),
             ),
             DemoAutomationRiskTier(
                 name="elite",
@@ -49,7 +49,7 @@ def configured_score_risk_tiers(settings: Settings) -> list[DemoAutomationRiskTi
                 maximum_score=extreme - 1,
                 risk_pct=settings.okx_demo_structural_elite_risk_pct,
                 leverage=settings.okx_demo_structural_elite_leverage_cap,
-                margin_allocation_pct=Decimal("1"),
+                margin_allocation_pct=Decimal(1),
             ),
             DemoAutomationRiskTier(
                 name="extreme",
@@ -57,7 +57,7 @@ def configured_score_risk_tiers(settings: Settings) -> list[DemoAutomationRiskTi
                 maximum_score=100,
                 risk_pct=settings.okx_demo_structural_extreme_risk_pct,
                 leverage=settings.okx_demo_structural_extreme_leverage_cap,
-                margin_allocation_pct=Decimal("1"),
+                margin_allocation_pct=Decimal(1),
             ),
         ]
     return [

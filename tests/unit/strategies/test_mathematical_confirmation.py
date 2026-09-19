@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
@@ -29,7 +29,7 @@ def _analysis(core: MathematicalCoreSnapshot | None) -> MultiTimeframeAnalysis:
         trade_ready=True,
         timeframe_analyses={},
         mathematical_core=core,
-        generated_at=datetime.now(timezone.utc),
+        generated_at=datetime.now(UTC),
     )
 
 
@@ -227,9 +227,7 @@ def test_domain_rejects_high_grade_without_validated_components() -> None:
     ("grade", "expected_cap"),
     [("high", 100), ("medium", 89), ("low", 79), ("blocked", 0)],
 )
-def test_mathematical_score_cap_is_downward_only(
-    grade: str, expected_cap: int
-) -> None:
+def test_mathematical_score_cap_is_downward_only(grade: str, expected_cap: int) -> None:
     status = "opposed" if grade == "blocked" else "confirmed"
     confirmation = MathematicalConfirmation(
         status=status,
@@ -240,11 +238,10 @@ def test_mathematical_score_cap_is_downward_only(
         coverage=D("0.9"),
         consensus=D("0.9"),
         instability=D("0.1"),
-        component_codes=(
-            ["state"] if grade in {"high", "medium"} else []
-        ),
+        component_codes=(["state"] if grade in {"high", "medium"} else []),
     )
 
-    assert mathematical_score_cap(
-        confirmation, medium_minimum=80, high_minimum=90
-    ) == expected_cap
+    assert (
+        mathematical_score_cap(confirmation, medium_minimum=80, high_minimum=90)
+        == expected_cap
+    )

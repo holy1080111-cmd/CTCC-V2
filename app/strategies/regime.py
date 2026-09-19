@@ -287,8 +287,10 @@ def route_regime(analysis: MultiTimeframeAnalysis) -> RegimeRoute:
                 MarketRegime.EXPANSION,
                 ("breakout_continuation",),
                 (
-                    "Current 15m high volatility and BOS permit breakout scoring only; "
-                    "prior compression is unobserved.",
+                    (
+                        "Current 15m high volatility and BOS permit breakout scoring only; "
+                        "prior compression is unobserved."
+                    ),
                 ),
                 ("compression_history_missing",),
                 (("expansion.bos_direction", direction),),
@@ -317,8 +319,10 @@ def route_regime(analysis: MultiTimeframeAnalysis) -> RegimeRoute:
             MarketRegime.TREND,
             allowed,
             (
-                "Only directional trend families may be scored; "
-                "each retains its own HTF/setup gates.",
+                (
+                    "Only directional trend families may be scored; "
+                    "each retains its own HTF/setup gates."
+                ),
             ),
             ()
             if "trend_pullback" in allowed
@@ -335,8 +339,10 @@ def route_regime(analysis: MultiTimeframeAnalysis) -> RegimeRoute:
                 MarketRegime.UNKNOWN,
                 (),
                 (
-                    "A current structural break cannot establish the earlier range "
-                    "or sweep/reclaim chronology.",
+                    (
+                        "A current structural break cannot establish the earlier range "
+                        "or sweep/reclaim chronology."
+                    ),
                 ),
                 ("range_transition_history_missing",),
             )
@@ -344,8 +350,10 @@ def route_regime(analysis: MultiTimeframeAnalysis) -> RegimeRoute:
             MarketRegime.RANGE,
             ("range_reversal",),
             (
-                "Neutral HTFs and an intact 15m support/price/resistance bracket "
-                "define a conservative range route.",
+                (
+                    "Neutral HTFs and an intact 15m support/price/resistance bracket "
+                    "define a conservative range route."
+                ),
             ),
             (
                 "sweep_transition_history_missing",
@@ -357,8 +365,10 @@ def route_regime(analysis: MultiTimeframeAnalysis) -> RegimeRoute:
         MarketRegime.UNKNOWN,
         (),
         (
-            "Range/transition ambiguity has no sufficient "
-            "snapshot-only routing evidence.",
+            (
+                "Range/transition ambiguity has no sufficient "
+                "snapshot-only routing evidence."
+            ),
         ),
         ("regime_evidence_missing",),
     )

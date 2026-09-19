@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, Literal
 from uuid import UUID
@@ -32,7 +32,7 @@ class DemoSoakStartRequest(BaseModel):
     confirmation: str
 
     @model_validator(mode="after")
-    def validate_confirmation(self) -> "DemoSoakStartRequest":
+    def validate_confirmation(self) -> DemoSoakStartRequest:
         expected = START_EXECUTE_PHRASE if self.execute else START_OBSERVE_PHRASE
         if self.confirmation != expected:
             raise ValueError(f"confirmation must equal {expected}")
@@ -49,7 +49,7 @@ class DemoObservabilityEventView(BaseModel):
     code: str
     message: str
     details: dict[str, Any] = Field(default_factory=dict)
-    observed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    observed_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class DemoExecutionSoakPreflight(BaseModel):
@@ -72,18 +72,14 @@ class DemoExecutionSoakPreflight(BaseModel):
     equity_basis: str | None = None
     equity_currency: str | None = None
     execution_order_type: Literal["fok"] = "fok"
-    execution_max_adverse_slippage_bps: Decimal = Field(
-        default=Decimal("5"), ge=0
-    )
-    minimum_execution_risk_reward: Decimal = Field(
-        default=Decimal("1.8"), gt=0
-    )
+    execution_max_adverse_slippage_bps: Decimal = Field(default=Decimal(5), ge=0)
+    minimum_execution_risk_reward: Decimal = Field(default=Decimal("1.8"), gt=0)
     require_flat_start: bool
     require_protection: bool
     auto_disarm: bool
     max_submissions: int
     loss_limit_pct: Decimal
-    generated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class DemoSoakSessionView(BaseModel):
@@ -108,8 +104,8 @@ class DemoSoakSessionView(BaseModel):
     equity_currency: str | None = None
     starting_equity: Decimal | None = None
     latest_equity: Decimal | None = None
-    session_pnl: Decimal = Decimal("0")
-    max_drawdown_pct_observed: Decimal = Decimal("0")
+    session_pnl: Decimal = Decimal(0)
+    max_drawdown_pct_observed: Decimal = Decimal(0)
     protection_checks: int = 0
     protection_failures: int = 0
     active_position_count: int = 0
@@ -166,4 +162,4 @@ class DemoObservabilitySummary(BaseModel):
     soak: DemoSoakSessionView
     metrics: DemoObservabilityMetrics
     alerts: list[DemoObservabilityEventView] = Field(default_factory=list)
-    generated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))

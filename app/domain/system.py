@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from pydantic import BaseModel, Field
 
@@ -11,7 +11,7 @@ class DependencyStatus(BaseModel):
 class LivenessResponse(BaseModel):
     status: str = "alive"
     version: str
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class ReadinessResponse(BaseModel):
@@ -20,7 +20,7 @@ class ReadinessResponse(BaseModel):
     database: DependencyStatus
     redis: DependencyStatus
     blockers: list[str]
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class VersionResponse(BaseModel):

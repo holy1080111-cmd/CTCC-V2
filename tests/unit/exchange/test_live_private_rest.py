@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import httpx
 import pytest
@@ -40,7 +40,7 @@ def test_live_private_rest_client_satisfies_private_api_contract() -> None:
 @pytest.mark.asyncio
 async def test_live_authenticated_get_uses_live_signature_without_demo_header() -> None:
     settings = live_settings()
-    fixed = datetime(2026, 8, 9, 0, 0, 0, tzinfo=timezone.utc)
+    fixed = datetime(2026, 8, 9, 0, 0, 0, tzinfo=UTC)
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/api/v5/account/config"

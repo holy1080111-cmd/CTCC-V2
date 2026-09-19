@@ -40,13 +40,15 @@ def test_image_includes_core_blueprint_acceptance_inputs_explicitly() -> None:
     copy_lines = {
         line.strip() for line in dockerfile.splitlines() if line.startswith("COPY ")
     }
-    assert "COPY README.md Dockerfile ./" in copy_lines
     assert (
-        "COPY config/ctcc_core_blueprint.json ./config/ctcc_core_blueprint.json"
+        "COPY README.md Dockerfile MANIFEST.sha256 compose.yaml .env.example .gitignore .dockerignore .gitattributes ./"
         in copy_lines
     )
+    assert "COPY config ./config" in copy_lines
     # Keep build inputs allowlisted: no real configuration or workspace copy.
-    assert "COPY config ./config" not in copy_lines
     assert "COPY . ." not in copy_lines
+    assert "COPY .env " not in dockerfile
+    ignored = (root / ".dockerignore").read_text(encoding="utf-8").splitlines()
+    assert ".env*" in ignored and "!.env.example" in ignored
     for relative in ("README.md", "Dockerfile", "config/ctcc_core_blueprint.json"):
         assert (root / relative).is_file()

@@ -7,7 +7,6 @@ from app.exchange.okx.symbols import (
     to_instrument_id,
 )
 
-
 EXPECTED_DEMO_UNIVERSE = (
     "BTC-USDT-SWAP",
     "ETH-USDT-SWAP",

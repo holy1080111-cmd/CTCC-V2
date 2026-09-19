@@ -21,7 +21,6 @@ from app.domain.performance import (
     DemoReliabilityValidation,
 )
 
-
 DASHBOARD_SOURCE_NAMES: tuple[str, ...] = (
     "balance",
     "positions",
@@ -50,43 +49,26 @@ class DashboardSourceStatus(BaseModel):
         self,
     ) -> "DashboardSourceStatus":
         if self.started_at.utcoffset() is None:
-            raise ValueError(
-                "source_started_at_must_be_timezone_aware"
-            )
+            raise ValueError("source_started_at_must_be_timezone_aware")
 
         if self.completed_at.utcoffset() is None:
-            raise ValueError(
-                "source_completed_at_must_be_timezone_aware"
-            )
+            raise ValueError("source_completed_at_must_be_timezone_aware")
 
         if self.completed_at < self.started_at:
-            raise ValueError(
-                "source_completed_before_started"
-            )
+            raise ValueError("source_completed_before_started")
 
         if self.ok:
             if self.timed_out:
-                raise ValueError(
-                    "successful_source_cannot_time_out"
-                )
+                raise ValueError("successful_source_cannot_time_out")
 
             if self.error_code is not None:
-                raise ValueError(
-                    "successful_source_cannot_have_error"
-                )
+                raise ValueError("successful_source_cannot_have_error")
 
         if not self.ok and self.error_code is None:
-            raise ValueError(
-                "failed_source_requires_error_code"
-            )
+            raise ValueError("failed_source_requires_error_code")
 
-        if (
-            self.timed_out
-            and self.error_code != "source_timeout"
-        ):
-            raise ValueError(
-                "timed_out_source_requires_timeout_code"
-            )
+        if self.timed_out and self.error_code != "source_timeout":
+            raise ValueError("timed_out_source_requires_timeout_code")
 
         return self
 
@@ -108,53 +90,34 @@ class DashboardSnapshotResponse(BaseModel):
 
     balance: OkxDemoBalanceSnapshot | None = None
 
-    positions: list[OkxDemoPositionView] = Field(
-        default_factory=list
-    )
+    positions: list[OkxDemoPositionView] = Field(default_factory=list)
 
-    algo_orders: list[OkxDemoAlgoOrderView] = Field(
-        default_factory=list
-    )
+    algo_orders: list[OkxDemoAlgoOrderView] = Field(default_factory=list)
 
     automation: DemoAutomationStatus | None = None
     performance: DemoPerformanceSummary | None = None
     validation: DemoReliabilityValidation | None = None
 
-    events: list[DemoObservabilityEventView] = Field(
-        default_factory=list
-    )
+    events: list[DemoObservabilityEventView] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_snapshot_contract(
         self,
     ) -> "DashboardSnapshotResponse":
         if self.generated_at.utcoffset() is None:
-            raise ValueError(
-                "generated_at_must_be_timezone_aware"
-            )
+            raise ValueError("generated_at_must_be_timezone_aware")
 
-        expected_sources = set(
-            DASHBOARD_SOURCE_NAMES
-        )
+        expected_sources = set(DASHBOARD_SOURCE_NAMES)
 
-        actual_sources = set(
-            self.source_status
-        )
+        actual_sources = set(self.source_status)
 
         if actual_sources != expected_sources:
-            raise ValueError(
-                "dashboard_source_contract_mismatch"
-            )
+            raise ValueError("dashboard_source_contract_mismatch")
 
-        calculated_complete = all(
-            status.ok
-            for status in self.source_status.values()
-        )
+        calculated_complete = all(status.ok for status in self.source_status.values())
 
         if self.complete != calculated_complete:
-            raise ValueError(
-                "complete_does_not_match_source_status"
-            )
+            raise ValueError("complete_does_not_match_source_status")
 
         scalar_sources = {
             "balance": self.balance,
@@ -167,16 +130,10 @@ class DashboardSnapshotResponse(BaseModel):
             status = self.source_status[source_name]
 
             if status.ok and value is None:
-                raise ValueError(
-                    f"successful_source_missing_value:"
-                    f"{source_name}"
-                )
+                raise ValueError(f"successful_source_missing_value:{source_name}")
 
             if not status.ok and value is not None:
-                raise ValueError(
-                    f"failed_source_contains_value:"
-                    f"{source_name}"
-                )
+                raise ValueError(f"failed_source_contains_value:{source_name}")
 
         list_sources = {
             "positions": self.positions,
@@ -188,9 +145,6 @@ class DashboardSnapshotResponse(BaseModel):
             status = self.source_status[source_name]
 
             if not status.ok and value:
-                raise ValueError(
-                    f"failed_source_contains_items:"
-                    f"{source_name}"
-                )
+                raise ValueError(f"failed_source_contains_items:{source_name}")
 
         return self

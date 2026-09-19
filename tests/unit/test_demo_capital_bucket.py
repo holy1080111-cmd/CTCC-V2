@@ -8,7 +8,6 @@ from app.demo_automation.capital_bucket import (
     demo_position_notional_ceiling,
 )
 
-
 D = Decimal
 
 
@@ -103,9 +102,7 @@ def test_randomized_capital_bucket_invariants() -> None:
 
     for _ in range(1000):
         equity = D(generator.randint(1, 2_000_000_000)) / D("100000")
-        available = D(generator.randint(0, int(equity * D("100000")))) / D(
-            "100000"
-        )
+        available = D(generator.randint(0, int(equity * D("100000")))) / D("100000")
         configured_limit = generator.randint(1, 10)
         plan = build_demo_capital_bucket_plan(
             risk_equity_usdt=equity,
@@ -116,13 +113,10 @@ def test_randomized_capital_bucket_invariants() -> None:
 
         assert D("0") <= plan.available_position_margin_cap_usdt
         assert plan.available_position_margin_cap_usdt <= available
-        assert plan.available_position_margin_cap_usdt <= (
-            equity if equity <= bucket else bucket
-        )
+        assert plan.available_position_margin_cap_usdt <= (min(equity, bucket))
         assert 1 <= plan.effective_position_limit <= configured_limit
         assert (
-            plan.target_position_margin_usdt * plan.effective_position_limit
-            <= equity
+            plan.target_position_margin_usdt * plan.effective_position_limit <= equity
         )
         if equity <= bucket:
             assert plan.target_position_margin_usdt == equity

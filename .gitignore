@@ -10,6 +10,8 @@ backups/
 .env.*
 !.env.example
 .venv/
+build/
+dist/
 *.egg-info/
 .mypy_cache/
 .ruff_cache/

@@ -3,16 +3,17 @@
 Revision ID: 0004
 Revises: 0003
 """
-from typing import Sequence, Union
 
-from alembic import op
+from collections.abc import Sequence
+
 import sqlalchemy as sa
+from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision: str = "0004"
-down_revision: Union[str, None] = "0003"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = "0003"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
@@ -26,8 +27,15 @@ def upgrade() -> None:
         sa.Column("details", postgresql.JSONB(), nullable=False),
         sa.Column("raw", postgresql.JSONB(), nullable=False),
         sa.Column("captured_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("persisted_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-        sa.CheckConstraint("id = 1", name=op.f("ck_okx_demo_balance_state_singleton_id")),
+        sa.Column(
+            "persisted_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.func.now(),
+            nullable=False,
+        ),
+        sa.CheckConstraint(
+            "id = 1", name=op.f("ck_okx_demo_balance_state_singleton_id")
+        ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_okx_demo_balance_state")),
     )
 
@@ -49,12 +57,25 @@ def upgrade() -> None:
         sa.Column("raw", postgresql.JSONB(), nullable=False),
         sa.Column("exchange_created_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("exchange_updated_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("persisted_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        sa.Column(
+            "persisted_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.func.now(),
+            nullable=False,
+        ),
         sa.PrimaryKeyConstraint("order_id", name=op.f("pk_okx_demo_order_state")),
-        sa.UniqueConstraint("client_order_id", name=op.f("uq_okx_demo_order_state_client_order_id")),
+        sa.UniqueConstraint(
+            "client_order_id", name=op.f("uq_okx_demo_order_state_client_order_id")
+        ),
     )
-    op.create_index(op.f("ix_okx_demo_order_state_instrument_id"), "okx_demo_order_state", ["instrument_id"])
-    op.create_index(op.f("ix_okx_demo_order_state_state"), "okx_demo_order_state", ["state"])
+    op.create_index(
+        op.f("ix_okx_demo_order_state_instrument_id"),
+        "okx_demo_order_state",
+        ["instrument_id"],
+    )
+    op.create_index(
+        op.f("ix_okx_demo_order_state_state"), "okx_demo_order_state", ["state"]
+    )
 
     op.create_table(
         "okx_demo_position_state",
@@ -72,10 +93,21 @@ def upgrade() -> None:
         sa.Column("raw", postgresql.JSONB(), nullable=False),
         sa.Column("exchange_created_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("exchange_updated_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("persisted_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-        sa.PrimaryKeyConstraint("position_key", name=op.f("pk_okx_demo_position_state")),
+        sa.Column(
+            "persisted_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.func.now(),
+            nullable=False,
+        ),
+        sa.PrimaryKeyConstraint(
+            "position_key", name=op.f("pk_okx_demo_position_state")
+        ),
     )
-    op.create_index(op.f("ix_okx_demo_position_state_instrument_id"), "okx_demo_position_state", ["instrument_id"])
+    op.create_index(
+        op.f("ix_okx_demo_position_state_instrument_id"),
+        "okx_demo_position_state",
+        ["instrument_id"],
+    )
 
     op.create_table(
         "okx_demo_algo_order_state",
@@ -92,12 +124,30 @@ def upgrade() -> None:
         sa.Column("raw", postgresql.JSONB(), nullable=False),
         sa.Column("exchange_created_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("exchange_updated_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("persisted_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-        sa.PrimaryKeyConstraint("algo_order_id", name=op.f("pk_okx_demo_algo_order_state")),
-        sa.UniqueConstraint("client_algo_order_id", name=op.f("uq_okx_demo_algo_order_state_client_algo_order_id")),
+        sa.Column(
+            "persisted_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.func.now(),
+            nullable=False,
+        ),
+        sa.PrimaryKeyConstraint(
+            "algo_order_id", name=op.f("pk_okx_demo_algo_order_state")
+        ),
+        sa.UniqueConstraint(
+            "client_algo_order_id",
+            name=op.f("uq_okx_demo_algo_order_state_client_algo_order_id"),
+        ),
     )
-    op.create_index(op.f("ix_okx_demo_algo_order_state_instrument_id"), "okx_demo_algo_order_state", ["instrument_id"])
-    op.create_index(op.f("ix_okx_demo_algo_order_state_state"), "okx_demo_algo_order_state", ["state"])
+    op.create_index(
+        op.f("ix_okx_demo_algo_order_state_instrument_id"),
+        "okx_demo_algo_order_state",
+        ["instrument_id"],
+    )
+    op.create_index(
+        op.f("ix_okx_demo_algo_order_state_state"),
+        "okx_demo_algo_order_state",
+        ["state"],
+    )
 
     op.create_table(
         "okx_demo_sync_checkpoints",
@@ -109,20 +159,40 @@ def upgrade() -> None:
         sa.Column("details", postgresql.JSONB(), nullable=False),
         sa.Column("last_error", sa.String(250), nullable=True),
         sa.Column("reconciled_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-        sa.CheckConstraint("id = 1", name=op.f("ck_okx_demo_sync_checkpoints_singleton_id")),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.func.now(),
+            nullable=False,
+        ),
+        sa.CheckConstraint(
+            "id = 1", name=op.f("ck_okx_demo_sync_checkpoints_singleton_id")
+        ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_okx_demo_sync_checkpoints")),
     )
 
 
 def downgrade() -> None:
     op.drop_table("okx_demo_sync_checkpoints")
-    op.drop_index(op.f("ix_okx_demo_algo_order_state_state"), table_name="okx_demo_algo_order_state")
-    op.drop_index(op.f("ix_okx_demo_algo_order_state_instrument_id"), table_name="okx_demo_algo_order_state")
+    op.drop_index(
+        op.f("ix_okx_demo_algo_order_state_state"),
+        table_name="okx_demo_algo_order_state",
+    )
+    op.drop_index(
+        op.f("ix_okx_demo_algo_order_state_instrument_id"),
+        table_name="okx_demo_algo_order_state",
+    )
     op.drop_table("okx_demo_algo_order_state")
-    op.drop_index(op.f("ix_okx_demo_position_state_instrument_id"), table_name="okx_demo_position_state")
+    op.drop_index(
+        op.f("ix_okx_demo_position_state_instrument_id"),
+        table_name="okx_demo_position_state",
+    )
     op.drop_table("okx_demo_position_state")
-    op.drop_index(op.f("ix_okx_demo_order_state_state"), table_name="okx_demo_order_state")
-    op.drop_index(op.f("ix_okx_demo_order_state_instrument_id"), table_name="okx_demo_order_state")
+    op.drop_index(
+        op.f("ix_okx_demo_order_state_state"), table_name="okx_demo_order_state"
+    )
+    op.drop_index(
+        op.f("ix_okx_demo_order_state_instrument_id"), table_name="okx_demo_order_state"
+    )
     op.drop_table("okx_demo_order_state")
     op.drop_table("okx_demo_balance_state")

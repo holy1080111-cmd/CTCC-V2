@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
-from decimal import Decimal
 import hashlib
-from pathlib import Path
 import zipfile
+from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -25,8 +25,7 @@ from app.research.external_benchmarks import (
     summarize_binance_partitions,
 )
 
-
-NOW = datetime(2026, 8, 22, 16, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 8, 22, 16, 0, tzinfo=UTC)
 
 
 def _coordinates(day: date) -> BinanceBatchKlineCoordinates:
@@ -52,18 +51,18 @@ def _write_kline_zip(
         datetime.combine(
             coordinates.day,
             datetime.min.time(),
-            tzinfo=timezone.utc,
+            tzinfo=UTC,
         ).timestamp()
         * 1000
     )
-    step = (final_close - first_open) / Decimal("1440")
+    step = (final_close - first_open) / Decimal(1440)
     rows: list[str] = []
     previous = first_open
     for index in range(1440):
         opened = start + index * 60_000
         closed = first_open + step * Decimal(index + 1)
-        high = max(previous, closed) + Decimal("1")
-        low = min(previous, closed) - Decimal("1")
+        high = max(previous, closed) + Decimal(1)
+        low = min(previous, closed) - Decimal(1)
         rows.append(
             f"{opened},{previous},{high},{low},{closed},2,"
             f"{opened + 59_999},200,10,1,100,0"
@@ -172,8 +171,8 @@ def test_daily_and_partition_summaries_are_deterministic(
     daily = []
     hashes = []
     for day, opened, closed in (
-        (date(2024, 1, 1), Decimal("100"), Decimal("110")),
-        (date(2024, 1, 2), Decimal("110"), Decimal("121")),
+        (date(2024, 1, 1), Decimal(100), Decimal(110)),
+        (date(2024, 1, 2), Decimal(110), Decimal(121)),
     ):
         coordinates = _coordinates(day)
         path = tmp_path / coordinates.filename
@@ -202,10 +201,10 @@ def test_daily_and_partition_summaries_are_deterministic(
     assert summary.day_count == 2
     assert summary.minute_row_count == 2880
     assert summary.close_path_metrics.total_return == Decimal("0.21")
-    assert summary.close_path_metrics.hit_rate == Decimal("1")
+    assert summary.close_path_metrics.hit_rate == Decimal(1)
     assert summary.observed_direction == "rising"
     assert summary.theil_sen_log_slope_per_day > 0
-    assert Decimal("0") < summary.path_efficiency <= Decimal("1")
+    assert Decimal(0) < summary.path_efficiency <= Decimal(1)
     assert summary.strategy_evaluated is False
     assert summary.predictive_validity_claimed is False
 
@@ -274,8 +273,8 @@ def test_partition_summary_rejects_missing_planned_day(
     digest = _write_kline_zip(
         path,
         coordinates,
-        first_open=Decimal("100"),
-        final_close=Decimal("101"),
+        first_open=Decimal(100),
+        final_close=Decimal(101),
     )
     summary = summarize_binance_daily_archive(
         coordinates,

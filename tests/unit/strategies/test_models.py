@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
@@ -11,12 +11,12 @@ def test_long_candidate_geometry() -> None:
         strategy="test",
         direction="long",
         score=80,
-        entry=Decimal("100"),
-        stop_loss=Decimal("98"),
-        take_profit=Decimal("104"),
-        risk_reward=Decimal("2"),
+        entry=Decimal(100),
+        stop_loss=Decimal(98),
+        take_profit=Decimal(104),
+        risk_reward=Decimal(2),
         invalidation="stop",
-        expires_at=datetime.now(timezone.utc),
+        expires_at=datetime.now(UTC),
     )
     assert item.direction == "long"
 
@@ -27,10 +27,10 @@ def test_invalid_long_geometry_rejected() -> None:
             strategy="test",
             direction="long",
             score=80,
-            entry=Decimal("100"),
-            stop_loss=Decimal("101"),
-            take_profit=Decimal("104"),
-            risk_reward=Decimal("2"),
+            entry=Decimal(100),
+            stop_loss=Decimal(101),
+            take_profit=Decimal(104),
+            risk_reward=Decimal(2),
             invalidation="stop",
-            expires_at=datetime.now(timezone.utc),
+            expires_at=datetime.now(UTC),
         )

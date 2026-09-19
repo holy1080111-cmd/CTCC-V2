@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Literal
 
@@ -35,7 +35,7 @@ class RealtimeSnapshot(BaseModel):
     best_bids: list[RealtimeBookLevel] = Field(default_factory=list)
     best_asks: list[RealtimeBookLevel] = Field(default_factory=list)
     exchange_timestamp: datetime | None = None
-    received_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    received_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     sequence: int = 0
 
 

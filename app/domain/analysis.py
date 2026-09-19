@@ -52,9 +52,7 @@ class CausalReturnIntervalSnapshot(BaseModel):
     @model_validator(mode="after")
     def validate_interval_geometry(self) -> "CausalReturnIntervalSnapshot":
         if not (
-            self.lower_log_return
-            <= self.predicted_log_return
-            <= self.upper_log_return
+            self.lower_log_return <= self.predicted_log_return <= self.upper_log_return
         ):
             raise ValueError("predicted return must lie inside conformal interval")
         if self.direction == "rising" and self.lower_log_return <= 0:
@@ -87,8 +85,8 @@ class MathematicalCoreSnapshot(BaseModel):
     coverage: Decimal = Field(ge=0, le=1)
     consensus: Decimal = Field(ge=0, le=1)
     instability: Decimal = Field(ge=0, le=1)
-    auxiliary_directional_score: Decimal = Field(default=Decimal("0"), ge=-1, le=1)
-    auxiliary_confidence: Decimal = Field(default=Decimal("0"), ge=0, le=1)
+    auxiliary_directional_score: Decimal = Field(default=Decimal(0), ge=-1, le=1)
+    auxiliary_confidence: Decimal = Field(default=Decimal(0), ge=0, le=1)
     components: list[MathematicalCoreComponent] = Field(default_factory=list)
 
     @model_validator(mode="after")
@@ -99,8 +97,7 @@ class MathematicalCoreSnapshot(BaseModel):
         executable = [
             component
             for component in self.components
-            if component.validation_level != "auxiliary"
-            and component.reliability > 0
+            if component.validation_level != "auxiliary" and component.reliability > 0
         ]
         if self.status == "long" and not (
             self.directional_score >= Decimal("0.25")
@@ -151,7 +148,7 @@ class FairValueGap(BaseModel):
     lower: Decimal
     upper: Decimal
     created_at: datetime
-    filled_ratio: Decimal = Decimal("0")
+    filled_ratio: Decimal = Decimal(0)
 
 
 class OrderBlock(BaseModel):

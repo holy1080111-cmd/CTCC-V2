@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import httpx
 
@@ -10,8 +10,8 @@ from app.research.external_benchmarks import (
     DatasetArtifact,
     DatasetKind,
     DatasetWindow,
-    ExternalDatasetManifest,
     ExternalArtifactAcquisitionRequest,
+    ExternalDatasetManifest,
     IntendedUse,
     LicenseStatus,
     RevisionPolicy,
@@ -19,8 +19,7 @@ from app.research.external_benchmarks import (
     TimestampEncoding,
 )
 
-
-START = datetime(2026, 1, 1, tzinfo=timezone.utc)
+START = datetime(2026, 1, 1, tzinfo=UTC)
 END = START + timedelta(seconds=2)
 AVAILABLE = END + timedelta(minutes=1)
 RETRIEVED = AVAILABLE + timedelta(minutes=1)

@@ -27,6 +27,9 @@ test = [
   "httpx==0.28.1",
   "websockets==17.0.1",
 ]
+validation = [
+  "ruff==0.16.8",
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

@@ -1,52 +1,67 @@
 from app.domain.enums import LifecycleState
 from app.domain.errors import InvalidStateTransition
 
-
 _ALLOWED_TRANSITIONS: dict[LifecycleState, frozenset[LifecycleState]] = {
-    LifecycleState.CANDIDATE: frozenset({
-        LifecycleState.RISK_APPROVED,
-        LifecycleState.REJECTED,
-        LifecycleState.CANCELLED,
-        LifecycleState.FAILED,
-    }),
-    LifecycleState.RISK_APPROVED: frozenset({
-        LifecycleState.SUBMITTED,
-        LifecycleState.CANCELLED,
-        LifecycleState.FAILED,
-    }),
-    LifecycleState.SUBMITTED: frozenset({
-        LifecycleState.ACCEPTED,
-        LifecycleState.PARTIAL_FILLED,
-        LifecycleState.FILLED,
-        LifecycleState.REJECTED,
-        LifecycleState.CANCELLED,
-        LifecycleState.FAILED,
-    }),
-    LifecycleState.ACCEPTED: frozenset({
-        LifecycleState.PARTIAL_FILLED,
-        LifecycleState.FILLED,
-        LifecycleState.CANCELLED,
-        LifecycleState.FAILED,
-    }),
-    LifecycleState.PARTIAL_FILLED: frozenset({
-        LifecycleState.PARTIAL_FILLED,
-        LifecycleState.FILLED,
-        LifecycleState.CLOSING,
-        LifecycleState.FAILED,
-    }),
-    LifecycleState.FILLED: frozenset({
-        LifecycleState.PROTECTED,
-        LifecycleState.CLOSING,
-        LifecycleState.FAILED,
-    }),
-    LifecycleState.PROTECTED: frozenset({
-        LifecycleState.CLOSING,
-        LifecycleState.FAILED,
-    }),
-    LifecycleState.CLOSING: frozenset({
-        LifecycleState.CLOSED,
-        LifecycleState.FAILED,
-    }),
+    LifecycleState.CANDIDATE: frozenset(
+        {
+            LifecycleState.RISK_APPROVED,
+            LifecycleState.REJECTED,
+            LifecycleState.CANCELLED,
+            LifecycleState.FAILED,
+        }
+    ),
+    LifecycleState.RISK_APPROVED: frozenset(
+        {
+            LifecycleState.SUBMITTED,
+            LifecycleState.CANCELLED,
+            LifecycleState.FAILED,
+        }
+    ),
+    LifecycleState.SUBMITTED: frozenset(
+        {
+            LifecycleState.ACCEPTED,
+            LifecycleState.PARTIAL_FILLED,
+            LifecycleState.FILLED,
+            LifecycleState.REJECTED,
+            LifecycleState.CANCELLED,
+            LifecycleState.FAILED,
+        }
+    ),
+    LifecycleState.ACCEPTED: frozenset(
+        {
+            LifecycleState.PARTIAL_FILLED,
+            LifecycleState.FILLED,
+            LifecycleState.CANCELLED,
+            LifecycleState.FAILED,
+        }
+    ),
+    LifecycleState.PARTIAL_FILLED: frozenset(
+        {
+            LifecycleState.PARTIAL_FILLED,
+            LifecycleState.FILLED,
+            LifecycleState.CLOSING,
+            LifecycleState.FAILED,
+        }
+    ),
+    LifecycleState.FILLED: frozenset(
+        {
+            LifecycleState.PROTECTED,
+            LifecycleState.CLOSING,
+            LifecycleState.FAILED,
+        }
+    ),
+    LifecycleState.PROTECTED: frozenset(
+        {
+            LifecycleState.CLOSING,
+            LifecycleState.FAILED,
+        }
+    ),
+    LifecycleState.CLOSING: frozenset(
+        {
+            LifecycleState.CLOSED,
+            LifecycleState.FAILED,
+        }
+    ),
     LifecycleState.CLOSED: frozenset({LifecycleState.ARCHIVED}),
     LifecycleState.ARCHIVED: frozenset(),
     LifecycleState.REJECTED: frozenset({LifecycleState.ARCHIVED}),

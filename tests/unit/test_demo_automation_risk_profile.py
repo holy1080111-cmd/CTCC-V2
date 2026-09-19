@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -66,12 +66,12 @@ def _candidate(status: str, confidence: str) -> TradeCandidate:
         strategy="trend_pullback",
         direction="long",
         score=95,
-        entry=Decimal("100"),
-        stop_loss=Decimal("95"),
-        take_profit=Decimal("110"),
-        risk_reward=Decimal("2"),
+        entry=Decimal(100),
+        stop_loss=Decimal(95),
+        take_profit=Decimal(110),
+        risk_reward=Decimal(2),
         invalidation="stop",
-        expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
+        expires_at=datetime.now(UTC) + timedelta(minutes=10),
         derivative_confirmation=DerivativeConfirmation(
             status=status,
             confidence=Decimal(confidence),
@@ -124,17 +124,13 @@ def _mathematical_candidate(
                 risk_grade=risk_grade,
                 confidence=Decimal(confidence),
                 directional_support=(
-                    Decimal("-0.8")
-                    if status == "opposed"
-                    else Decimal("0.8")
+                    Decimal("-0.8") if status == "opposed" else Decimal("0.8")
                 ),
                 reliability=Decimal("0.8"),
                 coverage=Decimal("0.9"),
                 consensus=Decimal("0.9"),
                 instability=(
-                    Decimal("0.9")
-                    if status == "unstable"
-                    else Decimal("0.1")
+                    Decimal("0.9") if status == "unstable" else Decimal("0.1")
                 ),
                 component_codes=(
                     ["derivative", "state", "conformal"]
@@ -176,7 +172,7 @@ def test_auxiliary_bonus_never_changes_demo_risk_score() -> None:
             "mathematical_confirmation": confirmation.model_copy(
                 update={
                     "auxiliary_bonus": 5,
-                    "auxiliary_directional_support": Decimal("1"),
+                    "auxiliary_directional_support": Decimal(1),
                     "auxiliary_component_codes": ["structure", "momentum"],
                 }
             )

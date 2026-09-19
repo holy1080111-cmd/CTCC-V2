@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from copy import deepcopy
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import delete, select
@@ -41,9 +42,9 @@ class DemoAutomationRepository:
             "active_client_order_id": row.active_client_order_id,
             "active_start_equity": row.active_start_equity,
             "active_started_at": row.active_started_at,
-            "active_trades": dict(row.active_trades or {}),
+            "active_trades": deepcopy(row.active_trades),
             "symbol_cooldowns": dict(row.symbol_cooldowns or {}),
-            "realized_pnl_events": list(row.realized_pnl_events or []),
+            "realized_pnl_events": deepcopy(row.realized_pnl_events),
             "last_trade_closed_at": row.last_trade_closed_at,
             "last_started_at": row.last_started_at,
             "last_completed_at": row.last_completed_at,
@@ -51,19 +52,20 @@ class DemoAutomationRepository:
         }
 
     async def save_state(self, state: dict[str, Any]) -> None:
-        values = {"id": 1, **state, "updated_at": datetime.now(timezone.utc)}
-        async with self.session_factory() as session:
-            async with session.begin():
-                stmt = pg_insert(DemoAutomationState).values(**values)
-                await session.execute(
-                    stmt.on_conflict_do_update(
-                        index_elements=[DemoAutomationState.id],
-                        set_={key: value for key, value in values.items() if key != "id"},
-                    )
+        values = {"id": 1, **state, "updated_at": datetime.now(UTC)}
+        async with self.session_factory() as session, session.begin():
+            stmt = pg_insert(DemoAutomationState).values(**values)
+            await session.execute(
+                stmt.on_conflict_do_update(
+                    index_elements=[DemoAutomationState.id],
+                    set_={key: value for key, value in values.items() if key != "id"},
                 )
+            )
 
-    async def save_run(self, run: DemoAutomationRunResult, *, history_limit: int) -> None:
-        async with self.session_factory() as session:
+    async def save_run(
+        self, run: DemoAutomationRunResult, *, history_limit: int
+    ) -> None:
+        async with self.session_factory() as session:  # noqa: SIM117 - Keep database session and transaction lifetimes explicit at the durable boundary.
             async with session.begin():
                 session.add(
                     DemoAutomationRun(
@@ -82,7 +84,9 @@ class DemoAutomationRepository:
                     )
                 ).all()
                 if ids:
-                    await session.execute(delete(DemoAutomationRun).where(DemoAutomationRun.id.in_(ids)))
+                    await session.execute(
+                        delete(DemoAutomationRun).where(DemoAutomationRun.id.in_(ids))
+                    )
 
     async def load_runs(self, limit: int) -> list[DemoAutomationRunResult]:
         async with self.session_factory() as session:
@@ -93,7 +97,9 @@ class DemoAutomationRepository:
                     .limit(limit)
                 )
             ).all()
-        return [DemoAutomationRunResult.model_validate(row.result) for row in reversed(rows)]
+        return [
+            DemoAutomationRunResult.model_validate(row.result) for row in reversed(rows)
+        ]
 
     async def fingerprint_exists(self, fingerprint: str, now: datetime) -> bool:
         async with self.session_factory() as session:
@@ -107,25 +113,23 @@ class DemoAutomationRepository:
     async def save_fingerprint(
         self, fingerprint: str, expires_at: datetime, details: dict[str, Any]
     ) -> None:
-        async with self.session_factory() as session:
-            async with session.begin():
-                stmt = pg_insert(DemoAutomationFingerprint).values(
-                    fingerprint=fingerprint,
-                    expires_at=expires_at,
-                    details=details,
+        async with self.session_factory() as session, session.begin():
+            stmt = pg_insert(DemoAutomationFingerprint).values(
+                fingerprint=fingerprint,
+                expires_at=expires_at,
+                details=details,
+            )
+            await session.execute(
+                stmt.on_conflict_do_update(
+                    index_elements=[DemoAutomationFingerprint.fingerprint],
+                    set_={"expires_at": expires_at, "details": details},
                 )
-                await session.execute(
-                    stmt.on_conflict_do_update(
-                        index_elements=[DemoAutomationFingerprint.fingerprint],
-                        set_={"expires_at": expires_at, "details": details},
-                    )
-                )
+            )
 
     async def cleanup_fingerprints(self, now: datetime) -> None:
-        async with self.session_factory() as session:
-            async with session.begin():
-                await session.execute(
-                    delete(DemoAutomationFingerprint).where(
-                        DemoAutomationFingerprint.expires_at <= now
-                    )
+        async with self.session_factory() as session, session.begin():
+            await session.execute(
+                delete(DemoAutomationFingerprint).where(
+                    DemoAutomationFingerprint.expires_at <= now
                 )
+            )

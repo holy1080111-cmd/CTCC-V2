@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from decimal import Decimal
-from typing import Sequence
 
 from app.mie.features._math import EPSILON, log_returns_from_prices, median
 from app.mie.features.models import StatisticsFeatures
@@ -23,21 +23,14 @@ def statistical_features(
 
     sample_size = len(returns)
     mean = sum(returns, D("0")) / D(sample_size)
-    variance = sum(
-        ((value - mean) ** 2 for value in returns), D("0")
-    ) / D(sample_size)
+    variance = sum(((value - mean) ** 2 for value in returns), D("0")) / D(sample_size)
     center = median(returns)
-    mad_scale = median([abs(value - center) for value in returns]) * D(
-        "1.4826"
-    )
+    mad_scale = median([abs(value - center) for value in returns]) * D("1.4826")
     downside_deviation = (
-        sum((min(value, D("0")) ** 2 for value in returns), D("0"))
-        / D(sample_size)
+        sum((min(value, D("0")) ** 2 for value in returns), D("0")) / D(sample_size)
     ).sqrt()
     outlier_threshold = D("3") * max(mad_scale, EPSILON)
-    outlier_count = sum(
-        abs(value - center) > outlier_threshold for value in returns
-    )
+    outlier_count = sum(abs(value - center) > outlier_threshold for value in returns)
 
     return StatisticsFeatures(
         sample_size=sample_size,

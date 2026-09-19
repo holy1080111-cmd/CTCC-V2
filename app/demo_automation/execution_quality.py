@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
+from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 
 from app.config.settings import Settings
 from app.demo_automation.structural_risk import (
@@ -125,30 +125,24 @@ def bounded_fok_execution_price(
     )
     if reference_quality is None:
         return None, "execution_reference_outside_protective_bounds"
-    if (
-        reference_quality.enforced_risk_reward
-        < reference_quality.minimum_risk_reward
-    ):
+    if reference_quality.enforced_risk_reward < reference_quality.minimum_risk_reward:
         return None, "execution_reference_risk_reward_below_minimum"
 
     minimum = reference_quality.minimum_risk_reward
     costs = reference_quality.estimated_cost_rate
-    weighted_boundary = (
-        candidate.take_profit + minimum * candidate.stop_loss
-    ) / (D("1") + minimum)
-    slippage_bps = D(
-        str(settings.okx_demo_execution_max_adverse_slippage_bps)
+    weighted_boundary = (candidate.take_profit + minimum * candidate.stop_loss) / (
+        D("1") + minimum
     )
+    slippage_bps = D(str(settings.okx_demo_execution_max_adverse_slippage_bps))
     slippage_rate = slippage_bps / D("10000")
 
     if candidate.direction == "long":
         risk_reward_boundary = weighted_boundary / (D("1") + costs)
         slippage_boundary = reference_price * (D("1") + slippage_rate)
         raw_limit = min(risk_reward_boundary, slippage_boundary)
-        limit_price = (
-            (raw_limit / tick_size).to_integral_value(rounding=ROUND_FLOOR)
-            * tick_size
-        )
+        limit_price = (raw_limit / tick_size).to_integral_value(
+            rounding=ROUND_FLOOR
+        ) * tick_size
         if limit_price < reference_price:
             return None, "bounded_fok_price_not_marketable_at_reference"
     else:
@@ -157,10 +151,9 @@ def bounded_fok_execution_price(
         risk_reward_boundary = weighted_boundary / (D("1") - costs)
         slippage_boundary = reference_price * (D("1") - slippage_rate)
         raw_limit = max(risk_reward_boundary, slippage_boundary)
-        limit_price = (
-            (raw_limit / tick_size).to_integral_value(rounding=ROUND_CEILING)
-            * tick_size
-        )
+        limit_price = (raw_limit / tick_size).to_integral_value(
+            rounding=ROUND_CEILING
+        ) * tick_size
         if limit_price > reference_price:
             return None, "bounded_fok_price_not_marketable_at_reference"
 

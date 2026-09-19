@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from collections.abc import Callable
+from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Awaitable, Callable, TypeVar
+from typing import TypeVar
 from uuid import UUID
 
 from app.database.repositories.persistence import PersistenceRepository, state_checksum
@@ -66,7 +67,7 @@ class PaperExecutionService:
                 else:
                     self.broker.restore(loaded)
                     checksum = state_checksum(loaded)
-                    now = datetime.now(timezone.utc)
+                    now = datetime.now(UTC)
                     await self.repository.mark_recovered(
                         checksum,
                         {
@@ -107,7 +108,7 @@ class PaperExecutionService:
         async with self._lock:
             before = self.broker.state()
             result = self.broker.tick(symbol=symbol, price=price, timestamp=timestamp)
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             material = bool(result.filled_order_ids or result.closed_position_ids)
             interval_due = (
                 self._last_mark_persist_at is None
@@ -115,25 +116,35 @@ class PaperExecutionService:
                 >= self.persist_mark_interval_seconds
             )
             has_open_positions = result.account.open_positions > 0
-            if self.repository is not None and (material or (has_open_positions and interval_due)):
+            if self.repository is not None and (
+                material or (has_open_positions and interval_due)
+            ):
                 try:
                     await self._persist(
                         "paper_tick_applied",
                         details={
                             "symbol": symbol,
                             "price": str(price),
-                            "filled_order_ids": [str(item) for item in result.filled_order_ids],
-                            "closed_position_ids": [str(item) for item in result.closed_position_ids],
+                            "filled_order_ids": [
+                                str(item) for item in result.filled_order_ids
+                            ],
+                            "closed_position_ids": [
+                                str(item) for item in result.closed_position_ids
+                            ],
                         },
                     )
                     self._last_mark_persist_at = now
                 except Exception as exc:
                     self.broker.restore(before)
                     self._last_error = f"{exc.__class__.__name__}: {exc}"
-                    raise PaperPersistenceError("paper_tick_persistence_failed") from exc
+                    raise PaperPersistenceError(
+                        "paper_tick_persistence_failed"
+                    ) from exc
             return result
 
-    async def close(self, position_id: UUID, *, price: Decimal, reason: str = "manual") -> PaperPositionView:
+    async def close(
+        self, position_id: UUID, *, price: Decimal, reason: str = "manual"
+    ) -> PaperPositionView:
         return await self._mutate(
             "paper_position_closed",
             lambda: self.broker.close(position_id, price=price, reason=reason),
@@ -161,7 +172,7 @@ class PaperExecutionService:
                 if loaded is None:
                     raise PaperPersistenceError("persisted_paper_state_not_found")
                 self.broker.restore(loaded)
-                self._last_recovered_at = datetime.now(timezone.utc)
+                self._last_recovered_at = datetime.now(UTC)
                 self._recovered = True
             elif action == "persist_memory":
                 await self._persist("paper_state_manual_reconcile")
@@ -185,13 +196,15 @@ class PaperExecutionService:
                 if loaded is not None:
                     database_sum = state_checksum(loaded)
                 counts = await self.repository.counts()
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - IO safety boundary retains failure status; arbitrary adapter errors must not grant authority.
                 self._last_error = f"{exc.__class__.__name__}: {exc}"
         return RecoveryStatus(
             persistence_enabled=self.repository is not None,
             initialized=self._initialized,
             recovered=self._recovered,
-            consistent=(memory_sum == database_sum) if database_sum is not None else None,
+            consistent=(memory_sum == database_sum)
+            if database_sum is not None
+            else None,
             memory_checksum=memory_sum,
             database_checksum=database_sum,
             order_count=counts["orders"],
@@ -259,6 +272,6 @@ class PaperExecutionService:
             resource_id=resource_id,
             details=details,
         )
-        self._last_persisted_at = datetime.now(timezone.utc)
+        self._last_persisted_at = datetime.now(UTC)
         self._last_error = None
         return checksum

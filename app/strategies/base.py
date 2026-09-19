@@ -1,7 +1,6 @@
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
-from decimal import Decimal, ROUND_HALF_UP
-from typing import Callable
+from datetime import UTC, datetime, timedelta
+from decimal import ROUND_HALF_UP, Decimal
 
 from app.domain.analysis import MultiTimeframeAnalysis, TimeframeAnalysis
 from app.domain.market import MarketSnapshot
@@ -44,7 +43,9 @@ def _q(value: Decimal) -> Decimal:
 
 
 def atr_distance(
-    ctx: StrategyContext, timeframe: str = "15m", multiplier: Decimal = D("1.5")
+    ctx: StrategyContext,
+    timeframe: str = "15m",
+    multiplier: Decimal = D("1.5"),  # noqa: B008 - D constructs immutable exact Decimal values.
 ) -> Decimal:
     atr = ctx.tf(timeframe).indicators.atr14
     fallback = ctx.price * D("0.005")
@@ -76,7 +77,7 @@ def build_candidate(
         take_profit=_q(take),
         risk_reward=rr,
         invalidation=f"{direction} setup invalidates at stop loss",
-        expires_at=datetime.now(timezone.utc) + timedelta(minutes=20),
+        expires_at=datetime.now(UTC) + timedelta(minutes=20),
         reasons=reasons,
         counter_evidence=counter_evidence,
         derivative_confirmation=derivative_confirmation(ctx.analysis, direction),

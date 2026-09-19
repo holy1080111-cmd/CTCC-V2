@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
 from app.domain.analysis import (
@@ -24,7 +24,7 @@ def _view(
     return TimeframeAnalysis(
         timeframe=timeframe,
         candle_count=250,
-        last_closed_at=datetime.now(timezone.utc),
+        last_closed_at=datetime.now(UTC),
         close=D("100"),
         data_quality_ok=True,
         indicators=IndicatorSnapshot(
@@ -57,7 +57,7 @@ def _analysis(views: dict[str, TimeframeAnalysis]) -> MultiTimeframeAnalysis:
         alignment_score=100,
         trade_ready=True,
         timeframe_analyses=views,
-        generated_at=datetime.now(timezone.utc),
+        generated_at=datetime.now(UTC),
     )
 
 
@@ -114,12 +114,8 @@ def test_long_horizon_only_alignment_cannot_unlock_higher_risk() -> None:
     views = {
         "4H": _view("4H", velocity_ratio="1"),
         "1H": _view("1H", velocity_ratio="1"),
-        "15m": _view(
-            "15m", velocity_ratio="1", confidence="0.1", fit_r2="0.2"
-        ),
-        "5m": _view(
-            "5m", velocity_ratio="1", confidence="0.1", fit_r2="0.2"
-        ),
+        "15m": _view("15m", velocity_ratio="1", confidence="0.1", fit_r2="0.2"),
+        "5m": _view("5m", velocity_ratio="1", confidence="0.1", fit_r2="0.2"),
     }
 
     result = derivative_confirmation(_analysis(views), "long")

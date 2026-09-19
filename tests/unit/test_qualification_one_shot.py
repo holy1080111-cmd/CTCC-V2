@@ -346,7 +346,7 @@ async def test_g12_then_raw_collectors_then_real_recheck_without_order_authority
     assert all(check.passed for check in result.recheck.checks[:-1])
     assert not result.recheck.computational_checks_passed
     assert result.account_packet.account_complete is False
-    assert len(result.account_packet.observations) == 13
+    assert len(result.account_packet.observations) == 23
     assert result.account_payload_sha256
     assert all(
         request.method == "GET" and request.url.host == "www.okx.com"

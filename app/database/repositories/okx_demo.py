@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -8,6 +8,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.config.settings import get_settings
 from app.database.models.okx_demo import (
     OkxDemoAlgoOrderState,
     OkxDemoBalanceState,
@@ -17,7 +18,6 @@ from app.database.models.okx_demo import (
 )
 from app.database.models.operations import AuditLog, SystemEvent
 from app.database.models.performance import DemoPerformanceSnapshot
-from app.config.settings import get_settings
 from app.domain.okx_demo import (
     OkxDemoAccountConfig,
     OkxDemoAlgoOrderView,
@@ -48,10 +48,12 @@ class OkxDemoRepository:
         orders: list[OkxDemoOrderView],
         algo_orders: list[OkxDemoAlgoOrderView],
     ) -> OkxDemoMirrorStatus:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         deduped_orders = {item.order_id: item for item in orders if item.order_id}
         deduped_positions = {
-            item.position_key: item for item in positions if item.instrument_id and item.size != 0
+            item.position_key: item
+            for item in positions
+            if item.instrument_id and item.size != 0
         }
         deduped_algo_orders = {
             item.algo_order_id: item for item in algo_orders if item.algo_order_id
@@ -61,7 +63,7 @@ class OkxDemoRepository:
             balance,
         )
 
-        async with self.session_factory() as session:
+        async with self.session_factory() as session:  # noqa: SIM117 - Keep database session and transaction lifetimes explicit at the durable boundary.
             async with session.begin():
                 balance_values = {
                     "id": 1,
@@ -69,7 +71,9 @@ class OkxDemoRepository:
                     "isolated_equity": balance.isolated_equity,
                     "adjusted_equity": balance.adjusted_equity,
                     "available_equity": balance.available_equity,
-                    "details": [item.model_dump(mode="json") for item in balance.details],
+                    "details": [
+                        item.model_dump(mode="json") for item in balance.details
+                    ],
                     "raw": balance.raw,
                     "captured_at": balance.captured_at,
                     "persisted_at": now,
@@ -116,7 +120,9 @@ class OkxDemoRepository:
                     "last_error": None,
                     "reconciled_at": now,
                 }
-                checkpoint_stmt = pg_insert(OkxDemoSyncCheckpoint).values(**checkpoint_values)
+                checkpoint_stmt = pg_insert(OkxDemoSyncCheckpoint).values(
+                    **checkpoint_values
+                )
                 await session.execute(
                     checkpoint_stmt.on_conflict_do_update(
                         index_elements=[OkxDemoSyncCheckpoint.id],
@@ -153,7 +159,7 @@ class OkxDemoRepository:
                 )
                 unrealized_pnl = sum(
                     (item.unrealized_pnl for item in balance.details),
-                    start=Decimal("0"),
+                    start=Decimal(0),
                 )
                 session.add(
                     DemoPerformanceSnapshot(
@@ -182,18 +188,19 @@ class OkxDemoRepository:
                         ),
                         unrealized_pnl=unrealized_pnl,
                         position_count=len(deduped_positions),
-                        pending_order_count=len([
-                            item for item in deduped_orders.values()
-                            if item.state in {"live", "partially_filled"}
-                        ]),
+                        pending_order_count=len(
+                            [
+                                item
+                                for item in deduped_orders.values()
+                                if item.state in {"live", "partially_filled"}
+                            ]
+                        ),
                         algo_order_count=len(deduped_algo_orders),
                         details={
                             "source": "okx_demo_reconcile",
                             "position_mode": account_config.position_mode,
                             "account_level": account_config.account_level,
-                            "performance_equity_blocker": (
-                                performance_blocker or None
-                            ),
+                            "performance_equity_blocker": (performance_blocker or None),
                         },
                     )
                 )
@@ -207,79 +214,94 @@ class OkxDemoRepository:
                 )
         return await self.mirror_status()
 
-    async def upsert_orders(self, orders: list[OkxDemoOrderView], *, action: str) -> None:
-        now = datetime.now(timezone.utc)
+    async def upsert_orders(
+        self, orders: list[OkxDemoOrderView], *, action: str
+    ) -> None:
+        now = datetime.now(UTC)
         valid = {item.order_id: item for item in orders if item.order_id}
         if not valid:
             return
-        async with self.session_factory() as session:
-            async with session.begin():
-                for order in valid.values():
-                    values = self._order_values(order, now)
-                    stmt = pg_insert(OkxDemoOrderState).values(**values)
-                    await session.execute(
-                        stmt.on_conflict_do_update(
-                            index_elements=[OkxDemoOrderState.order_id],
-                            set_={k: v for k, v in values.items() if k != "order_id"},
-                        )
-                    )
-                session.add(
-                    AuditLog(
-                        actor="ctcc-system",
-                        action=action,
-                        resource_type="okx_demo_order",
-                        resource_id=next(iter(valid)),
-                        before=None,
-                        after={"order_ids": list(valid), "count": len(valid)},
-                    )
-                )
-
-    async def mark_failure(self, message: str) -> None:
-        now = datetime.now(timezone.utc)
-        safe_message = message[:250]
-        async with self.session_factory() as session:
-            async with session.begin():
-                values = {
-                    "id": 1,
-                    "status": "error",
-                    "order_count": 0,
-                    "position_count": 0,
-                    "algo_order_count": 0,
-                    "details": {},
-                    "last_error": safe_message,
-                    "reconciled_at": None,
-                }
-                stmt = pg_insert(OkxDemoSyncCheckpoint).values(**values)
+        async with self.session_factory() as session, session.begin():
+            for order in valid.values():
+                values = self._order_values(order, now)
+                stmt = pg_insert(OkxDemoOrderState).values(**values)
                 await session.execute(
                     stmt.on_conflict_do_update(
-                        index_elements=[OkxDemoSyncCheckpoint.id],
-                        set_={
-                            "status": "error",
-                            "last_error": safe_message,
-                            "updated_at": now,
-                        },
+                        index_elements=[OkxDemoOrderState.order_id],
+                        set_={k: v for k, v in values.items() if k != "order_id"},
                     )
                 )
-                session.add(
-                    SystemEvent(
-                        event_type="okx_demo_reconcile_failed",
-                        aggregate_type="okx_demo_account",
-                        severity="error",
-                        payload={"error": safe_message},
-                    )
+            session.add(
+                AuditLog(
+                    actor="ctcc-system",
+                    action=action,
+                    resource_type="okx_demo_order",
+                    resource_id=next(iter(valid)),
+                    before=None,
+                    after={"order_ids": list(valid), "count": len(valid)},
                 )
+            )
+
+    async def mark_failure(self, message: str) -> None:
+        now = datetime.now(UTC)
+        safe_message = message[:250]
+        async with self.session_factory() as session, session.begin():
+            values = {
+                "id": 1,
+                "status": "error",
+                "order_count": 0,
+                "position_count": 0,
+                "algo_order_count": 0,
+                "details": {},
+                "last_error": safe_message,
+                "reconciled_at": None,
+            }
+            stmt = pg_insert(OkxDemoSyncCheckpoint).values(**values)
+            await session.execute(
+                stmt.on_conflict_do_update(
+                    index_elements=[OkxDemoSyncCheckpoint.id],
+                    set_={
+                        "status": "error",
+                        "last_error": safe_message,
+                        "updated_at": now,
+                    },
+                )
+            )
+            session.add(
+                SystemEvent(
+                    event_type="okx_demo_reconcile_failed",
+                    aggregate_type="okx_demo_account",
+                    severity="error",
+                    payload={"error": safe_message},
+                )
+            )
 
     async def mirror_status(self) -> OkxDemoMirrorStatus:
         async with self.session_factory() as session:
             checkpoint = await session.get(OkxDemoSyncCheckpoint, 1)
             order_count = int(
-                (await session.scalar(select(func.count()).select_from(OkxDemoOrderState))) or 0
+                (
+                    await session.scalar(
+                        select(func.count()).select_from(OkxDemoOrderState)
+                    )
+                )
+                or 0
             )
             position_count = int(
-                (await session.scalar(select(func.count()).select_from(OkxDemoPositionState))) or 0
+                (
+                    await session.scalar(
+                        select(func.count()).select_from(OkxDemoPositionState)
+                    )
+                )
+                or 0
             )
             algo_count = int(
-                (await session.scalar(select(func.count()).select_from(OkxDemoAlgoOrderState))) or 0
+                (
+                    await session.scalar(
+                        select(func.count()).select_from(OkxDemoAlgoOrderState)
+                    )
+                )
+                or 0
             )
         if checkpoint is None:
             return OkxDemoMirrorStatus(available=False)
@@ -316,7 +338,9 @@ class OkxDemoRepository:
         }
 
     @staticmethod
-    def _position_row(position: OkxDemoPositionView, now: datetime) -> OkxDemoPositionState:
+    def _position_row(
+        position: OkxDemoPositionView, now: datetime
+    ) -> OkxDemoPositionState:
         return OkxDemoPositionState(
             position_key=position.position_key,
             instrument_id=position.instrument_id,

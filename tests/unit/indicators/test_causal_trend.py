@@ -25,9 +25,7 @@ def test_quadratic_log_price_recovers_endpoint_acceleration() -> None:
         context.prec = 50
         closes = [
             (
-                D("4")
-                + velocity * D(index)
-                + acceleration * D(index * index) / D("2")
+                D("4") + velocity * D(index) + acceleration * D(index * index) / D("2")
             ).exp()
             for index in range(21)
         ]
@@ -35,9 +33,9 @@ def test_quadratic_log_price_recovers_endpoint_acceleration() -> None:
     result = causal_log_trend(closes)
 
     assert result is not None
-    assert abs(
-        result.log_velocity_per_bar - (velocity + acceleration * D("20"))
-    ) < D("1e-24")
+    assert abs(result.log_velocity_per_bar - (velocity + acceleration * D("20"))) < D(
+        "1e-24"
+    )
     assert abs(result.log_acceleration_per_bar2 - acceleration) < D("1e-24")
     assert result.fit_r2 == D("1")
 

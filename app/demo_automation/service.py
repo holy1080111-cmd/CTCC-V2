@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import asyncio
-from collections import deque
-from contextlib import suppress
-from datetime import date, datetime, timedelta, timezone
-from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR, ROUND_DOWN
 import hashlib
 import logging
-from typing import Any, Iterable
+from collections import deque
+from collections.abc import Iterable
+from contextlib import suppress
+from datetime import UTC, datetime, timedelta
+from decimal import ROUND_CEILING, ROUND_DOWN, ROUND_FLOOR, Decimal, localcontext
+from typing import Any
 
 from app.config.settings import Settings, get_settings
 from app.database.repositories.demo_automation import DemoAutomationRepository
@@ -45,8 +46,8 @@ from app.domain.okx_demo import (
     DEMO_CONFIRMATION_PHRASE,
     OkxDemoAlgoOrderView,
     OkxDemoLeverageRequest,
-    OkxDemoOrderView,
     OkxDemoOrderRequest,
+    OkxDemoOrderView,
     OkxDemoReconcileResult,
 )
 from app.domain.realtime import RealtimeSnapshot
@@ -101,9 +102,12 @@ class SafeDemoAutomation:
             from app.database.repositories.performance import DemoPerformanceRepository
             from app.database.session import AsyncSessionFactory
 
-            self.strategy_control_repository = DemoPerformanceRepository(AsyncSessionFactory)
+            self.strategy_control_repository = DemoPerformanceRepository(
+                AsyncSessionFactory
+            )
         if market_hub is None or market_client is None:
             if self.settings.environment == "test":
+
                 class _NullHub:
                     async def snapshot(self, _symbol: str):
                         return None
@@ -122,7 +126,7 @@ class SafeDemoAutomation:
         self.market_hub = market_hub or realtime_hub
         self.market_client = market_client or realtime_client
 
-        today = datetime.now(timezone.utc).date()
+        today = datetime.now(UTC).date()
         self._state: dict[str, Any] = {
             "armed": False,
             "emergency_stop": False,
@@ -225,18 +229,12 @@ class SafeDemoAutomation:
             continuous_session_enabled=(
                 self.settings.okx_demo_continuous_session_enabled
             ),
-            daily_loss_limit_enforced=(
-                not self.settings.okx_demo_continuous_session_enabled
-            ),
+            daily_loss_limit_enforced=True,
             daily_trade_limit_enforced=(
                 not self.settings.okx_demo_continuous_session_enabled
             ),
-            consecutive_loss_limit_enforced=(
-                not self.settings.okx_demo_continuous_session_enabled
-            ),
-            effective_trade_cooldown_seconds=(
-                self._effective_trade_cooldown_seconds()
-            ),
+            consecutive_loss_limit_enforced=True,
+            effective_trade_cooldown_seconds=(self._effective_trade_cooldown_seconds()),
             score_risk_enabled=self.settings.okx_demo_score_risk_enabled,
             derivative_risk_gate_enabled=self.settings.okx_demo_score_risk_enabled,
             mathematical_risk_gate_enabled=self.settings.okx_demo_score_risk_enabled,
@@ -315,7 +313,7 @@ class SafeDemoAutomation:
         )
 
     async def history(self, limit: int = 20) -> list[DemoAutomationRunResult]:
-        return list(self._history)[-max(1, limit):]
+        return list(self._history)[-max(1, limit) :]
 
     async def arm(self) -> DemoAutomationStatus:
         blockers = self._configuration_blockers()
@@ -324,8 +322,14 @@ class SafeDemoAutomation:
         if self._state["emergency_stop"]:
             raise DemoAutomationSafetyError("emergency_stop_must_be_cleared")
         snapshot = await self.demo_service.reconcile()
-        if snapshot.positions or snapshot.pending_orders or snapshot.pending_algo_orders:
-            raise DemoAutomationSafetyError("exchange_exposure_must_be_zero_before_arming")
+        if (
+            snapshot.positions
+            or snapshot.pending_orders
+            or snapshot.pending_algo_orders
+        ):
+            raise DemoAutomationSafetyError(
+                "exchange_exposure_must_be_zero_before_arming"
+            )
         if self._active_trades():
             raise DemoAutomationSafetyError(
                 "tracked_trade_state_must_be_resolved_before_arming"
@@ -344,7 +348,9 @@ class SafeDemoAutomation:
             raise DemoAutomationSafetyError(basis_blocker)
         self._apply_locks(capital.risk_equity)
         if self._state["locked"]:
-            raise DemoAutomationSafetyError("automation_locked:" + ",".join(self._state["lock_reasons"]))
+            raise DemoAutomationSafetyError(
+                "automation_locked:" + ",".join(self._state["lock_reasons"])
+            )
         self._state["armed"] = True
         await self._persist_state(required=True)
         return await self.status()
@@ -360,7 +366,7 @@ class SafeDemoAutomation:
         self._state["emergency_stop"] = True
         self._state["locked"] = True
         self._state["lock_reasons"] = sorted(
-            set([*self._state["lock_reasons"], "emergency_stop_engaged"])
+            {*self._state["lock_reasons"], "emergency_stop_engaged"}
         )
         await self.stop()
         await self._persist_state(required=False)
@@ -368,8 +374,14 @@ class SafeDemoAutomation:
 
     async def clear_emergency_stop(self) -> DemoAutomationStatus:
         snapshot = await self.demo_service.reconcile()
-        if snapshot.positions or snapshot.pending_orders or snapshot.pending_algo_orders:
-            raise DemoAutomationSafetyError("exchange_exposure_must_be_zero_before_clearing_stop")
+        if (
+            snapshot.positions
+            or snapshot.pending_orders
+            or snapshot.pending_algo_orders
+        ):
+            raise DemoAutomationSafetyError(
+                "exchange_exposure_must_be_zero_before_clearing_stop"
+            )
         if self._active_trades():
             raise DemoAutomationSafetyError(
                 "tracked_trade_state_must_be_resolved_before_clearing_stop"
@@ -429,7 +441,7 @@ class SafeDemoAutomation:
             self._ensure_execute_ready(allow_session_lock_refresh=True)
 
         async with self._run_lock:
-            started = datetime.now(timezone.utc)
+            started = datetime.now(UTC)
             self._state["last_started_at"] = started
             results: list[DemoAutomationSymbolResult] = []
             total_equity: Decimal | None = None
@@ -461,9 +473,7 @@ class SafeDemoAutomation:
                     available_margin_equity,
                 )
                 if bucket_plan is not None:
-                    capital_bucket_position_limit = (
-                        bucket_plan.effective_position_limit
-                    )
+                    capital_bucket_position_limit = bucket_plan.effective_position_limit
                 basis_blocker = self._roll_session(
                     risk_equity,
                     capital.basis,
@@ -505,9 +515,9 @@ class SafeDemoAutomation:
                     exposure_violation = "active_portfolio_stop_risk_limit_exceeded"
                 elif (
                     self.settings.okx_demo_score_risk_enabled
-                    and bucket_plan is None
-                    and self._portfolio_usage(portfolio_view)[1]
-                    > D(str(self.settings.okx_demo_portfolio_max_margin_pct))
+                    and self._portfolio_margin_amount(portfolio_view)
+                    > risk_equity
+                    * D(str(self.settings.okx_demo_portfolio_max_margin_pct))
                 ):
                     exposure_violation = "active_portfolio_margin_limit_exceeded"
                 elif bucket_plan is not None:
@@ -597,8 +607,7 @@ class SafeDemoAutomation:
                             shadow_portfolio.append(reservation)
                             available_margin_equity = max(
                                 D("0"),
-                                available_margin_equity
-                                - reservation.estimated_margin,
+                                available_margin_equity - reservation.estimated_margin,
                             )
                     portfolio_view = (
                         self._active_trades() if execute else shadow_portfolio
@@ -623,7 +632,7 @@ class SafeDemoAutomation:
                     )
                 )
 
-            completed = datetime.now(timezone.utc)
+            completed = datetime.now(UTC)
             self._state["last_completed_at"] = completed
             run = DemoAutomationRunResult(
                 trigger="scheduled" if trigger == "scheduled" else "manual",
@@ -634,9 +643,7 @@ class SafeDemoAutomation:
                 total_equity=total_equity,
                 risk_equity=risk_equity,
                 risk_equity_currency=risk_equity_currency,
-                capital_bucket_enabled=(
-                    self.settings.okx_demo_capital_bucket_enabled
-                ),
+                capital_bucket_enabled=(self.settings.okx_demo_capital_bucket_enabled),
                 capital_bucket_usdt=(
                     D(str(self.settings.okx_demo_position_margin_bucket_usdt))
                     if self.settings.okx_demo_capital_bucket_enabled
@@ -651,10 +658,7 @@ class SafeDemoAutomation:
                 portfolio_open_risk_pct=self._portfolio_usage(portfolio_view)[0],
                 portfolio_margin_pct=self._portfolio_usage(portfolio_view)[1],
                 portfolio_estimated_margin=sum(
-                    (
-                        max(D("0"), item.estimated_margin)
-                        for item in portfolio_view
-                    ),
+                    (max(D("0"), item.estimated_margin) for item in portfolio_view),
                     D("0"),
                 ),
             )
@@ -663,10 +667,13 @@ class SafeDemoAutomation:
             if self.repository is not None:
                 try:
                     await self.repository.save_run(
-                        run, history_limit=self.settings.okx_demo_automation_history_limit
+                        run,
+                        history_limit=self.settings.okx_demo_automation_history_limit,
                     )
-                except Exception as exc:
-                    self._state["last_error"] = "run_persistence_failed:" + self._safe_error(exc)
+                except Exception as exc:  # noqa: BLE001 - Retain observable persistence failure without granting a retry.
+                    self._state["last_error"] = (
+                        "run_persistence_failed:" + self._safe_error(exc)
+                    )
             return run
 
     async def _rank_requested_symbols(
@@ -676,9 +683,7 @@ class SafeDemoAutomation:
         list[tuple[str, StrategyDecision]],
     ]:
         results: list[DemoAutomationSymbolResult] = []
-        ranked: list[
-            tuple[int, int, Decimal, int, int, str, StrategyDecision]
-        ] = []
+        ranked: list[tuple[int, int, Decimal, int, int, str, StrategyDecision]] = []
         seen: set[str] = set()
         tracked = {item.instrument_id for item in self._active_trades()}
         disabled_strategies: set[str] = set()
@@ -780,14 +785,10 @@ class SafeDemoAutomation:
             ranking_score = -1 if mathematical_blocker else effective_score
             confirmation = candidate.mathematical_confirmation
             validated_confidence = (
-                confirmation.confidence
-                if confirmation is not None
-                else D("0")
+                confirmation.confidence if confirmation is not None else D("0")
             )
             auxiliary_bonus = (
-                confirmation.auxiliary_bonus
-                if confirmation is not None
-                else 0
+                confirmation.auxiliary_bonus if confirmation is not None else 0
             )
             ranked.append(
                 (
@@ -802,10 +803,7 @@ class SafeDemoAutomation:
             )
 
         ranked.sort(key=lambda item: item[:5])
-        return results, [
-            (raw, strategy)
-            for _, _, _, _, _, raw, strategy in ranked
-        ]
+        return results, [(raw, strategy) for _, _, _, _, _, raw, strategy in ranked]
 
     async def _process_symbol(
         self,
@@ -886,7 +884,7 @@ class SafeDemoAutomation:
                     None,
                 )
 
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             fingerprint = self._fingerprint(instrument_id, execution_candidate)
             if await self._fingerprint_exists(fingerprint, now):
                 return (
@@ -1011,11 +1009,9 @@ class SafeDemoAutomation:
                     None,
                 )
             if self.settings.okx_demo_structural_dynamic_leverage_enabled:
-                aligned_candidate, structural_blocker = (
-                    apply_cost_adjusted_reward_risk(
-                        aligned_candidate,
-                        self.settings,
-                    )
+                aligned_candidate, structural_blocker = apply_cost_adjusted_reward_risk(
+                    aligned_candidate,
+                    self.settings,
                 )
                 if aligned_candidate is None:
                     return (
@@ -1093,7 +1089,28 @@ class SafeDemoAutomation:
                 else None
             )
             open_risk_pct, open_margin_pct = self._portfolio_usage(portfolio)
+            enforce_margin_guard = self.settings.okx_demo_score_risk_enabled
+            margin_guard_limit = D(str(self.settings.okx_demo_portfolio_max_margin_pct))
             if self.settings.okx_demo_score_risk_enabled:
+                remaining_margin_amount = balance_equity * D(
+                    str(self.settings.okx_demo_portfolio_max_margin_pct)
+                ) - self._portfolio_margin_amount(portfolio)
+                if remaining_margin_amount <= 0:
+                    return (
+                        self._candidate_result(
+                            strategy.symbol,
+                            instrument_id,
+                            aligned_candidate,
+                            outcome="blocked",
+                            reference_price=reference_price,
+                            detail="portfolio_margin_limit_reached",
+                        ),
+                        None,
+                    )
+                if position_margin_cap_usdt is not None:
+                    position_margin_cap_usdt = min(
+                        position_margin_cap_usdt, remaining_margin_amount
+                    )
                 remaining_risk = max(
                     D("0"),
                     D(str(self.settings.okx_demo_portfolio_max_risk_pct))
@@ -1153,7 +1170,10 @@ class SafeDemoAutomation:
                     leverage_cap = selection.leverage_cap
                     leverage_cap_reasons = list(selection.cap_reasons)
                 if bucket_plan is not None:
-                    if position_margin_cap_usdt is None or position_margin_cap_usdt <= 0:
+                    if (
+                        position_margin_cap_usdt is None
+                        or position_margin_cap_usdt <= 0
+                    ):
                         return (
                             self._candidate_result(
                                 strategy.symbol,
@@ -1178,6 +1198,9 @@ class SafeDemoAutomation:
                             str(self.settings.order_size_cap_usdt)
                         ),
                     )
+                    margin_notional_cap = min(
+                        margin_notional_cap, remaining_margin_amount * D(leverage)
+                    )
                 else:
                     remaining_margin = max(
                         D("0"),
@@ -1199,9 +1222,7 @@ class SafeDemoAutomation:
                             ),
                             None,
                         )
-                    margin_notional_cap = (
-                        balance_equity * margin_cap_pct * D(leverage)
-                    )
+                    margin_notional_cap = balance_equity * margin_cap_pct * D(leverage)
                 max_notional = min(
                     D(str(self.settings.order_size_cap_usdt)),
                     margin_notional_cap,
@@ -1248,11 +1269,7 @@ class SafeDemoAutomation:
 
             account = AccountRiskState(
                 equity=balance_equity,
-                daily_realized_pnl=(
-                    D("0")
-                    if self.settings.okx_demo_continuous_session_enabled
-                    else min(D("0"), self._state["daily_pnl"])
-                ),
+                daily_realized_pnl=self._daily_realized_pnl(now),
                 # Only exchange-attributed, de-duplicated close outcomes may
                 # enter the realized seven-day loss gate.  Account equity
                 # deltas include open-position PnL, deposits, withdrawals, and
@@ -1261,14 +1278,12 @@ class SafeDemoAutomation:
                 # independently bounded by the persistent drawdown high-water.
                 weekly_realized_pnl=self._rolling_realized_pnl(now),
                 peak_equity=self._state["risk_peak_equity"] or balance_equity,
-                consecutive_losses=(
-                    0
-                    if self.settings.okx_demo_continuous_session_enabled
-                    else int(self._state["consecutive_losses"])
-                ),
+                consecutive_losses=int(self._state["consecutive_losses"]),
                 open_positions=len(portfolio),
                 same_direction_positions=sum(
-                    1 for item in portfolio if item.direction == aligned_candidate.direction
+                    1
+                    for item in portfolio
+                    if item.direction == aligned_candidate.direction
                 ),
                 correlated_positions=len(portfolio),
             )
@@ -1372,9 +1387,9 @@ class SafeDemoAutomation:
                 rounded_budget_detail = "rounded_order_exceeds_position_margin_bucket"
             elif (
                 self.settings.okx_demo_score_risk_enabled
-                and bucket_plan is None
-                and open_margin_pct + estimated_margin_pct
-                > D(str(self.settings.okx_demo_portfolio_max_margin_pct))
+                and self._portfolio_margin_amount(portfolio) + estimated_margin
+                > balance_equity
+                * D(str(self.settings.okx_demo_portfolio_max_margin_pct))
             ):
                 rounded_budget_detail = "rounded_order_exceeds_portfolio_budget"
             if rounded_budget_detail is not None:
@@ -1591,16 +1606,71 @@ class SafeDemoAutomation:
             # veto the actual POST. The callback runs after its final await.
             self._ensure_execute_ready()
 
+            margin_guard_equity = balance_equity
+            margin_guard_available = available_margin_equity
+            margin_guard_portfolio = list(portfolio)
+            if enforce_margin_guard:
+                # Leverage IO cannot preserve an earlier balance or margin budget.
+                # This fresh read validates the unchanged order; it never resizes it.
+                margin_snapshot = await self.demo_service.reconcile()
+                fresh_capital, capital_blocker = self._automation_capital(
+                    margin_snapshot
+                )
+                if fresh_capital is None:
+                    raise DemoAutomationSafetyError(capital_blocker)
+                self._ensure_capital_bucket_currency(fresh_capital)
+                if fresh_capital.basis != self._state.get("equity_basis"):
+                    raise DemoAutomationSafetyError(_EQUITY_BASIS_LOCK)
+                basis_blocker = self._roll_session(
+                    fresh_capital.risk_equity, fresh_capital.basis
+                )
+                if basis_blocker is not None:
+                    raise DemoAutomationSafetyError(basis_blocker)
+                self._refresh_active_trade_estimates(
+                    margin_snapshot, fresh_capital.risk_equity
+                )
+                margin_guard_portfolio = self._margin_portfolio(portfolio)
+                try:
+                    margin_guard_portfolio = self._recheck_margin_inventory(
+                        margin_snapshot,
+                        margin_guard_portfolio,
+                        equity_currency=fresh_capital.currency,
+                    )
+                except DemoAutomationSafetyError as error:
+                    self._engage_emergency(str(error))
+                    raise
+                margin_guard_equity = fresh_capital.risk_equity
+                margin_guard_available = fresh_capital.available_equity
+
             def before_submit() -> None:
                 nonlocal order_submission_attempted
                 self._ensure_execute_ready()
+                if enforce_margin_guard:
+                    try:
+                        current = self._margin_portfolio(margin_guard_portfolio)
+                    except DemoAutomationSafetyError as error:
+                        self._engage_emergency(str(error))
+                        raise
+                    if (
+                        estimated_margin > margin_guard_available
+                        or self._portfolio_margin_amount(current) + estimated_margin
+                        > margin_guard_equity
+                        * min(
+                            margin_guard_limit,
+                            D(str(self.settings.okx_demo_portfolio_max_margin_pct)),
+                        )
+                    ):
+                        self._engage_emergency(
+                            "portfolio_margin_limit_changed_before_submit"
+                        )
+                        raise DemoAutomationSafetyError(
+                            "portfolio_margin_limit_changed_before_submit"
+                        )
                 order_submission_attempted = True
 
             expiry = max(
                 sizing_candidate.expires_at,
-                now + timedelta(
-                    seconds=self._effective_trade_cooldown_seconds()
-                ),
+                now + timedelta(seconds=self._effective_trade_cooldown_seconds()),
             )
             try:
                 write = await self.demo_service.place_order(
@@ -1640,12 +1710,16 @@ class SafeDemoAutomation:
                                 "strategy": sizing_candidate.strategy,
                                 "client_order_id": client_order_id,
                                 "execution_order_type": "fok",
-                                "execution_limit_price": str(execution_boundary.limit_price),
+                                "execution_limit_price": str(
+                                    execution_boundary.limit_price
+                                ),
                                 "outcome": "unconfirmed",
                             },
                         )
                     except Exception:  # noqa: BLE001 - retain the original uncertain-write error.
-                        self._engage_emergency("post_submission_fingerprint_persistence_failed")
+                        self._engage_emergency(
+                            "post_submission_fingerprint_persistence_failed"
+                        )
                         await self._persist_state(required=False)
                 raise
             acknowledgement = write.acknowledgement
@@ -1679,9 +1753,7 @@ class SafeDemoAutomation:
                         },
                     )
                 except Exception:
-                    self._engage_emergency(
-                        "fok_no_fill_fingerprint_persistence_failed"
-                    )
+                    self._engage_emergency("fok_no_fill_fingerprint_persistence_failed")
                     await self._persist_state(required=False)
                     raise
                 return (
@@ -1717,9 +1789,7 @@ class SafeDemoAutomation:
                     None,
                 )
 
-            average_fill_price = (
-                order.average_fill_price if order is not None else None
-            )
+            average_fill_price = order.average_fill_price if order is not None else None
             fill_quality = (
                 execution_quality_at_price(
                     sizing_candidate,
@@ -1742,9 +1812,7 @@ class SafeDemoAutomation:
                 update={
                     "client_order_id": client_order_id,
                     "exchange_order_id": exchange_order_id,
-                    "protection_client_order_id": (
-                        write.protection_client_order_id
-                    ),
+                    "protection_client_order_id": (write.protection_client_order_id),
                     "average_fill_price": average_fill_price,
                     "actual_gross_risk_reward": (
                         fill_quality.gross_risk_reward
@@ -1775,9 +1843,7 @@ class SafeDemoAutomation:
                     or acknowledgement is None
                     or not exchange_order_id
                 ):
-                    self._engage_emergency(
-                        "post_submission_acknowledgement_invalid"
-                    )
+                    self._engage_emergency("post_submission_acknowledgement_invalid")
                     await self._persist_state(required=False)
                     raise DemoAutomationSafetyError(
                         "okx_demo_order_submission_acknowledgement_invalid"
@@ -1791,9 +1857,7 @@ class SafeDemoAutomation:
                 ):
                     self._engage_emergency("post_submission_fok_fill_unconfirmed")
                     await self._persist_state(required=False)
-                    raise DemoAutomationSafetyError(
-                        "okx_demo_fok_fill_unconfirmed"
-                    )
+                    raise DemoAutomationSafetyError("okx_demo_fok_fill_unconfirmed")
                 execution_price_outside_limit = (
                     sizing_candidate.direction == "long"
                     and average_fill_price > execution_boundary.limit_price
@@ -1823,8 +1887,7 @@ class SafeDemoAutomation:
                     )
                 if (
                     fill_slippage_bps is None
-                    or fill_slippage_bps
-                    > execution_boundary.max_adverse_slippage_bps
+                    or fill_slippage_bps > execution_boundary.max_adverse_slippage_bps
                 ):
                     self._engage_emergency(
                         "post_submission_adverse_fill_slippage_exceeds_limit"
@@ -1837,9 +1900,7 @@ class SafeDemoAutomation:
                     self.settings.okx_demo_require_protection
                     and write.protection_confirmed is not True
                 ):
-                    self._engage_emergency(
-                        "post_submission_protection_unconfirmed"
-                    )
+                    self._engage_emergency("post_submission_protection_unconfirmed")
                     await self._persist_state(required=False)
                     raise DemoAutomationSafetyError(
                         "okx_demo_order_protection_unconfirmed"
@@ -1853,9 +1914,7 @@ class SafeDemoAutomation:
                         "client_order_id": client_order_id,
                         "exchange_order_id": exchange_order_id,
                         "execution_order_type": "fok",
-                        "execution_limit_price": str(
-                            execution_boundary.limit_price
-                        ),
+                        "execution_limit_price": str(execution_boundary.limit_price),
                         "average_fill_price": str(average_fill_price),
                         "actual_enforced_risk_reward": str(
                             fill_quality.enforced_risk_reward
@@ -1943,9 +2002,14 @@ class SafeDemoAutomation:
     ) -> tuple[Decimal, str | None]:
         if require_realtime and not self.market_client.status().connected:
             return candidate.entry, "realtime_websocket_not_connected"
-        snapshot: RealtimeSnapshot | None = await self.market_hub.snapshot(instrument_id)
+        snapshot: RealtimeSnapshot | None = await self.market_hub.snapshot(
+            instrument_id
+        )
         if snapshot is None:
-            return candidate.entry, "realtime_snapshot_not_available" if require_realtime else None
+            return (
+                candidate.entry,
+                "realtime_snapshot_not_available" if require_realtime else None,
+            )
 
         executable_quote = (
             snapshot.ask if candidate.direction == "long" else snapshot.bid
@@ -1957,9 +2021,7 @@ class SafeDemoAutomation:
         if require_realtime:
             if snapshot.quote_received_at is None:
                 return executable_quote, "realtime_quote_timestamp_missing"
-            quote_age = (
-                datetime.now(timezone.utc) - snapshot.quote_received_at
-            ).total_seconds()
+            quote_age = (datetime.now(UTC) - snapshot.quote_received_at).total_seconds()
             if quote_age > self.settings.okx_demo_scan_max_snapshot_age_seconds:
                 return executable_quote, "realtime_executable_quote_stale"
             if (
@@ -1975,7 +2037,7 @@ class SafeDemoAutomation:
             if snapshot.mark_price_received_at is None:
                 return executable_quote, "realtime_mark_price_timestamp_missing"
             mark_age = (
-                datetime.now(timezone.utc) - snapshot.mark_price_received_at
+                datetime.now(UTC) - snapshot.mark_price_received_at
             ).total_seconds()
             if mark_age > self.settings.okx_demo_scan_max_snapshot_age_seconds:
                 return executable_quote, "realtime_mark_price_stale"
@@ -1984,9 +2046,7 @@ class SafeDemoAutomation:
                 / executable_quote
                 * D("10000")
             )
-            if basis_bps > D(
-                str(self.settings.okx_demo_scan_max_entry_drift_bps)
-            ):
+            if basis_bps > D(str(self.settings.okx_demo_scan_max_entry_drift_bps)):
                 return executable_quote, "mark_execution_basis_exceeds_limit"
             geometry = candidate.structural_protection
             stop_loss = (
@@ -2009,9 +2069,7 @@ class SafeDemoAutomation:
                 return executable_quote, "mark_price_outside_protective_bounds"
 
         drift_bps = (
-            abs(executable_quote - candidate.entry)
-            / candidate.entry
-            * D("10000")
+            abs(executable_quote - candidate.entry) / candidate.entry * D("10000")
         )
         if drift_bps > D(str(self.settings.okx_demo_scan_max_entry_drift_bps)):
             return executable_quote, "entry_price_drift_exceeds_limit"
@@ -2037,15 +2095,22 @@ class SafeDemoAutomation:
             update={"entry": reference_price, "risk_reward": reward / risk}
         )
 
-    def _contracts_from_base_quantity(self, base_quantity, instrument) -> tuple[Decimal, str | None]:
+    def _contracts_from_base_quantity(
+        self, base_quantity, instrument
+    ) -> tuple[Decimal, str | None]:
         contract_value = instrument.contract_value
         base_currency = instrument.instrument_id.split("-")[0]
         if contract_value is None or contract_value <= 0:
             return D("0"), "instrument_contract_value_missing"
-        if instrument.contract_currency and instrument.contract_currency != base_currency:
+        if (
+            instrument.contract_currency
+            and instrument.contract_currency != base_currency
+        ):
             return D("0"), "unsupported_contract_value_currency"
         raw = base_quantity / contract_value
-        contracts = (raw / instrument.lot_size).to_integral_value(rounding=ROUND_DOWN) * instrument.lot_size
+        contracts = (raw / instrument.lot_size).to_integral_value(
+            rounding=ROUND_DOWN
+        ) * instrument.lot_size
         contracts = min(contracts, self.settings.okx_demo_max_order_size_contracts)
         if contracts < instrument.minimum_size:
             return contracts, "risk_sized_contracts_below_exchange_minimum"
@@ -2054,7 +2119,9 @@ class SafeDemoAutomation:
         return contracts, None
 
     @staticmethod
-    def _align_protection(candidate: TradeCandidate, tick: Decimal) -> tuple[Decimal, Decimal]:
+    def _align_protection(
+        candidate: TradeCandidate, tick: Decimal
+    ) -> tuple[Decimal, Decimal]:
         if candidate.direction == "long":
             sl_round = ROUND_FLOOR
             tp_round = (
@@ -2070,7 +2137,9 @@ class SafeDemoAutomation:
                 else ROUND_FLOOR
             )
         stop = (candidate.stop_loss / tick).to_integral_value(rounding=sl_round) * tick
-        take = (candidate.take_profit / tick).to_integral_value(rounding=tp_round) * tick
+        take = (candidate.take_profit / tick).to_integral_value(
+            rounding=tp_round
+        ) * tick
         # Re-validate geometry after exchange tick alignment.
         candidate.model_copy(update={"stop_loss": stop, "take_profit": take})
         return stop, take
@@ -2134,7 +2203,7 @@ class SafeDemoAutomation:
 
     def _ensure_capital_bucket_currency(
         self,
-        capital: _AutomationCapital,
+        capital: DemoRiskCapital,
     ) -> None:
         if (
             self.settings.okx_demo_capital_bucket_enabled
@@ -2172,6 +2241,166 @@ class SafeDemoAutomation:
             snapshot.balance,
             settlement_currency=_AUTOMATION_SETTLEMENT_CURRENCY,
         )
+
+    @staticmethod
+    def _portfolio_margin_amount(
+        trades: Iterable[DemoAutomationActiveTrade],
+    ) -> Decimal:
+        # Monetary amounts share the current reconciled settlement/equity basis.
+        # Do not add ratios that may have been recorded against older equity.
+        return sum((item.estimated_margin for item in trades), D("0"))
+
+    def _margin_portfolio(
+        self, captured: Iterable[DemoAutomationActiveTrade]
+    ) -> list[DemoAutomationActiveTrade]:
+        # A captured hold cannot disappear during an await. A larger current hold
+        # wins; same-run shadow reservations and newly uncertain holds both count.
+        captured = list(captured)
+        by_instrument = {item.instrument_id: item for item in captured}
+        raw = self._state.get("active_trades")
+        current = self._active_trades()
+        if (
+            len(by_instrument) != len(captured)
+            or type(raw) is not dict
+            or len(current) != len(raw)
+            or len({item.instrument_id for item in current}) != len(current)
+            or any(
+                type(value) is not dict
+                or value.get("instrument_id") != key
+                or not {
+                    "estimated_margin",
+                    "estimated_notional",
+                    "contracts",
+                    "leverage",
+                }.issubset(value)
+                for key, value in raw.items()
+            )
+            or any(
+                not item.estimated_margin.is_finite()
+                or item.estimated_margin <= 0
+                or not item.estimated_notional.is_finite()
+                or item.estimated_notional <= 0
+                or not item.contracts.is_finite()
+                or item.contracts <= 0
+                for item in (*captured, *current)
+            )
+        ):
+            raise DemoAutomationSafetyError("portfolio_margin_inventory_invalid")
+        for item in current:
+            prior = by_instrument.get(item.instrument_id)
+            if prior is not None and prior.client_order_id != item.client_order_id:
+                raise DemoAutomationSafetyError("portfolio_margin_inventory_conflict")
+            if prior is None or item.estimated_margin > prior.estimated_margin:
+                by_instrument[item.instrument_id] = item
+        return list(by_instrument.values())
+
+    def _recheck_margin_inventory(
+        self,
+        snapshot: OkxDemoReconcileResult,
+        held: list[DemoAutomationActiveTrade],
+        *,
+        equity_currency: str,
+    ) -> list[DemoAutomationActiveTrade]:
+        """Reject changed/unknown exposure and retain the larger monetary hold."""
+        tracked = {item.instrument_id: item for item in held}
+        positions = {item.instrument_id: item for item in snapshot.positions}
+        exposed = {
+            item.instrument_id
+            for item in (
+                *snapshot.positions,
+                *snapshot.pending_orders,
+                *snapshot.pending_algo_orders,
+            )
+        }
+        if exposed - set(tracked):
+            raise DemoAutomationSafetyError("untracked_exchange_exposure_detected")
+        if snapshot.pending_orders:
+            raise DemoAutomationSafetyError("portfolio_pending_orders_unresolved")
+        if len(positions) != len(snapshot.positions):
+            raise DemoAutomationSafetyError(
+                "multiple_positions_per_instrument_detected"
+            )
+        mode = snapshot.account_config.position_mode
+        if (
+            mode not in {"net_mode", "long_short_mode"}
+            or snapshot.account_config.raw.get("posMode") != mode
+        ):
+            raise DemoAutomationSafetyError("portfolio_margin_position_mode_unknown")
+        for name, position in positions.items():
+            trade = tracked[name]
+            side = "net" if mode == "net_mode" else trade.direction
+            if (
+                not position.size.is_finite()
+                or abs(position.size) != trade.contracts
+                or position.position_side != side
+                or trade.direction not in {"long", "short"}
+                or mode == "net_mode"
+                and ("long" if position.size > 0 else "short") != trade.direction
+                or position.margin_mode != trade.margin_mode
+                or position.leverage is None
+                or not position.leverage.is_finite()
+                or position.leverage != D(trade.leverage)
+            ):
+                raise DemoAutomationSafetyError("portfolio_margin_position_changed")
+            # OKX imr is USD; isolated margin is in ccy. Never label USD as USDT.
+            # The same raw position's usdPx is required for any conversion.
+            field = "margin" if trade.margin_mode == "isolated" else "imr"
+            raw_margin = position.raw.get(field)
+            try:
+                if type(raw_margin) is not str or not raw_margin:
+                    raise ValueError
+                margin = D(raw_margin)
+                if not margin.is_finite() or margin < 0:
+                    raise ValueError
+                ccy = position.raw.get("ccy")
+                if type(ccy) is not str or not ccy:
+                    raise ValueError
+                source_currency = ccy if trade.margin_mode == "isolated" else "USD"
+                if source_currency != equity_currency:
+                    usd_price = position.raw.get("usdPx")
+                    if type(usd_price) is not str or not usd_price:
+                        raise ValueError
+                    usd_price = D(usd_price)
+                    if not usd_price.is_finite() or usd_price <= 0:
+                        raise ValueError
+                    with localcontext() as context:
+                        context.prec = max(context.prec, 28)
+                        context.rounding = ROUND_CEILING
+                        if source_currency == "USD" and ccy == equity_currency:
+                            margin = margin / usd_price
+                        elif source_currency == ccy and equity_currency == "USD":
+                            margin = margin * usd_price
+                        else:
+                            raise ValueError
+            except (ValueError, ArithmeticError):
+                raise DemoAutomationSafetyError(
+                    "portfolio_margin_source_missing"
+                ) from None
+            if margin > trade.estimated_margin:
+                tracked[name] = trade.model_copy(update={"estimated_margin": margin})
+        recognized_algos = set()
+        for name, position in positions.items():
+            trade = tracked[name]
+            side = "net" if mode == "net_mode" else trade.direction
+            if not self._active_trade_has_matching_protection(
+                trade,
+                abs(position.size),
+                snapshot.pending_algo_orders,
+                expected_position_side=side,
+            ):
+                raise DemoAutomationSafetyError(
+                    "tracked_position_protection_missing_or_mismatched"
+                )
+            recognized_algos.add(trade.protection_client_order_id)
+        if any(
+            algo.client_algo_order_id not in recognized_algos
+            or algo.state != "live"
+            or algo.order_type not in {"conditional", "oco"}
+            for algo in snapshot.pending_algo_orders
+        ):
+            raise DemoAutomationSafetyError("portfolio_pending_algos_unresolved")
+        # Holds without exchange positions remain reserved/uncertain, never released.
+        return list(tracked.values())
 
     @staticmethod
     def _portfolio_usage(
@@ -2216,13 +2445,23 @@ class SafeDemoAutomation:
         force_if_empty: bool = False,
         allow_rebase: bool = False,
     ) -> str | None:
-        today = datetime.now(timezone.utc).date()
+        today = datetime.now(UTC).date()
+        if self._state["session_date"] > today:
+            self._engage_emergency("risk_session_clock_reversed")
+            return "risk_session_clock_reversed"
         current_basis = self._state.get("equity_basis")
         if current_basis != equity_basis:
-            if not allow_rebase:
+            if not allow_rebase or (
+                self._state["realized_pnl_events"]
+                or self._state["consecutive_losses"]
+                or {
+                    "daily_loss_limit_reached",
+                    "consecutive_loss_limit_reached",
+                }.intersection(self._state["lock_reasons"])
+            ):
                 self._state["locked"] = True
                 self._state["lock_reasons"] = sorted(
-                    set([*self._state["lock_reasons"], _EQUITY_BASIS_LOCK])
+                    {*self._state["lock_reasons"], _EQUITY_BASIS_LOCK}
                 )
                 return _EQUITY_BASIS_LOCK
             self._state["equity_basis"] = equity_basis
@@ -2233,7 +2472,8 @@ class SafeDemoAutomation:
             self._state["realized_pnl_events"] = []
             self._state["daily_pnl"] = D("0")
             self._state["trades_today"] = 0
-            self._state["consecutive_losses"] = 0
+            # An empty initial session may establish a basis; history never
+            # disappears merely because capital or scheduling settings changed.
         self._state["lock_reasons"] = [
             reason
             for reason in self._state["lock_reasons"]
@@ -2245,7 +2485,12 @@ class SafeDemoAutomation:
             self._state["peak_equity"] = equity
             self._state["daily_pnl"] = D("0")
             self._state["trades_today"] = 0
-            self._state["consecutive_losses"] = 0
+            self._state["lock_reasons"] = [
+                reason
+                for reason in self._state["lock_reasons"]
+                if reason
+                not in {"daily_loss_limit_reached", "daily_trade_count_limit_reached"}
+            ]
         elif force_if_empty and self._state["baseline_equity"] is None:
             self._state["baseline_equity"] = equity
             self._state["peak_equity"] = equity
@@ -2279,14 +2524,12 @@ class SafeDemoAutomation:
             ]
         }
         reconciled_at = snapshot.reconciled_at
-        grace = timedelta(
-            seconds=self.settings.okx_demo_trade_reconcile_grace_seconds
-        )
+        grace = timedelta(seconds=self.settings.okx_demo_trade_reconcile_grace_seconds)
         closed = [
             item
             for item in active
             if item.instrument_id not in exposed
-            and reconciled_at - item.started_at.astimezone(timezone.utc) >= grace
+            and reconciled_at - item.started_at.astimezone(UTC) >= grace
         ]
         if not closed:
             return
@@ -2308,7 +2551,7 @@ class SafeDemoAutomation:
             self._state["emergency_stop"] = True
             self._state["locked"] = True
             self._state["lock_reasons"] = sorted(
-                set([*self._state["lock_reasons"], "trade_outcome_unconfirmed"])
+                {*self._state["lock_reasons"], "trade_outcome_unconfirmed"}
             )
             self._state["last_error"] = (
                 "trade_outcome_unconfirmed:"
@@ -2320,19 +2563,27 @@ class SafeDemoAutomation:
         for closed_at, trade, net_pnl, closing_order_ids in sorted(
             outcomes, key=lambda item: item[0]
         ):
-            self._record_realized_pnl_event(
+            if not self._record_realized_pnl_event(
                 trade,
                 closed_at,
                 net_pnl,
                 closing_order_ids=closing_order_ids,
-            )
-            if closed_at.date() == self._state["session_date"]:
-                if net_pnl < 0:
-                    self._state["consecutive_losses"] = (
-                        int(self._state["consecutive_losses"]) + 1
-                    )
-                else:
-                    self._state["consecutive_losses"] = 0
+            ):
+                continue
+            previous_close = self._state["last_trade_closed_at"]
+            if previous_close is not None and closed_at <= previous_close:
+                self._engage_emergency("loss_history_chronology_unresolved")
+            elif net_pnl < 0:
+                self._state["consecutive_losses"] = (
+                    int(self._state["consecutive_losses"]) + 1
+                )
+            elif net_pnl > 0:
+                self._state["consecutive_losses"] = 0
+                self._state["lock_reasons"] = [
+                    reason
+                    for reason in self._state["lock_reasons"]
+                    if reason != "consecutive_loss_limit_reached"
+                ]
             cooldowns[trade.instrument_id] = closed_at.isoformat()
             self._remove_active_trade(trade.instrument_id)
             previous = self._state["last_trade_closed_at"]
@@ -2356,8 +2607,10 @@ class SafeDemoAutomation:
                 continue
             mode = snapshot.account_config.position_mode
             expected_position_side = (
-                "net" if mode == "net_mode"
-                else trade.direction if mode == "long_short_mode"
+                "net"
+                if mode == "net_mode"
+                else trade.direction
+                if mode == "long_short_mode"
                 else None
             )
             if (
@@ -2398,7 +2651,8 @@ class SafeDemoAutomation:
         ):
             return False
         matches = [
-            algo for algo in pending
+            algo
+            for algo in pending
             if algo.client_algo_order_id == trade.protection_client_order_id
         ]
         if len(matches) != 1:
@@ -2409,7 +2663,11 @@ class SafeDemoAutomation:
             for key in ("algoClOrdId", "attachAlgoClOrdId")
         ):
             return False
-        prices = (algo.size, algo.stop_loss_trigger_price, algo.take_profit_trigger_price)
+        prices = (
+            algo.size,
+            algo.stop_loss_trigger_price,
+            algo.take_profit_trigger_price,
+        )
         if any(value is None or not value.is_finite() for value in prices):
             return False
         return (
@@ -2484,9 +2742,9 @@ class SafeDemoAutomation:
             if closed_at is None:
                 continue
             if closed_at.tzinfo is None:
-                closed_at = closed_at.replace(tzinfo=timezone.utc)
-            closed_at = closed_at.astimezone(timezone.utc)
-            if closed_at < trade.started_at.astimezone(timezone.utc):
+                closed_at = closed_at.replace(tzinfo=UTC)
+            closed_at = closed_at.astimezone(UTC)
+            if closed_at < trade.started_at.astimezone(UTC):
                 continue
             realized, present = cls._decimal_with_presence(
                 order.raw, "pnl", "fillPnl", "realizedPnl"
@@ -2519,18 +2777,27 @@ class SafeDemoAutomation:
         net_pnl: Decimal,
         *,
         closing_order_ids: Iterable[str] = (),
-    ) -> None:
-        closed_utc = closed_at.astimezone(timezone.utc)
+    ) -> bool:
+        if not net_pnl.is_finite():
+            self._engage_emergency("realized_pnl_history_invalid")
+            return False
+        closed_utc = closed_at.astimezone(UTC)
         event_id = hashlib.sha256(
             "|".join(
                 [
                     trade.instrument_id,
-                    trade.started_at.astimezone(timezone.utc).isoformat(),
+                    trade.started_at.astimezone(UTC).isoformat(),
                     closed_utc.isoformat(),
                 ]
             ).encode("utf-8")
         ).hexdigest()
         events = self._normalize_realized_pnl_events()
+        if "realized_pnl_history_invalid" in self._state["lock_reasons"]:
+            return False
+        existing = next((item for item in events if item["event_id"] == event_id), None)
+        if existing is not None and D(existing["net_pnl"]) != net_pnl:
+            self._engage_emergency("realized_pnl_history_invalid")
+            return False
         events = [item for item in events if item["event_id"] != event_id]
         events.append(
             {
@@ -2550,7 +2817,7 @@ class SafeDemoAutomation:
                 "closing_order_ids": sorted(
                     {str(value) for value in closing_order_ids if value}
                 ),
-                "started_at": trade.started_at.astimezone(timezone.utc).isoformat(),
+                "started_at": trade.started_at.astimezone(UTC).isoformat(),
                 "closed_at": closed_utc.isoformat(),
                 "net_pnl": str(net_pnl),
             }
@@ -2558,32 +2825,56 @@ class SafeDemoAutomation:
         self._state["realized_pnl_events"] = sorted(
             events, key=lambda item: (item["closed_at"], item["event_id"])
         )
+        return True
 
     def _normalize_realized_pnl_events(
         self,
         now: datetime | None = None,
     ) -> list[dict[str, Any]]:
-        reference = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        reference = (now or datetime.now(UTC)).astimezone(UTC)
         cutoff = reference - timedelta(
             days=self.settings.okx_demo_performance_snapshot_retention_days
         )
         normalized: dict[str, dict[str, Any]] = {}
-        raw_events = self._state.get("realized_pnl_events") or []
+        raw_events = self._state.get("realized_pnl_events")
+        invalid = False
         if not isinstance(raw_events, list):
+            invalid = True
             raw_events = []
         for raw in raw_events:
             if not isinstance(raw, dict):
+                invalid = True
                 continue
             event_id = str(raw.get("event_id") or "")
             instrument_id = str(raw.get("instrument_id") or "")
-            closed_at = self._parse_datetime(raw.get("closed_at"))
-            if not event_id or not instrument_id or closed_at is None:
+            source_time = raw.get("closed_at")
+            try:
+                if isinstance(source_time, str):
+                    source_time = datetime.fromisoformat(source_time)
+                if (
+                    not isinstance(source_time, datetime)
+                    or source_time.utcoffset() is None
+                ):
+                    raise ValueError
+            except ValueError:
+                invalid = True
                 continue
-            if closed_at < cutoff or closed_at > reference + timedelta(minutes=5):
+            closed_at = self._parse_datetime(source_time)
+            if not event_id or not instrument_id or closed_at is None:
+                invalid = True
+                continue
+            if closed_at > reference:
+                invalid = True
+                continue
+            if closed_at < cutoff:
                 continue
             try:
                 net_pnl = D(str(raw.get("net_pnl")))
             except (ArithmeticError, ValueError):
+                invalid = True
+                continue
+            if not net_pnl.is_finite():
+                invalid = True
                 continue
             event: dict[str, Any] = {
                 "event_id": event_id,
@@ -2624,31 +2915,74 @@ class SafeDemoAutomation:
                     if value
                 }
             )
+            if event_id in normalized and normalized[event_id] != event:
+                invalid = True
+                continue
             normalized[event_id] = event
         events = sorted(
             normalized.values(), key=lambda item: (item["closed_at"], item["event_id"])
         )
-        self._state["realized_pnl_events"] = events
+        if invalid:
+            # Preserve the original malformed/conflicting evidence for recovery;
+            # partial valid rows never license a new submission.
+            self._engage_emergency("realized_pnl_history_invalid")
+        else:
+            self._state["realized_pnl_events"] = events
         return events
 
     def _rolling_realized_pnl(self, now: datetime | None = None) -> Decimal:
-        reference = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        reference = (now or datetime.now(UTC)).astimezone(UTC)
         cutoff = reference - timedelta(days=7)
         return sum(
             (
                 D(item["net_pnl"])
                 for item in self._normalize_realized_pnl_events(reference)
                 if (closed_at := self._parse_datetime(item["closed_at"])) is not None
-                and cutoff <= closed_at <= reference + timedelta(minutes=5)
+                and cutoff <= closed_at <= reference
             ),
             D("0"),
         )
+
+    def _daily_realized_pnl(self, now: datetime | None = None) -> Decimal:
+        reference = (now or datetime.now(UTC)).astimezone(UTC)
+        start = reference.replace(hour=0, minute=0, second=0, microsecond=0)
+        return sum(
+            (
+                D(item["net_pnl"])
+                for item in self._normalize_realized_pnl_events(reference)
+                if (closed_at := self._parse_datetime(item["closed_at"])) is not None
+                and start <= closed_at <= reference
+            ),
+            D("0"),
+        )
+
+    def _loss_limit_reasons(self) -> list[str]:
+        # These are financial gates; continuous scheduling cannot disable them.
+        retained = {"daily_loss_limit_reached", "consecutive_loss_limit_reached"}
+        reasons = [
+            reason for reason in self._state["lock_reasons"] if reason in retained
+        ]
+        baseline = self._state["baseline_equity"]
+        if baseline is not None and baseline > 0:
+            loss_limit = baseline * D(str(self.settings.okx_demo_daily_loss_limit_pct))
+            # Keep the conservative equity-deterioration veto separately from
+            # recorded realized cash outcomes; deposits cannot erase a loss.
+            if min(self._state["daily_pnl"], self._daily_realized_pnl()) <= -loss_limit:
+                reasons.append("daily_loss_limit_reached")
+        if (
+            int(self._state["consecutive_losses"])
+            >= self.settings.okx_demo_automation_max_consecutive_losses
+        ):
+            reasons.append("consecutive_loss_limit_reached")
+        return sorted(set(reasons))
 
     @staticmethod
     def _is_closing_order(order: OkxDemoOrderView) -> bool:
         if order.reduce_only:
             return True
-        position_side = str(order.raw.get("posSide") or order.position_side or "").lower()
+        position_side = str(
+            order.raw.get("posSide") or order.position_side or ""
+        ).lower()
         side = order.side.lower()
         return (position_side == "long" and side == "sell") or (
             position_side == "short" and side == "buy"
@@ -2660,9 +2994,7 @@ class SafeDemoAutomation:
         return value if present else None
 
     @staticmethod
-    def _decimal_with_presence(
-        raw: dict[str, Any], *keys: str
-    ) -> tuple[Decimal, bool]:
+    def _decimal_with_presence(raw: dict[str, Any], *keys: str) -> tuple[Decimal, bool]:
         for key in keys:
             value = raw.get(key)
             if value not in (None, ""):
@@ -2673,27 +3005,14 @@ class SafeDemoAutomation:
         return D("0"), False
 
     def _apply_locks(self, equity: Decimal) -> None:
-        reasons: list[str] = []
+        reasons = self._loss_limit_reasons()
         if _EQUITY_BASIS_LOCK in self._state["lock_reasons"]:
             reasons.append(_EQUITY_BASIS_LOCK)
-        if not self.settings.okx_demo_continuous_session_enabled:
-            baseline = self._state["baseline_equity"]
-            if baseline is not None and baseline > 0:
-                loss_limit = baseline * D(
-                    str(self.settings.okx_demo_daily_loss_limit_pct)
-                )
-                if self._state["daily_pnl"] <= -loss_limit:
-                    reasons.append("daily_loss_limit_reached")
-            if (
-                int(self._state["trades_today"])
-                >= self.settings.okx_demo_max_trades_per_day
-            ):
-                reasons.append("daily_trade_count_limit_reached")
-            if (
-                int(self._state["consecutive_losses"])
-                >= self.settings.okx_demo_automation_max_consecutive_losses
-            ):
-                reasons.append("consecutive_loss_limit_reached")
+        if not self.settings.okx_demo_continuous_session_enabled and (
+            int(self._state["trades_today"])
+            >= self.settings.okx_demo_max_trades_per_day
+        ):
+            reasons.append("daily_trade_count_limit_reached")
         if self._state["emergency_stop"]:
             reasons.append("emergency_stop_engaged")
             reasons.extend(
@@ -2707,12 +3026,15 @@ class SafeDemoAutomation:
                     "capital_bucket_position_limit_exceeded",
                     "exchange_position_limit_exceeded",
                     "isolated_margin_mode_mismatch",
+                    "loss_history_chronology_unresolved",
                     "multiple_positions_per_instrument_detected",
                     "order_submission_outcome_unconfirmed",
                     "portfolio_state_invalid",
                     "post_submission_acknowledgement_invalid",
                     "post_submission_fingerprint_persistence_failed",
                     "post_submission_state_persistence_failed",
+                    "realized_pnl_history_invalid",
+                    "risk_session_clock_reversed",
                     "tracked_position_protection_missing_or_mismatched",
                     "trade_outcome_unconfirmed",
                     "untracked_exchange_exposure_detected",
@@ -2726,7 +3048,7 @@ class SafeDemoAutomation:
         self._state["emergency_stop"] = True
         self._state["locked"] = True
         self._state["lock_reasons"] = sorted(
-            set([*self._state["lock_reasons"], reason, "emergency_stop_engaged"])
+            {*self._state["lock_reasons"], reason, "emergency_stop_engaged"}
         )
 
     def _cooldown_active(self, instrument_id: str, now: datetime) -> bool:
@@ -2750,19 +3072,11 @@ class SafeDemoAutomation:
     def _clear_disabled_continuous_session_locks(self) -> None:
         if not self.settings.okx_demo_continuous_session_enabled:
             return
-        disabled = {
-            "daily_loss_limit_reached",
-            "daily_trade_count_limit_reached",
-            "consecutive_loss_limit_reached",
-        }
+        disabled = {"daily_trade_count_limit_reached"}
         original = list(self._state["lock_reasons"])
         if not any(reason in disabled for reason in original):
             return
-        retained = [
-            reason
-            for reason in original
-            if reason not in disabled
-        ]
+        retained = [reason for reason in original if reason not in disabled]
         if self._state["emergency_stop"]:
             retained.append("emergency_stop_engaged")
         self._state["lock_reasons"] = sorted(set(retained))
@@ -2770,39 +3084,42 @@ class SafeDemoAutomation:
 
     def _normalize_portfolio_state(self) -> None:
         if self._state.get("risk_peak_equity") is None:
-            self._state["risk_peak_equity"] = (
-                self._state.get("peak_equity")
-                or self._state.get("baseline_equity")
-            )
+            self._state["risk_peak_equity"] = self._state.get(
+                "peak_equity"
+            ) or self._state.get("baseline_equity")
         self._normalize_realized_pnl_events()
+        if "portfolio_state_invalid" in self._state["lock_reasons"]:
+            self._invalid_portfolio_state()
+            return
         raw_active = self._state.get("active_trades")
-        if not isinstance(raw_active, dict):
-            raw_active = {}
 
-        if not raw_active and self._state.get("active_instrument_id"):
+        if (
+            isinstance(raw_active, dict)
+            and not raw_active
+            and self._state.get("active_instrument_id")
+        ):
             instrument_id = str(self._state["active_instrument_id"])
-            started_at = self._state.get("active_started_at") or datetime.now(timezone.utc)
-            legacy = DemoAutomationActiveTrade(
-                instrument_id=instrument_id,
-                client_order_id=self._state.get("active_client_order_id"),
-                tier="legacy",
-                start_equity=self._state.get("active_start_equity"),
-                started_at=started_at,
-            )
-            raw_active = {
+            try:
+                legacy = DemoAutomationActiveTrade(
+                    instrument_id=instrument_id,
+                    client_order_id=self._state.get("active_client_order_id"),
+                    tier="legacy",
+                    start_equity=self._state.get("active_start_equity"),
+                    started_at=self._state.get("active_started_at"),
+                )
+            except Exception:  # noqa: BLE001 - Any legacy reconstruction failure preserves raw exposure and latches stop.
+                self._invalid_portfolio_state()
+                return
+            self._state["active_trades"] = {
                 instrument_id: legacy.model_dump(mode="json")
             }
 
-        normalized: dict[str, dict[str, Any]] = {}
-        invalid: list[str] = []
-        for key, value in raw_active.items():
-            try:
-                trade = DemoAutomationActiveTrade.model_validate(value)
-            except Exception:
-                invalid.append(str(key))
-                continue
-            normalized[trade.instrument_id] = trade.model_dump(mode="json")
-        self._state["active_trades"] = normalized
+        # Keep the complete original inventory if any row is uncertain. A partial
+        # normalized mapping can erase the only durable record of exposure.
+        try:
+            self._active_trades()
+        except DemoAutomationSafetyError:
+            return
 
         cooldowns = self._state.get("symbol_cooldowns")
         normalized_cooldowns: dict[str, str] = {}
@@ -2813,38 +3130,56 @@ class SafeDemoAutomation:
                     normalized_cooldowns[str(key)] = parsed.isoformat()
         self._state["symbol_cooldowns"] = normalized_cooldowns
 
-        if invalid:
-            self._state["armed"] = False
-            self._state["emergency_stop"] = True
-            self._state["locked"] = True
-            self._state["lock_reasons"] = sorted(
-                set([*self._state["lock_reasons"], "portfolio_state_invalid"])
-            )
-            self._state["last_error"] = (
-                "portfolio_state_invalid:" + ",".join(sorted(invalid))
-            )[:250]
         self._sync_legacy_active_fields()
 
+    def _invalid_portfolio_state(self) -> None:
+        self._engage_emergency("portfolio_state_invalid")
+        self._state["last_error"] = "portfolio_state_invalid"
+
     def _active_trades(self) -> list[DemoAutomationActiveTrade]:
+        # The current status schema has no representation for unknown totals;
+        # reject the view instead of displaying a false flat/zero portfolio.
+        if "portfolio_state_invalid" in self._state["lock_reasons"]:
+            self._invalid_portfolio_state()
+            raise DemoAutomationSafetyError("portfolio_state_invalid")
         values: list[DemoAutomationActiveTrade] = []
-        raw = self._state.get("active_trades") or {}
+        raw = self._state.get("active_trades")
         if not isinstance(raw, dict):
-            return values
-        for value in raw.values():
+            self._invalid_portfolio_state()
+            raise DemoAutomationSafetyError("portfolio_state_invalid")
+        clients: set[str] = set()
+        for key, value in raw.items():
             try:
-                values.append(DemoAutomationActiveTrade.model_validate(value))
-            except Exception:
-                continue
+                trade = DemoAutomationActiveTrade.model_validate(value)
+                if (
+                    key != trade.instrument_id
+                    or not trade.instrument_id
+                    or trade.started_at.tzinfo is None
+                    or trade.started_at.utcoffset() is None
+                    or (
+                        trade.client_order_id is not None
+                        and trade.client_order_id in clients
+                    )
+                ):
+                    raise ValueError("active_trade_identity_or_chronology_invalid")
+                if trade.client_order_id is not None:
+                    clients.add(trade.client_order_id)
+                values.append(trade)
+            except Exception:  # noqa: BLE001 - Any malformed exposure remains unknown and cannot become flat.
+                self._invalid_portfolio_state()
+                raise DemoAutomationSafetyError("portfolio_state_invalid") from None
         return sorted(values, key=lambda item: (item.started_at, item.instrument_id))
 
     def _set_active_trade(self, trade: DemoAutomationActiveTrade) -> None:
-        active = dict(self._state.get("active_trades") or {})
+        self._active_trades()
+        active = dict(self._state["active_trades"])
         active[trade.instrument_id] = trade.model_dump(mode="json")
         self._state["active_trades"] = active
         self._sync_legacy_active_fields()
 
     def _remove_active_trade(self, instrument_id: str) -> None:
-        active = dict(self._state.get("active_trades") or {})
+        self._active_trades()
+        active = dict(self._state["active_trades"])
         active.pop(instrument_id, None)
         self._state["active_trades"] = active
         self._sync_legacy_active_fields()
@@ -2871,14 +3206,14 @@ class SafeDemoAutomation:
             parsed = value
         elif isinstance(value, str):
             try:
-                parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                parsed = datetime.fromisoformat(value)
             except ValueError:
                 return None
         else:
             return None
         if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-        return parsed.astimezone(timezone.utc)
+            parsed = parsed.replace(tzinfo=UTC)
+        return parsed.astimezone(UTC)
 
     def _configuration_blockers(self) -> list[str]:
         blockers: list[str] = []
@@ -2900,7 +3235,15 @@ class SafeDemoAutomation:
             blockers.append("real_auto_trade_must_remain_disabled")
         return blockers
 
-    def _ensure_execute_ready(self, *, allow_session_lock_refresh: bool = False) -> None:
+    def _ensure_execute_ready(
+        self, *, allow_session_lock_refresh: bool = False
+    ) -> None:
+        losses = self._loss_limit_reasons()
+        if losses:
+            self._state["lock_reasons"] = sorted(
+                {*self._state["lock_reasons"], *losses}
+            )
+            self._state["locked"] = True
         blockers = self._configuration_blockers()
         if blockers:
             raise DemoAutomationSafetyError(";".join(blockers))
@@ -2922,7 +3265,7 @@ class SafeDemoAutomation:
     async def _loop(self) -> None:
         initial = self.settings.okx_demo_scan_initial_delay_seconds
         if initial:
-            self._next_run_at = datetime.now(timezone.utc) + timedelta(seconds=initial)
+            self._next_run_at = datetime.now(UTC) + timedelta(seconds=initial)
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=initial)
                 return
@@ -2931,7 +3274,7 @@ class SafeDemoAutomation:
         while not self._stop.is_set():
             await self.run_once(execute=True, trigger="scheduled")
             interval = self.settings.okx_demo_scan_interval_seconds
-            self._next_run_at = datetime.now(timezone.utc) + timedelta(seconds=interval)
+            self._next_run_at = datetime.now(UTC) + timedelta(seconds=interval)
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=interval)
             except TimeoutError:
@@ -2944,12 +3287,16 @@ class SafeDemoAutomation:
         try:
             await self.repository.save_state(payload)
         except Exception as exc:
-            self._state["last_error"] = "state_persistence_failed:" + self._safe_error(exc)
+            self._state["last_error"] = "state_persistence_failed:" + self._safe_error(
+                exc
+            )
             if required:
                 raise DemoAutomationSafetyError(self._state["last_error"]) from exc
 
     async def _fingerprint_exists(self, fingerprint: str, now: datetime) -> bool:
-        self._fingerprints = {key: expiry for key, expiry in self._fingerprints.items() if expiry > now}
+        self._fingerprints = {
+            key: expiry for key, expiry in self._fingerprints.items() if expiry > now
+        }
         if fingerprint in self._fingerprints:
             return True
         if self.repository is not None:
@@ -3070,9 +3417,7 @@ class SafeDemoAutomation:
                 else []
             ),
             reference_price=reference_price,
-            execution_order_type=(
-                "fok" if execution_limit_price is not None else None
-            ),
+            execution_order_type=("fok" if execution_limit_price is not None else None),
             execution_limit_price=execution_limit_price,
             average_fill_price=average_fill_price,
             actual_gross_risk_reward=actual_gross_risk_reward,
@@ -3127,9 +3472,7 @@ class SafeDemoAutomation:
                 and candidate.structural_protection is not None
                 else None
             ),
-            estimated_round_trip_cost_pct=(
-                candidate.estimated_round_trip_cost_pct
-            ),
+            estimated_round_trip_cost_pct=(candidate.estimated_round_trip_cost_pct),
             estimated_cost_amount=(
                 estimated_margin
                 * D(selected_leverage)

@@ -209,12 +209,9 @@ Invoke-NativeStep "Git whitespace check" {
 }
 
 Invoke-NativeStep "Canonical source manifest" {
-    docker compose run --rm --no-deps `
-        --volume "${sourceRoot}:/source:ro" `
-        api python /source/scripts/manifest.py `
-        --root /source `
-        --manifest /source/MANIFEST.sha256 `
-        --check
+    # Verify the actual COPY output, without exposing the host .env or source
+    # checkout to the container or substituting a host-mounted manifest.
+    docker compose exec -T api python scripts/manifest.py --check
 }
 
 $head = (git rev-parse HEAD).Trim()

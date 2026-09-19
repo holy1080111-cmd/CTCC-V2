@@ -1,0 +1,154 @@
+"""Synthetic journal probe for a real process kill and DB/Redis restart.
+
+Runs only inside the isolated final-validation network. No exchange client,
+real credentials, market observations, or execution authority are involved.
+The host harness kills the seeded process after its fsynced marker, restarts
+the actual database and Redis containers, then launches an independent verifier.
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import hashlib
+import json
+import os
+from datetime import UTC, datetime
+from pathlib import Path
+from uuid import uuid4
+
+from sqlalchemy.engine import make_url
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
+
+from app.config.settings import Settings
+from app.database.repositories.qualification_ledger import QualificationLedgerRepository
+from app.trade_qualification.reservations import LedgerScope, QualificationLedgerError
+from scripts.hermetic_pytest import enabled_execution_authority
+
+
+def isolated_database_url() -> str:
+    url = os.environ.get("DATABASE_URL", "")
+    parsed = make_url(url)
+    settings = Settings(_env_file=None)
+    if (
+        os.environ.get("CTCC_HERMETIC_DURABILITY") != "1"
+        or settings.environment != "test"
+        or settings.trading_mode != "analysis_only"
+        or enabled_execution_authority(settings)
+        or parsed.drivername != "postgresql+asyncpg"
+        or not (parsed.host or "").startswith("ctcc-final-")
+        or not (parsed.host or "").endswith("-postgres")
+        or parsed.database != "ctcc"
+        or settings.okx_demo_credentials_configured
+        or settings.okx_live_credentials_configured
+    ):
+        raise RuntimeError("isolated_credential_free_validation_required")
+    return url
+
+
+def canonical(value: dict) -> bytes:
+    return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+
+
+def write_marker(path: Path, value: dict) -> None:
+    raw = canonical(value)
+    envelope = canonical({"body": value, "sha256": hashlib.sha256(raw).hexdigest()})
+    with path.open("xb") as stream:
+        stream.write(envelope)
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+async def probe(mode: str, marker: Path) -> None:
+    engine = create_async_engine(isolated_database_url(), poolclass=NullPool)
+    sessions = async_sessionmaker(engine, expire_on_commit=False, autoflush=False)
+    try:
+        if mode == "seed":
+            # Fixture claims are synthetic and can never prove source authenticity.
+            from tests.unit.qualification_ledger_fixtures import ledger_fixture
+
+            fixture = ledger_fixture(account_id=f"987654321{uuid4().int % 10**12:012d}")
+            repository = QualificationLedgerRepository(
+                sessions, clock=lambda: fixture.now
+            )
+            await repository.reconcile_scope(fixture.claims, expected_revision=0)
+            held = await repository.reserve(fixture.request)
+            intent = await repository.consume_with_submission_intent(
+                held.scope, held.original_event_key, expected_revision=2
+            )
+            uncertain = await repository.mark_uncertain(
+                held.scope, held.original_event_key, expected_revision=3
+            )
+            state = await repository.read_scope(held.scope)
+            if state.active != (uncertain,) or state.ledger_revision != 4:
+                raise RuntimeError("seed_readback_mismatch")
+            write_marker(
+                marker,
+                {
+                    "schema": "ctcc.synthetic.qualification.crash-probe.v1",
+                    "scope": held.scope.model_dump(mode="json"),
+                    "event": held.original_event_key,
+                    "reservation_id": held.reservation_id,
+                    "intent_sha256": intent.sha256,
+                    "coverage": held.coverage.model_dump(mode="json"),
+                    "execution_authority": False,
+                    "order_writes": 0,
+                },
+            )
+            print("SYNTHETIC_DURABLE_COMMIT_READBACK_READY=1", flush=True)
+            # Real SIGKILL is applied by the owning Docker validation harness.
+            await asyncio.Event().wait()
+        else:
+            raw = marker.read_bytes()
+            if len(raw) > 32768:
+                raise RuntimeError("probe_marker_oversize")
+            envelope = json.loads(raw)
+            body = envelope["body"]
+            if envelope["sha256"] != hashlib.sha256(canonical(body)).hexdigest():
+                raise RuntimeError("probe_marker_digest_mismatch")
+            scope = LedgerScope.model_validate(body["scope"])
+            repository = QualificationLedgerRepository(
+                sessions, clock=lambda: datetime.now(UTC)
+            )
+            state = await repository.read_scope(scope)
+            if len(state.active) != 1 or state.ledger_revision != 4:
+                raise RuntimeError("durable_hold_missing_after_restart")
+            held = state.active[0]
+            if (
+                held.state != "uncertain"
+                or held.reservation_id != body["reservation_id"]
+                or held.coverage.model_dump(mode="json") != body["coverage"]
+            ):
+                raise RuntimeError("durable_hold_changed_after_restart")
+            intent = await repository.read_submission_intent(
+                scope, body["event"], expected_sha256=body["intent_sha256"]
+            )
+            if intent.execution_authority or intent.order_retry_authority:
+                raise RuntimeError("restart_regained_authority")
+            try:
+                await repository.consume_with_submission_intent(
+                    scope, body["event"], expected_revision=4
+                )
+            except QualificationLedgerError:
+                pass
+            else:
+                raise RuntimeError("restart_consumed_twice")
+            if await repository.read_scope(scope) != state:
+                raise RuntimeError("denied_replay_changed_hold")
+            print("PROCESS_KILL_POSTGRES_REDIS_RESTART_DURABILITY=PASS")
+            print("SYNTHETIC_CLAIMS=1;SOURCE_AUTHORITY=0;ORDER_WRITES=0")
+    finally:
+        await engine.dispose()
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("mode", choices=("seed", "verify"))
+    parser.add_argument("--marker", type=Path, required=True)
+    args = parser.parse_args()
+    asyncio.run(probe(args.mode, args.marker))
+
+
+if __name__ == "__main__":
+    main()

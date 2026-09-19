@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from decimal import Decimal, ROUND_DOWN
+from datetime import UTC, datetime
+from decimal import ROUND_DOWN, Decimal
 from threading import RLock
 from uuid import UUID, uuid4
 
@@ -43,10 +43,10 @@ class PaperBroker:
     def __init__(
         self,
         *,
-        starting_balance: Decimal = Decimal("10000"),
+        starting_balance: Decimal = Decimal(10000),
         taker_fee_rate: Decimal = Decimal("0.0005"),
         maker_fee_rate: Decimal = Decimal("0.0002"),
-        slippage_bps: Decimal = Decimal("2"),
+        slippage_bps: Decimal = Decimal(2),
     ) -> None:
         if starting_balance <= 0:
             raise ValueError("starting_balance must be positive")
@@ -98,7 +98,7 @@ class PaperBroker:
 
             order_id = uuid4()
             client_order_id = request.client_order_id or f"paper-{order_id.hex}"
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             order = PaperOrderView(
                 id=order_id,
                 client_order_id=client_order_id,
@@ -108,21 +108,29 @@ class PaperBroker:
                 status="pending",
                 quantity=_q(request.quantity),
                 reference_price=_q(request.reference_price),
-                limit_price=_q(request.limit_price) if request.limit_price is not None else None,
+                limit_price=_q(request.limit_price)
+                if request.limit_price is not None
+                else None,
                 average_fill_price=None,
                 stop_loss=_q(request.stop_loss),
                 take_profit=_q(request.take_profit),
-                fee=Decimal("0"),
+                fee=Decimal(0),
                 strategy=request.strategy,
                 score=request.score,
                 reasons=list(request.reasons),
                 created_at=now,
             )
-            stored = _Order(view=order, stop_loss=_q(request.stop_loss), take_profit=_q(request.take_profit))
+            stored = _Order(
+                view=order,
+                stop_loss=_q(request.stop_loss),
+                take_profit=_q(request.take_profit),
+            )
             self.orders[order_id] = stored
 
             if request.order_type == "market":
-                self._fill(stored, request.reference_price, is_maker=False, filled_at=now)
+                self._fill(
+                    stored, request.reference_price, is_maker=False, filled_at=now
+                )
             return stored.view
 
     def cancel(self, order_id: UUID) -> PaperOrderView:
@@ -133,23 +141,29 @@ class PaperBroker:
             stored.view = stored.view.model_copy(update={"status": "cancelled"})
             return stored.view
 
-    def tick(self, *, symbol: str, price: Decimal, timestamp: datetime | None = None) -> PaperTickResult:
+    def tick(
+        self, *, symbol: str, price: Decimal, timestamp: datetime | None = None
+    ) -> PaperTickResult:
         with self._lock:
-            timestamp = timestamp or datetime.now(timezone.utc)
+            timestamp = timestamp or datetime.now(UTC)
             filled: list[UUID] = []
             closed: list[UUID] = []
 
             for stored in list(self.orders.values()):
                 order = stored.view
-                if order.symbol != symbol or order.status != "pending" or order.limit_price is None:
+                if (
+                    order.symbol != symbol
+                    or order.status != "pending"
+                    or order.limit_price is None
+                ):
                     continue
-                should_fill = (
-                    order.side == "long" and price <= order.limit_price
-                ) or (
+                should_fill = (order.side == "long" and price <= order.limit_price) or (
                     order.side == "short" and price >= order.limit_price
                 )
                 if should_fill:
-                    self._fill(stored, order.limit_price, is_maker=True, filled_at=timestamp)
+                    self._fill(
+                        stored, order.limit_price, is_maker=True, filled_at=timestamp
+                    )
                     filled.append(order.id)
 
             for position_id, position in list(self.positions.items()):
@@ -158,7 +172,12 @@ class PaperBroker:
                 updated = position.model_copy(
                     update={
                         "mark_price": _q(price),
-                        "unrealized_pnl": self._gross_pnl(position.side, position.entry_price, price, position.quantity),
+                        "unrealized_pnl": self._gross_pnl(
+                            position.side,
+                            position.entry_price,
+                            price,
+                            position.quantity,
+                        ),
                     }
                 )
                 self.positions[position_id] = updated
@@ -186,9 +205,11 @@ class PaperBroker:
                 account=self.account(),
             )
 
-    def close(self, position_id: UUID, *, price: Decimal, reason: str = "manual") -> PaperPositionView:
+    def close(
+        self, position_id: UUID, *, price: Decimal, reason: str = "manual"
+    ) -> PaperPositionView:
         with self._lock:
-            return self._close_position(position_id, price, reason, datetime.now(timezone.utc))
+            return self._close_position(position_id, price, reason, datetime.now(UTC))
 
     def get_order(self, order_id: UUID) -> PaperOrderView:
         with self._lock:
@@ -212,11 +233,15 @@ class PaperBroker:
     def account(self) -> PaperAccountView:
         with self._lock:
             open_positions = [p for p in self.positions.values() if p.status == "open"]
-            closed_positions = [p for p in self.positions.values() if p.status == "closed"]
-            unrealized = sum((p.unrealized_pnl for p in open_positions), Decimal("0"))
-            fees = sum((p.fees for p in self.positions.values()), Decimal("0"))
-            realized = sum((p.realized_pnl for p in closed_positions), Decimal("0"))
-            pending = sum(1 for item in self.orders.values() if item.view.status == "pending")
+            closed_positions = [
+                p for p in self.positions.values() if p.status == "closed"
+            ]
+            unrealized = sum((p.unrealized_pnl for p in open_positions), Decimal(0))
+            fees = sum((p.fees for p in self.positions.values()), Decimal(0))
+            realized = sum((p.realized_pnl for p in closed_positions), Decimal(0))
+            pending = sum(
+                1 for item in self.orders.values() if item.view.status == "pending"
+            )
             return PaperAccountView(
                 starting_balance=_q(self.starting_balance),
                 cash_balance=_q(self.cash_balance),
@@ -229,11 +254,15 @@ class PaperBroker:
                 closed_trades=len(closed_positions),
             )
 
-    def _fill(self, stored: _Order, price: Decimal, *, is_maker: bool, filled_at: datetime) -> None:
+    def _fill(
+        self, stored: _Order, price: Decimal, *, is_maker: bool, filled_at: datetime
+    ) -> None:
         order = stored.view
         if order.status != "pending":
             raise PaperBrokerError("order_not_pending")
-        fill_price = _q(price if is_maker else self._apply_slippage(price, order.side, opening=True))
+        fill_price = _q(
+            price if is_maker else self._apply_slippage(price, order.side, opening=True)
+        )
         fee_rate = self.maker_fee_rate if is_maker else self.taker_fee_rate
         entry_fee = _q(fill_price * order.quantity * fee_rate)
         self.cash_balance -= entry_fee
@@ -257,18 +286,22 @@ class PaperBroker:
             mark_price=fill_price,
             stop_loss=stored.stop_loss,
             take_profit=stored.take_profit,
-            unrealized_pnl=Decimal("0"),
-            realized_pnl=Decimal("0"),
+            unrealized_pnl=Decimal(0),
+            realized_pnl=Decimal(0),
             fees=entry_fee,
             opened_at=filled_at,
         )
 
-    def _close_position(self, position_id: UUID, price: Decimal, reason: str, timestamp: datetime) -> PaperPositionView:
+    def _close_position(
+        self, position_id: UUID, price: Decimal, reason: str, timestamp: datetime
+    ) -> PaperPositionView:
         position = self.get_position(position_id)
         if position.status != "open":
             raise PaperBrokerError("position_not_open")
         exit_price = _q(self._apply_slippage(price, position.side, opening=False))
-        gross = self._gross_pnl(position.side, position.entry_price, exit_price, position.quantity)
+        gross = self._gross_pnl(
+            position.side, position.entry_price, exit_price, position.quantity
+        )
         exit_fee = _q(exit_price * position.quantity * self.taker_fee_rate)
         net_after_exit = gross - exit_fee
         self.cash_balance += net_after_exit
@@ -276,7 +309,7 @@ class PaperBroker:
             update={
                 "status": "closed",
                 "mark_price": exit_price,
-                "unrealized_pnl": Decimal("0"),
+                "unrealized_pnl": Decimal(0),
                 "realized_pnl": _q(gross - position.fees - exit_fee),
                 "fees": _q(position.fees + exit_fee),
                 "closed_at": timestamp,
@@ -287,13 +320,19 @@ class PaperBroker:
         return closed
 
     def _apply_slippage(self, price: Decimal, side: str, *, opening: bool) -> Decimal:
-        rate = self.slippage_bps / Decimal("10000")
+        rate = self.slippage_bps / Decimal(10000)
         is_buy = (side == "long" and opening) or (side == "short" and not opening)
-        return price * (Decimal("1") + rate if is_buy else Decimal("1") - rate)
+        return price * (Decimal(1) + rate if is_buy else Decimal(1) - rate)
 
     @staticmethod
-    def _gross_pnl(side: str, entry: Decimal, exit_price: Decimal, quantity: Decimal) -> Decimal:
-        raw = (exit_price - entry) * quantity if side == "long" else (entry - exit_price) * quantity
+    def _gross_pnl(
+        side: str, entry: Decimal, exit_price: Decimal, quantity: Decimal
+    ) -> Decimal:
+        raw = (
+            (exit_price - entry) * quantity
+            if side == "long"
+            else (entry - exit_price) * quantity
+        )
         return _q(raw)
 
     def _require_order(self, order_id: UUID) -> _Order:

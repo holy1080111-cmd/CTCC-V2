@@ -1,6 +1,16 @@
 # R5 Demo 帳戶來源計畫
 
-狀態：**bytes-only 原始回應與頁鏈驗證、固定 Demo GET collector 已實作，2026-09-12；完整帳戶 materializer／來源認證與 runtime 接線仍未完成。不是完整 R5、R6 或 R7 驗收。**
+狀態：**2026-09-19 已擴充 v2 原始回應／頁鏈契約與固定 Demo GET collector；完整帳戶來源認證與 runtime 接線仍未完成。不是完整 R5、R6 或 R7 驗收。**
+
+## 2026-09-19 官方契約複核與 v2 範圍
+
+直接讀取 [OKX 官方文件](https://www.okx.com/docs-v5/en/)，HTTP 200、5,244,029 bytes，文件 SHA256 `af574ed8aad5e4fbab8b147e6028b5a35ed471250f11828a4343d5a3938d27ba`。以下是程式來源契約變更，沒有讀取真實帳戶或取得憑證。
+
+- 必查八類 algo：conditional、oco、trigger、move_order_stop、iceberg、twap、chase、smart_iceberg，分別使用 algoId 頁鏈；任一 scope 缺失拒絕。無法分類的活動 algo 留在 exposure projection，阻擋 snapshot。[官方 algo list](https://www.okx.com/docs-v5/en/#order-book-trading-algo-trading-get-algo-order-list)
+- 同時擷取 `/trade/fills`、`/trade/fills-history`、`/account/bills`、`/account/bills-archive`，cursor 為 billId；`/trade/orders-history`、`/trade/orders-history-archive` 為 ordId。保留各自 raw receipts；fills／bills 重疊 identity 只有 canonical row 相同才合併經濟事件，衝突不任選一份。orders history 仍僅用於對帳，不作 PnL。
+- 新增 `/account/instruments?instType=SWAP` 與 cross／isolated `/account/leverage-info`。Plan 必填唯一 `leverage_instrument_ids`（最多 20 個 SWAP IDs）並進入 plan SHA；超出 scope 的持倉或掛單使 metadata coverage incomplete。空 metadata 回應、缺 side／instrument 或外部 instrument 與本次 raw spec 衝突，都不得 materialize snapshot。[官方槓桿查詢](https://www.okx.com/docs-v5/en/#trading-account-rest-api-get-leverage)
+- Packet 改為 `ctcc.demo_account_capture.v2`，plan scope 為 `all_current_algos_v2_and_swap_history`。舊 v1 packet／plan 不會默默取得新 scope 的資格；本模組拒絕重用，歷史 artifacts 保留不改寫。
+- 三個近期端點的文件保留期分別是 fills 3 天、bills／orders 7 天；archive 3 個月。空 terminal 只證明本次 query 結束，沒有證明全帳戶歷史、保留期或 ingestion watermark。現有 incomplete／authority=false 邊界不變。
 
 後續 `account_collector` 已提供 owned HTTPS client、HMAC／Demo header、外部帳戶
 pin、完整固定頁鏈、有限時限、秘密 echo 拒絕及 freeze 重播；介面与明確未完邊界
@@ -15,14 +25,18 @@ transport；原始來源設計與待驗規則保留，不把計畫／GET 成功�
 `plan_sha256`、`account_request`、`parse_demo_account_observation`、
 `verify_demo_account_records`、`freeze_demo_account_packet`、
 `verify_demo_account_packet`。只接受合成／外部提供的 bounded bytes，沒有 transport、
-signer、設定、wall clock、資料庫或送單依賴。13 個固定 streams 涵蓋前後 config、
-account-position-risk、balance、全部 positions／普通 pending、四類 algo、
-SWAP fills history、全部 bills archive、SWAP orders history archive。
+signer、設定、wall clock、資料庫或送單依賴。23 個固定 streams 涵蓋前後 config、
+account-position-risk、balance、全部 positions／普通 pending、八類 algo、
+SWAP fills recent/history、全部 bills recent/archive、SWAP orders recent/archive、
+SWAP account instruments 與明示 instrument scope 的 cross／isolated leverage。
 
 每條分頁鏈須明確空白 terminal、ID exclusive cursor、完整 raw／canonical pins、
 exact UID／mainUid／session／config receipt 綁定、publication barrier 及全部 request
 時鐘。freeze／replay 前先重驗 exact nested types，再從原始 bytes 重建；未知欄位、
-source time 與 history seed 不填 0 或 now。独立交叉審查後單元 291 項通過，擴大回歸另記。
+source time 與 history seed 不填 0 或 now。2026-09-19 本次五檔回歸 1,006 cases：
+1,004 passed、兩項真正 POSIX G12 publication 在 Windows 明確 skipped；其後最後的
+order-history overlap guard 由 materializer 全檔 144 passed 驗證。兩個集合重疊，不相加。
+這是合成來源測試，不是實帳戶／完整 R5 驗收；最終 source commit 仍須整體回歸。
 
 有效 packet 仍只能是 `records_verified_incomplete_account`；`account_complete`、
 `source_authenticity_verified`、`execution_authority` 固定 false。必留缺口包括
@@ -63,14 +77,14 @@ source time 與 history seed 不填 0 或 now。独立交叉審查後單元 291 
 | 權益／可用保證金 | `/api/v5/account/balance`；頂層與各幣別 details、uTime | 保留幣別與更新時間；缺值不補 0，不把 USD 數字改標 USDT。 |
 | 全部部位 | `/api/v5/account/positions`；posId、instId、posSide、pos、ccy、mgnMode、mark／margin 欄、cTime/uTime | 初版需全 scope inventory；不能僅查候選 symbol 後稱 account-wide。 |
 | 普通未完成單 | `/api/v5/trade/orders-pending`；ordId、clOrdId、state、sz、accFillSz、side／posSide、時間 | 逐頁 ordId cursor；不得只取第一頁。 |
-| 未觸發 algo 單 | `/api/v5/trade/orders-algo-pending`；algoId、algoClOrdId、ordType、完整保護與數量欄 | 分別收集 conditional、oco、trigger、move_order_stop 的 algoId 頁鏈；若不能覆蓋其他活動產品／機制，明示 incomplete。 |
+| 未觸發 algo 單 | `/api/v5/trade/orders-algo-pending`；algoId、algoClOrdId、ordType、完整保護與數量欄 | 分別收集上述八類 algoId 頁鏈；其他活動產品／機制仍需獨立 coverage 證明。 |
 | 成交／已結算變動 | `/api/v5/trade/fills-history`、`/api/v5/account/bills-archive`，視保留期補相對應近端 endpoint | 以 billId 頁鏈保存原始事件；損益、費用、funding 與非交易資金變動必須明確分類。 |
 | 訂單對帳輔助 | `/api/v5/trade/orders-history`、`orders-history-archive`，必要時 exact order/algo detail | 不是完整已實現損益來源；不得用訂單建立時間代替成交／關倉時間。 |
 | 合約／數量單位 | 經審查的 instruments 原始來源，必要時 account instruments／leverage-info | 所有已持有與待成交 instrument 都需規格；公開 ceiling 不等於帳戶當下可用額度。 |
 
 同時點 anchor 可優先實作，但缺 `available_margin`、掛單、歷史、本機 pending、peak 等所需證據，**單獨不足以 materialize**。[Account and position risk](https://app.okx.com/docs-v5/en/#trading-account-rest-api-get-account-and-position-risk)
 
-普通與 algo 訂單頁鏈分別使用其 endpoint 的識別碼，不能混用。Algo 的四類分開查，不能把既有 `conditional,oco` 呼叫視作已覆蓋全部類型。[Order list](https://app.okx.com/docs-v5/en/#order-book-trading-trade-get-order-list)、[Algo order list](https://app.okx.com/docs-v5/en/#order-book-trading-algo-trading-get-algo-order-list)
+普通與 algo 訂單頁鏈分別使用其 endpoint 的識別碼，不能混用。Algo 的八類分開查，不能把既有 `conditional,oco` 呼叫視作已覆蓋全部類型。[Order list](https://www.okx.com/docs-v5/en/#order-book-trading-trade-get-order-list)、[Algo order list](https://www.okx.com/docs-v5/en/#order-book-trading-algo-trading-get-algo-order-list)
 
 ### 頁鏈與 history 規則
 

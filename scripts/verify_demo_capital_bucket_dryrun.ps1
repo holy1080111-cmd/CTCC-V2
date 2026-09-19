@@ -45,14 +45,14 @@ if ($ExpectContinuousSession) {
     if ($status.continuous_session_enabled -ne $true) {
         throw "Continuous Demo session is not enabled."
     }
-    if ($status.daily_loss_limit_enforced -ne $false) {
-        throw "Continuous Demo session still enforces the daily loss gate."
+    if ($status.daily_loss_limit_enforced -ne $true) {
+        throw "Continuous Demo session must enforce the daily loss gate."
     }
     if ($status.daily_trade_limit_enforced -ne $false) {
         throw "Continuous Demo session still enforces the daily trade-count gate."
     }
-    if ($status.consecutive_loss_limit_enforced -ne $false) {
-        throw "Continuous Demo session still enforces the consecutive-loss gate."
+    if ($status.consecutive_loss_limit_enforced -ne $true) {
+        throw "Continuous Demo session must enforce the consecutive-loss gate."
     }
     if ([int]$status.effective_trade_cooldown_seconds -ne 0) {
         throw "Continuous Demo session must expose a zero effective cooldown."

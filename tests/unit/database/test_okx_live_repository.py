@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from decimal import Decimal
 import inspect
+from datetime import UTC, datetime
+from decimal import Decimal
 
 import pytest
 
@@ -19,8 +19,7 @@ from app.domain.okx_live import (
     OkxLivePositionView,
 )
 
-
-NOW = datetime(2026, 8, 9, 1, 2, 3, tzinfo=timezone.utc)
+NOW = datetime(2026, 8, 9, 1, 2, 3, tzinfo=UTC)
 
 
 def account_config(
@@ -47,7 +46,9 @@ def account_config(
     )
 
 
-def test_account_fingerprint_is_normalized_domain_separated_and_non_reversible() -> None:
+def test_account_fingerprint_is_normalized_domain_separated_and_non_reversible() -> (
+    None
+):
     fingerprint = fingerprint_account_identifier("  live-user-123  ")
 
     assert fingerprint == fingerprint_account_identifier("live-user-123")
@@ -61,7 +62,9 @@ def test_account_values_require_both_identifiers_and_exclude_raw_identity() -> N
     values = OkxLiveRepository._account_values(account_config(), NOW)
 
     assert values["uid_fingerprint"] == fingerprint_account_identifier("live-user-123")
-    assert values["main_uid_fingerprint"] == fingerprint_account_identifier("live-main-456")
+    assert values["main_uid_fingerprint"] == fingerprint_account_identifier(
+        "live-main-456"
+    )
     assert values["permissions"] == ["read_only", "trade"]
     assert values["unknown_permissions"] == ["future_permission"]
     assert {
@@ -124,8 +127,8 @@ def test_row_mappings_keep_exchange_primary_identifiers() -> None:
         position_id="position-123",
         instrument_id="BTC-USDT-SWAP",
         position_side="net",
-        size=Decimal("1"),
-        available_size=Decimal("1"),
+        size=Decimal(1),
+        available_size=Decimal(1),
         unrealized_pnl=Decimal("0.5"),
     )
     order = OkxLiveOrderView(
@@ -135,8 +138,8 @@ def test_row_mappings_keep_exchange_primary_identifiers() -> None:
         side="buy",
         order_type="market",
         state="filled",
-        size=Decimal("1"),
-        accumulated_fill_size=Decimal("1"),
+        size=Decimal(1),
+        accumulated_fill_size=Decimal(1),
     )
     algo = OkxLiveAlgoOrderView(
         algo_order_id="algo-123",
@@ -144,7 +147,7 @@ def test_row_mappings_keep_exchange_primary_identifiers() -> None:
         instrument_id="BTC-USDT-SWAP",
         order_type="conditional",
         state="live",
-        size=Decimal("1"),
+        size=Decimal(1),
     )
 
     position_row = OkxLiveRepository._position_row(position, NOW)

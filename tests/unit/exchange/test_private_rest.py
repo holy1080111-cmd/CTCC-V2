@@ -1,11 +1,15 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import httpx
 import pytest
 
 from app.config.settings import Settings
 from app.exchange.okx.errors import OkxPrivateApiError
-from app.exchange.okx.private_rest import OkxDemoPrivateRestClient, build_signature, utc_iso_timestamp
+from app.exchange.okx.private_rest import (
+    OkxDemoPrivateRestClient,
+    build_signature,
+    utc_iso_timestamp,
+)
 
 
 def demo_settings(**updates) -> Settings:
@@ -36,14 +40,14 @@ def test_signature_matches_okx_prehash_definition() -> None:
 
 
 def test_utc_timestamp_is_millisecond_iso8601() -> None:
-    value = utc_iso_timestamp(datetime(2026, 8, 4, 13, 1, 2, 345678, tzinfo=timezone.utc))
+    value = utc_iso_timestamp(datetime(2026, 8, 4, 13, 1, 2, 345678, tzinfo=UTC))
     assert value == "2026-08-04T13:01:02.345Z"
 
 
 @pytest.mark.asyncio
 async def test_authenticated_get_includes_simulated_header_and_signed_query() -> None:
     settings = demo_settings()
-    fixed = datetime(2026, 8, 4, 13, 1, 2, 345000, tzinfo=timezone.utc)
+    fixed = datetime(2026, 8, 4, 13, 1, 2, 345000, tzinfo=UTC)
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/api/v5/account/positions"
@@ -61,17 +65,19 @@ async def test_authenticated_get_includes_simulated_header_and_signed_query() ->
         return httpx.Response(200, json={"code": "0", "msg": "", "data": []})
 
     transport = httpx.MockTransport(handler)
-    async with httpx.AsyncClient(transport=transport, base_url="https://www.okx.com") as client:
-        result = await OkxDemoPrivateRestClient(client, settings=settings, clock=lambda: fixed).positions(
-            "BTC-USDT-SWAP"
-        )
+    async with httpx.AsyncClient(
+        transport=transport, base_url="https://www.okx.com"
+    ) as client:
+        result = await OkxDemoPrivateRestClient(
+            client, settings=settings, clock=lambda: fixed
+        ).positions("BTC-USDT-SWAP")
     assert result == []
 
 
 @pytest.mark.asyncio
 async def test_pending_algos_queries_conditional_and_oco_with_signed_query() -> None:
     settings = demo_settings()
-    fixed = datetime(2026, 8, 4, 13, 1, 2, 345000, tzinfo=timezone.utc)
+    fixed = datetime(2026, 8, 4, 13, 1, 2, 345000, tzinfo=UTC)
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/api/v5/trade/orders-algo-pending"
@@ -117,9 +123,13 @@ async def test_write_item_error_is_raised() -> None:
         )
 
     transport = httpx.MockTransport(handler)
-    async with httpx.AsyncClient(transport=transport, base_url="https://www.okx.com") as client:
+    async with httpx.AsyncClient(
+        transport=transport, base_url="https://www.okx.com"
+    ) as client:
         with pytest.raises(OkxPrivateApiError) as exc_info:
-            await OkxDemoPrivateRestClient(client, settings=settings).place_order({"instId": "BTC-USDT-SWAP"})
+            await OkxDemoPrivateRestClient(client, settings=settings).cancel_order(
+                {"instId": "BTC-USDT-SWAP", "ordId": "synthetic"}
+            )
     assert exc_info.value.code == "51000"
     assert "demo-secret" not in str(exc_info.value)
 
@@ -135,9 +145,13 @@ async def test_write_transport_failure_is_not_retried() -> None:
         raise httpx.ConnectError("network down", request=request)
 
     transport = httpx.MockTransport(handler)
-    async with httpx.AsyncClient(transport=transport, base_url="https://www.okx.com") as client:
+    async with httpx.AsyncClient(
+        transport=transport, base_url="https://www.okx.com"
+    ) as client:
         with pytest.raises(OkxPrivateApiError) as exc_info:
-            await OkxDemoPrivateRestClient(client, settings=settings).place_order({"instId": "BTC-USDT-SWAP"})
+            await OkxDemoPrivateRestClient(client, settings=settings).cancel_order(
+                {"instId": "BTC-USDT-SWAP", "ordId": "synthetic"}
+            )
     assert calls == 1
     assert exc_info.value.code == "transport_error"
 
@@ -145,10 +159,12 @@ async def test_write_transport_failure_is_not_retried() -> None:
 @pytest.mark.asyncio
 async def test_read_retry_refreshes_timestamp_and_signature() -> None:
     settings = demo_settings(okx_demo_read_max_retries=1)
-    moments = iter([
-        datetime(2026, 8, 4, 13, 1, 2, tzinfo=timezone.utc),
-        datetime(2026, 8, 4, 13, 1, 3, tzinfo=timezone.utc),
-    ])
+    moments = iter(
+        [
+            datetime(2026, 8, 4, 13, 1, 2, tzinfo=UTC),
+            datetime(2026, 8, 4, 13, 1, 3, tzinfo=UTC),
+        ]
+    )
     seen_timestamps: list[str] = []
     calls = 0
 
@@ -161,7 +177,9 @@ async def test_read_retry_refreshes_timestamp_and_signature() -> None:
         return httpx.Response(200, json={"code": "0", "msg": "", "data": []})
 
     transport = httpx.MockTransport(handler)
-    async with httpx.AsyncClient(transport=transport, base_url="https://www.okx.com") as client:
+    async with httpx.AsyncClient(
+        transport=transport, base_url="https://www.okx.com"
+    ) as client:
         result = await OkxDemoPrivateRestClient(
             client, settings=settings, clock=lambda: next(moments)
         ).balance()

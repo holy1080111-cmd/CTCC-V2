@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Literal
 from uuid import UUID, uuid4
@@ -40,7 +40,7 @@ class OrchestratorSymbolResult(BaseModel):
     order_id: UUID | None = None
     client_order_id: str | None = None
     detail: str
-    generated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class OrchestratorRunResult(BaseModel):

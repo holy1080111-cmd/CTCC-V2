@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
+from itertools import pairwise
 from typing import Literal
 
 from pydantic import Field, field_validator, model_validator
@@ -12,7 +13,6 @@ from app.research.external_benchmarks.contracts import (
     ReferenceMetricBundle,
     require_utc,
 )
-
 
 REVIEWED_BATCH_SYMBOLS = ("BTCUSDT", "ETHUSDT")
 REVIEWED_BATCH_FIRST_DAY = date(2024, 1, 1)
@@ -97,7 +97,7 @@ class BinanceBatchWindow(ReferenceContract):
     end_day: date
 
     @model_validator(mode="after")
-    def validate_window(self) -> "BinanceBatchWindow":
+    def validate_window(self) -> BinanceBatchWindow:
         if self.end_day < self.start_day:
             raise ValueError("batch window end cannot precede start")
         if (
@@ -149,7 +149,7 @@ class BinanceBatchPlan(ReferenceContract):
         return value
 
     @model_validator(mode="after")
-    def validate_plan(self) -> "BinanceBatchPlan":
+    def validate_plan(self) -> BinanceBatchPlan:
         partitions = [window.partition for window in self.windows]
         if len(partitions) != len(set(partitions)):
             raise ValueError("batch partitions must be unique")
@@ -244,7 +244,7 @@ class BinanceBatchPreparationEntry(ReferenceContract):
         return require_utc(value, "provider_last_modified_at")
 
     @model_validator(mode="after")
-    def validate_coordinates(self) -> "BinanceBatchPreparationEntry":
+    def validate_coordinates(self) -> BinanceBatchPreparationEntry:
         coordinates = BinanceBatchKlineCoordinates(
             symbol=self.symbol,
             interval=self.interval,
@@ -278,7 +278,7 @@ class BinanceBatchPreparation(ReferenceContract):
         return require_utc(value, "prepared_at")
 
     @model_validator(mode="after")
-    def validate_preparation(self) -> "BinanceBatchPreparation":
+    def validate_preparation(self) -> BinanceBatchPreparation:
         if len(self.entries) != self.expected_artifact_count:
             raise ValueError("batch preparation entry count does not match")
         request_ids = [entry.request_id for entry in self.entries]
@@ -319,7 +319,7 @@ class BinanceDailyMarketSummary(ReferenceContract):
     execution_authority: Literal[False] = False
 
     @model_validator(mode="after")
-    def validate_summary(self) -> "BinanceDailyMarketSummary":
+    def validate_summary(self) -> BinanceDailyMarketSummary:
         coordinates = BinanceBatchKlineCoordinates(
             symbol=self.symbol,
             day=self.day,
@@ -333,7 +333,7 @@ class BinanceDailyMarketSummary(ReferenceContract):
             raise ValueError("daily high cannot be below open or close")
         if self.period_low > min(self.first_open, self.last_close):
             raise ValueError("daily low cannot be above open or close")
-        expected_return = (self.last_close / self.first_open) - Decimal("1")
+        expected_return = (self.last_close / self.first_open) - Decimal(1)
         if self.simple_return != expected_return:
             raise ValueError("daily simple return does not match prices")
         expected_direction = (
@@ -389,7 +389,7 @@ class BinancePartitionMarketSummary(ReferenceContract):
     execution_authority: Literal[False] = False
 
     @model_validator(mode="after")
-    def validate_partition_summary(self) -> "BinancePartitionMarketSummary":
+    def validate_partition_summary(self) -> BinancePartitionMarketSummary:
         expected_instrument = (
             "BTC-USDT-SWAP" if self.symbol == "BTCUSDT" else "ETH-USDT-SWAP"
         )
@@ -467,7 +467,7 @@ class BinanceBatchEvidence(ReferenceContract):
         return require_utc(value, "generated_at")
 
     @model_validator(mode="after")
-    def validate_batch_evidence(self) -> "BinanceBatchEvidence":
+    def validate_batch_evidence(self) -> BinanceBatchEvidence:
         if self.completed_artifact_count != self.expected_artifact_count:
             raise ValueError("batch evidence is incomplete")
         if len(self.entries) != self.completed_artifact_count:
@@ -491,7 +491,7 @@ class BinanceBatchEvidence(ReferenceContract):
             by_symbol.setdefault(summary.symbol, []).append(summary)
         for summaries in by_symbol.values():
             ordered = sorted(summaries, key=lambda item: item.start_day)
-            for previous, current in zip(ordered, ordered[1:]):
+            for previous, current in pairwise(ordered):
                 if current.start_day <= previous.end_day:
                     raise ValueError("partition summaries cannot overlap")
         return self

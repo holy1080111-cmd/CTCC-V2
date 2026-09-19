@@ -1,4 +1,4 @@
-﻿import pytest
+import pytest
 
 from app.dashboard.router import dashboard
 
@@ -8,14 +8,8 @@ async def test_frontend_declares_snapshot_contract() -> None:
     response = await dashboard()
     html = response.body.decode("utf-8")
 
-    assert (
-        'SUPPORTED_SNAPSHOT_CONTRACT_VERSION = "1.0"'
-        in html
-    )
-    assert (
-        "MAX_SNAPSHOT_FUTURE_SKEW_MS = 30000"
-        in html
-    )
+    assert 'SUPPORTED_SNAPSHOT_CONTRACT_VERSION = "1.0"' in html
+    assert "MAX_SNAPSHOT_FUTURE_SKEW_MS = 30000" in html
     assert "EXPECTED_SNAPSHOT_SOURCES" in html
 
     for source_name in (
@@ -60,13 +54,9 @@ async def test_contract_gate_runs_before_render() -> None:
     response = await dashboard()
     html = response.body.decode("utf-8")
 
-    validation_index = html.index(
-        "validateSnapshotContract(snapshot);"
-    )
+    validation_index = html.index("validateSnapshotContract(snapshot);")
 
-    first_render_index = html.index(
-        "renderBalance(snapshot.balance);"
-    )
+    first_render_index = html.index("renderBalance(snapshot.balance);")
 
     assert validation_index < first_render_index
 

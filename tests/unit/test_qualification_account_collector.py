@@ -186,7 +186,7 @@ def assert_secret_free(value):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("empty,expected_receipts", [(False, 21), (True, 13)])
+@pytest.mark.parametrize("empty,expected_receipts", [(False, 38), (True, 23)])
 async def test_all_streams_fixed_gets_auth_signatures_and_incomplete_packet(
     monkeypatch, empty, expected_receipts
 ):
@@ -284,6 +284,52 @@ async def test_noncontiguous_descending_ids_produce_exact_exclusive_raw_cursor(
     assert b"after=" + ids[1].encode() in requests[2].url.raw_path
     assert all("begin" in r.url.params and "end" in r.url.params for r in requests)
     assert chain[-1].terminal
+    harness.assert_closed()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["iceberg", "twap", "chase", "smart_iceberg"])
+async def test_advanced_algo_short_pages_require_terminal_and_exact_algo_cursor(
+    monkeypatch, kind
+):
+    stream = "algo_" + kind
+    ids = ("8888888", "1111111")
+    harness = Harness(
+        monkeypatch,
+        empty=True,
+        pages={
+            stream: [
+                [row(stream, ids[0], ordId="99999999", billId="77777777")],
+                [row(stream, ids[1], ordId="99999998", billId="77777776")],
+                [],
+            ]
+        },
+    )
+    result = await harness.collect()
+    requests = [r for r in harness.requests if r.url.params.get("ordType") == kind]
+    assert len(requests) == 3
+    assert all(r.url.path == "/api/v5/trade/orders-algo-pending" for r in requests)
+    assert [r.url.params.get("after") for r in requests] == [None, *ids]
+    chain = [o for o in result.observations if o.request.stream == stream]
+    assert [o.terminal for o in chain] == [False, False, True]
+    assert chain[1].previous_page_sha256 == chain[0].receipt_sha256
+    assert chain[2].previous_page_sha256 == chain[1].receipt_sha256
+    assert result.account_complete is False
+    harness.assert_closed()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["iceberg", "twap", "chase", "smart_iceberg"])
+async def test_advanced_algo_cross_kind_duplicate_is_not_silently_dropped(
+    monkeypatch, kind
+):
+    stream = "algo_" + kind
+    harness = Harness(monkeypatch, pages={stream: [[row(stream, "910")], []]})
+    with pytest.raises(
+        module.AccountCollectionError, match="conflicting_algo_identity"
+    ):
+        await harness.collect()
+    assert harness.requests[-1].url.params["ordType"] == kind
     harness.assert_closed()
 
 
@@ -660,7 +706,7 @@ async def test_request_deadline_rejects_late_headers_or_body(monkeypatch, index)
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("index", [4, 64])
+@pytest.mark.parametrize("index", [4, 1 + 3 * (len(STREAMS) + len(CURSORS))])
 async def test_batch_deadline_includes_next_request_and_final_client_close_clock(
     monkeypatch, index
 ):
@@ -670,7 +716,7 @@ async def test_batch_deadline_includes_next_request_and_final_client_close_clock
             clock=Clock({index: NOW + timedelta(seconds=2)}),
             selected=plan(max_batch_seconds=1),
         )
-    assert len(harness.requests) == (1 if index == 4 else 21)
+    assert len(harness.requests) == (1 if index == 4 else 38)
     harness.assert_closed()
 
 
@@ -689,8 +735,8 @@ async def test_nonempty_page_at_stream_budget_never_issues_extra_terminal_get(
 async def test_total_page_budget_stops_before_next_request(monkeypatch):
     harness = Harness(monkeypatch)
     with pytest.raises(module.AccountCollectionError):
-        await harness.collect(selected=plan(max_total_pages=13))
-    assert len(harness.requests) == 13
+        await harness.collect(selected=plan(max_total_pages=23))
+    assert len(harness.requests) == 23
     harness.assert_closed()
 
 
@@ -1294,7 +1340,7 @@ async def test_client_close_failure_or_timeout_cannot_return_packet(monkeypatch,
         await harness.collect()
     assert_secret_free("".join(traceback.format_exception(error.value)))
     assert str(error.value) == "cleanup_failed"
-    assert len(harness.requests) == 21 and close_calls == [True]
+    assert len(harness.requests) == 38 and close_calls == [True]
     harness.assert_closed()
 
 
@@ -1359,7 +1405,7 @@ async def test_cancellation_during_client_close_is_preserved_after_cleanup(monke
         if not task.done():
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
-    assert len(harness.requests) == 21 and close_calls == [True]
+    assert len(harness.requests) == 38 and close_calls == [True]
     harness.assert_closed()
 
 
@@ -1368,11 +1414,11 @@ async def test_serialized_packet_budget_cannot_be_bypassed_by_small_raw_bodies(
     monkeypatch,
 ):
     harness = Harness(monkeypatch)
-    selected = plan(max_response_bytes=1024, max_total_bytes=4096)
+    selected = plan(max_response_bytes=1024, max_total_bytes=8192)
     monkeypatch.setattr(capture_api, "MAX_PACKET_BYTES", 8192)
     with pytest.raises(module.AccountCollectionError):
         await harness.collect(selected=selected)
-    assert len(harness.requests) == 21
+    assert len(harness.requests) == 38
     assert (
         sum(len(stream.body) for stream in harness.streams) <= selected.max_total_bytes
     )
@@ -1525,19 +1571,19 @@ async def test_real_config_change_is_diagnosed_at_verify_not_last_parser(monkeyp
     assert_diagnostic(
         error.value, stage="verify_records", reason="account_mode_changed"
     )
-    assert len(harness.requests) == 21
+    assert len(harness.requests) == 38
     harness.assert_closed()
 
 
 @pytest.mark.asyncio
 async def test_real_serialized_packet_limit_is_diagnosed_at_freeze(monkeypatch):
     harness = Harness(monkeypatch)
-    selected = plan(max_response_bytes=1024, max_total_bytes=4096)
+    selected = plan(max_response_bytes=1024, max_total_bytes=8192)
     monkeypatch.setattr(capture_api, "MAX_PACKET_BYTES", 8192)
     with pytest.raises(module.AccountCollectionError) as error:
         await harness.collect(selected=selected)
     assert_diagnostic(error.value, stage="freeze_packet", reason="packet_bytes_limit")
-    assert len(harness.requests) == 21
+    assert len(harness.requests) == 38
     harness.assert_closed()
 
 
@@ -1595,7 +1641,7 @@ async def test_capture_diagnostic_is_attached_only_by_actual_api_boundary(
         reason="record_type_invalid",
     )
     assert calls == [True]
-    assert len(harness.requests) == (1 if stream else 21)
+    assert len(harness.requests) == (1 if stream else 38)
     harness.assert_closed()
 
 

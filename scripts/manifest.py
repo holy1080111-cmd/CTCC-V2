@@ -18,7 +18,7 @@ TEXT_SUFFIXES = {
     ".yaml",
     ".yml",
 }
-TEXT_NAMES = {"Dockerfile", ".dockerignore", ".gitignore"}
+TEXT_NAMES = {"Dockerfile", ".dockerignore", ".gitignore", ".gitattributes"}
 EXCLUDED_DIRECTORIES = {
     ".git",
     ".mypy_cache",
@@ -29,6 +29,8 @@ EXCLUDED_DIRECTORIES = {
     ".vscode",
     "__pycache__",
     "backups",
+    "build",
+    "dist",
     "artifacts",
     "htmlcov",
     "node_modules",
@@ -41,7 +43,10 @@ EXCLUDED_SUFFIXES = {".bak", ".dump", ".log", ".patch", ".pyc", ".pyo", ".zip"}
 
 def _excluded(path: Path, root: Path) -> bool:
     relative = path.relative_to(root)
-    if any(part in EXCLUDED_DIRECTORIES or part.endswith(".egg-info") for part in relative.parts[:-1]):
+    if any(
+        part in EXCLUDED_DIRECTORIES or part.endswith(".egg-info")
+        for part in relative.parts[:-1]
+    ):
         return True
     return (
         path.name in EXCLUDED_FILES
@@ -93,7 +98,9 @@ def read_manifest(manifest_path: Path) -> dict[str, str]:
             digest, name = raw_line.split("  ", 1)
         except ValueError as exc:
             raise ValueError(f"invalid manifest line {number}") from exc
-        if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
+        if len(digest) != 64 or any(
+            character not in "0123456789abcdef" for character in digest
+        ):
             raise ValueError(f"invalid SHA256 on manifest line {number}")
         if not name or name in entries:
             raise ValueError(f"invalid or duplicate path on manifest line {number}")
@@ -125,7 +132,9 @@ def check_manifest(root: Path, manifest_path: Path) -> bool:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Write or verify canonical CTCC source hashes")
+    parser = argparse.ArgumentParser(
+        description="Write or verify canonical CTCC source hashes"
+    )
     action = parser.add_mutually_exclusive_group(required=True)
     action.add_argument("--write", action="store_true")
     action.add_argument("--check", action="store_true")

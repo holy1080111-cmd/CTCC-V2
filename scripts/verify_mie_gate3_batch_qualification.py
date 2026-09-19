@@ -25,10 +25,7 @@ from app.research.external_benchmarks.evidence_io import read_contract_json
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_QUALIFICATION_PATH = (
-    PROJECT_ROOT
-    / "docs"
-    / "evidence"
-    / "mie_gate3_binance_batch_qualification_v1.json"
+    PROJECT_ROOT / "docs" / "evidence" / "mie_gate3_binance_batch_qualification_v1.json"
 )
 MAX_QUALIFICATION_BYTES = 64 * 1024
 
@@ -55,9 +52,7 @@ def _real_file(path: Path, *, root: Path | None = None) -> Path:
             "qualification input does not exist"
         ) from exc
     if not resolved.is_file():
-        raise Gate3BatchQualificationError(
-            "qualification input must be a real file"
-        )
+        raise Gate3BatchQualificationError("qualification input must be a real file")
     if root is not None and not resolved.is_relative_to(root):
         raise Gate3BatchQualificationError("dataset input escaped its root")
     return resolved
@@ -218,10 +213,7 @@ def main() -> int:
     if args.dataset_root is not None:
         _verify_external_dataset(qualification, args.dataset_root)
         print("MIE_GATE3_BATCH_DATASET_BINDING_VERIFIED=1")
-    print(
-        "MIE_GATE3_BATCH_QUALIFICATION_SHA256="
-        f"{qualification.canonical_sha256()}"
-    )
+    print(f"MIE_GATE3_BATCH_QUALIFICATION_SHA256={qualification.canonical_sha256()}")
     print("MIE_GATE3_BATCH_QUALIFICATION_VERIFIED=1")
     print("MIE_GATE3_BATCH_CURRENT_CLAIM=computational")
     print("MIE_GATE3_BATCH_HOLDOUT_ACCESS=descriptive_summary_exposed")

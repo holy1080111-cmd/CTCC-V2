@@ -1,3 +1,5 @@
+from itertools import pairwise
+
 import pytest
 
 from app.domain.enums import LifecycleState
@@ -18,7 +20,7 @@ def test_happy_path_transitions() -> None:
         LifecycleState.CLOSED,
         LifecycleState.ARCHIVED,
     ]
-    for current, target in zip(path, path[1:]):
+    for current, target in pairwise(path):
         ensure_transition(current, target)
 
 

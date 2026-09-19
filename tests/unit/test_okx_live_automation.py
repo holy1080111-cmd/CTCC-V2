@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -19,7 +19,6 @@ from app.domain.realtime import RealtimeSnapshot
 from app.domain.strategy import TradeCandidate
 from app.okx_live import OkxLiveSafetyError
 from app.okx_live.automation import ControlledLiveAutomation
-
 
 D = Decimal
 
@@ -54,7 +53,7 @@ def candidate() -> TradeCandidate:
         take_profit=D("102000"),
         risk_reward=D("2"),
         invalidation="test",
-        expires_at=datetime(2026, 8, 10, tzinfo=timezone.utc),
+        expires_at=datetime(2026, 8, 10, tzinfo=UTC),
     )
 
 
@@ -126,7 +125,7 @@ class FakeRisk:
 
 
 class FakePublic:
-    def __init__(self, *, tick_size: Decimal = D("0.1")) -> None:
+    def __init__(self, *, tick_size: Decimal = D("0.1")) -> None:  # noqa: B008 - D constructs immutable exact Decimal values.
         self.tick_size = tick_size
 
     async def instruments(self, instrument_id):
@@ -149,14 +148,14 @@ class FakeHub:
     def __init__(
         self,
         *,
-        last: Decimal = D("100000"),
-        bid: Decimal = D("99999.9"),
-        ask: Decimal = D("100000.1"),
-        mark: Decimal = D("100000"),
+        last: Decimal = D("100000"),  # noqa: B008 - D constructs immutable exact Decimal values.
+        bid: Decimal = D("99999.9"),  # noqa: B008 - D constructs immutable exact Decimal values.
+        ask: Decimal = D("100000.1"),  # noqa: B008 - D constructs immutable exact Decimal values.
+        mark: Decimal = D("100000"),  # noqa: B008 - D constructs immutable exact Decimal values.
         quote_age_seconds: int = 0,
         mark_age_seconds: int = 0,
     ) -> None:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         self.value = RealtimeSnapshot(
             symbol="BTC-USDT-SWAP",
             last=last,
@@ -323,7 +322,9 @@ async def test_live_risk_uses_tick_aligned_protection_geometry() -> None:
 
 
 @pytest.mark.asyncio
-async def test_existing_live_exposure_only_monitors_and_never_evaluates_new_order() -> None:
+async def test_existing_live_exposure_only_monitors_and_never_evaluates_new_order() -> (
+    None
+):
     live = FakeLiveService()
     live.exposure = True
     result = await automation(live).run_once(execute=True)
@@ -362,9 +363,7 @@ async def test_scheduled_start_rejects_malformed_symbol() -> None:
     live = FakeLiveService()
     worker = automation(live)
 
-    with pytest.raises(
-        OkxLiveSafetyError, match="invalid_live_scan_symbol"
-    ):
+    with pytest.raises(OkxLiveSafetyError, match="invalid_live_scan_symbol"):
         await worker.start(symbols=["NOT-A-SYMBOL"])
 
     assert live.orders == []

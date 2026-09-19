@@ -11,5 +11,12 @@ def test_subscription_args_are_complete() -> None:
     client = OkxPublicWebSocket(settings, _handler)
     args = client.subscription_args()
     channels = {item["channel"] for item in args}
-    assert channels == {"tickers", "mark-price", "funding-rate", "open-interest", "trades", "books5"}
+    assert channels == {
+        "tickers",
+        "mark-price",
+        "funding-rate",
+        "open-interest",
+        "trades",
+        "books5",
+    }
     assert all(item["instId"] == "BTC-USDT-SWAP" for item in args)

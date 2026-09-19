@@ -151,24 +151,28 @@ drawdown backstops therefore no longer depend on a UTC-daily proxy.
 
 ## Session stop and frequency gates
 
-Each tracked instrument is finalized from filled closing-order realized PnL,
-fees, rebates, and funding. A negative net close increments the consecutive
-stop-loss count. A zero or positive net close resets it. At three consecutive
-negative closes, new Demo entries are locked for the rest of that UTC day.
-Standard mode also locks new entries when the configured daily realized-loss
-limit or daily trade count is reached.
+The legacy close projection records order-associated outcomes; it is not proof
+of complete fill/bill/funding history. A recorded negative net close increments
+the persisted consecutive-loss count. A strictly later positive close resets
+it; a zero close does not. At the configured consecutive-loss limit, new Demo
+entries are locked in both standard and continuous mode. The UTC daily loss
+gate likewise remains active in both modes; standard mode additionally enforces
+the daily trade-count pacing limit.
 
-On the next UTC date, the counter, daily trade count, and daily baseline reset.
+On the next UTC date, the daily trade count, daily baseline and daily-loss latch
+reset. The consecutive-loss counter and seven-day history remain preserved.
 Open positions remain tracked. When more than one trade is involved, missing
 instrument-level close evidence is not replaced with account-equity guessing;
 the automation disarms and engages Emergency Stop.
 
 ### Optional continuous Demo session
 
-`OKX_DEMO_CONTINUOUS_SESSION_ENABLED=true` removes the daily realized-loss
-lock, daily trade-count lock, consecutive-negative-close lock, and post-close
-symbol cooldown. Daily PnL and the counters remain persisted and exposed for
-audit, but they do not determine eligibility while this mode is active.
+`OKX_DEMO_CONTINUOUS_SESSION_ENABLED=true` removes only the daily trade-count
+pacing lock and post-close symbol cooldown. Daily-loss and consecutive-loss
+gates remain enforced, including at the final synchronous submission check.
+Restart never restores Arm or discards a recorded financial lock. Deposits do
+not erase the current UTC day's recorded realized loss, and malformed/future/
+conflicting history remains retained with EStop instead of disappearing.
 
 This is not an unconditional or zero-delay order loop. The scheduler remains
 non-overlapping and runs only at `OKX_DEMO_SCAN_INTERVAL_SECONDS` (minimum 60
@@ -183,16 +187,17 @@ seconds). Each scan still requires a fresh qualifying candidate and retains:
 - exchange reconciliation, durable state, explicit Arm/Start, automatic
   disarm, and Emergency Stop.
 
-The mode requires score risk, the 2,000 USDT capital-bucket boundary,
+The mode requires score risk, the configured capital-bucket boundary (default 300 USDT),
 protection, and `OKX_DEMO_TRADE_COOLDOWN_SECONDS=0`. It is disabled by default,
 does not enable Demo writes, is never restored as Armed after restart, and has
 no effect on OKX Live. More eligible scans do not improve mathematical
 expectancy and can increase fees, funding, slippage, and correlated loss.
 
-`OKX_DEMO_DAILY_LOSS_LIMIT_PCT` remains a standard-mode and controlled-soak
-configuration field, but it is not enforced by the normal automation path when
-continuous mode is active. The controlled execute-soak retains its independent
-loss budget and submission cap.
+`OKX_DEMO_DAILY_LOSS_LIMIT_PCT` is enforced in both scheduling modes. The
+controlled execute-soak also retains its independent loss budget and submission
+cap. These legacy guards do not establish a trusted history watermark, complete
+account-wide outcomes or independently sourced streak seed. The new account
+source pipeline remains incomplete until those prerequisites are proved.
 
 ## Bounded execution quality
 

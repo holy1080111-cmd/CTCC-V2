@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Literal
 from uuid import UUID
@@ -24,12 +24,18 @@ class PaperOrderRequest(BaseModel):
     client_order_id: str | None = Field(default=None, min_length=4, max_length=80)
 
     @model_validator(mode="after")
-    def validate_order(self) -> "PaperOrderRequest":
+    def validate_order(self) -> PaperOrderRequest:
         if self.order_type == "limit" and self.limit_price is None:
             raise ValueError("limit_price is required for limit orders")
-        if self.side == "long" and not self.stop_loss < self.reference_price < self.take_profit:
+        if (
+            self.side == "long"
+            and not self.stop_loss < self.reference_price < self.take_profit
+        ):
             raise ValueError("long requires stop_loss < reference_price < take_profit")
-        if self.side == "short" and not self.take_profit < self.reference_price < self.stop_loss:
+        if (
+            self.side == "short"
+            and not self.take_profit < self.reference_price < self.stop_loss
+        ):
             raise ValueError("short requires take_profit < reference_price < stop_loss")
         return self
 
@@ -77,7 +83,7 @@ class PaperPositionView(BaseModel):
 class MarketTickRequest(BaseModel):
     symbol: str = Field(min_length=3, max_length=40)
     price: Decimal = Field(gt=0)
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class ManualCloseRequest(BaseModel):

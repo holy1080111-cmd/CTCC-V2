@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
@@ -12,7 +12,6 @@ from sqlalchemy.pool import NullPool
 from app.config.settings import get_settings
 from app.database.models.operations import SystemEvent
 from app.database.repositories.persistence import PersistenceRepository
-
 
 EXPECTED_PAYLOAD_KEYS = {
     "snapshot_id",
@@ -64,19 +63,16 @@ async def test_dashboard_snapshot_audit_persists_minimal_system_event(
     repository = PersistenceRepository(Session)
 
     snapshot_id = f"integration-{uuid4()}"
-    generated_at = datetime.now(timezone.utc)
+    generated_at = datetime.now(UTC)
 
     async def cleanup() -> None:
-        async with Session() as session:
-            async with session.begin():
-                await session.execute(
-                    delete(SystemEvent).where(
-                        SystemEvent.event_type
-                        == "dashboard_snapshot_generated",
-                        SystemEvent.payload["snapshot_id"].astext
-                        == snapshot_id,
-                    )
+        async with Session() as session, session.begin():
+            await session.execute(
+                delete(SystemEvent).where(
+                    SystemEvent.event_type == "dashboard_snapshot_generated",
+                    SystemEvent.payload["snapshot_id"].astext == snapshot_id,
                 )
+            )
 
     try:
         await cleanup()
@@ -95,10 +91,8 @@ async def test_dashboard_snapshot_audit_persists_minimal_system_event(
             event = (
                 await session.scalars(
                     select(SystemEvent).where(
-                        SystemEvent.event_type
-                        == "dashboard_snapshot_generated",
-                        SystemEvent.payload["snapshot_id"].astext
-                        == snapshot_id,
+                        SystemEvent.event_type == "dashboard_snapshot_generated",
+                        SystemEvent.payload["snapshot_id"].astext == snapshot_id,
                     )
                 )
             ).one()

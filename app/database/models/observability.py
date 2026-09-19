@@ -19,8 +19,12 @@ class DemoSoakSession(UUIDPrimaryKeyMixin, Base):
     duration_minutes: Mapped[int] = mapped_column(Integer, nullable=False)
     max_runs: Mapped[int] = mapped_column(Integer, nullable=False)
     max_submissions: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
-    planned_end_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, index=True
+    )
+    planned_end_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
     stopped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_runs: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     submitted_runs: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -33,16 +37,22 @@ class DemoSoakSession(UUIDPrimaryKeyMixin, Base):
     starting_equity: Mapped[Decimal | None] = mapped_column(Numeric(38, 18))
     latest_equity: Mapped[Decimal | None] = mapped_column(Numeric(38, 18))
     session_pnl: Mapped[Decimal] = mapped_column(
-        Numeric(38, 18), nullable=False, default=Decimal("0")
+        Numeric(38, 18), nullable=False, default=Decimal(0)
     )
     max_drawdown_pct_observed: Mapped[Decimal] = mapped_column(
-        Numeric(18, 12), nullable=False, default=Decimal("0")
+        Numeric(18, 12), nullable=False, default=Decimal(0)
     )
     protection_checks: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     protection_failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    active_position_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    active_pending_order_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    active_algo_order_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    active_position_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    active_pending_order_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    active_algo_order_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
     protection_verified: Mapped[bool | None] = mapped_column(Boolean)
     auto_disarmed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -51,7 +61,10 @@ class DemoSoakSession(UUIDPrimaryKeyMixin, Base):
     safety_stop_reason: Mapped[str | None] = mapped_column(String(120))
     last_error: Mapped[str | None] = mapped_column(String(250))
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
     )
 
 

@@ -1,4 +1,4 @@
-﻿from fastapi import APIRouter
+from fastapi import APIRouter
 
 from app.api.routers.analysis import router as analysis_router
 from app.api.routers.dashboard_snapshot import (
@@ -27,7 +27,6 @@ from app.api.routers.strategy import router as strategy_router
 from app.api.routers.system import router as system_router
 from app.dashboard.router import router as dashboard_router
 
-
 api_router = APIRouter()
 
 _child_routers = (
@@ -53,21 +52,14 @@ for child_router in _child_routers:
     api_router.routes.extend(child_router.routes)
 
 
-_registered_paths = [
-    getattr(route, "path", None)
-    for route in api_router.routes
-]
+_registered_paths = [getattr(route, "path", None) for route in api_router.routes]
 
 if any(path is None for path in _registered_paths):
-    raise RuntimeError(
-        "api_router_contains_route_without_path"
-    )
+    raise RuntimeError("api_router_contains_route_without_path")
 
 for required_path in (
     "/dashboard",
     "/api/dashboard/snapshot",
 ):
     if required_path not in _registered_paths:
-        raise RuntimeError(
-            f"required_route_missing:{required_path}"
-        )
+        raise RuntimeError(f"required_route_missing:{required_path}")

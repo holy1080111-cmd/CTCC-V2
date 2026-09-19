@@ -44,9 +44,7 @@ class ModelHealth(MieContract):
     failure_codes: tuple[str, ...] = ()
     execution_authority: Literal[False] = False
 
-    @field_validator(
-        "evaluated_at", "data_cutoff", "last_oos_validation_at"
-    )
+    @field_validator("evaluated_at", "data_cutoff", "last_oos_validation_at")
     @classmethod
     def validate_timestamps(cls, value: datetime | None, info):
         if value is None:
@@ -55,9 +53,7 @@ class ModelHealth(MieContract):
 
     @field_validator("covered_sources", "failure_codes")
     @classmethod
-    def validate_codes(
-        cls, value: tuple[str, ...], info
-    ) -> tuple[str, ...]:
+    def validate_codes(cls, value: tuple[str, ...], info) -> tuple[str, ...]:
         if len(value) != len(set(value)):
             raise ValueError(f"{info.field_name} must be unique")
         if any(not item.strip() for item in value):
@@ -65,7 +61,7 @@ class ModelHealth(MieContract):
         return value
 
     @model_validator(mode="after")
-    def validate_health(self) -> "ModelHealth":
+    def validate_health(self) -> ModelHealth:
         if self.data_cutoff > self.evaluated_at:
             raise ValueError("model health cannot use future data")
         if (
@@ -82,28 +78,26 @@ class ModelHealth(MieContract):
             raise ValueError(
                 "healthy model requires fresh data, leakage pass, and no failures"
             )
-        if self.status in {
-            ModelHealthStatus.DEGRADED,
-            ModelHealthStatus.UNHEALTHY,
-        } and not self.failure_codes:
+        if (
+            self.status
+            in {
+                ModelHealthStatus.DEGRADED,
+                ModelHealthStatus.UNHEALTHY,
+            }
+            and not self.failure_codes
+        ):
             raise ValueError("degraded or unhealthy model requires failure codes")
         if (
             self.calibration_status == CalibrationStatus.DEGRADED
             and not self.failure_codes
         ):
-            raise ValueError(
-                "degraded calibration requires an explicit failure code"
-            )
+            raise ValueError("degraded calibration requires an explicit failure code")
         if validation_at_least(
             self.validation_level, ValidationLevel.PREDICTIVE_OOS
+        ) and (
+            self.last_oos_validation_at is None or self.validation_reference is None
         ):
-            if (
-                self.last_oos_validation_at is None
-                or self.validation_reference is None
-            ):
-                raise ValueError(
-                    "OOS-validated model health requires validation evidence"
-                )
+            raise ValueError("OOS-validated model health requires validation evidence")
         if self.calibration_status == CalibrationStatus.CALIBRATED:
             if not validation_at_least(
                 self.validation_level, ValidationLevel.PREQUENTIAL
@@ -111,16 +105,9 @@ class ModelHealth(MieContract):
                 raise ValueError(
                     "calibrated model health requires prequential validation"
                 )
-            if (
-                self.last_oos_validation_at is None
-                or self.validation_reference is None
-            ):
-                raise ValueError(
-                    "calibrated model health requires validation evidence"
-                )
-        if (self.last_oos_validation_at is None) != (
-            self.validation_reference is None
-        ):
+            if self.last_oos_validation_at is None or self.validation_reference is None:
+                raise ValueError("calibrated model health requires validation evidence")
+        if (self.last_oos_validation_at is None) != (self.validation_reference is None):
             raise ValueError(
                 "model health validation time and artifact must appear together"
             )
@@ -128,24 +115,15 @@ class ModelHealth(MieContract):
             self.validation_reference.source != self.model_id
             or self.validation_reference.model_version != self.model_version
         ):
-            raise ValueError(
-                "model health validation artifact does not match model"
-            )
-        if (
-            self.validation_reference is not None
-            and not validation_at_least(
-                self.validation_reference.attested_level,
-                self.validation_level,
-            )
+            raise ValueError("model health validation artifact does not match model")
+        if self.validation_reference is not None and not validation_at_least(
+            self.validation_reference.attested_level,
+            self.validation_level,
         ):
-            raise ValueError(
-                "validation artifact is below the model health claim"
-            )
+            raise ValueError("validation artifact is below the model health claim")
         if (
             self.validation_reference is not None
             and self.validation_reference.issued_at > self.evaluated_at
         ):
-            raise ValueError(
-                "model health cannot use a future validation artifact"
-            )
+            raise ValueError("model health cannot use a future validation artifact")
         return self

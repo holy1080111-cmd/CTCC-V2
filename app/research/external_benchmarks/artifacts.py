@@ -3,11 +3,11 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
+from app.research.external_benchmarks.catalog import validate_manifest_source
 from app.research.external_benchmarks.contracts import (
     ArtifactVerification,
     ExternalDatasetManifest,
 )
-from app.research.external_benchmarks.catalog import validate_manifest_source
 
 
 class ArtifactVerificationError(ValueError):

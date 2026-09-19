@@ -4,7 +4,7 @@ from app.domain.market import Candle, InstrumentInfo, MarketSnapshot
 from app.exchange.okx.errors import OkxPublicApiError
 from app.exchange.okx.public_rest import OkxPublicRestClient
 from app.exchange.okx.symbols import SUPPORTED_SYMBOLS, to_instrument_id
-from app.market.service import MarketDataService, SUPPORTED_BARS
+from app.market.service import SUPPORTED_BARS, MarketDataService
 
 router = APIRouter(prefix="/api/market", tags=["market"])
 
@@ -32,7 +32,9 @@ async def candles(
     confirmed_only: bool = Query(default=True),
 ) -> list[Candle]:
     if bar not in SUPPORTED_BARS:
-        raise HTTPException(status_code=400, detail=f"bar must be one of {SUPPORTED_BARS}")
+        raise HTTPException(
+            status_code=400, detail=f"bar must be one of {SUPPORTED_BARS}"
+        )
     try:
         rows = await OkxPublicRestClient().candles(to_instrument_id(symbol), bar, limit)
     except ValueError as exc:

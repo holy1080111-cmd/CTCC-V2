@@ -4,6 +4,12 @@
 collector、Notion adapter／one-pass worker、交易事後分析及送單權限 await 邊界。
 下文保留原固定版本的驗證紀錄，不把舊完整測試數轉移至後續版本。
 
+2026-09-19 增量：帳戶 packet/plan v2 已擴至 23 個來源 streams（含八種 algo、
+instrument 與 leverage metadata），詳見 [帳戶來源方案](qualification_account_source_plan.md)。
+Windows no-clobber publisher 已修正並通過本機專項測試，詳見
+[事後報告](post_submit_reporting.md)。下列 13-stream／Windows failure 描述屬原 checkpoint，
+不代表目前版本狀態；可信帳戶完整性與交易放行仍未通過。
+
 2026-09-12 開發 checkpoint。既有 `d984753` Demo 服務持續運行；本頁的新元件
 尚未部署，也沒有修改交易憑證、Live 權限、風控預算或重新送出維護平倉。
 各元件的合成測試、真實 PostgreSQL 資料庫 transaction 測試與 Linux 檔案測試分開記錄。

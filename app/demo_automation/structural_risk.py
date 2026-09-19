@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal, ROUND_CEILING
+from decimal import ROUND_CEILING, Decimal
 
 from app.config.settings import Settings
 from app.domain.demo_automation import DemoAutomationRiskTier
@@ -56,13 +56,13 @@ def candidate_with_structural_prices(
         }
     )
     if candidate.direction == "long":
-        payload["risk_reward"] = (
-            geometry.take_profit - reference_price
-        ) / (reference_price - geometry.stop_loss)
+        payload["risk_reward"] = (geometry.take_profit - reference_price) / (
+            reference_price - geometry.stop_loss
+        )
     else:
-        payload["risk_reward"] = (
-            reference_price - geometry.take_profit
-        ) / (geometry.stop_loss - reference_price)
+        payload["risk_reward"] = (reference_price - geometry.take_profit) / (
+            geometry.stop_loss - reference_price
+        )
     return TradeCandidate.model_validate(payload)
 
 
@@ -124,10 +124,8 @@ def _twenty_x_reasons(candidate: TradeCandidate, settings: Settings) -> list[str
         reasons.append("derivative_confirmation_below_20x_threshold")
     if candidate.protection_model != "structure":
         reasons.append("structural_protection_required_for_20x")
-    if (
-        candidate.net_risk_reward is None
-        or candidate.net_risk_reward
-        < D(str(settings.okx_demo_structural_min_net_risk_reward))
+    if candidate.net_risk_reward is None or candidate.net_risk_reward < D(
+        str(settings.okx_demo_structural_min_net_risk_reward)
     ):
         reasons.append("net_risk_reward_below_20x_threshold")
     return reasons
@@ -159,8 +157,7 @@ def select_structural_leverage(
     risk_budget_amount = account_equity * D(str(tier.risk_pct))
     required = int(
         (
-            risk_budget_amount
-            / (position_margin_cap * total_risk_rate)
+            risk_budget_amount / (position_margin_cap * total_risk_rate)
         ).to_integral_value(rounding=ROUND_CEILING)
     )
     twenty_x_reasons = _twenty_x_reasons(candidate, settings)

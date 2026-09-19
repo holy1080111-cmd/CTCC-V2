@@ -1,1 +1,1 @@
-﻿"""CTCC read-only dashboard."""
+"""CTCC read-only dashboard."""

@@ -1,5 +1,12 @@
 # Frozen implementation sequence
 
+2026-09-19 final-completion work is tracked in
+[source and validation state](final_completion_validation.md). The source has
+been preserved and isolated; engineering changes are undergoing a new exact
+source regression. Production, predictive OOS, Demo and manually armed Micro
+Live acceptance remain incomplete. Historical phase completions below do not
+transfer to the final source automatically.
+
 Latest user-supplied construction track: [entry qualification and evidence](entry_qualification_implementation.md)
 (2026-09-11). Its domain foundation and strategy hard-gate work are local-only;
 regime/timing/location engines, evidence, final recheck, outbox, forensics and

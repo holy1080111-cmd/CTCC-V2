@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from app.research.external_benchmarks.catalog import validate_manifest_source
 from app.research.external_benchmarks.contracts import (
     DatasetQualityPolicy,
     DatasetQualityReport,
@@ -12,10 +13,8 @@ from app.research.external_benchmarks.contracts import (
     TimestampEncoding,
     require_utc,
 )
-from app.research.external_benchmarks.catalog import validate_manifest_source
 
-
-EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
 
 def _datetime_to_nanoseconds(value: datetime) -> int:
@@ -30,7 +29,7 @@ def _datetime_to_nanoseconds(value: datetime) -> int:
 
 def _integer_timestamp(value: Any) -> int:
     if isinstance(value, bool):
-        raise ValueError("boolean is not a timestamp")
+        raise ValueError("boolean is not a timestamp")  # noqa: TRY004 - Public validation contract consistently rejects malformed values with ValueError.
     if isinstance(value, int):
         result = value
     elif isinstance(value, str) and value.strip().isdigit():
@@ -83,7 +82,7 @@ def _positive_number(value: Any) -> bool:
 
 def _rate(count: int, denominator: int) -> Decimal:
     if denominator <= 0:
-        return Decimal("0")
+        return Decimal(0)
     return Decimal(count) / Decimal(denominator)
 
 
@@ -124,7 +123,10 @@ def profile_dataset_records(
         if missing_required:
             missing_required_rows += 1
 
-        if all(field in record and not _missing(record.get(field)) for field in manifest.key_fields):
+        if all(
+            field in record and not _missing(record.get(field))
+            for field in manifest.key_fields
+        ):
             key = tuple(record[field] for field in manifest.key_fields)
             if key in seen_keys:
                 duplicate_key_rows += 1

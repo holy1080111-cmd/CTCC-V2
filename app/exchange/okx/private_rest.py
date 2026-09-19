@@ -5,22 +5,24 @@ import base64
 import hashlib
 import hmac
 import json
-from datetime import datetime, timezone
-from typing import Any, Callable
+from collections.abc import Callable
+from datetime import UTC, datetime
+from typing import Any
 
 import httpx
 
 from app.config.settings import Settings, get_settings
 from app.exchange.okx.errors import OkxPrivateApiError
+from app.trade_qualification.execution_authority import enforce_demo_submission_boundary
 
 Clock = Callable[[], datetime]
 
 
 def utc_iso_timestamp(now: datetime | None = None) -> str:
-    value = now or datetime.now(timezone.utc)
+    value = now or datetime.now(UTC)
     if value.tzinfo is None:
-        value = value.replace(tzinfo=timezone.utc)
-    value = value.astimezone(timezone.utc)
+        value = value.replace(tzinfo=UTC)
+    value = value.astimezone(UTC)
     return value.isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
@@ -33,7 +35,9 @@ def build_signature(
     secret: str,
 ) -> str:
     prehash = f"{timestamp}{method.upper()}{request_path}{body}"
-    digest = hmac.new(secret.encode("utf-8"), prehash.encode("utf-8"), hashlib.sha256).digest()
+    digest = hmac.new(
+        secret.encode("utf-8"), prehash.encode("utf-8"), hashlib.sha256
+    ).digest()
     return base64.b64encode(digest).decode("ascii")
 
 
@@ -54,7 +58,7 @@ class _OkxPrivateRestClientBase:
     ) -> None:
         self.settings = settings or get_settings()
         self._external_client = client
-        self._clock = clock or (lambda: datetime.now(timezone.utc))
+        self._clock = clock or (lambda: datetime.now(UTC))
 
     def _credentials(self) -> tuple[str, str, str]:
         raise NotImplementedError
@@ -75,6 +79,9 @@ class _OkxPrivateRestClientBase:
         self, *, method: str, path: str, write: bool
     ) -> dict[str, str]:
         return {}
+
+    def _before_send(self, *, method: str, path: str) -> None:
+        """Environment-specific synchronous check at the actual HTTP boundary."""
 
     def _headers(self, *, method: str, request_path: str, body: str) -> dict[str, str]:
         api_key, api_secret, passphrase = self._credentials()
@@ -107,9 +114,20 @@ class _OkxPrivateRestClientBase:
         body: dict[str, Any] | None = None,
         write: bool = False,
     ) -> list[dict[str, Any]]:
-        query = str(httpx.QueryParams({k: v for k, v in (params or {}).items() if v not in (None, "")}))
+        self._before_send(method=method, path=path)
+        # Non-GET requests cannot gain retries by claiming to be reads.
+        write = write or method.upper() != "GET"
+        query = str(
+            httpx.QueryParams(
+                {k: v for k, v in (params or {}).items() if v not in (None, "")}
+            )
+        )
         request_path = path if not query else f"{path}?{query}"
-        body_text = "" if body is None else json.dumps(body, separators=(",", ":"), ensure_ascii=False)
+        body_text = (
+            ""
+            if body is None
+            else json.dumps(body, separators=(",", ":"), ensure_ascii=False)
+        )
 
         own_client = self._external_client is None
         client = self._external_client or httpx.AsyncClient(
@@ -136,6 +154,7 @@ class _OkxPrivateRestClientBase:
                             write=write,
                         )
                     )
+                    self._before_send(method=method, path=path)
                     response = await client.request(
                         method.upper(),
                         request_path,
@@ -203,7 +222,9 @@ class _OkxPrivateRestClientBase:
         return await self._request("GET", "/api/v5/account/config")
 
     async def balance(self, currency: str | None = None) -> list[dict[str, Any]]:
-        return await self._request("GET", "/api/v5/account/balance", params={"ccy": currency})
+        return await self._request(
+            "GET", "/api/v5/account/balance", params={"ccy": currency}
+        )
 
     async def positions(self, instrument_id: str | None = None) -> list[dict[str, Any]]:
         return await self._request(
@@ -212,21 +233,27 @@ class _OkxPrivateRestClientBase:
             params={"instType": "SWAP", "instId": instrument_id},
         )
 
-    async def pending_orders(self, instrument_id: str | None = None) -> list[dict[str, Any]]:
+    async def pending_orders(
+        self, instrument_id: str | None = None
+    ) -> list[dict[str, Any]]:
         return await self._request(
             "GET",
             "/api/v5/trade/orders-pending",
             params={"instType": "SWAP", "instId": instrument_id},
         )
 
-    async def order_history(self, instrument_id: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+    async def order_history(
+        self, instrument_id: str | None = None, limit: int = 100
+    ) -> list[dict[str, Any]]:
         return await self._request(
             "GET",
             "/api/v5/trade/orders-history",
             params={"instType": "SWAP", "instId": instrument_id, "limit": str(limit)},
         )
 
-    async def pending_algo_orders(self, instrument_id: str | None = None) -> list[dict[str, Any]]:
+    async def pending_algo_orders(
+        self, instrument_id: str | None = None
+    ) -> list[dict[str, Any]]:
         return await self._request(
             "GET",
             "/api/v5/trade/orders-algo-pending",
@@ -243,7 +270,11 @@ class _OkxPrivateRestClientBase:
         return await self._request(
             "GET",
             "/api/v5/trade/order",
-            params={"instId": instrument_id, "ordId": order_id, "clOrdId": client_order_id},
+            params={
+                "instId": instrument_id,
+                "ordId": order_id,
+                "clOrdId": client_order_id,
+            },
         )
 
     async def max_order_size(
@@ -274,16 +305,24 @@ class _OkxPrivateRestClientBase:
         )
 
     async def place_order(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
-        return await self._request("POST", "/api/v5/trade/order", body=payload, write=True)
+        return await self._request(
+            "POST", "/api/v5/trade/order", body=payload, write=True
+        )
 
     async def cancel_order(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
-        return await self._request("POST", "/api/v5/trade/cancel-order", body=payload, write=True)
+        return await self._request(
+            "POST", "/api/v5/trade/cancel-order", body=payload, write=True
+        )
 
     async def close_position(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
-        return await self._request("POST", "/api/v5/trade/close-position", body=payload, write=True)
+        return await self._request(
+            "POST", "/api/v5/trade/close-position", body=payload, write=True
+        )
 
     async def set_leverage(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
-        return await self._request("POST", "/api/v5/account/set-leverage", body=payload, write=True)
+        return await self._request(
+            "POST", "/api/v5/account/set-leverage", body=payload, write=True
+        )
 
     async def cancel_all_after(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
         return await self._request(
@@ -296,6 +335,9 @@ class _OkxPrivateRestClientBase:
 
 class OkxDemoPrivateRestClient(_OkxPrivateRestClientBase):
     """Authenticated OKX Demo REST client with simulation permanently enabled."""
+
+    def _before_send(self, *, method: str, path: str) -> None:
+        enforce_demo_submission_boundary(method, path)
 
     def _credentials(self) -> tuple[str, str, str]:
         if not self.settings.okx_demo_credentials_configured:
@@ -404,8 +446,8 @@ class OkxLiveExecutionRestClient(_OkxPrivateRestClientBase):
         if write and method == "POST" and path == "/api/v5/trade/order":
             now = self._clock()
             if now.tzinfo is None:
-                now = now.replace(tzinfo=timezone.utc)
-            expiry = int(now.astimezone(timezone.utc).timestamp() * 1000)
+                now = now.replace(tzinfo=UTC)
+            expiry = int(now.astimezone(UTC).timestamp() * 1000)
             expiry += self.settings.okx_live_order_expiry_milliseconds
             return {"expTime": str(expiry)}
         return {}

@@ -409,7 +409,24 @@ class _WindowsAPI:
                 ("index_low", wintypes.DWORD),
             ]
 
+        class LinkInformation(ctypes.Structure):
+            _fields_ = [
+                ("replace_if_exists", ctypes.c_ubyte),
+                ("root_directory", wintypes.HANDLE),
+                ("file_name_length", wintypes.ULONG),
+                ("file_name", wintypes.WCHAR * 1),
+            ]
+
+        class IOStatusBlock(ctypes.Structure):
+            # The first native member is a union of NTSTATUS and PVOID.
+            _fields_ = [
+                ("status_or_pointer", ctypes.c_void_p),
+                ("information", ctypes.c_size_t),
+            ]
+
         self.info_type = FileInformation
+        self.link_type = LinkInformation
+        self.io_status_type = IOStatusBlock
         self.kernel = ctypes.WinDLL("kernel32", use_last_error=True)
         self.create = self.kernel.CreateFileW
         self.create.argtypes = [
@@ -429,6 +446,19 @@ class _WindowsAPI:
             [wintypes.HANDLE, ctypes.POINTER(FileInformation)],
             wintypes.BOOL,
         )
+        self.native = ctypes.WinDLL("ntdll")
+        self.set_information = self.native.NtSetInformationFile
+        self.set_information.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(IOStatusBlock),
+            wintypes.LPVOID,
+            wintypes.ULONG,
+            wintypes.ULONG,
+        ]
+        self.set_information.restype = wintypes.LONG
+        self.status_error = self.native.RtlNtStatusToDosError
+        self.status_error.argtypes = [wintypes.LONG]
+        self.status_error.restype = wintypes.ULONG
 
     def open_directory(self, path: Path, *, publisher=False):
         # FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES (+ FILE_ADD_FILE for lease).
@@ -480,6 +510,54 @@ class _WindowsAPI:
             self.close(handle)
             raise
 
+    def link_same_directory(self, fd: int, name: str):
+        """Publish from the open, fsynced file without reopening its parent.
+
+        FILE_LINK_INFORMATION specifies a same-directory link with a null
+        RootDirectory and a single filename. A full-path CreateHardLink call
+        reopens the parent and conflicts with our exclusive root publisher
+        lease. Keep that lease and all ancestor pins; never replace a target.
+        """
+        import msvcrt
+
+        if (
+            type(name) is not str
+            or not name
+            or any(character in name for character in '/\\:<>"|?*')
+            or any(ord(character) < 32 for character in name)
+            or name != name.rstrip(" .")
+            or _WINDOWS_DEVICE.fullmatch(name)
+        ):
+            raise EvidencePublicationError("unsafe Windows publication filename")
+        encoded = name.encode("utf-16-le")
+        if len(encoded) > 510:
+            raise EvidencePublicationError("unsafe Windows publication filename")
+        size = max(
+            ctypes.sizeof(self.link_type),
+            self.link_type.file_name.offset + len(encoded),
+        )
+        buffer = ctypes.create_string_buffer(size)
+        info = self.link_type.from_buffer(buffer)
+        info.replace_if_exists = 0
+        info.root_directory = None
+        info.file_name_length = len(encoded)
+        ctypes.memmove(
+            ctypes.addressof(buffer) + self.link_type.file_name.offset,
+            encoded,
+            len(encoded),
+        )
+        status_block = self.io_status_type()
+        status = self.set_information(
+            msvcrt.get_osfhandle(fd),
+            ctypes.byref(status_block),
+            buffer,
+            size,
+            11,  # FileLinkInformation, not a replacing/posix-semantics variant.
+        )
+        if status != 0:
+            # The file handle is synchronous; pending/unknown is not success.
+            raise ctypes.WinError(self.status_error(status))
+
 
 class _WindowsDirectory:
     def __init__(self, path: Path, api: _WindowsAPI):
@@ -514,9 +592,9 @@ class _WindowsDirectory:
             owned = True
             try:
                 _write_fd(fd, payload)
+                self.api.link_same_directory(fd, name)
             finally:
                 os.close(fd)
-            os.link(temporary, self.path / name, follow_symlinks=False)
         finally:
             if owned:
                 os.unlink(temporary)

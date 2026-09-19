@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import UUID
 
@@ -19,10 +19,20 @@ class TradeCandidateInput(BaseModel):
 
     @model_validator(mode="after")
     def validate_price_geometry(self) -> "TradeCandidateInput":
-        if self.side == Side.LONG and not self.stop_loss < self.entry_price < self.take_profit:
-            raise ValueError("long candidate requires stop_loss < entry_price < take_profit")
-        if self.side == Side.SHORT and not self.take_profit < self.entry_price < self.stop_loss:
-            raise ValueError("short candidate requires take_profit < entry_price < stop_loss")
+        if (
+            self.side == Side.LONG
+            and not self.stop_loss < self.entry_price < self.take_profit
+        ):
+            raise ValueError(
+                "long candidate requires stop_loss < entry_price < take_profit"
+            )
+        if (
+            self.side == Side.SHORT
+            and not self.take_profit < self.entry_price < self.stop_loss
+        ):
+            raise ValueError(
+                "short candidate requires take_profit < entry_price < stop_loss"
+            )
         return self
 
     @property
@@ -42,9 +52,12 @@ class RiskDecisionInput(BaseModel):
 
     @model_validator(mode="after")
     def validate_rejection_amounts(self) -> "RiskDecisionInput":
-        if self.decision == Decision.REJECTED:
-            if self.approved_risk_pct != 0 or self.approved_quantity != 0:
-                raise ValueError("rejected risk decision must approve zero risk and quantity")
+        if self.decision == Decision.REJECTED and (
+            self.approved_risk_pct != 0 or self.approved_quantity != 0
+        ):
+            raise ValueError(
+                "rejected risk decision must approve zero risk and quantity"
+            )
         return self
 
 
@@ -63,4 +76,4 @@ class LifecycleTransitionResult(BaseModel):
     previous_state: LifecycleState
     new_state: LifecycleState
     version: int
-    transitioned_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    transitioned_at: datetime = Field(default_factory=lambda: datetime.now(UTC))

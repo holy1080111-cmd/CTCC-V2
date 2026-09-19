@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from decimal import Decimal
-from typing import Sequence
 
 from app.mie.features._math import EPSILON, clamp, log_returns_from_prices, rms
 from app.mie.features.models import SignalFeatures
@@ -12,7 +12,7 @@ D = Decimal
 def causal_signal_features(
     closes: Sequence[Decimal],
     *,
-    alpha: Decimal = D("0.25"),
+    alpha: Decimal = D("0.25"),  # noqa: B008 - D constructs immutable exact Decimal values.
 ) -> SignalFeatures | None:
     """Apply a past-only EWMA to returns and quantify residual noise."""
 
@@ -31,9 +31,7 @@ def causal_signal_features(
 
     raw_rms = rms(returns)
     residual_rms = rms(residuals)
-    noise_ratio = clamp(
-        residual_rms / max(raw_rms, EPSILON), D("0"), D("1")
-    )
+    noise_ratio = clamp(residual_rms / max(raw_rms, EPSILON), D("0"), D("1"))
     strength = clamp(
         abs(smoothed) / (abs(smoothed) + residual_rms + EPSILON),
         D("0"),

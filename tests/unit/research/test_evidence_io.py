@@ -20,8 +20,7 @@ def test_evidence_json_is_no_clobber_and_idempotent(tmp_path: Path) -> None:
     )
     assert write_contract_json(tmp_path, "evidence/spec.json", model) == "written"
     assert (
-        write_contract_json(tmp_path, "evidence/spec.json", model)
-        == "already_present"
+        write_contract_json(tmp_path, "evidence/spec.json", model) == "already_present"
     )
     loaded = read_contract_json(
         tmp_path,
@@ -35,7 +34,7 @@ def test_evidence_json_is_no_clobber_and_idempotent(tmp_path: Path) -> None:
         write_contract_json(tmp_path, "evidence/spec.json", different)
 
 
-def test_evidence_paths_reject_traversal_and_symlinks(tmp_path: Path) -> None:
+def test_evidence_paths_reject_traversal(tmp_path: Path) -> None:
     model = BinanceKlineCoordinates(
         symbol="BTCUSDT",
         interval="1m",
@@ -44,10 +43,25 @@ def test_evidence_paths_reject_traversal_and_symlinks(tmp_path: Path) -> None:
     with pytest.raises(ExternalEvidenceIOError, match="safe relative"):
         write_contract_json(tmp_path, "../escape.json", model)
 
+
+def test_evidence_paths_reject_symlinks(tmp_path: Path) -> None:
+    model = BinanceKlineCoordinates(
+        symbol="BTCUSDT",
+        interval="1m",
+        day="2024-01-01",
+    )
     outside = tmp_path / "outside"
     outside.mkdir()
     link = tmp_path / "link"
-    link.symlink_to(outside, target_is_directory=True)
+    try:
+        link.symlink_to(outside, target_is_directory=True)
+    except OSError as error:
+        if getattr(error, "winerror", None) != 1314:
+            raise
+        pytest.skip(
+            "Windows symlink privilege unavailable (WinError 1314); "
+            "required native symlink acceptance runs in immutable Linux validation"
+        )
     with pytest.raises(ExternalEvidenceIOError, match="symlink"):
         write_contract_json(tmp_path, "link/escape.json", model)
 

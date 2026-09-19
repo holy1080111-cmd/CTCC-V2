@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from decimal import Decimal, localcontext
-from typing import Sequence
+from itertools import pairwise
 
 from app.mie.features._math import EPSILON, clamp, log_prices
 from app.mie.features.models import DynamicsFeatures
@@ -14,9 +15,7 @@ def _solve_3x3(
 ) -> tuple[Decimal, Decimal, Decimal] | None:
     augmented = [row[:] + [value] for row, value in zip(matrix, rhs, strict=True)]
     for column in range(3):
-        pivot_row = max(
-            range(column, 3), key=lambda row: abs(augmented[row][column])
-        )
+        pivot_row = max(range(column, 3), key=lambda row: abs(augmented[row][column]))
         pivot = augmented[pivot_row][column]
         if abs(pivot) <= EPSILON:
             return None
@@ -121,25 +120,16 @@ def causal_dynamics_from_logs(
         if total_variation <= EPSILON:
             fit_r2 = D("1") if squared_error <= EPSILON else D("0")
         else:
-            fit_r2 = clamp(
-                D("1") - squared_error / total_variation, D("0"), D("1")
-            )
+            fit_r2 = clamp(D("1") - squared_error / total_variation, D("0"), D("1"))
         residual_std = (max(D("0"), squared_error) / weight_sum).sqrt()
-        returns = [
-            current - previous
-            for previous, current in zip(logs[:-1], logs[1:], strict=True)
-        ]
-        return_rms = (
-            sum((value * value for value in returns), D("0")) / span
-        ).sqrt()
+        returns = [current - previous for previous, current in pairwise(logs)]
+        return_rms = (sum((value * value for value in returns), D("0")) / span).sqrt()
 
         velocity = linear / span
         acceleration = D("2") * quadratic / (span * span)
         scale = max(return_rms, EPSILON)
         velocity_ratio = clamp(velocity / scale, D("-10"), D("10"))
-        acceleration_ratio = clamp(
-            acceleration / scale, D("-10"), D("10")
-        )
+        acceleration_ratio = clamp(acceleration / scale, D("-10"), D("10"))
         signal_strength = min(D("1"), abs(velocity_ratio))
         confidence = clamp(fit_r2 * signal_strength, D("0"), D("1"))
 

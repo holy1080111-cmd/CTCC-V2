@@ -4,7 +4,15 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, Integer, Numeric, String, func
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    Integer,
+    Numeric,
+    String,
+    func,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -24,14 +32,27 @@ class OkxLiveAccountConfigState(Base):
     account_stp_mode: Mapped[str | None] = mapped_column(String(32))
     account_type: Mapped[str | None] = mapped_column(String(16))
     permissions: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
-    unknown_permissions: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
-    read_permission: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    trade_permission: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    withdraw_permission: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    unknown_permissions: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, default=list
+    )
+    read_permission: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    trade_permission: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    withdraw_permission: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
     ip_bound: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    captured_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
     persisted_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
     )
 
 
@@ -44,11 +65,18 @@ class OkxLiveBalanceState(Base):
     isolated_equity: Mapped[Decimal] = mapped_column(Numeric(28, 10), nullable=False)
     adjusted_equity: Mapped[Decimal] = mapped_column(Numeric(28, 10), nullable=False)
     available_equity: Mapped[Decimal] = mapped_column(Numeric(28, 10), nullable=False)
-    details: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list)
+    details: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False, default=list
+    )
     raw: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
-    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    captured_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
     persisted_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
     )
 
 
@@ -63,7 +91,9 @@ class OkxLiveOrderState(Base):
     order_type: Mapped[str] = mapped_column(String(32), nullable=False)
     state: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     size: Mapped[Decimal] = mapped_column(Numeric(28, 10), nullable=False)
-    accumulated_fill_size: Mapped[Decimal] = mapped_column(Numeric(28, 10), nullable=False)
+    accumulated_fill_size: Mapped[Decimal] = mapped_column(
+        Numeric(28, 10), nullable=False
+    )
     price: Mapped[Decimal | None] = mapped_column(Numeric(28, 10))
     average_fill_price: Mapped[Decimal | None] = mapped_column(Numeric(28, 10))
     reduce_only: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
@@ -71,10 +101,17 @@ class OkxLiveOrderState(Base):
         JSONB, nullable=False, default=list
     )
     raw: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
-    exchange_created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    exchange_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    exchange_created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    exchange_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
     persisted_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
     )
 
 
@@ -93,10 +130,17 @@ class OkxLivePositionState(Base):
     margin_mode: Mapped[str | None] = mapped_column(String(16))
     liquidation_price: Mapped[Decimal | None] = mapped_column(Numeric(28, 10))
     raw: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
-    exchange_created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    exchange_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    exchange_created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    exchange_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
     persisted_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
     )
 
 
@@ -114,10 +158,17 @@ class OkxLiveAlgoOrderState(Base):
     take_profit_trigger_price: Mapped[Decimal | None] = mapped_column(Numeric(28, 10))
     stop_loss_trigger_price: Mapped[Decimal | None] = mapped_column(Numeric(28, 10))
     raw: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
-    exchange_created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    exchange_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    exchange_created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    exchange_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
     persisted_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
     )
 
 
@@ -136,8 +187,7 @@ class OkxLiveSyncCheckpoint(Base):
             "safety_latch_version >= 0", name="safety_latch_version_nonnegative"
         ),
         CheckConstraint(
-            "safety_latch_code IS NULL OR "
-            "safety_latch_code ~ '^[a-z0-9_]{1,80}$'",
+            "safety_latch_code IS NULL OR safety_latch_code ~ '^[a-z0-9_]{1,80}$'",
             name="safety_latch_code_safe",
         ),
     )
@@ -154,14 +204,15 @@ class OkxLiveSyncCheckpoint(Base):
     safety_latch_version: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default="0"
     )
-    safety_latched_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True)
-    )
+    safety_latched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     details: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     last_error: Mapped[str | None] = mapped_column(String(250))
     reconciled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
     )
 
 
@@ -215,9 +266,7 @@ class OkxLiveExecutionIntent(Base):
     protection_client_order_id: Mapped[str | None] = mapped_column(
         String(32), unique=True
     )
-    expected_protection_size: Mapped[Decimal | None] = mapped_column(
-        Numeric(28, 10)
-    )
+    expected_protection_size: Mapped[Decimal | None] = mapped_column(Numeric(28, 10))
     expected_stop_loss: Mapped[Decimal | None] = mapped_column(Numeric(28, 10))
     expected_take_profit: Mapped[Decimal | None] = mapped_column(Numeric(28, 10))
     expected_trigger_price_type: Mapped[str | None] = mapped_column(String(16))
@@ -230,5 +279,8 @@ class OkxLiveExecutionIntent(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
     )

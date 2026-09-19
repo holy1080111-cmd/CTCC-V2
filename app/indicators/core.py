@@ -1,5 +1,6 @@
+from collections.abc import Sequence
 from decimal import Decimal
-from typing import Sequence
+from itertools import pairwise
 
 from app.domain.market import Candle
 
@@ -44,12 +45,14 @@ def true_ranges(candles: Sequence[Candle]) -> list[Decimal]:
     if not candles:
         return []
     result = [candles[0].high - candles[0].low]
-    for previous, current in zip(candles, candles[1:]):
-        result.append(max(
-            current.high - current.low,
-            abs(current.high - previous.close),
-            abs(current.low - previous.close),
-        ))
+    for previous, current in pairwise(candles):
+        result.append(
+            max(
+                current.high - current.low,
+                abs(current.high - previous.close),
+                abs(current.low - previous.close),
+            )
+        )
     return result
 
 
@@ -69,7 +72,7 @@ def atr(candles: Sequence[Candle], period: int = 14) -> Decimal | None:
 def rsi(closes: Sequence[Decimal], period: int = 14) -> Decimal | None:
     if len(closes) < period + 1:
         return None
-    changes = [current - previous for previous, current in zip(closes, closes[1:])]
+    changes = [current - previous for previous, current in pairwise(closes)]
     gains = [max(change, D("0")) for change in changes]
     losses = [max(-change, D("0")) for change in changes]
     avg_gain = sum(gains[:period], D("0")) / D(period)
@@ -83,7 +86,9 @@ def rsi(closes: Sequence[Decimal], period: int = 14) -> Decimal | None:
     return D("100") - D("100") / (D("1") + rs)
 
 
-def macd(closes: Sequence[Decimal], fast: int = 12, slow: int = 26, signal: int = 9) -> tuple[Decimal | None, Decimal | None, Decimal | None]:
+def macd(
+    closes: Sequence[Decimal], fast: int = 12, slow: int = 26, signal: int = 9
+) -> tuple[Decimal | None, Decimal | None, Decimal | None]:
     fast_series = ema_series(closes, fast)
     slow_series = ema_series(closes, slow)
     macd_values: list[Decimal] = []
@@ -104,12 +109,18 @@ def adx(candles: Sequence[Candle], period: int = 14) -> Decimal | None:
     trs: list[Decimal] = []
     plus_dm: list[Decimal] = []
     minus_dm: list[Decimal] = []
-    for previous, current in zip(candles, candles[1:]):
+    for previous, current in pairwise(candles):
         up = current.high - previous.high
         down = previous.low - current.low
         plus_dm.append(up if up > down and up > 0 else D("0"))
         minus_dm.append(down if down > up and down > 0 else D("0"))
-        trs.append(max(current.high-current.low, abs(current.high-previous.close), abs(current.low-previous.close)))
+        trs.append(
+            max(
+                current.high - current.low,
+                abs(current.high - previous.close),
+                abs(current.low - previous.close),
+            )
+        )
     tr_avg = wilder_average(trs, period)
     plus_avg = wilder_average(plus_dm, period)
     minus_avg = wilder_average(minus_dm, period)
@@ -136,12 +147,17 @@ def vwap(candles: Sequence[Candle], period: int = 20) -> Decimal | None:
         volume_getter = lambda c: c.volume_quote
     if total_volume <= 0:
         return None
-    weighted = sum((((c.high+c.low+c.close)/D("3"))*volume_getter(c) for c in subset), D("0"))
+    weighted = sum(
+        (((c.high + c.low + c.close) / D("3")) * volume_getter(c) for c in subset),
+        D("0"),
+    )
     return weighted / total_volume
 
 
 def volume_ratio(candles: Sequence[Candle], period: int = 20) -> Decimal | None:
     if len(candles) < period + 1:
         return None
-    baseline = sum((c.volume_contracts for c in candles[-period-1:-1]), D("0")) / D(period)
+    baseline = sum((c.volume_contracts for c in candles[-period - 1 : -1]), D("0")) / D(
+        period
+    )
     return None if baseline <= 0 else candles[-1].volume_contracts / baseline

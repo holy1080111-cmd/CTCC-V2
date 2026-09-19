@@ -1,5 +1,12 @@
 # CTCC 核心總規格：123 專案整合
 
+2026-09-19 最終施工狀態見 [來源與驗證紀錄](final_completion_validation.md)。
+canonical 開發分支由 `016a358` 保留施工歷史後建立，未覆蓋原部署。
+每筆 structural risk 0.5%、portfolio stop risk 1%、300 USDT bucket 與
+60% aggregate margin 為本輪保守設定；continuous mode 不得跳過每日虧損或連敗。
+新資料／資格／風控／intent 的工程測試不代表 Demo、OOS 或 Micro Live 已驗收。
+Live 維持預設關閉；只完成實際驗證的項目才能勾選 Done。
+
 更新日期：2026-09-11。來源為「123」專案的
 [CTCC 開發進度](https://chatgpt.com/c/6a94fbd0-34e4-83ee-979c-519b5ecb1c66)。
 依 Asia/Taipei 時間，整理範圍為 9 月 9 日 22:51 起的討論，並包含同一段

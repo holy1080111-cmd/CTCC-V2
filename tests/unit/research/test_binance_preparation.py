@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import httpx
@@ -15,8 +15,7 @@ from app.research.external_benchmarks import (
 )
 from tests.unit.research.helpers import MockAsyncByteStream
 
-
-NOW = datetime(2026, 8, 17, 1, 2, 3, tzinfo=timezone.utc)
+NOW = datetime(2026, 8, 17, 1, 2, 3, tzinfo=UTC)
 ARTIFACT_HASH = "ab" * 32
 ARTIFACT_SIZE = 60_928
 
@@ -167,17 +166,13 @@ async def test_preparation_fails_closed_on_untrusted_metadata(
             )
         headers = {
             "content-type": (
-                "text/html"
-                if case == "html_media_type"
-                else "application/zip"
+                "text/html" if case == "html_media_type" else "application/zip"
             ),
             "last-modified": "Tue, 02 Jan 2024 06:07:08 GMT",
         }
         if case != "missing_length":
             headers["content-length"] = str(
-                2 * 1024 * 1024
-                if case == "oversized_artifact"
-                else ARTIFACT_SIZE
+                2 * 1024 * 1024 if case == "oversized_artifact" else ARTIFACT_SIZE
             )
         return httpx.Response(200, headers=headers)
 

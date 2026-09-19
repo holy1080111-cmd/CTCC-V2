@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass
-from typing import Generic, TypeVar
+from typing import TypeVar
 
 from pydantic import ValidationError
 
@@ -39,13 +39,13 @@ class ArtifactVerificationError(ValueError):
 
 
 @dataclass(frozen=True, slots=True)
-class FrozenGate3Artifact(Generic[TGate3]):
+class FrozenGate3Artifact[TGate3: Gate3Contract]:
     payload: bytes
     sha256: str
     contract: TGate3
 
 
-def _freeze(
+def _freeze[TGate3: Gate3Contract](
     contract: TGate3,
     *,
     contract_type: type[TGate3],
@@ -131,7 +131,7 @@ def freeze_prospective_holdout_receipt(
     )
 
 
-def _verify(
+def _verify[TGate3: Gate3Contract](
     payload: bytes,
     *,
     expected_sha256: str,

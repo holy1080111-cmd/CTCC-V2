@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from app.config.settings import Settings
@@ -33,16 +33,8 @@ def candidate(
     entry_price = D(entry)
     stop = D(stop_loss)
     take = D(take_profit)
-    risk = (
-        entry_price - stop
-        if direction == "long"
-        else stop - entry_price
-    )
-    reward = (
-        take - entry_price
-        if direction == "long"
-        else entry_price - take
-    )
+    risk = entry_price - stop if direction == "long" else stop - entry_price
+    reward = take - entry_price if direction == "long" else entry_price - take
     return TradeCandidate(
         strategy="unit_test",
         direction=direction,
@@ -52,12 +44,12 @@ def candidate(
         take_profit=take,
         risk_reward=reward / risk,
         invalidation="stop",
-        expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+        expires_at=datetime.now(UTC) + timedelta(minutes=5),
     )
 
 
 def structural_candidate() -> TradeCandidate:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     geometry = StructuralProtectionGeometry(
         timeframe="15m",
         source_closed_at=now - timedelta(minutes=1),

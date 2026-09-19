@@ -3,16 +3,17 @@
 Revision ID: 0009
 Revises: 0008
 """
-from typing import Sequence, Union
 
-from alembic import op
+from collections.abc import Sequence
+
 import sqlalchemy as sa
+from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision: str = "0009"
-down_revision: Union[str, None] = "0008"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = "0008"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
@@ -62,7 +63,9 @@ def upgrade() -> None:
             server_default=sa.func.now(),
             nullable=False,
         ),
-        sa.CheckConstraint("id = 1", name=op.f("ck_okx_live_balance_state_singleton_id")),
+        sa.CheckConstraint(
+            "id = 1", name=op.f("ck_okx_live_balance_state_singleton_id")
+        ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_okx_live_balance_state")),
     )
 
@@ -159,7 +162,9 @@ def upgrade() -> None:
             server_default=sa.func.now(),
             nullable=False,
         ),
-        sa.PrimaryKeyConstraint("algo_order_id", name=op.f("pk_okx_live_algo_order_state")),
+        sa.PrimaryKeyConstraint(
+            "algo_order_id", name=op.f("pk_okx_live_algo_order_state")
+        ),
     )
     op.create_index(
         op.f("ix_okx_live_algo_order_state_client_algo_order_id"),

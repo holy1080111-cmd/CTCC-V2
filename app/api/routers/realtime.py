@@ -20,7 +20,10 @@ async def snapshots() -> list[RealtimeSnapshot]:
 async def snapshot(symbol: str) -> RealtimeSnapshot:
     result = await realtime_hub.snapshot(symbol)
     if result is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="realtime_snapshot_not_available")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="realtime_snapshot_not_available",
+        )
     return result
 
 

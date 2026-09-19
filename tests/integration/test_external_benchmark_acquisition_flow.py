@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import zipfile
 from datetime import timedelta
 from io import BytesIO
 from pathlib import Path
-import zipfile
 
 import httpx
 import pytest
@@ -38,9 +38,7 @@ async def test_reviewed_download_flows_to_immutable_quality_checked_reference(
     ) as archive:
         archive.writestr(
             "BTCUSDT-trades-2026-01-01.csv",
-            "1,1767225600000,100,1\n"
-            "2,1767225601000,101,1\n"
-            "3,1767225602000,102,1\n",
+            "1,1767225600000,100,1\n2,1767225601000,101,1\n3,1767225602000,102,1\n",
         )
     payload = buffer.getvalue()
     request = acquisition_request(
@@ -91,9 +89,7 @@ async def test_reviewed_download_flows_to_immutable_quality_checked_reference(
         },
         {
             "trade_id": "2",
-            "timestamp": int(
-                (START + timedelta(seconds=1)).timestamp() * 1000
-            ),
+            "timestamp": int((START + timedelta(seconds=1)).timestamp() * 1000),
             "price": "101",
             "quantity": "1",
         },

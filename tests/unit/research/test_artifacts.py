@@ -37,7 +37,15 @@ def test_artifact_verification_rejects_symlinks(tmp_path: Path) -> None:
     outside.write_bytes(payload)
     artifact = tmp_path / "raw" / "trades.csv"
     artifact.parent.mkdir()
-    artifact.symlink_to(outside)
+    try:
+        artifact.symlink_to(outside)
+    except OSError as error:
+        if getattr(error, "winerror", None) != 1314:
+            raise
+        pytest.skip(
+            "Windows symlink privilege unavailable (WinError 1314); "
+            "required native symlink acceptance runs in immutable Linux validation"
+        )
 
     with pytest.raises(ArtifactVerificationError, match="symlinks"):
         verify_dataset_artifacts(manifest, tmp_path)

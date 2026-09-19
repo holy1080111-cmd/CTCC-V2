@@ -10,8 +10,8 @@ from app.research.external_benchmarks.contracts import (
     ExternalArtifactAcquisitionRequest,
     ExternalDatasetManifest,
     IntendedUse,
-    ReferenceContract,
     PublishedBenchmarkRecord,
+    ReferenceContract,
     SourceKind,
 )
 
@@ -40,10 +40,8 @@ class ReferenceSourceDescriptor(ReferenceContract):
         return value
 
     @model_validator(mode="after")
-    def validate_unique_values(self) -> "ReferenceSourceDescriptor":
-        if len(self.supported_dataset_kinds) != len(
-            set(self.supported_dataset_kinds)
-        ):
+    def validate_unique_values(self) -> ReferenceSourceDescriptor:
+        if len(self.supported_dataset_kinds) != len(set(self.supported_dataset_kinds)):
             raise ValueError("supported dataset kinds must be unique")
         if len(self.intended_uses) != len(set(self.intended_uses)):
             raise ValueError("catalog intended uses must be unique")

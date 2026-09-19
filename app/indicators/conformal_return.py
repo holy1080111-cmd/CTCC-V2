@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
-from decimal import Decimal, ROUND_CEILING, localcontext
-from typing import Sequence
+from decimal import ROUND_CEILING, Decimal, localcontext
 
 from app.indicators.causal_trend import causal_log_trend_from_logs
 
@@ -45,7 +45,7 @@ def causal_return_interval(
     *,
     trend_window: int = 21,
     calibration_size: int = 60,
-    confidence_level: Decimal = D("0.90"),
+    confidence_level: Decimal = D("0.90"),  # noqa: B008 - D constructs immutable exact Decimal values.
 ) -> CausalReturnIntervalEstimate | None:
     """Calibrate a one-bar interval without reading any future candle.
 
@@ -81,9 +81,7 @@ def causal_return_interval(
                 + estimate.log_acceleration_per_bar2 / D("2")
             )
             observed = logs[target_index] - logs[target_index - 1]
-            residuals.append(
-                max(_RESIDUAL_NUMERICAL_FLOOR, abs(observed - predicted))
-            )
+            residuals.append(max(_RESIDUAL_NUMERICAL_FLOOR, abs(observed - predicted)))
 
         # Evaluate calibration honestly: each outcome is compared against a
         # quantile formed only from residuals available before that outcome.
@@ -104,8 +102,7 @@ def causal_return_interval(
         if endpoint is None:
             return None
         predicted = (
-            endpoint.log_velocity_per_bar
-            + endpoint.log_acceleration_per_bar2 / D("2")
+            endpoint.log_velocity_per_bar + endpoint.log_acceleration_per_bar2 / D("2")
         )
         lower = predicted - half_width
         upper = predicted + half_width

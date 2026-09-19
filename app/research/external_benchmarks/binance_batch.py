@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 import csv
-from datetime import datetime, time, timezone
+import zipfile
+from datetime import UTC, datetime, time
 from decimal import Decimal, InvalidOperation, localcontext
 from pathlib import Path
-import zipfile
 
 from app.research.external_benchmarks.archive import require_safe_zip_archive
 from app.research.external_benchmarks.artifacts import sha256_file
 from app.research.external_benchmarks.binance_batch_contracts import (
+    EXPECTED_MINUTE_ROWS_PER_DAY,
     BinanceBatchEvidence,
     BinanceBatchKlineCoordinates,
     BinanceBatchPartition,
@@ -17,14 +18,12 @@ from app.research.external_benchmarks.binance_batch_contracts import (
     BinanceBatchResultEntry,
     BinanceDailyMarketSummary,
     BinancePartitionMarketSummary,
-    EXPECTED_MINUTE_ROWS_PER_DAY,
 )
 from app.research.external_benchmarks.binance_klines import PROVIDER_HEADER
 from app.research.external_benchmarks.contracts import ArchiveInspectionPolicy
 from app.research.external_benchmarks.metrics import (
     calculate_reference_return_metrics,
 )
-
 
 BATCH_PLAN_PATH = "evidence/binance-reference-batch-v1-plan.json"
 BATCH_PREPARATION_PATH = "evidence/binance-reference-batch-v1-preparation.json"
@@ -86,7 +85,7 @@ def _archive_rows(
             max_members=1,
             max_total_uncompressed_bytes=MAX_KLINE_CSV_BYTES,
             max_single_member_bytes=MAX_KLINE_CSV_BYTES,
-            max_expansion_ratio=Decimal("20"),
+            max_expansion_ratio=Decimal(20),
         ),
     )
     try:
@@ -145,15 +144,15 @@ def summarize_binance_daily_archive(
     day_start = datetime.combine(
         coordinates.day,
         time.min,
-        tzinfo=timezone.utc,
+        tzinfo=UTC,
     )
     start_ms = int(day_start.timestamp() * 1000)
     first_open: Decimal | None = None
     last_close: Decimal | None = None
     period_high: Decimal | None = None
     period_low: Decimal | None = None
-    base_volume = Decimal("0")
-    quote_volume = Decimal("0")
+    base_volume = Decimal(0)
+    quote_volume = Decimal(0)
     trade_count = 0
 
     for index, row in enumerate(rows):
@@ -208,7 +207,7 @@ def summarize_binance_daily_archive(
         or period_low is None
     ):
         raise BinanceBatchValidationError("batch kline summary is empty")
-    simple_return = (last_close / first_open) - Decimal("1")
+    simple_return = (last_close / first_open) - Decimal(1)
     direction = (
         "rising" if simple_return > 0 else "falling" if simple_return < 0 else "flat"
     )
@@ -236,7 +235,7 @@ def _median(values: list[Decimal]) -> Decimal:
     middle = len(ordered) // 2
     if len(ordered) % 2:
         return ordered[middle]
-    return (ordered[middle - 1] + ordered[middle]) / Decimal("2")
+    return (ordered[middle - 1] + ordered[middle]) / Decimal(2)
 
 
 def _theil_sen_log_slope(closes: list[Decimal]) -> Decimal:
@@ -267,10 +266,10 @@ def _path_efficiency(
                 abs((points[index] / points[index - 1]).ln())
                 for index in range(1, len(points))
             ),
-            Decimal("0"),
+            Decimal(0),
         )
         if path == 0:
-            return Decimal("0")
+            return Decimal(0)
         displacement = abs((points[-1] / points[0]).ln())
         return +(displacement / path)
 
@@ -306,7 +305,7 @@ def summarize_binance_partitions(
             returns: list[Decimal] = []
             previous = summaries[0].first_open
             for close_price in closes:
-                returns.append((close_price / previous) - Decimal("1"))
+                returns.append((close_price / previous) - Decimal(1))
                 previous = close_price
             metrics = calculate_reference_return_metrics(
                 returns,
@@ -329,11 +328,11 @@ def summarize_binance_partitions(
                     period_low=min(summary.period_low for summary in summaries),
                     base_volume=sum(
                         (summary.base_volume for summary in summaries),
-                        Decimal("0"),
+                        Decimal(0),
                     ),
                     quote_volume=sum(
                         (summary.quote_volume for summary in summaries),
-                        Decimal("0"),
+                        Decimal(0),
                     ),
                     trade_count=sum(summary.trade_count for summary in summaries),
                     close_path_metrics=metrics,

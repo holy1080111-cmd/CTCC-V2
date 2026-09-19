@@ -87,7 +87,7 @@ class DecisionCandidate(MieContract):
         return value
 
     @model_validator(mode="after")
-    def validate_decision_candidate(self) -> "DecisionCandidate":
+    def validate_decision_candidate(self) -> DecisionCandidate:
         if self.data_cutoff > self.as_of:
             raise ValueError("decision cannot use data after as_of")
         if self.generated_at < self.as_of:
@@ -97,9 +97,7 @@ class DecisionCandidate(MieContract):
         if len(self.model_health_ids) != len(set(self.model_health_ids)):
             raise ValueError("decision model health ids must be unique")
         if self.checks.ev_net_positive != (self.net_expected_value > 0):
-            raise ValueError(
-                "EV logic check must match the signed net expected value"
-            )
+            raise ValueError("EV logic check must match the signed net expected value")
 
         directional = self.action in {
             DecisionAction.LONG_CANDIDATE,

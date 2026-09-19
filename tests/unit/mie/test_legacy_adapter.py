@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from app.domain.analysis import (
@@ -15,7 +15,7 @@ from app.mie.contracts import (
 )
 
 D = Decimal
-NOW = datetime(2026, 8, 12, 4, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 8, 12, 4, 0, tzinfo=UTC)
 CUTOFF = NOW - timedelta(seconds=1)
 HORIZON = ForecastHorizon(label="15m", seconds=900)
 
@@ -57,23 +57,20 @@ def legacy_core() -> MathematicalCoreSnapshot:
         ],
     )
 
+
 def test_legacy_adapter_is_deterministic_and_dependency_aware() -> None:
-    kwargs = dict(
-        instrument_id="BTC-USDT-SWAP",
-        horizon=HORIZON,
-        observed_at=NOW,
-        data_cutoff=CUTOFF,
-        provenance_sha256="c" * 64,
-    )
+    kwargs = {
+        "instrument_id": "BTC-USDT-SWAP",
+        "horizon": HORIZON,
+        "observed_at": NOW,
+        "data_cutoff": CUTOFF,
+        "provenance_sha256": "c" * 64,
+    }
     first = adapt_legacy_mathematical_core(legacy_core(), **kwargs)
     second = adapt_legacy_mathematical_core(legacy_core(), **kwargs)
 
-    assert [item.evidence_id for item in first] == [
-        item.evidence_id for item in second
-    ]
-    assert {item.dependency_group for item in first} == {
-        "legacy.price_path.shared"
-    }
+    assert [item.evidence_id for item in first] == [item.evidence_id for item in second]
+    assert {item.dependency_group for item in first} == {"legacy.price_path.shared"}
     assert all(item.execution_authority is False for item in first)
 
 
@@ -86,21 +83,12 @@ def test_legacy_adapter_preserves_validation_without_overstating_it() -> None:
         data_cutoff=CUTOFF,
         provenance_sha256="c" * 64,
     )
-    by_code = {
-        item.source.rsplit(".", 1)[-1]: item
-        for item in items
-    }
+    by_code = {item.source.rsplit(".", 1)[-1]: item for item in items}
 
     assert by_code["derivative"].validation_level == ValidationLevel.CAUSAL
-    assert (
-        by_code["derivative"].permitted_use
-        == EvidenceUse.RISK_DOWNGRADE_ONLY
-    )
+    assert by_code["derivative"].permitted_use == EvidenceUse.RISK_DOWNGRADE_ONLY
     assert by_code["conformal"].validation_level == ValidationLevel.PREQUENTIAL
     assert by_code["conformal"].validation_sample_size == 60
     assert by_code["conformal"].calibrated_probability is None
     assert by_code["structure"].validation_level == ValidationLevel.AUXILIARY
-    assert (
-        by_code["structure"].permitted_use
-        == EvidenceUse.AUXILIARY_TIE_BREAK
-    )
+    assert by_code["structure"].permitted_use == EvidenceUse.AUXILIARY_TIE_BREAK

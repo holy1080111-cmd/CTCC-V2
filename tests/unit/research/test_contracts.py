@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -12,18 +12,22 @@ from app.research.external_benchmarks import (
     BenchmarkRunStatus,
     DatasetArtifact,
     DatasetWindow,
+    ExternalArtifactAcquisitionRequest,
     ExternalBenchmarkRun,
     ExternalDatasetManifest,
-    ExternalArtifactAcquisitionRequest,
     PublishedBenchmarkRecord,
     ReproducibilityLevel,
 )
-from tests.unit.research.helpers import AVAILABLE, END, RETRIEVED, START, trade_manifest
-from tests.unit.research.helpers import acquisition_request
-
+from tests.unit.research.helpers import (
+    AVAILABLE,
+    END,
+    START,
+    acquisition_request,
+    trade_manifest,
+)
 
 SHA = "a" * 64
-NOW = datetime(2026, 1, 2, tzinfo=timezone.utc)
+NOW = datetime(2026, 1, 2, tzinfo=UTC)
 
 
 def test_manifest_is_frozen_strict_and_reference_only() -> None:

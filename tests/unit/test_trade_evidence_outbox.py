@@ -6,6 +6,7 @@ Windows ancestor-pin denial must not be disguised as successful native IO.
 """
 
 import asyncio
+import ctypes
 import hashlib
 import json
 import os
@@ -1276,19 +1277,135 @@ def test_native_posix_linked_paths_are_refused_without_altering_outside_bytes(
     os.name != "nt",
     reason="This case records native Windows ancestor-pin behavior only",
 )
+@pytest.mark.parametrize("inject_late_denial", (False, True))
 def test_native_windows_owned_root_truthfully_records_pin_denial_or_real_success(
-    native_root, clock
+    native_root, clock, monkeypatch, inject_late_denial
 ):
+    pins, publications = [], []
+    original_pin = module.storage._WindowsAPI.open_directory
+    original_publish = module.storage._WindowsDirectory.publish
+
+    def pin(api, path, *, publisher=False):
+        try:
+            handle = original_pin(api, path, publisher=publisher)
+        except PermissionError as error:
+            pins.append((path, publisher, "denied", error.winerror))
+            raise
+        pins.append((path, publisher, "opened", None))
+        return handle
+
+    def publish(directory, name, raw):
+        try:
+            original_publish(directory, name, raw)
+        except PermissionError as error:
+            publications.append((directory.path, name, "denied", error.winerror))
+            raise
+        publications.append((directory.path, name, "published", None))
+
+    monkeypatch.setattr(module.storage._WindowsAPI, "open_directory", pin)
+    monkeypatch.setattr(module.storage._WindowsDirectory, "publish", publish)
+    if inject_late_denial:
+        original_link = module.storage._WindowsAPI.link_same_directory
+
+        def denied_envelope(api, fd, name):
+            if name == f"{REPORT}.json":
+                raise ctypes.WinError(32)
+            return original_link(api, fd, name)
+
+        monkeypatch.setattr(
+            module.storage._WindowsAPI, "link_same_directory", denied_envelope
+        )
+    initial_at = clock.now
     try:
         result = module.enqueue(native_root, payload(), clock=clock)
     except module.OutboxError as error:
         assert error.code == "outbox_storage_permission_denied", (
             "Only a specifically classified native permission denial is expected"
         )
-        assert list(native_root.iterdir()) == []
-        print(
-            "Native Windows outbox: ancestor permission denied; success path unverified"
-        )
+        names = {item.name for item in native_root.iterdir()}
+        if not names:
+            # Only actual ancestor/root pin denial may use this early branch.
+            # Do not call a failed post-mkdir operation an ancestor denial.
+            assert publications == []
+            assert pins[-1][2] == "denied"
+            assert pins[-1][0] in (*native_root.parents, native_root)
+            assert not any(
+                path == native_root and publisher and state == "opened"
+                for path, publisher, state, _ in pins
+            )
+            print(
+                "Native Windows outbox: early ancestor/root pin denied; "
+                "no artifact created; native publication unverified"
+            )
+        else:
+            # A root-level hardlink may fail with WinError 32 after the child
+            # journal has been fully published. That is retained evidence, NOT
+            # a successful enqueue and NOT permission to delete or reconstruct it.
+            assert getattr(error.__context__, "winerror", None) == 32
+            assert publications == [
+                (
+                    native_root / f"{REPORT}.state",
+                    "00000001.json",
+                    "published",
+                    None,
+                ),
+                (native_root, f"{REPORT}.json", "denied", 32),
+            ]
+            assert names == {f"{REPORT}.state"}
+            state = native_root / f"{REPORT}.state"
+            assert {item.name for item in state.iterdir()} == {"00000001.json"}
+            initial_file = state / "00000001.json"
+            original = initial_file.read_bytes()
+            envelope = module._seal(
+                module.OutboxEnvelope,
+                {"payload": payload(), "policy": policy(), "enqueued_at": initial_at},
+                "envelope_sha256",
+            )
+            initial = module._event(envelope, None, "enqueue", initial_at)
+            assert original == module._wire(initial)
+            module._verify(envelope, (module._decode(original, module.OutboxEvent),))
+            assert initial.action == "enqueue" and initial.revision == 1
+            assert not (native_root / f"{REPORT}.json").exists()
+
+            # A fresh root context cannot repair/backfill the missing marker,
+            # even with identical payload or a newly reconstructed timestamp.
+            clock.advance(1)
+            for value in (payload(), payload(order_reference="changed-local-claim")):
+                with pytest.raises(
+                    module.OutboxError, match="^outbox_enqueue_incomplete$"
+                ):
+                    module.enqueue(native_root, value, clock=clock)
+            with pytest.raises(
+                module.OutboxError, match="^outbox_storage_unavailable$"
+            ):
+                module.read_job(native_root, REPORT, clock=clock)
+            called = []
+
+            async def adapter(*args):
+                called.append(True)
+                raise AssertionError("incomplete enqueue must not dispatch")
+
+            with pytest.raises(
+                module.OutboxError, match="^outbox_storage_unavailable$"
+            ):
+                asyncio.run(
+                    module.dispatch_once(
+                        native_root,
+                        REPORT,
+                        worker_id="native-partial-proof",
+                        adapter=adapter,
+                        clock=clock,
+                    )
+                )
+            assert called == []
+            assert {item.name for item in native_root.iterdir()} == names
+            assert {item.name for item in state.iterdir()} == {"00000001.json"}
+            assert initial_file.read_bytes() == original
+            print(
+                f"Native Windows outbox: late denial (injected={inject_late_denial}); "
+                "exact initial journal retained, commit marker absent, no dispatch; "
+                "this failed invocation is not an enqueue success"
+            )
     else:
         # If this execution environment permits the real pin chain, demand real
         # bytes and readback instead of assuming a denial or using a fake pass.
@@ -1297,3 +1414,143 @@ def test_native_windows_owned_root_truthfully_records_pin_denial_or_real_success
         assert (native_root / f"{REPORT}.state" / "00000001.json").is_file()
         assert module.read_job(native_root, REPORT, clock=clock) == result
         print("Native Windows outbox: real pinned publication and readback succeeded")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Required real Windows outbox acceptance")
+def test_native_windows_root_publication_delivery_and_conflict_preserve_history(
+    native_root, clock
+):
+    first = module.enqueue(native_root, payload(), clock=clock)
+    assert first.status == "queued"
+    original = {
+        path.relative_to(native_root): path.read_bytes()
+        for path in native_root.rglob("*.json")
+    }
+    assert len(original) == 2
+    assert module.enqueue(native_root, payload(), clock=clock) == first
+    with pytest.raises(module.OutboxError):
+        module.enqueue(
+            native_root, payload(order_reference="conflicting-order"), clock=clock
+        )
+    token = module.claim_job(native_root, REPORT, worker_id="windows-a", clock=clock)
+    token = module.begin_dispatch(native_root, token, clock=clock)
+    result = module.finish_dispatch(native_root, token, outcome(token), clock=clock)
+    assert result.status == "delivered"
+    assert module.read_job(native_root, REPORT, clock=clock) == result
+    assert all(
+        (native_root / name).read_bytes() == raw for name, raw in original.items()
+    )
+    assert len(tuple(native_root.rglob("*.json"))) == 5
+    assert not tuple(native_root.rglob("*.partial"))
+    with pytest.raises(module.OutboxError):
+        module.claim_job(native_root, REPORT, worker_id="windows-b", clock=clock)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Required real Windows worker fencing")
+def test_native_windows_two_workers_cannot_both_claim(native_root, clock):
+    module.enqueue(native_root, payload(), clock=clock)
+    barrier = Barrier(2)
+
+    def attempt(worker):
+        barrier.wait(timeout=10)
+        try:
+            return module.claim_job(native_root, REPORT, worker_id=worker, clock=clock)
+        except module.OutboxError:
+            return None
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = tuple(pool.map(attempt, ("windows-a", "windows-b")))
+    assert sum(result is not None for result in results) == 1
+    assert module.read_job(native_root, REPORT, clock=clock).status == "claimed"
+
+
+@pytest.mark.parametrize(
+    "stage", ("journal_before", "journal_after", "envelope_before")
+)
+def test_permission_denial_after_mkdir_retains_exact_partial_and_refuses_rebuild(
+    memory, clock, monkeypatch, stage
+):
+    original_publish = MemoryDirectory.publish
+    initial_path = event_path(1)
+    envelope_path = (f"{REPORT}.json",)
+    denied_path = envelope_path if stage == "envelope_before" else initial_path
+
+    def denied(directory, name, raw):
+        destination = (*directory.relative, name)
+        if destination == denied_path and stage != "journal_after":
+            raise PermissionError("synthetic permission denial before publication")
+        original_publish(directory, name, raw)
+        if destination == denied_path:
+            raise PermissionError("synthetic permission denial after publication")
+
+    monkeypatch.setattr(MemoryDirectory, "publish", denied)
+    with pytest.raises(module.OutboxError, match="^outbox_storage_permission_denied$"):
+        enqueue(memory, clock)
+    assert memory.directories == {(), (f"{REPORT}.state",)}
+    if stage == "journal_before":
+        assert memory.files == {}
+    else:
+        expected = module._seal(
+            module.OutboxEnvelope,
+            {"payload": payload(), "policy": policy(), "enqueued_at": clock.now},
+            "envelope_sha256",
+        )
+        initial = module._event(expected, None, "enqueue", clock.now)
+        assert memory.files == {initial_path: module._wire(initial)}
+        module._verify(expected, (initial,))
+    assert envelope_path not in memory.files
+    retained = dict(memory.files)
+    # Removing the injected fault does not license reconstruction of an
+    # interrupted enqueue. Its retained state is not another submit allowance.
+    monkeypatch.setattr(MemoryDirectory, "publish", original_publish)
+    clock.advance(1)
+    for value in (payload(), payload(order_reference="changed-local-claim")):
+        with pytest.raises(module.OutboxError, match="^outbox_enqueue_incomplete$"):
+            module.enqueue(memory.root, value, clock=clock)
+    with pytest.raises(module.OutboxError, match="^outbox_storage_unavailable$"):
+        module.claim_job(memory.root, REPORT, worker_id="new-worker", clock=clock)
+    assert memory.files == retained
+    assert memory.active_contexts == 0
+
+
+def test_root_permission_denial_before_transaction_creates_no_artifacts(
+    memory, clock, monkeypatch
+):
+    @contextmanager
+    def denied_root(root):
+        assert root == memory.root
+        raise PermissionError("synthetic root pin permission denial")
+        yield  # pragma: no cover -- required contextmanager generator shape
+
+    monkeypatch.setattr(module, "_root_context", denied_root)
+    with pytest.raises(module.OutboxError, match="^outbox_storage_permission_denied$"):
+        enqueue(memory, clock)
+    assert memory.files == {}
+    assert memory.directories == {()}
+    assert memory.operations == []
+
+
+def test_permission_denial_after_commit_marker_is_not_assumed_to_be_zero_writes(
+    memory, clock, monkeypatch
+):
+    original_publish = MemoryDirectory.publish
+
+    def denied_after_marker(directory, name, raw):
+        original_publish(directory, name, raw)
+        if (*directory.relative, name) == (f"{REPORT}.json",):
+            raise PermissionError("synthetic post-commit driver failure")
+
+    monkeypatch.setattr(MemoryDirectory, "publish", denied_after_marker)
+    with pytest.raises(module.OutboxError, match="^outbox_storage_permission_denied$"):
+        enqueue(memory, clock)
+    assert set(memory.files) == {event_path(1), (f"{REPORT}.json",)}
+    retained = dict(memory.files)
+    monkeypatch.setattr(MemoryDirectory, "publish", original_publish)
+    # This is read-only reconciliation plus identical LOCAL enqueue, never a
+    # second remote/order call. A changed report remains a conflict.
+    readback = module.read_job(memory.root, REPORT, clock=clock)
+    assert readback.status == "queued" and len(readback.events) == 1
+    assert module.enqueue(memory.root, payload(), clock=clock) == readback
+    with pytest.raises(module.OutboxError, match="^outbox_report_conflict$"):
+        module.enqueue(memory.root, payload(order_reference="changed"), clock=clock)
+    assert memory.files == retained

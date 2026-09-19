@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -18,7 +18,7 @@ from app.mie.validation import (
 )
 
 D = Decimal
-START = datetime(2026, 1, 1, tzinfo=timezone.utc)
+START = datetime(2026, 1, 1, tzinfo=UTC)
 HORIZON = ForecastHorizon(label="15m", seconds=900)
 
 
@@ -137,9 +137,7 @@ def test_replay_rejects_missing_duplicate_unsorted_and_late_due_rows() -> None:
             bar_horizon=HORIZON,
         )
 
-    late = rows[-1].model_copy(
-        update={"available_at": cutoff + timedelta(seconds=1)}
-    )
+    late = rows[-1].model_copy(update={"available_at": cutoff + timedelta(seconds=1)})
     with pytest.raises(ReplayValidationError, match="not available"):
         replay_features_at(
             (*rows[:-1], late),
@@ -154,7 +152,7 @@ def test_replay_requires_utc_aligned_cutoffs_and_sufficient_history() -> None:
     with pytest.raises(ValueError, match="timezone-aware UTC"):
         replay_features_at(
             rows,
-            as_of=datetime(2026, 1, 1),
+            as_of=datetime(2026, 1, 1),  # noqa: DTZ001 - Deliberately naive input verifies rejection, never accepted source time.
             bar_horizon=HORIZON,
         )
 
@@ -171,10 +169,7 @@ def test_replay_requires_utc_aligned_cutoffs_and_sufficient_history() -> None:
             update={
                 "available_at": row.available_at + timedelta(microseconds=1),
                 "bar": row.bar.model_copy(
-                    update={
-                        "closed_at": row.bar.closed_at
-                        + timedelta(microseconds=1)
-                    }
+                    update={"closed_at": row.bar.closed_at + timedelta(microseconds=1)}
                 ),
             }
         )

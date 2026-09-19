@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -68,7 +68,7 @@ def test_public_reference_flows_to_replayable_non_promoting_benchmark(
         dataset_id="lean.sample.regression",
         model_or_engine_version="v2",
         metric_spec_version="lean-statistics-v1",
-        published_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        published_at=datetime(2026, 1, 1, tzinfo=UTC),
         retrieved_at=RETRIEVED,
         reproducibility=ReproducibilityLevel.CODE_AVAILABLE,
         source_artifact_sha256="e" * 64,

@@ -1,5 +1,5 @@
-from datetime import datetime, timezone
-from decimal import Decimal, ROUND_DOWN
+from datetime import UTC, datetime
+from decimal import ROUND_DOWN, Decimal
 
 from app.domain.risk import AccountRiskState, RiskDecision, RiskLimits
 from app.domain.strategy import TradeCandidate
@@ -24,14 +24,12 @@ def evaluate_risk(
     limits: RiskLimits,
 ) -> RiskDecision:
     reasons: list[str] = []
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     stop_distance = abs(candidate.entry - candidate.stop_loss)
     cost_distance = candidate.entry * candidate.estimated_round_trip_cost_pct
     effective_risk_distance = stop_distance + cost_distance
     effective_score = (
-        candidate.risk_score
-        if candidate.risk_score is not None
-        else candidate.score
+        candidate.risk_score if candidate.risk_score is not None else candidate.score
     )
 
     if candidate.expires_at <= now:
@@ -42,9 +40,15 @@ def evaluate_risk(
         reasons.append("risk_reward_below_minimum")
     if stop_distance <= 0:
         reasons.append("invalid_stop_distance")
-    if _loss_ratio(account.daily_realized_pnl, account.equity) >= limits.max_daily_loss_pct:
+    if (
+        _loss_ratio(account.daily_realized_pnl, account.equity)
+        >= limits.max_daily_loss_pct
+    ):
         reasons.append("daily_loss_limit_reached")
-    if _loss_ratio(account.weekly_realized_pnl, account.equity) >= limits.max_weekly_loss_pct:
+    if (
+        _loss_ratio(account.weekly_realized_pnl, account.equity)
+        >= limits.max_weekly_loss_pct
+    ):
         reasons.append("weekly_loss_limit_reached")
     if _drawdown(account) >= limits.max_drawdown_pct:
         reasons.append("drawdown_limit_reached")
@@ -65,7 +69,9 @@ def evaluate_risk(
         else risk_budget / effective_risk_distance
     )
     quantity_by_notional = limits.max_notional / candidate.entry
-    quantity = min(quantity_by_risk, quantity_by_notional).quantize(QTY_QUANTUM, rounding=ROUND_DOWN)
+    quantity = min(quantity_by_risk, quantity_by_notional).quantize(
+        QTY_QUANTUM, rounding=ROUND_DOWN
+    )
 
     if quantity < limits.minimum_quantity:
         reasons.append("quantity_below_minimum")
@@ -74,7 +80,11 @@ def evaluate_risk(
     notional = (quantity * candidate.entry).quantize(MONEY_QUANTUM)
     estimated_cost = (quantity * cost_distance).quantize(MONEY_QUANTUM)
     max_loss = (quantity * effective_risk_distance).quantize(MONEY_QUANTUM)
-    approved_risk = (max_loss / account.equity).quantize(D("0.00000001")) if quantity > 0 else D("0")
+    approved_risk = (
+        (max_loss / account.equity).quantize(D("0.00000001"))
+        if quantity > 0
+        else D("0")
+    )
 
     approved = not reasons and quantity > 0
     return RiskDecision(

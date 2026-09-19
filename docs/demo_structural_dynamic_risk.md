@@ -1,6 +1,6 @@
 # Demo structural dynamic risk (3–20x, disabled by default)
 
-This Gate integrates the 150-USDT / 2,000-USDT capital rule, confirmed K-line
+This Gate integrates the 300-USDT margin bucket, confirmed K-line
 structure, execution costs, score- and mathematics-capped leverage, multiple
 instruments, and continuous Demo sessions without granting any new Live or
 exchange-write authority.
@@ -29,25 +29,24 @@ stop-risk, margin, capital-bucket, submission, or protection limits. Fresh
 metadata must still identify exactly one live, USDT-settled SWAP. See
 `docs/demo_multi_symbol_universe.md`.
 
-Enabling the feature also requires `OKX_DEMO_MAX_LEVERAGE=20`, a portfolio
-stop-risk ceiling of at least 6%, and a weekly-loss backstop of at least 6%.
-The validation profile uses `MAX_WEEKLY_LOSS_PCT=0.10`; the default remains 5%
-while this feature is disabled. Configuration validation fails closed if the
-6% extreme per-trade ceiling could exceed either aggregate backstop.
+Enabling the feature requires `OKX_DEMO_MAX_LEVERAGE=20`. Each structural
+risk band has a hard maximum of 0.5%; portfolio stop risk cannot exceed 1%.
+The weekly-loss backstop must cover the configured per-trade ceiling.
+Old profiles with 1.5%–6% structural risk or 10% portfolio risk are rejected.
 
 A read-only validation profile is:
 
 ```env
 OKX_DEMO_SCORE_RISK_ENABLED=true
 OKX_DEMO_CAPITAL_BUCKET_ENABLED=true
-OKX_DEMO_POSITION_MARGIN_BUCKET_USDT=2000
+OKX_DEMO_POSITION_MARGIN_BUCKET_USDT=300
 OKX_DEMO_CONTINUOUS_SESSION_ENABLED=true
 OKX_DEMO_TRADE_COOLDOWN_SECONDS=0
 OKX_DEMO_STRUCTURAL_DYNAMIC_LEVERAGE_ENABLED=true
 OKX_DEMO_MAX_OPEN_POSITIONS=3
 OKX_DEMO_MAX_LEVERAGE=20
-OKX_DEMO_PORTFOLIO_MAX_RISK_PCT=0.10
-MAX_WEEKLY_LOSS_PCT=0.10
+OKX_DEMO_PORTFOLIO_MAX_RISK_PCT=0.01
+OKX_DEMO_PORTFOLIO_MAX_MARGIN_PCT=0.60
 
 OKX_DEMO_ALLOW_ORDER_WRITES=false
 OKX_DEMO_AUTO_EXECUTION=false
@@ -58,7 +57,7 @@ OKX_LIVE_AUTO_EXECUTION=false
 ```
 
 `ORDER_SIZE_CAP_USDT`, exchange availability, contract limits, risk sizing,
-and the 2,000-USDT bucket are all ceilings. The lowest ceiling wins; no setting
+and the 300-USDT bucket are all ceilings. The lowest ceiling wins; no setting
 forces a full-margin order.
 
 ## Causal structure
@@ -124,11 +123,11 @@ not margin.
 
 | Effective score | Risk ceiling | Leverage ceiling |
 |---:|---:|---:|
-| 72–79 | 1.5% | 3x |
-| 80–89 | 2.5% | 5x |
-| 90–94 | 3.0% | 8x |
-| 95–97 | 4.0% | 10x |
-| 98–100 | 6.0% | 20x |
+| 72–79 | 0.5% | 3x |
+| 80–89 | 0.5% | 5x |
+| 90–94 | 0.5% | 8x |
+| 95–97 | 0.5% | 10x |
+| 98–100 | 0.5% | 20x |
 
 The mathematical core remains downward-only: it can retain, reduce, or block
 the effective score, but cannot increase the raw strategy score.
@@ -146,8 +145,8 @@ requested risk amount = E × q
 required leverage = ceil((E × q) / (M × (s + c)))
 ```
 
-The earlier shortcut `ceil(q / (s + c))` is valid only when `E = M`, which is
-the below-bucket case. Above 2,000 USDT, omitting `E / M` understates the
+The earlier shortcut `ceil(q / (s + c))` is valid only when `E = M`.
+Omitting `E / M` understates the
 leverage needed to deploy the account-level risk request from one fixed-size
 position bucket.
 
@@ -193,38 +192,53 @@ round-trip cost below 16 bps.
 
 ## Capital and portfolio rules
 
-- Risk equity <= 2,000 USDT: one margin slot, capped by available risk equity.
-- Risk equity > 2,000 USDT: one slot for each complete 2,000-USDT bucket, up to
+- Risk equity <= 300 USDT: one slot, capped by available equity and margin limits.
+- Risk equity > 300 USDT: one slot for each complete 300-USDT bucket, up to
   the configured position limit.
 - One position per instrument.
 - Total open worst-case stop risk includes estimated costs and cannot exceed the
   portfolio risk ceiling.
 - A bucket is a ceiling, not a command to consume all available margin.
+- Aggregate margin cannot exceed 60% of reconciled USDT risk equity; current
+  held and reserved amounts count even when individual buckets remain available.
 - Structural orders use isolated margin; a reconciled margin-mode mismatch
   engages Emergency Stop.
 
-One deterministic 150-USDT boundary fixture uses a 0.10% structural stop,
-0.16% cost buffer, score 99, and approved high-grade mathematics. The 6% risk
-request needs more than 20x, so the 20x ceiling and one 150-USDT bucket cap
-notional at 3,000 USDT. Estimated worst-case stop plus costs is 7.80 USDT
-(5.2%), below the 9-USDT risk request. This verifies sizing mechanics only; it
-is not a return forecast.
+For 150 USDT of equity the structural loss budget is at most 0.75 USDT;
+the aggregate margin ceiling is 90 USDT. The trade need not consume either
+ceiling. For 10,000 USDT equity, a 300-USDT bucket and a 0.26% stop-plus-cost
+rate, the 0.5% risk budget would require 65x. The maximum approved leverage
+remains 20x and the trade consumes less than that loss budget. These are
+sizing calculations, not return forecasts. `required_leverage` is diagnostic
+and never authorizes exceeding the approved leverage cap.
 
-For comparison, with 10,000 USDT account equity and one 2,000-USDT bucket, the
-same 6% request and 0.26% stop-plus-cost rate mathematically requires 116x.
-CTCC still selects no more than 20x, reports the 116x requirement as an
-unfunded risk-budget target, and sizes the position below the requested 6%
-risk. `required_leverage` is therefore diagnostic, never permission to exceed
-the approved cap.
+Continuous Demo mode removes only the daily trade-count pacing gate and
+post-close cooldown. It retains financial gates in both scheduling modes:
 
-Continuous Demo mode removes only the daily realized-loss entry gate, daily
-trade-count gate, consecutive-loss gate, and post-close cooldown. It retains:
-
+- UTC daily recorded realized-loss and conservative equity-deterioration control;
+- the persisted consecutive-loss count, which does not reset at UTC midnight;
 - rolling seven-day attributed net-PnL loss control;
 - a high-water equity drawdown control that does not reset at UTC midnight;
 - stop-risk, capital buckets, available equity, one-position-per-symbol,
   duplicate fingerprints, exchange reconciliation, protection, Arm, and
   Emergency Stop.
+
+The 2026-09-19 correction prevents continuous mode from replacing loss inputs
+with zero or stripping persisted daily/streak locks on restart. A daily breach
+remains latched until a later UTC date; deposits or recovered equity do not
+erase recorded daily loss. A strictly later positive close can reset the
+streak; a zero close does not, and ambiguous close chronology stops execution.
+The synchronous final submission check re-evaluates current local loss state.
+Malformed, conflicting, nonfinite, naive-time or future recorded history is
+retained and triggers EStop. History and a loss streak prevent a currency-basis
+change from clearing accumulated risk state.
+
+This is a correction to the legacy runtime guard, not proof of complete account
+history. Its recorded outcome list still lacks an independently authenticated
+ingestion watermark and streak seed; its legacy close projection is not the
+trusted fills/bills forensics pipeline. The new account materializer retains
+incomplete flags and cannot authorize a complete PortfolioRiskSnapshot from
+this list. A missing-history proof is not replaced with a zero-loss assertion.
 
 ## What is and is not mathematically verified
 

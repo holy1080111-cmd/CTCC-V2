@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
-from datetime import datetime, timezone
 import re
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 
 from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -44,9 +44,7 @@ _TRANSITIONS: dict[str, frozenset[str]] = {
 }
 _EXECUTION_ADVISORY_LOCK_ID = 1680010
 _UNRESOLVED_STATUSES = frozenset({"reserved", "acknowledged", "ambiguous"})
-OKX_LIVE_FLAT_EXCHANGE_RESOLUTION_CODE = (
-    "operator_confirmed_flat_exchange_state"
-)
+OKX_LIVE_FLAT_EXCHANGE_RESOLUTION_CODE = "operator_confirmed_flat_exchange_state"
 
 
 class OkxLiveExecutionRepository:
@@ -125,7 +123,7 @@ class OkxLiveExecutionRepository:
             raise OkxLiveExecutionRepositoryError(
                 "okx_live_protection_expectation_not_allowed"
             )
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         values = {
             "idempotency_key": idempotency_key,
             "request_hash": request_hash,
@@ -145,48 +143,44 @@ class OkxLiveExecutionRepository:
             "created_at": now,
             "updated_at": now,
         }
-        async with self.session_factory() as session:
-            async with session.begin():
-                statement = (
-                    pg_insert(OkxLiveExecutionIntent)
-                    .values(**values)
-                    .on_conflict_do_nothing(
-                        index_elements=[OkxLiveExecutionIntent.idempotency_key]
-                    )
-                    .returning(OkxLiveExecutionIntent.idempotency_key)
+        async with self.session_factory() as session, session.begin():
+            statement = (
+                pg_insert(OkxLiveExecutionIntent)
+                .values(**values)
+                .on_conflict_do_nothing(
+                    index_elements=[OkxLiveExecutionIntent.idempotency_key]
                 )
-                created = (await session.scalar(statement)) is not None
-                row = await session.scalar(
-                    select(OkxLiveExecutionIntent)
-                    .where(OkxLiveExecutionIntent.idempotency_key == idempotency_key)
-                    .with_for_update()
+                .returning(OkxLiveExecutionIntent.idempotency_key)
+            )
+            created = (await session.scalar(statement)) is not None
+            row = await session.scalar(
+                select(OkxLiveExecutionIntent)
+                .where(OkxLiveExecutionIntent.idempotency_key == idempotency_key)
+                .with_for_update()
+            )
+            if row is None:
+                raise OkxLiveExecutionRepositoryError(
+                    "okx_live_execution_intent_unavailable"
                 )
-                if row is None:
-                    raise OkxLiveExecutionRepositoryError(
-                        "okx_live_execution_intent_unavailable"
+            if not created:
+                if (
+                    row.request_hash != request_hash
+                    or row.action != action
+                    or row.instrument_id != instrument_id
+                    or row.client_order_id != client_order_id
+                    or row.protection_client_order_id != protection_client_order_id
+                    or row.expected_protection_size != expected_protection_size
+                    or row.expected_stop_loss != expected_stop_loss
+                    or row.expected_take_profit != expected_take_profit
+                    or row.expected_trigger_price_type != expected_trigger_price_type
+                ):
+                    raise OkxLiveExecutionIntentConflict(
+                        "okx_live_idempotency_key_payload_mismatch"
                     )
-                if not created:
-                    if (
-                        row.request_hash != request_hash
-                        or row.action != action
-                        or row.instrument_id != instrument_id
-                        or row.client_order_id != client_order_id
-                        or row.protection_client_order_id
-                        != protection_client_order_id
-                        or row.expected_protection_size
-                        != expected_protection_size
-                        or row.expected_stop_loss != expected_stop_loss
-                        or row.expected_take_profit != expected_take_profit
-                        or row.expected_trigger_price_type
-                        != expected_trigger_price_type
-                    ):
-                        raise OkxLiveExecutionIntentConflict(
-                            "okx_live_idempotency_key_payload_mismatch"
-                        )
-                    raise OkxLiveExecutionIntentReplay(
-                        f"okx_live_idempotency_key_already_used:{row.status}"
-                    )
-                return self._view(row)
+                raise OkxLiveExecutionIntentReplay(
+                    f"okx_live_idempotency_key_already_used:{row.status}"
+                )
+            return self._view(row)
 
     async def update_intent(
         self,
@@ -196,7 +190,7 @@ class OkxLiveExecutionRepository:
         exchange_order_id: str | None = None,
         detail_codes: list[str] | None = None,
     ) -> OkxLiveExecutionIntentView:
-        async with self.session_factory() as session:
+        async with self.session_factory() as session:  # noqa: SIM117 - Keep database session and transaction lifetimes explicit at the durable boundary.
             async with session.begin():
                 row = await session.scalar(
                     select(OkxLiveExecutionIntent)
@@ -217,7 +211,7 @@ class OkxLiveExecutionRepository:
                 if exchange_order_id:
                     row.exchange_order_id = exchange_order_id[:100]
                 row.detail_codes = self._safe_detail_codes(detail_codes or [])
-                row.updated_at = datetime.now(timezone.utc)
+                row.updated_at = datetime.now(UTC)
                 await session.flush()
                 return self._view(row)
 
@@ -266,9 +260,7 @@ class OkxLiveExecutionRepository:
                     .where(
                         OkxLiveExecutionIntent.action == "place_order",
                         OkxLiveExecutionIntent.status != "rejected",
-                        OkxLiveExecutionIntent.protection_client_order_id.is_not(
-                            None
-                        ),
+                        OkxLiveExecutionIntent.protection_client_order_id.is_not(None),
                     )
                     .order_by(
                         OkxLiveExecutionIntent.created_at.desc(),
@@ -292,61 +284,58 @@ class OkxLiveExecutionRepository:
             )
         when = reconciled_at
         if when.tzinfo is None:
-            when = when.replace(tzinfo=timezone.utc)
-        when = when.astimezone(timezone.utc)
-        async with self.session_factory() as session:
-            async with session.begin():
-                rows = (
-                    await session.scalars(
-                        select(OkxLiveExecutionIntent)
-                        .where(
-                            OkxLiveExecutionIntent.status.in_(
-                                _UNRESOLVED_STATUSES
-                            ),
-                            OkxLiveExecutionIntent.operator_reconciled_at.is_(
-                                None
-                            ),
-                        )
-                        .order_by(
-                            OkxLiveExecutionIntent.created_at,
-                            OkxLiveExecutionIntent.idempotency_key,
-                        )
-                        .with_for_update()
+            when = when.replace(tzinfo=UTC)
+        when = when.astimezone(UTC)
+        async with self.session_factory() as session, session.begin():
+            rows = (
+                await session.scalars(
+                    select(OkxLiveExecutionIntent)
+                    .where(
+                        OkxLiveExecutionIntent.status.in_(_UNRESOLVED_STATUSES),
+                        OkxLiveExecutionIntent.operator_reconciled_at.is_(None),
                     )
-                ).all()
-                expected_by_key = {
-                    item.idempotency_key: item for item in expectations
-                }
-                actual_keys = {row.idempotency_key for row in rows}
-                if actual_keys != set(expected_by_key):
+                    .order_by(
+                        OkxLiveExecutionIntent.created_at,
+                        OkxLiveExecutionIntent.idempotency_key,
+                    )
+                    .with_for_update()
+                )
+            ).all()
+            expected_by_key = {item.idempotency_key: item for item in expectations}
+            actual_keys = {row.idempotency_key for row in rows}
+            if actual_keys != set(expected_by_key):
+                raise OkxLiveExecutionIntentConflict(
+                    "okx_live_unresolved_intent_set_changed"
+                )
+            for row in rows:
+                expected = expected_by_key[row.idempotency_key]
+                if row.status != expected.status or self._utc(
+                    row.updated_at
+                ) != self._utc(expected.updated_at):
                     raise OkxLiveExecutionIntentConflict(
-                        "okx_live_unresolved_intent_set_changed"
+                        "okx_live_unresolved_intent_changed"
                     )
-                for row in rows:
-                    expected = expected_by_key[row.idempotency_key]
-                    if (
-                        row.status != expected.status
-                        or self._utc(row.updated_at)
-                        != self._utc(expected.updated_at)
-                    ):
-                        raise OkxLiveExecutionIntentConflict(
-                            "okx_live_unresolved_intent_changed"
-                        )
-                    row.operator_reconciled_at = when
-                    row.operator_resolution_code = resolution_code
-                    row.updated_at = when
-                await session.flush()
-                return len(rows)
+                row.operator_reconciled_at = when
+                row.operator_resolution_code = resolution_code
+                row.updated_at = when
+            await session.flush()
+            return len(rows)
 
     @staticmethod
     def _utc(value: datetime) -> datetime:
         if value.tzinfo is None:
-            value = value.replace(tzinfo=timezone.utc)
-        return value.astimezone(timezone.utc)
+            value = value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
 
     @staticmethod
     def _safe_detail_codes(values: list[str]) -> list[str]:
-        safe = sorted({item.strip().lower() for item in values if _SAFE_CODE.fullmatch(item.strip().lower())})
+        safe = sorted(
+            {
+                item.strip().lower()
+                for item in values
+                if _SAFE_CODE.fullmatch(item.strip().lower())
+            }
+        )
         return safe[:20] or (["unspecified"] if values else [])
 
     @staticmethod

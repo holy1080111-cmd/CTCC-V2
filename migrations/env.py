@@ -1,14 +1,14 @@
-from logging.config import fileConfig
 import asyncio
+from logging.config import fileConfig
 
 from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
+import app.database.models  # noqa: F401 - registers all ORM tables
 from app.config.settings import get_settings
 from app.database.alembic_config import escape_alembic_config_value
 from app.database.base import Base
-import app.database.models  # noqa: F401 - registers all ORM tables
 
 config = context.config
 settings = get_settings()
@@ -35,7 +35,9 @@ def run_migrations_offline() -> None:
 
 
 def do_run_migrations(connection) -> None:
-    context.configure(connection=connection, target_metadata=target_metadata, compare_type=True)
+    context.configure(
+        connection=connection, target_metadata=target_metadata, compare_type=True
+    )
     with context.begin_transaction():
         context.run_migrations()
 

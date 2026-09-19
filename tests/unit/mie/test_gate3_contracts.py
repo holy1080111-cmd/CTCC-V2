@@ -2,16 +2,16 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal, localcontext
 
 import pytest
 from pydantic import ValidationError
 
 from app.mie.validation import (
+    BarConstruction,
     BaselineKind,
     BaselineSpec,
-    BarConstruction,
     CandidateSpec,
     ComponentVersion,
     CostModel,
@@ -47,7 +47,6 @@ from app.mie.validation.artifact import (
 )
 
 D = Decimal
-UTC = timezone.utc
 START = datetime(2025, 1, 1, tzinfo=UTC)
 
 
@@ -157,9 +156,7 @@ def valid_preregistration() -> Gate3Preregistration:
                 block_length=5,
                 seed=20260901,
                 familywise_alpha=D("0.05"),
-                multiple_testing_correction=(
-                    MultipleTestingCorrection.HOLM_BONFERRONI
-                ),
+                multiple_testing_correction=(MultipleTestingCorrection.HOLM_BONFERRONI),
             ),
             trials=TrialRegistry(
                 registry_id="trials:fixture:v1",
@@ -200,10 +197,7 @@ def valid_artifact() -> Gate3EvidenceArtifact:
     }
     subject_metrics = {
         preregistration.candidate.candidate_id: candidate_metrics,
-        **{
-            item.baseline_id: probability_metrics
-            for item in preregistration.baselines
-        },
+        **{item.baseline_id: probability_metrics for item in preregistration.baselines},
     }
     metrics = tuple(
         MetricEstimate(
@@ -260,8 +254,7 @@ def valid_artifact() -> Gate3EvidenceArtifact:
                 ),
             ),
             preregistered_at=preregistration.created_at,
-            holdout_first_read_at=preregistration.created_at
-            + timedelta(days=1),
+            holdout_first_read_at=preregistration.created_at + timedelta(days=1),
             generated_at=generated_at,
         ),
         validation_claim=Gate3Claim.PREDICTIVE_OOS,
@@ -301,9 +294,10 @@ def test_preregistration_is_canonical_immutable_and_zero_authority() -> None:
 
     assert parsed["created_at"].endswith(".000000Z")
     assert parsed["features"][0]["parameters"][0]["value"] == "0.25"
-    assert preregistration.canonical_sha256() == hashlib.sha256(
-        preregistration.canonical_json_bytes()
-    ).hexdigest()
+    assert (
+        preregistration.canonical_sha256()
+        == hashlib.sha256(preregistration.canonical_json_bytes()).hexdigest()
+    )
     assert preregistration.canonical_json() == valid_preregistration().canonical_json()
     assert preregistration.holdout_state == "unread"
     assert preregistration.authority == "offline_shadow_only"
@@ -376,9 +370,7 @@ def test_split_requires_dependency_coverage_and_real_time_gaps() -> None:
         PurgedWalkForwardSplit.model_validate(payload)
 
     payload = split.model_dump()
-    payload["holdout"]["start_at"] = split.validation.end_at + timedelta(
-        seconds=3599
-    )
+    payload["holdout"]["start_at"] = split.validation.end_at + timedelta(seconds=3599)
     with pytest.raises(ValidationError, match="below the embargo"):
         PurgedWalkForwardSplit.model_validate(payload)
 
@@ -390,7 +382,7 @@ def test_split_requires_dependency_coverage_and_real_time_gaps() -> None:
 
 def test_contracts_reject_non_utc_nonfinite_and_incomplete_protocols() -> None:
     dataset = valid_preregistration().dataset.model_dump()
-    dataset["first_event_at"] = datetime(2025, 1, 1)
+    dataset["first_event_at"] = datetime(2025, 1, 1)  # noqa: DTZ001 - Deliberately naive input verifies rejection, never accepted source time.
     with pytest.raises(ValidationError, match="timezone-aware UTC"):
         DatasetIdentity.model_validate(dataset)
 
@@ -410,9 +402,7 @@ def test_contracts_reject_non_utc_nonfinite_and_incomplete_protocols() -> None:
         Gate3Preregistration.model_validate(preregistration)
 
     preregistration = valid_preregistration().model_dump()
-    preregistration["split"]["development"]["start_at"] += timedelta(
-        microseconds=1
-    )
+    preregistration["split"]["development"]["start_at"] += timedelta(microseconds=1)
     with pytest.raises(ValidationError, match="align to bars"):
         Gate3Preregistration.model_validate(preregistration)
 
@@ -495,15 +485,11 @@ def test_evidence_artifact_binds_hashes_trials_costs_and_review() -> None:
 
     preregistration_payload = artifact.preregistration.model_dump()
     preregistration_payload["candidate"]["selected_trial_id"] = "trial:002"
-    preregistration_payload["candidate"]["configuration_sha256"] = sha(
-        "trial-002"
-    )
+    preregistration_payload["candidate"]["configuration_sha256"] = sha("trial-002")
     unselected = Gate3Preregistration.model_validate(preregistration_payload)
     payload = artifact.model_dump()
     payload["preregistration"] = unselected.model_dump()
-    payload["provenance"][
-        "preregistration_sha256"
-    ] = unselected.canonical_sha256()
+    payload["provenance"]["preregistration_sha256"] = unselected.canonical_sha256()
     with pytest.raises(ValidationError, match="pass frozen trial correction"):
         Gate3EvidenceArtifact.model_validate(payload)
 
@@ -526,8 +512,7 @@ def test_evidence_artifact_binds_hashes_trials_costs_and_review() -> None:
     target = next(
         item
         for item in payload["metric_estimates"]
-        if item["subject_id"]
-        == artifact.preregistration.candidate.candidate_id
+        if item["subject_id"] == artifact.preregistration.candidate.candidate_id
         and item["metric"] == Gate3Metric.BRIER_SCORE
     )
     target["confidence_lower"] = None
@@ -565,10 +550,13 @@ def test_canonical_preregistration_freeze_and_verification_are_exact() -> None:
 
     assert frozen.payload == preregistration.canonical_json_bytes()
     assert frozen.sha256 == preregistration.canonical_sha256()
-    assert verify_preregistration(
-        frozen.payload,
-        expected_sha256=frozen.sha256,
-    ) == preregistration
+    assert (
+        verify_preregistration(
+            frozen.payload,
+            expected_sha256=frozen.sha256,
+        )
+        == preregistration
+    )
 
     with pytest.raises(ArtifactVerificationError, match="SHA256 mismatch"):
         verify_preregistration(
@@ -589,12 +577,17 @@ def test_canonical_evidence_freeze_rejects_tampering_and_wrong_schema() -> None:
     artifact = valid_artifact()
     frozen = freeze_evidence_artifact(artifact)
 
-    assert verify_evidence_artifact(
-        frozen.payload,
-        expected_sha256=frozen.sha256,
-    ) == artifact
+    assert (
+        verify_evidence_artifact(
+            frozen.payload,
+            expected_sha256=frozen.sha256,
+        )
+        == artifact
+    )
 
-    tampered = frozen.payload.replace(b'"runtime_consumers":0', b'"runtime_consumers":1')
+    tampered = frozen.payload.replace(
+        b'"runtime_consumers":0', b'"runtime_consumers":1'
+    )
     tampered_digest = hashlib.sha256(tampered).hexdigest()
     with pytest.raises(ArtifactVerificationError, match="schema validation"):
         verify_evidence_artifact(
@@ -616,9 +609,7 @@ def test_freeze_revalidates_model_copy_nested_and_subclass_tampering() -> None:
     with pytest.raises(ArtifactVerificationError, match="revalidation failed"):
         freeze_evidence_artifact(tampered)
 
-    nested = artifact.preregistration.model_copy(
-        update={"runtime_consumers": 1}
-    )
+    nested = artifact.preregistration.model_copy(update={"runtime_consumers": 1})
     tampered = artifact.model_copy(update={"preregistration": nested})
     with pytest.raises(ArtifactVerificationError, match="revalidation failed"):
         freeze_evidence_artifact(tampered)

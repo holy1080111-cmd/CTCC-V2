@@ -53,7 +53,9 @@ def test_strict_quality_profile_accepts_complete_ordered_records() -> None:
     assert report.execution_authority is False
 
 
-def test_quality_profile_reports_missing_duplicate_temporal_and_numeric_failures() -> None:
+def test_quality_profile_reports_missing_duplicate_temporal_and_numeric_failures() -> (
+    None
+):
     manifest = trade_manifest(row_count=4)
     records = (
         {
@@ -122,7 +124,7 @@ def test_explicit_quality_policy_can_document_but_not_repair_known_rates() -> No
     )
     policy = DatasetQualityPolicy(
         max_duplicate_key_rate=Decimal("0.5"),
-        max_out_of_order_rate=Decimal("1"),
+        max_out_of_order_rate=Decimal(1),
     )
 
     report = profile_dataset_records(
@@ -136,7 +138,7 @@ def test_explicit_quality_policy_can_document_but_not_repair_known_rates() -> No
     assert report.duplicate_key_rows == 1
     assert report.out_of_order_rows == 1
     assert report.duplicate_key_rate == Decimal("0.5")
-    assert report.out_of_order_rate == Decimal("1")
+    assert report.out_of_order_rate == Decimal(1)
 
 
 def test_quality_report_rejects_forged_rates() -> None:

@@ -2,17 +2,17 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import sys
 from decimal import Decimal
 from pathlib import Path
-import sys
 
 import httpx
 
 from app.research.external_benchmarks import (
-    AcquisitionLimits,
-    ArchiveInspectionPolicy,
     BATCH_EVIDENCE_PATH,
     BATCH_PREPARATION_PATH,
+    AcquisitionLimits,
+    ArchiveInspectionPolicy,
     BinanceBatchEvidence,
     BinanceBatchPlan,
     BinanceBatchPreparation,
@@ -147,7 +147,7 @@ async def _run(args: argparse.Namespace) -> int:
         max_members=2,
         max_total_uncompressed_bytes=4 * 1024 * 1024,
         max_single_member_bytes=4 * 1024 * 1024,
-        max_expansion_ratio=Decimal("20"),
+        max_expansion_ratio=Decimal(20),
     )
 
     async with httpx.AsyncClient(

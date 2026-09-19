@@ -52,13 +52,18 @@ def test_manifest_excludes_secrets_build_products_and_archives(tmp_path: Path) -
     (tmp_path / "delivery.patch").write_text("patch\n", encoding="utf-8")
     (tmp_path / ".venv").mkdir()
     (tmp_path / ".venv" / "installed.py").write_text("pass\n", encoding="utf-8")
+    for generated in ("build", "dist"):
+        (tmp_path / generated).mkdir()
+        (tmp_path / generated / "generated.py").write_text("pass\n", encoding="utf-8")
 
     entries = manifest.build_manifest(tmp_path)
 
     assert entries.keys() == {"app.py"}
 
 
-def test_runtime_trade_evidence_is_not_part_of_the_source_release(tmp_path: Path) -> None:
+def test_runtime_trade_evidence_is_not_part_of_the_source_release(
+    tmp_path: Path,
+) -> None:
     (tmp_path / "app.py").write_text("pass\n", encoding="utf-8")
     packet = tmp_path / "artifacts" / "trade_evidence" / "synthetic-report"
     packet.mkdir(parents=True)

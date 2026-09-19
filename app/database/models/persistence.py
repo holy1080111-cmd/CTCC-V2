@@ -5,8 +5,18 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Integer, Numeric, String, func
-from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Integer,
+    Numeric,
+    String,
+    func,
+)
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database.base import Base
@@ -33,7 +43,10 @@ class PaperAccountState(Base):
     revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     state_checksum: Mapped[str] = mapped_column(String(64), nullable=False)
     persisted_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
     )
 
 
@@ -48,7 +61,9 @@ class PaperOrderState(Base):
     )
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
-    client_order_id: Mapped[str] = mapped_column(String(80), nullable=False, unique=True)
+    client_order_id: Mapped[str] = mapped_column(
+        String(80), nullable=False, unique=True
+    )
     symbol: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
     side: Mapped[str] = mapped_column(String(16), nullable=False)
     order_type: Mapped[str] = mapped_column(String(16), nullable=False)
@@ -63,10 +78,15 @@ class PaperOrderState(Base):
     strategy: Mapped[str] = mapped_column(String(100), nullable=False)
     score: Mapped[int] = mapped_column(Integer, nullable=False)
     reasons: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
     filled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     persisted_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
     )
 
 
@@ -103,7 +123,10 @@ class PaperPositionState(Base):
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     close_reason: Mapped[str | None] = mapped_column(String(100))
     persisted_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
     )
 
 
@@ -114,24 +137,30 @@ class OrchestratorRunState(Base):
     trigger: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
     execute: Mapped[bool] = mapped_column(Boolean, nullable=False)
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
-    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
-    completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, index=True
+    )
+    completed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, index=True
+    )
 
 
 class OrchestratorFingerprintState(Base):
     __tablename__ = "orchestrator_fingerprint_state"
 
     fingerprint: Mapped[str] = mapped_column(String(64), primary_key=True)
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, index=True
+    )
     details: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
 
 
 class RecoveryCheckpoint(Base):
     __tablename__ = "recovery_checkpoints"
-    __table_args__ = (
-        CheckConstraint("id = 1", name="singleton_id"),
-    )
+    __table_args__ = (CheckConstraint("id = 1", name="singleton_id"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -140,5 +169,8 @@ class RecoveryCheckpoint(Base):
     recovered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     persisted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
     )

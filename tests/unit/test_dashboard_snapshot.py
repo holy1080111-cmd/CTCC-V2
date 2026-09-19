@@ -1,4 +1,4 @@
-﻿from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -22,11 +22,7 @@ def patch_successful_sources(monkeypatch) -> None:
     monkeypatch.setattr(
         okx_demo_service,
         "balance",
-        AsyncMock(
-            return_value=(
-                OkxDemoBalanceSnapshot.model_construct()
-            )
-        ),
+        AsyncMock(return_value=(OkxDemoBalanceSnapshot.model_construct())),
     )
 
     monkeypatch.setattr(
@@ -44,31 +40,19 @@ def patch_successful_sources(monkeypatch) -> None:
     monkeypatch.setattr(
         safe_demo_automation,
         "status",
-        AsyncMock(
-            return_value=(
-                DemoAutomationStatus.model_construct()
-            )
-        ),
+        AsyncMock(return_value=(DemoAutomationStatus.model_construct())),
     )
 
     monkeypatch.setattr(
         demo_performance,
         "summary",
-        AsyncMock(
-            return_value=(
-                DemoPerformanceSummary.model_construct()
-            )
-        ),
+        AsyncMock(return_value=(DemoPerformanceSummary.model_construct())),
     )
 
     monkeypatch.setattr(
         demo_performance,
         "validation",
-        AsyncMock(
-            return_value=(
-                DemoReliabilityValidation.model_construct()
-            )
-        ),
+        AsyncMock(return_value=(DemoReliabilityValidation.model_construct())),
     )
 
     monkeypatch.setattr(
@@ -101,10 +85,7 @@ async def test_dashboard_snapshot_is_complete(
         "events",
     }
 
-    assert all(
-        status.ok
-        for status in snapshot.source_status.values()
-    )
+    assert all(status.ok for status in snapshot.source_status.values())
 
 
 @pytest.mark.asyncio
@@ -116,11 +97,7 @@ async def test_dashboard_snapshot_isolates_failure(
     monkeypatch.setattr(
         okx_demo_service,
         "balance",
-        AsyncMock(
-            side_effect=RuntimeError(
-                "sensitive-value-must-not-be-returned"
-            )
-        ),
+        AsyncMock(side_effect=RuntimeError("sensitive-value-must-not-be-returned")),
     )
 
     snapshot = await get_dashboard_snapshot(None)
@@ -128,10 +105,7 @@ async def test_dashboard_snapshot_isolates_failure(
     assert snapshot.complete is False
     assert snapshot.balance is None
     assert snapshot.source_status["balance"].ok is False
-    assert (
-        snapshot.source_status["balance"].error_code
-        == "RuntimeError"
-    )
+    assert snapshot.source_status["balance"].error_code == "RuntimeError"
 
     serialized = snapshot.model_dump_json()
 
@@ -143,8 +117,7 @@ def test_dashboard_snapshot_route_is_get_only() -> None:
     matching_routes = [
         route
         for route in api_router.routes
-        if getattr(route, "path", None)
-        == "/api/dashboard/snapshot"
+        if getattr(route, "path", None) == "/api/dashboard/snapshot"
     ]
 
     assert len(matching_routes) == 1

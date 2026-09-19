@@ -76,7 +76,7 @@ class StrategyService:
                         "eligible": False,
                         "candidate": None,
                         "vetoes": sorted(
-                            set([*evaluation.vetoes, "strategy_identity_mismatch"])
+                            {*evaluation.vetoes, "strategy_identity_mismatch"}
                         ),
                     }
                 )
@@ -108,7 +108,7 @@ class StrategyService:
                         "eligible": False,
                         "candidate": None,
                         "vetoes": sorted(
-                            set([*item.vetoes, "strategy_disabled_by_operator"])
+                            {*item.vetoes, "strategy_disabled_by_operator"}
                         ),
                     }
                 )
@@ -121,17 +121,15 @@ class StrategyService:
                 update={
                     "eligible": False,
                     "vetoes": sorted(
-                        set(
-                            [
-                                *item.vetoes,
-                                (
-                                    "mathematical_core_regime_instability"
-                                    if item.candidate.mathematical_confirmation.status
-                                    == "unstable"
-                                    else "mathematical_core_opposes_trade_direction"
-                                ),
-                            ]
-                        )
+                        {
+                            *item.vetoes,
+                            (
+                                "mathematical_core_regime_instability"
+                                if item.candidate.mathematical_confirmation.status
+                                == "unstable"
+                                else "mathematical_core_opposes_trade_direction"
+                            ),
+                        }
                     ),
                 }
             )
@@ -158,10 +156,10 @@ class StrategyService:
         def selection_key(item):
             candidate = item.candidate
             if candidate is None:
-                return (-1, item.score, Decimal("0"), 0)
+                return (-1, item.score, Decimal(0), 0)
             confirmation = candidate.mathematical_confirmation
             effective_score = item.score
-            confidence = Decimal("0")
+            confidence = Decimal(0)
             auxiliary_bonus = 0
             if confirmation is not None:
                 effective_score = min(

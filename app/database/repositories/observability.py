@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
-from uuid import UUID
 
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -18,22 +17,23 @@ class DemoObservabilityRepository:
         self.session_factory = session_factory
 
     async def interrupt_running_sessions(self) -> int:
-        now = datetime.now(timezone.utc)
-        async with self.session_factory() as session:
-            async with session.begin():
-                result = await session.execute(
-                    update(DemoSoakSession)
-                    .where(DemoSoakSession.state == "running")
-                    .values(
-                        state="interrupted",
-                        stopped_at=now,
-                        stop_reason="api_process_restarted",
-                        updated_at=now,
-                    )
+        now = datetime.now(UTC)
+        async with self.session_factory() as session, session.begin():
+            result = await session.execute(
+                update(DemoSoakSession)
+                .where(DemoSoakSession.state == "running")
+                .values(
+                    state="interrupted",
+                    stopped_at=now,
+                    stop_reason="api_process_restarted",
+                    updated_at=now,
                 )
+            )
         return int(result.rowcount or 0)
 
-    async def create_session(self, session_view: DemoSoakSessionView) -> DemoSoakSessionView:
+    async def create_session(
+        self, session_view: DemoSoakSessionView
+    ) -> DemoSoakSessionView:
         row = DemoSoakSession(
             state=session_view.state,
             execute=session_view.execute,
@@ -70,25 +70,23 @@ class DemoObservabilityRepository:
             safety_stop_reason=session_view.safety_stop_reason,
             last_error=session_view.last_error,
         )
-        async with self.session_factory() as session:
-            async with session.begin():
-                session.add(row)
-                await session.flush()
-                await session.refresh(row)
+        async with self.session_factory() as session, session.begin():
+            session.add(row)
+            await session.flush()
+            await session.refresh(row)
         return self._session_view(row)
 
     async def update_session(self, session_view: DemoSoakSessionView) -> None:
         if session_view.id is None:
             return
         values = session_view.model_dump(exclude={"id"}, mode="python")
-        values["updated_at"] = datetime.now(timezone.utc)
-        async with self.session_factory() as session:
-            async with session.begin():
-                await session.execute(
-                    update(DemoSoakSession)
-                    .where(DemoSoakSession.id == session_view.id)
-                    .values(**values)
-                )
+        values["updated_at"] = datetime.now(UTC)
+        async with self.session_factory() as session, session.begin():
+            await session.execute(
+                update(DemoSoakSession)
+                .where(DemoSoakSession.id == session_view.id)
+                .values(**values)
+            )
 
     async def latest_session(self) -> DemoSoakSessionView | None:
         async with self.session_factory() as session:
@@ -113,28 +111,26 @@ class DemoObservabilityRepository:
             code=code,
             message=message,
             details=details,
-            observed_at=datetime.now(timezone.utc),
+            observed_at=datetime.now(UTC),
         )
-        async with self.session_factory() as session:
-            async with session.begin():
-                session.add(row)
-                await session.flush()
-                await session.refresh(row)
-                ids = (
-                    await session.scalars(
-                        select(DemoObservabilityEvent.id)
-                        .order_by(DemoObservabilityEvent.observed_at.desc())
-                        .offset(event_limit)
+        async with self.session_factory() as session, session.begin():
+            session.add(row)
+            await session.flush()
+            await session.refresh(row)
+            ids = (
+                await session.scalars(
+                    select(DemoObservabilityEvent.id)
+                    .order_by(DemoObservabilityEvent.observed_at.desc())
+                    .offset(event_limit)
+                )
+            ).all()
+            if ids:
+                await session.execute(
+                    delete(DemoObservabilityEvent).where(
+                        DemoObservabilityEvent.id.in_(ids)
                     )
-                ).all()
-                if ids:
-                    await session.execute(
-                        delete(DemoObservabilityEvent).where(
-                            DemoObservabilityEvent.id.in_(ids)
-                        )
-                    )
+                )
         return self._event_view(row)
-
 
     async def automation_runs_since(
         self, cutoff: datetime, *, limit: int

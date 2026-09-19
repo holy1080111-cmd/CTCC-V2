@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import zipfile
 from datetime import timedelta
 from io import BytesIO
 from pathlib import Path
-import zipfile
 
 import httpx
 import pytest
@@ -41,9 +41,7 @@ async def test_acquisition_pins_hash_size_media_type_and_reviewed_redirect(
             return httpx.Response(
                 302,
                 headers={
-                    "location": (
-                        "https://cdn.data.binance.vision/test/trades.csv"
-                    )
+                    "location": ("https://cdn.data.binance.vision/test/trades.csv")
                 },
             )
         return httpx.Response(
@@ -198,9 +196,7 @@ async def test_acquisition_enforces_streamed_size_and_redirect_limits(
     def redirect_handler(http_request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             302,
-            headers={
-                "location": "https://data.binance.vision/second.csv"
-            },
+            headers={"location": "https://data.binance.vision/second.csv"},
         )
 
     async with httpx.AsyncClient(

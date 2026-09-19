@@ -1,12 +1,8 @@
 from pathlib import Path
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 SCRIPT = PROJECT_ROOT / "scripts/run_binance_btcusdt_reference_probe.ps1"
-TERMS_REVIEW = (
-    "docs/external_sources/"
-    "binance_public_data_review_2026-08-17.md"
-)
+TERMS_REVIEW = "docs/external_sources/binance_public_data_review_2026-08-17.md"
 TERMS_REVIEW_PATH = PROJECT_ROOT / TERMS_REVIEW
 
 
@@ -14,7 +10,7 @@ def test_operator_probe_requires_review_before_artifact_get() -> None:
     source = SCRIPT.read_text(encoding="utf-8")
 
     prepare = source.index("Prepare official Binance identity")
-    confirmation = source.index('Read-Host (')
+    confirmation = source.index("Read-Host (")
     acquire = source.index("Acquire pinned Binance ZIP")
     profile = source.index("Profile Binance kline quality")
 

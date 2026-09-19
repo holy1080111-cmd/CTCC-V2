@@ -24,7 +24,9 @@ async def reconcile(request: RecoveryRequest) -> RecoveryStatus:
     try:
         return await paper_service.reconcile(request.action)
     except PaperPersistenceError as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from exc
 
 
 @router.get("/audit", response_model=list[AuditEntryView])

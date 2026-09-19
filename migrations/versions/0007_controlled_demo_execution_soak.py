@@ -3,15 +3,16 @@
 Revision ID: 0007
 Revises: 0006
 """
-from typing import Sequence, Union
 
-from alembic import op
+from collections.abc import Sequence
+
 import sqlalchemy as sa
+from alembic import op
 
 revision: str = "0007"
-down_revision: Union[str, None] = "0006"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = "0006"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
@@ -29,7 +30,9 @@ def upgrade() -> None:
     )
     op.add_column(
         "demo_soak_sessions",
-        sa.Column("session_pnl", sa.Numeric(38, 18), nullable=False, server_default="0"),
+        sa.Column(
+            "session_pnl", sa.Numeric(38, 18), nullable=False, server_default="0"
+        ),
     )
     op.add_column(
         "demo_soak_sessions",
@@ -42,25 +45,36 @@ def upgrade() -> None:
     )
     op.add_column(
         "demo_soak_sessions",
-        sa.Column("protection_checks", sa.Integer(), nullable=False, server_default="0"),
-    )
-    op.add_column(
-        "demo_soak_sessions",
-        sa.Column("protection_failures", sa.Integer(), nullable=False, server_default="0"),
-    )
-    op.add_column(
-        "demo_soak_sessions",
-        sa.Column("active_position_count", sa.Integer(), nullable=False, server_default="0"),
-    )
-    op.add_column(
-        "demo_soak_sessions",
         sa.Column(
-            "active_pending_order_count", sa.Integer(), nullable=False, server_default="0"
+            "protection_checks", sa.Integer(), nullable=False, server_default="0"
         ),
     )
     op.add_column(
         "demo_soak_sessions",
-        sa.Column("active_algo_order_count", sa.Integer(), nullable=False, server_default="0"),
+        sa.Column(
+            "protection_failures", sa.Integer(), nullable=False, server_default="0"
+        ),
+    )
+    op.add_column(
+        "demo_soak_sessions",
+        sa.Column(
+            "active_position_count", sa.Integer(), nullable=False, server_default="0"
+        ),
+    )
+    op.add_column(
+        "demo_soak_sessions",
+        sa.Column(
+            "active_pending_order_count",
+            sa.Integer(),
+            nullable=False,
+            server_default="0",
+        ),
+    )
+    op.add_column(
+        "demo_soak_sessions",
+        sa.Column(
+            "active_algo_order_count", sa.Integer(), nullable=False, server_default="0"
+        ),
     )
     op.add_column(
         "demo_soak_sessions",
@@ -68,7 +82,9 @@ def upgrade() -> None:
     )
     op.add_column(
         "demo_soak_sessions",
-        sa.Column("auto_disarmed", sa.Boolean(), nullable=False, server_default=sa.false()),
+        sa.Column(
+            "auto_disarmed", sa.Boolean(), nullable=False, server_default=sa.false()
+        ),
     )
     op.add_column(
         "demo_soak_sessions",

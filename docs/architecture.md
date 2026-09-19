@@ -51,8 +51,10 @@ capital-bucket, portfolio-risk, submission, or execution-authority limits.
 Fresh instrument metadata must still be unique, live, SWAP, and USDT-settled
 before Demo sizing. The Live boundary remains the separate BTC/ETH allowlist.
 
-Continuous Demo eligibility skips daily-loss, daily trade-count,
-consecutive-loss, and cooldown entry gates only. Weekly-loss, drawdown,
+Continuous Demo eligibility skips daily trade-count pacing and cooldown only.
+Daily-loss and consecutive-loss hard gates remain active and persist across
+restart; a UTC date change resets the daily budget, not the global loss streak.
+Weekly-loss, drawdown,
 protection, portfolio/capital, reconciliation, Arm, submission, and Emergency
 Stop boundaries remain in force. It never changes Live execution authority.
 

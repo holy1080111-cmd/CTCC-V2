@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from decimal import Decimal
-from typing import Callable
 
 from app.domain.analysis import (
     CausalReturnIntervalSnapshot,
@@ -71,19 +71,12 @@ def conformal_coverage_is_valid(
     observed = interval.empirical_coverage
     z_squared = _WILSON_Z * _WILSON_Z
     denominator = D("1") + z_squared / sample_size
-    center = (
-        observed + z_squared / (D("2") * sample_size)
-    ) / denominator
-    variance = (
-        observed * (D("1") - observed) / sample_size
-        + z_squared / (D("4") * sample_size * sample_size)
+    center = (observed + z_squared / (D("2") * sample_size)) / denominator
+    variance = observed * (D("1") - observed) / sample_size + z_squared / (
+        D("4") * sample_size * sample_size
     )
     half_width = _WILSON_Z * variance.sqrt() / denominator
-    return (
-        center - half_width
-        <= interval.confidence_level
-        <= center + half_width
-    )
+    return center - half_width <= interval.confidence_level <= center + half_width
 
 
 def _component_validation(
@@ -104,9 +97,9 @@ def _component_validation(
     if not intervals:
         return "auxiliary", 0, None
     sample_size = min(item.coverage_sample_size for item in intervals)
-    mean_coverage = sum(
-        (item.empirical_coverage for item in intervals), D("0")
-    ) / D(len(intervals))
+    mean_coverage = sum((item.empirical_coverage for item in intervals), D("0")) / D(
+        len(intervals)
+    )
     if all(conformal_coverage_is_valid(item) for item in intervals):
         return "prequential", sample_size, mean_coverage
     return "auxiliary", sample_size, mean_coverage
@@ -138,8 +131,7 @@ def _structure_signal(view: TimeframeAnalysis) -> tuple[Decimal, Decimal]:
     trend_strength = (
         D("0.50")
         if adx is None
-        else D("0.50")
-        + D("0.50") * _clamp((adx - D("15")) / D("20"), D("0"), D("1"))
+        else D("0.50") + D("0.50") * _clamp((adx - D("15")) / D("20"), D("0"), D("1"))
     )
     reliability = _quality(view) * trend_strength * _volatility_reliability(view)
     return _clamp(signal, D("-1"), D("1")), reliability
@@ -152,20 +144,14 @@ def _momentum_signal(
     rsi = view.indicators.rsi14
     if histogram is None or rsi is None:
         return None
-    histogram_signal = (
-        D("1") if histogram > 0 else D("-1") if histogram < 0 else D("0")
-    )
+    histogram_signal = D("1") if histogram > 0 else D("-1") if histogram < 0 else D("0")
     rsi_signal = _clamp((rsi - D("50")) / D("22"), D("-1"), D("1"))
     signal = D("0.65") * histogram_signal + D("0.35") * rsi_signal
     volume = view.indicators.volume_ratio20
     volume_reliability = (
-        D("0.50")
-        if volume is None
-        else _clamp(volume, D("0.25"), D("1"))
+        D("0.50") if volume is None else _clamp(volume, D("0.25"), D("1"))
     )
-    reliability = (
-        _quality(view) * _volatility_reliability(view) * volume_reliability
-    )
+    reliability = _quality(view) * _volatility_reliability(view) * volume_reliability
     return _clamp(signal, D("-1"), D("1")), reliability
 
 
@@ -177,8 +163,7 @@ def _derivative_signal(
         return None
     signal = _clamp(
         D("0.80") * _clamp(trend.velocity_to_volatility, D("-1"), D("1"))
-        + D("0.20")
-        * _clamp(trend.acceleration_to_volatility, D("-1"), D("1")),
+        + D("0.20") * _clamp(trend.acceleration_to_volatility, D("-1"), D("1")),
         D("-1"),
         D("1"),
     )
@@ -201,8 +186,7 @@ def _state_signal(
         return None
     signal = _clamp(
         D("0.80") * _clamp(state.velocity_z / D("3"), D("-1"), D("1"))
-        + D("0.20")
-        * _clamp(state.acceleration_z / D("3"), D("-1"), D("1")),
+        + D("0.20") * _clamp(state.acceleration_z / D("3"), D("-1"), D("1")),
         D("-1"),
         D("1"),
     )
@@ -265,8 +249,8 @@ def _aggregate_component(
         effective_weight += weight
     signal = D("0") if effective_weight == 0 else numerator / effective_weight
     reliability = _clamp(effective_weight, D("0"), D("1"))
-    validation_level, validation_sample_size, validation_metric = (
-        _component_validation(code, views)
+    validation_level, validation_sample_size, validation_metric = _component_validation(
+        code, views
     )
     return MathematicalCoreComponent(
         code=code,
@@ -284,7 +268,7 @@ def _fuse_components(
     *,
     weights: dict[str, Decimal],
     auxiliary: bool,
-    coverage_scale: Decimal = D("1"),
+    coverage_scale: Decimal = D("1"),  # noqa: B008 - D constructs immutable exact Decimal values.
 ) -> tuple[Decimal, Decimal, Decimal]:
     selected = [
         component
@@ -297,27 +281,25 @@ def _fuse_components(
         )
     ]
     effective_weights = [
-        weights[component.code] * component.reliability
-        for component in selected
+        weights[component.code] * component.reliability for component in selected
     ]
     denominator = sum(effective_weights, D("0"))
     if denominator == 0:
         return D("0"), D("0"), D("0")
-    directional_score = sum(
-        (
-            weight * component.signal
-            for weight, component in zip(
-                effective_weights, selected, strict=True
-            )
-        ),
-        D("0"),
-    ) / denominator
+    directional_score = (
+        sum(
+            (
+                weight * component.signal
+                for weight, component in zip(effective_weights, selected, strict=True)
+            ),
+            D("0"),
+        )
+        / denominator
+    )
     disagreement = sum(
         (
             weight * abs(component.signal - directional_score)
-            for weight, component in zip(
-                effective_weights, selected, strict=True
-            )
+            for weight, component in zip(effective_weights, selected, strict=True)
         ),
         D("0"),
     ) / (D("2") * denominator)
@@ -385,10 +367,7 @@ def mathematical_core_snapshot(
     )
     instability = _instability(views)
     confidence = _clamp(
-        coverage
-        * consensus
-        * abs(directional_score)
-        * (D("1") - instability),
+        coverage * consensus * abs(directional_score) * (D("1") - instability),
         D("0"),
         D("1"),
     )

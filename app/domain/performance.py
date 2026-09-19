@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Literal
 
@@ -36,7 +36,7 @@ class DemoEquityPoint(BaseModel):
     performance_available_equity: Decimal | None = None
     equity_basis: str | None = None
     equity_currency: str | None = None
-    unrealized_pnl: Decimal = Decimal("0")
+    unrealized_pnl: Decimal = Decimal(0)
     position_count: int = 0
     pending_order_count: int = 0
     algo_order_count: int = 0
@@ -53,9 +53,9 @@ class DemoOrderPerformanceSample(BaseModel):
     requested_price: Decimal | None = None
     average_fill_price: Decimal | None = None
     reduce_only: bool = False
-    fee: Decimal = Decimal("0")
-    rebate: Decimal = Decimal("0")
-    funding_fee: Decimal = Decimal("0")
+    fee: Decimal = Decimal(0)
+    rebate: Decimal = Decimal(0)
+    funding_fee: Decimal = Decimal(0)
     realized_pnl: Decimal | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
@@ -88,9 +88,9 @@ class DemoStrategyPerformance(BaseModel):
     losses: int = 0
     breakeven: int = 0
     win_rate: Decimal | None = None
-    gross_profit: Decimal = Decimal("0")
-    gross_loss: Decimal = Decimal("0")
-    net_after_costs: Decimal = Decimal("0")
+    gross_profit: Decimal = Decimal(0)
+    gross_loss: Decimal = Decimal(0)
+    net_after_costs: Decimal = Decimal(0)
     average_adverse_slippage_bps: Decimal | None = None
     review_recommended: bool = False
     review_reasons: list[str] = Field(default_factory=list)
@@ -124,13 +124,13 @@ class DemoPerformanceSummary(BaseModel):
     losses: int = 0
     breakeven: int = 0
     win_rate: Decimal | None = None
-    gross_profit: Decimal = Decimal("0")
-    gross_loss: Decimal = Decimal("0")
-    realized_pnl: Decimal = Decimal("0")
-    fees: Decimal = Decimal("0")
-    rebates: Decimal = Decimal("0")
-    funding_fees: Decimal = Decimal("0")
-    net_after_costs: Decimal = Decimal("0")
+    gross_profit: Decimal = Decimal(0)
+    gross_loss: Decimal = Decimal(0)
+    realized_pnl: Decimal = Decimal(0)
+    fees: Decimal = Decimal(0)
+    rebates: Decimal = Decimal(0)
+    funding_fees: Decimal = Decimal(0)
+    net_after_costs: Decimal = Decimal(0)
     profit_factor: Decimal | None = None
     average_win: Decimal | None = None
     average_loss: Decimal | None = None
@@ -138,17 +138,17 @@ class DemoPerformanceSummary(BaseModel):
     opening_equity: Decimal | None = None
     closing_equity: Decimal | None = None
     equity_change: Decimal | None = None
-    max_drawdown_pct: Decimal = Decimal("0")
+    max_drawdown_pct: Decimal = Decimal(0)
     account_opening_equity: Decimal | None = None
     account_closing_equity: Decimal | None = None
     account_equity_change: Decimal | None = None
-    account_max_drawdown_pct: Decimal = Decimal("0")
+    account_max_drawdown_pct: Decimal = Decimal(0)
     slippage_sample_count: int = 0
     average_adverse_slippage_bps: Decimal | None = None
     max_adverse_slippage_bps: Decimal | None = None
     strategy_stats: list[DemoStrategyPerformance] = Field(default_factory=list)
     alerts: list[DemoPerformanceAlert] = Field(default_factory=list)
-    generated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class DemoDailyPerformanceReport(BaseModel):
@@ -161,11 +161,11 @@ class DemoDailyPerformanceReport(BaseModel):
     opening_equity: Decimal | None = None
     closing_equity: Decimal | None = None
     net_equity_change: Decimal | None = None
-    realized_pnl: Decimal = Decimal("0")
-    fees: Decimal = Decimal("0")
-    rebates: Decimal = Decimal("0")
-    funding_fees: Decimal = Decimal("0")
-    net_after_costs: Decimal = Decimal("0")
+    realized_pnl: Decimal = Decimal(0)
+    fees: Decimal = Decimal(0)
+    rebates: Decimal = Decimal(0)
+    funding_fees: Decimal = Decimal(0)
+    net_after_costs: Decimal = Decimal(0)
     order_count: int = 0
     filled_order_count: int = 0
     realized_trade_count: int = 0
@@ -178,14 +178,14 @@ class DemoDailyPerformanceReport(BaseModel):
     profit_factor: Decimal | None = None
     average_adverse_slippage_bps: Decimal | None = None
     max_adverse_slippage_bps: Decimal | None = None
-    max_drawdown_pct: Decimal = Decimal("0")
+    max_drawdown_pct: Decimal = Decimal(0)
     account_opening_equity: Decimal | None = None
     account_closing_equity: Decimal | None = None
     account_equity_change: Decimal | None = None
-    account_max_drawdown_pct: Decimal = Decimal("0")
+    account_max_drawdown_pct: Decimal = Decimal(0)
     strategy_stats: list[DemoStrategyPerformance] = Field(default_factory=list)
     alerts: list[DemoPerformanceAlert] = Field(default_factory=list)
-    generated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class DemoReliabilityValidation(BaseModel):
@@ -201,7 +201,7 @@ class DemoReliabilityValidation(BaseModel):
     profit_factor: Decimal | None = None
     minimum_profit_factor: Decimal
     max_drawdown_pct: Decimal
-    account_max_drawdown_pct: Decimal = Decimal("0")
+    account_max_drawdown_pct: Decimal = Decimal(0)
     maximum_drawdown_pct: Decimal
     equity_basis: str | None = None
     performance_snapshot_count: int = 0
@@ -210,4 +210,4 @@ class DemoReliabilityValidation(BaseModel):
     reliability_ready: bool
     blockers: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
-    generated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))

@@ -31,7 +31,7 @@ class MathematicalConfirmation(BaseModel):
     instability: Decimal = Field(ge=0, le=1)
     component_codes: list[str] = Field(default_factory=list)
     auxiliary_bonus: int = Field(default=0, ge=0, le=5)
-    auxiliary_directional_support: Decimal = Field(default=Decimal("0"), ge=-1, le=1)
+    auxiliary_directional_support: Decimal = Field(default=Decimal(0), ge=-1, le=1)
     auxiliary_component_codes: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
@@ -152,7 +152,7 @@ class TradeCandidate(BaseModel):
     protection_model: Literal["atr", "structure"] = "atr"
     structural_protection: StructuralProtectionGeometry | None = None
     estimated_round_trip_cost_pct: Decimal = Field(
-        default=Decimal("0"), ge=0, le=Decimal("0.20")
+        default=Decimal(0), ge=0, le=Decimal("0.20")
     )
     gross_risk_reward: Decimal | None = Field(default=None, gt=0)
     net_risk_reward: Decimal | None = Field(default=None, gt=0)

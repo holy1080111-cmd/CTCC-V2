@@ -36,7 +36,9 @@ def test_live_account_config_extracts_capabilities_without_retaining_ip() -> Non
     assert "203.0.113.10" not in config.model_dump_json()
 
 
-def test_live_account_config_preserves_unknown_permissions_for_fail_closed_gates() -> None:
+def test_live_account_config_preserves_unknown_permissions_for_fail_closed_gates() -> (
+    None
+):
     config = parse_live_account_config(
         {
             "uid": "sub-42",
@@ -85,7 +87,7 @@ def test_live_position_uses_exchange_position_id() -> None:
 
     assert position.position_id == "1752810569801498626"
     assert position.position_key == position.position_id
-    assert position.size == Decimal("-2")
+    assert position.size == Decimal(-2)
     assert position.instrument_id == "BTC-USDT-SWAP"
 
 
@@ -164,11 +166,11 @@ def test_live_read_parsers_keep_exchange_identifiers_and_numeric_precision() -> 
     assert algo.instrument_type == "SWAP"
     assert algo.margin_mode == "cross"
     assert algo.reduce_only is True
-    assert algo.actual_size == Decimal("0")
+    assert algo.actual_size == Decimal(0)
     assert algo.take_profit_trigger_price_type == "mark"
-    assert algo.take_profit_order_price == Decimal("-1")
-    assert algo.stop_loss_trigger_price == Decimal("62000")
+    assert algo.take_profit_order_price == Decimal(-1)
+    assert algo.stop_loss_trigger_price == Decimal(62000)
     assert algo.stop_loss_trigger_price_type == "mark"
-    assert algo.stop_loss_order_price == Decimal("-1")
+    assert algo.stop_loss_order_price == Decimal(-1)
     assert algo.failure_code is None
     assert algo.trigger_time is None

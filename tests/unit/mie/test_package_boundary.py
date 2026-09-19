@@ -37,8 +37,7 @@ FORBIDDEN_IMPORT_PREFIXES = (
     "app.risk",
 )
 FORBIDDEN_RELATIVE_ROOTS = {
-    prefix.removeprefix("app.").split(".", 1)[0]
-    for prefix in FORBIDDEN_IMPORT_PREFIXES
+    prefix.removeprefix("app.").split(".", 1)[0] for prefix in FORBIDDEN_IMPORT_PREFIXES
 }
 
 
@@ -50,8 +49,7 @@ def imported_names(node: ast.AST) -> tuple[str, ...]:
 
     module = node.module or ""
     names = ([module] if module else []) + [
-        f"{module}.{alias.name}" if module else alias.name
-        for alias in node.names
+        f"{module}.{alias.name}" if module else alias.name for alias in node.names
     ]
     if node.level:
         names.extend(f"relative:{name}" for name in tuple(names))
@@ -61,14 +59,10 @@ def imported_names(node: ast.AST) -> tuple[str, ...]:
 def test_mie_has_no_execution_side_imports() -> None:
     violations: list[str] = []
     for path in sorted(MIE_ROOT.rglob("*.py")):
-        tree = ast.parse(
-            path.read_text(encoding="utf-8-sig"), filename=str(path)
-        )
+        tree = ast.parse(path.read_text(encoding="utf-8-sig"), filename=str(path))
         for node in ast.walk(tree):
             for name in imported_names(node):
-                relative_root = name.removeprefix("relative:").split(
-                    ".", 1
-                )[0]
+                relative_root = name.removeprefix("relative:").split(".", 1)[0]
                 if name.startswith(FORBIDDEN_IMPORT_PREFIXES) or (
                     name.startswith("relative:")
                     and relative_root in FORBIDDEN_RELATIVE_ROOTS
@@ -85,9 +79,7 @@ def test_mie_has_no_external_runtime_consumers() -> None:
     for path in sorted(APP_ROOT.rglob("*.py")):
         if path.is_relative_to(MIE_ROOT):
             continue
-        tree = ast.parse(
-            path.read_text(encoding="utf-8-sig"), filename=str(path)
-        )
+        tree = ast.parse(path.read_text(encoding="utf-8-sig"), filename=str(path))
         for node in ast.walk(tree):
             for name in imported_names(node):
                 if name in {"app.mie", "relative:mie"} or name.startswith(

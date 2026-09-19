@@ -1,10 +1,11 @@
 """Offline Demo account receipts, not a trusted collector or portfolio snapshot.
 
 Only supplied bytes are parsed. No transport, credentials, settings, wall clock,
-database or execution imports exist. OKX primary documentation checked 2026-09-12:
-https://app.okx.com/docs-v5/en/ and https://app.okx.com/docs-v5/trick_en/#pagination.
-Current account queries are unfiltered; fills/order archive queries explicitly
-cover SWAP only. An empty terminal page proves only the supplied query chain,
+database or execution imports exist. OKX primary documentation checked 2026-09-19:
+https://www.okx.com/docs-v5/en/ and https://www.okx.com/docs-v5/trick_en/#pagination.
+Current exposure queries are unfiltered; fills/order history and instrument
+queries cover SWAP only, and leverage queries pin an explicit instrument set.
+An empty terminal page proves only the supplied query chain,
 not exchange retention, ingestion completeness, atomicity or account-wide risk.
 Source update/event times are preserved, never replaced by receipt time.
 Limits below are uncalibrated engineering budgets, not trading-risk policy.
@@ -31,6 +32,16 @@ from app.trade_qualification.models import QualificationModel
 MAX_RESPONSE_BYTES = 262144
 MAX_PACKET_BYTES = 16777216
 MAX_TOTAL_PAGES = 256
+ALGO_ORDER_TYPES = (
+    "conditional",
+    "oco",
+    "trigger",
+    "move_order_stop",
+    "iceberg",
+    "twap",
+    "chase",
+    "smart_iceberg",
+)
 STREAMS = (
     "config_before",
     "account_position_risk",
@@ -41,9 +52,19 @@ STREAMS = (
     "algo_oco",
     "algo_trigger",
     "algo_move_order_stop",
+    "algo_iceberg",
+    "algo_twap",
+    "algo_chase",
+    "algo_smart_iceberg",
+    "fills_recent",
     "fills_history",
+    "bills_recent",
     "bills_archive",
+    "orders_history_recent",
     "orders_history_archive",
+    "account_instruments",
+    "leverage_cross",
+    "leverage_isolated",
     "config_after",
 )
 Stream = Literal[
@@ -56,9 +77,19 @@ Stream = Literal[
     "algo_oco",
     "algo_trigger",
     "algo_move_order_stop",
+    "algo_iceberg",
+    "algo_twap",
+    "algo_chase",
+    "algo_smart_iceberg",
+    "fills_recent",
     "fills_history",
+    "bills_recent",
     "bills_archive",
+    "orders_history_recent",
     "orders_history_archive",
+    "account_instruments",
+    "leverage_cross",
+    "leverage_isolated",
     "config_after",
 ]
 Digest = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
@@ -76,21 +107,33 @@ _ENDPOINTS = {
     "balance": "/api/v5/account/balance",
     "positions": "/api/v5/account/positions",
     "orders_pending": "/api/v5/trade/orders-pending",
+    "fills_recent": "/api/v5/trade/fills",
     "fills_history": "/api/v5/trade/fills-history",
+    "bills_recent": "/api/v5/account/bills",
     "bills_archive": "/api/v5/account/bills-archive",
+    "orders_history_recent": "/api/v5/trade/orders-history",
     "orders_history_archive": "/api/v5/trade/orders-history-archive",
+    "account_instruments": "/api/v5/account/instruments",
+    "leverage_cross": "/api/v5/account/leverage-info",
+    "leverage_isolated": "/api/v5/account/leverage-info",
     **{
-        f"algo_{kind}": "/api/v5/trade/orders-algo-pending"
-        for kind in ("conditional", "oco", "trigger", "move_order_stop")
+        f"algo_{kind}": "/api/v5/trade/orders-algo-pending" for kind in ALGO_ORDER_TYPES
     },
 }
 _CURSOR_FIELDS = {
     "orders_pending": "ordId",
+    "orders_history_recent": "ordId",
     "orders_history_archive": "ordId",
+    "fills_recent": "billId",
     "fills_history": "billId",
+    "bills_recent": "billId",
     "bills_archive": "billId",
     **{stream: "algoId" for stream in STREAMS if stream.startswith("algo_")},
 }
+_FILL_STREAMS = frozenset({"fills_recent", "fills_history"})
+_BILL_STREAMS = frozenset({"bills_recent", "bills_archive"})
+_ORDER_HISTORY_STREAMS = frozenset({"orders_history_recent", "orders_history_archive"})
+_HISTORY_STREAMS = _FILL_STREAMS | _BILL_STREAMS | _ORDER_HISTORY_STREAMS
 _BASE_GAPS = (
     "advanced_product_scope_unverified",
     "cross_source_atomicity_unverified",
@@ -174,11 +217,12 @@ class DemoAccountCapturePlan(_Record):
     expected_main_uid: Identifier
     session_binding_id: Name
     settlement_currency: Currency
+    leverage_instrument_ids: tuple[Name, ...] = Field(min_length=1, max_length=20)
     history_start: datetime
     history_end: datetime
     page_size: int = Field(default=100, ge=1, le=100)
     max_pages_per_stream: int = Field(default=16, ge=1, le=64)
-    max_total_pages: int = Field(default=128, ge=13, le=MAX_TOTAL_PAGES)
+    max_total_pages: int = Field(default=128, ge=len(STREAMS), le=MAX_TOTAL_PAGES)
     # Top-level data rows; nested inventory/JSON nodes have independent bounds.
     max_total_rows: int = Field(default=2048, ge=1, le=8192)
     max_response_bytes: int = Field(default=65536, ge=256, le=MAX_RESPONSE_BYTES)
@@ -186,14 +230,22 @@ class DemoAccountCapturePlan(_Record):
     max_request_seconds: int = Field(default=5, ge=1, le=30)
     max_batch_seconds: int = Field(default=120, ge=1, le=3600)
     environment: Literal["demo"] = "demo"
-    capture_scope: Literal["all_current_and_swap_history"] = (
-        "all_current_and_swap_history"
+    # A new mandatory query inventory must not silently reuse an old plan pin.
+    capture_scope: Literal["all_current_algos_v2_and_swap_history"] = (
+        "all_current_algos_v2_and_swap_history"
     )
 
     _times = field_validator("created_at", "history_start", "history_end")(_utc)
 
     @model_validator(mode="after")
     def windows(self):
+        if len(set(self.leverage_instrument_ids)) != len(
+            self.leverage_instrument_ids
+        ) or any(
+            re.fullmatch(r"[A-Z0-9]+-[A-Z0-9]+-SWAP", item) is None
+            for item in self.leverage_instrument_ids
+        ):
+            _fail("plan_leverage_scope_invalid")
         if not _EPOCH < self.history_start <= self.history_end <= self.created_at:
             _fail("plan_history_window_invalid")
         if any(
@@ -210,7 +262,7 @@ class AccountRequest(_Record):
     endpoint: Annotated[str, Field(max_length=96)]
     parameters: tuple[
         tuple[
-            Annotated[str, Field(max_length=20)], Annotated[str, Field(max_length=40)]
+            Annotated[str, Field(max_length=20)], Annotated[str, Field(max_length=1940)]
         ],
         ...,
     ] = Field(max_length=5)
@@ -232,7 +284,7 @@ class AccountSourceTime(_Record):
 
 
 class AccountRow(_Record):
-    row_id: Annotated[str, Field(min_length=1, max_length=96)]
+    row_id: Annotated[str, Field(min_length=1, max_length=160)]
     instrument_id: Annotated[str, Field(min_length=1, max_length=96)] | None
     canonical_json: RawText
     numbers: tuple[AccountNumber, ...] = Field(max_length=4096)
@@ -274,13 +326,13 @@ class DemoAccountObservation(_Record):
 
 
 class DemoAccountPacket(_Record):
-    schema_version: Literal["ctcc.demo_account_capture.v1"] = (
-        "ctcc.demo_account_capture.v1"
+    schema_version: Literal["ctcc.demo_account_capture.v2"] = (
+        "ctcc.demo_account_capture.v2"
     )
     plan: DemoAccountCapturePlan
     plan_sha256: Digest
     observations: tuple[DemoAccountObservation, ...] = Field(
-        min_length=13, max_length=256
+        min_length=len(STREAMS), max_length=256
     )
     barrier_completed_at: datetime
     completed_at: datetime
@@ -461,11 +513,14 @@ def account_request(
             parameters["after"] = after
     if stream.startswith("algo_"):
         parameters["ordType"] = stream.removeprefix("algo_")
-    if stream in {"fills_history", "orders_history_archive"}:
+    if stream in _FILL_STREAMS | _ORDER_HISTORY_STREAMS | {"account_instruments"}:
         parameters["instType"] = "SWAP"
-    if stream in {"fills_history", "bills_archive", "orders_history_archive"}:
+    if stream in _HISTORY_STREAMS:
         parameters["begin"] = _milliseconds(plan.history_start)
         parameters["end"] = _milliseconds(plan.history_end)
+    if stream.startswith("leverage_"):
+        parameters["instId"] = ",".join(plan.leverage_instrument_ids)
+        parameters["mgnMode"] = stream.removeprefix("leverage_")
     return AccountRequest(
         stream=stream,
         endpoint=_ENDPOINTS[stream],
@@ -526,6 +581,12 @@ _NUMBERS = frozenset(
         "liab",
         "borrowFroz",
         "ordFroz",
+        "ctVal",
+        "ctMult",
+        "lotSz",
+        "minSz",
+        "maxLmtSz",
+        "tickSz",
     }
 )
 _CLOCKS = {
@@ -692,14 +753,33 @@ def _row_record(row, stream, plan, received):
                     _required_text(item, "instId")
         required_numbers = {"totalEq", "availEq"} if stream == "balance" else {"adjEq"}
         required_clocks = {"uTime"} if stream == "balance" else {"ts"}
+    elif stream == "account_instruments":
+        instrument = _required_text(row, "instId")
+        row_id = instrument
+        if _required_text(row, "instType") != "SWAP":
+            _fail("history_instrument_scope_mismatch")
+        for field in ("ctType", "settleCcy", "ctValCcy", "state"):
+            _required_text(row, field)
+        required_numbers = {"ctVal", "ctMult", "lotSz", "minSz", "maxLmtSz", "lever"}
+    elif stream.startswith("leverage_"):
+        instrument = _required_text(row, "instId")
+        if instrument not in plan.leverage_instrument_ids:
+            _fail("leverage_instrument_scope_mismatch")
+        if _required_text(row, "mgnMode") != stream.removeprefix("leverage_"):
+            _fail("margin_mode_invalid")
+        position_side = _required_text(row, "posSide")
+        if position_side not in {"net", "long", "short"}:
+            _fail("position_side_invalid")
+        row_id = instrument + ":" + position_side
+        required_numbers = {"lever"}
     else:
         row_id = _required_text(
             row, _CURSOR_FIELDS.get(stream, "posId"), identifier=True
         )
-        if stream != "bills_archive":
+        if stream not in _BILL_STREAMS:
             instrument = _required_text(row, "instId")
             kind = _required_text(row, "instType")
-            if stream in {"fills_history", "orders_history_archive"} and kind != "SWAP":
+            if stream in _FILL_STREAMS | _ORDER_HISTORY_STREAMS and kind != "SWAP":
                 _fail("history_instrument_scope_mismatch")
             if _required_text(row, "posSide") not in {"net", "long", "short"}:
                 _fail("position_side_invalid")
@@ -712,7 +792,7 @@ def _row_record(row, stream, plan, received):
                 _fail("margin_mode_invalid")
             required_numbers = {"pos", "margin", "avgPx", "markPx", "notionalUsd"}
             required_clocks = {"cTime", "uTime"}
-        elif stream in {"orders_pending", "orders_history_archive"}:
+        elif stream in {"orders_pending"} | _ORDER_HISTORY_STREAMS:
             if _required_text(row, "side") not in {"buy", "sell"}:
                 _fail("order_side_invalid")
             state = _required_text(row, "state")
@@ -732,15 +812,18 @@ def _row_record(row, stream, plan, received):
                 _fail("order_side_invalid")
             if _required_text(row, "state") not in {"live", "pause"}:
                 _fail("algo_state_invalid")
-            required_numbers = {
-                "sz",
-                "slTriggerPx",
-                "slOrdPx",
-                "tpTriggerPx",
-                "tpOrdPx",
-            }
+            required_numbers = {"sz"}
+            if stream in {
+                "algo_conditional",
+                "algo_oco",
+                "algo_trigger",
+                "algo_move_order_stop",
+            }:
+                required_numbers.update(
+                    {"slTriggerPx", "slOrdPx", "tpTriggerPx", "tpOrdPx"}
+                )
             required_clocks = {"cTime"}
-        elif stream == "fills_history":
+        elif stream in _FILL_STREAMS:
             _required_text(row, "ordId", identifier=True)
             _required_text(row, "tradeId", identifier=True)
             _required_text(row, "feeCcy")
@@ -771,7 +854,7 @@ def _row_record(row, stream, plan, received):
                     semantics = (
                         "source_update"
                         if key == "ts"
-                        and stream in {"account_position_risk", "bills_archive"}
+                        and stream in {"account_position_risk"} | _BILL_STREAMS
                         else _CLOCKS[key]
                     )
                     times.append(_time_record(path, part, semantics))
@@ -787,7 +870,7 @@ def _row_record(row, stream, plan, received):
     for field in sorted(required_clocks - set(row)):
         semantics = (
             "source_update"
-            if field == "ts" and stream in {"account_position_risk", "bills_archive"}
+            if field == "ts" and stream in {"account_position_risk"} | _BILL_STREAMS
             else _CLOCKS[field]
         )
         times.append(_time_record(field, None, semantics))
@@ -812,7 +895,7 @@ def _row_record(row, stream, plan, received):
         ):
             _fail("source_lifecycle_reversed")
     if (
-        stream == "fills_history"
+        stream in _FILL_STREAMS
         and roots.get("fillTime") is not None
         and roots.get("ts") is not None
         and roots["fillTime"] > roots["ts"]
@@ -828,8 +911,8 @@ def _row_record(row, stream, plan, received):
         and amounts["accFillSz"] > amounts["sz"]
     ):
         _fail("filled_quantity_exceeds_order")
-    if stream in {"fills_history", "bills_archive", "orders_history_archive"}:
-        key = "cTime" if stream == "orders_history_archive" else "ts"
+    if stream in _HISTORY_STREAMS:
+        key = "cTime" if stream in _ORDER_HISTORY_STREAMS else "ts"
         if (
             roots.get(key) is not None
             and not plan.history_start <= roots[key] <= plan.history_end
@@ -985,7 +1068,7 @@ def verify_demo_account_records(
     barrier = _utc(barrier_completed_at)
     if (
         type(observations) is not tuple
-        or not 13 <= len(observations) <= plan.max_total_pages
+        or not len(STREAMS) <= len(observations) <= plan.max_total_pages
     ):
         _fail("inventory_page_count_invalid")
     _guard(observations)
@@ -1069,7 +1152,7 @@ def verify_demo_account_records(
     ):
         gaps.add("source_clock_coverage_incomplete")
     fields = {
-        "schema_version": "ctcc.demo_account_capture.v1",
+        "schema_version": "ctcc.demo_account_capture.v2",
         "plan": plan,
         "plan_sha256": expected_plan_sha256,
         "observations": verified,

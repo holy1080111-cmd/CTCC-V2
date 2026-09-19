@@ -240,8 +240,7 @@ class Gate3ProspectivePreregistration(Gate3Contract):
     @model_validator(mode="after")
     def validate_preregistration(self) -> Gate3ProspectivePreregistration:
         if any(
-            item.baseline_id == self.candidate.candidate_id
-            for item in self.baselines
+            item.baseline_id == self.candidate.candidate_id for item in self.baselines
         ):
             raise ValueError("candidate id must differ from every baseline id")
         if self.training_dataset.frozen_at > self.created_at:

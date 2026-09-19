@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
@@ -30,11 +30,7 @@ def patch_successful_sources(
     monkeypatch.setattr(
         okx_demo_service,
         "balance",
-        AsyncMock(
-            return_value=(
-                OkxDemoBalanceSnapshot.model_construct()
-            )
-        ),
+        AsyncMock(return_value=(OkxDemoBalanceSnapshot.model_construct())),
     )
 
     monkeypatch.setattr(
@@ -52,31 +48,19 @@ def patch_successful_sources(
     monkeypatch.setattr(
         safe_demo_automation,
         "status",
-        AsyncMock(
-            return_value=(
-                DemoAutomationStatus.model_construct()
-            )
-        ),
+        AsyncMock(return_value=(DemoAutomationStatus.model_construct())),
     )
 
     monkeypatch.setattr(
         demo_performance,
         "summary",
-        AsyncMock(
-            return_value=(
-                DemoPerformanceSummary.model_construct()
-            )
-        ),
+        AsyncMock(return_value=(DemoPerformanceSummary.model_construct())),
     )
 
     monkeypatch.setattr(
         demo_performance,
         "validation",
-        AsyncMock(
-            return_value=(
-                DemoReliabilityValidation.model_construct()
-            )
-        ),
+        AsyncMock(return_value=(DemoReliabilityValidation.model_construct())),
     )
 
     monkeypatch.setattr(
@@ -92,14 +76,10 @@ async def test_snapshot_contract_version_and_sources(
 ) -> None:
     patch_successful_sources(monkeypatch)
 
-    snapshot = await (
-        snapshot_module.get_dashboard_snapshot(None)
-    )
+    snapshot = await snapshot_module.get_dashboard_snapshot(None)
 
     assert snapshot.contract_version == "1.0"
-    assert set(snapshot.source_status) == set(
-        DASHBOARD_SOURCE_NAMES
-    )
+    assert set(snapshot.source_status) == set(DASHBOARD_SOURCE_NAMES)
     assert snapshot.complete is True
 
     for status in snapshot.source_status.values():
@@ -121,9 +101,7 @@ async def test_snapshot_timeout_is_isolated(
     async def slow_balance():
         await asyncio.sleep(0.05)
 
-        return (
-            OkxDemoBalanceSnapshot.model_construct()
-        )
+        return OkxDemoBalanceSnapshot.model_construct()
 
     monkeypatch.setattr(
         okx_demo_service,
@@ -132,34 +110,23 @@ async def test_snapshot_timeout_is_isolated(
     )
 
     monkeypatch.setitem(
-        snapshot_module.
-        DASHBOARD_SOURCE_TIMEOUT_SECONDS,
+        snapshot_module.DASHBOARD_SOURCE_TIMEOUT_SECONDS,
         "balance",
         0.01,
     )
 
-    snapshot = await (
-        snapshot_module.get_dashboard_snapshot(None)
-    )
+    snapshot = await snapshot_module.get_dashboard_snapshot(None)
 
-    balance_status = (
-        snapshot.source_status["balance"]
-    )
+    balance_status = snapshot.source_status["balance"]
 
     assert snapshot.complete is False
     assert snapshot.balance is None
 
     assert balance_status.ok is False
     assert balance_status.timed_out is True
-    assert (
-        balance_status.error_code
-        == "source_timeout"
-    )
+    assert balance_status.error_code == "source_timeout"
 
-    assert (
-        snapshot.source_status["positions"].ok
-        is True
-    )
+    assert snapshot.source_status["positions"].ok is True
 
     serialized = snapshot.model_dump_json()
 
@@ -167,9 +134,8 @@ async def test_snapshot_timeout_is_isolated(
     assert "Traceback" not in serialized
 
 
-def test_snapshot_contract_rejects_complete_mismatch(
-) -> None:
-    now = datetime.now(timezone.utc)
+def test_snapshot_contract_rejects_complete_mismatch() -> None:
+    now = datetime.now(UTC)
 
     statuses = {
         name: DashboardSourceStatus(
@@ -201,13 +167,7 @@ def test_snapshot_contract_rejects_complete_mismatch(
             complete=True,
             source_status=statuses,
             balance=None,
-            automation=(
-                DemoAutomationStatus.model_construct()
-            ),
-            performance=(
-                DemoPerformanceSummary.model_construct()
-            ),
-            validation=(
-                DemoReliabilityValidation.model_construct()
-            ),
+            automation=(DemoAutomationStatus.model_construct()),
+            performance=(DemoPerformanceSummary.model_construct()),
+            validation=(DemoReliabilityValidation.model_construct()),
         )

@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
-from uuid import UUID
 from typing import Any
+from uuid import UUID
 
 from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -36,7 +36,7 @@ def _canonical(value: Any) -> Any:
             return "0"
         return format(value.normalize(), "f")
     if isinstance(value, datetime):
-        return value.astimezone(timezone.utc).isoformat()
+        return value.astimezone(UTC).isoformat()
     if isinstance(value, UUID):
         return str(value)
     if isinstance(value, dict):
@@ -101,8 +101,8 @@ class PersistenceRepository:
         details: dict[str, Any] | None = None,
     ) -> str:
         checksum = state_checksum(state)
-        now = datetime.now(timezone.utc)
-        async with self.session_factory() as session:
+        now = datetime.now(UTC)
+        async with self.session_factory() as session:  # noqa: SIM117 - Keep database session and transaction lifetimes explicit at the durable boundary.
             async with session.begin():
                 account_values = {
                     "id": 1,
@@ -124,7 +124,11 @@ class PersistenceRepository:
                     account_insert.on_conflict_do_update(
                         index_elements=[PaperAccountState.id],
                         set_={
-                            **{key: value for key, value in account_values.items() if key != "id"},
+                            **{
+                                key: value
+                                for key, value in account_values.items()
+                                if key != "id"
+                            },
                             "revision": PaperAccountState.revision + 1,
                         },
                     )
@@ -135,14 +139,18 @@ class PersistenceRepository:
 
                 if position_ids:
                     await session.execute(
-                        delete(PaperPositionState).where(PaperPositionState.id.not_in(position_ids))
+                        delete(PaperPositionState).where(
+                            PaperPositionState.id.not_in(position_ids)
+                        )
                     )
                 else:
                     await session.execute(delete(PaperPositionState))
 
                 if order_ids:
                     await session.execute(
-                        delete(PaperOrderState).where(PaperOrderState.id.not_in(order_ids))
+                        delete(PaperOrderState).where(
+                            PaperOrderState.id.not_in(order_ids)
+                        )
                     )
                 else:
                     await session.execute(delete(PaperOrderState))
@@ -173,7 +181,11 @@ class PersistenceRepository:
                     await session.execute(
                         stmt.on_conflict_do_update(
                             index_elements=[PaperOrderState.id],
-                            set_={key: value for key, value in values.items() if key != "id"},
+                            set_={
+                                key: value
+                                for key, value in values.items()
+                                if key != "id"
+                            },
                         )
                     )
 
@@ -201,7 +213,11 @@ class PersistenceRepository:
                     await session.execute(
                         stmt.on_conflict_do_update(
                             index_elements=[PaperPositionState.id],
-                            set_={key: value for key, value in values.items() if key != "id"},
+                            set_={
+                                key: value
+                                for key, value in values.items()
+                                if key != "id"
+                            },
                         )
                     )
 
@@ -237,11 +253,17 @@ class PersistenceRepository:
                     "details": summary,
                     "persisted_at": now,
                 }
-                checkpoint_insert = pg_insert(RecoveryCheckpoint).values(**checkpoint_values)
+                checkpoint_insert = pg_insert(RecoveryCheckpoint).values(
+                    **checkpoint_values
+                )
                 await session.execute(
                     checkpoint_insert.on_conflict_do_update(
                         index_elements=[RecoveryCheckpoint.id],
-                        set_={key: value for key, value in checkpoint_values.items() if key != "id"},
+                        set_={
+                            key: value
+                            for key, value in checkpoint_values.items()
+                            if key != "id"
+                        },
                     )
                 )
         return checksum
@@ -252,10 +274,20 @@ class PersistenceRepository:
             if account is None:
                 return None
             orders = list(
-                (await session.scalars(select(PaperOrderState).order_by(PaperOrderState.created_at))).all()
+                (
+                    await session.scalars(
+                        select(PaperOrderState).order_by(PaperOrderState.created_at)
+                    )
+                ).all()
             )
             positions = list(
-                (await session.scalars(select(PaperPositionState).order_by(PaperPositionState.opened_at))).all()
+                (
+                    await session.scalars(
+                        select(PaperPositionState).order_by(
+                            PaperPositionState.opened_at
+                        )
+                    )
+                ).all()
             )
 
         return PaperStateView(
@@ -316,7 +348,9 @@ class PersistenceRepository:
             ],
         )
 
-    async def save_orchestrator_run(self, run: OrchestratorRunResult, *, history_limit: int) -> None:
+    async def save_orchestrator_run(
+        self, run: OrchestratorRunResult, *, history_limit: int
+    ) -> None:
         values = {
             "run_id": run.run_id,
             "trigger": run.trigger,
@@ -325,13 +359,17 @@ class PersistenceRepository:
             "started_at": run.started_at,
             "completed_at": run.completed_at,
         }
-        async with self.session_factory() as session:
+        async with self.session_factory() as session:  # noqa: SIM117 - Keep database session and transaction lifetimes explicit at the durable boundary.
             async with session.begin():
                 stmt = pg_insert(OrchestratorRunState).values(**values)
                 await session.execute(
                     stmt.on_conflict_do_update(
                         index_elements=[OrchestratorRunState.run_id],
-                        set_={key: value for key, value in values.items() if key != "run_id"},
+                        set_={
+                            key: value
+                            for key, value in values.items()
+                            if key != "run_id"
+                        },
                     )
                 )
                 keep_ids = list(
@@ -345,7 +383,9 @@ class PersistenceRepository:
                 )
                 if keep_ids:
                     await session.execute(
-                        delete(OrchestratorRunState).where(OrchestratorRunState.run_id.not_in(keep_ids))
+                        delete(OrchestratorRunState).where(
+                            OrchestratorRunState.run_id.not_in(keep_ids)
+                        )
                     )
 
     async def load_orchestrator_runs(self, limit: int) -> list[OrchestratorRunResult]:
@@ -363,9 +403,8 @@ class PersistenceRepository:
         return [OrchestratorRunResult.model_validate(row.payload) for row in rows]
 
     async def clear_orchestrator_runs(self) -> None:
-        async with self.session_factory() as session:
-            async with session.begin():
-                await session.execute(delete(OrchestratorRunState))
+        async with self.session_factory() as session, session.begin():
+            await session.execute(delete(OrchestratorRunState))
 
     async def save_fingerprint(
         self,
@@ -379,40 +418,39 @@ class PersistenceRepository:
             "expires_at": expires_at,
             "details": details or {},
         }
-        async with self.session_factory() as session:
-            async with session.begin():
-                stmt = pg_insert(OrchestratorFingerprintState).values(**values)
-                await session.execute(
-                    stmt.on_conflict_do_update(
-                        index_elements=[OrchestratorFingerprintState.fingerprint],
-                        set_={"expires_at": expires_at, "details": details or {}},
-                    )
+        async with self.session_factory() as session, session.begin():
+            stmt = pg_insert(OrchestratorFingerprintState).values(**values)
+            await session.execute(
+                stmt.on_conflict_do_update(
+                    index_elements=[OrchestratorFingerprintState.fingerprint],
+                    set_={"expires_at": expires_at, "details": details or {}},
                 )
+            )
 
     async def load_fingerprints(self, now: datetime) -> dict[str, datetime]:
-        async with self.session_factory() as session:
+        async with self.session_factory() as session:  # noqa: SIM117 - Keep database session and transaction lifetimes explicit at the durable boundary.
             async with session.begin():
                 await session.execute(
                     delete(OrchestratorFingerprintState).where(
                         OrchestratorFingerprintState.expires_at <= now
                     )
                 )
-                rows = list((await session.scalars(select(OrchestratorFingerprintState))).all())
+                rows = list(
+                    (await session.scalars(select(OrchestratorFingerprintState))).all()
+                )
         return {row.fingerprint: row.expires_at for row in rows}
 
     async def delete_expired_fingerprints(self, now: datetime) -> None:
-        async with self.session_factory() as session:
-            async with session.begin():
-                await session.execute(
-                    delete(OrchestratorFingerprintState).where(
-                        OrchestratorFingerprintState.expires_at <= now
-                    )
+        async with self.session_factory() as session, session.begin():
+            await session.execute(
+                delete(OrchestratorFingerprintState).where(
+                    OrchestratorFingerprintState.expires_at <= now
                 )
+            )
 
     async def clear_fingerprints(self) -> None:
-        async with self.session_factory() as session:
-            async with session.begin():
-                await session.execute(delete(OrchestratorFingerprintState))
+        async with self.session_factory() as session, session.begin():
+            await session.execute(delete(OrchestratorFingerprintState))
 
     async def record_dashboard_snapshot_audit(
         self,
@@ -426,50 +464,30 @@ class PersistenceRepository:
         timed_out_sources: list[str],
     ) -> None:
         if generated_at.tzinfo is None:
-            raise ValueError(
-                "dashboard_snapshot_generated_at_timezone_required"
-            )
+            raise ValueError("dashboard_snapshot_generated_at_timezone_required")
 
         payload = {
             "snapshot_id": str(snapshot_id),
             "contract_version": str(contract_version),
-            "generated_at": (
-                generated_at
-                .astimezone(timezone.utc)
-                .isoformat()
-            ),
+            "generated_at": (generated_at.astimezone(UTC).isoformat()),
             "duration_ms": max(0, int(duration_ms)),
             "complete": bool(complete),
-            "failed_sources": sorted(
-                {
-                    str(source)
-                    for source in failed_sources
-                }
-            ),
-            "timed_out_sources": sorted(
-                {
-                    str(source)
-                    for source in timed_out_sources
-                }
-            ),
+            "failed_sources": sorted({str(source) for source in failed_sources}),
+            "timed_out_sources": sorted({str(source) for source in timed_out_sources}),
         }
 
-        async with self.session_factory() as session:
-            async with session.begin():
-                session.add(
-                    SystemEvent(
-                        event_type="dashboard_snapshot_generated",
-                        aggregate_type="dashboard_snapshot",
-                        severity=(
-                            "info"
-                            if complete
-                            else "warning"
-                        ),
-                        payload=payload,
-                    )
+        async with self.session_factory() as session, session.begin():
+            session.add(
+                SystemEvent(
+                    event_type="dashboard_snapshot_generated",
+                    aggregate_type="dashboard_snapshot",
+                    severity=("info" if complete else "warning"),
+                    payload=payload,
                 )
+            )
+
     async def mark_recovered(self, checksum: str, details: dict[str, Any]) -> None:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         values = {
             "id": 1,
             "status": "recovered",
@@ -477,23 +495,22 @@ class PersistenceRepository:
             "details": details,
             "recovered_at": now,
         }
-        async with self.session_factory() as session:
-            async with session.begin():
-                stmt = pg_insert(RecoveryCheckpoint).values(**values)
-                await session.execute(
-                    stmt.on_conflict_do_update(
-                        index_elements=[RecoveryCheckpoint.id],
-                        set_={key: value for key, value in values.items() if key != "id"},
-                    )
+        async with self.session_factory() as session, session.begin():
+            stmt = pg_insert(RecoveryCheckpoint).values(**values)
+            await session.execute(
+                stmt.on_conflict_do_update(
+                    index_elements=[RecoveryCheckpoint.id],
+                    set_={key: value for key, value in values.items() if key != "id"},
                 )
-                session.add(
-                    SystemEvent(
-                        event_type="paper_state_recovered",
-                        aggregate_type="paper_state",
-                        severity="info",
-                        payload={"checksum": checksum, **details},
-                    )
+            )
+            session.add(
+                SystemEvent(
+                    event_type="paper_state_recovered",
+                    aggregate_type="paper_state",
+                    severity="info",
+                    payload={"checksum": checksum, **details},
                 )
+            )
 
     async def audit_entries(self, limit: int = 50) -> list[AuditEntryView]:
         async with self.session_factory() as session:
@@ -520,11 +537,15 @@ class PersistenceRepository:
         ]
 
     async def counts(self, now: datetime | None = None) -> dict[str, int]:
-        now = now or datetime.now(timezone.utc)
+        now = now or datetime.now(UTC)
         async with self.session_factory() as session:
             order_count = len((await session.scalars(select(PaperOrderState.id))).all())
-            position_count = len((await session.scalars(select(PaperPositionState.id))).all())
-            history_count = len((await session.scalars(select(OrchestratorRunState.run_id))).all())
+            position_count = len(
+                (await session.scalars(select(PaperPositionState.id))).all()
+            )
+            history_count = len(
+                (await session.scalars(select(OrchestratorRunState.run_id))).all()
+            )
             fingerprint_count = len(
                 (
                     await session.scalars(

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from decimal import Decimal, localcontext
-from typing import Sequence
+from itertools import pairwise
 
 D = Decimal
 EPSILON = D("1e-30")
@@ -24,9 +25,7 @@ def median(values: Sequence[Decimal]) -> Decimal:
 def rms(values: Sequence[Decimal]) -> Decimal:
     if not values:
         raise ValueError("RMS requires at least one value")
-    return (
-        sum((value * value for value in values), D("0")) / D(len(values))
-    ).sqrt()
+    return (sum((value * value for value in values), D("0")) / D(len(values))).sqrt()
 
 
 def log_prices(values: Sequence[Decimal]) -> list[Decimal]:
@@ -39,7 +38,4 @@ def log_prices(values: Sequence[Decimal]) -> list[Decimal]:
 
 def log_returns_from_prices(values: Sequence[Decimal]) -> list[Decimal]:
     logs = log_prices(values)
-    return [
-        current - previous
-        for previous, current in zip(logs[:-1], logs[1:], strict=True)
-    ]
+    return [current - previous for previous, current in pairwise(logs)]

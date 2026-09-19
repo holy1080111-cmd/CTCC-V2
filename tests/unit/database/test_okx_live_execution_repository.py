@@ -1,6 +1,6 @@
 from app.database.repositories.okx_live_execution import (
-    OkxLiveExecutionRepository,
     _EXECUTION_ADVISORY_LOCK_ID,
+    OkxLiveExecutionRepository,
 )
 
 

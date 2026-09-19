@@ -3,16 +3,17 @@
 Revision ID: 0005
 Revises: 0004
 """
-from typing import Sequence, Union
 
-from alembic import op
+from collections.abc import Sequence
+
 import sqlalchemy as sa
+from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision: str = "0005"
-down_revision: Union[str, None] = "0004"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = "0004"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
@@ -37,8 +38,15 @@ def upgrade() -> None:
         sa.Column("last_started_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("last_completed_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("last_error", sa.String(250), nullable=True),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-        sa.CheckConstraint("id = 1", name=op.f("ck_demo_automation_state_singleton_id")),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.func.now(),
+            nullable=False,
+        ),
+        sa.CheckConstraint(
+            "id = 1", name=op.f("ck_demo_automation_state_singleton_id")
+        ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_demo_automation_state")),
     )
 
@@ -52,17 +60,34 @@ def upgrade() -> None:
         sa.Column("completed_at", sa.DateTime(timezone=True), nullable=False),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_demo_automation_runs")),
     )
-    op.create_index(op.f("ix_demo_automation_runs_trigger"), "demo_automation_runs", ["trigger"])
-    op.create_index(op.f("ix_demo_automation_runs_started_at"), "demo_automation_runs", ["started_at"])
-    op.create_index(op.f("ix_demo_automation_runs_completed_at"), "demo_automation_runs", ["completed_at"])
+    op.create_index(
+        op.f("ix_demo_automation_runs_trigger"), "demo_automation_runs", ["trigger"]
+    )
+    op.create_index(
+        op.f("ix_demo_automation_runs_started_at"),
+        "demo_automation_runs",
+        ["started_at"],
+    )
+    op.create_index(
+        op.f("ix_demo_automation_runs_completed_at"),
+        "demo_automation_runs",
+        ["completed_at"],
+    )
 
     op.create_table(
         "demo_automation_fingerprints",
         sa.Column("fingerprint", sa.String(64), nullable=False),
         sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("details", postgresql.JSONB(), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-        sa.PrimaryKeyConstraint("fingerprint", name=op.f("pk_demo_automation_fingerprints")),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.func.now(),
+            nullable=False,
+        ),
+        sa.PrimaryKeyConstraint(
+            "fingerprint", name=op.f("pk_demo_automation_fingerprints")
+        ),
     )
     op.create_index(
         op.f("ix_demo_automation_fingerprints_expires_at"),
@@ -72,10 +97,19 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index(op.f("ix_demo_automation_fingerprints_expires_at"), table_name="demo_automation_fingerprints")
+    op.drop_index(
+        op.f("ix_demo_automation_fingerprints_expires_at"),
+        table_name="demo_automation_fingerprints",
+    )
     op.drop_table("demo_automation_fingerprints")
-    op.drop_index(op.f("ix_demo_automation_runs_completed_at"), table_name="demo_automation_runs")
-    op.drop_index(op.f("ix_demo_automation_runs_started_at"), table_name="demo_automation_runs")
-    op.drop_index(op.f("ix_demo_automation_runs_trigger"), table_name="demo_automation_runs")
+    op.drop_index(
+        op.f("ix_demo_automation_runs_completed_at"), table_name="demo_automation_runs"
+    )
+    op.drop_index(
+        op.f("ix_demo_automation_runs_started_at"), table_name="demo_automation_runs"
+    )
+    op.drop_index(
+        op.f("ix_demo_automation_runs_trigger"), table_name="demo_automation_runs"
+    )
     op.drop_table("demo_automation_runs")
     op.drop_table("demo_automation_state")

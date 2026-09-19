@@ -8,7 +8,9 @@ router = APIRouter(prefix="/api/analysis", tags=["analysis"])
 
 
 @router.get("/{symbol:path}", response_model=MultiTimeframeAnalysis)
-async def analyze(symbol: str, candle_limit: int = Query(default=250, ge=200, le=300)) -> MultiTimeframeAnalysis:
+async def analyze(
+    symbol: str, candle_limit: int = Query(default=250, ge=200, le=300)
+) -> MultiTimeframeAnalysis:
     try:
         return await AnalysisService().analyze(symbol, candle_limit)
     except ValueError as exc:

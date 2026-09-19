@@ -1,5 +1,10 @@
 # CTCC V2 v1.6.9 — Durable OKX Live Recovery
 
+**V2.0 production acceptance is incomplete.** The final-completion branch is
+undergoing new source-bound validation; [current status and boundaries](docs/final_completion_validation.md)
+distinguish engineering checks from real Demo, OOS and Micro Live acceptance.
+Live remains default OFF and requires contemporaneous operator authorization.
+
 Core planning index: [CTCC core master — 123 project discussion](docs/ctcc_core_master.md).
 This separates the integrated target design from implemented, validated, and
 deployed capability; it does not enable trading.
@@ -208,11 +213,13 @@ reward/risk remains at least 2.0 after configured round-trip fees, slippage,
 and funding. Those costs are included in position risk rather than reported
 after sizing.
 
-Its bands are 72–79 (1.5% risk, at most 3x), 80–89 (2.5%, 5x), 90–94
-(3%, 8x), 95–97 (4%, 10x), and 98–100 (6%, 20x). CTCC selects the smallest
+Every structural band is capped at 0.5% risk. The leverage ceilings remain
+72–79 (3x), 80–89 (5x), 90–94 (8x), 95–97 (10x), and 98–100 (20x).
+Portfolio stop risk is capped at 1%, with a 300-USDT margin bucket and a 60%
+aggregate margin limit. CTCC selects the smallest
 ladder leverage needed to fund the account-level risk ceiling from the current
-position-margin bucket after structural stop distance and costs. Above 2,000
-USDT this calculation includes `account equity / 2,000`; requirements above
+position-margin bucket after structural stop distance and costs. The calculation
+includes `account equity / current margin ceiling`; requirements above
 the approved cap are reported but never executed above 20x. A 20x result
 also requires confirmed high-grade mathematics, confidence/reliability at
 least 0.65, instability no higher than 0.20, confirmed derivative alignment,

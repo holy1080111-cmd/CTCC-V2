@@ -33,7 +33,6 @@ from app.exchange.okx.errors import OkxPrivateApiError, OkxPublicApiError
 from app.okx_live import OkxLiveBusyError, OkxLiveSafetyError, OkxLiveUnavailableError
 from app.okx_live.runtime import controlled_live_automation, okx_live_service
 
-
 router = APIRouter(
     prefix="/api/okx-live",
     tags=["okx-live"],
@@ -207,8 +206,7 @@ async def clear_emergency_stop(request: OkxLiveClearStopRequest) -> OkxLiveStatu
     "/execution-intents/unresolved",
     response_model=list[OkxLiveIntentResolutionExpectation],
 )
-async def unresolved_execution_intents(
-) -> list[OkxLiveIntentResolutionExpectation]:
+async def unresolved_execution_intents() -> list[OkxLiveIntentResolutionExpectation]:
     try:
         return await okx_live_service.unresolved_intent_expectations()
     except Exception as exc:

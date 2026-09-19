@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
@@ -12,9 +12,9 @@ from sqlalchemy.pool import NullPool
 from app.config.settings import get_settings
 from app.database.models.okx_live import OkxLiveExecutionIntent
 from app.database.repositories.okx_live_execution import (
+    OkxLiveExecutionAuthorityBusy,
     OkxLiveExecutionIntentConflict,
     OkxLiveExecutionIntentReplay,
-    OkxLiveExecutionAuthorityBusy,
     OkxLiveExecutionRepository,
     OkxLiveExecutionRepositoryError,
 )
@@ -30,13 +30,12 @@ async def test_live_execution_intent_is_durable_idempotent_and_secret_free() -> 
     key = "CTCCX" + uuid4().hex[:20]
 
     async def cleanup() -> None:
-        async with Session() as session:
-            async with session.begin():
-                await session.execute(
-                    delete(OkxLiveExecutionIntent).where(
-                        OkxLiveExecutionIntent.idempotency_key == key
-                    )
+        async with Session() as session, session.begin():
+            await session.execute(
+                delete(OkxLiveExecutionIntent).where(
+                    OkxLiveExecutionIntent.idempotency_key == key
                 )
+            )
 
     try:
         await cleanup()
@@ -57,8 +56,7 @@ async def test_live_execution_intent_is_durable_idempotent_and_secret_free() -> 
         )
         assert reserved.status == "reserved"
         assert key in {
-            item.idempotency_key
-            for item in await repository.load_unresolved_intents()
+            item.idempotency_key for item in await repository.load_unresolved_intents()
         }
 
         with pytest.raises(OkxLiveExecutionIntentReplay):
@@ -92,8 +90,7 @@ async def test_live_execution_intent_is_durable_idempotent_and_secret_free() -> 
         assert acknowledged.status == "acknowledged"
         assert confirmed.status == "confirmed"
         assert key not in {
-            item.idempotency_key
-            for item in await repository.load_unresolved_intents()
+            item.idempotency_key for item in await repository.load_unresolved_intents()
         }
 
         with pytest.raises(OkxLiveExecutionRepositoryError):
@@ -138,13 +135,12 @@ async def test_ambiguous_live_intent_requires_flat_operator_resolution() -> None
     key = "CTCCX" + uuid4().hex[:20]
 
     async def cleanup() -> None:
-        async with Session() as session:
-            async with session.begin():
-                await session.execute(
-                    delete(OkxLiveExecutionIntent).where(
-                        OkxLiveExecutionIntent.idempotency_key == key
-                    )
+        async with Session() as session, session.begin():
+            await session.execute(
+                delete(OkxLiveExecutionIntent).where(
+                    OkxLiveExecutionIntent.idempotency_key == key
                 )
+            )
 
     try:
         await cleanup()
@@ -161,29 +157,25 @@ async def test_ambiguous_live_intent_requires_flat_operator_resolution() -> None
         )
         assert ambiguous.operator_reconciled_at is None
         assert key in {
-            item.idempotency_key
-            for item in await repository.load_unresolved_intents()
+            item.idempotency_key for item in await repository.load_unresolved_intents()
         }
 
-        reconciled_at = datetime.now(timezone.utc)
+        reconciled_at = datetime.now(UTC)
         expectation = OkxLiveIntentResolutionExpectation(
             idempotency_key=ambiguous.idempotency_key,
             status=ambiguous.status,
             updated_at=ambiguous.updated_at,
         )
         async with repository.execution_lock():
-            count = (
-                await repository.mark_unresolved_intents_operator_reconciled(
-                    expectations=[expectation],
-                    reconciled_at=reconciled_at,
-                    resolution_code="operator_confirmed_flat_exchange_state",
-                )
+            count = await repository.mark_unresolved_intents_operator_reconciled(
+                expectations=[expectation],
+                reconciled_at=reconciled_at,
+                resolution_code="operator_confirmed_flat_exchange_state",
             )
 
         assert count == 1
         assert key not in {
-            item.idempotency_key
-            for item in await repository.load_unresolved_intents()
+            item.idempotency_key for item in await repository.load_unresolved_intents()
         }
         stored = await repository.load_intent(key)
         assert stored is not None
@@ -206,13 +198,12 @@ async def test_operator_resolution_is_exact_set_all_or_none_cas() -> None:
     keys = ["CTCCX" + uuid4().hex[:20] for _ in range(2)]
 
     async def cleanup() -> None:
-        async with Session() as session:
-            async with session.begin():
-                await session.execute(
-                    delete(OkxLiveExecutionIntent).where(
-                        OkxLiveExecutionIntent.idempotency_key.in_(keys)
-                    )
+        async with Session() as session, session.begin():
+            await session.execute(
+                delete(OkxLiveExecutionIntent).where(
+                    OkxLiveExecutionIntent.idempotency_key.in_(keys)
                 )
+            )
 
     try:
         await cleanup()
@@ -239,7 +230,7 @@ async def test_operator_resolution_is_exact_set_all_or_none_cas() -> None:
         with pytest.raises(OkxLiveExecutionIntentConflict):
             await repository.mark_unresolved_intents_operator_reconciled(
                 expectations=captured,
-                reconciled_at=datetime.now(timezone.utc),
+                reconciled_at=datetime.now(UTC),
                 resolution_code="operator_confirmed_flat_exchange_state",
             )
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -16,7 +16,7 @@ from app.domain.okx_demo import (
 
 def decimal_or_zero(value: Any) -> Decimal:
     if value in (None, ""):
-        return Decimal("0")
+        return Decimal(0)
     return Decimal(str(value))
 
 
@@ -35,7 +35,7 @@ def bool_value(value: Any) -> bool:
 def datetime_from_ms(value: Any) -> datetime | None:
     if value in (None, "", "0", 0):
         return None
-    return datetime.fromtimestamp(int(value) / 1000, tz=timezone.utc)
+    return datetime.fromtimestamp(int(value) / 1000, tz=UTC)
 
 
 def parse_account_config(row: dict[str, Any]) -> OkxDemoAccountConfig:
@@ -63,7 +63,7 @@ def parse_balance(row: dict[str, Any]) -> OkxDemoBalanceSnapshot:
                 unrealized_pnl=decimal_or_zero(item.get("upl")),
             )
         )
-    captured_at = datetime_from_ms(row.get("uTime")) or datetime.now(timezone.utc)
+    captured_at = datetime_from_ms(row.get("uTime")) or datetime.now(UTC)
     return OkxDemoBalanceSnapshot(
         total_equity=decimal_or_zero(row.get("totalEq")),
         isolated_equity=decimal_or_zero(row.get("isoEq")),

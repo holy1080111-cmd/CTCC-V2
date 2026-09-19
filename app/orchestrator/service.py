@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 import asyncio
-from collections import deque
-from contextlib import suppress
-from datetime import datetime, timedelta, timezone
-from decimal import Decimal
 import hashlib
 import logging
-from typing import Iterable
+from collections import deque
+from collections.abc import Iterable
+from contextlib import suppress
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 
 from app.config.settings import Settings, get_settings
+from app.database.repositories.persistence import PersistenceRepository
 from app.domain.orchestrator import (
     OrchestratorRunResult,
     OrchestratorStatus,
@@ -20,7 +21,6 @@ from app.domain.realtime import RealtimeSnapshot
 from app.domain.risk import AccountRiskState
 from app.domain.strategy import TradeCandidate
 from app.exchange.okx.symbols import to_instrument_id
-from app.database.repositories.persistence import PersistenceRepository
 from app.paper.engine import PaperBroker, PaperBrokerError
 from app.paper.execution_service import PaperExecutionService
 from app.risk import RiskService
@@ -67,7 +67,8 @@ class AutoPaperOrchestrator:
             self.paper = PaperExecutionService(broker)
             self.persistence_repository = persistence_repository
         else:
-            from app.paper.service import paper_service, persistence_repository as global_repository
+            from app.paper.service import paper_service
+            from app.paper.service import persistence_repository as global_repository
 
             self.paper = paper_service
             self.persistence_repository = persistence_repository or global_repository
@@ -104,17 +105,22 @@ class AutoPaperOrchestrator:
         if self.persistence_repository is None:
             self._recovered = True
             return
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         recovery_limit = min(
             self.settings.paper_scan_history_limit,
             self.settings.paper_recovery_history_limit,
         )
-        history = await self.persistence_repository.load_orchestrator_runs(recovery_limit)
+        history = await self.persistence_repository.load_orchestrator_runs(
+            recovery_limit
+        )
         self._history = deque(history, maxlen=self.settings.paper_scan_history_limit)
         self._fingerprints = await self.persistence_repository.load_fingerprints(now)
         self._scan_count = len(history)
         self._submission_count = sum(
-            1 for run in history for result in run.results if result.outcome == "submitted"
+            1
+            for run in history
+            for result in run.results
+            if result.outcome == "submitted"
         )
         self._error_count = sum(
             1 for run in history for result in run.results if result.outcome == "error"
@@ -141,7 +147,9 @@ class AutoPaperOrchestrator:
         if not self.settings.paper_auto_ticks:
             raise OrchestratorConfigurationError("paper_auto_ticks_required")
         if self.settings.auto_trade or self.settings.live_trading:
-            raise OrchestratorConfigurationError("exchange_auto_trade_must_remain_disabled")
+            raise OrchestratorConfigurationError(
+                "exchange_auto_trade_must_remain_disabled"
+            )
 
     async def start(self) -> OrchestratorStatus:
         self._validate_auto_execution_configuration()
@@ -205,7 +213,7 @@ class AutoPaperOrchestrator:
             self._validate_auto_execution_configuration()
 
         async with self._run_lock:
-            started = datetime.now(timezone.utc)
+            started = datetime.now(UTC)
             self._last_started_at = started
             self._last_error = None
             await self._cleanup_fingerprints(started)
@@ -222,7 +230,7 @@ class AutoPaperOrchestrator:
                 else:
                     self._skipped_count += 1
 
-            completed = datetime.now(timezone.utc)
+            completed = datetime.now(UTC)
             run = OrchestratorRunResult(
                 trigger="scheduled" if trigger == "scheduled" else "manual",
                 execute=execute,
@@ -241,7 +249,9 @@ class AutoPaperOrchestrator:
                 )
             return run
 
-    async def _process_symbol(self, raw_symbol: str, *, execute: bool) -> OrchestratorSymbolResult:
+    async def _process_symbol(
+        self, raw_symbol: str, *, execute: bool
+    ) -> OrchestratorSymbolResult:
         try:
             instrument_id = to_instrument_id(raw_symbol)
         except ValueError as exc:
@@ -294,7 +304,9 @@ class AutoPaperOrchestrator:
                     detail=realtime_error,
                 )
 
-            execution_candidate = self._candidate_at_reference(candidate, reference_price)
+            execution_candidate = self._candidate_at_reference(
+                candidate, reference_price
+            )
             if execution_candidate is None:
                 return OrchestratorSymbolResult(
                     symbol=strategy.symbol,
@@ -322,7 +334,9 @@ class AutoPaperOrchestrator:
                     detail="candidate_fingerprint_already_processed",
                 )
 
-            account_state = self._account_risk_state(instrument_id, execution_candidate.direction)
+            account_state = self._account_risk_state(
+                instrument_id, execution_candidate.direction
+            )
             risk = self.risk_service.evaluate(execution_candidate, account_state)
             if risk.decision != "approved":
                 return OrchestratorSymbolResult(
@@ -374,7 +388,7 @@ class AutoPaperOrchestrator:
             )
             hold_until = max(
                 execution_candidate.expires_at,
-                datetime.now(timezone.utc)
+                datetime.now(UTC)
                 + timedelta(seconds=self.settings.paper_scan_cooldown_seconds),
             )
             self._fingerprints[fingerprint] = hold_until
@@ -410,7 +424,9 @@ class AutoPaperOrchestrator:
                 outcome="blocked",
                 detail=f"paper_broker:{exc}",
             )
-        except Exception as exc:  # Per-symbol containment: one failure must not stop the whole scan.
+        except (
+            Exception
+        ) as exc:  # Per-symbol containment: one failure must not stop the whole scan.
             self._last_error = f"{exc.__class__.__name__}: {exc}"
             logger.exception("orchestrator_symbol_error symbol=%s", raw_symbol)
             return OrchestratorSymbolResult(
@@ -430,14 +446,22 @@ class AutoPaperOrchestrator:
         if require_realtime and not self.market_client.status().connected:
             return candidate.entry, "realtime_websocket_not_connected"
 
-        snapshot: RealtimeSnapshot | None = await self.market_hub.snapshot(instrument_id)
+        snapshot: RealtimeSnapshot | None = await self.market_hub.snapshot(
+            instrument_id
+        )
         if snapshot is None or snapshot.last is None:
-            return candidate.entry, "realtime_snapshot_not_available" if require_realtime else None
+            return (
+                candidate.entry,
+                "realtime_snapshot_not_available" if require_realtime else None,
+            )
 
         observed_at = snapshot.last_received_at or snapshot.received_at
-        age = (datetime.now(timezone.utc) - observed_at).total_seconds()
+        age = (datetime.now(UTC) - observed_at).total_seconds()
         if age > self.settings.paper_scan_max_snapshot_age_seconds:
-            return snapshot.last, "realtime_snapshot_stale" if require_realtime else None
+            return (
+                snapshot.last,
+                "realtime_snapshot_stale" if require_realtime else None,
+            )
 
         drift_bps = abs(snapshot.last - candidate.entry) / candidate.entry * D("10000")
         if drift_bps > D(str(self.settings.paper_scan_max_entry_drift_bps)):
@@ -470,27 +494,45 @@ class AutoPaperOrchestrator:
 
     def _existing_exposure_reason(self, instrument_id: str) -> str | None:
         state = self.paper.state()
-        if any(p.symbol == instrument_id and p.status == "open" for p in state.positions):
+        if any(
+            p.symbol == instrument_id and p.status == "open" for p in state.positions
+        ):
             return "open_position_already_exists_for_symbol"
-        if any(o.symbol == instrument_id and o.status == "pending" for o in state.orders):
+        if any(
+            o.symbol == instrument_id and o.status == "pending" for o in state.orders
+        ):
             return "pending_order_already_exists_for_symbol"
         return None
 
-    def _account_risk_state(self, instrument_id: str, direction: str) -> AccountRiskState:
+    def _account_risk_state(
+        self, instrument_id: str, direction: str
+    ) -> AccountRiskState:
         state: PaperStateView = self.paper.state()
         account = state.account
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         week_start = (now - timedelta(days=now.weekday())).date()
         closed = sorted(
-            (p for p in state.positions if p.status == "closed" and p.closed_at is not None),
+            (
+                p
+                for p in state.positions
+                if p.status == "closed" and p.closed_at is not None
+            ),
             key=lambda p: p.closed_at or now,
         )
         daily = sum(
-            (p.realized_pnl for p in closed if p.closed_at and p.closed_at.date() == now.date()),
+            (
+                p.realized_pnl
+                for p in closed
+                if p.closed_at and p.closed_at.date() == now.date()
+            ),
             D("0"),
         )
         weekly = sum(
-            (p.realized_pnl for p in closed if p.closed_at and p.closed_at.date() >= week_start),
+            (
+                p.realized_pnl
+                for p in closed
+                if p.closed_at and p.closed_at.date() >= week_start
+            ),
             D("0"),
         )
         consecutive_losses = 0
@@ -504,7 +546,8 @@ class AutoPaperOrchestrator:
         same_direction = sum(1 for p in open_positions if p.side == direction)
         configured = set(self.settings.paper_scan_symbol_list)
         correlated = sum(
-            1 for p in open_positions
+            1
+            for p in open_positions
             if p.symbol != instrument_id and p.symbol in configured
         )
         self._peak_equity = max(self._peak_equity, account.equity)
@@ -545,7 +588,7 @@ class AutoPaperOrchestrator:
         try:
             initial = self.settings.paper_scan_initial_delay_seconds
             if initial > 0:
-                self._next_run_at = datetime.now(timezone.utc) + timedelta(seconds=initial)
+                self._next_run_at = datetime.now(UTC) + timedelta(seconds=initial)
                 await asyncio.wait_for(self._stop.wait(), timeout=initial)
                 return
         except TimeoutError:
@@ -562,7 +605,7 @@ class AutoPaperOrchestrator:
                 logger.exception("orchestrator_scheduled_run_failed")
 
             interval = self.settings.paper_scan_interval_seconds
-            self._next_run_at = datetime.now(timezone.utc) + timedelta(seconds=interval)
+            self._next_run_at = datetime.now(UTC) + timedelta(seconds=interval)
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=interval)
             except TimeoutError:

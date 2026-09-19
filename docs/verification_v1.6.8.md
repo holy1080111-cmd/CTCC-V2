@@ -187,6 +187,12 @@ Telemetry counters remain persisted and visible
 All Demo and Live write flags remain disabled during verification
 ```
 
+2026-09-19 supersession: the historical loss/streak bypass expectations above
+are no longer the current contract. Continuous mode now preserves both
+financial gates and their persisted locks; only trade-count pacing and
+post-close cooldown are optional. This correction does not rewrite or reuse
+the historical test evidence as current acceptance.
+
 The authenticated runtime dry-run adds `-ExpectContinuousSession` to verify the
 status contract and still calls `run-once` with `execute=false`. It cannot prove
 profitability and must not be reported as an exchange execution test.

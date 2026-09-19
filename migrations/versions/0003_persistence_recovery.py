@@ -3,16 +3,17 @@
 Revision ID: 0003
 Revises: 0002
 """
-from typing import Sequence, Union
 
-from alembic import op
+from collections.abc import Sequence
+
 import sqlalchemy as sa
+from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision: str = "0003"
-down_revision: Union[str, None] = "0002"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = "0002"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
@@ -30,10 +31,20 @@ def upgrade() -> None:
         sa.Column("closed_trades", sa.Integer(), nullable=False),
         sa.Column("revision", sa.Integer(), nullable=False),
         sa.Column("state_checksum", sa.String(64), nullable=False),
-        sa.Column("persisted_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        sa.Column(
+            "persisted_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.func.now(),
+            nullable=False,
+        ),
         sa.CheckConstraint("id = 1", name=op.f("ck_paper_account_state_singleton_id")),
-        sa.CheckConstraint("starting_balance > 0", name=op.f("ck_paper_account_state_starting_balance_positive")),
-        sa.CheckConstraint("revision >= 1", name=op.f("ck_paper_account_state_revision_positive")),
+        sa.CheckConstraint(
+            "starting_balance > 0",
+            name=op.f("ck_paper_account_state_starting_balance_positive"),
+        ),
+        sa.CheckConstraint(
+            "revision >= 1", name=op.f("ck_paper_account_state_revision_positive")
+        ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_paper_account_state")),
     )
 
@@ -57,17 +68,39 @@ def upgrade() -> None:
         sa.Column("reasons", postgresql.JSONB(), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("filled_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("persisted_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-        sa.CheckConstraint("quantity > 0", name=op.f("ck_paper_order_state_quantity_positive")),
-        sa.CheckConstraint("reference_price > 0", name=op.f("ck_paper_order_state_reference_price_positive")),
-        sa.CheckConstraint("stop_loss > 0", name=op.f("ck_paper_order_state_stop_loss_positive")),
-        sa.CheckConstraint("take_profit > 0", name=op.f("ck_paper_order_state_take_profit_positive")),
-        sa.CheckConstraint("fee >= 0", name=op.f("ck_paper_order_state_fee_nonnegative")),
+        sa.Column(
+            "persisted_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.func.now(),
+            nullable=False,
+        ),
+        sa.CheckConstraint(
+            "quantity > 0", name=op.f("ck_paper_order_state_quantity_positive")
+        ),
+        sa.CheckConstraint(
+            "reference_price > 0",
+            name=op.f("ck_paper_order_state_reference_price_positive"),
+        ),
+        sa.CheckConstraint(
+            "stop_loss > 0", name=op.f("ck_paper_order_state_stop_loss_positive")
+        ),
+        sa.CheckConstraint(
+            "take_profit > 0", name=op.f("ck_paper_order_state_take_profit_positive")
+        ),
+        sa.CheckConstraint(
+            "fee >= 0", name=op.f("ck_paper_order_state_fee_nonnegative")
+        ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_paper_order_state")),
-        sa.UniqueConstraint("client_order_id", name=op.f("uq_paper_order_state_client_order_id")),
+        sa.UniqueConstraint(
+            "client_order_id", name=op.f("uq_paper_order_state_client_order_id")
+        ),
     )
-    op.create_index(op.f("ix_paper_order_state_symbol"), "paper_order_state", ["symbol"])
-    op.create_index(op.f("ix_paper_order_state_status"), "paper_order_state", ["status"])
+    op.create_index(
+        op.f("ix_paper_order_state_symbol"), "paper_order_state", ["symbol"]
+    )
+    op.create_index(
+        op.f("ix_paper_order_state_status"), "paper_order_state", ["status"]
+    )
 
     op.create_table(
         "paper_position_state",
@@ -87,19 +120,45 @@ def upgrade() -> None:
         sa.Column("opened_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("closed_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("close_reason", sa.String(100), nullable=True),
-        sa.Column("persisted_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-        sa.CheckConstraint("quantity > 0", name=op.f("ck_paper_position_state_quantity_positive")),
-        sa.CheckConstraint("entry_price > 0", name=op.f("ck_paper_position_state_entry_price_positive")),
-        sa.CheckConstraint("mark_price > 0", name=op.f("ck_paper_position_state_mark_price_positive")),
-        sa.CheckConstraint("stop_loss > 0", name=op.f("ck_paper_position_state_stop_loss_positive")),
-        sa.CheckConstraint("take_profit > 0", name=op.f("ck_paper_position_state_take_profit_positive")),
-        sa.CheckConstraint("fees >= 0", name=op.f("ck_paper_position_state_fees_nonnegative")),
-        sa.ForeignKeyConstraint(["order_id"], ["paper_order_state.id"], name=op.f("fk_paper_position_state_order_id_paper_order_state"), ondelete="RESTRICT"),
+        sa.Column(
+            "persisted_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.func.now(),
+            nullable=False,
+        ),
+        sa.CheckConstraint(
+            "quantity > 0", name=op.f("ck_paper_position_state_quantity_positive")
+        ),
+        sa.CheckConstraint(
+            "entry_price > 0", name=op.f("ck_paper_position_state_entry_price_positive")
+        ),
+        sa.CheckConstraint(
+            "mark_price > 0", name=op.f("ck_paper_position_state_mark_price_positive")
+        ),
+        sa.CheckConstraint(
+            "stop_loss > 0", name=op.f("ck_paper_position_state_stop_loss_positive")
+        ),
+        sa.CheckConstraint(
+            "take_profit > 0", name=op.f("ck_paper_position_state_take_profit_positive")
+        ),
+        sa.CheckConstraint(
+            "fees >= 0", name=op.f("ck_paper_position_state_fees_nonnegative")
+        ),
+        sa.ForeignKeyConstraint(
+            ["order_id"],
+            ["paper_order_state.id"],
+            name=op.f("fk_paper_position_state_order_id_paper_order_state"),
+            ondelete="RESTRICT",
+        ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_paper_position_state")),
         sa.UniqueConstraint("order_id", name=op.f("uq_paper_position_state_order_id")),
     )
-    op.create_index(op.f("ix_paper_position_state_symbol"), "paper_position_state", ["symbol"])
-    op.create_index(op.f("ix_paper_position_state_status"), "paper_position_state", ["status"])
+    op.create_index(
+        op.f("ix_paper_position_state_symbol"), "paper_position_state", ["symbol"]
+    )
+    op.create_index(
+        op.f("ix_paper_position_state_status"), "paper_position_state", ["status"]
+    )
 
     op.create_table(
         "orchestrator_run_state",
@@ -111,19 +170,40 @@ def upgrade() -> None:
         sa.Column("completed_at", sa.DateTime(timezone=True), nullable=False),
         sa.PrimaryKeyConstraint("run_id", name=op.f("pk_orchestrator_run_state")),
     )
-    op.create_index(op.f("ix_orchestrator_run_state_trigger"), "orchestrator_run_state", ["trigger"])
-    op.create_index(op.f("ix_orchestrator_run_state_started_at"), "orchestrator_run_state", ["started_at"])
-    op.create_index(op.f("ix_orchestrator_run_state_completed_at"), "orchestrator_run_state", ["completed_at"])
+    op.create_index(
+        op.f("ix_orchestrator_run_state_trigger"), "orchestrator_run_state", ["trigger"]
+    )
+    op.create_index(
+        op.f("ix_orchestrator_run_state_started_at"),
+        "orchestrator_run_state",
+        ["started_at"],
+    )
+    op.create_index(
+        op.f("ix_orchestrator_run_state_completed_at"),
+        "orchestrator_run_state",
+        ["completed_at"],
+    )
 
     op.create_table(
         "orchestrator_fingerprint_state",
         sa.Column("fingerprint", sa.String(64), nullable=False),
         sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("details", postgresql.JSONB(), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-        sa.PrimaryKeyConstraint("fingerprint", name=op.f("pk_orchestrator_fingerprint_state")),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.func.now(),
+            nullable=False,
+        ),
+        sa.PrimaryKeyConstraint(
+            "fingerprint", name=op.f("pk_orchestrator_fingerprint_state")
+        ),
     )
-    op.create_index(op.f("ix_orchestrator_fingerprint_state_expires_at"), "orchestrator_fingerprint_state", ["expires_at"])
+    op.create_index(
+        op.f("ix_orchestrator_fingerprint_state_expires_at"),
+        "orchestrator_fingerprint_state",
+        ["expires_at"],
+    )
 
     op.create_table(
         "recovery_checkpoints",
@@ -133,7 +213,12 @@ def upgrade() -> None:
         sa.Column("details", postgresql.JSONB(), nullable=False),
         sa.Column("recovered_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("persisted_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.func.now(),
+            nullable=False,
+        ),
         sa.CheckConstraint("id = 1", name=op.f("ck_recovery_checkpoints_singleton_id")),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_recovery_checkpoints")),
     )
@@ -141,14 +226,29 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_table("recovery_checkpoints")
-    op.drop_index(op.f("ix_orchestrator_fingerprint_state_expires_at"), table_name="orchestrator_fingerprint_state")
+    op.drop_index(
+        op.f("ix_orchestrator_fingerprint_state_expires_at"),
+        table_name="orchestrator_fingerprint_state",
+    )
     op.drop_table("orchestrator_fingerprint_state")
-    op.drop_index(op.f("ix_orchestrator_run_state_completed_at"), table_name="orchestrator_run_state")
-    op.drop_index(op.f("ix_orchestrator_run_state_started_at"), table_name="orchestrator_run_state")
-    op.drop_index(op.f("ix_orchestrator_run_state_trigger"), table_name="orchestrator_run_state")
+    op.drop_index(
+        op.f("ix_orchestrator_run_state_completed_at"),
+        table_name="orchestrator_run_state",
+    )
+    op.drop_index(
+        op.f("ix_orchestrator_run_state_started_at"),
+        table_name="orchestrator_run_state",
+    )
+    op.drop_index(
+        op.f("ix_orchestrator_run_state_trigger"), table_name="orchestrator_run_state"
+    )
     op.drop_table("orchestrator_run_state")
-    op.drop_index(op.f("ix_paper_position_state_status"), table_name="paper_position_state")
-    op.drop_index(op.f("ix_paper_position_state_symbol"), table_name="paper_position_state")
+    op.drop_index(
+        op.f("ix_paper_position_state_status"), table_name="paper_position_state"
+    )
+    op.drop_index(
+        op.f("ix_paper_position_state_symbol"), table_name="paper_position_state"
+    )
     op.drop_table("paper_position_state")
     op.drop_index(op.f("ix_paper_order_state_status"), table_name="paper_order_state")
     op.drop_index(op.f("ix_paper_order_state_symbol"), table_name="paper_order_state")

@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from app.domain.market import MarketSnapshot
 from app.exchange.okx.public_rest import OkxPublicRestClient
@@ -17,7 +17,9 @@ class MarketDataService:
         instrument_id = to_instrument_id(symbol)
 
         candle_tasks = {
-            bar: asyncio.create_task(self.client.candles(instrument_id, bar, candle_limit))
+            bar: asyncio.create_task(
+                self.client.candles(instrument_id, bar, candle_limit)
+            )
             for bar in SUPPORTED_BARS
         }
         ticker_task = asyncio.create_task(self.client.ticker(instrument_id))
@@ -50,5 +52,5 @@ class MarketDataService:
             order_book=order_book,
             candles=candles,
             quality=quality,
-            received_at=datetime.now(timezone.utc),
+            received_at=datetime.now(UTC),
         )

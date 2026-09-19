@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import Decimal, localcontext
-from typing import Sequence
+from itertools import pairwise
 
 D = Decimal
 _EPSILON = D("1e-30")
@@ -33,9 +34,7 @@ def _solve_3x3(
 ) -> tuple[Decimal, Decimal, Decimal] | None:
     augmented = [row[:] + [value] for row, value in zip(matrix, rhs, strict=True)]
     for column in range(3):
-        pivot_row = max(
-            range(column, 3), key=lambda row: abs(augmented[row][column])
-        )
+        pivot_row = max(range(column, 3), key=lambda row: abs(augmented[row][column]))
         pivot = augmented[pivot_row][column]
         if abs(pivot) <= _EPSILON:
             return None
@@ -154,15 +153,10 @@ def causal_log_trend_from_logs(
         if total_variation <= _EPSILON:
             fit_r2 = D("1") if squared_error <= _EPSILON else D("0")
         else:
-            fit_r2 = _clamp(
-                D("1") - squared_error / total_variation, D("0"), D("1")
-            )
+            fit_r2 = _clamp(D("1") - squared_error / total_variation, D("0"), D("1"))
         residual_std = (max(D("0"), squared_error) / weight_sum).sqrt()
 
-        log_returns = [
-            current - previous
-            for previous, current in zip(logs[:-1], logs[1:], strict=True)
-        ]
+        log_returns = [current - previous for previous, current in pairwise(logs)]
         return_rms = (
             sum((value * value for value in log_returns), D("0")) / span
         ).sqrt()
@@ -171,9 +165,7 @@ def causal_log_trend_from_logs(
         acceleration = D("2") * quadratic / (span * span)
         scale = max(return_rms, _EPSILON)
         velocity_ratio = _clamp(velocity / scale, D("-10"), D("10"))
-        acceleration_ratio = _clamp(
-            acceleration / scale, D("-10"), D("10")
-        )
+        acceleration_ratio = _clamp(acceleration / scale, D("-10"), D("10"))
         signal_strength = min(D("1"), abs(velocity_ratio))
         confidence = _clamp(fit_r2 * signal_strength, D("0"), D("1"))
 

@@ -898,6 +898,54 @@ def test_native_windows_owned_root_handle_enforces_publisher_and_rename_exclusio
     assert not destination.exists()
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Native Windows root publication")
+def test_native_windows_root_link_is_no_clobber_without_releasing_lease(storage_root):
+    with storage_module._windows_root(storage_root) as directory:
+        directory.publish("receipt.json", b"accepted")
+        assert directory.read("receipt.json", 1024) == b"accepted"
+        with pytest.raises(FileExistsError):
+            directory.publish("receipt.json", b"must-not-replace")
+        assert directory.read("receipt.json", 1024) == b"accepted"
+        with (
+            pytest.raises(PermissionError),
+            storage_module._windows_root(storage_root),
+        ):
+            pytest.fail("root publisher lease was released during publication")
+        assert directory.names() == ["receipt.json"]
+    assert (storage_root / "receipt.json").stat().st_nlink == 1
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Native Windows publication filename guard")
+@pytest.mark.parametrize(
+    "name",
+    (
+        "../escape",
+        "nested/file",
+        "nested\\file",
+        "x:stream",
+        "..",
+        "NUL",
+        "trailing.",
+        "",
+        "x\x00y",
+        "wild*card",
+        'quote"name',
+    ),
+)
+def test_native_windows_link_rejects_other_directory_and_stream_names(
+    storage_root, name
+):
+    api = storage_module._WindowsAPI()
+    original = storage_root / "owned.partial"
+    fd = api.open_file(original, create=True)
+    try:
+        with pytest.raises(EvidencePublicationError, match="unsafe Windows"):
+            api.link_same_directory(fd, name)
+        assert list(storage_root.iterdir()) == [original]
+    finally:
+        os.close(fd)
+
+
 @pytest.fixture
 def forbid_publication_io(monkeypatch):
     def forbidden_context(*args, **kwargs):

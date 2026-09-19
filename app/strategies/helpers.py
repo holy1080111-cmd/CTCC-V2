@@ -22,15 +22,19 @@ def momentum_matches(view: TimeframeAnalysis, direction: str) -> bool:
     rsi = view.indicators.rsi14
     if hist is None or rsi is None:
         return False
-    return (hist > 0 and D("50") <= rsi < D("72")) if direction == "long" else (hist < 0 and D("28") < rsi <= D("50"))
+    return (
+        (hist > 0 and D("50") <= rsi < D("72"))
+        if direction == "long"
+        else (hist < 0 and D("28") < rsi <= D("50"))
+    )
 
 
-def volume_confirmed(view: TimeframeAnalysis, minimum: Decimal = D("1.0")) -> bool:
+def volume_confirmed(view: TimeframeAnalysis, minimum: Decimal = D("1.0")) -> bool:  # noqa: B008 - D constructs immutable exact Decimal values.
     ratio = view.indicators.volume_ratio20
     return ratio is not None and ratio >= minimum
 
 
-def near_ema20(view: TimeframeAnalysis, tolerance_pct: Decimal = D("0.6")) -> bool:
+def near_ema20(view: TimeframeAnalysis, tolerance_pct: Decimal = D("0.6")) -> bool:  # noqa: B008 - D constructs immutable exact Decimal values.
     ema20 = view.indicators.ema20
     if ema20 is None or ema20 <= 0:
         return False
@@ -39,4 +43,7 @@ def near_ema20(view: TimeframeAnalysis, tolerance_pct: Decimal = D("0.6")) -> bo
 
 def has_fvg(view: TimeframeAnalysis, direction: str) -> bool:
     expected = "bullish" if direction == "long" else "bearish"
-    return any(gap.direction == expected and gap.filled_ratio < D("1") for gap in view.structure.fair_value_gaps)
+    return any(
+        gap.direction == expected and gap.filled_ratio < D("1")
+        for gap in view.structure.fair_value_gaps
+    )

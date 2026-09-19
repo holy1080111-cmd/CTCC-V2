@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import sys
 from datetime import date
 from pathlib import Path
-import sys
 
 from app.research.external_benchmarks.binance import (
     BinanceKlineCoordinates,

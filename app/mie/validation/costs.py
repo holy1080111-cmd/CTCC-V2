@@ -6,9 +6,10 @@ exchange, account, order, quantity, leverage, risk-budget, or runtime hooks.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
-from decimal import Decimal, ROUND_CEILING, localcontext
-from typing import Literal, Sequence
+from decimal import ROUND_CEILING, Decimal, localcontext
+from typing import Literal
 
 from app.mie.validation.contracts import CostModel
 
@@ -53,7 +54,7 @@ class ReturnPathMetrics:
 
 def _finite_decimal(value: Decimal | int, name: str) -> Decimal:
     if isinstance(value, bool) or not isinstance(value, (Decimal, int)):
-        raise ValueError(f"{name} must be a Decimal or integer")
+        raise ValueError(f"{name} must be a Decimal or integer")  # noqa: TRY004 - Public validation contract consistently rejects malformed values with ValueError.
     result = D(value)
     if not result.is_finite():
         raise ValueError(f"{name} must be finite")
@@ -82,14 +83,10 @@ def _maximum_drawdown(returns: Sequence[Decimal]) -> Decimal:
     return maximum
 
 
-def _cvar_loss(
-    returns: Sequence[Decimal], confidence_level: Decimal
-) -> Decimal:
+def _cvar_loss(returns: Sequence[Decimal], confidence_level: Decimal) -> Decimal:
     tail_probability = D("1") - confidence_level
     tail_count = int(
-        (D(len(returns)) * tail_probability).to_integral_value(
-            rounding=ROUND_CEILING
-        )
+        (D(len(returns)) * tail_probability).to_integral_value(rounding=ROUND_CEILING)
     )
     tail_count = max(1, tail_count)
     losses = sorted((-value for value in returns), reverse=True)
@@ -102,7 +99,7 @@ def evaluate_costed_return_path(
     *,
     cost_model: CostModel,
     observation_interval_seconds: int,
-    cvar_confidence_level: Decimal = D("0.95"),
+    cvar_confidence_level: Decimal = D("0.95"),  # noqa: B008 - D constructs immutable exact Decimal values.
 ) -> ReturnPathMetrics:
     """Apply the frozen cost model to a normalized offline exposure path.
 
@@ -111,9 +108,7 @@ def evaluate_costed_return_path(
     interval. The final observation includes mandatory flattening turnover.
     """
 
-    returns = tuple(
-        _finite_decimal(value, "asset return") for value in asset_returns
-    )
+    returns = tuple(_finite_decimal(value, "asset return") for value in asset_returns)
     shadow_exposures = tuple(
         _finite_decimal(value, "shadow exposure") for value in exposures
     )
@@ -132,9 +127,7 @@ def evaluate_costed_return_path(
     ):
         raise ValueError("observation interval must be a positive integer")
     if cost_model.funding_interval_seconds % observation_interval_seconds:
-        raise ValueError(
-            "observation interval must divide the frozen funding interval"
-        )
+        raise ValueError("observation interval must divide the frozen funding interval")
 
     confidence = _finite_decimal(cvar_confidence_level, "CVaR confidence level")
     if confidence <= D("0") or confidence >= D("1"):
@@ -160,9 +153,7 @@ def evaluate_costed_return_path(
                 / D(cost_model.funding_interval_seconds)
             )
             spread_cost = turnover * cost_model.spread_bps / BASIS_POINTS
-            slippage_cost = (
-                turnover * cost_model.slippage_bps / BASIS_POINTS
-            )
+            slippage_cost = turnover * cost_model.slippage_bps / BASIS_POINTS
             net_return = gross_return - (
                 fee_cost + funding_cost + spread_cost + slippage_cost
             )
@@ -187,13 +178,9 @@ def evaluate_costed_return_path(
         gross_returns = tuple(item.gross_return for item in observations)
         net_returns = tuple(item.net_return for item in observations)
         fee_cost = sum((item.fee_cost for item in observations), D("0"))
-        funding_cost = sum(
-            (item.funding_cost for item in observations), D("0")
-        )
+        funding_cost = sum((item.funding_cost for item in observations), D("0"))
         spread_cost = sum((item.spread_cost for item in observations), D("0"))
-        slippage_cost = sum(
-            (item.slippage_cost for item in observations), D("0")
-        )
+        slippage_cost = sum((item.slippage_cost for item in observations), D("0"))
         total_cost = fee_cost + funding_cost + spread_cost + slippage_cost
         return ReturnPathMetrics(
             sample_count=len(observations),

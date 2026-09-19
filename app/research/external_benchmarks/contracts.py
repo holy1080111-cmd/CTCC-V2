@@ -18,7 +18,6 @@ from pydantic import (
 )
 
 
-
 def require_utc(value: datetime, field_name: str) -> datetime:
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError(f"{field_name} must be timezone-aware UTC")
@@ -116,7 +115,7 @@ class DatasetWindow(ReferenceContract):
         return require_utc(value, info.field_name)
 
     @model_validator(mode="after")
-    def validate_window(self) -> "DatasetWindow":
+    def validate_window(self) -> DatasetWindow:
         if self.end < self.start:
             raise ValueError("dataset window end cannot precede start")
         if self.available_at < self.end:
@@ -216,14 +215,17 @@ class ExternalDatasetManifest(ReferenceContract):
         if len(value) != len(set(value)):
             raise ValueError("instrument_ids must be unique")
         for item in value:
-            if "-" not in item or len(item) < 3 or len(item) > 64 or not all(
-                part.isalnum() for part in item.split("-")
+            if (
+                "-" not in item
+                or len(item) < 3
+                or len(item) > 64
+                or not all(part.isalnum() for part in item.split("-"))
             ):
                 raise ValueError("instrument_ids contains an invalid instrument")
         return value
 
     @model_validator(mode="after")
-    def validate_manifest(self) -> "ExternalDatasetManifest":
+    def validate_manifest(self) -> ExternalDatasetManifest:
         if self.window.available_at > self.retrieved_at:
             raise ValueError("dataset cannot be retrieved before it was available")
         field_set = set(self.fields)
@@ -252,12 +254,12 @@ class ExternalDatasetManifest(ReferenceContract):
 
 class DatasetQualityPolicy(ReferenceContract):
     minimum_rows: int = Field(default=2, ge=1)
-    max_missing_required_rate: Decimal = Field(default=Decimal("0"), ge=0, le=1)
-    max_duplicate_key_rate: Decimal = Field(default=Decimal("0"), ge=0, le=1)
-    max_invalid_timestamp_rate: Decimal = Field(default=Decimal("0"), ge=0, le=1)
-    max_out_of_order_rate: Decimal = Field(default=Decimal("0"), ge=0, le=1)
-    max_out_of_window_rate: Decimal = Field(default=Decimal("0"), ge=0, le=1)
-    max_nonpositive_numeric_rate: Decimal = Field(default=Decimal("0"), ge=0, le=1)
+    max_missing_required_rate: Decimal = Field(default=Decimal(0), ge=0, le=1)
+    max_duplicate_key_rate: Decimal = Field(default=Decimal(0), ge=0, le=1)
+    max_invalid_timestamp_rate: Decimal = Field(default=Decimal(0), ge=0, le=1)
+    max_out_of_order_rate: Decimal = Field(default=Decimal(0), ge=0, le=1)
+    max_out_of_window_rate: Decimal = Field(default=Decimal(0), ge=0, le=1)
+    max_nonpositive_numeric_rate: Decimal = Field(default=Decimal(0), ge=0, le=1)
 
 
 class DatasetQualityReport(ReferenceContract):
@@ -297,7 +299,7 @@ class DatasetQualityReport(ReferenceContract):
         return value
 
     @model_validator(mode="after")
-    def validate_result(self) -> "DatasetQualityReport":
+    def validate_result(self) -> DatasetQualityReport:
         if self.passed != (len(self.failure_codes) == 0):
             raise ValueError("quality pass state must match failure codes")
         row_counts = (
@@ -345,7 +347,7 @@ class DatasetQualityReport(ReferenceContract):
         )
         for rate, count, denominator in expected_rates:
             expected = (
-                Decimal("0")
+                Decimal(0)
                 if denominator == 0
                 else Decimal(count) / Decimal(denominator)
             )
@@ -416,9 +418,7 @@ class ExternalArtifactAcquisitionRequest(ReferenceContract):
         if "\\" in value:
             raise ValueError("acquisition paths must use POSIX separators")
         path = PurePosixPath(value)
-        if path.is_absolute() or any(
-            part in {"", ".", ".."} for part in path.parts
-        ):
+        if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
             raise ValueError("acquisition path must remain below its dataset root")
         return value
 
@@ -431,17 +431,14 @@ class ExternalArtifactAcquisitionRequest(ReferenceContract):
         if len(value) != len(set(value)):
             raise ValueError("expected media types must be unique")
         if any(
-            item != item.lower()
-            or "/" not in item
-            or ";" in item
-            or not item.strip()
+            item != item.lower() or "/" not in item or ";" in item or not item.strip()
             for item in value
         ):
             raise ValueError("expected media types must be lowercase base types")
         return value
 
     @model_validator(mode="after")
-    def validate_archive_identity(self) -> "ExternalArtifactAcquisitionRequest":
+    def validate_archive_identity(self) -> ExternalArtifactAcquisitionRequest:
         is_zip_path = self.relative_path.lower().endswith(".zip")
         if is_zip_path != (self.archive_kind == ArchiveKind.ZIP):
             raise ValueError("zip path and archive_kind must agree")
@@ -458,7 +455,7 @@ class ArchiveInspectionPolicy(ReferenceContract):
         default=1024 * 1024 * 1024,
         ge=1,
     )
-    max_expansion_ratio: Decimal = Field(default=Decimal("100"), ge=1)
+    max_expansion_ratio: Decimal = Field(default=Decimal(100), ge=1)
     allow_nested_archives: Literal[False] = False
 
 
@@ -480,7 +477,7 @@ class ArchiveInspectionReport(ReferenceContract):
     execution_authority: Literal[False] = False
 
     @model_validator(mode="after")
-    def validate_archive_report(self) -> "ArchiveInspectionReport":
+    def validate_archive_report(self) -> ArchiveInspectionReport:
         if len(self.failure_codes) != len(set(self.failure_codes)) or any(
             not code.strip() for code in self.failure_codes
         ):
@@ -511,8 +508,8 @@ class AcquisitionLimits(ReferenceContract):
         ge=4096,
         le=16 * 1024 * 1024,
     )
-    connect_timeout_seconds: Decimal = Field(default=Decimal("10"), gt=0, le=120)
-    read_timeout_seconds: Decimal = Field(default=Decimal("60"), gt=0, le=600)
+    connect_timeout_seconds: Decimal = Field(default=Decimal(10), gt=0, le=120)
+    read_timeout_seconds: Decimal = Field(default=Decimal(60), gt=0, le=600)
 
 
 class ExternalArtifactAcquisitionReceipt(ReferenceContract):
@@ -568,9 +565,7 @@ class ExternalArtifactAcquisitionReceipt(ReferenceContract):
         if "\\" in value:
             raise ValueError("receipt paths must use POSIX separators")
         path = PurePosixPath(value)
-        if path.is_absolute() or any(
-            part in {"", ".", ".."} for part in path.parts
-        ):
+        if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
             raise ValueError("receipt path must remain below its dataset root")
         return value
 
@@ -582,7 +577,7 @@ class ExternalArtifactAcquisitionReceipt(ReferenceContract):
         return value
 
     @model_validator(mode="after")
-    def validate_archive_receipt(self) -> "ExternalArtifactAcquisitionReceipt":
+    def validate_archive_receipt(self) -> ExternalArtifactAcquisitionReceipt:
         is_zip_path = self.relative_path.lower().endswith(".zip")
         if is_zip_path != (self.archive_report_sha256 is not None):
             raise ValueError("zip receipts require an archive report identity")
@@ -599,7 +594,7 @@ class BenchmarkMetric(ReferenceContract):
     unit: str = Field(min_length=1, max_length=40)
 
     @model_validator(mode="after")
-    def validate_value(self) -> "BenchmarkMetric":
+    def validate_value(self) -> BenchmarkMetric:
         if not self.value.is_finite():
             raise ValueError("benchmark metric must be finite")
         return self
@@ -636,9 +631,7 @@ class PublishedBenchmarkRecord(ReferenceContract):
     reproducibility: ReproducibilityLevel
     source_artifact_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     metrics: tuple[BenchmarkMetric, ...] = Field(min_length=1)
-    permitted_use: Literal["calculation_reference_only"] = (
-        "calculation_reference_only"
-    )
+    permitted_use: Literal["calculation_reference_only"] = "calculation_reference_only"
     promotion_eligible: Literal[False] = False
     execution_authority: Literal[False] = False
 
@@ -655,7 +648,7 @@ class PublishedBenchmarkRecord(ReferenceContract):
         return require_utc(value, info.field_name)
 
     @model_validator(mode="after")
-    def validate_record(self) -> "PublishedBenchmarkRecord":
+    def validate_record(self) -> PublishedBenchmarkRecord:
         if self.retrieved_at < self.published_at:
             raise ValueError("benchmark cannot be retrieved before publication")
         names = [metric.name for metric in self.metrics]
@@ -681,7 +674,7 @@ class ReferenceMetricBundle(ReferenceContract):
     execution_authority: Literal[False] = False
 
     @model_validator(mode="after")
-    def validate_finite_values(self) -> "ReferenceMetricBundle":
+    def validate_finite_values(self) -> ReferenceMetricBundle:
         values = (
             self.total_return,
             self.mean_return,
@@ -738,7 +731,7 @@ class ExternalBenchmarkRun(ReferenceContract):
         return value
 
     @model_validator(mode="after")
-    def validate_run(self) -> "ExternalBenchmarkRun":
+    def validate_run(self) -> ExternalBenchmarkRun:
         if self.completed_at < self.started_at:
             raise ValueError("benchmark completion cannot precede start")
         metric_names = [metric.name for metric in self.metrics]

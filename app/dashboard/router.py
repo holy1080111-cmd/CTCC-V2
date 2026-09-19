@@ -1,8 +1,7 @@
-﻿from fastapi import APIRouter
+from fastapi import APIRouter
 from fastapi.responses import HTMLResponse
 
 from app.dashboard.page import DASHBOARD_HTML
-
 
 router = APIRouter(
     tags=["dashboard"],

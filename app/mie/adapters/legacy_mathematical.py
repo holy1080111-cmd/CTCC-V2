@@ -13,7 +13,6 @@ from app.mie.contracts import (
     ValidationLevel,
 )
 
-
 _VALIDATION_MAP = {
     "analytical": ValidationLevel.CAUSAL,
     "prequential": ValidationLevel.PREQUENTIAL,
@@ -70,7 +69,7 @@ def adapt_legacy_mathematical_core(
                 direction=_direction(component.signal),
                 strength=abs(component.signal),
                 reliability=component.reliability,
-                uncertainty=Decimal("1") - component.reliability,
+                uncertainty=Decimal(1) - component.reliability,
                 data_quality=core.coverage,
                 validation_level=validation_level,
                 permitted_use=permitted_use,

@@ -11,17 +11,12 @@ from app.exchange.okx.symbols import (
     REVIEWED_DEMO_INSTRUMENT_IDS,
 )
 
-
 _REVIEWED_DEMO_SYMBOLS_CSV = ",".join(REVIEWED_DEMO_INSTRUMENT_IDS)
 _LIVE_BOUNDARY_SYMBOLS_CSV = ",".join(LIVE_BOUNDARY_INSTRUMENT_IDS)
 
 
 def _normalized_symbol_list(value: str) -> list[str]:
-    return [
-        item.strip().upper()
-        for item in value.split(",")
-        if item.strip()
-    ]
+    return [item.strip().upper() for item in value.split(",") if item.strip()]
 
 
 def _validate_symbol_scope(
@@ -73,7 +68,9 @@ class Settings(BaseSettings):
     readiness_require_redis: bool = True
     readiness_require_database: bool = True
 
-    trading_mode: Literal["analysis_only", "paper", "okx_demo", "live"] = "analysis_only"
+    trading_mode: Literal["analysis_only", "paper", "okx_demo", "live"] = (
+        "analysis_only"
+    )
     auto_trade: bool = False
     live_trading: bool = False
 
@@ -138,10 +135,10 @@ class Settings(BaseSettings):
     okx_live_read_max_retries: int = Field(default=2, ge=0, le=5)
     okx_live_allowed_symbols: str = _LIVE_BOUNDARY_SYMBOLS_CSV
     okx_live_max_order_size_contracts: Decimal = Field(
-        default=Decimal("1"), gt=0, le=Decimal("10")
+        default=Decimal(1), gt=0, le=Decimal(10)
     )
     okx_live_max_notional_usdt: Decimal = Field(
-        default=Decimal("1000"), gt=0, le=Decimal("10000")
+        default=Decimal(1000), gt=0, le=Decimal(10000)
     )
     okx_live_max_open_positions: int = Field(default=1, ge=1, le=2)
     okx_live_max_leverage: int = Field(default=1, ge=1, le=3)
@@ -152,12 +149,8 @@ class Settings(BaseSettings):
     okx_live_order_detail_poll_attempts: int = Field(default=5, ge=1, le=10)
     okx_live_order_detail_poll_delay_seconds: float = Field(default=0.5, ge=0, le=5)
     okx_live_recovery_flat_poll_attempts: int = Field(default=3, ge=2, le=10)
-    okx_live_recovery_flat_poll_delay_seconds: float = Field(
-        default=2.0, ge=0, le=10
-    )
-    okx_live_order_expiry_milliseconds: int = Field(
-        default=5000, ge=1000, le=10000
-    )
+    okx_live_recovery_flat_poll_delay_seconds: float = Field(default=2.0, ge=0, le=10)
+    okx_live_order_expiry_milliseconds: int = Field(default=5000, ge=1000, le=10000)
 
     # An arm is process-local, short lived, flat-start, and one-submission only.
     okx_live_arm_ttl_seconds: int = Field(default=300, ge=60, le=900)
@@ -184,7 +177,7 @@ class Settings(BaseSettings):
     okx_live_scan_candle_limit: int = Field(default=250, ge=200, le=300)
     okx_live_scan_max_snapshot_age_seconds: int = Field(default=30, ge=5, le=300)
     okx_live_scan_max_entry_drift_bps: Decimal = Field(
-        default=Decimal("20"), ge=1, le=Decimal("100")
+        default=Decimal(20), ge=1, le=Decimal(100)
     )
     okx_live_automation_leverage: int = Field(default=1, ge=1, le=3)
 
@@ -198,7 +191,9 @@ class Settings(BaseSettings):
     okx_demo_timeout_seconds: float = Field(default=10, gt=1, le=60)
     okx_demo_read_max_retries: int = Field(default=2, ge=0, le=5)
     okx_demo_allowed_symbols: str = _REVIEWED_DEMO_SYMBOLS_CSV
-    okx_demo_max_order_size_contracts: Decimal = Field(default=Decimal("1"), gt=0, le=1000)
+    okx_demo_max_order_size_contracts: Decimal = Field(
+        default=Decimal(1), gt=0, le=1000
+    )
     okx_demo_max_open_positions: int = Field(default=1, ge=1, le=10)
     okx_demo_max_leverage: int = Field(default=3, ge=1, le=20)
     okx_demo_require_protection: bool = True
@@ -213,23 +208,25 @@ class Settings(BaseSettings):
     okx_demo_scan_initial_delay_seconds: int = Field(default=10, ge=0, le=600)
     okx_demo_scan_candle_limit: int = Field(default=250, ge=200, le=300)
     okx_demo_scan_max_snapshot_age_seconds: int = Field(default=30, ge=5, le=300)
-    okx_demo_scan_max_entry_drift_bps: Decimal = Field(default=Decimal("30"), ge=1, le=500)
+    okx_demo_scan_max_entry_drift_bps: Decimal = Field(
+        default=Decimal(30), ge=1, le=500
+    )
     # Automated Demo entries use a price-bounded FOK order.  This cap is
     # applied in addition to the candidate reward/risk boundary, so a fill
     # must satisfy both limits.  It never authorizes writes by itself.
     okx_demo_execution_max_adverse_slippage_bps: Decimal = Field(
-        default=Decimal("5"), ge=0, le=Decimal("50")
+        default=Decimal(5), ge=0, le=Decimal(50)
     )
     okx_demo_trade_cooldown_seconds: int = Field(default=1800, ge=0, le=86_400)
-    # Optional continuous Demo session. It removes the daily-loss, daily
-    # trade-count, consecutive-loss, and post-close cooldown gates. Protected
-    # stops, weekly-loss/drawdown, portfolio risk, capital buckets, duplicate
-    # suppression, and execution-authority gates remain mandatory. Disabled by
-    # default.
+    # Continuous scheduling may remove daily trade-count pacing and cooldown.
+    # Daily-loss, loss-streak, weekly-loss/drawdown, protected stops, portfolio
+    # risk, capital buckets, duplicate suppression and authority remain mandatory.
     okx_demo_continuous_session_enabled: bool = False
     okx_demo_trade_reconcile_grace_seconds: int = Field(default=30, ge=5, le=300)
     okx_demo_max_trades_per_day: int = Field(default=3, ge=1, le=20)
-    okx_demo_daily_loss_limit_pct: Decimal = Field(default=Decimal("0.01"), gt=0, le=Decimal("0.10"))
+    okx_demo_daily_loss_limit_pct: Decimal = Field(
+        default=Decimal("0.01"), gt=0, le=Decimal("0.10")
+    )
     okx_demo_automation_max_consecutive_losses: int = Field(default=3, ge=1, le=10)
     okx_demo_automation_leverage: int = Field(default=1, ge=1, le=5)
     okx_demo_automation_history_limit: int = Field(default=100, ge=10, le=1000)
@@ -262,7 +259,7 @@ class Settings(BaseSettings):
         default=Decimal("0.25"), gt=0, le=Decimal("0.50")
     )
     okx_demo_portfolio_max_risk_pct: Decimal = Field(
-        default=Decimal("0.02"), gt=0, le=Decimal("0.20")
+        default=Decimal("0.01"), gt=0, le=Decimal("0.20")
     )
     okx_demo_portfolio_max_margin_pct: Decimal = Field(
         default=Decimal("0.60"), gt=0, le=Decimal("0.80")
@@ -271,7 +268,7 @@ class Settings(BaseSettings):
     # feature is disabled by default and cannot authorize a Demo or Live write.
     okx_demo_capital_bucket_enabled: bool = False
     okx_demo_position_margin_bucket_usdt: Decimal = Field(
-        default=Decimal("2000"), gt=0, le=Decimal("10000")
+        default=Decimal(300), gt=0, le=Decimal(10000)
     )
 
     # Opt-in structural Demo risk model.  It consumes confirmed K-line swing
@@ -282,19 +279,19 @@ class Settings(BaseSettings):
     okx_demo_structural_score_elite_min: int = Field(default=95, ge=3, le=99)
     okx_demo_structural_score_extreme_min: int = Field(default=98, ge=4, le=100)
     okx_demo_structural_low_risk_pct: Decimal = Field(
-        default=Decimal("0.015"), gt=0, le=Decimal("0.10")
+        default=Decimal("0.005"), gt=0, le=Decimal("0.005")
     )
     okx_demo_structural_medium_risk_pct: Decimal = Field(
-        default=Decimal("0.025"), gt=0, le=Decimal("0.10")
+        default=Decimal("0.005"), gt=0, le=Decimal("0.005")
     )
     okx_demo_structural_high_risk_pct: Decimal = Field(
-        default=Decimal("0.03"), gt=0, le=Decimal("0.10")
+        default=Decimal("0.005"), gt=0, le=Decimal("0.005")
     )
     okx_demo_structural_elite_risk_pct: Decimal = Field(
-        default=Decimal("0.04"), gt=0, le=Decimal("0.10")
+        default=Decimal("0.005"), gt=0, le=Decimal("0.005")
     )
     okx_demo_structural_extreme_risk_pct: Decimal = Field(
-        default=Decimal("0.06"), gt=0, le=Decimal("0.10")
+        default=Decimal("0.005"), gt=0, le=Decimal("0.005")
     )
     okx_demo_structural_low_leverage_cap: int = Field(default=3, ge=1, le=20)
     okx_demo_structural_medium_leverage_cap: int = Field(default=5, ge=1, le=20)
@@ -302,16 +299,16 @@ class Settings(BaseSettings):
     okx_demo_structural_elite_leverage_cap: int = Field(default=10, ge=1, le=20)
     okx_demo_structural_extreme_leverage_cap: int = Field(default=20, ge=1, le=20)
     okx_demo_structural_round_trip_fee_bps: Decimal = Field(
-        default=Decimal("10"), ge=0, le=Decimal("100")
+        default=Decimal(10), ge=0, le=Decimal(100)
     )
     okx_demo_structural_round_trip_slippage_bps: Decimal = Field(
-        default=Decimal("4"), ge=0, le=Decimal("100")
+        default=Decimal(4), ge=0, le=Decimal(100)
     )
     okx_demo_structural_funding_buffer_bps: Decimal = Field(
-        default=Decimal("2"), ge=0, le=Decimal("100")
+        default=Decimal(2), ge=0, le=Decimal(100)
     )
     okx_demo_structural_min_net_risk_reward: Decimal = Field(
-        default=Decimal("2.0"), gt=0, le=Decimal("10")
+        default=Decimal("2.0"), gt=0, le=Decimal(10)
     )
     okx_demo_structural_20x_min_confidence: Decimal = Field(
         default=Decimal("0.65"), ge=0, le=1
@@ -329,7 +326,9 @@ class Settings(BaseSettings):
     okx_demo_observability_stale_after_seconds: int = Field(default=90, ge=10, le=3600)
     okx_demo_observability_error_threshold: int = Field(default=3, ge=1, le=20)
     okx_demo_observability_event_limit: int = Field(default=500, ge=50, le=5000)
-    okx_demo_observability_metrics_run_limit: int = Field(default=5000, ge=100, le=50_000)
+    okx_demo_observability_metrics_run_limit: int = Field(
+        default=5000, ge=100, le=50_000
+    )
     okx_demo_soak_enabled: bool = True
     okx_demo_soak_allow_execute: bool = False
     okx_demo_soak_default_duration_minutes: int = Field(default=60, ge=1, le=10_080)
@@ -353,22 +352,26 @@ class Settings(BaseSettings):
     # v1.5 Demo reliability and performance validation. Analytics are read-only.
     okx_demo_performance_window_days: int = Field(default=30, ge=1, le=365)
     okx_demo_performance_snapshot_retention_days: int = Field(default=90, ge=7, le=730)
-    okx_demo_performance_snapshot_query_limit: int = Field(default=50_000, ge=100, le=200_000)
-    okx_demo_performance_order_query_limit: int = Field(default=10_000, ge=100, le=100_000)
+    okx_demo_performance_snapshot_query_limit: int = Field(
+        default=50_000, ge=100, le=200_000
+    )
+    okx_demo_performance_order_query_limit: int = Field(
+        default=10_000, ge=100, le=100_000
+    )
     okx_demo_performance_min_active_days: int = Field(default=7, ge=1, le=365)
     okx_demo_performance_min_realized_trades: int = Field(default=20, ge=1, le=10_000)
     okx_demo_performance_max_average_slippage_bps: Decimal = Field(
-        default=Decimal("10"), ge=0, le=Decimal("500")
+        default=Decimal(10), ge=0, le=Decimal(500)
     )
     okx_demo_performance_min_profit_factor: Decimal = Field(
-        default=Decimal("1.0"), ge=0, le=Decimal("20")
+        default=Decimal("1.0"), ge=0, le=Decimal(20)
     )
     okx_demo_performance_max_drawdown_pct: Decimal = Field(
         default=Decimal("0.02"), gt=0, le=Decimal("0.50")
     )
     okx_demo_strategy_review_min_trades: int = Field(default=5, ge=1, le=1000)
     okx_demo_strategy_review_min_win_rate: Decimal = Field(
-        default=Decimal("0.35"), ge=0, le=Decimal("1")
+        default=Decimal("0.35"), ge=0, le=Decimal(1)
     )
     okx_demo_strategy_auto_disable: bool = False
 
@@ -485,15 +488,13 @@ class Settings(BaseSettings):
             set(self.okx_demo_allowed_symbol_list)
         ):
             raise ValueError(
-                "OKX_DEMO_SCAN_SYMBOLS must be a subset of "
-                "OKX_DEMO_ALLOWED_SYMBOLS"
+                "OKX_DEMO_SCAN_SYMBOLS must be a subset of OKX_DEMO_ALLOWED_SYMBOLS"
             )
         if not set(self.okx_live_scan_symbol_list).issubset(
             set(self.okx_live_allowed_symbol_list)
         ):
             raise ValueError(
-                "OKX_LIVE_SCAN_SYMBOLS must be a subset of "
-                "OKX_LIVE_ALLOWED_SYMBOLS"
+                "OKX_LIVE_SCAN_SYMBOLS must be a subset of OKX_LIVE_ALLOWED_SYMBOLS"
             )
 
         if self.paper_auto_execution:
@@ -504,7 +505,9 @@ class Settings(BaseSettings):
             if not self.paper_auto_ticks:
                 raise ValueError("PAPER_AUTO_EXECUTION requires PAPER_AUTO_TICKS=true")
             if not self.paper_persistence_enabled:
-                raise ValueError("PAPER_AUTO_EXECUTION requires PAPER_PERSISTENCE_ENABLED=true")
+                raise ValueError(
+                    "PAPER_AUTO_EXECUTION requires PAPER_PERSISTENCE_ENABLED=true"
+                )
             if not set(self.paper_scan_symbol_list).issubset(
                 set(self.okx_ws_symbol_list)
             ):
@@ -537,13 +540,17 @@ class Settings(BaseSettings):
             if self.paper_auto_execution:
                 raise ValueError("PAPER_AUTO_EXECUTION must be false in live mode")
             if self.okx_demo_auto_execution or self.okx_demo_allow_order_writes:
-                raise ValueError("OKX Demo writes and automation must be disabled in live mode")
+                raise ValueError(
+                    "OKX Demo writes and automation must be disabled in live mode"
+                )
 
         if self.live_trading:
             if self.trading_mode != "live":
                 raise ValueError("LIVE_TRADING=true requires TRADING_MODE=live")
             if not self.okx_live_enabled or not self.okx_live_credentials_configured:
-                raise ValueError("LIVE_TRADING=true requires enabled OKX Live credentials")
+                raise ValueError(
+                    "LIVE_TRADING=true requires enabled OKX Live credentials"
+                )
             if not self.okx_live_allow_order_writes:
                 raise ValueError(
                     "LIVE_TRADING=true requires OKX_LIVE_ALLOW_ORDER_WRITES=true"
@@ -551,7 +558,9 @@ class Settings(BaseSettings):
             if self.environment != "production":
                 raise ValueError("OKX Live writes require ENVIRONMENT=production")
             if not self.api_token_is_safe:
-                raise ValueError("OKX Live writes require an API token of at least 32 characters")
+                raise ValueError(
+                    "OKX Live writes require an API token of at least 32 characters"
+                )
             if self.web_concurrency != 1:
                 raise ValueError("OKX Live writes require WEB_CONCURRENCY=1")
 
@@ -603,36 +612,56 @@ class Settings(BaseSettings):
                 )
 
         parsed = urlparse(self.okx_demo_rest_base_url)
-        if parsed.scheme != "https" or parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
-            raise ValueError("OKX_DEMO_REST_BASE_URL must be an HTTPS origin without a path")
+        if (
+            parsed.scheme != "https"
+            or parsed.path not in {"", "/"}
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError(
+                "OKX_DEMO_REST_BASE_URL must be an HTTPS origin without a path"
+            )
         if parsed.hostname not in {"openapi.okx.com", "www.okx.com", "us.okx.com"}:
             raise ValueError("OKX_DEMO_REST_BASE_URL must use an approved OKX API host")
 
         if self.okx_demo_allow_order_writes:
             if not self.okx_demo_enabled:
-                raise ValueError("OKX_DEMO_ALLOW_ORDER_WRITES requires OKX_DEMO_ENABLED=true")
-            if self.trading_mode != "okx_demo":
-                raise ValueError("OKX_DEMO_ALLOW_ORDER_WRITES requires TRADING_MODE=okx_demo")
-            if not self.okx_demo_credentials_configured:
-                raise ValueError("OKX Demo credentials are required before enabling order writes")
-            if self.paper_auto_execution:
-                raise ValueError("PAPER_AUTO_EXECUTION must be false when OKX Demo writes are enabled")
-
-        if self.okx_demo_auto_reconcile_on_start:
-            if not self.okx_demo_enabled or not self.okx_demo_credentials_configured:
                 raise ValueError(
-                    "OKX_DEMO_AUTO_RECONCILE_ON_START requires enabled Demo credentials"
+                    "OKX_DEMO_ALLOW_ORDER_WRITES requires OKX_DEMO_ENABLED=true"
                 )
+            if self.trading_mode != "okx_demo":
+                raise ValueError(
+                    "OKX_DEMO_ALLOW_ORDER_WRITES requires TRADING_MODE=okx_demo"
+                )
+            if not self.okx_demo_credentials_configured:
+                raise ValueError(
+                    "OKX Demo credentials are required before enabling order writes"
+                )
+            if self.paper_auto_execution:
+                raise ValueError(
+                    "PAPER_AUTO_EXECUTION must be false when OKX Demo writes are enabled"
+                )
+
+        if self.okx_demo_auto_reconcile_on_start and (
+            not self.okx_demo_enabled or not self.okx_demo_credentials_configured
+        ):
+            raise ValueError(
+                "OKX_DEMO_AUTO_RECONCILE_ON_START requires enabled Demo credentials"
+            )
 
         if self.okx_demo_auto_execution:
             if self.trading_mode != "okx_demo":
-                raise ValueError("OKX_DEMO_AUTO_EXECUTION requires TRADING_MODE=okx_demo")
+                raise ValueError(
+                    "OKX_DEMO_AUTO_EXECUTION requires TRADING_MODE=okx_demo"
+                )
             if not self.okx_demo_enabled or not self.okx_demo_allow_order_writes:
                 raise ValueError(
                     "OKX_DEMO_AUTO_EXECUTION requires enabled Demo order writes"
                 )
             if not self.okx_demo_credentials_configured:
-                raise ValueError("OKX Demo credentials are required for Demo automation")
+                raise ValueError(
+                    "OKX Demo credentials are required for Demo automation"
+                )
             if not self.okx_ws_enabled:
                 raise ValueError("OKX_DEMO_AUTO_EXECUTION requires OKX_WS_ENABLED=true")
             if self.paper_auto_execution:
@@ -744,7 +773,9 @@ class Settings(BaseSettings):
                 < self.okx_demo_structural_score_extreme_min
                 <= 100
             ):
-                raise ValueError("structural Demo score tiers must be strictly increasing")
+                raise ValueError(
+                    "structural Demo score tiers must be strictly increasing"
+                )
             if (
                 self.strategy_min_score < 72
                 or self.okx_demo_score_medium_min < 80
@@ -752,9 +783,7 @@ class Settings(BaseSettings):
                 or self.okx_demo_structural_score_elite_min < 95
                 or self.okx_demo_structural_score_extreme_min < 98
             ):
-                raise ValueError(
-                    "structural Demo score thresholds cannot be relaxed"
-                )
+                raise ValueError("structural Demo score thresholds cannot be relaxed")
             structural_risks = (
                 self.okx_demo_structural_low_risk_pct,
                 self.okx_demo_structural_medium_risk_pct,
@@ -764,13 +793,7 @@ class Settings(BaseSettings):
             )
             if tuple(sorted(structural_risks)) != structural_risks:
                 raise ValueError("structural Demo risk tiers must be nondecreasing")
-            risk_ceilings = (
-                Decimal("0.015"),
-                Decimal("0.025"),
-                Decimal("0.03"),
-                Decimal("0.04"),
-                Decimal("0.06"),
-            )
+            risk_ceilings = (Decimal("0.005"),) * 5
             if any(
                 configured > ceiling
                 for configured, ceiling in zip(structural_risks, risk_ceilings)
@@ -780,6 +803,8 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "structural extreme risk cannot exceed portfolio stop-risk limit"
                 )
+            if self.okx_demo_portfolio_max_risk_pct > Decimal("0.01"):
+                raise ValueError("structural Demo portfolio stop-risk ceiling is 1%")
             if structural_risks[-1] > Decimal(str(self.max_weekly_loss_pct)):
                 raise ValueError(
                     "structural extreme risk cannot exceed the weekly-loss backstop"
@@ -796,9 +821,7 @@ class Settings(BaseSettings):
             leverage_ceilings = (3, 5, 8, 10, 20)
             if any(
                 configured > ceiling
-                for configured, ceiling in zip(
-                    structural_leverage, leverage_ceilings
-                )
+                for configured, ceiling in zip(structural_leverage, leverage_ceilings)
             ):
                 raise ValueError(
                     "structural Demo leverage ceilings cannot be increased"
@@ -812,18 +835,14 @@ class Settings(BaseSettings):
                 + self.okx_demo_structural_round_trip_slippage_bps
                 + self.okx_demo_structural_funding_buffer_bps
             )
-            if total_cost_bps < Decimal("16"):
-                raise ValueError(
-                    "structural Demo cost buffer cannot be below 16 bps"
-                )
-            if self.okx_demo_structural_min_net_risk_reward < Decimal("2"):
+            if total_cost_bps < Decimal(16):
+                raise ValueError("structural Demo cost buffer cannot be below 16 bps")
+            if self.okx_demo_structural_min_net_risk_reward < Decimal(2):
                 raise ValueError("structural Demo net RR floor cannot be relaxed")
             if (
                 self.okx_demo_structural_20x_min_confidence < Decimal("0.65")
-                or self.okx_demo_structural_20x_min_reliability
-                < Decimal("0.65")
-                or self.okx_demo_structural_20x_max_instability
-                > Decimal("0.20")
+                or self.okx_demo_structural_20x_min_reliability < Decimal("0.65")
+                or self.okx_demo_structural_20x_max_instability > Decimal("0.20")
             ):
                 raise ValueError(
                     "structural Demo 20x quality thresholds cannot be relaxed"
@@ -850,28 +869,43 @@ class Settings(BaseSettings):
                     "OKX_DEMO_CONTINUOUS_SESSION_ENABLED requires "
                     "OKX_DEMO_TRADE_COOLDOWN_SECONDS=0"
                 )
-        if self.okx_demo_soak_default_duration_minutes > self.okx_demo_soak_max_duration_minutes:
+        if (
+            self.okx_demo_soak_default_duration_minutes
+            > self.okx_demo_soak_max_duration_minutes
+        ):
             raise ValueError(
                 "OKX_DEMO_SOAK_DEFAULT_DURATION_MINUTES cannot exceed "
                 "OKX_DEMO_SOAK_MAX_DURATION_MINUTES"
             )
-        if self.okx_demo_execution_soak_max_submissions > self.okx_demo_max_trades_per_day:
+        if (
+            self.okx_demo_execution_soak_max_submissions
+            > self.okx_demo_max_trades_per_day
+        ):
             raise ValueError(
                 "OKX_DEMO_EXECUTION_SOAK_MAX_SUBMISSIONS cannot exceed "
                 "OKX_DEMO_MAX_TRADES_PER_DAY"
             )
-        if self.okx_demo_execution_soak_loss_limit_pct > self.okx_demo_daily_loss_limit_pct:
+        if (
+            self.okx_demo_execution_soak_loss_limit_pct
+            > self.okx_demo_daily_loss_limit_pct
+        ):
             raise ValueError(
                 "OKX_DEMO_EXECUTION_SOAK_LOSS_LIMIT_PCT cannot exceed "
                 "OKX_DEMO_DAILY_LOSS_LIMIT_PCT"
             )
 
-        if self.okx_demo_performance_window_days > self.okx_demo_performance_snapshot_retention_days:
+        if (
+            self.okx_demo_performance_window_days
+            > self.okx_demo_performance_snapshot_retention_days
+        ):
             raise ValueError(
                 "OKX_DEMO_PERFORMANCE_WINDOW_DAYS cannot exceed "
                 "OKX_DEMO_PERFORMANCE_SNAPSHOT_RETENTION_DAYS"
             )
-        if self.okx_demo_performance_min_active_days > self.okx_demo_performance_window_days:
+        if (
+            self.okx_demo_performance_min_active_days
+            > self.okx_demo_performance_window_days
+        ):
             raise ValueError(
                 "OKX_DEMO_PERFORMANCE_MIN_ACTIVE_DAYS cannot exceed "
                 "OKX_DEMO_PERFORMANCE_WINDOW_DAYS"
@@ -883,7 +917,9 @@ class Settings(BaseSettings):
 
         if self.okx_demo_soak_allow_execute:
             if not self.okx_demo_soak_enabled:
-                raise ValueError("OKX_DEMO_SOAK_ALLOW_EXECUTE requires OKX_DEMO_SOAK_ENABLED=true")
+                raise ValueError(
+                    "OKX_DEMO_SOAK_ALLOW_EXECUTE requires OKX_DEMO_SOAK_ENABLED=true"
+                )
             if not self.okx_demo_auto_execution:
                 raise ValueError(
                     "OKX_DEMO_SOAK_ALLOW_EXECUTE requires OKX_DEMO_AUTO_EXECUTION=true"

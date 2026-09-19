@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import random
+from collections.abc import Sequence
 from dataclasses import asdict
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal, localcontext
-from typing import Sequence
 
 import pytest
 from pydantic import ValidationError
@@ -25,7 +25,7 @@ from app.mie.features import (
 )
 
 D = Decimal
-START = datetime(2026, 1, 1, tzinfo=timezone.utc)
+START = datetime(2026, 1, 1, tzinfo=UTC)
 HORIZON = ForecastHorizon(label="15m", seconds=900)
 
 
@@ -39,16 +39,8 @@ def feature_bars(
     result: list[FeatureBar] = []
     for index, close in enumerate(closes):
         open_price = closes[index - 1] if index else close
-        high = (
-            highs[index]
-            if highs is not None
-            else max(open_price, close) + D("0.1")
-        )
-        low = (
-            lows[index]
-            if lows is not None
-            else min(open_price, close) - D("0.1")
-        )
+        high = highs[index] if highs is not None else max(open_price, close) + D("0.1")
+        low = lows[index] if lows is not None else min(open_price, close) - D("0.1")
         result.append(
             FeatureBar(
                 closed_at=START + timedelta(minutes=15 * (index + 1)),
@@ -56,11 +48,7 @@ def feature_bars(
                 high=high,
                 low=low,
                 close=close,
-                volume=(
-                    volumes[index]
-                    if volumes is not None
-                    else D("100") + D(index)
-                ),
+                volume=(volumes[index] if volumes is not None else D("100") + D(index)),
             )
         )
     return tuple(result)
@@ -121,7 +109,7 @@ def test_feature_window_requires_closed_confirmed_chronological_bars() -> None:
             instrument_id="BTC-USDT-SWAP",
             horizon=HORIZON,
             as_of=bars[-1].closed_at,
-            bars=tuple([*bars[:-2], bars[-1], bars[-2]]),
+            bars=(*bars[:-2], bars[-1], bars[-2]),
         )
 
     corrupted = bars[0].model_copy(update={"confirmed": False})
@@ -130,7 +118,7 @@ def test_feature_window_requires_closed_confirmed_chronological_bars() -> None:
             instrument_id="BTC-USDT-SWAP",
             horizon=HORIZON,
             as_of=bars[-1].closed_at,
-            bars=tuple([corrupted, *bars[1:]]),
+            bars=(corrupted, *bars[1:]),
         )
 
 
@@ -147,7 +135,7 @@ def test_feature_window_rejects_future_and_non_utc_data() -> None:
 
     with pytest.raises(ValidationError):
         FeatureBar(
-            closed_at=datetime(2026, 1, 1),
+            closed_at=datetime(2026, 1, 1),  # noqa: DTZ001 - Deliberately naive input verifies rejection, never accepted source time.
             open=D("100"),
             high=D("101"),
             low=D("99"),
@@ -188,21 +176,25 @@ def test_public_feature_engines_fail_closed_on_invalid_inputs() -> None:
     assert causal_signal_features([D("100")] * 6, alpha=D("0")) is None
     assert causal_dynamics([D("100")] * 20, window=21) is None
     assert momentum_features([D("100")] * 20) is None
-    assert momentum_features(
-        [D("100")] * 21,
-        [D("1")] * 20,
-    ) is None
-    assert momentum_features(
-        [D("100")] * 21,
-        [D("1")] * 20 + [D("-1")],
-    ) is None
-    assert confirmed_geometry_features(
-        feature_bars([D("100")] * 5), left_bars=0
-    ) is None
+    assert (
+        momentum_features(
+            [D("100")] * 21,
+            [D("1")] * 20,
+        )
+        is None
+    )
+    assert (
+        momentum_features(
+            [D("100")] * 21,
+            [D("1")] * 20 + [D("-1")],
+        )
+        is None
+    )
+    assert (
+        confirmed_geometry_features(feature_bars([D("100")] * 5), left_bars=0) is None
+    )
     bars = list(feature_bars([D("100")] * 5))
-    assert confirmed_geometry_features(
-        tuple([*bars[:-2], bars[-1], bars[-2]])
-    ) is None
+    assert confirmed_geometry_features((*bars[:-2], bars[-1], bars[-2])) is None
 
 
 def test_statistics_are_exact_for_constant_prices() -> None:
@@ -338,10 +330,7 @@ def test_randomized_feature_paths_remain_finite_bounded_and_deterministic() -> N
 
         assert first is not None and second is not None
         assert first.replay_sha256 == second.replay_sha256
-        assert all(
-            value.is_finite()
-            for value in decimal_values(first.model_dump())
-        )
+        assert all(value.is_finite() for value in decimal_values(first.model_dump()))
         assert D("0") <= first.statistics.outlier_fraction <= D("1")
         assert D("0") <= first.signal.noise_ratio <= D("1")
         assert D("0") <= first.signal.strength <= D("1")

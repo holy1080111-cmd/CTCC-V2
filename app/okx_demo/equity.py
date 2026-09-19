@@ -5,7 +5,6 @@ from decimal import Decimal
 
 from app.domain.okx_demo import OkxDemoAccountConfig, OkxDemoBalanceSnapshot
 
-
 D = Decimal
 DEFAULT_DEMO_SETTLEMENT_CURRENCY = "USDT"
 

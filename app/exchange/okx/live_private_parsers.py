@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -14,13 +14,12 @@ from app.domain.okx_live import (
     OkxLivePositionView,
 )
 
-
 KNOWN_API_KEY_PERMISSIONS = frozenset({"read_only", "trade", "withdraw"})
 
 
 def _decimal_or_zero(value: Any) -> Decimal:
     if value in (None, ""):
-        return Decimal("0")
+        return Decimal(0)
     return Decimal(str(value))
 
 
@@ -45,18 +44,14 @@ def _bool_or_none(value: Any) -> bool | None:
 def _datetime_from_ms(value: Any) -> datetime | None:
     if value in (None, "", "0", 0):
         return None
-    return datetime.fromtimestamp(int(value) / 1000, tz=timezone.utc)
+    return datetime.fromtimestamp(int(value) / 1000, tz=UTC)
 
 
 def _permission_tokens(value: Any) -> list[str]:
     if value in (None, ""):
         return []
     return sorted(
-        {
-            item.strip().lower()
-            for item in str(value).split(",")
-            if item.strip()
-        }
+        {item.strip().lower() for item in str(value).split(",") if item.strip()}
     )
 
 
@@ -99,7 +94,7 @@ def parse_live_balance(row: dict[str, Any]) -> OkxLiveBalanceSnapshot:
                 unrealized_pnl=_decimal_or_zero(item.get("upl")),
             )
         )
-    captured_at = _datetime_from_ms(row.get("uTime")) or datetime.now(timezone.utc)
+    captured_at = _datetime_from_ms(row.get("uTime")) or datetime.now(UTC)
     return OkxLiveBalanceSnapshot(
         total_equity=_decimal_or_zero(row.get("totalEq")),
         isolated_equity=_decimal_or_zero(row.get("isoEq")),

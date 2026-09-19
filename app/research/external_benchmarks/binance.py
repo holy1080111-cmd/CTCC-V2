@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from collections.abc import Callable
-from datetime import date, datetime, timezone
 import hashlib
-from pathlib import Path
 import re
+from collections.abc import Callable
+from datetime import UTC, date, datetime
+from pathlib import Path
 from typing import Literal
 from urllib.parse import urljoin, urlparse
 
@@ -19,7 +19,6 @@ from app.research.external_benchmarks.contracts import (
     require_utc,
 )
 
-
 Clock = Callable[[], datetime]
 BINANCE_DATA_HOST = "data.binance.vision"
 BINANCE_TERMS_URL = "https://github.com/binance/binance-public-data"
@@ -32,9 +31,7 @@ EXPECTED_MEDIA_TYPES = (
     "binary/octet-stream",
 )
 FIRST_REFERENCE_DAY = date(2024, 1, 1)
-CHECKSUM_PATTERN = re.compile(
-    rb"\A([0-9a-fA-F]{64})[ \t]+\*?([^\r\n]+)\r?\n?\Z"
-)
+CHECKSUM_PATTERN = re.compile(rb"\A([0-9a-fA-F]{64})[ \t]+\*?([^\r\n]+)\r?\n?\Z")
 
 
 class BinanceReferencePreparationError(RuntimeError):
@@ -149,7 +146,7 @@ class BinancePublicArtifactIdentity(ReferenceContract):
         return value
 
     @model_validator(mode="after")
-    def validate_timing(self) -> "BinancePublicArtifactIdentity":
+    def validate_timing(self) -> BinancePublicArtifactIdentity:
         if self.provider_last_modified_at > self.observed_at:
             raise ValueError("provider Last-Modified cannot be in the future")
         return self
@@ -184,16 +181,14 @@ def _media_type(value: str | None) -> str:
 
 def _http_datetime(value: str | None) -> datetime:
     if not value:
-        raise BinanceReferencePreparationError(
-            "Binance artifact omitted Last-Modified"
-        )
+        raise BinanceReferencePreparationError("Binance artifact omitted Last-Modified")
     try:
-        parsed = datetime.strptime(value, "%a, %d %b %Y %H:%M:%S GMT")
+        parsed = datetime.strptime(value, "%a, %d %b %Y %H:%M:%S GMT")  # noqa: DTZ007 - The fixed GMT header format is explicitly attached to UTC immediately below.
     except ValueError as exc:
         raise BinanceReferencePreparationError(
             "Binance artifact Last-Modified is invalid"
         ) from exc
-    return parsed.replace(tzinfo=timezone.utc)
+    return parsed.replace(tzinfo=UTC)
 
 
 def parse_binance_checksum(payload: bytes, expected_filename: str) -> str:
@@ -250,9 +245,7 @@ async def _bounded_response_with_redirects(
                         raise BinanceReferencePreparationError(
                             "Binance metadata redirect omitted Location"
                         )
-                    current_url = _exact_binance_url(
-                        urljoin(current_url, location)
-                    )
+                    current_url = _exact_binance_url(urljoin(current_url, location))
                     redirect_count += 1
                     continue
                 if response.status_code < 200 or response.status_code >= 300:
@@ -294,19 +287,13 @@ async def _bounded_response_with_redirects(
 
 def _real_terms_review(path: Path) -> Path:
     if path.is_symlink():
-        raise BinanceReferencePreparationError(
-            "terms review cannot be a symlink"
-        )
+        raise BinanceReferencePreparationError("terms review cannot be a symlink")
     try:
         resolved = path.resolve(strict=True)
     except OSError as exc:
-        raise BinanceReferencePreparationError(
-            "terms review does not exist"
-        ) from exc
+        raise BinanceReferencePreparationError("terms review does not exist") from exc
     if not resolved.is_file():
-        raise BinanceReferencePreparationError(
-            "terms review must be a real file"
-        )
+        raise BinanceReferencePreparationError("terms review must be a real file")
     return resolved
 
 
@@ -320,7 +307,7 @@ async def prepare_binance_kline_request(
     """Resolve the official checksum and size before any artifact GET."""
 
     observed_at = require_utc(
-        (clock or (lambda: datetime.now(timezone.utc)))(),
+        (clock or (lambda: datetime.now(UTC)))(),
         "observed_at",
     )
     terms_path = _real_terms_review(terms_review_path)
@@ -343,9 +330,7 @@ async def prepare_binance_kline_request(
             coordinates.checksum_url,
             max_body_bytes=CHECKSUM_MAX_BYTES,
         )
-        encoding = checksum_headers.get(
-            "content-encoding", "identity"
-        ).strip().lower()
+        encoding = checksum_headers.get("content-encoding", "identity").strip().lower()
         if encoding not in {"", "identity"}:
             raise BinanceReferencePreparationError(
                 "encoded checksum responses are not accepted"
@@ -380,16 +365,12 @@ async def prepare_binance_kline_request(
             raise BinanceReferencePreparationError(
                 "Binance artifact Content-Length is outside the reviewed limit"
             )
-        artifact_media_type = _media_type(
-            artifact_headers.get("content-type")
-        )
+        artifact_media_type = _media_type(artifact_headers.get("content-type"))
         if artifact_media_type not in EXPECTED_MEDIA_TYPES:
             raise BinanceReferencePreparationError(
                 "Binance artifact media type is outside the reviewed set"
             )
-        last_modified = _http_datetime(
-            artifact_headers.get("last-modified")
-        )
+        last_modified = _http_datetime(artifact_headers.get("last-modified"))
         if checksum_url != coordinates.checksum_url:
             raise BinanceReferencePreparationError(
                 "Binance checksum redirected away from reviewed coordinates"
@@ -406,9 +387,7 @@ async def prepare_binance_kline_request(
         coordinates_sha256=coordinates.canonical_sha256(),
         artifact_url=artifact_url,
         checksum_url=checksum_url,
-        checksum_payload_sha256=hashlib.sha256(
-            checksum_payload
-        ).hexdigest(),
+        checksum_payload_sha256=hashlib.sha256(checksum_payload).hexdigest(),
         artifact_sha256=artifact_sha256,
         artifact_byte_size=artifact_byte_size,
         artifact_media_type=artifact_media_type,

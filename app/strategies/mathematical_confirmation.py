@@ -49,23 +49,17 @@ def mathematical_confirmation(
 
     direction_sign = D("1") if direction == "long" else D("-1")
     directional_support = direction_sign * core.directional_score
-    reliability = (
-        core.coverage * core.consensus * (D("1") - core.instability)
-    )
-    auxiliary_directional_support = (
-        direction_sign * core.auxiliary_directional_score
-    )
+    reliability = core.coverage * core.consensus * (D("1") - core.instability)
+    auxiliary_directional_support = direction_sign * core.auxiliary_directional_score
     validated_components = [
         component.code
         for component in core.components
-        if component.validation_level != "auxiliary"
-        and component.reliability > 0
+        if component.validation_level != "auxiliary" and component.reliability > 0
     ]
     auxiliary_components = [
         component.code
         for component in core.components
-        if component.validation_level == "auxiliary"
-        and component.reliability > 0
+        if component.validation_level == "auxiliary" and component.reliability > 0
     ]
     auxiliary_bonus = (
         min(5, int(D("5") * core.auxiliary_confidence))

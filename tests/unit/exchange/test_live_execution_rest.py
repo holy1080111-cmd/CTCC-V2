@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import httpx
 import pytest
@@ -31,7 +31,7 @@ def execution_settings(**updates) -> Settings:
 @pytest.mark.asyncio
 async def test_execution_transport_has_no_demo_header_and_uses_live_endpoints() -> None:
     seen: list[tuple[str, str]] = []
-    fixed = datetime(2026, 8, 9, 12, 0, tzinfo=timezone.utc)
+    fixed = datetime(2026, 8, 9, 12, 0, tzinfo=UTC)
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert "x-simulated-trading" not in request.headers
@@ -43,7 +43,11 @@ async def test_execution_transport_has_no_demo_header_and_uses_live_endpoints() 
         if request.url.path == "/api/v5/account/max-size":
             return httpx.Response(
                 200,
-                json={"code": "0", "msg": "", "data": [{"maxBuy": "2", "maxSell": "2"}]},
+                json={
+                    "code": "0",
+                    "msg": "",
+                    "data": [{"maxBuy": "2", "maxSell": "2"}],
+                },
             )
         return httpx.Response(
             200,
@@ -117,9 +121,9 @@ async def test_execution_transport_blocks_before_http_when_not_enabled() -> None
         base_url="https://openapi.okx.com",
     ) as client:
         with pytest.raises(OkxPrivateApiError) as exc_info:
-            await OkxLiveExecutionRestClient(
-                client, settings=settings
-            ).place_order({"instId": "BTC-USDT-SWAP"})
+            await OkxLiveExecutionRestClient(client, settings=settings).place_order(
+                {"instId": "BTC-USDT-SWAP"}
+            )
 
     assert calls == 0
     assert exc_info.value.code == "live_execution_not_enabled"

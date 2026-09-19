@@ -63,8 +63,5 @@ def test_endpoint_prediction_matches_shared_causal_derivative() -> None:
     assert trend is not None
     with localcontext() as context:
         context.prec = 50
-        expected = (
-            trend.log_velocity_per_bar
-            + trend.log_acceleration_per_bar2 / D("2")
-        )
+        expected = trend.log_velocity_per_bar + trend.log_acceleration_per_bar2 / D("2")
     assert abs(interval.predicted_log_return - expected) < D("1e-40")

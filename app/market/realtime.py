@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -17,6 +17,7 @@ class RealtimeMarketHub:
         self.paper_auto_ticks = paper_auto_ticks
         if paper_execution is None:
             from app.paper.service import paper_service
+
             paper_execution = paper_service
         self.paper_execution = paper_execution
         self._snapshots: dict[str, RealtimeSnapshot] = {}
@@ -24,19 +25,24 @@ class RealtimeMarketHub:
 
     async def apply(self, event: dict[str, Any]) -> RealtimeSnapshot:
         symbol = str(event["symbol"])
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         tick_price: Decimal | None = event.get("last")
 
         async with self._lock:
             current = self._snapshots.get(symbol) or RealtimeSnapshot(symbol=symbol)
             updates: dict[str, Any] = {
-                key: value for key, value in event.items()
+                key: value
+                for key, value in event.items()
                 if key in RealtimeSnapshot.model_fields and value is not None
             }
             if "bids" in event:
-                updates["best_bids"] = [RealtimeBookLevel(**level) for level in event["bids"]]
+                updates["best_bids"] = [
+                    RealtimeBookLevel(**level) for level in event["bids"]
+                ]
             if "asks" in event:
-                updates["best_asks"] = [RealtimeBookLevel(**level) for level in event["asks"]]
+                updates["best_asks"] = [
+                    RealtimeBookLevel(**level) for level in event["asks"]
+                ]
             if event.get("last") is not None:
                 updates["last_received_at"] = now
             # A single-sided partial update cannot certify the opposite side

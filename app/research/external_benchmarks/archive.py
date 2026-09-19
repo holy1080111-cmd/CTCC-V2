@@ -1,17 +1,16 @@
 from __future__ import annotations
 
-from decimal import Decimal, localcontext
-from pathlib import Path, PurePosixPath
 import stat
 import unicodedata
 import zipfile
+from decimal import Decimal, localcontext
+from pathlib import Path, PurePosixPath
 
 from app.research.external_benchmarks.artifacts import sha256_file
 from app.research.external_benchmarks.contracts import (
     ArchiveInspectionPolicy,
     ArchiveInspectionReport,
 )
-
 
 NESTED_ARCHIVE_SUFFIXES = (
     ".7z",
@@ -30,18 +29,11 @@ NESTED_ARCHIVE_SUFFIXES = (
 class ArchiveInspectionError(ValueError):
     def __init__(self, report: ArchiveInspectionReport) -> None:
         self.report = report
-        super().__init__(
-            "unsafe zip archive: " + ",".join(report.failure_codes)
-        )
+        super().__init__("unsafe zip archive: " + ",".join(report.failure_codes))
 
 
 def _unsafe_member_path(name: str) -> bool:
-    if (
-        not name
-        or "\\" in name
-        or "\x00" in name
-        or "//" in name
-    ):
+    if not name or "\\" in name or "\x00" in name or "//" in name:
         return True
     path = PurePosixPath(name)
     if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
@@ -73,7 +65,7 @@ def inspect_zip_archive(
             member_count=0,
             total_compressed_bytes=0,
             total_uncompressed_bytes=0,
-            maximum_expansion_ratio=Decimal("0"),
+            maximum_expansion_ratio=Decimal(0),
             duplicate_member_count=0,
             unsafe_path_count=0,
             encrypted_member_count=0,
@@ -91,7 +83,7 @@ def inspect_zip_archive(
     nested_archive_count = 0
     total_compressed_bytes = 0
     total_uncompressed_bytes = 0
-    maximum_expansion_ratio = Decimal("0")
+    maximum_expansion_ratio = Decimal(0)
     oversized_member = False
 
     with localcontext() as context:
@@ -109,8 +101,7 @@ def inspect_zip_archive(
             symlink_member_count += int(_is_symlink(member))
             lower_name = member.filename.lower()
             nested_archive_count += int(
-                not member.is_dir()
-                and lower_name.endswith(NESTED_ARCHIVE_SUFFIXES)
+                not member.is_dir() and lower_name.endswith(NESTED_ARCHIVE_SUFFIXES)
             )
             total_compressed_bytes += member.compress_size
             total_uncompressed_bytes += member.file_size
@@ -119,9 +110,9 @@ def inspect_zip_archive(
                 or member.file_size > inspection_policy.max_single_member_bytes
             )
             if member.file_size == 0:
-                ratio = Decimal("0")
+                ratio = Decimal(0)
             elif member.compress_size == 0:
-                ratio = inspection_policy.max_expansion_ratio + Decimal("1")
+                ratio = inspection_policy.max_expansion_ratio + Decimal(1)
             else:
                 ratio = Decimal(member.file_size) / Decimal(member.compress_size)
             maximum_expansion_ratio = max(maximum_expansion_ratio, ratio)

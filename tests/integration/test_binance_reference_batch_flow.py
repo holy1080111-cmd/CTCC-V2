@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
-from decimal import Decimal
 import hashlib
+import zipfile
+from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 from io import BytesIO
 from pathlib import Path
-import zipfile
 
 import httpx
 import pytest
@@ -28,8 +28,7 @@ from app.research.external_benchmarks import (
 from app.research.external_benchmarks.evidence_io import write_contract_json
 from tests.unit.research.helpers import MockAsyncByteStream
 
-
-NOW = datetime(2026, 8, 22, 16, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 8, 22, 16, 0, tzinfo=UTC)
 
 
 def _payload(
@@ -45,11 +44,11 @@ def _payload(
         datetime.combine(
             coordinates.day,
             datetime.min.time(),
-            tzinfo=timezone.utc,
+            tzinfo=UTC,
         ).timestamp()
         * 1000
     )
-    step = (final_close - first_open) / Decimal("1440")
+    step = (final_close - first_open) / Decimal(1440)
     rows = []
     previous = first_open
     for index in range(1440):
@@ -92,8 +91,8 @@ async def test_two_day_batch_remains_reference_only_end_to_end(
     for (_, coordinates), prices in zip(
         plan.coordinate_items(),
         (
-            (Decimal("100"), Decimal("110")),
-            (Decimal("110"), Decimal("121")),
+            (Decimal(100), Decimal(110)),
+            (Decimal(110), Decimal(121)),
         ),
         strict=True,
     ):
@@ -111,7 +110,7 @@ async def test_two_day_batch_remains_reference_only_end_to_end(
         provider_last_modified = datetime.combine(
             provider_day + timedelta(days=1),
             datetime.min.time(),
-            tzinfo=timezone.utc,
+            tzinfo=UTC,
         ) + timedelta(hours=6, minutes=7, seconds=8)
         if request.method == "GET":
             return httpx.Response(

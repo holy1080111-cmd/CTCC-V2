@@ -1,6 +1,6 @@
 """Owned Demo-only GET capture, never a complete or authenticated risk snapshot.
 
-OKX primary contracts checked 2026-09-12:
+OKX primary contracts checked 2026-09-19:
 https://app.okx.com/docs-v5/en/#overview-rest-authentication
 https://app.okx.com/docs-v5/en/#overview-demo-trading-services
 https://app.okx.com/docs-v5/en/#trading-account-rest-api-get-account-configuration
@@ -13,7 +13,7 @@ loading, private SDK, DB, execution or retry integration exists here. Callers mu
 supply a dedicated Demo read credential through a separately reviewed integration.
 Tests replace ONLY the private client factory with synthetic MockTransport.
 
-All 13 streams and raw page chains are replayed by account_capture. A successful
+All 23 streams and raw page chains are replayed by account_capture. A successful
 result is still records_verified_incomplete_account. Rate limiting, server errors
 and missing/unsupported coverage abort this attempt; no old mirror or zero fallback
 exists. Engineering bounds are inherited from the externally pinned capture plan.
@@ -89,6 +89,8 @@ _CAPTURE_REASONS = frozenset(
         "account_capture_invalid",
         "clock_invalid",
         "plan_history_window_invalid",
+        "plan_leverage_scope_invalid",
+        "leverage_instrument_scope_mismatch",
         "history_window_requires_milliseconds",
         "account_capture_cannot_grant_authority",
         "record_traversal_limit",

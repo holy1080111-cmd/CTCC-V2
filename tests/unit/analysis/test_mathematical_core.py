@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
@@ -32,7 +32,7 @@ def _view(
     return TimeframeAnalysis(
         timeframe=timeframe,
         candle_count=250,
-        last_closed_at=datetime.now(timezone.utc),
+        last_closed_at=datetime.now(UTC),
         close=D("100"),
         data_quality_ok=quality,
         indicators=IndicatorSnapshot(
@@ -160,7 +160,9 @@ def test_small_prequential_sample_cannot_enter_execution_core() -> None:
 
 
 def test_auxiliary_structure_and_momentum_cannot_change_execution_core() -> None:
-    baseline_views = {timeframe: _view(timeframe) for timeframe in ("4H", "1H", "15m", "5m")}
+    baseline_views = {
+        timeframe: _view(timeframe) for timeframe in ("4H", "1H", "15m", "5m")
+    }
     opposed_auxiliary_views: dict[str, TimeframeAnalysis] = {}
     for timeframe, view in baseline_views.items():
         opposed_auxiliary_views[timeframe] = view.model_copy(

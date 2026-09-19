@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from decimal import Decimal
-from typing import Sequence
+from itertools import pairwise
 
 from app.mie.features._math import EPSILON, clamp, log_prices, rms
 from app.mie.features.models import MomentumFeatures
@@ -18,20 +19,13 @@ def momentum_features(
 ) -> MomentumFeatures | None:
     """Measure scale-normalized momentum without assigning probability."""
 
-    if (
-        fast_bars < 2
-        or slow_bars <= fast_bars
-        or len(closes) < slow_bars + 1
-    ):
+    if fast_bars < 2 or slow_bars <= fast_bars or len(closes) < slow_bars + 1:
         return None
     try:
         logs = log_prices(closes)
     except ValueError:
         return None
-    returns = [
-        current - previous
-        for previous, current in zip(logs[:-1], logs[1:], strict=True)
-    ]
+    returns = [current - previous for previous, current in pairwise(logs)]
     return_rms = rms(returns[-slow_bars:])
     scale = max(return_rms, EPSILON)
     fast_return = logs[-1] - logs[-fast_bars - 1]
@@ -59,7 +53,7 @@ def momentum_features(
     if volumes is not None:
         if len(volumes) != len(closes):
             return None
-        selected = list(volumes[-slow_bars - 1:])
+        selected = list(volumes[-slow_bars - 1 :])
         if not all(value.is_finite() and value >= 0 for value in selected):
             return None
         baseline = sum(selected[:-1], D("0")) / D(slow_bars)

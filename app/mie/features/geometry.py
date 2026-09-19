@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from decimal import Decimal
-from typing import Sequence
+from itertools import pairwise
 
 from app.mie.features._math import clamp
 from app.mie.features.models import FeatureBar, GeometryFeatures, SwingPoint
@@ -9,9 +10,7 @@ from app.mie.features.models import FeatureBar, GeometryFeatures, SwingPoint
 D = Decimal
 
 
-def _is_unique_extreme(
-    values: Sequence[Decimal], index: int, *, maximum: bool
-) -> bool:
+def _is_unique_extreme(values: Sequence[Decimal], index: int, *, maximum: bool) -> bool:
     candidate = values[index]
     extreme = max(values) if maximum else min(values)
     return candidate == extreme and values.count(extreme) == 1
@@ -31,10 +30,7 @@ def confirmed_geometry_features(
     if len(bars) < minimum_size:
         return None
     if any(
-        current.closed_at <= previous.closed_at
-        for previous, current in zip(
-            bars[:-1], bars[1:], strict=True
-        )
+        current.closed_at <= previous.closed_at for previous, current in pairwise(bars)
     ):
         return None
 
@@ -48,12 +44,8 @@ def confirmed_geometry_features(
         lows = [bar.low for bar in selected]
         confirmed_at = bars[index + right_bars].closed_at
 
-        is_swing_high = _is_unique_extreme(
-            highs, relative_index, maximum=True
-        )
-        is_swing_low = _is_unique_extreme(
-            lows, relative_index, maximum=False
-        )
+        is_swing_high = _is_unique_extreme(highs, relative_index, maximum=True)
+        is_swing_low = _is_unique_extreme(lows, relative_index, maximum=False)
         # An outside bar can be both the unique high and unique low.  That is
         # structurally ambiguous, so it must not emit contradictory pivots.
         if is_swing_high and is_swing_low:
@@ -95,9 +87,7 @@ def confirmed_geometry_features(
         lower = min(last_low.price, last_high.price)
         upper = max(last_low.price, last_high.price)
         if upper > lower:
-            range_position = clamp(
-                (close - lower) / (upper - lower), D("0"), D("1")
-            )
+            range_position = clamp((close - lower) / (upper - lower), D("0"), D("1"))
 
     return GeometryFeatures(
         pivot_left_bars=left_bars,

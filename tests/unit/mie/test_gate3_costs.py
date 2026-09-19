@@ -49,9 +49,7 @@ def test_costed_return_path_reports_every_declared_cost_and_risk_metric() -> Non
     assert result.observations[0].net_return == D("0.00965")
     assert result.observations[1].net_return == D("-0.02005")
     assert result.observations[2].net_return == D("-0.0003")
-    assert result.gross_compound_return == (
-        (D("1.01") * D("0.98") * D("1")) - D("1")
-    )
+    assert result.gross_compound_return == ((D("1.01") * D("0.98") * D("1")) - D("1"))
     assert result.net_compound_return == (
         D("1.00965") * D("0.97995") * D("0.9997") - D("1")
     )

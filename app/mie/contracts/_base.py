@@ -32,7 +32,7 @@ class ForecastHorizon(MieContract):
     seconds: int = Field(ge=1)
 
     @model_validator(mode="after")
-    def validate_duration(self) -> "ForecastHorizon":
+    def validate_duration(self) -> ForecastHorizon:
         amount = int(self.label[:-1])
         multiplier = {
             "s": 1,

@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import csv
-from datetime import datetime, time, timezone
+import zipfile
+from datetime import UTC, datetime, time
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Literal
-import zipfile
 
 from pydantic import Field, field_validator, model_validator
 
@@ -32,7 +32,6 @@ from app.research.external_benchmarks.contracts import (
     require_utc,
 )
 from app.research.external_benchmarks.quality import profile_dataset_records
-
 
 KLINE_FIELDS = (
     "open_time",
@@ -108,7 +107,7 @@ class BinanceKlineQualityReport(ReferenceContract):
         return value
 
     @model_validator(mode="after")
-    def validate_report(self) -> "BinanceKlineQualityReport":
+    def validate_report(self) -> BinanceKlineQualityReport:
         if self.passed != (len(self.failure_codes) == 0):
             raise ValueError("Binance quality state must match failure codes")
         counts = (
@@ -141,7 +140,7 @@ class BinanceKlineEvidence(ReferenceContract):
     execution_authority: Literal[False] = False
 
     @model_validator(mode="after")
-    def validate_evidence(self) -> "BinanceKlineEvidence":
+    def validate_evidence(self) -> BinanceKlineEvidence:
         if len(self.failure_codes) != len(set(self.failure_codes)) or any(
             not item for item in self.failure_codes
         ):
@@ -198,9 +197,7 @@ def _read_rows(
     try:
         text = raw.decode("utf-8-sig")
     except UnicodeDecodeError as exc:
-        raise BinanceKlineValidationError(
-            "Binance kline CSV must be UTF-8"
-        ) from exc
+        raise BinanceKlineValidationError("Binance kline CSV must be UTF-8") from exc
     rows = list(csv.reader(text.splitlines()))
     if not rows:
         raise BinanceKlineValidationError("Binance kline CSV is empty")
@@ -276,9 +273,7 @@ def profile_binance_kline_archive(
         or resolved_path.is_symlink()
         or not resolved_path.is_relative_to(root)
     ):
-        raise BinanceKlineValidationError(
-            "Binance artifact escaped the dataset root"
-        )
+        raise BinanceKlineValidationError("Binance artifact escaped the dataset root")
     rows, header_present = _read_rows(resolved_path, coordinates)
     if resolved_path.stat().st_size != request.expected_byte_size:
         raise BinanceKlineValidationError("Binance artifact byte size changed")
@@ -288,7 +283,7 @@ def profile_binance_kline_archive(
     day_start = datetime.combine(
         coordinates.day,
         time.min,
-        tzinfo=timezone.utc,
+        tzinfo=UTC,
     )
     start_ms = int(day_start.timestamp() * 1000)
     expected_last_ms = start_ms + (EXPECTED_ROWS_1M - 1) * INTERVAL_MILLISECONDS
@@ -387,7 +382,7 @@ def profile_binance_kline_archive(
             start=day_start,
             end=datetime.fromtimestamp(
                 expected_last_ms / 1000,
-                tz=timezone.utc,
+                tz=UTC,
             ),
             available_at=identity.provider_last_modified_at,
         ),

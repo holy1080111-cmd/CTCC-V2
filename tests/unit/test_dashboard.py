@@ -52,17 +52,11 @@ async def test_dashboard_is_read_only() -> None:
 async def test_dashboard_has_security_headers() -> None:
     response = await dashboard()
 
-    assert response.headers["cache-control"] == (
-        "no-store, max-age=0"
-    )
-    assert response.headers["x-content-type-options"] == (
-        "nosniff"
-    )
+    assert response.headers["cache-control"] == ("no-store, max-age=0")
+    assert response.headers["x-content-type-options"] == ("nosniff")
     assert response.headers["x-frame-options"] == "DENY"
     assert response.headers["referrer-policy"] == "no-referrer"
-    assert response.headers["cross-origin-opener-policy"] == (
-        "same-origin"
-    )
+    assert response.headers["cross-origin-opener-policy"] == ("same-origin")
 
     policy = response.headers["content-security-policy"]
 
@@ -78,10 +72,7 @@ async def test_dashboard_uses_single_snapshot_request() -> None:
     html = response.body.decode("utf-8")
 
     assert (
-        'apiGet(\n'
-        '            "/api/dashboard/snapshot",\n'
-        '            token\n'
-        '        )'
+        'apiGet(\n            "/api/dashboard/snapshot",\n            token\n        )'
     ) in html
 
     assert "new AbortController" in html
@@ -104,14 +95,8 @@ async def test_dashboard_uses_snapshot_integrity() -> None:
     assert "DATA_STALE_AFTER_MS = 90000" in html
     assert "DATA_CONSISTENCY_WINDOW_MS = 5000" in html
 
-    assert (
-        "snapshot.source_status" in html
-        or "snapshot?.source_status" in html
-    )
-    assert (
-        "snapshot.generated_at" in html
-        or "snapshot?.generated_at" in html
-    )
+    assert "snapshot.source_status" in html or "snapshot?.source_status" in html
+    assert "snapshot.generated_at" in html or "snapshot?.generated_at" in html
     assert "snapshot.snapshot_id" in html
     assert "snapshot.duration_ms" in html
     assert "snapshot.complete" in html

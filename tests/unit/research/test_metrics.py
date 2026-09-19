@@ -6,7 +6,6 @@ import pytest
 
 from app.research.external_benchmarks import calculate_reference_return_metrics
 
-
 D = Decimal
 
 

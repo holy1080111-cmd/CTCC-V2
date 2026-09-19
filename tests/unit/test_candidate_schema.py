@@ -13,11 +13,11 @@ def test_long_candidate_geometry_and_rr() -> None:
         side=Side.LONG,
         strategy_name="trend_pullback",
         score=80,
-        entry_price=Decimal("100"),
-        stop_loss=Decimal("95"),
-        take_profit=Decimal("110"),
+        entry_price=Decimal(100),
+        stop_loss=Decimal(95),
+        take_profit=Decimal(110),
     )
-    assert candidate.risk_reward == Decimal("2")
+    assert candidate.risk_reward == Decimal(2)
 
 
 def test_short_candidate_geometry() -> None:
@@ -26,11 +26,11 @@ def test_short_candidate_geometry() -> None:
         side=Side.SHORT,
         strategy_name="breakout",
         score=75,
-        entry_price=Decimal("100"),
-        stop_loss=Decimal("105"),
-        take_profit=Decimal("90"),
+        entry_price=Decimal(100),
+        stop_loss=Decimal(105),
+        take_profit=Decimal(90),
     )
-    assert candidate.risk_reward == Decimal("2")
+    assert candidate.risk_reward == Decimal(2)
 
 
 def test_invalid_long_geometry_is_rejected() -> None:
@@ -40,7 +40,7 @@ def test_invalid_long_geometry_is_rejected() -> None:
             side=Side.LONG,
             strategy_name="invalid",
             score=70,
-            entry_price=Decimal("100"),
-            stop_loss=Decimal("105"),
-            take_profit=Decimal("110"),
+            entry_price=Decimal(100),
+            stop_loss=Decimal(105),
+            take_profit=Decimal(110),
         )

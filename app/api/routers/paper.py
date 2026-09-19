@@ -19,11 +19,17 @@ router = APIRouter(prefix="/api/paper", tags=["paper"])
 
 
 def _handle(exc: PaperBrokerError | PaperPersistenceError) -> HTTPException:
-    code = status.HTTP_404_NOT_FOUND if str(exc) in {"order_not_found", "position_not_found"} else status.HTTP_409_CONFLICT
+    code = (
+        status.HTTP_404_NOT_FOUND
+        if str(exc) in {"order_not_found", "position_not_found"}
+        else status.HTTP_409_CONFLICT
+    )
     return HTTPException(status_code=code, detail=str(exc))
 
 
-@router.post("/orders", response_model=PaperOrderView, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/orders", response_model=PaperOrderView, status_code=status.HTTP_201_CREATED
+)
 async def submit_order(request: PaperOrderRequest) -> PaperOrderView:
     try:
         return await paper_service.submit(request)
@@ -50,7 +56,9 @@ async def cancel_order(order_id: UUID) -> PaperOrderView:
 @router.post("/ticks", response_model=PaperTickResult)
 async def process_tick(request: MarketTickRequest) -> PaperTickResult:
     try:
-        return await paper_service.tick(symbol=request.symbol, price=request.price, timestamp=request.timestamp)
+        return await paper_service.tick(
+            symbol=request.symbol, price=request.price, timestamp=request.timestamp
+        )
     except PaperPersistenceError as exc:
         raise _handle(exc) from exc
 
@@ -64,9 +72,13 @@ async def get_position(position_id: UUID) -> PaperPositionView:
 
 
 @router.post("/positions/{position_id}/close", response_model=PaperPositionView)
-async def close_position(position_id: UUID, request: ManualCloseRequest) -> PaperPositionView:
+async def close_position(
+    position_id: UUID, request: ManualCloseRequest
+) -> PaperPositionView:
     try:
-        return await paper_service.close(position_id, price=request.price, reason=request.reason)
+        return await paper_service.close(
+            position_id, price=request.price, reason=request.reason
+        )
     except (PaperBrokerError, PaperPersistenceError) as exc:
         raise _handle(exc) from exc
 

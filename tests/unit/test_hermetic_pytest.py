@@ -11,7 +11,6 @@ from scripts.hermetic_pytest import (
     enabled_execution_authority,
 )
 
-
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -40,9 +39,7 @@ def test_hermetic_environment_preserves_only_test_infrastructure_settings() -> N
     assert "PYTEST_ADDOPTS" not in result
 
     retained_setting_names = {
-        name.upper()
-        for name in result
-        if name.upper() in SETTING_ENVIRONMENT_NAMES
+        name.upper() for name in result if name.upper() in SETTING_ENVIRONMENT_NAMES
     }
     assert retained_setting_names == (
         PRESERVED_SETTING_ENVIRONMENT_NAMES | {"ENVIRONMENT", "TRADING_MODE"}
@@ -93,9 +90,7 @@ def test_docker_verifiers_are_safe_on_windows_powershell(
 ) -> None:
     source = (ROOT / "scripts" / script_name).read_text(encoding="utf-8")
 
-    host_preflight = source.index(
-        "Host Compose execution-authority preflight"
-    )
+    host_preflight = source.index("Host Compose execution-authority preflight")
     container_start = source.index("Docker build and start")
 
     assert host_preflight < container_start
@@ -135,9 +130,9 @@ def test_docker_verifiers_are_safe_on_windows_powershell(
 
 
 def test_gate3_foundation_verifier_is_isolated_and_offline() -> None:
-    source = (
-        ROOT / "scripts" / "verify_mie_gate3_foundation.ps1"
-    ).read_text(encoding="utf-8")
+    source = (ROOT / "scripts" / "verify_mie_gate3_foundation.ps1").read_text(
+        encoding="utf-8"
+    )
     assert "[Guid]::NewGuid()" in source
     assert "Get-Location" not in source
     assert '"--project-directory"' in source
@@ -160,12 +155,12 @@ def test_gate3_foundation_verifier_is_isolated_and_offline() -> None:
     compose_path = ROOT / "compose.yaml"
     if compose_path.is_file():
         compose = compose_path.read_text(encoding="utf-8")
-        override = (
-            ROOT / "config" / "mie_gate3.compose.yaml"
-        ).read_text(encoding="utf-8")
-        profile = (
-            ROOT / "config" / "mie_gate3_offline.env.example"
-        ).read_text(encoding="utf-8")
+        override = (ROOT / "config" / "mie_gate3.compose.yaml").read_text(
+            encoding="utf-8"
+        )
+        profile = (ROOT / "config" / "mie_gate3_offline.env.example").read_text(
+            encoding="utf-8"
+        )
 
         assert "container_name: ${CTCC_API_CONTAINER_NAME:-ctcc-v2-api}" in compose
         assert "ports: !reset []" in override

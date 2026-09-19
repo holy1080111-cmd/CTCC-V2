@@ -6,15 +6,12 @@ from collections.abc import Mapping, Sequence
 
 from app.config.settings import Settings
 
-
 # PostgreSQL integration tests must use the same database as Alembic, and a
 # small number of readiness tests use the Compose Redis service.  Every other
 # application setting is reset so an operator's deployment profile cannot
 # change deterministic test expectations.
 PRESERVED_SETTING_ENVIRONMENT_NAMES = frozenset({"DATABASE_URL", "REDIS_URL"})
-SETTING_ENVIRONMENT_NAMES = frozenset(
-    name.upper() for name in Settings.model_fields
-)
+SETTING_ENVIRONMENT_NAMES = frozenset(name.upper() for name in Settings.model_fields)
 SAFE_TEST_ENVIRONMENT = {
     "ENVIRONMENT": "test",
     "TRADING_MODE": "analysis_only",
@@ -42,9 +39,7 @@ def build_hermetic_environment(source: Mapping[str, str]) -> dict[str, str]:
 
     for preserved_name in PRESERVED_SETTING_ENVIRONMENT_NAMES:
         matching_values = [
-            value
-            for name, value in source.items()
-            if name.upper() == preserved_name
+            value for name, value in source.items() if name.upper() == preserved_name
         ]
         if matching_values:
             result[preserved_name] = matching_values[-1]
@@ -55,9 +50,7 @@ def build_hermetic_environment(source: Mapping[str, str]) -> dict[str, str]:
 
 def enabled_execution_authority(settings: Settings) -> tuple[str, ...]:
     return tuple(
-        name
-        for name in EXECUTION_AUTHORITY_FIELDS
-        if bool(getattr(settings, name))
+        name for name in EXECUTION_AUTHORITY_FIELDS if bool(getattr(settings, name))
     )
 
 

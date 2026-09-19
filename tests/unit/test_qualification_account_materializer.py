@@ -276,6 +276,38 @@ def test_empty_pending_does_not_turn_protective_algo_into_opening_exposure():
     assert result.snapshot is None
 
 
+@pytest.mark.parametrize(
+    "stream", ["algo_iceberg", "algo_twap", "algo_chase", "algo_smart_iceberg"]
+)
+def test_advanced_algo_exposure_cannot_disappear_or_claim_position_protection(stream):
+    def change(pages):
+        pages["algo_conditional"] = [[]]
+        pages[stream] = [
+            [
+                row(
+                    stream,
+                    reduceOnly=True,
+                    side="sell",
+                    sz="2",
+                    slTriggerPx="95",
+                    slOrdPx="-1",
+                    slTriggerPxType="mark",
+                )
+            ],
+            [],
+        ]
+
+    result = materialize(source=packet(pending=False, changes=change))
+    outstanding = projection(result, stream)
+    assert outstanding.kind == "unsupported_algo"
+    assert outstanding.reasons == ("outstanding_algo_unclassified",)
+    assert "outstanding_algo_unclassified" in result.incomplete_reasons
+    assert not any(item.kind == "protection" for item in result.projections)
+    assert result.snapshot is None
+    assert result.account_complete is False
+    assert result.execution_authority is False
+
+
 def test_top_level_usd_balance_is_never_relabelled_as_usdt():
     def change(pages):
         pages["balance"][0][0].update(totalEq="9999", availEq="8888")
@@ -970,6 +1002,9 @@ def history_source(
     exit_fee="-0.01",
     exit_quantity="1",
     wrong_fee_side=None,
+    recent_only=False,
+    overlap=False,
+    overlap_conflict=False,
 ):
     def change(pages):
         entry = row(
@@ -1004,6 +1039,13 @@ def history_source(
         )
         # Provider pages descend by billId; outcome chronology uses fillTime.
         pages["fills_history"] = [[exit_fill, entry], []]
+        if recent_only or overlap or overlap_conflict:
+            recent_exit = (
+                {**exit_fill, "fee": "-0.05"} if overlap_conflict else exit_fill
+            )
+            pages["fills_recent"] = [[recent_exit, entry], []]
+        if recent_only:
+            pages["fills_history"] = [[]]
         if funding:
             pages["bills_archive"] = [
                 [
@@ -1051,16 +1093,87 @@ def test_nonempty_fills_derive_net_outcome_at_actual_exit_fill_time():
     assert result.account_complete is False
 
 
-def test_funding_cash_change_is_added_once_without_bill_fee_or_pnl_double_counting():
+@pytest.mark.parametrize("recent_only,overlap", [(True, False), (False, True)])
+def test_recent_fills_are_accounted_and_identical_history_overlap_is_not_double_charged(
+    recent_only, overlap
+):
     result = materialize(
-        source=history_source(funding=True),
-        supplied=nonempty_history_inputs(funding=True),
+        source=history_source(recent_only=recent_only, overlap=overlap),
+        supplied=nonempty_history_inputs(),
     )
     assert len(result.loss_history) == 1
-    assert result.loss_history[0].realized_pnl == D("0.15")
-    assert result.loss_history[0].closed_at == EXIT_FILL_AT
-    assert result.snapshot is not None
-    assert result.snapshot.history_stamp.complete is False
+    assert result.loss_history[0].realized_pnl == D("0.18")
+    assert "history_fill_inventory_unmapped" not in result.incomplete_reasons
+    assert result.account_complete is False
+
+
+def test_conflicting_recent_and_archive_fill_is_incomplete_without_selecting_a_winner():
+    result = materialize(
+        source=history_source(overlap_conflict=True), supplied=nonempty_history_inputs()
+    )
+    assert "history_overlapping_source_conflict" in result.incomplete_reasons
+    assert result.loss_history == ()
+    assert result.snapshot is None
+
+
+@pytest.mark.parametrize(
+    "stream", ["account_instruments", "leverage_cross", "leverage_isolated"]
+)
+def test_missing_account_metadata_cannot_materialize_a_snapshot(stream):
+    def change(pages):
+        pages[stream] = [[]]
+
+    result = materialize(source=packet(changes=change), supplied=snapshot_inputs())
+    assert result.snapshot is None
+    expected = (
+        "account_metadata_instrument_coverage_incomplete"
+        if stream == "account_instruments"
+        else "account_leverage_coverage_incomplete"
+    )
+    assert expected in result.incomplete_reasons
+
+
+def test_external_instrument_spec_cannot_override_new_account_capture():
+    def change(pages):
+        pages["account_instruments"] = [[row("account_instruments", ctVal="1")]]
+
+    result = materialize(source=packet(changes=change), supplied=snapshot_inputs())
+    assert "account_instrument_source_conflict" in result.incomplete_reasons
+    assert result.snapshot is None
+
+
+def test_conflicting_recent_and_archive_order_cannot_be_hidden_by_fill_only_mapping():
+    def change(pages):
+        pages["orders_history_recent"] = [
+            [row("orders_history_recent", "850", avgPx="101")],
+            [],
+        ]
+        pages["orders_history_archive"] = [
+            [row("orders_history_archive", "850", avgPx="100")],
+            [],
+        ]
+
+    result = materialize(source=packet(changes=change), supplied=snapshot_inputs())
+    assert "history_overlapping_source_conflict" in result.incomplete_reasons
+    assert result.loss_history == ()
+    assert result.snapshot is None
+
+
+def test_funding_cash_bill_time_cannot_be_used_as_holding_accrual_evidence():
+    source = history_source(funding=True)
+    result = materialize(
+        source=source,
+        supplied=nonempty_history_inputs(funding=True),
+    )
+    assert result.loss_history == ()
+    assert result.snapshot is None
+    assert "funding_accrual_provenance_missing" in result.incomplete_reasons
+    bills = [
+        o
+        for o in source[0].observations
+        if o.request.stream == "bills_archive" and o.rows
+    ]
+    assert json.loads(bills[0].rows[0].canonical_json)["balChg"] == "-0.03"
 
 
 @pytest.mark.parametrize(

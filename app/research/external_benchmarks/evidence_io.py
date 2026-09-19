@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path, PurePosixPath
 import tempfile
+from pathlib import Path, PurePosixPath
 from typing import TypeVar
 
 from pydantic import BaseModel
-
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
 MAX_EVIDENCE_BYTES = 2 * 1024 * 1024
@@ -36,9 +35,7 @@ def evidence_path(
 ) -> Path:
     resolved_root = real_directory(root, "evidence root")
     if "\\" in relative_path:
-        raise ExternalEvidenceIOError(
-            "evidence paths must use POSIX separators"
-        )
+        raise ExternalEvidenceIOError("evidence paths must use POSIX separators")
     parts = PurePosixPath(relative_path).parts
     if not parts or any(part in {"", ".", ".."} for part in parts):
         raise ExternalEvidenceIOError("evidence path is not a safe relative path")
@@ -46,19 +43,13 @@ def evidence_path(
     for part in parts[:-1]:
         parent = parent / part
         if parent.is_symlink():
-            raise ExternalEvidenceIOError(
-                "evidence path cannot traverse a symlink"
-            )
+            raise ExternalEvidenceIOError("evidence path cannot traverse a symlink")
         if parent.exists() and not parent.is_dir():
-            raise ExternalEvidenceIOError(
-                "evidence path parent is not a directory"
-            )
+            raise ExternalEvidenceIOError("evidence path parent is not a directory")
         if create_parents:
             parent.mkdir(exist_ok=True)
         elif not parent.exists():
-            raise ExternalEvidenceIOError(
-                "evidence path parent does not exist"
-            )
+            raise ExternalEvidenceIOError("evidence path parent does not exist")
     resolved_parent = parent.resolve(strict=True)
     if not resolved_parent.is_relative_to(resolved_root):
         raise ExternalEvidenceIOError("evidence path escaped its root")
@@ -123,7 +114,7 @@ def write_contract_json(
     return "written"
 
 
-def read_contract_json(
+def read_contract_json[ModelT: BaseModel](
     root: Path,
     relative_path: str,
     model_type: type[ModelT],

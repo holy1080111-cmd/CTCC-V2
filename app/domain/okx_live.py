@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
-
 
 LIVE_ARM_PHRASE = "ARM_OKX_LIVE_REAL_MONEY"
 LIVE_DISARM_PHRASE = "DISARM_OKX_LIVE"
@@ -54,7 +53,7 @@ class OkxLiveBalanceSnapshot(BaseModel):
     adjusted_equity: Decimal
     available_equity: Decimal
     details: list[OkxLiveBalanceDetail] = Field(default_factory=list)
-    captured_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    captured_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     raw: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -111,7 +110,7 @@ class OkxLiveAlgoOrderView(BaseModel):
     reduce_only: bool | None = None
     close_fraction: Decimal | None = None
     size: Decimal
-    actual_size: Decimal = Decimal("0")
+    actual_size: Decimal = Decimal(0)
     take_profit_trigger_price: Decimal | None = None
     take_profit_trigger_price_type: str | None = None
     take_profit_order_price: Decimal | None = None
@@ -134,7 +133,7 @@ class OkxLiveReconcileResult(BaseModel):
     recent_orders: list[OkxLiveOrderView]
     pending_algo_orders: list[OkxLiveAlgoOrderView]
     persisted: bool
-    reconciled_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    reconciled_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class OkxLiveMirrorStatus(BaseModel):
@@ -293,7 +292,7 @@ class OkxLiveWriteResult(BaseModel):
     order: OkxLiveOrderSummary | None = None
     reconciled: bool = False
     warnings: list[str] = Field(default_factory=list)
-    completed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    completed_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 LiveIntentAction = Literal[
@@ -354,7 +353,7 @@ class OkxLiveIntentResolutionExpectation(BaseModel):
     updated_at: datetime
 
     @model_validator(mode="after")
-    def require_timezone(self) -> "OkxLiveIntentResolutionExpectation":
+    def require_timezone(self) -> OkxLiveIntentResolutionExpectation:
         if self.updated_at.tzinfo is None:
             raise ValueError("updated_at must include a timezone")
         return self
@@ -362,13 +361,13 @@ class OkxLiveIntentResolutionExpectation(BaseModel):
 
 class OkxLiveClearStopRequest(BaseModel):
     confirmation: Literal[LIVE_CLEAR_STOP_PHRASE]
-    expected_unresolved_intents: list[
-        OkxLiveIntentResolutionExpectation
-    ] = Field(default_factory=list, max_length=100)
+    expected_unresolved_intents: list[OkxLiveIntentResolutionExpectation] = Field(
+        default_factory=list, max_length=100
+    )
     unresolved_confirmation: Literal[LIVE_UNRESOLVED_CLEAR_PHRASE] | None = None
 
     @model_validator(mode="after")
-    def validate_unresolved_confirmation(self) -> "OkxLiveClearStopRequest":
+    def validate_unresolved_confirmation(self) -> OkxLiveClearStopRequest:
         keys = [item.idempotency_key for item in self.expected_unresolved_intents]
         if len(keys) != len(set(keys)):
             raise ValueError("duplicate unresolved intent expectation")
@@ -380,9 +379,7 @@ class OkxLiveClearStopRequest(BaseModel):
 
 
 class OkxLiveOrderRequest(BaseModel):
-    instrument_id: str = Field(
-        pattern=r"^[A-Z0-9]+-[A-Z0-9]+-SWAP$", max_length=40
-    )
+    instrument_id: str = Field(pattern=r"^[A-Z0-9]+-[A-Z0-9]+-SWAP$", max_length=40)
     direction: Literal["long", "short"]
     size: Decimal = Field(gt=0)
     margin_mode: Literal["cross", "isolated"] = "cross"
@@ -399,7 +396,7 @@ class OkxLiveOrderRequest(BaseModel):
     confirmation: Literal[LIVE_ORDER_PHRASE]
 
     @model_validator(mode="after")
-    def validate_protection(self) -> "OkxLiveOrderRequest":
+    def validate_protection(self) -> OkxLiveOrderRequest:
         if self.direction == "long" and not self.stop_loss < self.take_profit:
             raise ValueError("long protection prices are inverted")
         if self.direction == "short" and not self.take_profit < self.stop_loss:
@@ -408,9 +405,7 @@ class OkxLiveOrderRequest(BaseModel):
 
 
 class OkxLiveCancelRequest(BaseModel):
-    instrument_id: str = Field(
-        pattern=r"^[A-Z0-9]+-[A-Z0-9]+-SWAP$", max_length=40
-    )
+    instrument_id: str = Field(pattern=r"^[A-Z0-9]+-[A-Z0-9]+-SWAP$", max_length=40)
     order_id: str | None = Field(default=None, min_length=1, max_length=100)
     client_order_id: str | None = Field(default=None, min_length=1, max_length=32)
     idempotency_key: str = Field(
@@ -421,16 +416,14 @@ class OkxLiveCancelRequest(BaseModel):
     confirmation: Literal[LIVE_CANCEL_PHRASE]
 
     @model_validator(mode="after")
-    def validate_identifier(self) -> "OkxLiveCancelRequest":
+    def validate_identifier(self) -> OkxLiveCancelRequest:
         if bool(self.order_id) == bool(self.client_order_id):
             raise ValueError("provide exactly one of order_id or client_order_id")
         return self
 
 
 class OkxLiveCloseRequest(BaseModel):
-    instrument_id: str = Field(
-        pattern=r"^[A-Z0-9]+-[A-Z0-9]+-SWAP$", max_length=40
-    )
+    instrument_id: str = Field(pattern=r"^[A-Z0-9]+-[A-Z0-9]+-SWAP$", max_length=40)
     direction: Literal["long", "short"] | None = None
     margin_mode: Literal["cross", "isolated"] = "cross"
     idempotency_key: str = Field(
@@ -442,9 +435,7 @@ class OkxLiveCloseRequest(BaseModel):
 
 
 class OkxLiveLeverageRequest(BaseModel):
-    instrument_id: str = Field(
-        pattern=r"^[A-Z0-9]+-[A-Z0-9]+-SWAP$", max_length=40
-    )
+    instrument_id: str = Field(pattern=r"^[A-Z0-9]+-[A-Z0-9]+-SWAP$", max_length=40)
     leverage: int = Field(ge=1, le=3)
     margin_mode: Literal["cross", "isolated"] = "cross"
     direction: Literal["long", "short"] | None = None
@@ -474,11 +465,10 @@ class OkxLiveAutomationRunRequest(BaseModel):
     confirmation: str | None = None
 
     @model_validator(mode="after")
-    def require_execute_confirmation(self) -> "OkxLiveAutomationRunRequest":
+    def require_execute_confirmation(self) -> OkxLiveAutomationRunRequest:
         if self.execute and self.confirmation != LIVE_AUTOMATION_EXECUTE_PHRASE:
             raise ValueError(
-                "execute=true requires confirmation="
-                f"{LIVE_AUTOMATION_EXECUTE_PHRASE}"
+                f"execute=true requires confirmation={LIVE_AUTOMATION_EXECUTE_PHRASE}"
             )
         return self
 

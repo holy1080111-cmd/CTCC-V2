@@ -5,7 +5,6 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-
 RecoveryAction = Literal["verify", "restore_from_database", "persist_memory"]
 
 

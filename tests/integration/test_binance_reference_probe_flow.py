@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+import zipfile
+from datetime import UTC, date, datetime, timedelta
 from io import BytesIO
 from pathlib import Path
-import zipfile
 
 import httpx
 import pytest
@@ -17,8 +17,7 @@ from app.research.external_benchmarks import (
 from app.research.external_benchmarks.evidence_io import write_contract_json
 from tests.unit.research.helpers import MockAsyncByteStream
 
-
-NOW = datetime(2026, 8, 17, 1, 2, 3, tzinfo=timezone.utc)
+NOW = datetime(2026, 8, 17, 1, 2, 3, tzinfo=UTC)
 
 
 def kline_zip(coordinates: BinanceKlineCoordinates) -> bytes:
@@ -30,10 +29,7 @@ def kline_zip(coordinates: BinanceKlineCoordinates) -> bytes:
     rows = []
     for index in range(1440):
         opened = start + index * 60_000
-        rows.append(
-            f"{opened},100,102,99,101,2,{opened + 59_999},"
-            "201,10,1,100.5,0"
-        )
+        rows.append(f"{opened},100,102,99,101,2,{opened + 59_999},201,10,1,100.5,0")
     buffer = BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.writestr(

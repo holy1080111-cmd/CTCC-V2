@@ -7,7 +7,11 @@ from sqlalchemy.pool import NullPool
 
 from app.config.settings import get_settings
 from app.database.models.operations import AuditLog
-from app.database.models.persistence import PaperAccountState, PaperOrderState, PaperPositionState
+from app.database.models.persistence import (
+    PaperAccountState,
+    PaperOrderState,
+    PaperPositionState,
+)
 from app.database.repositories.persistence import PersistenceRepository
 from app.domain.paper import PaperOrderRequest
 from app.paper.engine import PaperBroker
@@ -33,9 +37,7 @@ async def test_paper_state_round_trip_and_audit() -> None:
                 await connection.execute(delete(PaperOrderState))
                 await connection.execute(delete(PaperAccountState))
                 await connection.execute(
-                    delete(AuditLog).where(
-                        AuditLog.action == "test_paper_state_saved"
-                    )
+                    delete(AuditLog).where(AuditLog.action == "test_paper_state_saved")
                 )
 
                 broker = PaperBroker()
@@ -43,10 +45,10 @@ async def test_paper_state_round_trip_and_audit() -> None:
                     PaperOrderRequest(
                         symbol="BTC-USDT-SWAP",
                         side="long",
-                        quantity=Decimal("1"),
-                        reference_price=Decimal("100"),
-                        stop_loss=Decimal("95"),
-                        take_profit=Decimal("110"),
+                        quantity=Decimal(1),
+                        reference_price=Decimal(100),
+                        stop_loss=Decimal(95),
+                        take_profit=Decimal(110),
                         strategy="integration_test",
                         score=80,
                     )
@@ -59,9 +61,7 @@ async def test_paper_state_round_trip_and_audit() -> None:
 
                 assert actual == expected
                 audits = await repository.audit_entries(10)
-                assert any(
-                    item.action == "test_paper_state_saved" for item in audits
-                )
+                assert any(item.action == "test_paper_state_saved" for item in audits)
                 assert outer_transaction.is_active
             finally:
                 if outer_transaction.is_active:

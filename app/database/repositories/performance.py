@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 from sqlalchemy import delete, func, select
@@ -11,6 +11,8 @@ from app.database.models.demo_automation import DemoAutomationRun, DemoAutomatio
 from app.database.models.okx_demo import OkxDemoOrderState
 from app.database.models.performance import (
     DemoDailyPerformanceReport as DemoDailyPerformanceReportRow,
+)
+from app.database.models.performance import (
     DemoPerformanceSnapshot,
     DemoStrategyControl,
 )
@@ -45,30 +47,29 @@ class DemoPerformanceRepository:
         details: dict,
         retention_days: int,
     ) -> None:
-        cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
-        async with self.session_factory() as session:
-            async with session.begin():
-                session.add(
-                    DemoPerformanceSnapshot(
-                        captured_at=captured_at,
-                        total_equity=total_equity,
-                        available_equity=available_equity,
-                        performance_equity=performance_equity,
-                        performance_available_equity=performance_available_equity,
-                        equity_basis=equity_basis,
-                        equity_currency=equity_currency,
-                        unrealized_pnl=unrealized_pnl,
-                        position_count=position_count,
-                        pending_order_count=pending_order_count,
-                        algo_order_count=algo_order_count,
-                        details=details,
-                    )
+        cutoff = datetime.now(UTC) - timedelta(days=retention_days)
+        async with self.session_factory() as session, session.begin():
+            session.add(
+                DemoPerformanceSnapshot(
+                    captured_at=captured_at,
+                    total_equity=total_equity,
+                    available_equity=available_equity,
+                    performance_equity=performance_equity,
+                    performance_available_equity=performance_available_equity,
+                    equity_basis=equity_basis,
+                    equity_currency=equity_currency,
+                    unrealized_pnl=unrealized_pnl,
+                    position_count=position_count,
+                    pending_order_count=pending_order_count,
+                    algo_order_count=algo_order_count,
+                    details=details,
                 )
-                await session.execute(
-                    delete(DemoPerformanceSnapshot).where(
-                        DemoPerformanceSnapshot.captured_at < cutoff
-                    )
+            )
+            await session.execute(
+                delete(DemoPerformanceSnapshot).where(
+                    DemoPerformanceSnapshot.captured_at < cutoff
                 )
+            )
 
     async def snapshots_between(
         self, start: datetime, end: datetime, *, limit: int
@@ -176,7 +177,7 @@ class DemoPerformanceRepository:
                 continue
             closed_at = item.closed_at
             if closed_at.tzinfo is None:
-                closed_at = closed_at.replace(tzinfo=timezone.utc)
+                closed_at = closed_at.replace(tzinfo=UTC)
                 item = item.model_copy(update={"closed_at": closed_at})
             if start <= closed_at < end:
                 values.append(item)
@@ -186,7 +187,9 @@ class DemoPerformanceRepository:
         async with self.session_factory() as session:
             rows = (
                 await session.scalars(
-                    select(DemoStrategyControl).order_by(DemoStrategyControl.strategy.asc())
+                    select(DemoStrategyControl).order_by(
+                        DemoStrategyControl.strategy.asc()
+                    )
                 )
             ).all()
         return [self._control_view(row) for row in rows]
@@ -210,7 +213,7 @@ class DemoPerformanceRepository:
         reason: str,
         actor: str,
     ) -> DemoStrategyControlView:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         values = {
             "strategy": strategy,
             "enabled": enabled,
@@ -225,7 +228,11 @@ class DemoPerformanceRepository:
                 await session.execute(
                     stmt.on_conflict_do_update(
                         index_elements=[DemoStrategyControl.strategy],
-                        set_={key: value for key, value in values.items() if key != "strategy"},
+                        set_={
+                            key: value
+                            for key, value in values.items()
+                            if key != "strategy"
+                        },
                     )
                 )
             row = await session.get(DemoStrategyControl, strategy)
@@ -268,23 +275,31 @@ class DemoPerformanceRepository:
             "account_closing_equity": report.account_closing_equity,
             "account_equity_change": report.account_equity_change,
             "account_max_drawdown_pct": report.account_max_drawdown_pct,
-            "strategy_stats": [item.model_dump(mode="json") for item in report.strategy_stats],
+            "strategy_stats": [
+                item.model_dump(mode="json") for item in report.strategy_stats
+            ],
             "alerts": [item.model_dump(mode="json") for item in report.alerts],
             "generated_at": report.generated_at,
-            "updated_at": datetime.now(timezone.utc),
+            "updated_at": datetime.now(UTC),
         }
-        async with self.session_factory() as session:
+        async with self.session_factory() as session:  # noqa: SIM117 - Keep database session and transaction lifetimes explicit at the durable boundary.
             async with session.begin():
                 stmt = pg_insert(DemoDailyPerformanceReportRow).values(**values)
                 await session.execute(
                     stmt.on_conflict_do_update(
                         index_elements=[DemoDailyPerformanceReportRow.report_date],
-                        set_={key: value for key, value in values.items() if key != "report_date"},
+                        set_={
+                            key: value
+                            for key, value in values.items()
+                            if key != "report_date"
+                        },
                     )
                 )
         return report
 
-    async def daily_report(self, report_date: date) -> DemoDailyPerformanceReport | None:
+    async def daily_report(
+        self, report_date: date
+    ) -> DemoDailyPerformanceReport | None:
         async with self.session_factory() as session:
             row = await session.get(DemoDailyPerformanceReportRow, report_date)
         if row is None:

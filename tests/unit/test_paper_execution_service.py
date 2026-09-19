@@ -14,7 +14,9 @@ class FakeRepository:
         self.actions: list[str] = []
         self.fail = False
 
-    async def save_paper_state(self, state, *, action, resource_id=None, actor="ctcc-system", details=None):
+    async def save_paper_state(
+        self, state, *, action, resource_id=None, actor="ctcc-system", details=None
+    ):
         if self.fail:
             raise RuntimeError("database unavailable")
         self.state = state.model_copy(deep=True)
@@ -41,10 +43,10 @@ def request() -> PaperOrderRequest:
     return PaperOrderRequest(
         symbol="BTC-USDT-SWAP",
         side="long",
-        quantity=Decimal("1"),
-        reference_price=Decimal("100"),
-        stop_loss=Decimal("95"),
-        take_profit=Decimal("110"),
+        quantity=Decimal(1),
+        reference_price=Decimal(100),
+        stop_loss=Decimal(95),
+        take_profit=Decimal(110),
         strategy="unit_test",
         score=80,
     )
@@ -90,7 +92,10 @@ async def test_recover_restores_persisted_position() -> None:
 
     assert status.recovered is True
     assert second.account().open_positions == 1
-    assert second.state().orders[0].client_order_id == first.state().orders[0].client_order_id
+    assert (
+        second.state().orders[0].client_order_id
+        == first.state().orders[0].client_order_id
+    )
 
 
 def test_checksum_ignores_decimal_scale() -> None:
@@ -106,7 +111,6 @@ def test_checksum_ignores_decimal_scale() -> None:
     assert state_checksum(state) == state_checksum(scaled)
 
 
-
 def test_checksum_ignores_runtime_market_fields() -> None:
     broker = PaperBroker()
     broker.submit(request())
@@ -117,16 +121,16 @@ def test_checksum_ignores_runtime_market_fields() -> None:
         update={
             "account": state.account.model_copy(
                 update={
-                    "equity": Decimal("12345"),
-                    "unrealized_pnl": Decimal("2345"),
+                    "equity": Decimal(12345),
+                    "unrealized_pnl": Decimal(2345),
                     "open_positions": 99,
                 }
             ),
             "positions": [
                 position.model_copy(
                     update={
-                        "mark_price": Decimal("999"),
-                        "unrealized_pnl": Decimal("555"),
+                        "mark_price": Decimal(999),
+                        "unrealized_pnl": Decimal(555),
                     }
                 )
             ],

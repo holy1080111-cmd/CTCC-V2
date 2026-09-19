@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -32,7 +32,7 @@ def structural_settings(**updates) -> Settings:
         "okx_demo_structural_dynamic_leverage_enabled": True,
         "okx_demo_max_open_positions": 3,
         "okx_demo_max_leverage": 20,
-        "okx_demo_portfolio_max_risk_pct": D("0.10"),
+        "okx_demo_portfolio_max_risk_pct": D("0.01"),
         "max_weekly_loss_pct": 0.10,
     }
     values.update(updates)
@@ -42,7 +42,7 @@ def structural_settings(**updates) -> Settings:
 def structural_candidate(*, high_math: bool = True) -> TradeCandidate:
     geometry = StructuralProtectionGeometry(
         timeframe="15m",
-        source_closed_at=datetime(2026, 8, 12, 8, 0, tzinfo=timezone.utc),
+        source_closed_at=datetime(2026, 8, 12, 8, 0, tzinfo=UTC),
         reference_entry=D("100"),
         stop_anchor=D("99.95"),
         target_anchor=D("101"),
@@ -61,7 +61,7 @@ def structural_candidate(*, high_math: bool = True) -> TradeCandidate:
         take_profit=D("110"),
         risk_reward=D("2"),
         invalidation="stop",
-        expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
+        expires_at=datetime.now(UTC) + timedelta(minutes=10),
         structural_protection=geometry,
         derivative_confirmation=DerivativeConfirmation(
             status="confirmed",
@@ -95,9 +95,7 @@ def finalized_candidate(*, high_math: bool = True) -> TradeCandidate:
     return finalized
 
 
-def finalized_candidate_for_rate(
-    *, score: int, stop_rate: Decimal
-) -> TradeCandidate:
+def finalized_candidate_for_rate(*, score: int, stop_rate: Decimal) -> TradeCandidate:
     base = finalized_candidate()
     entry = D("100")
     costs = D("0.0016")
@@ -122,9 +120,7 @@ def finalized_candidate_for_rate(
             "estimated_round_trip_cost_pct": costs,
             "structural_protection": StructuralProtectionGeometry(
                 timeframe="15m",
-                source_closed_at=datetime(
-                    2026, 8, 12, 8, 0, tzinfo=timezone.utc
-                ),
+                source_closed_at=datetime(2026, 8, 12, 8, 0, tzinfo=UTC),
                 reference_entry=entry,
                 stop_anchor=stop_anchor,
                 target_anchor=take_profit,
@@ -148,13 +144,7 @@ def test_structural_tiers_form_the_agreed_five_band_matrix() -> None:
         "elite",
         "extreme",
     ]
-    assert [item.risk_pct for item in tiers] == [
-        D("0.015"),
-        D("0.025"),
-        D("0.03"),
-        D("0.04"),
-        D("0.06"),
-    ]
+    assert [item.risk_pct for item in tiers] == [D("0.005")] * 5
     assert [item.leverage for item in tiers] == [3, 5, 8, 10, 20]
 
 
@@ -176,15 +166,13 @@ def test_high_quality_extreme_geometry_can_select_20x() -> None:
         score_risk_tier(99, settings),
         settings,
         account_equity=D("150"),
-        position_margin_cap=D("150"),
+        position_margin_cap=D("12.5"),
     )
 
     assert selection.required_leverage == 24
     assert selection.selected_leverage == 20
     assert selection.twenty_x_eligible is True
-    assert selection.cap_reasons == (
-        "required_leverage_exceeds_20x_safety_cap",
-    )
+    assert selection.cap_reasons == ("required_leverage_exceeds_20x_safety_cap",)
 
 
 def test_20x_is_capped_to_10x_when_mathematics_is_not_high_grade() -> None:
@@ -195,7 +183,7 @@ def test_20x_is_capped_to_10x_when_mathematics_is_not_high_grade() -> None:
         score_risk_tier(99, settings),
         settings,
         account_equity=D("150"),
-        position_margin_cap=D("150"),
+        position_margin_cap=D("12.5"),
     )
 
     assert selection.selected_leverage == 10
@@ -216,7 +204,7 @@ def test_downward_risk_score_never_falls_back_to_raw_99(risk_score) -> None:
         score_risk_tier(99, settings),
         settings,
         account_equity=D("150"),
-        position_margin_cap=D("150"),
+        position_margin_cap=D("12.5"),
     )
 
     assert candidate.score == 99 and candidate.risk_score == risk_score
@@ -235,7 +223,7 @@ def test_only_absent_risk_score_preserves_legacy_raw_score_fallback() -> None:
         score_risk_tier(99, settings),
         settings,
         account_equity=D("150"),
-        position_margin_cap=D("150"),
+        position_margin_cap=D("12.5"),
     )
 
     assert selection.twenty_x_eligible is True
@@ -276,9 +264,7 @@ def test_leverage_matrix_preserves_risk_and_ladder_invariants() -> None:
                 account_equity=D("1000"),
                 position_margin_cap=D("1000"),
             )
-            total_risk_rate = (
-                stop_rate + candidate.estimated_round_trip_cost_pct
-            )
+            total_risk_rate = stop_rate + candidate.estimated_round_trip_cost_pct
             required = selection.required_leverage
 
             assert selection.selected_leverage in allowed
@@ -288,17 +274,12 @@ def test_leverage_matrix_preserves_risk_and_ladder_invariants() -> None:
                     value for value in allowed if value >= required
                 )
                 required_margin_fraction = (
-                    tier.risk_pct
-                    / total_risk_rate
-                    / D(selection.selected_leverage)
+                    tier.risk_pct / total_risk_rate / D(selection.selected_leverage)
                 )
                 assert D("0") < required_margin_fraction <= D("1")
             else:
                 assert selection.selected_leverage == tier.leverage
-                assert (
-                    D(selection.selected_leverage) * total_risk_rate
-                    < tier.risk_pct
-                )
+                assert D(selection.selected_leverage) * total_risk_rate < tier.risk_pct
 
             if selection.selected_leverage == 20:
                 assert score >= 98
@@ -319,15 +300,13 @@ def test_required_leverage_includes_account_to_position_bucket_ratio() -> None:
         score_risk_tier(99, settings),
         settings,
         account_equity=D("5000"),
-        position_margin_cap=D("2000"),
+        position_margin_cap=D("300"),
     )
 
-    assert selection.required_leverage == 58
+    assert selection.required_leverage == 33
     assert selection.selected_leverage == 20
     assert selection.leverage_cap == 20
-    assert selection.cap_reasons == (
-        "required_leverage_exceeds_20x_safety_cap",
-    )
+    assert selection.cap_reasons == ("required_leverage_exceeds_20x_safety_cap",)
 
 
 def test_bucket_ratio_can_raise_selected_leverage_within_score_cap() -> None:
@@ -342,18 +321,15 @@ def test_bucket_ratio_can_raise_selected_leverage_within_score_cap() -> None:
         score_risk_tier(85, settings),
         settings,
         account_equity=D("5000"),
-        position_margin_cap=D("2000"),
+        position_margin_cap=D("300"),
     )
 
-    # total loss rate is 1%; a 2.5% account risk request needs 6.25x
-    # from one 2,000-USDT bucket, so the 5x score cap is selected and the
-    # shortfall is explicit.  The old account==bucket shortcut selected 3x.
-    assert selection.required_leverage == 7
+    # A 0.5% risk ceiling permits 25 USDT. At a 1% total loss rate,
+    # a 300-USDT bucket needs 8.33x; the 5x score cap limits the trade.
+    assert selection.required_leverage == 9
     assert selection.selected_leverage == 5
     assert selection.leverage_cap == 5
-    assert selection.cap_reasons == (
-        "required_leverage_exceeds_score_tier_cap",
-    )
+    assert selection.cap_reasons == ("required_leverage_exceeds_score_tier_cap",)
 
 
 def test_candidate_cannot_move_stop_inside_structural_anchor() -> None:

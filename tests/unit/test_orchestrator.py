@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -58,12 +58,12 @@ def candidate() -> TradeCandidate:
         strategy="trend_pullback",
         direction="long",
         score=82,
-        entry=Decimal("100"),
-        stop_loss=Decimal("95"),
-        take_profit=Decimal("110"),
-        risk_reward=Decimal("2"),
+        entry=Decimal(100),
+        stop_loss=Decimal(95),
+        take_profit=Decimal(110),
+        risk_reward=Decimal(2),
         invalidation="stop",
-        expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
+        expires_at=datetime.now(UTC) + timedelta(minutes=10),
         reasons=["unit-test"],
     )
 
@@ -78,16 +78,16 @@ def decision(selected: TradeCandidate | None) -> StrategyDecision:
         minimum_score=72,
         evaluations=[],
         blockers=[] if selected else ["no_signal"],
-        generated_at=datetime.now(timezone.utc),
+        generated_at=datetime.now(UTC),
         version="1.0.0",
     )
 
 
 def snapshot(*, age_seconds: int = 0) -> RealtimeSnapshot:
-    observed_at = datetime.now(timezone.utc) - timedelta(seconds=age_seconds)
+    observed_at = datetime.now(UTC) - timedelta(seconds=age_seconds)
     return RealtimeSnapshot(
         symbol="BTC-USDT-SWAP",
-        last=Decimal("100"),
+        last=Decimal(100),
         last_received_at=observed_at,
         received_at=observed_at,
     )
@@ -157,7 +157,7 @@ async def test_stale_realtime_snapshot_blocks_execution() -> None:
 @pytest.mark.asyncio
 async def test_fresh_non_price_update_cannot_hide_stale_last_price() -> None:
     stale = snapshot(age_seconds=120).model_copy(
-        update={"received_at": datetime.now(timezone.utc)}
+        update={"received_at": datetime.now(UTC)}
     )
     broker = PaperBroker()
     service = AutoPaperOrchestrator(

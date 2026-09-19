@@ -36,6 +36,7 @@ from app.trade_qualification.reservations import (
 )
 from app.trade_qualification.service import _plain
 from app.trade_qualification.submission_intent import (
+    SubmissionExecutionBinding,
     build_submission_intent,
     replay_submission_intent,
 )
@@ -358,7 +359,15 @@ class QualificationLedgerRepository:
         )
 
     async def _transition(
-        self, scope, key, *, expected_revision, target, claims=None, record_intent=False
+        self,
+        scope,
+        key,
+        *,
+        expected_revision,
+        target,
+        claims=None,
+        record_intent=False,
+        execution_binding: SubmissionExecutionBinding | None = None,
     ):
         scope = checked(scope, LedgerScope)
         if claims is not None:
@@ -438,7 +447,11 @@ class QualificationLedgerRepository:
             record.updated_at = now
             receipt = self._receipt(record, row)
             intent = (
-                build_submission_intent(request, receipt) if record_intent else None
+                build_submission_intent(
+                    request, receipt, execution_binding=execution_binding
+                )
+                if record_intent
+                else None
             )
             self._journal(
                 session,
@@ -497,7 +510,12 @@ class QualificationLedgerRepository:
         )
 
     async def consume_with_submission_intent(
-        self, scope, event_key, *, expected_revision
+        self,
+        scope,
+        event_key,
+        *,
+        expected_revision,
+        execution_binding: SubmissionExecutionBinding | None = None,
     ):
         """Consume and record derived intent atomically; then independently read.
 
@@ -505,6 +523,10 @@ class QualificationLedgerRepository:
         outcome; callers must inspect/reconcile, not consume or submit again.
         The existing consume_once API is retained and cannot manufacture this
         newer record retroactively.
+
+        An explicit replayable binding records a v2 exact FOK body in the same
+        transition journal. Absence retains v1; invalid bindings roll back and
+        never fall back to v1. Neither version grants submission authority.
         """
         intent = await self._transition(
             scope,
@@ -512,6 +534,7 @@ class QualificationLedgerRepository:
             expected_revision=expected_revision,
             target="consumed",
             record_intent=True,
+            execution_binding=execution_binding,
         )
         return await self.read_submission_intent(
             scope, event_key, expected_sha256=intent.sha256

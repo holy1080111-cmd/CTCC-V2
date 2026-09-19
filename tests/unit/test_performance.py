@@ -1,4 +1,4 @@
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -41,7 +41,9 @@ class FakeRepository:
         self.saved_report = None
 
     async def snapshots_between(self, start, end, *, limit):
-        return [item for item in self.snapshots if start <= item.captured_at < end][:limit]
+        return [item for item in self.snapshots if start <= item.captured_at < end][
+            :limit
+        ]
 
     async def orders_between(self, start, end, *, limit):
         return [
@@ -54,11 +56,9 @@ class FakeRepository:
         return [item for item in self.runs if start <= item.completed_at < end][:limit]
 
     async def trade_attributions_between(self, start, end, *, limit):
-        return [
-            item
-            for item in self.attributions
-            if start <= item.closed_at < end
-        ][:limit]
+        return [item for item in self.attributions if start <= item.closed_at < end][
+            :limit
+        ]
 
     async def strategy_controls(self):
         return list(self.controls.values())
@@ -72,8 +72,8 @@ class FakeRepository:
             enabled=enabled,
             reason=reason,
             updated_by=actor,
-            disabled_at=None if enabled else datetime.now(timezone.utc),
-            updated_at=datetime.now(timezone.utc),
+            disabled_at=None if enabled else datetime.now(UTC),
+            updated_at=datetime.now(UTC),
         )
         self.controls[strategy] = item
         return item
@@ -90,7 +90,7 @@ class FakeRepository:
 
 class FakeDemoService:
     async def reconcile(self):
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         return SimpleNamespace(
             reconciled_at=now,
             account_config=SimpleNamespace(account_level="2"),
@@ -114,21 +114,21 @@ class FakeDemoService:
 
 
 def settings(**updates) -> Settings:
-    values = dict(
-        environment="test",
-        okx_demo_performance_window_days=30,
-        okx_demo_performance_snapshot_retention_days=90,
-        okx_demo_performance_min_active_days=2,
-        okx_demo_performance_min_realized_trades=2,
-        okx_demo_strategy_review_min_trades=1,
-        okx_demo_strategy_review_min_win_rate="0.60",
-    )
+    values = {
+        "environment": "test",
+        "okx_demo_performance_window_days": 30,
+        "okx_demo_performance_snapshot_retention_days": 90,
+        "okx_demo_performance_min_active_days": 2,
+        "okx_demo_performance_min_realized_trades": 2,
+        "okx_demo_strategy_review_min_trades": 1,
+        "okx_demo_strategy_review_min_win_rate": "0.60",
+    }
     values.update(updates)
     return Settings(_env_file=None, **values)
 
 
 def performance_data():
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     snapshots = [
         DemoEquityPoint(
             captured_at=now - timedelta(days=2),
@@ -265,7 +265,7 @@ async def test_validation_requires_coverage_and_thresholds() -> None:
 
 @pytest.mark.asyncio
 async def test_daily_report_is_persisted() -> None:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     snapshot = DemoEquityPoint(
         captured_at=now,
         total_equity=D("1000"),
@@ -340,7 +340,7 @@ async def test_capture_snapshot_is_read_only_reconcile() -> None:
 
 @pytest.mark.asyncio
 async def test_multi_asset_total_equity_drawdown_is_not_strategy_drawdown() -> None:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     snapshots = [
         DemoEquityPoint(
             captured_at=now - timedelta(hours=2),
@@ -384,7 +384,7 @@ async def test_multi_asset_total_equity_drawdown_is_not_strategy_drawdown() -> N
 
 @pytest.mark.asyncio
 async def test_legacy_unbased_snapshots_fail_closed_without_fake_backfill() -> None:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     snapshot = DemoEquityPoint(
         captured_at=now - timedelta(hours=1),
         total_equity=D("95161.01"),
@@ -409,7 +409,7 @@ async def test_legacy_unbased_snapshots_fail_closed_without_fake_backfill() -> N
 
 @pytest.mark.asyncio
 async def test_durable_closing_order_attribution_reaches_strategy_stats() -> None:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     snapshot = DemoEquityPoint(
         captured_at=now - timedelta(hours=2),
         total_equity=D("95000"),
@@ -459,7 +459,7 @@ async def test_durable_closing_order_attribution_reaches_strategy_stats() -> Non
 
 @pytest.mark.asyncio
 async def test_equity_basis_change_restarts_the_performance_evidence_window() -> None:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     snapshots = [
         DemoEquityPoint(
             captured_at=now - timedelta(days=2),
@@ -514,7 +514,7 @@ async def test_equity_basis_change_restarts_the_performance_evidence_window() ->
 
 @pytest.mark.asyncio
 async def test_unattributed_realized_trade_cannot_satisfy_reliability_gate() -> None:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     snapshots = [
         DemoEquityPoint(
             captured_at=now - timedelta(days=1),

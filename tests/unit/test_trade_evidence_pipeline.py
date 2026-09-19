@@ -66,9 +66,7 @@ def synthetic_snapshot(case="long"):
             report_id=event.report_id,
             gate=gate,
             passed=not (case == "cancel" and index == 6),
-            code="entry_zone_missed"
-            if case == "cancel" and index == 6
-            else "passed",
+            code="entry_zone_missed" if case == "cancel" and index == 6 else "passed",
             reason="Synthetic renderer assessment; not actual gate execution.",
             measured_values={"synthetic": True, "source_bound_fixture": True},
         )
@@ -129,9 +127,10 @@ def test_source_to_render_to_publication_preserves_one_immutable_packet(tmp_path
     assert report["schema_version"] == "ctcc.trade_evidence.v1"
     assert set(report["images"]) == IMAGE_NAMES
     for name in IMAGE_NAMES:
-        assert report["images"][name]["sha256"] == hashlib.sha256(
-            rendered[name]
-        ).hexdigest()
+        assert (
+            report["images"][name]["sha256"]
+            == hashlib.sha256(rendered[name]).hexdigest()
+        )
         assert report["images"][name]["size_bytes"] == len(rendered[name])
     root = tmp_path / "trusted-evidence-root"
     root.mkdir()

@@ -9,8 +9,7 @@ from uuid import UUID, uuid4
 from pydantic import Field, field_validator, model_validator
 
 from app.mie.contracts._base import MieContract, require_utc
-from app.mie.contracts.decision import DecisionCandidate
-from app.mie.contracts.decision import DecisionAction
+from app.mie.contracts.decision import DecisionAction, DecisionCandidate
 from app.mie.contracts.evidence import Evidence
 from app.mie.contracts.forecast import (
     CalibrationStatus,
@@ -45,7 +44,7 @@ class MieShadowTrace(MieContract):
         return require_utc(value, "created_at")
 
     @model_validator(mode="after")
-    def validate_trace_links(self) -> "MieShadowTrace":
+    def validate_trace_links(self) -> MieShadowTrace:
         nested_contracts = [
             *self.evidence,
             self.forecast,
@@ -68,22 +67,15 @@ class MieShadowTrace(MieContract):
             raise ValueError("decision must reference all trace evidence")
         if self.decision.forecast_id != self.forecast.forecast_id:
             raise ValueError("decision forecast link is invalid")
-        if (
-            self.decision.regime_snapshot_id
-            != self.regime.regime_snapshot_id
-        ):
+        if self.decision.regime_snapshot_id != self.regime.regime_snapshot_id:
             raise ValueError("decision regime link is invalid")
 
         health_ids = tuple(item.health_id for item in self.model_health)
         if len(health_ids) != len(set(health_ids)):
             raise ValueError("shadow trace model health ids must be unique")
-        health_model_ids = tuple(
-            item.model_id for item in self.model_health
-        )
+        health_model_ids = tuple(item.model_id for item in self.model_health)
         if len(health_model_ids) != len(set(health_model_ids)):
-            raise ValueError(
-                "shadow trace model health identities must be unique"
-            )
+            raise ValueError("shadow trace model health identities must be unique")
         if set(self.decision.model_health_ids) != set(health_ids):
             raise ValueError("decision must reference all model health records")
         required_model_health = (
@@ -95,13 +87,10 @@ class MieShadowTrace(MieContract):
             raise ValueError(
                 "forecast, regime, and logic require distinct model identities"
             )
-        health_by_model_id = {
-            health.model_id: health for health in self.model_health
-        }
+        health_by_model_id = {health.model_id: health for health in self.model_health}
         if not set(required_model_health).issubset(health_by_model_id):
             raise ValueError(
-                "forecast, regime, and logic each require their own "
-                "model health record"
+                "forecast, regime, and logic each require their own model health record"
             )
         forecast_health = health_by_model_id[self.forecast.model_id]
         regime_health = health_by_model_id[self.regime.model_id]
@@ -125,9 +114,7 @@ class MieShadowTrace(MieContract):
             and self.forecast.validation_reference.artifact_sha256
             != forecast_health.validation_reference.artifact_sha256
         ):
-            raise ValueError(
-                "forecast and model health validation artifacts disagree"
-            )
+            raise ValueError("forecast and model health validation artifacts disagree")
 
         for item in self.evidence:
             covering_health = [
@@ -137,15 +124,12 @@ class MieShadowTrace(MieContract):
             ]
             if len(covering_health) != 1:
                 raise ValueError(
-                    "every evidence source requires exactly one model "
-                    "health record"
+                    "every evidence source requires exactly one model health record"
                 )
             health = covering_health[0]
             if health.model_version != item.model_version:
                 raise ValueError("evidence model health version mismatch")
-            if not validation_at_least(
-                health.validation_level, item.validation_level
-            ):
+            if not validation_at_least(health.validation_level, item.validation_level):
                 raise ValueError(
                     "evidence model health validation is below the evidence claim"
                 )
@@ -194,23 +178,14 @@ class MieShadowTrace(MieContract):
                 self.forecast.validation_level,
                 ValidationLevel.PREDICTIVE_OOS,
             ):
-                raise ValueError(
-                    "directional trace requires an OOS-validated forecast"
-                )
-            if (
-                self.forecast.calibration_status
-                != CalibrationStatus.CALIBRATED
-            ):
-                raise ValueError(
-                    "directional trace requires a calibrated forecast"
-                )
+                raise ValueError("directional trace requires an OOS-validated forecast")
+            if self.forecast.calibration_status != CalibrationStatus.CALIBRATED:
+                raise ValueError("directional trace requires a calibrated forecast")
             if any(
                 health.status != ModelHealthStatus.HEALTHY
                 for health in self.model_health
             ):
-                raise ValueError(
-                    "directional trace requires healthy model records"
-                )
+                raise ValueError("directional trace requires healthy model records")
 
         instrument_id = self.forecast.instrument_id
         horizon = self.forecast.horizon
@@ -229,28 +204,17 @@ class MieShadowTrace(MieContract):
         if any(item != horizon for item in linked_horizons):
             raise ValueError("shadow trace horizon mismatch")
 
-        if not (
-            self.forecast.as_of
-            == self.regime.as_of
-            == self.decision.as_of
-        ):
+        if not (self.forecast.as_of == self.regime.as_of == self.decision.as_of):
             raise ValueError("shadow trace as_of timestamps must match")
-        if any(
-            item.data_cutoff > self.forecast.data_cutoff
-            for item in self.evidence
-        ):
-            raise ValueError(
-                "forecast data cutoff cannot precede evidence data"
-            )
+        if any(item.data_cutoff > self.forecast.data_cutoff for item in self.evidence):
+            raise ValueError("forecast data cutoff cannot precede evidence data")
         regime_evidence_ids = set(self.regime.evidence_ids)
         if any(
             item.data_cutoff > self.regime.data_cutoff
             for item in self.evidence
             if item.evidence_id in regime_evidence_ids
         ):
-            raise ValueError(
-                "regime data cutoff cannot precede linked evidence data"
-            )
+            raise ValueError("regime data cutoff cannot precede linked evidence data")
         decision_inputs = [
             *(item.data_cutoff for item in self.evidence),
             self.forecast.data_cutoff,
@@ -258,12 +222,9 @@ class MieShadowTrace(MieContract):
             *(item.data_cutoff for item in self.model_health),
         ]
         if any(
-            data_cutoff > self.decision.data_cutoff
-            for data_cutoff in decision_inputs
+            data_cutoff > self.decision.data_cutoff for data_cutoff in decision_inputs
         ):
-            raise ValueError(
-                "decision data cutoff cannot precede a linked input"
-            )
+            raise ValueError("decision data cutoff cannot precede a linked input")
         if any(
             item.observed_at > self.forecast.as_of
             or item.generated_at > self.forecast.generated_at

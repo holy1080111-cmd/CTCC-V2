@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
@@ -27,7 +27,7 @@ def settings(**updates) -> Settings:
         "okx_demo_api_passphrase": "pass",
         "okx_demo_order_detail_poll_attempts": 1,
         "okx_demo_order_detail_poll_delay_seconds": 0,
-        "okx_demo_max_order_size_contracts": Decimal("1"),
+        "okx_demo_max_order_size_contracts": Decimal(1),
     }
     values.update(updates)
     return Settings(_env_file=None, **values)
@@ -60,14 +60,22 @@ class FakePrivate:
         self.order_detail_calls = 0
         self.order_states: list[str] = ["filled"]
         self.order_fill_size = Decimal("0.1")
-        self.order_average_fill_price: Decimal | None = Decimal("100000")
+        self.order_average_fill_price: Decimal | None = Decimal(100000)
         self.order_average_fill_prices: list[Decimal | None] | None = None
 
     async def account_config(self):
         return [{"uid": "1", "acctLv": "2", "posMode": self.position_mode}]
 
     async def balance(self, currency=None):
-        return [{"totalEq": "10000", "isoEq": "0", "adjEq": "10000", "availEq": "9000", "details": []}]
+        return [
+            {
+                "totalEq": "10000",
+                "isoEq": "0",
+                "adjEq": "10000",
+                "availEq": "9000",
+                "details": [],
+            }
+        ]
 
     async def positions(self, instrument_id=None):
         return list(self.position_rows)
@@ -92,8 +100,7 @@ class FakePrivate:
         row = {
             "algoId": "algo-123",
             "algoClOrdId": (
-                self.pending_algo_client_id_override
-                or attached["attachAlgoClOrdId"]
+                self.pending_algo_client_id_override or attached["attachAlgoClOrdId"]
             ),
             "instId": self.placed_payload["instId"],
             "ordType": "oco",
@@ -116,7 +123,9 @@ class FakePrivate:
 
     async def place_order(self, payload):
         self.placed_payload = payload
-        return [{"ordId": "123", "clOrdId": payload["clOrdId"], "sCode": "0", "sMsg": ""}]
+        return [
+            {"ordId": "123", "clOrdId": payload["clOrdId"], "sCode": "0", "sMsg": ""}
+        ]
 
     async def order_detail(self, instrument_id, *, order_id=None, client_order_id=None):
         self.order_detail_calls += 1
@@ -134,34 +143,41 @@ class FakePrivate:
             else self.order_average_fill_price
         )
         payload = self.placed_payload or {}
-        return [{
-            "ordId": order_id or "123",
-            "clOrdId": client_order_id or payload.get("clOrdId", "CTCC1"),
-            "instId": instrument_id,
-            "side": payload.get("side", "buy"),
-            "posSide": payload.get("posSide", "net"),
-            "ordType": payload.get("ordType", "market"),
-            "state": state,
-            "sz": payload.get("sz", "0.1"),
-            "accFillSz": str(self.order_fill_size),
-            "avgPx": (
-                str(average_fill_price)
-                if average_fill_price is not None
-                else ""
-            ),
-            "px": payload.get("px", ""),
-            "reduceOnly": "false",
-            "cTime": "1785858062000",
-            "uTime": "1785858063000",
-            "attachAlgoOrds": (
-                (self.placed_payload or {}).get("attachAlgoOrds", [])
-                if self.include_order_protection
-                else []
-            ),
-        }]
+        return [
+            {
+                "ordId": order_id or "123",
+                "clOrdId": client_order_id or payload.get("clOrdId", "CTCC1"),
+                "instId": instrument_id,
+                "side": payload.get("side", "buy"),
+                "posSide": payload.get("posSide", "net"),
+                "ordType": payload.get("ordType", "market"),
+                "state": state,
+                "sz": payload.get("sz", "0.1"),
+                "accFillSz": str(self.order_fill_size),
+                "avgPx": (
+                    str(average_fill_price) if average_fill_price is not None else ""
+                ),
+                "px": payload.get("px", ""),
+                "reduceOnly": "false",
+                "cTime": "1785858062000",
+                "uTime": "1785858063000",
+                "attachAlgoOrds": (
+                    (self.placed_payload or {}).get("attachAlgoOrds", [])
+                    if self.include_order_protection
+                    else []
+                ),
+            }
+        ]
 
     async def cancel_order(self, payload):
-        return [{"ordId": payload.get("ordId", "123"), "clOrdId": payload.get("clOrdId", ""), "sCode": "0", "sMsg": ""}]
+        return [
+            {
+                "ordId": payload.get("ordId", "123"),
+                "clOrdId": payload.get("clOrdId", ""),
+                "sCode": "0",
+                "sMsg": "",
+            }
+        ]
 
     async def close_position(self, payload):
         self.closed_payload = payload
@@ -181,9 +197,9 @@ class FakePublic:
         lot=Decimal("0.1"),
         minimum=Decimal("0.1"),
         *,
-        bid=Decimal("99999"),
-        ask=Decimal("100001"),
-        mark=Decimal("100000"),
+        bid=Decimal(99999),
+        ask=Decimal(100001),
+        mark=Decimal(100000),
     ) -> None:
         self.lot = lot
         self.minimum = minimum
@@ -192,32 +208,34 @@ class FakePublic:
         self.mark = mark
 
     async def instruments(self, instrument_id):
-        return [InstrumentInfo(
-            symbol=instrument_id,
-            instrument_id=instrument_id,
-            instrument_type="SWAP",
-            state="live",
-            tick_size=Decimal("0.1"),
-            lot_size=self.lot,
-            minimum_size=self.minimum,
-            contract_value=Decimal("0.01"),
-            contract_currency="BTC",
-        )]
+        return [
+            InstrumentInfo(
+                symbol=instrument_id,
+                instrument_id=instrument_id,
+                instrument_type="SWAP",
+                state="live",
+                tick_size=Decimal("0.1"),
+                lot_size=self.lot,
+                minimum_size=self.minimum,
+                contract_value=Decimal("0.01"),
+                contract_currency="BTC",
+            )
+        ]
 
     async def ticker(self, instrument_id):
         return Ticker(
             instrument_id=instrument_id,
-            last=Decimal("100000"),
+            last=Decimal(100000),
             bid=self.bid,
             ask=self.ask,
-            bid_size=Decimal("1"),
-            ask_size=Decimal("1"),
-            open_24h=Decimal("99000"),
-            high_24h=Decimal("101000"),
-            low_24h=Decimal("98000"),
-            volume_24h=Decimal("100"),
-            volume_quote_24h=Decimal("10000000"),
-            timestamp=datetime.now(timezone.utc),
+            bid_size=Decimal(1),
+            ask_size=Decimal(1),
+            open_24h=Decimal(99000),
+            high_24h=Decimal(101000),
+            low_24h=Decimal(98000),
+            volume_24h=Decimal(100),
+            volume_quote_24h=Decimal(10000000),
+            timestamp=datetime.now(UTC),
         )
 
     async def mark_price(self, instrument_id):
@@ -237,6 +255,7 @@ class FakeRepository:
 
     async def mirror_status(self):
         from app.domain.okx_demo import OkxDemoMirrorStatus
+
         return OkxDemoMirrorStatus(available=True)
 
     async def mark_failure(self, message):
@@ -248,8 +267,8 @@ def request(**updates):
         "instrument_id": "BTC-USDT-SWAP",
         "direction": "long",
         "size": Decimal("0.1"),
-        "stop_loss": Decimal("99000"),
-        "take_profit": Decimal("102000"),
+        "stop_loss": Decimal(99000),
+        "take_profit": Decimal(102000),
         "confirmation": "OKX_DEMO_ONLY",
     }
     values.update(updates)
@@ -296,20 +315,34 @@ async def test_before_submit_callback_can_block_write_after_preflight() -> None:
         assert private.placed_payload is None
         raise OkxDemoSafetyError("automation_disarmed_during_preflight")
 
-    with pytest.raises(OkxDemoSafetyError, match="automation_disarmed_during_preflight"):
+    with pytest.raises(
+        OkxDemoSafetyError, match="automation_disarmed_during_preflight"
+    ):
         await service.place_order(request(), before_submit=reject_submit)
 
     assert private.placed_payload is None
     assert private.order_detail_calls == 0
     assert private.pending_algo_post_place_calls == 0
 
-    private.position_rows = [{
-        "instId": "BTC-USDT-SWAP", "posSide": "net", "pos": "0.1", "availPos": "0.1",
-        "avgPx": "100000", "markPx": "100000", "upl": "0", "lever": "3", "mgnMode": "cross",
-    }]
-    close_result = await service.close_position(OkxDemoCloseRequest(
-        instrument_id="BTC-USDT-SWAP", confirmation="OKX_DEMO_ONLY",
-    ))
+    private.position_rows = [
+        {
+            "instId": "BTC-USDT-SWAP",
+            "posSide": "net",
+            "pos": "0.1",
+            "availPos": "0.1",
+            "avgPx": "100000",
+            "markPx": "100000",
+            "upl": "0",
+            "lever": "3",
+            "mgnMode": "cross",
+        }
+    ]
+    close_result = await service.close_position(
+        OkxDemoCloseRequest(
+            instrument_id="BTC-USDT-SWAP",
+            confirmation="OKX_DEMO_ONLY",
+        )
+    )
 
     assert close_result.acknowledged is True
     assert private.closed_payload["instId"] == "BTC-USDT-SWAP"
@@ -329,7 +362,8 @@ async def test_before_submit_callback_runs_once_immediately_before_write() -> No
     service = OkxDemoService(private, FakePublic(), None, settings=settings())
 
     result = await service.place_order(
-        request(), before_submit=lambda: events.append("before_submit"),
+        request(),
+        before_submit=lambda: events.append("before_submit"),
     )
 
     assert events == ["before_submit", "write"]
@@ -342,9 +376,7 @@ async def test_place_fok_maps_price_bound_and_attached_protection() -> None:
     private = FakePrivate()
     service = OkxDemoService(private, FakePublic(), None, settings=settings())
 
-    result = await service.place_order(
-        request(order_type="fok", price=Decimal("100010"))
-    )
+    result = await service.place_order(request(order_type="fok", price=Decimal(100010)))
 
     assert private.placed_payload["ordType"] == "fok"
     assert private.placed_payload["px"] == "100010"
@@ -359,7 +391,8 @@ async def test_place_fok_maps_price_bound_and_attached_protection() -> None:
 @pytest.mark.parametrize("order_type", ["market", "limit", "fok"])
 @pytest.mark.parametrize("disable", ["writes", "enabled", "mode"])
 async def test_manual_entry_rechecks_authority_after_last_preflight_await(
-    order_type, disable,
+    order_type,
+    disable,
 ) -> None:
     config = settings()
 
@@ -381,7 +414,7 @@ async def test_manual_entry_rechecks_authority_after_last_preflight_await(
         await service.place_order(
             request(
                 order_type=order_type,
-                price=None if order_type == "market" else Decimal("100010"),
+                price=None if order_type == "market" else Decimal(100010),
             ),
             before_submit=lambda: callbacks.append("submission_started"),
         )
@@ -401,9 +434,7 @@ async def test_fok_order_detail_poll_waits_for_terminal_state() -> None:
         settings=settings(okx_demo_order_detail_poll_attempts=2),
     )
 
-    result = await service.place_order(
-        request(order_type="fok", price=Decimal("100010"))
-    )
+    result = await service.place_order(request(order_type="fok", price=Decimal(100010)))
 
     assert private.order_detail_calls == 2
     assert result.order is not None
@@ -414,7 +445,7 @@ async def test_fok_order_detail_poll_waits_for_terminal_state() -> None:
 async def test_fok_order_detail_poll_waits_for_positive_average_fill_price() -> None:
     private = FakePrivate()
     private.order_states = ["filled", "filled"]
-    private.order_average_fill_prices = [None, Decimal("100000")]
+    private.order_average_fill_prices = [None, Decimal(100000)]
     service = OkxDemoService(
         private,
         FakePublic(),
@@ -422,14 +453,12 @@ async def test_fok_order_detail_poll_waits_for_positive_average_fill_price() -> 
         settings=settings(okx_demo_order_detail_poll_attempts=2),
     )
 
-    result = await service.place_order(
-        request(order_type="fok", price=Decimal("100010"))
-    )
+    result = await service.place_order(request(order_type="fok", price=Decimal(100010)))
 
     assert private.order_detail_calls == 2
     assert result.order is not None
     assert result.order.state == "filled"
-    assert result.order.average_fill_price == Decimal("100000")
+    assert result.order.average_fill_price == Decimal(100000)
 
 
 @pytest.mark.parametrize("terminal_state", ["canceled", "mmp_canceled"])
@@ -439,13 +468,11 @@ async def test_zero_fill_fok_is_terminal_without_protection_poll(
 ) -> None:
     private = FakePrivate()
     private.order_states = [terminal_state]
-    private.order_fill_size = Decimal("0")
+    private.order_fill_size = Decimal(0)
     private.order_average_fill_price = None
     service = OkxDemoService(private, FakePublic(), None, settings=settings())
 
-    result = await service.place_order(
-        request(order_type="fok", price=Decimal("100010"))
-    )
+    result = await service.place_order(request(order_type="fok", price=Decimal(100010)))
 
     assert result.order is not None
     assert result.order.state == terminal_state
@@ -453,8 +480,6 @@ async def test_zero_fill_fok_is_terminal_without_protection_poll(
     assert result.protection_confirmed is False
     assert "fok_order_not_filled" in result.warnings
     assert private.pending_algo_post_place_calls == 0
-
-
 
 
 @pytest.mark.asyncio
@@ -467,22 +492,21 @@ async def test_place_ack_without_confirmed_protection_is_explicitly_unsafe() -> 
 
     assert result.acknowledged is True
     assert result.protection_confirmed is False
-    assert (
-        "exchange_acknowledged_but_protection_not_confirmed"
-        in result.warnings
-    )
+    assert "exchange_acknowledged_but_protection_not_confirmed" in result.warnings
 
 
 @pytest.mark.asyncio
 async def test_place_rejects_preexisting_pending_algo_order() -> None:
     private = FakePrivate(
-        pending_algos=[{
-            "algoId": "existing",
-            "instId": "BTC-USDT-SWAP",
-            "ordType": "oco",
-            "state": "live",
-            "sz": "0.1",
-        }]
+        pending_algos=[
+            {
+                "algoId": "existing",
+                "instId": "BTC-USDT-SWAP",
+                "ordType": "oco",
+                "state": "live",
+                "sz": "0.1",
+            }
+        ]
     )
     service = OkxDemoService(private, FakePublic(), None, settings=settings())
 
@@ -521,11 +545,17 @@ async def test_protection_confirmation_requires_exact_unique_client_id() -> None
         ("posSide", "long"),
         ("posSide", "short"),
         ("attachAlgoClOrdId", "CONFLICTINGPROTECTIONID"),
+        ("state", "canceled"),
+        ("state", "effective"),
+        ("state", "order_failed"),
+        ("state", ""),
+        ("ordType", "trigger"),
     ],
 )
 @pytest.mark.asyncio
 async def test_protection_confirmation_rejects_mismatched_protection(
-    field: str, value: str,
+    field: str,
+    value: str,
 ) -> None:
     private = FakePrivate()
     private.pending_algo_row_overrides = {field: value}
@@ -541,14 +571,24 @@ async def test_protection_confirmation_rejects_mismatched_protection(
 @pytest.mark.parametrize(
     "field",
     [
-        "algoClOrdId", "instId", "sz", "side", "posSide", "slTriggerPx",
-        "tpTriggerPx", "slTriggerPxType", "tpTriggerPxType",
+        "algoClOrdId",
+        "instId",
+        "sz",
+        "side",
+        "posSide",
+        "slTriggerPx",
+        "state",
+        "ordType",
+        "tpTriggerPx",
+        "slTriggerPxType",
+        "tpTriggerPxType",
     ],
 )
 @pytest.mark.parametrize("missing", [True, False], ids=["missing", "empty"])
 @pytest.mark.asyncio
 async def test_protection_confirmation_requires_complete_exchange_evidence(
-    field: str, missing: bool,
+    field: str,
+    missing: bool,
 ) -> None:
     private = FakePrivate()
     if missing:
@@ -588,7 +628,9 @@ async def test_protection_confirmation_rejects_duplicate_client_id(
 @pytest.mark.parametrize("matching_position_side", [True, False])
 @pytest.mark.asyncio
 async def test_protection_confirmation_uses_exchange_account_position_mode(
-    position_mode: str, direction: str, matching_position_side: bool,
+    position_mode: str,
+    direction: str,
+    matching_position_side: bool,
 ) -> None:
     private = FakePrivate(position_mode=position_mode)
     expected_position_side = "net" if position_mode == "net_mode" else direction
@@ -631,7 +673,11 @@ async def test_protection_confirmation_uses_bounded_pending_algo_poll() -> None:
 async def test_long_short_mode_uses_direction_as_position_side() -> None:
     private = FakePrivate(position_mode="long_short_mode")
     service = OkxDemoService(private, FakePublic(), None, settings=settings())
-    await service.place_order(request(direction="short", stop_loss=Decimal("102000"), take_profit=Decimal("99000")))
+    await service.place_order(
+        request(
+            direction="short", stop_loss=Decimal(102000), take_profit=Decimal(99000)
+        )
+    )
     assert private.placed_payload["side"] == "sell"
     assert private.placed_payload["posSide"] == "short"
 
@@ -661,7 +707,9 @@ async def test_place_rejects_unknown_or_missing_account_position_mode(
 
 @pytest.mark.asyncio
 async def test_place_rejects_unaligned_contract_size() -> None:
-    service = OkxDemoService(FakePrivate(), FakePublic(lot=Decimal("0.1")), None, settings=settings())
+    service = OkxDemoService(
+        FakePrivate(), FakePublic(lot=Decimal("0.1")), None, settings=settings()
+    )
     with pytest.raises(OkxDemoSafetyError, match="order_size_not_aligned"):
         await service.place_order(request(size=Decimal("0.15")))
 
@@ -677,7 +725,7 @@ async def test_place_rejects_unprotected_order_when_required() -> None:
 async def test_demo_market_order_rechecks_executable_quote_and_mark() -> None:
     service = OkxDemoService(
         FakePrivate(),
-        FakePublic(ask=Decimal("102500")),
+        FakePublic(ask=Decimal(102500)),
         None,
         settings=settings(),
     )
@@ -689,7 +737,7 @@ async def test_demo_market_order_rechecks_executable_quote_and_mark() -> None:
 
     service = OkxDemoService(
         FakePrivate(),
-        FakePublic(mark=Decimal("100025")),
+        FakePublic(mark=Decimal(100025)),
         None,
         settings=settings(),
     )
@@ -699,8 +747,8 @@ async def test_demo_market_order_rechecks_executable_quote_and_mark() -> None:
     ):
         await service.place_order(
             request(
-                stop_loss=Decimal("99990"),
-                take_profit=Decimal("100020"),
+                stop_loss=Decimal(99990),
+                take_profit=Decimal(100020),
             )
         )
 
@@ -712,10 +760,21 @@ def test_demo_order_model_rejects_unreviewed_trigger_price_sources() -> None:
 
 @pytest.mark.asyncio
 async def test_place_rejects_existing_position_for_same_instrument() -> None:
-    private = FakePrivate(positions=[{
-        "instId": "BTC-USDT-SWAP", "posSide": "net", "pos": "0.1", "availPos": "0.1",
-        "avgPx": "100000", "markPx": "100000", "upl": "0", "lever": "3", "mgnMode": "cross"
-    }])
+    private = FakePrivate(
+        positions=[
+            {
+                "instId": "BTC-USDT-SWAP",
+                "posSide": "net",
+                "pos": "0.1",
+                "availPos": "0.1",
+                "avgPx": "100000",
+                "markPx": "100000",
+                "upl": "0",
+                "lever": "3",
+                "mgnMode": "cross",
+            }
+        ]
+    )
     service = OkxDemoService(private, FakePublic(), None, settings=settings())
     with pytest.raises(OkxDemoSafetyError, match="position_already_open"):
         await service.place_order(request())
@@ -771,7 +830,9 @@ async def test_set_leverage_requires_matching_exchange_response_fields() -> None
 @pytest.mark.asyncio
 async def test_reconcile_persists_exchange_snapshot() -> None:
     repository = FakeRepository()
-    service = OkxDemoService(FakePrivate(), FakePublic(), repository, settings=settings())
+    service = OkxDemoService(
+        FakePrivate(), FakePublic(), repository, settings=settings()
+    )
     result = await service.reconcile()
     assert result.persisted is True
     assert repository.synced is True
@@ -779,12 +840,24 @@ async def test_reconcile_persists_exchange_snapshot() -> None:
 
 @pytest.mark.asyncio
 async def test_place_rejects_existing_pending_order_for_same_instrument() -> None:
-    private = FakePrivate(pending_orders=[{
-        "ordId": "pending-1", "clOrdId": "CTCCPENDING1", "instId": "BTC-USDT-SWAP",
-        "side": "buy", "posSide": "net", "ordType": "limit", "state": "live",
-        "sz": "0.1", "accFillSz": "0", "px": "90000", "avgPx": "",
-        "reduceOnly": "false"
-    }])
+    private = FakePrivate(
+        pending_orders=[
+            {
+                "ordId": "pending-1",
+                "clOrdId": "CTCCPENDING1",
+                "instId": "BTC-USDT-SWAP",
+                "side": "buy",
+                "posSide": "net",
+                "ordType": "limit",
+                "state": "live",
+                "sz": "0.1",
+                "accFillSz": "0",
+                "px": "90000",
+                "avgPx": "",
+                "reduceOnly": "false",
+            }
+        ]
+    )
     service = OkxDemoService(private, FakePublic(), None, settings=settings())
     with pytest.raises(OkxDemoSafetyError, match="pending_order_already_exists"):
         await service.place_order(request())

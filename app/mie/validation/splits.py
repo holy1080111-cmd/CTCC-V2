@@ -6,9 +6,10 @@ It does not load data, fit a model, or interact with any runtime/execution path.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Sequence
+from itertools import pairwise
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,17 +36,12 @@ def _validated_timestamps(
         raise ValueError("walk-forward timestamps cannot be empty")
     for timestamp in values:
         if not isinstance(timestamp, datetime):
-            raise ValueError("walk-forward timestamps must be datetimes")
+            raise ValueError("walk-forward timestamps must be datetimes")  # noqa: TRY004 - Public validation contract consistently rejects malformed values with ValueError.
         if timestamp.tzinfo is None or timestamp.utcoffset() is None:
             raise ValueError("walk-forward timestamps must be timezone-aware UTC")
         if timestamp.utcoffset() != timedelta(0):
             raise ValueError("walk-forward timestamps must use UTC")
-    if any(
-        current <= previous
-        for previous, current in zip(
-            values[:-1], values[1:], strict=True
-        )
-    ):
+    if any(current <= previous for previous, current in pairwise(values)):
         raise ValueError("walk-forward timestamps must be strictly increasing")
     return values
 
@@ -90,11 +86,7 @@ def purged_walk_forward_folds(
     ):
         _validate_positive(name, value)
 
-    step = (
-        validation_observations
-        if step_observations is None
-        else step_observations
-    )
+    step = validation_observations if step_observations is None else step_observations
     _validate_positive("step_observations", step)
     if maximum_folds is not None:
         _validate_positive("maximum_folds", maximum_folds)
@@ -134,17 +126,13 @@ def purged_walk_forward_folds(
         prior_embargoed_indices = tuple(
             index
             for index in range(validation_start_index)
-            if any(
-                start < values[index] <= end
-                for start, end in previous_embargoes
-            )
+            if any(start < values[index] <= end for start, end in previous_embargoes)
         )
         prior_embargoed = frozenset(prior_embargoed_indices)
         training_indices = tuple(
             index
             for index in range(validation_start_index)
-            if values[index] < purge_cutoff
-            and index not in prior_embargoed
+            if values[index] < purge_cutoff and index not in prior_embargoed
         )
 
         if len(training_indices) < minimum_training_observations:
@@ -154,8 +142,7 @@ def purged_walk_forward_folds(
         purged_indices = tuple(
             index
             for index in range(validation_start_index)
-            if values[index] >= purge_cutoff
-            and index not in prior_embargoed
+            if values[index] >= purge_cutoff and index not in prior_embargoed
         )
         validation_indices = tuple(
             range(
@@ -190,10 +177,7 @@ def purged_walk_forward_folds(
 
         previous_embargoes.append((validation_end, current_embargo_end))
         candidate = validation_start_index + step
-        while (
-            candidate < len(values)
-            and values[candidate] <= current_embargo_end
-        ):
+        while candidate < len(values) and values[candidate] <= current_embargo_end:
             candidate += 1
         validation_start_index = candidate
 
@@ -266,9 +250,7 @@ def assert_no_temporal_leakage(
             for index in pre_validation - expected_prior_embargoed
             if values[index] < purge_cutoff
         }
-        expected_purged = (
-            pre_validation - expected_prior_embargoed - expected_training
-        )
+        expected_purged = pre_validation - expected_prior_embargoed - expected_training
         if set(fold.prior_embargoed_indices) != expected_prior_embargoed:
             raise ValueError("prior embargo accounting is incomplete")
         if set(fold.training_indices) != expected_training:

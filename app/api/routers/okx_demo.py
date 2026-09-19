@@ -26,14 +26,21 @@ def _http_error(exc: Exception) -> HTTPException:
     if isinstance(exc, OkxDemoSafetyError):
         return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
     if isinstance(exc, OkxDemoUnavailableError):
-        code = status.HTTP_404_NOT_FOUND if "not_found" in str(exc) else status.HTTP_503_SERVICE_UNAVAILABLE
+        code = (
+            status.HTTP_404_NOT_FOUND
+            if "not_found" in str(exc)
+            else status.HTTP_503_SERVICE_UNAVAILABLE
+        )
         return HTTPException(status_code=code, detail=str(exc))
     if isinstance(exc, (OkxPrivateApiError, OkxPublicApiError)):
         return HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail={"message": str(exc), "exchange_code": getattr(exc, "code", None)},
         )
-    return HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="okx_demo_internal_error")
+    return HTTPException(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        detail="okx_demo_internal_error",
+    )
 
 
 @router.get("/status", response_model=OkxDemoStatus)
@@ -123,7 +130,9 @@ async def reconcile(_: None = Depends(require_ctcc_token)) -> OkxDemoReconcileRe
         raise _http_error(exc) from exc
 
 
-@router.post("/orders", response_model=OkxDemoWriteResult, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/orders", response_model=OkxDemoWriteResult, status_code=status.HTTP_201_CREATED
+)
 async def place_order(
     request: OkxDemoOrderRequest,
     _: None = Depends(require_ctcc_token),

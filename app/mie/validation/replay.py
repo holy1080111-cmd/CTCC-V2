@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Sequence
 from datetime import datetime, timedelta
 from decimal import Decimal
-from typing import Literal, Sequence
+from itertools import pairwise
+from typing import Literal
 
 from pydantic import (
     ConfigDict,
@@ -79,7 +81,7 @@ class PointInTimeBar(ReplayContract):
         return require_utc(value, "available_at")
 
     @model_validator(mode="after")
-    def validate_point_in_time_boundary(self) -> "PointInTimeBar":
+    def validate_point_in_time_boundary(self) -> PointInTimeBar:
         if self.available_at < self.bar.closed_at:
             raise ValueError("a bar cannot be available before it closes")
         return self
@@ -108,7 +110,7 @@ class PointInTimeReplaySnapshot(ReplayContract):
         return require_utc(value, info.field_name)
 
     @model_validator(mode="after")
-    def validate_links(self) -> "PointInTimeReplaySnapshot":
+    def validate_links(self) -> PointInTimeReplaySnapshot:
         snapshot = self.feature_snapshot
         if self.data_cutoff > self.as_of:
             raise ValueError("replay data cutoff cannot follow its as-of time")
@@ -159,7 +161,7 @@ class ForwardDirectionLabel(ReplayContract):
         return value
 
     @model_validator(mode="after")
-    def validate_label_boundary(self) -> "ForwardDirectionLabel":
+    def validate_label_boundary(self) -> ForwardDirectionLabel:
         if self.outcome_at != self.feature_cutoff + timedelta(
             seconds=self.horizon_seconds
         ):
@@ -195,35 +197,24 @@ def _validate_records(
         raise ReplayValidationError("replay source row ids must be unique")
 
     closed_at = tuple(row.bar.closed_at for row in rows)
-    if any(
-        current <= previous
-        for previous, current in zip(
-            closed_at[:-1], closed_at[1:], strict=True
-        )
-    ):
+    if any(current <= previous for previous, current in pairwise(closed_at)):
         raise ReplayValidationError("replay rows must be strictly chronological")
 
     expected_step = timedelta(seconds=bar_horizon.seconds)
     if any(
-        current - previous != expected_step
-        for previous, current in zip(
-            closed_at[:-1], closed_at[1:], strict=True
-        )
+        current - previous != expected_step for previous, current in pairwise(closed_at)
     ):
         raise ReplayValidationError("replay rejects missing or irregular bars")
 
     if any(
-        not _aligned_to_horizon(row.bar.closed_at, bar_horizon.seconds)
-        for row in rows
+        not _aligned_to_horizon(row.bar.closed_at, bar_horizon.seconds) for row in rows
     ):
         raise ReplayValidationError("replay bars must align to the declared horizon")
     return rows
 
 
 def _source_rows_sha256(records: Sequence[PointInTimeBar]) -> str:
-    return _canonical_sha256(
-        [row.model_dump(mode="json") for row in records]
-    )
+    return _canonical_sha256([row.model_dump(mode="json") for row in records])
 
 
 def replay_features_at(
@@ -232,7 +223,7 @@ def replay_features_at(
     as_of: datetime,
     bar_horizon: ForecastHorizon,
     history_bars: int = 256,
-    signal_alpha: Decimal = D("0.25"),
+    signal_alpha: Decimal = D("0.25"),  # noqa: B008 - D constructs immutable exact Decimal values.
     dynamics_window: int = 21,
     momentum_fast_bars: int = 5,
     momentum_slow_bars: int = 20,
@@ -248,7 +239,9 @@ def replay_features_at(
 
     cutoff = require_utc(as_of, "as_of")
     if history_bars < max(5, dynamics_window, momentum_slow_bars + 1):
-        raise ReplayValidationError("history window cannot satisfy feature dependencies")
+        raise ReplayValidationError(
+            "history window cannot satisfy feature dependencies"
+        )
     if history_bars > 10_000:
         raise ReplayValidationError("history window exceeds the feature contract")
 
@@ -304,12 +297,7 @@ def replay_features_walk_forward(
     replay_cutoffs = tuple(require_utc(item, "cutoff") for item in cutoffs)
     if not replay_cutoffs:
         raise ReplayValidationError("walk-forward replay requires cutoffs")
-    if any(
-        current <= previous
-        for previous, current in zip(
-            replay_cutoffs[:-1], replay_cutoffs[1:], strict=True
-        )
-    ):
+    if any(current <= previous for previous, current in pairwise(replay_cutoffs)):
         raise ReplayValidationError("walk-forward cutoffs must be strictly increasing")
 
     return tuple(
@@ -331,7 +319,7 @@ def forward_direction_label(
     read_at: datetime,
     bar_horizon: ForecastHorizon,
     outcome_horizon_seconds: int,
-    positive_threshold: Decimal = D("0"),
+    positive_threshold: Decimal = D("0"),  # noqa: B008 - D constructs immutable exact Decimal values.
 ) -> ForwardDirectionLabel:
     """Reveal a frozen forward-return label only after its row is available."""
 
@@ -345,16 +333,16 @@ def forward_direction_label(
         raise ReplayValidationError("outcome threshold must be finite")
 
     target_at = cutoff + timedelta(seconds=outcome_horizon_seconds)
-    causal_rows = tuple(
-        row for row in records if row.bar.closed_at <= target_at
-    )
+    causal_rows = tuple(row for row in records if row.bar.closed_at <= target_at)
     rows = _validate_records(causal_rows, bar_horizon=bar_horizon)
     by_closed_at = {row.bar.closed_at: row for row in rows}
     try:
         base = by_closed_at[cutoff]
         outcome = by_closed_at[target_at]
     except KeyError as exc:
-        raise ReplayValidationError("outcome label requires exact boundary rows") from exc
+        raise ReplayValidationError(
+            "outcome label requires exact boundary rows"
+        ) from exc
     if base.available_at > cutoff:
         raise ReplayValidationError("feature cutoff row was not causally available")
     if outcome.available_at > observed_at:

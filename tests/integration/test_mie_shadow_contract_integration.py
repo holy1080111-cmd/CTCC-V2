@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -32,7 +32,7 @@ D = Decimal
 
 @pytest.mark.integration
 def test_legacy_mathematics_builds_replayable_no_trade_shadow_chain() -> None:
-    as_of = datetime(2026, 8, 12, 4, 0, tzinfo=timezone.utc)
+    as_of = datetime(2026, 8, 12, 4, 0, tzinfo=UTC)
     cutoff = as_of - timedelta(seconds=1)
     horizon = ForecastHorizon(label="15m", seconds=900)
     provenance = "f" * 64

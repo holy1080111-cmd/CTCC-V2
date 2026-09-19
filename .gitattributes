@@ -1,0 +1,2 @@
+# Source identity must not depend on the operator's core.autocrlf setting.
+* text=auto eol=lf

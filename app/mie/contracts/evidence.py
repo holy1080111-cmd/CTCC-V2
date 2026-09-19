@@ -78,7 +78,7 @@ class Evidence(MieContract):
         return value
 
     @model_validator(mode="after")
-    def validate_evidence_authority(self) -> "Evidence":
+    def validate_evidence_authority(self) -> Evidence:
         if self.data_cutoff > self.observed_at:
             raise ValueError("evidence cannot use data after observed_at")
         if self.generated_at < self.observed_at:
@@ -129,9 +129,7 @@ class Evidence(MieContract):
             },
         }[self.validation_level]
         if self.permitted_use not in allowed_uses:
-            raise ValueError(
-                "evidence use exceeds its mathematical validation level"
-            )
+            raise ValueError("evidence use exceeds its mathematical validation level")
 
         requires_reference = validation_at_least(
             self.validation_level, ValidationLevel.PREDICTIVE_OOS
@@ -158,24 +156,16 @@ class Evidence(MieContract):
             raise ValueError(
                 "validation artifact does not match evidence source and model"
             )
+        if self.validation_reference is not None and not validation_at_least(
+            self.validation_reference.attested_level,
+            self.validation_level,
+        ):
+            raise ValueError("validation artifact is below the evidence claim")
         if (
             self.validation_reference is not None
-            and not validation_at_least(
-                self.validation_reference.attested_level,
-                self.validation_level,
-            )
+            and self.validation_sample_size != self.validation_reference.sample_size
         ):
-            raise ValueError(
-                "validation artifact is below the evidence claim"
-            )
-        if (
-            self.validation_reference is not None
-            and self.validation_sample_size
-            != self.validation_reference.sample_size
-        ):
-            raise ValueError(
-                "evidence sample size must match its validation artifact"
-            )
+            raise ValueError("evidence sample size must match its validation artifact")
         if (
             self.validation_reference is not None
             and self.validation_reference.issued_at > self.generated_at

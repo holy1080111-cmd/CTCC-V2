@@ -11,7 +11,6 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal, localcontext
 
-
 DECIMAL_PRECISION = 50
 LOG_LOSS_EPSILON = Decimal("1e-15")
 
@@ -58,7 +57,7 @@ class AdjustedPValue:
 
 def _finite_decimal(value: Decimal | int, name: str) -> Decimal:
     if isinstance(value, bool) or not isinstance(value, (Decimal, int)):
-        raise ValueError(f"{name} must be a Decimal or integer")
+        raise ValueError(f"{name} must be a Decimal or integer")  # noqa: TRY004 - Public validation contract consistently rejects malformed values with ValueError.
     result = Decimal(value)
     if not result.is_finite():
         raise ValueError(f"{name} must be finite")
@@ -68,9 +67,7 @@ def _finite_decimal(value: Decimal | int, name: str) -> Decimal:
 def _validated_probabilities(
     probabilities: Sequence[Decimal | int],
 ) -> tuple[Decimal, ...]:
-    values = tuple(
-        _finite_decimal(value, "probability") for value in probabilities
-    )
+    values = tuple(_finite_decimal(value, "probability") for value in probabilities)
     if not values:
         raise ValueError("probabilities cannot be empty")
     if any(value < 0 or value > 1 for value in values):
@@ -180,13 +177,11 @@ def reliability_bins(
         probabilities, outcomes
     )
     if isinstance(bin_count, bool) or not isinstance(bin_count, int):
-        raise ValueError("reliability bin count must be an integer")
+        raise ValueError("reliability bin count must be an integer")  # noqa: TRY004 - Public validation contract consistently rejects malformed values with ValueError.
     if bin_count < 2 or bin_count > 100:
         raise ValueError("reliability bin count must be between 2 and 100")
 
-    grouped_probabilities: list[list[Decimal]] = [
-        [] for _ in range(bin_count)
-    ]
+    grouped_probabilities: list[list[Decimal]] = [[] for _ in range(bin_count)]
     grouped_outcomes: list[list[int]] = [[] for _ in range(bin_count)]
     with localcontext() as context:
         context.prec = DECIMAL_PRECISION
@@ -212,8 +207,7 @@ def reliability_bins(
             if count:
                 count_decimal = Decimal(count)
                 mean_prediction = (
-                    sum(grouped_probabilities[index], Decimal(0))
-                    / count_decimal
+                    sum(grouped_probabilities[index], Decimal(0)) / count_decimal
                 )
                 observed_frequency = (
                     Decimal(sum(grouped_outcomes[index])) / count_decimal
@@ -255,8 +249,7 @@ def expected_calibration_error(
                 if item.sample_count
                 and item.mean_prediction is not None
                 and item.observed_frequency is not None
-            )
-            ,
+            ),
             Decimal(0),
         )
 
@@ -388,7 +381,7 @@ def moving_block_bootstrap_interval(
     if block_length > len(samples):
         raise ValueError("bootstrap block length cannot exceed the sample count")
     if isinstance(seed, bool) or not isinstance(seed, int):
-        raise ValueError("bootstrap seed must be an integer")
+        raise ValueError("bootstrap seed must be an integer")  # noqa: TRY004 - Public validation contract consistently rejects malformed values with ValueError.
     confidence = _finite_decimal(confidence_level, "confidence level")
     if confidence <= 0 or confidence >= 1:
         raise ValueError("confidence level must lie strictly between zero and one")
@@ -408,8 +401,7 @@ def moving_block_bootstrap_interval(
                     for offset in range(block_length)
                 )
             bootstrap_means.append(
-                sum(resampled[:sample_count], Decimal(0))
-                / Decimal(sample_count)
+                sum(resampled[:sample_count], Decimal(0)) / Decimal(sample_count)
             )
         bootstrap_means.sort()
         tail = (Decimal(1) - confidence) / Decimal(2)
@@ -427,11 +419,7 @@ def moving_block_bootstrap_interval(
 
 
 def _validate_bootstrap_integer(name: str, value: int, *, minimum: int) -> None:
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, int)
-        or value < minimum
-    ):
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
         raise ValueError(f"{name} must be an integer of at least {minimum}")
 
 

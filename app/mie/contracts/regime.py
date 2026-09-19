@@ -10,7 +10,6 @@ from pydantic import Field, field_validator, model_validator
 
 from app.mie.contracts._base import ForecastHorizon, MieContract, require_utc
 
-
 _SUM_TOLERANCE = Decimal("1e-12")
 
 
@@ -30,7 +29,7 @@ class RegimeProbabilityVector(MieContract):
     transition: Decimal = Field(ge=0, le=1)
 
     @model_validator(mode="after")
-    def validate_total_probability(self) -> "RegimeProbabilityVector":
+    def validate_total_probability(self) -> RegimeProbabilityVector:
         total = sum(
             (
                 self.bull_trend,
@@ -39,9 +38,9 @@ class RegimeProbabilityVector(MieContract):
                 self.high_volatility,
                 self.transition,
             ),
-            Decimal("0"),
+            Decimal(0),
         )
-        if abs(total - Decimal("1")) > _SUM_TOLERANCE:
+        if abs(total - Decimal(1)) > _SUM_TOLERANCE:
             raise ValueError("regime probabilities must sum to one")
         return self
 
@@ -84,7 +83,7 @@ class RegimeSnapshot(MieContract):
         return require_utc(value, info.field_name)
 
     @model_validator(mode="after")
-    def validate_regime(self) -> "RegimeSnapshot":
+    def validate_regime(self) -> RegimeSnapshot:
         if self.data_cutoff > self.as_of:
             raise ValueError("regime cannot use data after as_of")
         if self.generated_at < self.as_of:

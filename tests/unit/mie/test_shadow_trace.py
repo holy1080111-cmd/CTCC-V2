@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -29,7 +29,7 @@ from app.mie.contracts import (
 )
 
 D = Decimal
-AS_OF = datetime(2026, 8, 12, 4, 0, tzinfo=timezone.utc)
+AS_OF = datetime(2026, 8, 12, 4, 0, tzinfo=UTC)
 CUTOFF = AS_OF - timedelta(seconds=1)
 HORIZON = ForecastHorizon(label="15m", seconds=900)
 SHA = "d" * 64
@@ -48,9 +48,7 @@ def reference(
         reviewer_id="quant-review",
         issued_at=AS_OF,
         artifact_sha256="e" * 64,
-        metrics=(
-            ValidationMetric(name="brier", value=D("0.18")),
-        ),
+        metrics=(ValidationMetric(name="brier", value=D("0.18")),),
     )
 
 
@@ -231,9 +229,7 @@ def test_complete_shadow_trace_round_trips_and_hashes_deterministically() -> Non
 
 def test_trace_rejects_cross_instrument_linkage() -> None:
     trace = complete_shadow_trace()
-    mismatched = trace.regime.model_copy(
-        update={"instrument_id": "ETH-USDT-SWAP"}
-    )
+    mismatched = trace.regime.model_copy(update={"instrument_id": "ETH-USDT-SWAP"})
     with pytest.raises(ValidationError, match="instrument mismatch"):
         MieShadowTrace.model_validate(
             {
@@ -257,9 +253,7 @@ def test_trace_rejects_missing_evidence_link() -> None:
 
 def test_trace_revalidates_nested_execution_authority() -> None:
     trace = complete_shadow_trace()
-    unsafe_decision = trace.decision.model_copy(
-        update={"execution_authority": True}
-    )
+    unsafe_decision = trace.decision.model_copy(update={"execution_authority": True})
     with pytest.raises(ValidationError, match="Input should be False"):
         MieShadowTrace(
             feature_snapshot_id=trace.feature_snapshot_id,
@@ -368,16 +362,10 @@ def test_forecast_cannot_reference_evidence_generated_later() -> None:
 def test_forecast_regime_and_logic_require_distinct_health_records() -> None:
     trace = complete_shadow_trace()
     reduced_health = tuple(
-        item
-        for item in trace.model_health
-        if item.model_id != trace.regime.model_id
+        item for item in trace.model_health if item.model_id != trace.regime.model_id
     )
     decision = trace.decision.model_copy(
-        update={
-            "model_health_ids": tuple(
-                item.health_id for item in reduced_health
-            )
-        }
+        update={"model_health_ids": tuple(item.health_id for item in reduced_health)}
     )
     with pytest.raises(ValidationError, match="their own"):
         MieShadowTrace(

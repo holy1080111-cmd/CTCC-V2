@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -11,15 +11,15 @@ from app.domain.market import InstrumentInfo
 from app.domain.okx_live import (
     LIVE_ARM_PHRASE,
     LIVE_CANCEL_PHRASE,
-    LIVE_CLOSE_PHRASE,
     LIVE_CLEAR_STOP_PHRASE,
+    LIVE_CLOSE_PHRASE,
     LIVE_LEVERAGE_PHRASE,
     LIVE_ORDER_PHRASE,
     LIVE_UNRESOLVED_CLEAR_PHRASE,
     OkxLiveArmRequest,
     OkxLiveCancelRequest,
-    OkxLiveCloseRequest,
     OkxLiveClearStopRequest,
+    OkxLiveCloseRequest,
     OkxLiveExecutionIntentView,
     OkxLiveLeverageRequest,
     OkxLiveMirrorStatus,
@@ -30,9 +30,8 @@ from app.exchange.okx.errors import OkxPrivateApiError
 from app.okx_live import OkxLiveBusyError, OkxLiveSafetyError, OkxLiveUnavailableError
 from app.okx_live.service import OkxLiveService
 
-
 D = Decimal
-NOW = datetime(2026, 8, 9, 12, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 8, 9, 12, 0, tzinfo=UTC)
 
 
 def live_settings(**updates) -> Settings:
@@ -131,9 +130,7 @@ class FakeReadClient:
             self.delayed_algo_rows = []
         return list(self.algo_rows)
 
-    async def order_detail(
-        self, instrument_id, *, order_id=None, client_order_id=None
-    ):
+    async def order_detail(self, instrument_id, *, order_id=None, client_order_id=None):
         return list(self.order_rows)
 
 
@@ -321,7 +318,9 @@ class FakeExecutionClient:
                 "accFillSz": (
                     self.cancel_fill_size
                     if self.cancel_fill_size is not None
-                    else "1" if self.cancel_state == "filled" else "0"
+                    else "1"
+                    if self.cancel_state == "filled"
+                    else "0"
                 ),
                 "px": "100000",
                 "avgPx": "100000" if self.cancel_state == "filled" else "",
@@ -454,9 +453,7 @@ class FakeIntentRepository:
                 OkxLiveExecutionAuthorityBusy,
             )
 
-            raise OkxLiveExecutionAuthorityBusy(
-                "okx_live_global_execution_lock_busy"
-            )
+            raise OkxLiveExecutionAuthorityBusy("okx_live_global_execution_lock_busy")
         yield
 
     async def reserve_intent(self, **kwargs):
@@ -494,9 +491,10 @@ class FakeIntentRepository:
         values = []
         for key, row in list(self.rows.items())[:limit]:
             self._apply_defaults(key, row)
-            if row.get("status") in {"reserved", "acknowledged", "ambiguous"} and row.get(
-                "operator_reconciled_at"
-            ) is None:
+            if (
+                row.get("status") in {"reserved", "acknowledged", "ambiguous"}
+                and row.get("operator_reconciled_at") is None
+            ):
                 values.append(self._view(key, row))
         return values
 
@@ -519,8 +517,7 @@ class FakeIntentRepository:
             raise RuntimeError("intent resolution failed")
         unresolved = await self.load_unresolved_intents(limit=1000)
         actual = {
-            item.idempotency_key: (item.status, item.updated_at)
-            for item in unresolved
+            item.idempotency_key: (item.status, item.updated_at) for item in unresolved
         }
         expected = {
             item.idempotency_key: (item.status, item.updated_at)
@@ -627,7 +624,9 @@ async def clear_stop_request(
 
 
 @pytest.mark.asyncio
-async def test_reconcile_persists_atomic_snapshot_and_public_summaries_hide_identity() -> None:
+async def test_reconcile_persists_atomic_snapshot_and_public_summaries_hide_identity() -> (
+    None
+):
     service, _, _, _, _ = service_fixture()
 
     snapshot = await service.reconcile()
@@ -700,9 +699,7 @@ async def test_place_order_is_protected_idempotent_one_shot_and_auto_disarms() -
     assert protection["tpTriggerPx"] == "102000"
     assert protection["attachAlgoClOrdId"] == "CTCCAabcdef"
     assert intents.rows["CTCCLabcdef"]["status"] == "confirmed"
-    assert intents.rows["CTCCLabcdef"]["protection_client_order_id"] == (
-        "CTCCAabcdef"
-    )
+    assert intents.rows["CTCCLabcdef"]["protection_client_order_id"] == ("CTCCAabcdef")
     assert intents.rows["CTCCLabcdef"]["expected_protection_size"] == D("0.1")
     assert intents.rows["CTCCLabcdef"]["expected_trigger_price_type"] == "mark"
     assert service.arm_status().unresolved_intent_count == 0
@@ -780,10 +777,7 @@ async def test_post_order_confirmation_rejects_unrelated_exchange_state(
     result = await service.place_order(live_order())
 
     assert result.final_state_confirmed is False
-    assert (
-        "post_order_state_not_isolated_or_exactly_protected"
-        in result.warnings
-    )
+    assert "post_order_state_not_isolated_or_exactly_protected" in result.warnings
     assert intents.rows["CTCCLabcdef"]["status"] == "ambiguous"
     assert service.arm_status().emergency_stop is True
 
@@ -859,9 +853,7 @@ async def test_reconcile_engages_stop_for_untrusted_unprotected_position() -> No
     await service.reconcile()
 
     assert service.arm_status().emergency_stop is True
-    assert service.arm_status().last_error == (
-        "live_position_protection_not_confirmed"
-    )
+    assert service.arm_status().last_error == ("live_position_protection_not_confirmed")
 
 
 @pytest.mark.asyncio
@@ -907,9 +899,7 @@ async def test_unresolved_intent_blocks_new_key_inside_execution_lock() -> None:
     )
     intents.rows["CTCCXolder01"] = {"status": "ambiguous"}
 
-    with pytest.raises(
-        OkxLiveSafetyError, match="unresolved_execution_intents"
-    ):
+    with pytest.raises(OkxLiveSafetyError, match="unresolved_execution_intents"):
         await service.place_order(live_order(client_order_id="CTCCLnewkey1"))
 
     assert execution.calls == []
@@ -923,9 +913,7 @@ async def test_unresolved_intent_blocks_leverage_but_allows_close() -> None:
     )
     intents.rows["CTCCXolder02"] = {"status": "acknowledged"}
 
-    with pytest.raises(
-        OkxLiveSafetyError, match="unresolved_execution_intents"
-    ):
+    with pytest.raises(OkxLiveSafetyError, match="unresolved_execution_intents"):
         await service.set_leverage(
             OkxLiveLeverageRequest(
                 instrument_id="BTC-USDT-SWAP",
@@ -962,21 +950,19 @@ async def test_unresolved_intent_blocks_leverage_but_allows_close() -> None:
 
 
 @pytest.mark.asyncio
-async def test_clear_stop_persists_flat_operator_reconciliation_across_restart() -> None:
+async def test_clear_stop_persists_flat_operator_reconciliation_across_restart() -> (
+    None
+):
     service, read, execution, intents, clock = service_fixture()
     intents.rows["CTCCXolder03"] = {"status": "ambiguous"}
     await service.startup()
     assert service.arm_status().emergency_stop is True
 
-    cleared = await service.clear_emergency_stop(
-        await clear_stop_request(service)
-    )
+    cleared = await service.clear_emergency_stop(await clear_stop_request(service))
 
     row = intents.rows["CTCCXolder03"]
     assert row["operator_reconciled_at"] == NOW
-    assert row["operator_resolution_code"] == (
-        "operator_confirmed_flat_exchange_state"
-    )
+    assert row["operator_resolution_code"] == ("operator_confirmed_flat_exchange_state")
     assert cleared.arm.emergency_stop is False
     restarted = OkxLiveService(
         read,
@@ -1083,9 +1069,7 @@ async def test_intent_recovery_persistence_failure_remains_stopped() -> None:
     intents.fail_resolution = True
     await service.startup()
 
-    with pytest.raises(
-        OkxLiveUnavailableError, match="intent_recovery_persist_failed"
-    ):
+    with pytest.raises(OkxLiveUnavailableError, match="intent_recovery_persist_failed"):
         await service.clear_emergency_stop(await clear_stop_request(service))
 
     assert service.arm_status().emergency_stop is True
@@ -1136,7 +1120,9 @@ async def test_database_wide_execution_lock_blocks_a_second_instance() -> None:
 
 
 @pytest.mark.asyncio
-async def test_ambiguous_order_transport_engages_stop_without_retry_or_auto_close() -> None:
+async def test_ambiguous_order_transport_engages_stop_without_retry_or_auto_close() -> (
+    None
+):
     service, _, execution, intents, _ = service_fixture()
     execution.fail_place = True
     await service.arm(
@@ -1154,7 +1140,9 @@ async def test_ambiguous_order_transport_engages_stop_without_retry_or_auto_clos
 
 
 @pytest.mark.asyncio
-async def test_missing_protection_for_live_exposure_stops_but_never_silently_closes() -> None:
+async def test_missing_protection_for_live_exposure_stops_but_never_silently_closes() -> (
+    None
+):
     service, _, execution, intents, _ = service_fixture()
     execution.include_protection = False
     await service.arm(
@@ -1171,7 +1159,9 @@ async def test_missing_protection_for_live_exposure_stops_but_never_silently_clo
 
 
 @pytest.mark.asyncio
-async def test_nonfinal_order_with_requested_protection_is_ambiguous_and_stops() -> None:
+async def test_nonfinal_order_with_requested_protection_is_ambiguous_and_stops() -> (
+    None
+):
     service, _, execution, intents, _ = service_fixture()
     execution.order_state = "live"
     await service.arm(
@@ -1195,9 +1185,7 @@ async def test_empty_ack_after_single_live_post_is_persisted_as_ambiguous() -> N
         OkxLiveArmRequest(duration_seconds=60, confirmation=LIVE_ARM_PHRASE)
     )
 
-    with pytest.raises(
-        OkxLiveUnavailableError, match="write_acknowledgement_invalid"
-    ):
+    with pytest.raises(OkxLiveUnavailableError, match="write_acknowledgement_invalid"):
         await service.place_order(live_order())
 
     assert service.arm_status().emergency_stop is True
