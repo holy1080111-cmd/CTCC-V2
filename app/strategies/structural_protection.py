@@ -168,6 +168,22 @@ class StructuralProtectionSelection:
 
 
 @dataclass(frozen=True)
+class ReversalStructuralProtectionSelection(StructuralProtectionSelection):
+    alignment_policy: Literal["ctcc-reversal-history-protection-v1"] = (
+        "ctcc-reversal-history-protection-v1"
+    )
+    history_admission_sha256: str | None = None
+    retained_analysis_blockers: tuple[str, ...] = ()
+
+    def to_audit_json(self) -> str:
+        payload = json.loads(super().to_audit_json())
+        payload["schema"] = "ctcc_structural_selection_reversal_v1"
+        return json.dumps(
+            payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+        )
+
+
+@dataclass(frozen=True)
 class _Policy:
     entry: Decimal
     direction: str
@@ -497,7 +513,21 @@ def _evaluate(stops, targets, policy):
     return tuple(stop_results), tuple(target_results), tuple(alternatives), selected
 
 
-def select_structural_protection(
+def select_structural_protection(detection, market, analysis, **inputs):
+    """Original selection policy; existing hashes and blocker behavior stay fixed."""
+    return _select_structural_protection(
+        detection, market, analysis, _reversal=False, **inputs
+    )
+
+
+def select_reversal_structural_protection(detection, market, analysis, **inputs):
+    """Recompute the historical permission; no caller PASS or blocker removal."""
+    return _select_structural_protection(
+        detection, market, analysis, _reversal=True, **inputs
+    )
+
+
+def _select_structural_protection(
     detection: TriggerDetection,
     market: MarketSnapshot,
     analysis: MultiTimeframeAnalysis,
@@ -511,6 +541,7 @@ def select_structural_protection(
     min_stop_distance_atr: Decimal,
     atr_buffer_multiplier: Decimal,
     minimum_buffer_bps: Decimal,
+    _reversal: bool,
 ) -> StructuralProtectionSelection:
     """Select a source-bound bracket without moving the supplied entry.
 
@@ -528,9 +559,14 @@ def select_structural_protection(
         "source_sha256": None,
         "evidence": "confirmed_ohlc",
     }
+    result_type = (
+        ReversalStructuralProtectionSelection
+        if _reversal
+        else StructuralProtectionSelection
+    )
 
     def failed(code):
-        return StructuralProtectionSelection(
+        return result_type(
             **identity,
             stops=(),
             targets=(),
@@ -609,7 +645,30 @@ def select_structural_protection(
             direction=event.direction,
             source_sha256=digest,
         )
-        if analysis.blockers:
+        if _reversal:
+            from app.trade_qualification.regime_admission import (
+                evaluate_regime_admission,
+            )
+
+            identity["retained_analysis_blockers"] = tuple(analysis.blockers)
+            if event.strategy != "structure_reversal":
+                return failed("reversal_protection_strategy_mismatch")
+            history = evaluate_regime_admission(
+                market,
+                report_id=event.report_id,
+                strategy=event.strategy,
+                direction=event.direction,
+                observed_at=event.observed_at,
+                analysis_version=analysis.version,
+            )
+            identity["history_admission_sha256"] = history.evaluation_sha256
+            if (
+                not history.admitted
+                or history.detection != event
+                or history.source_sha256 != digest
+            ):
+                return failed("reversal_protection_history_denied")
+        elif analysis.blockers:
             return failed("source_data_blockers")
         bid, ask = (
             _decimal(market.ticker.bid, positive=True),
@@ -659,7 +718,7 @@ def select_structural_protection(
         missing = ["measured_objective_not_defined", "non_pivot_liquidity_not_observed"]
         if not any(item.source.startswith("equal_") for item in stops + targets):
             missing.append("equal_pivot_pool_not_observed")
-        return StructuralProtectionSelection(
+        return result_type(
             **identity,
             stops=stop_results,
             targets=target_results,

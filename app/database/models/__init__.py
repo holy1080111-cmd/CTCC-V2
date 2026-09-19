@@ -52,6 +52,11 @@ from app.database.models.qualification_ledger import (
     QualificationReservation,
     QualificationReservationTransition,
 )
+from app.database.models.submission_reporting import (
+    QualificationReportProjectionReceipt,
+    QualificationReportSpool,
+    QualificationSubmissionOutcome,
+)
 from app.database.models.trading import (
     Fill,
     Order,
@@ -100,8 +105,11 @@ __all__ = [
     "Position",
     "ProtectiveOrder",
     "QualificationAccountScope",
+    "QualificationReportProjectionReceipt",
+    "QualificationReportSpool",
     "QualificationReservation",
     "QualificationReservationTransition",
+    "QualificationSubmissionOutcome",
     "RecoveryCheckpoint",
     "RiskDecision",
     "SafetyIncident",

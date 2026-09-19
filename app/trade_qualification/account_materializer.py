@@ -444,7 +444,7 @@ def _records(packet):
         stream: [
             (row, json.loads(row.canonical_json), observed)
             for observed in packet.observations
-            if observed.request.stream == stream
+            if capture.stream_family(observed.request.stream) == stream
             for row in observed.rows
         ]
         for stream in capture.STREAMS
@@ -577,7 +577,9 @@ def _stop(row, reference, direction):
     return stop
 
 
-def _positions_and_orders(records, inputs, specs, completed, gaps, mode):
+def _positions_and_orders(
+    records, inputs, specs, completed, gaps, mode, *, all_product_scope=False
+):
     costs = {}
     for item in inputs.costs:
         if item.instrument_id in costs:
@@ -636,6 +638,11 @@ def _positions_and_orders(records, inputs, specs, completed, gaps, mode):
             "kind": "position",
             "source_sha256": observed.receipt_sha256,
         }
+        if all_product_scope and row.get("instType") != "SWAP":
+            reason = "position_instrument_scope_unsupported"
+            gaps.add(reason)
+            projections.append(ExposureProjection(**fields, reasons=(reason,)))
+            continue
         if quantity == 0:
             projections.append(
                 ExposureProjection(
@@ -732,6 +739,11 @@ def _positions_and_orders(records, inputs, specs, completed, gaps, mode):
             "kind": "opening_order",
             "source_sha256": observed.receipt_sha256,
         }
+        if all_product_scope and row.get("instType") != "SWAP":
+            reason = "pending_order_scope_unsupported"
+            gaps.add(reason)
+            projections.append(ExposureProjection(**fields, reasons=(reason,)))
+            continue
         size = _fraction(row.get("sz"), positive=True)
         filled = _fraction(row.get("accFillSz"), nonnegative=True)
         remaining = (
@@ -1041,6 +1053,11 @@ def _history(inputs, records, specs, packet, gaps):
     )
     if fills is None or bills is None or orders is None:
         return (), None
+    if any(
+        row.get("instType") != "SWAP" for row in (*fills.values(), *orders.values())
+    ):
+        gaps.add("history_product_mapping_unsupported")
+        return (), None
     evidence = inputs.history
     if evidence is None:
         gaps.add("history_grouping_and_seed_missing")
@@ -1267,7 +1284,13 @@ def materialize_demo_portfolio_snapshot(
             balance_receipt.headers_received_at,
         )
     positions, pending, projections = _positions_and_orders(
-        records, inputs, specs, packet.completed_at, gaps, config["posMode"]
+        records,
+        inputs,
+        specs,
+        packet.completed_at,
+        gaps,
+        config["posMode"],
+        all_product_scope=type(packet.plan) is capture.AllProductDemoAccountCapturePlan,
     )
     _, anchor, anchor_receipt = records["account_position_risk"][0]
     anchor_time = _time(anchor.get("ts"))

@@ -42,6 +42,7 @@ from app.indicators.core import atr
 from app.market.quality.candles import BAR_SECONDS, candle_closed_at, inspect_candles_at
 from app.strategies.structural_protection import (
     _source_anchors,
+    select_reversal_structural_protection,
     select_structural_protection,
 )
 from app.trade_qualification.data import (
@@ -144,6 +145,7 @@ def _guard(value, depth=0, budget=None):
             ExecutableQuote,
             FixedProtectionCheck,
             FixedProtectionResult,
+            FixedProtectionResultV3,
         }
         if type(value) not in allowed:
             raise FixedProtectionError("exact_fixed_protection_model_required")
@@ -373,7 +375,23 @@ class FixedProtectionResult(QualificationModel):
     @property
     def evaluation_sha256(self):
         """A strict output fingerprint, not source verification or a permit."""
-        return _hash(_copy(self, FixedProtectionResult))
+        return _hash(_copy(self, type(self)))
+
+
+class FixedProtectionResultV3(FixedProtectionResult):
+    contract_version: Literal["ctcc-history-fixed-protection-v3"]
+    alignment_policy: Literal["ctcc-reversal-history-protection-v1"] = (
+        "ctcc-reversal-history-protection-v1"
+    )
+    history_admission_sha256: Digest | None = None
+
+    @model_validator(mode="after")
+    def history_bound(self):
+        if self.strategy != "structure_reversal" or (
+            self.passed and self.history_admission_sha256 is None
+        ):
+            raise ValueError("fixed_reversal_history_binding_required")
+        return self
 
 
 def _price(value):
@@ -435,7 +453,15 @@ def _source(market, supplied_analysis, *, at, data_policy):
     return _copy_source(market, analysis, at)
 
 
-def evaluate_fixed_protection(
+def evaluate_fixed_protection(*sources, **inputs):
+    return _evaluate_fixed_protection(*sources, _reversal=False, **inputs)
+
+
+def evaluate_fixed_protection_v3(*sources, **inputs):
+    return _evaluate_fixed_protection(*sources, _reversal=True, **inputs)
+
+
+def _evaluate_fixed_protection(
     original_market: MarketSnapshot,
     original_analysis: MultiTimeframeAnalysis,
     current_market: MarketSnapshot,
@@ -451,6 +477,7 @@ def evaluate_fixed_protection(
     data_policy: DataQualificationPolicy,
     quote: ExecutableQuote,
     observed_at: datetime,
+    _reversal: bool,
 ) -> FixedProtectionResult:
     """Compare original prices only; current-source history continuity is separate.
 
@@ -462,6 +489,8 @@ def evaluate_fixed_protection(
     """
     try:
         event = _copy(detection, TriggerDetection)
+        if _reversal and event.strategy != "structure_reversal":
+            raise FixedProtectionError("fixed_reversal_strategy_required")
         chosen_policy = _bounded_scalars(policy, ProtectionPolicy)
         data = _bounded_scalars(data_policy, DataQualificationPolicy)
         now = _time(observed_at)
@@ -484,6 +513,11 @@ def evaluate_fixed_protection(
     except _ERRORS as exc:
         raise FixedProtectionError("fixed_protection_input_invalid") from exc
     identity = {
+        **(
+            {"contract_version": "ctcc-history-fixed-protection-v3"}
+            if _reversal
+            else {}
+        ),
         "report_id": event.report_id,
         "instrument_id": event.instrument_id,
         "strategy": event.strategy,
@@ -510,7 +544,8 @@ def evaluate_fixed_protection(
         return code == "passed"
 
     def finish():
-        return FixedProtectionResult.model_validate(
+        result_type = FixedProtectionResultV3 if _reversal else FixedProtectionResult
+        return result_type.model_validate(
             _plain(
                 {
                     **identity,
@@ -556,7 +591,12 @@ def evaluate_fixed_protection(
             {"source_sha256": old_sha, "analysis_recomputed": True},
         )
         try:
-            original = select_structural_protection(
+            selector = (
+                select_reversal_structural_protection
+                if _reversal
+                else select_structural_protection
+            )
+            original = selector(
                 event,
                 old_market,
                 old_analysis,
@@ -571,6 +611,8 @@ def evaluate_fixed_protection(
             ):
                 raise FixedProtectionError("original_selection_replay_mismatch")
             selected = original.selected
+            if _reversal:
+                evidence["history_admission_sha256"] = original.history_admission_sha256
             if (selected.stop.final_stop, selected.target.final_target) != (
                 stop_loss,
                 take_profit,

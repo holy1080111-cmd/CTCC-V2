@@ -311,7 +311,7 @@ def _reconstruct(
     )
     fills, flows, source_links, unbound_fills, bills, trades = [], [], [], [], {}, set()
     for observation in account.observations:
-        stream = observation.request.stream
+        stream = account_capture.stream_family(observation.request.stream)
         if stream not in {"fills_history", "bills_archive"}:
             continue
         for record in observation.rows:

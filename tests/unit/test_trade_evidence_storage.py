@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import FrozenInstanceError
 from datetime import UTC, datetime, timedelta, timezone
 from io import BytesIO
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from threading import Barrier
 from types import MappingProxyType
 
@@ -913,6 +913,58 @@ def test_native_windows_root_link_is_no_clobber_without_releasing_lease(storage_
             pytest.fail("root publisher lease was released during publication")
         assert directory.names() == ["receipt.json"]
     assert (storage_root / "receipt.json").stat().st_nlink == 1
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Real Windows extended-length publication")
+def test_native_windows_long_path_publish_readback_no_clobber_and_pins(tmp_path):
+    root = tmp_path / ("a" * 90) / ("b" * 90) / ("c" * 90)
+    root.relative_to(tmp_path)
+    assert len(str(root)) > 260
+    native = storage_module._windows_native_path(root)
+    os.makedirs(native)
+    files = bundle()
+    receipt = publish(root, files)
+    assert receipt.status == "written"
+    assert receipt.report_directory == str(root / REPORT)
+    assert publish(root, files).status == "already_present"
+    changed = bundle(image_overrides={"4h.png": png_bytes(color=(3, 2, 1))})
+    with pytest.raises(EvidencePublicationError, match="conflicts"):
+        publish(root, changed)
+    with storage_module._windows_root(root) as directory:
+        with pytest.raises(PermissionError), storage_module._windows_root(root):
+            pytest.fail("extended path bypassed the publisher lease")
+        with directory.child(REPORT) as report:
+            assert set(report.names()) == set(NAMES)
+            for name, payload in files.items():
+                assert report.read(name, BYTE_LIMIT) == payload
+    assert {p.name for p in Path(native).iterdir()} == {REPORT}
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        r"C:relative",
+        r"relative\file",
+        r"\\server\share\evidence",
+        r"\\?\C:\evidence",
+        r"\\.\C:\evidence",
+        r"C:\evidence\..\escape",
+        r"C:\evidence\name:stream",
+        r"C:\evidence\NUL",
+        "C:\\evidence\\trailing. ",
+        r"C:\evidence\wild*card",
+    ],
+)
+def test_windows_long_path_spelling_does_not_accept_unsafe_names(value):
+    with pytest.raises(EvidencePublicationError, match="unsafe Windows"):
+        storage_module._windows_native_path(PureWindowsPath(value))
+
+
+def test_windows_long_path_spelling_preserves_unicode_and_drive_root():
+    for value in ("C:\\", "C:\\evidence\\證據", "C:\\" + "x" * 300):
+        assert storage_module._windows_native_path(PureWindowsPath(value)) == (
+            "\\\\?\\" + value
+        )
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Native Windows publication filename guard")

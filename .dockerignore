@@ -1,3 +1,4 @@
+.env*
 .[eE][nN][vV]*
 **/.[eE][nN][vV]*
 *.[tT][oO][kK][eE][nN]

@@ -289,7 +289,7 @@ def _panel(snapshot, panel):
     )
     canvas.text(
         (48, 118),
-        f"Regime: {q.market_regime.value}   Trend: {panel.trend}   Structure: {panel.structure}",
+        f"Regime: {q.market_regime if type(q.market_regime) is str else q.market_regime.value}   Trend: {panel.trend}   Structure: {panel.structure}",
         width=1504,
         key="regime_structure",
     )
@@ -579,7 +579,7 @@ def _summary(snapshot):
     detection = snapshot.detection
     zone, trigger = q.entry_zone, q.trigger
     why = (
-        f"Strategy {snapshot.strategy}; regime {q.market_regime.value}; HTF {q.htf_bias or 'unknown'}. "
+        f"Strategy {snapshot.strategy}; regime {q.market_regime if type(q.market_regime) is str else q.market_regime.value}; HTF {q.htf_bias or 'unknown'}. "
         f"Setup state {q.setup_state}. Raw/effective score {q.raw_score}/{q.effective_score}; score is not probability."
     )
     why_now = (

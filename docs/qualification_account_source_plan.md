@@ -1,6 +1,6 @@
 # R5 Demo 帳戶來源計畫
 
-狀態：**2026-09-19 已擴充 v2 原始回應／頁鏈契約與固定 Demo GET collector；完整帳戶來源認證與 runtime 接線仍未完成。不是完整 R5、R6 或 R7 驗收。**
+狀態：**2026-09-19 已新增獨立 v4 標準商品頁鏈與受控 runtime 支援，保留 v2／v3 canonical bytes。完整帳戶來源認證仍未完成；不是完整 R5、R6 或 R7 驗收。** 詳見 [v4 覆蓋範圍](qualification_account_v4.md) 與 [受控 runtime 的缺口](controlled_demo_account_runtime.md)。以下 v2 記錄保留其原始範圍，不取得新版本資格。
 
 ## 2026-09-19 官方契約複核與 v2 範圍
 

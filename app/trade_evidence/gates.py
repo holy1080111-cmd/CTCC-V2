@@ -28,7 +28,10 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.domain.analysis import MultiTimeframeAnalysis
 from app.domain.market import MarketSnapshot
-from app.strategies.structural_protection import select_structural_protection
+from app.strategies.structural_protection import (
+    select_reversal_structural_protection,
+    select_structural_protection,
+)
 from app.trade_evidence.models import (
     EvidenceCandle,
     EvidenceLevel,
@@ -56,13 +59,19 @@ from app.trade_qualification.engine import (
 from app.trade_qualification.event_models import Digest
 from app.trade_qualification.history_engine import (
     HistoryPreEvidencePolicyV2,
+    HistoryPreEvidencePolicyV3,
     HistoryPreEvidenceRunV2,
+    HistoryPreEvidenceRunV3,
     verify_history_pre_evidence_v2,
+    verify_history_pre_evidence_v3,
 )
 from app.trade_qualification.history_engine import (
     _preflight as _history_preflight,
 )
-from app.trade_qualification.history_prefix import HistoryEntryQualificationResultV2
+from app.trade_qualification.history_prefix import (
+    HistoryEntryQualificationResultV2,
+    HistoryEntryQualificationResultV3,
+)
 from app.trade_qualification.location import ExecutableQuote
 from app.trade_qualification.models import (
     EntryQualificationResult,
@@ -129,6 +138,7 @@ def _guard(value, depth=0, budget=None):
         if type(value) not in {
             EvidenceGateRun,
             HistoryEvidenceGateRunV2,
+            HistoryEvidenceGateRunV3,
             EvidenceSnapshot,
             EvidencePanel,
             EvidenceCandle,
@@ -141,6 +151,9 @@ def _guard(value, depth=0, budget=None):
                 HistoryPreEvidenceRunV2,
                 HistoryPreEvidencePolicyV2,
                 HistoryEntryQualificationResultV2,
+                HistoryPreEvidenceRunV3,
+                HistoryPreEvidencePolicyV3,
+                HistoryEntryQualificationResultV3,
             ):
                 _history_preflight(value)
             else:
@@ -317,7 +330,15 @@ class HistoryEvidenceGateRunV2(EvidenceGateRun):
     result: HistoryEntryQualificationResultV2
 
 
+class HistoryEvidenceGateRunV3(EvidenceGateRun):
+    contract_version: Literal["ctcc-history-evidence-v3"]
+    pre_evidence: HistoryPreEvidenceRunV3
+    result: HistoryEntryQualificationResultV3
+
+
 def verify_pre_evidence_versioned(run, market, **inputs):
+    if type(run) is HistoryPreEvidenceRunV3:
+        return verify_history_pre_evidence_v3(run, market, **inputs)
     if type(run) is HistoryPreEvidenceRunV2:
         return verify_history_pre_evidence_v2(run, market, **inputs)
     return verify_pre_evidence(run, market, **inputs)
@@ -379,7 +400,9 @@ def publish_qualification_evidence(
         raise EvidenceGateError("pre_evidence_replay_failed") from exc
     pin = pre.evaluation_sha256
     gate_type = (
-        HistoryEvidenceGateRunV2
+        HistoryEvidenceGateRunV3
+        if type(pre) is HistoryPreEvidenceRunV3
+        else HistoryEvidenceGateRunV2
         if type(pre) is HistoryPreEvidenceRunV2
         else EvidenceGateRun
     )
@@ -424,7 +447,9 @@ def publish_qualification_evidence(
             _plain(
                 {
                     **(
-                        {"contract_version": "ctcc-history-evidence-v2"}
+                        {"contract_version": "ctcc-history-evidence-v3"}
+                        if gate_type is HistoryEvidenceGateRunV3
+                        else {"contract_version": "ctcc-history-evidence-v2"}
                         if gate_type is HistoryEvidenceGateRunV2
                         else {}
                     ),
@@ -488,7 +513,12 @@ def publish_qualification_evidence(
         collected = validate_collected_quote(quote)
         if collected.bundle_sha256 != pre.prefix.data_result.quote_bundle_sha256:
             raise EvidenceGateError("evidence_quote_changed")
-        selection = select_structural_protection(
+        selector = (
+            select_reversal_structural_protection
+            if type(pre) is HistoryPreEvidenceRunV3
+            else select_structural_protection
+        )
+        selection = selector(
             pre.prefix.detection,
             rebuilt,
             analysis,

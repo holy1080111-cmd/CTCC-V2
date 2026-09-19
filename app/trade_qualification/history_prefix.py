@@ -63,6 +63,10 @@ from app.trade_qualification.regime_admission import (
     RegimeAdmissionResult,
     evaluate_regime_admission,
 )
+from app.trade_qualification.reversal_policy import (
+    REVERSAL_POLICY,
+    reversal_current_permission,
+)
 from app.trade_qualification.service import QualificationIntent
 from app.trade_qualification.timing import (
     TIMING_POLICIES,
@@ -165,6 +169,16 @@ class HistoryQualificationPrefixPolicyV2(HistoryQualificationPrefixPolicy):
     )
 
 
+class HistoryEntryQualificationResultV3(HistoryEntryQualificationResult):
+    contract_version: Literal["ctcc-history-qualification-result-v3"]
+    gates: tuple[GateAssessment, ...] = Field(default=(), max_length=12)
+
+
+class HistoryQualificationPrefixPolicyV3(HistoryQualificationPrefixPolicy):
+    contract_version: Literal["ctcc-history-qualification-prefix-v3"]
+    reversal_policy: Literal["ctcc-reversal-history-protection-v1"] = REVERSAL_POLICY
+
+
 def expansion_htf_permission(analysis, route, direction):
     """Deterministic existing Expansion route operands, never event detection.
 
@@ -206,10 +220,13 @@ def _bounded(value, depth=0, budget=None):
             HistoryQualificationPrefixRun,
             HistoryQualificationPrefixPolicyV2,
             HistoryQualificationPrefixRunV2,
+            HistoryQualificationPrefixPolicyV3,
+            HistoryQualificationPrefixRunV3,
             DataQualificationPolicy,
             DataQualificationResult,
             HistoryEntryQualificationResult,
             HistoryEntryQualificationResultV2,
+            HistoryEntryQualificationResultV3,
             GateAssessment,
             EntryTrigger,
             EntryZone,
@@ -482,6 +499,29 @@ class HistoryQualificationPrefixRunV2(HistoryQualificationPrefixRun):
         return self
 
 
+class HistoryQualificationPrefixRunV3(HistoryQualificationPrefixRun):
+    contract_version: Literal["ctcc-history-qualification-prefix-v3"]
+    policy: HistoryQualificationPrefixPolicyV3
+    result: HistoryEntryQualificationResultV3
+
+    @model_validator(mode="after")
+    def reversal_policy_bound(self):
+        if self.intent.strategy != "structure_reversal":
+            raise ValueError("history_v3_reversal_only")
+        if len(self.result.gates) >= 3:
+            measured = self.result.gates[2].measured_values
+            if (
+                measured.get("reversal_policy") != self.policy.reversal_policy
+                or measured.get("history_evaluation_sha256")
+                != self.history_admission.evaluation_sha256
+                or measured.get("source_sha256") != self.data_result.source_sha256
+                or measured.get("analysis_sha256")
+                != self.result.gates[1].measured_values.get("analysis_sha256")
+            ):
+                raise ValueError("history_reversal_htf_source_binding_mismatch")
+        return self
+
+
 def _policy_digest(policy, timing_policy):
     return _digest(
         {
@@ -520,6 +560,12 @@ def evaluate_history_qualification_prefix_v2(market, *, policy, **inputs):
     return _evaluate_history_prefix(market, policy=policy, **inputs)
 
 
+def evaluate_history_qualification_prefix_v3(market, *, policy, **inputs):
+    if type(policy) is not HistoryQualificationPrefixPolicyV3:
+        raise ValueError("exact v3 history policy required")
+    return _evaluate_history_prefix(market, policy=policy, **inputs)
+
+
 def _evaluate_history_prefix(
     market,
     *,
@@ -538,19 +584,30 @@ def _evaluate_history_prefix(
     """
     intent = _copy(intent, QualificationIntent)
     version2 = type(policy) is HistoryQualificationPrefixPolicyV2
+    version3 = type(policy) is HistoryQualificationPrefixPolicyV3
     if version2 and intent.strategy != "volatility_expansion":
         raise ValueError("history_v2_expansion_only")
+    if version3 and intent.strategy != "structure_reversal":
+        raise ValueError("history_v3_reversal_only")
     policy = _copy(
         policy,
-        HistoryQualificationPrefixPolicyV2
+        HistoryQualificationPrefixPolicyV3
+        if version3
+        else HistoryQualificationPrefixPolicyV2
         if version2
         else HistoryQualificationPrefixPolicy,
     )
     run_type = (
-        HistoryQualificationPrefixRunV2 if version2 else HistoryQualificationPrefixRun
+        HistoryQualificationPrefixRunV3
+        if version3
+        else HistoryQualificationPrefixRunV2
+        if version2
+        else HistoryQualificationPrefixRun
     )
     result_type = (
-        HistoryEntryQualificationResultV2
+        HistoryEntryQualificationResultV3
+        if version3
+        else HistoryEntryQualificationResultV2
         if version2
         else HistoryEntryQualificationResult
     )
@@ -582,12 +639,19 @@ def _evaluate_history_prefix(
     }
     if version2:
         values["contract_version"] = "ctcc-history-qualification-result-v2"
+    if version3:
+        values["contract_version"] = "ctcc-history-qualification-result-v3"
 
     def finish():
         values["history_admission_sha256"] = (
             history.evaluation_sha256 if history is not None else None
         )
         return run_type(
+            **(
+                {"contract_version": "ctcc-history-qualification-prefix-v3"}
+                if version3
+                else {}
+            ),
             history_admission=history,
             intent=intent,
             policy=policy,
@@ -708,6 +772,22 @@ def _evaluate_history_prefix(
                 "history_evaluation_sha256": history.evaluation_sha256,
                 "source_sha256": data.source_sha256,
                 "analysis_sha256": route.snapshot_sha256,
+            }
+        if version3:
+            htf_ok = (
+                direction_matches
+                and history is not None
+                and history.admitted
+                and reversal_current_permission(
+                    analysis, rebuilt, route, intent.direction
+                )
+            )
+            expansion_values = {
+                "reversal_policy": policy.reversal_policy,
+                "history_evaluation_sha256": history.evaluation_sha256,
+                "source_sha256": data.source_sha256,
+                "analysis_sha256": route.snapshot_sha256,
+                "retained_analysis_blockers": ",".join(analysis.blockers) or "none",
             }
         if htf_ok:
             values["htf_bias"] = "neutral" if range_htf else assessment.direction
@@ -913,6 +993,14 @@ def verify_history_qualification_prefix(
 def verify_history_qualification_prefix_v2(run, market, **inputs):
     checked = _copy(run, HistoryQualificationPrefixRunV2)
     replayed = evaluate_history_qualification_prefix_v2(market, **inputs)
+    if checked != replayed:
+        raise ValueError("history_qualification_prefix_replay_mismatch")
+    return replayed
+
+
+def verify_history_qualification_prefix_v3(run, market, **inputs):
+    checked = _copy(run, HistoryQualificationPrefixRunV3)
+    replayed = evaluate_history_qualification_prefix_v3(market, **inputs)
     if checked != replayed:
         raise ValueError("history_qualification_prefix_replay_mismatch")
     return replayed

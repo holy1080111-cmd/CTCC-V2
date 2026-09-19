@@ -391,6 +391,35 @@ def _posix_root(root: Path):
         yield _PosixDirectory(root, fd)
 
 
+def _windows_native_path(path: Path) -> str:
+    """Use extended-length local paths only after preserving literal identity.
+
+    This is an API spelling, not normalization or permission fallback. UNC,
+    device, drive-relative and parent-traversal inputs remain forbidden; no
+    resolve() hides a reparse point from the existing handle-chain checks.
+    """
+    if (
+        not path.is_absolute()
+        or re.fullmatch(r"[A-Za-z]:", path.drive) is None
+        or path.anchor != path.drive + "\\"
+    ):
+        raise EvidencePublicationError("unsafe Windows native publication path")
+    for part in path.parts[1:]:
+        if (
+            not part
+            or part in {".", ".."}
+            or any(character in part for character in '/\\:<>"|?*')
+            or any(ord(character) < 32 for character in part)
+            or part != part.rstrip(" .")
+            or _WINDOWS_DEVICE.fullmatch(part)
+        ):
+            raise EvidencePublicationError("unsafe Windows native publication path")
+    native = "\\\\?\\" + str(path)
+    if len(native.encode("utf-16-le")) // 2 >= 32767:
+        raise EvidencePublicationError("Windows native publication path too long")
+    return native
+
+
 class _WindowsAPI:
     def __init__(self):
         from ctypes import wintypes
@@ -473,7 +502,9 @@ class _WindowsAPI:
         )
 
     def _open(self, path: Path, access, share, disposition, flags, *, directory=False):
-        handle = self.create(str(path), access, share, None, disposition, flags, None)
+        handle = self.create(
+            _windows_native_path(path), access, share, None, disposition, flags, None
+        )
         if handle == ctypes.c_void_p(-1).value:
             raise ctypes.WinError(ctypes.get_last_error())
         try:
@@ -564,10 +595,10 @@ class _WindowsDirectory:
         self.path, self.api = path, api
 
     def names(self):
-        return os.listdir(self.path)
+        return os.listdir(_windows_native_path(self.path))
 
     def mkdir(self, name: str):
-        os.mkdir(self.path / name, mode=0o700)
+        os.mkdir(_windows_native_path(self.path / name), mode=0o700)
 
     @contextmanager
     def child(self, name: str):
@@ -597,7 +628,7 @@ class _WindowsDirectory:
                 os.close(fd)
         finally:
             if owned:
-                os.unlink(temporary)
+                os.unlink(_windows_native_path(temporary))
 
 
 @contextmanager

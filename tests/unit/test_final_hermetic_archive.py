@@ -170,3 +170,42 @@ def test_cleanup_does_not_treat_daemon_failure_as_resource_absence(monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", unavailable)
     assert cleanup_resources([("container", "new")], "run")[0]["status"] == "FAIL"
+
+
+@pytest.mark.parametrize(
+    "case", ("empty", "skipped", "missing_module", "failure", "false_count")
+)
+def test_required_postgres_evidence_cannot_pass_without_executed_cases(tmp_path, case):
+    from scripts.verify_final_hermetic import verify_pytest_report
+
+    module = "required.pg.module" if case != "missing_module" else "unrelated"
+    child = (
+        "<skipped/>" if case == "skipped" else "<failure/>" if case == "failure" else ""
+    )
+    count = 0 if case == "empty" else 2 if case == "false_count" else 1
+    cases = (
+        ""
+        if case == "empty"
+        else f'<testcase classname="{module}" name="case">{child}</testcase>'
+    )
+    path = tmp_path / "result.xml"
+    path.write_text(
+        f'<testsuites><testsuite tests="{count}" errors="0" failures="{int(case == "failure")}" skipped="{int(case == "skipped")}">{cases}</testsuite></testsuites>'
+    )
+    with pytest.raises(ValueError):
+        verify_pytest_report(path, required_modules=("required.pg.module",))
+
+
+def test_full_suite_platform_skip_is_retained_but_not_counted_as_pass(tmp_path):
+    from scripts.verify_final_hermetic import verify_pytest_report
+
+    path = tmp_path / "result.xml"
+    path.write_text(
+        '<testsuites><testsuite tests="2" errors="0" failures="0" skipped="1">'
+        '<testcase classname="executed" name="ran"/>'
+        '<testcase classname="platform" name="skipped"><skipped/></testcase>'
+        "</testsuite></testsuites>"
+    )
+    result = verify_pytest_report(path)
+    assert result["passed"] == 1 and result["skipped"] == 1
+    assert result["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()

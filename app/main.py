@@ -15,11 +15,13 @@ from app.okx_live.runtime import controlled_live_automation, okx_live_service
 from app.orchestrator.runtime import auto_paper_orchestrator
 from app.paper.service import paper_service
 from app.trade_evidence.runtime import NotionOutboxRuntime
+from app.trade_evidence.submission_runtime import SubmissionOutboxRuntime
 
 configure_logging()
 logger = logging.getLogger(__name__)
 settings = get_settings()
 notion_outbox_runtime = NotionOutboxRuntime(settings)
+submission_outbox_runtime = SubmissionOutboxRuntime(settings)
 
 
 @asynccontextmanager
@@ -44,6 +46,7 @@ async def lifespan(_: FastAPI):
         await demo_observability.recover()
         await demo_observability.start_monitoring()
     await notion_outbox_runtime.start()
+    await submission_outbox_runtime.start()
     try:
         yield
     finally:
@@ -58,7 +61,10 @@ async def lifespan(_: FastAPI):
                 await paper_service.persist_now("paper_state_shutdown_checkpoint")
             await engine.dispose()
         finally:
-            await notion_outbox_runtime.stop()
+            try:
+                await notion_outbox_runtime.stop()
+            finally:
+                await submission_outbox_runtime.stop()
         logger.info("ctcc_stopped")
 
 
@@ -68,6 +74,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.state.notion_outbox_runtime = notion_outbox_runtime
+app.state.submission_outbox_runtime = submission_outbox_runtime
 app.include_router(api_router)
 
 

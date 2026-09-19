@@ -48,13 +48,18 @@ from app.trade_qualification.engine import (
 )
 from app.trade_qualification.history_engine import (
     HistoryPreEvidencePolicyV2,
+    HistoryPreEvidencePolicyV3,
     HistoryPreEvidenceRunV2,
+    HistoryPreEvidenceRunV3,
 )
 from app.trade_qualification.history_engine import _copy as _history_copy
 from app.trade_qualification.history_prefix import (
     HistoryEntryQualificationResultV2,
+    HistoryEntryQualificationResultV3,
     HistoryQualificationPrefixPolicyV2,
+    HistoryQualificationPrefixPolicyV3,
     HistoryQualificationPrefixRunV2,
+    HistoryQualificationPrefixRunV3,
 )
 from app.trade_qualification.market_bridge import public_market_snapshot
 from app.trade_qualification.quote_collector import validate_collected_quote
@@ -83,6 +88,11 @@ _ORIGINAL_KEYS = frozenset(
     }
 )
 _INPUT_MODELS = (
+    HistoryPreEvidencePolicyV3,
+    HistoryPreEvidenceRunV3,
+    HistoryQualificationPrefixPolicyV3,
+    HistoryQualificationPrefixRunV3,
+    HistoryEntryQualificationResultV3,
     HistoryPreEvidencePolicyV2,
     HistoryPreEvidenceRunV2,
     HistoryQualificationPrefixPolicyV2,
@@ -310,6 +320,7 @@ def _original(market, run, values):
     if type(values["intent"]) is not QualificationIntent or type(run) not in (
         PreEvidenceRun,
         HistoryPreEvidenceRunV2,
+        HistoryPreEvidenceRunV3,
     ):
         raise OneShotInputError("one_shot_intent_or_run_invalid")
     _guard_original(market)
@@ -329,7 +340,9 @@ def _original(market, run, values):
         "reference": None
         if values["reference"] is None
         else _bounded_scalars(values["reference"], WSReferenceObservation),
-        "policy": _history_copy(values["policy"], HistoryPreEvidencePolicyV2)
+        "policy": _history_copy(values["policy"], HistoryPreEvidencePolicyV3)
+        if type(run) is HistoryPreEvidenceRunV3
+        else _history_copy(values["policy"], HistoryPreEvidencePolicyV2)
         if type(run) is HistoryPreEvidenceRunV2
         else _copy(values["policy"], PreEvidencePolicy),
         "risk_inputs": _copy(values["risk_inputs"], PortfolioInputs),

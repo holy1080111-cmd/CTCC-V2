@@ -4,11 +4,12 @@ All state mutations lock the same scope row BEFORE observing the supplied clock.
 Successful persistence is not an authenticated account snapshot or order permit.
 """
 
+import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from fractions import Fraction
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import defer
 
@@ -69,6 +70,24 @@ class QualificationLedgerRepository:
 
     async def _locked(self, session, scope, *, create=False):
         keys = self._keys(scope)
+        # Account UID, not settlement currency, is the concurrency boundary.
+        # A deterministic signed bigint avoids Python's process-randomized hash.
+        # Acquire before every scope row lock, including reconciliation/readback.
+        lock_bytes = hashlib.sha256(
+            (
+                "ctcc-qualification-account-v1\0"
+                + keys["environment"]
+                + "\0"
+                + keys["account_id"]
+            ).encode("ascii")
+        ).digest()[:8]
+        await session.execute(
+            select(
+                func.pg_advisory_xact_lock(
+                    int.from_bytes(lock_bytes, "big", signed=True)
+                )
+            )
+        )
         if create:
             await session.execute(
                 pg_insert(QualificationAccountScope)
@@ -337,6 +356,7 @@ class QualificationLedgerRepository:
         request = checked(request, ReservationRequest)
         async with self.session_factory() as session, session.begin():
             row = await self._locked(session, request.scope)
+            await self._require_compatible_currency(session, request.scope)
             self._revision(row.ledger_revision, request.expected_ledger_revision)
             self._revision(row.account_revision, request.expected_account_revision)
             now = self._now(row)
@@ -346,6 +366,8 @@ class QualificationLedgerRepository:
                 raise QualificationLedgerError("ledger_event_already_recorded")
             claims = self._claims(row)
             active = await self._active(session, request.scope, row)
+            self._require_no_uncertain(active)
+            await self._require_resolved_submissions(session, active)
             coverage, result = prepare_reservation(
                 request, claims, active, observed_at=now
             )
@@ -429,13 +451,17 @@ class QualificationLedgerRepository:
             if digest(request) != record.request_sha256:
                 raise QualificationLedgerError("ledger_request_digest_mismatch")
             if target == "consumed":
+                await self._require_compatible_currency(session, scope)
                 current = self._claims(row)
                 raw = _plain(request)
                 raw["risk_inputs"]["account"] = _plain(current.account)
                 raw["risk_inputs"]["authority"] = _plain(current.authority)
+                all_active = await self._active(session, scope, row)
+                self._require_no_uncertain(all_active)
+                await self._require_resolved_submissions(session, all_active)
                 active = tuple(
                     item
-                    for item in await self._active(session, scope, row)
+                    for item in all_active
                     if item.reservation_id != record.reservation_id
                 )
                 # A collector already includes this hold? Verify it then remove
@@ -647,6 +673,68 @@ class QualificationLedgerRepository:
         return await self._transition(
             scope, event_key, expected_revision=expected_revision, target="uncertain"
         )
+
+    @staticmethod
+    def _require_no_uncertain(active):
+        # A durable unknown result inhibits every event in this exact account
+        # scope. It survives restart and only explicit verified reconciliation
+        # can retire the existing tombstone; expiry cannot release the hold.
+        if any(item.state == "uncertain" for item in active):
+            raise QualificationLedgerError("ledger_uncertain_exposure_inhibits_entry")
+
+    @staticmethod
+    async def _require_resolved_submissions(session, active):
+        from app.database.models.submission_reporting import (
+            QualificationSubmissionOutcome,
+        )
+
+        consumed = {item.reservation_id for item in active if item.state == "consumed"}
+        if not consumed:
+            return
+        observed = set(
+            (
+                await session.scalars(
+                    select(QualificationSubmissionOutcome.reservation_id).where(
+                        QualificationSubmissionOutcome.reservation_id.in_(consumed),
+                        QualificationSubmissionOutcome.observation_kind == "initial",
+                    )
+                )
+            ).all()
+        )
+        # This also covers legacy consumed holds with no DB0018 observation. A
+        # commit/response failure cannot depend on a separate EStop transaction.
+        if consumed != observed:
+            raise QualificationLedgerError(
+                "ledger_unresolved_submission_inhibits_entry"
+            )
+
+    @staticmethod
+    async def _require_compatible_currency(session, scope):
+        other = await session.scalar(
+            select(QualificationReservation.reservation_id)
+            .where(
+                QualificationReservation.environment == scope.environment,
+                QualificationReservation.account_id == scope.account_id,
+                QualificationReservation.settlement_currency
+                != scope.settlement_currency,
+                QualificationReservation.state != "reconciled_flat",
+            )
+            .limit(1)
+        )
+        if other is not None:
+            # No conversion or cross-currency portfolio-cap claim is made.
+            # Unknown/consumed/reserved exposure in another currency all deny.
+            raise QualificationLedgerError("ledger_cross_currency_exposure_unknown")
+
+    async def record_submission_observation(self, scope, event_key, **kwargs):
+        """DB0018 observation/spool transaction; never sends an exchange order."""
+        from app.database.repositories.submission_reporting import (
+            SubmissionReportingRepository,
+        )
+
+        return await SubmissionReportingRepository(
+            self.session_factory, clock=self.clock
+        ).record_observation(scope, event_key, **kwargs)
 
     async def reconcile_reservation(
         self, scope, event_key, *, claims, expected_revision

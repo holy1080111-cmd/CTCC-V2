@@ -21,8 +21,23 @@ async def capture_history_source(
     *,
     bracket=False,
     expansion_entry=False,
+    reversal_bracket=False,
 ):
     market = fixture(strategy, direction)
+    if reversal_bracket:
+        if strategy != "structure_reversal":
+            raise ValueError("reversal fixture only")
+        # Overlapping old 1H wicks define a trend without a ladder of nearby
+        # opposing FVGs. This is source construction before any qualification.
+        rows = market.candles["1H"]
+        market.candles["1H"] = [
+            row.model_copy(
+                update={"high": row.close + D(".10"), "low": row.close - D(".10")}
+            )
+            if index < len(rows) - 7
+            else row
+            for index, row in enumerate(rows)
+        ]
     if strategy == "structure_reversal" or expansion_entry:
         # Shift the actual entire momentum tape inside the real 1H entry zone;
         # do not replace an event/zone/quote result or loosen the policy limits.
@@ -120,10 +135,15 @@ def history_source(
     *,
     bracket=False,
     expansion_entry=False,
+    reversal_bracket=False,
 ):
     return asyncio.run(
         capture_history_source(
-            strategy, direction, bracket=bracket, expansion_entry=expansion_entry
+            strategy,
+            direction,
+            bracket=bracket,
+            expansion_entry=expansion_entry,
+            reversal_bracket=reversal_bracket,
         )
     )
 

@@ -93,15 +93,70 @@ changed HTF, reused receipt, extended expiry and malformed chronology. These are
 engineering fixtures; they do not satisfy the original Notion real evidence
 examples, OOS, Demo or Live acceptance.
 
+## Explicit structure reversal V3 (2026-09-19)
+
+The separate V3 prefix, pre-evidence, qualification, evidence, current-condition
+and fixed-protection contracts use required exact version markers. Each union
+dispatches on the declared marker; missing fields never upcast an old record
+through subtype defaults. The original V1 reversal remains blocked at G8 and
+the expansion V2 policy remains unchanged. V3 accepts `structure_reversal` only.
+Liquidity sweep remains denied by `sweep_htf_policy_unspecified`.
+
+`ctcc-reversal-history-protection-v1` derives permission from the existing
+structural-reversal rules: independently rebuilt 1H CHoCH after an opposite
+prior structural trend, a confirmed historical pivot available before the
+break, and a subsequent closed 5m false-to-true momentum event. The 1H setup
+must have closed before the trigger interval begins; same-interval evidence
+does not prove chronology. G2 replays this history, while G3 retains the current
+1H CHoCH direction, 15m follow-through, 5m momentum, mathematical safety vetoes,
+strong opposing 4H veto and all data-quality requirements. No score repairs a
+failed predicate. The original snapshot regime and diagnostic blockers remain
+in the source; the explicit history classification never renames Unknown Trend.
+
+The V3 structural selector independently recomputes this original history from
+raw market rows, requires the exact original event and source digest, and emits
+`ctcc_structural_selection_reversal_v1`. Its separate audit retains
+`multi_timeframe_not_aligned` and the history digest. All structural anchors,
+invalidation boundaries, noise clearance, cost floors, nearer opposing targets
+and net-RR rules use the existing calculations. A caller's self-signed analysis,
+event, score or PASS cannot replace raw-source replay. A source without a valid
+complete bracket still fails G8. No stop or target is invented to obtain PASS.
+
+G12 dispatches exact V3 replay through the existing six-artifact renderer,
+no-clobber publisher and native readback. R7 replays the original V3 run and
+checks new current G1–G4 with the original history/event pins. It does not search
+for a new event. Original continuation, zone, timing, entry, SL and TP remain
+fixed. V3 fixed protection replays the original versioned selector and checks
+that same bracket against current constraints. Current 1H/4H permission loss,
+changed original inputs, stale capture, consumed event or expiry stops recheck.
+Candidate deadlines may shorten while retaining the exact event and geometry.
+The older history contract fixes the event's own trigger TTL: a separately
+rewritten or shortened trigger is conservatively rejected, not reauthenticated.
+
+The source rules follow the existing [master E3 specification](https://app.notion.com/p/3d832165a6888173bfb1df896604fc7c?pvs=204)
+and [strategy construction report](https://app.notion.com/p/3d832165a688813e8adcf68bde4003a1?pvs=204),
+which permit strategy-specific reversal conditions rather than unconditional
+4H/1H trend alignment. They do not define a complete sweep HTF permission table.
+The [implementation plan](https://app.notion.com/p/3d832165a68881b3981cd9692986f031?pvs=204)
+is the source of the originally recorded alignment and sweep gaps.
+
+Long/short tests construct raw OHLC and quotes before qualification and exercise
+G1–G12, file hashes/readback, fixed-protection recheck, forged history/analysis,
+malformed chronology, rejected old receipts and explicit version boundaries.
+They are synthetic engineering fixtures, not the four real Notion examples,
+real qualification samples, OOS, Demo, Live or authenticated market acceptance.
+
 ## Downstream work is explicitly not complete
 
 Legacy original pre-evidence verification and all V1 history contracts remain
-unchanged. The separate V2 path has no conversion shim or runtime registration.
-The historical reversal's G8 alignment policy, sweep HTF policy, complete
+unchanged. The separate V2/V3 paths have no conversion shim or runtime registration.
+Sweep HTF policy, complete
 authenticated account materialization, durable event-history scope, and final
-atomic reservation/intent/submit authority wiring remain required. V2 origin
-acceptance here does not extend the reservation or submission-intent model
-whitelists. Intrabar path completeness also remains unknown. No recheck record
+atomic reservation/intent/submit authority wiring remain required. The separate
+[exact intent replay](demo_submission_intent_v2.md) now accepts explicitly
+versioned V2/V3 original policies and reconstructs the complete source/recheck
+chain. Its synthetic tests do not authenticate the source or grant a submit
+permit. Intrabar path completeness also remains unknown. No recheck record
 can resume a previous invocation into a new order.
 
 All execution/authenticity/reservation/recheck authority flags remain false.

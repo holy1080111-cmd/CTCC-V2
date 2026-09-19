@@ -26,6 +26,8 @@ from app.trade_qualification import (
     economics,
     engine,
     event_models,
+    history_engine,
+    history_prefix,
     location,
     models,
     portfolio,
@@ -35,6 +37,7 @@ from app.trade_qualification import (
     service,
     timing,
 )
+from app.trade_qualification.regime_admission import RegimeAdmissionResult
 from app.trade_qualification.reservations import (
     QualificationLedgerError,
     ReservationReceipt,
@@ -81,7 +84,28 @@ class _OriginalReplayInputs(models.QualificationModel):
     evaluated_at: datetime
 
 
+class _HistoryReplayInputsV2(_OriginalReplayInputs):
+    policy: history_engine.HistoryPreEvidencePolicyV2
+
+
+class _HistoryReplayInputsV3(_OriginalReplayInputs):
+    policy: history_engine.HistoryPreEvidencePolicyV3
+
+
 _MODEL_TYPES = (
+    gates.HistoryEvidenceGateRunV2,
+    gates.HistoryEvidenceGateRunV3,
+    history_engine.HistoryPreEvidencePolicyV2,
+    history_engine.HistoryPreEvidencePolicyV3,
+    history_engine.HistoryPreEvidenceRunV2,
+    history_engine.HistoryPreEvidenceRunV3,
+    history_prefix.HistoryEntryQualificationResultV2,
+    history_prefix.HistoryEntryQualificationResultV3,
+    history_prefix.HistoryQualificationPrefixPolicyV2,
+    history_prefix.HistoryQualificationPrefixPolicyV3,
+    history_prefix.HistoryQualificationPrefixRunV2,
+    history_prefix.HistoryQualificationPrefixRunV3,
+    RegimeAdmissionResult,
     SubmissionExecutionBinding,
     ReservationRequest,
     ReservationReceipt,
@@ -345,6 +369,42 @@ def _document(raw, model):
     return model.model_validate_json(raw, strict=True)
 
 
+def _original_inputs_document(raw):
+    """Select only explicit supported policy families before Pydantic defaults.
+
+    The outer intent schema is unchanged. History V1 is not admitted; missing,
+    mixed or unknown history markers cannot silently become a newer policy.
+    Full original source and recheck replay still follow this schema selection.
+    """
+    parsed = json.loads(raw)
+    if _json(parsed) != raw or type(parsed) is not dict:
+        raise ValueError("noncanonical_original_inputs")
+    policy = parsed.get("policy")
+    if type(policy) is not dict:
+        raise ValueError("original_policy_required")
+    if "contract_version" not in policy:
+        model = _OriginalReplayInputs
+    else:
+        version = policy["contract_version"]
+        variants = {
+            "ctcc-history-pre-evidence-v2": (
+                _HistoryReplayInputsV2,
+                "ctcc-history-qualification-prefix-v2",
+            ),
+            "ctcc-history-pre-evidence-v3": (
+                _HistoryReplayInputsV3,
+                "ctcc-history-qualification-prefix-v3",
+            ),
+        }
+        if type(version) is not str or version not in variants:
+            raise ValueError("original_policy_version_unsupported")
+        model, prefix_version = variants[version]
+        prefix = policy.get("prefix")
+        if type(prefix) is not dict or prefix.get("contract_version") != prefix_version:
+            raise ValueError("original_policy_prefix_version_mismatch")
+    return model.model_validate_json(raw, strict=True)
+
+
 def _execution_body(request, consumed, supplied):
     # Keep this optional v2 path independent of unchanged historical v1 replay.
     from app.trade_qualification.executable_economics import (
@@ -371,7 +431,7 @@ def _execution_body(request, consumed, supplied):
         recorded = _document(binding.recheck_json, RecordedRecheckAssessment)
         quote = _document(binding.quote_json, quote_collector.CollectedQuote)
         reference = _document(binding.reference_json, data.WSReferenceObservation)
-        original_inputs = _document(binding.original_inputs_json, _OriginalReplayInputs)
+        original_inputs = _original_inputs_document(binding.original_inputs_json)
         if (
             packet.plan.expected_uid != request.scope.account_id
             or packet.plan.settlement_currency != request.scope.settlement_currency

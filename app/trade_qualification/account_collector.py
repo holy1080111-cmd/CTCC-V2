@@ -13,7 +13,7 @@ loading, private SDK, DB, execution or retry integration exists here. Callers mu
 supply a dedicated Demo read credential through a separately reviewed integration.
 Tests replace ONLY the private client factory with synthetic MockTransport.
 
-All 23 streams and raw page chains are replayed by account_capture. A successful
+All 23 legacy or 38 v4 streams and page chains are replayed by account_capture. A successful
 result is still records_verified_incomplete_account. Rate limiting, server errors
 and missing/unsupported coverage abort this attempt; no old mirror or zero fallback
 exists. Engineering bounds are inherited from the externally pinned capture plan.
@@ -91,6 +91,10 @@ _CAPTURE_REASONS = frozenset(
         "clock_invalid",
         "plan_history_window_invalid",
         "plan_leverage_scope_invalid",
+        "plan_inventory_budget_invalid",
+        "source_instrument_type_invalid",
+        "source_quantity_unit_invalid",
+        "conflicting_history_product_identity",
         "leverage_instrument_scope_mismatch",
         "history_window_requires_milliseconds",
         "account_capture_cannot_grant_authority",
@@ -209,7 +213,7 @@ class AccountCollectionDiagnostic:
             if (
                 type(self.stream) is not str
                 or not 1 <= len(self.stream) <= 32
-                or self.stream not in capture.STREAMS
+                or self.stream not in capture.ALL_STREAMS
                 or type(self.page_index) is not int
                 or not 0 <= self.page_index < 64
             ):
@@ -686,7 +690,7 @@ async def _collect_owned_demo_account_records(
             if loop.time() - wall_started >= selected.max_batch_seconds:
                 raise AccountCollectionError("batch_deadline_exceeded")
             async with asyncio.timeout_at(wall_started + selected.max_batch_seconds):
-                for stream in capture.STREAMS:
+                for stream in capture.streams_for_plan(selected):
                     after = previous_sha = None
                     page_index = 0
                     while True:

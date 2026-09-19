@@ -1,5 +1,18 @@
 # Controlled Demo account runtime — incomplete admission
 
+The current runtime receipt is separately versioned as
+`ctcc.controlled_demo_account_runtime.v2`. It binds a
+[captured instrument metadata receipt](captured_account_metadata.md): instrument
+rows now come directly from this invocation's replayed source packet. Caller
+instrument DTOs are optional exact assertions and cannot replace missing or
+conflicting source rows. Historical account packet v2/v3/v4 bytes are unchanged.
+
+The owned session also accepts the exact `AllProductDemoAccountCapturePlan` v4
+contract. It acquires 38 mandatory standard-product/current-inventory streams,
+then replays and maps every typed history row. See
+[v4 coverage and remaining gaps](qualification_account_v4.md). A v2/v3 packet
+cannot acquire v4 coverage by changing a version, scope, or receipt hash.
+
 `ControlledDemoAccountSession` owns a copied credential handle and a pinned
 `RegionalDemoAccountCapturePlan`. It connects the existing 23-stream collector to
 the existing account materializer and DB0017 qualification journal. It does not
@@ -73,7 +86,7 @@ calls the older caller-claims `reconcile_scope` as a shortcut.
 
 ## Validation
 
-Synthetic tests exercise the complete owned 23-stream flow for every explicit
+Synthetic tests exercise the complete owned legacy 23-stream and v4 38-stream flow for explicit
 region, exact UID mismatch, Live rejection, changed DB revision/claim hash,
 unresolved holds, clock reversal, foreign/replayed result, missing native TLS peer
 evidence, bootstrap tampering/scope/coverage, missing history, and secret redaction.

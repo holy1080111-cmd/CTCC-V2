@@ -3,8 +3,9 @@
 Only supplied bytes are parsed. No transport, credentials, settings, wall clock,
 database or execution imports exist. OKX primary documentation checked 2026-09-19:
 https://www.okx.com/docs-v5/en/ and https://www.okx.com/docs-v5/trick_en/#pagination.
-Current exposure queries are unfiltered; fills/order history and instrument
-queries cover SWAP only, and leverage queries pin an explicit instrument set.
+Current exposure queries are unfiltered. Historical v2/v3 plans cover SWAP
+history; v4 requires six standard-product history chains and unfiltered recent
+fills. Instrument/leverage metadata remains scoped to SWAP.
 An empty terminal page proves only the supplied query chain,
 not exchange retention, ingestion completeness, atomicity or account-wide risk.
 Source update/event times are preserved, never replaced by receipt time.
@@ -68,6 +69,24 @@ STREAMS = (
     "config_after",
 )
 Stream = Literal[
+    "fills_history_spot",
+    "fills_history_margin",
+    "fills_history_swap",
+    "fills_history_futures",
+    "fills_history_option",
+    "fills_history_events",
+    "orders_history_recent_spot",
+    "orders_history_recent_margin",
+    "orders_history_recent_swap",
+    "orders_history_recent_futures",
+    "orders_history_recent_option",
+    "orders_history_recent_events",
+    "orders_history_archive_spot",
+    "orders_history_archive_margin",
+    "orders_history_archive_swap",
+    "orders_history_archive_futures",
+    "orders_history_archive_option",
+    "orders_history_archive_events",
     "config_before",
     "account_position_risk",
     "balance",
@@ -133,7 +152,45 @@ _CURSOR_FIELDS = {
 _FILL_STREAMS = frozenset({"fills_recent", "fills_history"})
 _BILL_STREAMS = frozenset({"bills_recent", "bills_archive"})
 _ORDER_HISTORY_STREAMS = frozenset({"orders_history_recent", "orders_history_archive"})
+INSTRUMENT_TYPES = ("SPOT", "MARGIN", "SWAP", "FUTURES", "OPTION", "EVENTS")
+_HISTORY_VARIANTS = {
+    f"{family}_{kind.lower()}": (family, kind)
+    for family in ("fills_history", "orders_history_recent", "orders_history_archive")
+    for kind in INSTRUMENT_TYPES
+}
+V4_STREAMS = tuple(
+    item
+    for stream in STREAMS
+    for item in (
+        tuple(f"{stream}_{kind.lower()}" for kind in INSTRUMENT_TYPES)
+        if stream
+        in {"fills_history", "orders_history_recent", "orders_history_archive"}
+        else (stream,)
+    )
+)
+ALL_STREAMS = frozenset(STREAMS) | frozenset(V4_STREAMS)
+_ENDPOINTS.update(
+    {name: _ENDPOINTS[family] for name, (family, _) in _HISTORY_VARIANTS.items()}
+)
+_CURSOR_FIELDS.update(
+    {name: _CURSOR_FIELDS[family] for name, (family, _) in _HISTORY_VARIANTS.items()}
+)
+_FILL_STREAMS |= frozenset(
+    name for name, (family, _) in _HISTORY_VARIANTS.items() if family == "fills_history"
+)
+_ORDER_HISTORY_STREAMS |= frozenset(
+    name
+    for name, (family, _) in _HISTORY_VARIANTS.items()
+    if family.startswith("orders_history_")
+)
 _HISTORY_STREAMS = _FILL_STREAMS | _BILL_STREAMS | _ORDER_HISTORY_STREAMS
+
+
+def stream_family(stream):
+    """Preserve exact query identity while grouping documented endpoint families."""
+    return _HISTORY_VARIANTS.get(stream, (stream, None))[0]
+
+
 _BASE_GAPS = (
     "advanced_product_scope_unverified",
     "cross_source_atomicity_unverified",
@@ -283,6 +340,25 @@ class RegionalDemoAccountCapturePlan(DemoAccountCapturePlan):
         return self
 
 
+class AllProductDemoAccountCapturePlan(RegionalDemoAccountCapturePlan):
+    """Versioned standard-product query scope, never whole-account authority."""
+
+    contract_version: Literal["ctcc.demo_account_plan.v4"]
+    capture_scope: Literal["all_standard_products_v4_and_current_algos"] = (
+        "all_standard_products_v4_and_current_algos"
+    )
+
+    @model_validator(mode="after")
+    def inventory_budget(self):
+        if self.max_total_pages < len(V4_STREAMS):
+            _fail("plan_inventory_budget_invalid")
+        return self
+
+
+def streams_for_plan(plan):
+    return V4_STREAMS if type(plan) is AllProductDemoAccountCapturePlan else STREAMS
+
+
 class AccountRequest(_Record):
     stream: Stream
     method: Literal["GET"] = "GET"
@@ -360,9 +436,15 @@ class DemoAccountObservation(_Record):
 
 class DemoAccountPacket(_Record):
     schema_version: Literal[
-        "ctcc.demo_account_capture.v2", "ctcc.demo_account_capture.v3"
+        "ctcc.demo_account_capture.v2",
+        "ctcc.demo_account_capture.v3",
+        "ctcc.demo_account_capture.v4",
     ] = "ctcc.demo_account_capture.v2"
-    plan: RegionalDemoAccountCapturePlan | DemoAccountCapturePlan
+    plan: (
+        AllProductDemoAccountCapturePlan
+        | RegionalDemoAccountCapturePlan
+        | DemoAccountCapturePlan
+    )
     plan_sha256: Digest
     observations: tuple[DemoAccountObservation, ...] = Field(
         min_length=len(STREAMS), max_length=256
@@ -403,6 +485,7 @@ class FrozenAccountPacket:
 _MODELS = {
     DemoAccountCapturePlan,
     RegionalDemoAccountCapturePlan,
+    AllProductDemoAccountCapturePlan,
     AccountRequest,
     AccountNumber,
     AccountSourceTime,
@@ -516,6 +599,8 @@ def plan_sha256(plan: DemoAccountCapturePlan) -> str:
 
 
 def _copy_plan(plan):
+    if type(plan) is AllProductDemoAccountCapturePlan:
+        return _copy(plan, AllProductDemoAccountCapturePlan)
     if type(plan) is RegionalDemoAccountCapturePlan:
         return _copy(plan, RegionalDemoAccountCapturePlan)
     return _copy(plan, DemoAccountCapturePlan)
@@ -540,7 +625,7 @@ def account_request(
     plan: DemoAccountCapturePlan, stream: str, after: str | None = None
 ) -> AccountRequest:
     plan = _copy_plan(plan)
-    if type(stream) is not str or stream not in STREAMS:
+    if type(stream) is not str or stream not in streams_for_plan(plan):
         _fail("stream_invalid")
     if after is not None and (type(after) is not str or _ID.fullmatch(after) is None):
         _fail("cursor_invalid")
@@ -553,7 +638,13 @@ def account_request(
             parameters["after"] = after
     if stream.startswith("algo_"):
         parameters["ordType"] = stream.removeprefix("algo_")
-    if stream in _FILL_STREAMS | _ORDER_HISTORY_STREAMS | {"account_instruments"}:
+    if stream in _HISTORY_VARIANTS:
+        parameters["instType"] = _HISTORY_VARIANTS[stream][1]
+    elif stream in _FILL_STREAMS | _ORDER_HISTORY_STREAMS | {
+        "account_instruments"
+    } and not (
+        type(plan) is AllProductDemoAccountCapturePlan and stream == "fills_recent"
+    ):
         parameters["instType"] = "SWAP"
     if stream in _HISTORY_STREAMS:
         parameters["begin"] = _milliseconds(plan.history_start)
@@ -565,7 +656,8 @@ def account_request(
         stream=stream,
         origin=(
             plan.origin
-            if type(plan) is RegionalDemoAccountCapturePlan
+            if type(plan)
+            in {RegionalDemoAccountCapturePlan, AllProductDemoAccountCapturePlan}
             else "https://www.okx.com"
         ),
         endpoint=_ENDPOINTS[stream],
@@ -824,10 +916,36 @@ def _row_record(row, stream, plan, received):
         if stream not in _BILL_STREAMS:
             instrument = _required_text(row, "instId")
             kind = _required_text(row, "instType")
-            if stream in _FILL_STREAMS | _ORDER_HISTORY_STREAMS and kind != "SWAP":
-                _fail("history_instrument_scope_mismatch")
-            if _required_text(row, "posSide") not in {"net", "long", "short"}:
-                _fail("position_side_invalid")
+            if type(plan) is AllProductDemoAccountCapturePlan:
+                if kind not in INSTRUMENT_TYPES:
+                    _fail("source_instrument_type_invalid")
+                if stream == "positions" and kind == "SPOT":
+                    _fail("source_instrument_type_invalid")
+                if stream == "algo_chase" and kind not in {"SWAP", "FUTURES"}:
+                    _fail("source_instrument_type_invalid")
+                if stream.startswith("algo_") and kind not in {
+                    "SPOT",
+                    "MARGIN",
+                    "SWAP",
+                    "FUTURES",
+                }:
+                    _fail("source_instrument_type_invalid")
+                expected_kind = _HISTORY_VARIANTS.get(stream, (None, None))[1]
+                if expected_kind is not None and kind != expected_kind:
+                    _fail("history_instrument_scope_mismatch")
+                # Non-derivative responses can explicitly carry an empty side;
+                # preserve it, never turn it into a net/long/short risk claim.
+                position_side = row.get("posSide")
+                allowed_sides = {"net", "long", "short"}
+                if kind not in {"SWAP", "FUTURES"} and stream != "positions":
+                    allowed_sides.add("")
+                if type(position_side) is not str or position_side not in allowed_sides:
+                    _fail("position_side_invalid")
+            else:
+                if stream in _FILL_STREAMS | _ORDER_HISTORY_STREAMS and kind != "SWAP":
+                    _fail("history_instrument_scope_mismatch")
+                if _required_text(row, "posSide") not in {"net", "long", "short"}:
+                    _fail("position_side_invalid")
         elif row.get("instId") not in (None, ""):
             instrument = _required_text(row, "instId")
         if stream == "positions":
@@ -947,6 +1065,17 @@ def _row_record(row, stream, plan, received):
     ):
         _fail("source_lifecycle_reversed")
     amounts = {item.path: item.value for item in numbers}
+    spot_market_order = (
+        type(plan) is AllProductDemoAccountCapturePlan
+        and row.get("instType") == "SPOT"
+        and row.get("ordType") == "market"
+        and stream in {"orders_pending"} | _ORDER_HISTORY_STREAMS
+    )
+    if spot_market_order:
+        if row.get("tgtCcy") not in {None, "", "base_ccy", "quote_ccy"}:
+            _fail("source_quantity_unit_invalid")
+        if row.get("tgtCcy") in {None, ""}:
+            missing.append("tgtCcy")
     for name in ("sz", "accFillSz", "fillSz"):
         if amounts.get(name) is not None and amounts[name] < 0:
             _fail("source_quantity_negative")
@@ -954,6 +1083,7 @@ def _row_record(row, stream, plan, received):
         amounts.get("sz") is not None
         and amounts.get("accFillSz") is not None
         and amounts["accFillSz"] > amounts["sz"]
+        and not (spot_market_order and row.get("tgtCcy") != "base_ccy")
     ):
         _fail("filled_quantity_exceeds_order")
     if stream in _HISTORY_STREAMS:
@@ -1111,9 +1241,10 @@ def verify_demo_account_records(
     """Require the entire bounded requested inventory, still account-incomplete."""
     plan = _checked_plan(plan, expected_plan_sha256)
     barrier = _utc(barrier_completed_at)
+    streams = streams_for_plan(plan)
     if (
         type(observations) is not tuple
-        or not len(STREAMS) <= len(observations) <= plan.max_total_pages
+        or not len(streams) <= len(observations) <= plan.max_total_pages
     ):
         _fail("inventory_page_count_invalid")
     _guard(observations)
@@ -1128,7 +1259,7 @@ def verify_demo_account_records(
     if verified[0].request.stream != "config_before":
         _fail("inventory_order_invalid")
     identity = verified[0].receipt_sha256
-    groups = {stream: [] for stream in STREAMS}
+    groups = {stream: [] for stream in streams}
     prior = None
     for item in verified:
         if prior is not None:
@@ -1136,7 +1267,7 @@ def verify_demo_account_records(
                 _fail("cross_request_clock_reversed")
             if item.identity_receipt_sha256 != identity:
                 _fail("identity_chain_mismatch")
-            if STREAMS.index(item.request.stream) < STREAMS.index(prior.request.stream):
+            if streams.index(item.request.stream) < streams.index(prior.request.stream):
                 _fail("inventory_order_invalid")
         groups[item.request.stream].append(item)
         prior = item
@@ -1145,6 +1276,7 @@ def verify_demo_account_records(
     ):
         _fail("batch_deadline_exceeded")
     algo_ids = set()
+    product_history_ids = set()
     for stream, pages in groups.items():
         if not pages or len(pages) > plan.max_pages_per_stream:
             _fail("inventory_stream_missing_or_limit")
@@ -1171,6 +1303,11 @@ def verify_demo_account_records(
                 if row.row_id in seen:
                     _fail("duplicate_or_conflicting_page_identity")
                 seen.add(row.row_id)
+                if stream in _HISTORY_VARIANTS:
+                    identity_key = (stream_family(stream), row.row_id)
+                    if identity_key in product_history_ids:
+                        _fail("conflicting_history_product_identity")
+                    product_history_ids.add(identity_key)
                 if stream.startswith("algo_"):
                     if row.row_id in algo_ids:
                         _fail("conflicting_algo_type_identity")
@@ -1188,6 +1325,9 @@ def verify_demo_account_records(
     if row_count > plan.max_total_rows:
         _fail("inventory_rows_limit")
     gaps = set(_BASE_GAPS)
+    if type(plan) is AllProductDemoAccountCapturePlan:
+        gaps.remove("non_swap_history_not_requested")
+        gaps.add("all_product_metadata_coverage_unverified")
     if any(row.missing_fields for item in verified for row in item.rows):
         gaps.add("source_fields_missing")
     if any(
@@ -1198,7 +1338,9 @@ def verify_demo_account_records(
         gaps.add("source_clock_coverage_incomplete")
     fields = {
         "schema_version": (
-            "ctcc.demo_account_capture.v3"
+            "ctcc.demo_account_capture.v4"
+            if type(plan) is AllProductDemoAccountCapturePlan
+            else "ctcc.demo_account_capture.v3"
             if type(plan) is RegionalDemoAccountCapturePlan
             else "ctcc.demo_account_capture.v2"
         ),

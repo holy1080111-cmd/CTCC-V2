@@ -22,7 +22,7 @@ jobs:
   regression:
     name: Docker hermetic regression
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - name: Checkout reviewed source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -67,5 +67,6 @@ jobs:
             ${{ runner.temp }}/ctcc-validation/*.json
             ${{ runner.temp }}/ctcc-validation/*.log
             ${{ runner.temp }}/ctcc-validation/crash-probe/*.json
+            ${{ runner.temp }}/ctcc-validation/test-results/*.xml
           if-no-files-found: error
           retention-days: 30

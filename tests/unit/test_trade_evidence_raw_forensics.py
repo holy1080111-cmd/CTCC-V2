@@ -44,6 +44,7 @@ def fixtures(
     funding_changes=None,
     extra_fills=(),
     empty=False,
+    all_products=False,
 ):
     value, args = submit.inputs(direction)
     value = value.model_copy(update={"account_id": UID})
@@ -123,8 +124,14 @@ def fixtures(
     if not empty:
         pages["fills_history"] = [fills, []]
         pages["bills_archive"] = [[bill, mirror], []]
-    selected = plan()
-    account = verify(*records(selected=selected, pages=pages))
+    if all_products:
+        from tests.unit import test_qualification_account_v4 as all_product
+
+        selected = all_product.plan()
+        account = verify(*all_product.records(selected=selected, source=pages))
+    else:
+        selected = plan()
+        account = verify(*records(selected=selected, pages=pages))
     frozen = capture.freeze_demo_account_packet(
         account, expected_plan_sha256=capture.plan_sha256(selected)
     )
@@ -202,8 +209,11 @@ def change_path(sources, action):
 
 
 @pytest.mark.parametrize("direction", ["long", "short"])
-def test_raw_mapping_replays_partial_fills_and_never_marks_ack_as_filled(direction):
-    result = run(fixtures(direction=direction))
+@pytest.mark.parametrize("all_products", [False, True])
+def test_raw_mapping_replays_partial_fills_and_never_marks_ack_as_filled(
+    direction, all_products
+):
+    result = run(fixtures(direction=direction, all_products=all_products))
     packet = result.analysis.inputs
     assert [item.evidence_id for item in packet.fills] == [
         "fill_901",
@@ -237,6 +247,18 @@ def test_raw_mapping_replays_partial_fills_and_never_marks_ack_as_filled(directi
     assert receipt["funding_bill_claims"][0]["source_timestamp"] == at(25).isoformat()
     assert (
         not receipt["real_trade_sample_verified"] and not receipt["protection_verified"]
+    )
+
+
+def test_v4_raw_forensics_replays_source_packet_without_omitting_typed_history():
+    sources = fixtures(all_products=True)
+    result = run(sources)
+    assert len(result.analysis.inputs.fills) == 3
+    assert (
+        module.verify_raw_forensics_receipt(
+            result.canonical_receipt, result.receipt_sha256, sources[0], **sources[1]
+        )
+        == result
     )
 
 

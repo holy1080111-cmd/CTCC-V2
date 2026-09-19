@@ -9,10 +9,14 @@ Core planning index: [CTCC core master — 123 project discussion](docs/ctcc_cor
 This separates the integrated target design from implemented, validated, and
 deployed capability; it does not enable trading.
 
-CTCC V2 now has an isolated OKX production boundary that can reconcile and,
-only after explicit multi-stage authorization, operate real OKX SWAP positions.
-Paper and OKX Demo remain separate systems and cannot be enabled together with
-Live execution.
+This working branch currently refuses new Demo and Live entries at the HTTP
+transport boundary. The new qualified one-shot authority is not ready. Enabling
+configuration flags or completing the legacy Arm procedure cannot bypass that
+containment. Existing read, cancel, close and reconciliation controls are retained.
+
+The following sequence describes the preserved v1.6.9 Live control design; its
+submission step is blocked in this final-completion branch pending the new
+pipeline and actual acceptance. Paper, Demo and Live remain separate systems.
 
 ```text
 OKX Live authenticated reads
@@ -96,8 +100,11 @@ resolution, and a versioned safety latch that survives API restarts.
 Migration `0017` adds isolated Demo qualification account scopes, immutable
 event/risk reservations and append-only transitions. These are offline journal
 primitives, not source authentication, runtime admission or order authority.
-The running d984753 deployment remains on `0016` until separately upgraded;
-development-source schema changes are not deployed by running unit tests.
+The preserved local deployment database was independently restored at `0017`.
+Its containers remain stopped; current exchange exposure is unknown. Development
+schema changes are not deployed by running unit tests. Migration `0018` adds the
+immutable submission outcome/report spool and independent projection receipts;
+its new isolated acceptance is tracked in the final-completion record.
 
 Expected migration after upgrade:
 

@@ -34,7 +34,9 @@ from app.trade_qualification.data import (
 )
 from app.trade_qualification.event_models import Digest
 from app.trade_qualification.history_prefix import (
+    HistoryEntryQualificationResultV3,
     HistoryQualificationPrefixPolicyV2,
+    HistoryQualificationPrefixPolicyV3,
     expansion_htf_permission,
 )
 from app.trade_qualification.history_prefix import (
@@ -54,6 +56,10 @@ from app.trade_qualification.quote_collector import (
     CollectedQuote,
     validate_collected_quote,
 )
+from app.trade_qualification.reversal_policy import (
+    reversal_current_permission,
+    reversal_safety_permission,
+)
 from app.trade_qualification.service import (
     QualificationIntent,
     QualificationPrefixPolicy,
@@ -72,7 +78,11 @@ def _raw_record(value):
     if isinstance(value, BaseModel):
         if (
             type(value)
-            not in (CurrentConditionsResult, HistoryCurrentConditionsResultV2)
+            not in (
+                CurrentConditionsResult,
+                HistoryCurrentConditionsResultV2,
+                HistoryCurrentConditionsResultV3,
+            )
             or set(value.__dict__) != set(type(value).model_fields)
             or value.__pydantic_extra__
         ):
@@ -85,7 +95,11 @@ def _raw_record(value):
     for key, item in values.items():
         if type(key) is not str or len(key) > 128:
             raise ValueError("invalid current-conditions field")
-        if type(item) is HistoryQualificationPrefixPolicyV2:
+        if type(item) in (
+            HistoryQualificationPrefixPolicyV2,
+            HistoryQualificationPrefixPolicyV3,
+            HistoryEntryQualificationResultV3,
+        ):
             _history_bounded(item)
         else:
             _bounded(item)
@@ -117,13 +131,22 @@ class CurrentConditionsResult(QualificationModel):
                 ("intent", QualificationIntent),
                 (
                     "policy",
-                    HistoryQualificationPrefixPolicyV2
+                    HistoryQualificationPrefixPolicyV3
+                    if value.get("contract_version")
+                    == "ctcc-history-current-conditions-v3"
+                    else HistoryQualificationPrefixPolicyV2
                     if value.get("contract_version")
                     == "ctcc-history-current-conditions-v2"
                     else QualificationPrefixPolicy,
                 ),
                 ("data_result", DataQualificationResult),
-                ("result", EntryQualificationResult),
+                (
+                    "result",
+                    HistoryEntryQualificationResultV3
+                    if value.get("contract_version")
+                    == "ctcc-history-current-conditions-v3"
+                    else EntryQualificationResult,
+                ),
             ):
                 if field in value:
                     value[field] = _plain(
@@ -212,9 +235,44 @@ class HistoryCurrentConditionsResultV2(CurrentConditionsResult):
         return self
 
 
+class HistoryCurrentConditionsResultV3(CurrentConditionsResult):
+    contract_version: Literal["ctcc-history-current-conditions-v3"]
+    policy: HistoryQualificationPrefixPolicyV3
+    result: HistoryEntryQualificationResultV3
+    origin_sha256: Digest
+    original_event_key: Digest
+    history_admission_sha256: Digest
+
+    @model_validator(mode="after")
+    def reversal_only(self):
+        if self.intent.strategy != "structure_reversal":
+            raise ValueError("history_current_conditions_reversal_only")
+        if (
+            len(self.gates) >= 2
+            and self.result.history_admission_sha256 != self.history_admission_sha256
+        ):
+            raise ValueError("history_reversal_current_original_pin_mismatch")
+        if len(self.gates) >= 3:
+            measured = self.gates[2].measured_values
+            if (
+                measured.get("reversal_policy") != self.policy.reversal_policy
+                or measured.get("history_admission_sha256")
+                != self.history_admission_sha256
+                or measured.get("original_event_key") != self.original_event_key
+                or measured.get("current_source_sha256")
+                != self.data_result.source_sha256
+            ):
+                raise ValueError("history_reversal_current_binding_mismatch")
+        return self
+
+
 def copy_current_conditions(result) -> CurrentConditionsResult:
     """Strict, bounded consistency copy; this does not authenticate a PASS."""
-    if type(result) not in (CurrentConditionsResult, HistoryCurrentConditionsResultV2):
+    if type(result) not in (
+        CurrentConditionsResult,
+        HistoryCurrentConditionsResultV2,
+        HistoryCurrentConditionsResultV3,
+    ):
         raise ValueError("exact current-conditions result required")
     _raw_record(result)
     return type(result).model_validate(_plain(result), strict=True)
@@ -270,6 +328,35 @@ def evaluate_history_current_conditions_v2(
     )
 
 
+def evaluate_history_current_conditions_v3(
+    current_market, *, origin, quote, reference, observed_at
+):
+    from app.trade_qualification.history_engine import HistoryPreEvidenceRunV3
+    from app.trade_qualification.recheck_models import copy_recheck_origin
+
+    original = copy_recheck_origin(origin)
+    pre = original.evidence.pre_evidence
+    if (
+        type(pre) is not HistoryPreEvidenceRunV3
+        or pre.result.strategy != "structure_reversal"
+    ):
+        raise ValueError("history_current_conditions_origin_version_required")
+    return _evaluate_current_conditions(
+        current_market,
+        intent=pre.prefix.intent,
+        policy=pre.policy.prefix,
+        quote=quote,
+        reference=reference,
+        observed_at=observed_at,
+        history_pins={
+            "contract_version": "ctcc-history-current-conditions-v3",
+            "origin_sha256": original.evaluation_sha256,
+            "original_event_key": original.original_event_key,
+            "history_admission_sha256": pre.prefix.history_admission.evaluation_sha256,
+        },
+    )
+
+
 def _evaluate_current_conditions(
     current_market, *, intent, quote, reference, policy, observed_at, history_pins=None
 ):
@@ -281,13 +368,20 @@ def _evaluate_current_conditions(
     """
     intent = _copy(intent, QualificationIntent)
     version2 = type(policy) is HistoryQualificationPrefixPolicyV2
+    version3 = type(policy) is HistoryQualificationPrefixPolicyV3
     policy = (
-        _history_copy(policy, HistoryQualificationPrefixPolicyV2)
+        _history_copy(policy, HistoryQualificationPrefixPolicyV3)
+        if version3
+        else _history_copy(policy, HistoryQualificationPrefixPolicyV2)
         if version2
         else _copy(policy, QualificationPrefixPolicy)
     )
     result_type = (
-        HistoryCurrentConditionsResultV2 if version2 else CurrentConditionsResult
+        HistoryCurrentConditionsResultV3
+        if version3
+        else HistoryCurrentConditionsResultV2
+        if version2
+        else CurrentConditionsResult
     )
     now = _time(observed_at)
     data = evaluate_data(
@@ -312,12 +406,22 @@ def _evaluate_current_conditions(
     }
 
     def finish():
+        if version3:
+            values.update(
+                contract_version="ctcc-history-qualification-result-v3",
+                history_admission_sha256=history_pins["history_admission_sha256"]
+                if len(gates) >= 2
+                else None,
+            )
+        qualification_type = (
+            HistoryEntryQualificationResultV3 if version3 else EntryQualificationResult
+        )
         return result_type(
             intent=intent,
             policy=policy,
             policy_sha256=_digest(policy),
             data_result=data,
-            result=EntryQualificationResult(**values, gates=tuple(gates)),
+            result=qualification_type(**values, gates=tuple(gates)),
             **(history_pins or {}),
         )
 
@@ -359,7 +463,14 @@ def _evaluate_current_conditions(
                 and route.regime == MarketRegime.EXPANSION
                 and "breakout_continuation" in route.allowed_strategies
             )
+        if version3:
+            allowed = (
+                intent.strategy == "structure_reversal"
+                and reversal_safety_permission(analysis, route, intent.direction)
+            )
         values["market_regime"] = route.regime
+        if version3 and allowed and route.regime == MarketRegime.UNKNOWN:
+            values["market_regime"] = "History Verified Reversal"
         if not gate(
             QualificationGate.REGIME,
             "passed" if allowed else "regime_strategy_not_allowed",
@@ -371,6 +482,16 @@ def _evaluate_current_conditions(
                 "route_diagnostics": ",".join(route.fail_codes) or "none",
                 "analysis_sha256": route.snapshot_sha256,
                 "source_sha256": data.source_sha256,
+                **(
+                    {
+                        "history_evaluation_sha256": history_pins[
+                            "history_admission_sha256"
+                        ],
+                        "route_method": "original_history_current_safety",
+                    }
+                    if version3
+                    else {}
+                ),
             },
         ):
             return finish()
@@ -400,6 +521,18 @@ def _evaluate_current_conditions(
                 "original_event_key": history_pins["original_event_key"],
                 "current_source_sha256": data.source_sha256,
                 "current_analysis_sha256": route.snapshot_sha256,
+            }
+        if version3:
+            htf_ok = direction_matches and reversal_current_permission(
+                analysis, rebuilt, route, intent.direction
+            )
+            expansion_values = {
+                "reversal_policy": policy.reversal_policy,
+                "history_admission_sha256": history_pins["history_admission_sha256"],
+                "original_event_key": history_pins["original_event_key"],
+                "current_source_sha256": data.source_sha256,
+                "current_analysis_sha256": route.snapshot_sha256,
+                "retained_analysis_blockers": ",".join(analysis.blockers) or "none",
             }
         if htf_ok:
             values["htf_bias"] = "neutral" if range_htf else assessment.direction

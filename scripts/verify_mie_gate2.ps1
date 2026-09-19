@@ -171,30 +171,30 @@ print("MIE_GATE2_EXECUTION_AUTHORITY_DISABLED=1")
     $authorityProbe | docker compose @composeArguments exec -T api python -
 }
 
-Invoke-NativeStep "Alembic heads" {
-    docker compose @composeArguments exec -T api alembic heads
-}
-Invoke-NativeStep "Alembic current" {
-    docker compose @composeArguments exec -T api alembic current
-}
-Invoke-NativeStep "Alembic exact revision" {
-    $revisionProbe = @'
-import subprocess
-
-expected = "0017 (head)"
-heads = subprocess.check_output(
-    ["alembic", "heads"],
-    text=True,
-).strip()
-current = subprocess.check_output(
-    ["alembic", "current"],
-    text=True,
-).strip().splitlines()[-1]
-assert heads == expected, (heads, expected)
-assert current == expected, (current, expected)
-print("ALEMBIC_REVISION=0017")
-'@
-    $revisionProbe | docker compose @composeArguments exec -T api python -
+$script:verifiedMigrationHead = $null
+Invoke-NativeStep "Alembic source/database identity" {
+    $identityLines = @(docker compose @composeArguments exec -T api python -m scripts.verify_migration_identity)
+    $identityExit = $LASTEXITCODE
+    $identityLines | ForEach-Object { Write-Host $_ }
+    if ($identityExit -ne 0) {
+        throw "Migration identity read failed (exit=$identityExit)"
+    }
+    $identity = ($identityLines -join "`n") | ConvertFrom-Json -ErrorAction Stop
+    if (
+        $identity.schema -cne "ctcc.migration_identity.v1" -or
+        $identity.status -cne "PASS" -or
+        $identity.source_head -isnot [string] -or
+        $identity.database_head -isnot [string] -or
+        $identity.database_head -cnotmatch '^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$' -or
+        $identity.source_head -cne $identity.database_head -or
+        $identity.migration_sha256 -isnot [string] -or
+        $identity.migration_sha256 -cnotmatch '^[a-f0-9]{64}$' -or
+        $identity.execution_authority -isnot [bool] -or
+        $identity.execution_authority -ne $false
+    ) {
+        throw "Migration identity readback invalid"
+    }
+    $script:verifiedMigrationHead = $identity.database_head
 }
 Invoke-NativeStep "Alembic schema drift" {
     docker compose @composeArguments exec -T api alembic check
@@ -234,5 +234,5 @@ Write-Host "MIE_GATE2_VERIFIED=1"
 Write-Host "MIE_GATE2_EXECUTION_AUTHORITY=0"
 Write-Host "MIE_GATE2_RUNTIME_CONSUMERS=0"
 Write-Host "HEAD=$head"
-Write-Host "ALEMBIC_HEAD=0017"
+Write-Host ("ALEMBIC_HEAD={0}" -f $script:verifiedMigrationHead)
 Write-Host "API_HEALTH=$health"

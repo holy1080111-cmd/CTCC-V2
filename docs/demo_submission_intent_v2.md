@@ -38,6 +38,28 @@ digests. The original requested leverage remains bound in the encompassing
 intent, and its account readback must match; leverage is not invented as an OKX
 order-body field.
 
+The original replay-input decoder accepts the legacy policy or explicitly marked
+history V2/V3 policies and their matching prefix versions. History V1, missing
+markers, unknown versions and mixed families reject before defaults can create a
+new contract. New-family source, G12 and R7 objects remain exact typed records;
+the same original/current source replay is required before constructing an FOK
+body. This adds no field to historical intent JSON. Independent old-module
+comparison preserves exact legacy long/short v1/v2 canonical bytes.
+
+New long/short expansion and reversal tests exercise native G12 publication,
+source-derived recheck, sampled-risk reservation and intent replay. Changing
+original Entry/SL/TP or relabelling the policy and recomputing hashes still fails.
+These source/account fixtures are synthetic. Actual PostgreSQL new-family tests
+and final exact-source regression have their own recorded results; adding those
+tests does not itself establish their acceptance.
+
+The 2026-09-19 working-source run executed all eight new-family PostgreSQL cases
+in a newly created isolated database: both directions of V2/V3 each passed
+concurrent single-consumer commit/restart readback and malformed-marker atomic
+rollback. Its migration and schema check also passed. The 44 new unit cases and
+293 existing intent/ledger cases passed separately. These results precede the
+next immutable checkpoint and cannot replace its full regression.
+
 This remains `durable_intent_not_execution_permission`. Source authenticity,
 complete account history, same-invocation publication ownership and all possible
 fill-price/intrabar coverage are not established by these stored inputs. A FOK

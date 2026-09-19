@@ -24,6 +24,7 @@ from app.database.repositories.qualification_ledger import (
 from app.trade_qualification import account_capture as capture
 from app.trade_qualification import account_collector as collector
 from app.trade_qualification import account_materializer as mapping
+from app.trade_qualification import account_metadata as metadata
 from app.trade_qualification import reservations
 from app.trade_qualification.models import QualificationModel
 from app.trade_qualification.portfolio import ObservedSource
@@ -68,6 +69,7 @@ _ERRORS = frozenset(
         "registration_evidence_pin_mismatch",
         "bootstrap_history_coverage_incomplete",
         "bootstrap_invalid",
+        "captured_metadata_invalid",
     }
 )
 
@@ -231,6 +233,7 @@ class DemoAccountRuntimeResult:
     packet: capture.DemoAccountPacket
     materialization: mapping.AccountMaterializationResult
     materialization_inputs: mapping.AccountMaterializationInputs
+    instrument_metadata: metadata.CapturedInstrumentMetadata
     ledger_checkpoint: LedgerCaptureCheckpoint
     completed_at: datetime
     transport_provenance: Literal["owned_signed_verified_tls", "synthetic_transport"]
@@ -261,7 +264,10 @@ class ControlledDemoAccountSession:
 
     def __init__(self, *, credentials, plan, expected_plan_sha256):
         try:
-            if type(plan) is not capture.RegionalDemoAccountCapturePlan:
+            if type(plan) not in {
+                capture.RegionalDemoAccountCapturePlan,
+                capture.AllProductDemoAccountCapturePlan,
+            }:
                 raise AccountRuntimeError("explicit_registration_region_required")
             selected = capture._checked_plan(plan, expected_plan_sha256)
             owned = collector.DemoAccountCredentials(
@@ -411,6 +417,17 @@ class ControlledDemoAccountSession:
         inputs = mapping.AccountMaterializationInputs.model_validate(
             values, strict=True
         )
+        try:
+            instrument_metadata = metadata.derive_captured_instrument_metadata(
+                packet,
+                expected_plan_sha256=self._pin,
+                expected_packet_sha256=frozen.sha256,
+                inputs=inputs,
+                expected_inputs_sha256=mapping.materialization_inputs_sha256(inputs),
+            )
+        except metadata.CapturedMetadataError:
+            raise AccountRuntimeError("captured_metadata_invalid") from None
+        inputs = instrument_metadata.inputs
         mapped = mapping.materialize_demo_portfolio_snapshot(
             packet,
             expected_plan_sha256=self._pin,
@@ -435,6 +452,7 @@ class ControlledDemoAccountSession:
             else "synthetic_transport"
         )
         gaps = set(mapped.incomplete_reasons)
+        gaps.update(instrument_metadata.blocking_reasons)
         gaps.add("registration_provenance_unverified")
         if transport == "synthetic_transport":
             gaps.add("synthetic_transport_not_authenticated")
@@ -453,12 +471,13 @@ class ControlledDemoAccountSession:
         )
         receipt = capture._canonical(
             {
-                "schema_version": "ctcc.controlled_demo_account_runtime.v1",
+                "schema_version": "ctcc.controlled_demo_account_runtime.v2",
                 "environment": "demo",
                 "plan_sha256": self._pin,
                 "packet_sha256": frozen.sha256,
                 "inputs_sha256": mapping.materialization_inputs_sha256(inputs),
                 "materialization_sha256": mapped.evaluation_sha256,
+                "instrument_metadata_sha256": instrument_metadata.receipt_sha256,
                 "ledger_checkpoint_sha256": before.state_sha256,
                 "account_revision": before.state.account_revision,
                 "ledger_revision": before.state.ledger_revision,
@@ -476,6 +495,7 @@ class ControlledDemoAccountSession:
             packet,
             mapped,
             inputs,
+            instrument_metadata,
             before,
             finished,
             transport,

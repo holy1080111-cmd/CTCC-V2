@@ -76,6 +76,17 @@ publisher handle. File flush and report-last logical completion on Windows do no
 claim power-loss durability for directory metadata. See the
 [Microsoft CreateFileW sharing contract](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew).
 
+Native Windows filesystem calls use an internally generated extended-length
+local-drive spelling after validating every literal component. This also covers
+temporary filenames, whose suffix can exceed MAX_PATH even when the report
+directory itself fits. Caller UNC/device paths, alternate streams, traversal and
+reserved names remain rejected. No path is resolved through a junction; every
+ancestor still requires its original pinned handle and the root keeps its
+exclusive publisher lease. The public receipt retains the original path spelling.
+This follows the [Windows extended-length path contract](https://learn.microsoft.com/en-us/windows/win32/fileio/maximum-file-path-limitation)
+without changing system registry settings or ACLs. Unavailable pins or leases
+still fail closed, and this change adds no power-loss durability guarantee.
+
 The earlier restricted process on this development host could not open the
 user-profile ancestor with the required access, so publication correctly failed
 closed before writing a PNG. Native primitive sharing/rename checks alone were

@@ -113,6 +113,51 @@ def verify_copied_source(root: Path, manifest: Path, expected_sha256: str) -> in
     return len(files)
 
 
+def verify_pytest_report(path: Path, *, required_modules=()):
+    """Require executed tests, preserve platform skips, reject empty/false greens."""
+    import xml.etree.ElementTree as ET
+
+    if path.is_symlink() or not 0 < path.stat().st_size <= 64 * 1024 * 1024:
+        raise ValueError("pytest_report_missing_or_unsafe")
+    root = ET.fromstring(path.read_bytes())
+    if root.tag != "testsuites" or not len(root):
+        raise ValueError("pytest_report_schema_invalid")
+    total = {"tests": 0, "failures": 0, "errors": 0, "skipped": 0}
+    executed_modules = set()
+    for suite in root:
+        if suite.tag != "testsuite":
+            raise ValueError("pytest_report_schema_invalid")
+        cases = suite.findall("testcase")
+        counts = {"tests": len(cases)}
+        for key, child in (
+            ("failures", "failure"),
+            ("errors", "error"),
+            ("skipped", "skipped"),
+        ):
+            counts[key] = sum(case.find(child) is not None for case in cases)
+        if any(str(value) != suite.get(key) for key, value in counts.items()):
+            raise ValueError("pytest_report_counts_conflict")
+        for key, value in counts.items():
+            total[key] += value
+        for case in cases:
+            if all(case.find(tag) is None for tag in ("failure", "error", "skipped")):
+                executed_modules.add(case.get("classname"))
+    passed = total["tests"] - total["failures"] - total["errors"] - total["skipped"]
+    if (
+        passed <= 0
+        or total["failures"]
+        or total["errors"]
+        or (required_modules and total["skipped"])
+        or not set(required_modules) <= executed_modules
+    ):
+        raise ValueError("pytest_required_execution_not_verified")
+    return {
+        **total,
+        "passed": passed,
+        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+    }
+
+
 class Run:
     def __init__(self, output: Path):
         self.output = output
@@ -309,6 +354,14 @@ def main():
     }
     (args.output / "identity.json").write_text(json.dumps(identity, indent=2))
     run = Run(args.output)
+    test_results = args.output / "test-results"
+    test_results.mkdir()
+    # Dedicated synthetic test output only; neither source nor credentials mount.
+    test_results.chmod(0o777)
+    test_results_mount = (
+        "--mount",
+        f"type=bind,src={test_results.resolve()},dst=/validation-results",
+    )
     suffix = uuid4().hex[:12]
     label = f"org.ctcc.validation.run={suffix}"
     network, postgres, redis = (
@@ -459,9 +512,23 @@ def main():
         )
         container("migration-initial-supported", ["alembic", "upgrade", "0001"])
         container("migration-upgrade", ["alembic", "upgrade", "head"])
+        container(
+            "migration-identity", ["python", "-m", "scripts.verify_migration_identity"]
+        )
+        identity["migration"] = json.loads(
+            (args.output / "migration-identity.log").read_text()
+        )
         container("migration-drift", ["alembic", "check"])
         container("migration-downgrade", ["alembic", "downgrade", "0016"])
         container("migration-reupgrade", ["alembic", "upgrade", "head"])
+        container(
+            "migration-reidentity",
+            ["python", "-m", "scripts.verify_migration_identity"],
+        )
+        if identity["migration"] != json.loads(
+            (args.output / "migration-reidentity.log").read_text()
+        ):
+            raise RuntimeError("migration_reupgrade_identity_changed")
         container("migration-redrift", ["alembic", "check"])
         container(
             "postgres-intent",
@@ -471,9 +538,23 @@ def main():
                 "scripts.hermetic_pytest",
                 "-p",
                 "no:cacheprovider",
+                "-ra",
+                "--junitxml=/validation-results/postgres-intent.xml",
                 "tests/integration/test_qualification_ledger_repository.py",
                 "tests/integration/test_qualification_submission_intent_repository.py",
+                "tests/integration/test_history_submission_intent_repository.py",
+                "tests/integration/test_submission_reporting_repository.py",
             ],
+            mounts=test_results_mount,
+        )
+        identity["postgres_tests"] = verify_pytest_report(
+            test_results / "postgres-intent.xml",
+            required_modules=(
+                "tests.integration.test_qualification_ledger_repository",
+                "tests.integration.test_qualification_submission_intent_repository",
+                "tests.integration.test_history_submission_intent_repository",
+                "tests.integration.test_submission_reporting_repository",
+            ),
         )
         container(
             "linux-full",
@@ -483,9 +564,13 @@ def main():
                 "scripts.hermetic_pytest",
                 "-p",
                 "no:cacheprovider",
+                "-ra",
+                "--junitxml=/validation-results/linux-full.xml",
                 "tests",
             ],
+            mounts=test_results_mount,
         )
+        identity["linux_tests"] = verify_pytest_report(test_results / "linux-full.xml")
         # Actual process death and server restarts, using explicitly synthetic
         # claims. This does not establish source, Demo or Live acceptance.
         probe_dir = args.output / "crash-probe"
@@ -603,10 +688,17 @@ def main():
         if cleanup_failed:
             identity["hermetic_regression"] = "FAIL"
         (args.output / "identity.json").write_text(json.dumps(identity, indent=2))
+        evidence_files = (
+            *args.output.iterdir(),
+            *test_results.glob("*.xml"),
+            *(args.output / "crash-probe").glob("*.json"),
+        )
         hashes = {
-            p.name: hashlib.sha256(p.read_bytes()).hexdigest()
-            for p in args.output.iterdir()
-            if p.is_file()
+            p.relative_to(args.output).as_posix(): hashlib.sha256(
+                p.read_bytes()
+            ).hexdigest()
+            for p in evidence_files
+            if p.is_file() and not p.is_symlink()
         }
         (args.output / "results.sha256.json").write_text(json.dumps(hashes, indent=2))
         if cleanup_failed:

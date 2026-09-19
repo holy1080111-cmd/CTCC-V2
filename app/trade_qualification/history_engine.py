@@ -19,7 +19,10 @@ from pydantic import BaseModel, Field, computed_field, field_validator, model_va
 
 from app.domain.analysis import MultiTimeframeAnalysis
 from app.domain.market import MarketSnapshot
-from app.strategies.structural_protection import select_structural_protection
+from app.strategies.structural_protection import (
+    select_reversal_structural_protection,
+    select_structural_protection,
+)
 from app.trade_qualification.data import WSReferenceObservation
 from app.trade_qualification.economics import (
     EconomicsPolicy,
@@ -35,14 +38,18 @@ from app.trade_qualification.event_models import Digest
 from app.trade_qualification.history_prefix import (
     HistoryEntryQualificationResult,
     HistoryEntryQualificationResultV2,
+    HistoryEntryQualificationResultV3,
     HistoryQualificationPrefixPolicy,
     HistoryQualificationPrefixPolicyV2,
+    HistoryQualificationPrefixPolicyV3,
     HistoryQualificationPrefixRun,
     HistoryQualificationPrefixRunV2,
+    HistoryQualificationPrefixRunV3,
     QualificationIntent,
     _plain,
     evaluate_history_qualification_prefix,
     evaluate_history_qualification_prefix_v2,
+    evaluate_history_qualification_prefix_v3,
 )
 from app.trade_qualification.history_prefix import (
     _bounded as _prefix_bounded,
@@ -100,6 +107,11 @@ class HistoryPreEvidencePolicyV2(HistoryPreEvidencePolicy):
     prefix: HistoryQualificationPrefixPolicyV2
 
 
+class HistoryPreEvidencePolicyV3(HistoryPreEvidencePolicy):
+    contract_version: Literal["ctcc-history-pre-evidence-v3"]
+    prefix: HistoryQualificationPrefixPolicyV3
+
+
 def _preflight(value, depth=0, budget=None):
     """Exact declared models and bounded raw fields, before any serializer."""
     if budget is None:
@@ -113,9 +125,11 @@ def _preflight(value, depth=0, budget=None):
             ProtectionPolicy,
             HistoryPreEvidencePolicy,
             HistoryPreEvidencePolicyV2,
+            HistoryPreEvidencePolicyV3,
             PortfolioInputs,
             HistoryPreEvidenceRun,
             HistoryPreEvidenceRunV2,
+            HistoryPreEvidenceRunV3,
             EconomicsPolicy,
             EconomicsResult,
             PortfolioRiskPolicy,
@@ -201,6 +215,47 @@ def _hash(value):
     return hashlib.sha256(raw).hexdigest()
 
 
+def _reversal_audit(raw):
+    if type(raw) is not str or not 0 < len(raw) <= _MAX_BYTES:
+        raise ValueError("invalid bounded reversal structural audit")
+    value = json.loads(raw)
+    if (
+        json.dumps(
+            value,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        != raw
+    ):
+        raise ValueError("reversal structural audit must be canonical")
+    if (
+        type(value) is not dict
+        or value.get("schema") != "ctcc_structural_selection_reversal_v1"
+    ):
+        raise ValueError("unknown reversal structural audit")
+    if value.get("record_kind") != "audit_not_authority" or any(
+        value.get(key) is not False
+        for key in ("execution_authority", "economics_validated", "policy_calibrated")
+    ):
+        raise ValueError("reversal structural audit cannot grant authority")
+    if value.get("protection_valid") is True:
+        selected = value.get("selected")
+        if type(selected) is not dict or any(
+            type(selected.get(key)) is not dict for key in ("stop", "target")
+        ):
+            raise ValueError("reversal structural audit has incomplete prices")
+        for price in (
+            value.get("reference_entry"),
+            selected["stop"].get("final_stop"),
+            selected["target"].get("final_target"),
+        ):
+            if type(price) is not str or len(price) > 128 or not D(price).is_finite():
+                raise ValueError("reversal structural audit has invalid prices")
+    return value
+
+
 class HistoryPreEvidenceRun(QualificationModel):
     contract_version: Literal["ctcc-history-pre-evidence-v1"] = CONTRACT_VERSION
     prefix: HistoryQualificationPrefixRun
@@ -278,7 +333,11 @@ class HistoryPreEvidenceRun(QualificationModel):
                 raise ValueError("structural digest has no audit")
         else:
             raw = self.protection_audit_json
-            audit = _audit(raw)
+            audit = (
+                _reversal_audit(raw)
+                if type(self) is HistoryPreEvidenceRunV3
+                else _audit(raw)
+            )
             if hashlib.sha256(raw.encode()).hexdigest() != self.protection_sha256:
                 raise ValueError("structural audit digest mismatch")
             if result.gates[7].passed:
@@ -381,6 +440,26 @@ class HistoryPreEvidenceRunV2(HistoryPreEvidenceRun):
     result: HistoryEntryQualificationResultV2
 
 
+class HistoryPreEvidenceRunV3(HistoryPreEvidenceRun):
+    contract_version: Literal["ctcc-history-pre-evidence-v3"]
+    prefix: HistoryQualificationPrefixRunV3
+    policy: HistoryPreEvidencePolicyV3
+    result: HistoryEntryQualificationResultV3
+
+    @model_validator(mode="after")
+    def reversal_protection_bound(self):
+        if self.protection_audit_json is not None:
+            audit = _reversal_audit(self.protection_audit_json)
+            if (
+                audit.get("schema") != "ctcc_structural_selection_reversal_v1"
+                or audit.get("alignment_policy") != self.policy.prefix.reversal_policy
+                or audit.get("history_admission_sha256")
+                != self.prefix.history_admission.evaluation_sha256
+            ):
+                raise ValueError("history_reversal_protection_binding_mismatch")
+        return self
+
+
 def evaluate_history_pre_evidence(
     market: MarketSnapshot,
     *,
@@ -412,6 +491,12 @@ def evaluate_history_pre_evidence_v2(market, *, policy, **inputs):
     return _evaluate_history_pre_evidence(market, policy=policy, **inputs)
 
 
+def evaluate_history_pre_evidence_v3(market, *, policy, **inputs):
+    if type(policy) is not HistoryPreEvidencePolicyV3:
+        raise ValueError("exact v3 history pre-evidence policy required")
+    return _evaluate_history_pre_evidence(market, policy=policy, **inputs)
+
+
 def _evaluate_history_pre_evidence(
     market,
     *,
@@ -425,13 +510,27 @@ def _evaluate_history_pre_evidence(
 ):
     """Re-run original G1--G7 inputs, then stop at the first failed G8--G11 gate."""
     version2 = type(policy) is HistoryPreEvidencePolicyV2
+    version3 = type(policy) is HistoryPreEvidencePolicyV3
     policy = _copy(
-        policy, HistoryPreEvidencePolicyV2 if version2 else HistoryPreEvidencePolicy
+        policy,
+        HistoryPreEvidencePolicyV3
+        if version3
+        else HistoryPreEvidencePolicyV2
+        if version2
+        else HistoryPreEvidencePolicy,
     )
-    run_type = HistoryPreEvidenceRunV2 if version2 else HistoryPreEvidenceRun
+    run_type = (
+        HistoryPreEvidenceRunV3
+        if version3
+        else HistoryPreEvidenceRunV2
+        if version2
+        else HistoryPreEvidenceRun
+    )
     risk_inputs = _copy(risk_inputs, PortfolioInputs)
     prefix_evaluator = (
-        evaluate_history_qualification_prefix_v2
+        evaluate_history_qualification_prefix_v3
+        if version3
+        else evaluate_history_qualification_prefix_v2
         if version2
         else evaluate_history_qualification_prefix
     )
@@ -453,6 +552,11 @@ def _evaluate_history_pre_evidence(
         return run_type.model_validate(
             _plain(
                 {
+                    **(
+                        {"contract_version": "ctcc-history-pre-evidence-v3"}
+                        if version3
+                        else {}
+                    ),
                     "prefix": prefix,
                     "policy": policy,
                     "risk_inputs": risk_inputs,
@@ -497,7 +601,12 @@ def _evaluate_history_pre_evidence(
         raise ValueError("quote changed during pre-evidence evaluation")
     entry, now = prefix.intent.candidate_entry, prefix.result.evaluated_at
     with localcontext(Context(prec=100)):
-        selected = select_structural_protection(
+        selector = (
+            select_reversal_structural_protection
+            if version3
+            else select_structural_protection
+        )
+        selected = selector(
             prefix.detection,
             rebuilt,
             analysis,
@@ -634,6 +743,14 @@ def verify_history_pre_evidence(
 def verify_history_pre_evidence_v2(run, market, **original_inputs):
     checked = _copy(run, HistoryPreEvidenceRunV2)
     replayed = evaluate_history_pre_evidence_v2(market, **original_inputs)
+    if checked != replayed:
+        raise ValueError("history_pre_evidence_replay_mismatch")
+    return replayed
+
+
+def verify_history_pre_evidence_v3(run, market, **original_inputs):
+    checked = _copy(run, HistoryPreEvidenceRunV3)
+    replayed = evaluate_history_pre_evidence_v3(market, **original_inputs)
     if checked != replayed:
         raise ValueError("history_pre_evidence_replay_mismatch")
     return replayed

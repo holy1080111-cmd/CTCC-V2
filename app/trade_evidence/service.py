@@ -21,7 +21,9 @@ from app.domain.market import MarketSnapshot
 from app.indicators.core import ema_series
 from app.market.quality.candles import BAR_SECONDS, candle_closed_at
 from app.strategies.structural_protection import (
+    ReversalStructuralProtectionSelection,
     StructuralProtectionSelection,
+    select_reversal_structural_protection,
     select_structural_protection,
 )
 from app.structure.engine import analyze_structure, find_swings
@@ -35,7 +37,10 @@ from app.trade_evidence.models import (
 )
 from app.trade_qualification.event_models import TriggerDetection
 from app.trade_qualification.events import _copy_source, extract_trigger
-from app.trade_qualification.history_prefix import HistoryEntryQualificationResultV2
+from app.trade_qualification.history_prefix import (
+    HistoryEntryQualificationResultV2,
+    HistoryEntryQualificationResultV3,
+)
 from app.trade_qualification.location import (
     ExecutableQuote,
     build_entry_zone,
@@ -281,9 +286,21 @@ def _protection(protection, event, market, analysis, qualification):
         if qualification.stop_loss is not None or qualification.take_profit is not None:
             raise EvidenceError("structural_evidence_missing")
         return None, None
-    if type(protection) is not StructuralProtectionSelection or event is None:
+    reversal = type(qualification) is HistoryEntryQualificationResultV3
+    expected = (
+        ReversalStructuralProtectionSelection
+        if reversal
+        else StructuralProtectionSelection
+    )
+    if type(protection) is not expected or event is None:
         raise EvidenceError("structural_evidence_invalid")
     _guard(protection)
+    if (
+        reversal
+        and protection.history_admission_sha256
+        != qualification.history_admission_sha256
+    ):
+        raise EvidenceError("reversal_protection_history_mismatch")
     policy = dict(protection.policy_inputs)
     required = {
         "tick_size",
@@ -303,7 +320,12 @@ def _protection(protection, event, market, analysis, qualification):
         or protection.observed_at > qualification.evaluated_at
     ):
         raise EvidenceError("structural_observation_invalid")
-    rebuilt = select_structural_protection(
+    selector = (
+        select_reversal_structural_protection
+        if reversal
+        else select_structural_protection
+    )
+    rebuilt = selector(
         event,
         market,
         analysis,
@@ -350,7 +372,9 @@ def prepare_evidence(
         now = require_aware(prepared_at)
         q = _copy(
             qualification,
-            HistoryEntryQualificationResultV2
+            HistoryEntryQualificationResultV3
+            if type(qualification) is HistoryEntryQualificationResultV3
+            else HistoryEntryQualificationResultV2
             if type(qualification) is HistoryEntryQualificationResultV2
             else EntryQualificationResult,
         )
@@ -483,7 +507,12 @@ def validate_snapshot(snapshot: EvidenceSnapshot) -> EvidenceSnapshot:
                 for key, item in audit["policy_inputs"]
                 if key != "spread"
             }
-            protection = select_structural_protection(
+            selector = (
+                select_reversal_structural_protection
+                if type(value.qualification) is HistoryEntryQualificationResultV3
+                else select_structural_protection
+            )
+            protection = selector(
                 value.detection,
                 market,
                 analysis,

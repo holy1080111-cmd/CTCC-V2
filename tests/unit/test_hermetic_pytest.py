@@ -105,10 +105,12 @@ def test_docker_verifiers_are_safe_on_windows_powershell(
     assert any(
         command in source
         for command in (
-            "$revisionProbe | docker compose exec -T api python -",
-            "$revisionProbe | docker compose @composeArguments exec -T api python -",
+            "docker compose exec -T api python -m scripts.verify_migration_identity",
+            "docker compose @composeArguments exec -T api python -m scripts.verify_migration_identity",
         )
     )
+    assert "ConvertFrom-Json -ErrorAction Stop" in source
+    assert "$identity.source_head -cne $identity.database_head" in source
     assert any(
         command in source
         for command in (

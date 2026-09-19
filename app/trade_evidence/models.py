@@ -16,7 +16,10 @@ from pydantic import (
 from app.market.quality.candles import BAR_SECONDS
 from app.trade_qualification.contract_dispatch import record_family
 from app.trade_qualification.event_models import Digest, TriggerDetection
-from app.trade_qualification.history_prefix import HistoryEntryQualificationResultV2
+from app.trade_qualification.history_prefix import (
+    HistoryEntryQualificationResultV2,
+    HistoryEntryQualificationResultV3,
+)
 from app.trade_qualification.location import ExecutableQuote
 from app.trade_qualification.models import (
     EntryQualificationResult,
@@ -40,12 +43,18 @@ def _qualification_family(value):
         EntryQualificationResult,
         HistoryEntryQualificationResultV2,
         "ctcc-history-qualification-result-v2",
+        (
+            HistoryEntryQualificationResultV3,
+            "ctcc-history-qualification-result-v3",
+            "history_v3",
+        ),
     )
 
 
 EvidenceQualification = Annotated[
     Annotated[EntryQualificationResult, Tag("legacy")]
-    | Annotated[HistoryEntryQualificationResultV2, Tag("history_v2")],
+    | Annotated[HistoryEntryQualificationResultV2, Tag("history_v2")]
+    | Annotated[HistoryEntryQualificationResultV3, Tag("history_v3")],
     Discriminator(_qualification_family),
 ]
 

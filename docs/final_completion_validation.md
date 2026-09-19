@@ -62,6 +62,11 @@ API readiness and service restart with execution disabled; this is not a Live
 restart/protection test. CI keeps the existing required job name and runs this
 same exact-archive harness, retaining commit, tree, raw COPY map and step logs.
 Those require independent evidence at the same final source identity.
+Targeted PostgreSQL and full Linux runs retain JUnit XML and explicit skip reasons.
+The PostgreSQL acceptance verifier requires executed cases from every declared
+integration module with zero skips; an empty/skipped green pytest exit cannot
+satisfy it. Full-suite platform skips are retained separately from passing counts.
+The evidence hash manifest includes these XML files and the durable crash marker.
 
 ## Conservative risk and preservation
 
@@ -100,8 +105,31 @@ crash/restart stage failed before seeding durable state: the probe called an
 preserved and its overall hermetic result remains FAIL. A corrected probe must
 complete actual interruption, database/cache restart and independent readback;
 unit-suite success cannot substitute for that stage.
+The corrected durability probe has since passed a separate actual SIGKILL,
+PostgreSQL/Redis restart, durable-intent/uncertain-state readback and duplicate
+consume rejection. That diagnostic used a targeted overlay; it does not turn
+the original immutable run into PASS.
+
+The second checkpoint `ecda5214e5de1a1e0fecceab2472958646b2ecb6`, tree
+`ba865a1c66f63e11394e22914a330c8cf2d23c4a`, completed Windows with 9,989 passed,
+14 failed and 28 explicit platform skips. Linux completed with 9,992 passed,
+1 failed and 38 platform skips; its preceding 36 PostgreSQL intent cases and
+empty-database migration/drift cycle passed. The exact image digest was
+`sha256:25fef1ee65815d4295dec4b0f11e6d8303aec3fac710420d1df3de072ef141b7`.
+Both full runs remain FAIL. The Linux failure is the expected literal `.env*`
+rule missing beside the stronger case-insensitive exclusions; Windows also
+exposed native temporary filenames exceeding MAX_PATH. The working repair
+restores that exclusion and uses validated extended-length local API paths while
+retaining ancestor pins/no-clobber publication. All 14 originally failed Windows
+nodes subsequently passed in a separate working-source rerun. No assertion or
+permission check was relaxed. The pinned `tzdata` validation dependency removes
+the earlier two IANA-data skips; it does not change source timestamps.
+
 Later working-source changes require their own exact-source full rerun; these
-counts cannot be reused as their acceptance.
+counts cannot be reused as their acceptance. The next checkpoint includes the
+Windows repair, all-standard-product account packet v4, captured metadata,
+source-derived reversal V3, versioned history-intent replay, forensic cost
+decomposition and DB0018 reporting/unknown-result containment.
 
 The working branch adds explicit versioned expansion history dispatch through
 G12 and recorded Recheck, an owned regional account-capture/revision producer,

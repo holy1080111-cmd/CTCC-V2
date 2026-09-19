@@ -17,6 +17,7 @@ from app.domain.market import MarketSnapshot
 from app.trade_evidence.gates import (
     EvidenceGateRun,
     HistoryEvidenceGateRunV2,
+    HistoryEvidenceGateRunV3,
     _digest,
     verify_pre_evidence_versioned,
 )
@@ -36,13 +37,18 @@ from app.trade_qualification.timing import event_identity
 
 def _evidence_family(value):
     return record_family(
-        value, EvidenceGateRun, HistoryEvidenceGateRunV2, "ctcc-history-evidence-v2"
+        value,
+        EvidenceGateRun,
+        HistoryEvidenceGateRunV2,
+        "ctcc-history-evidence-v2",
+        (HistoryEvidenceGateRunV3, "ctcc-history-evidence-v3", "history_v3"),
     )
 
 
 OriginEvidence = Annotated[
     Annotated[EvidenceGateRun, Tag("legacy")]
-    | Annotated[HistoryEvidenceGateRunV2, Tag("history_v2")],
+    | Annotated[HistoryEvidenceGateRunV2, Tag("history_v2")]
+    | Annotated[HistoryEvidenceGateRunV3, Tag("history_v3")],
     Discriminator(_evidence_family),
 ]
 
@@ -169,7 +175,9 @@ def freeze_recheck_origin(evidence: EvidenceGateRun) -> RecheckOrigin:
     """
     checked = _copy_evidence(
         evidence,
-        HistoryEvidenceGateRunV2
+        HistoryEvidenceGateRunV3
+        if type(evidence) is HistoryEvidenceGateRunV3
+        else HistoryEvidenceGateRunV2
         if type(evidence) is HistoryEvidenceGateRunV2
         else EvidenceGateRun,
     )

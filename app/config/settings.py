@@ -75,6 +75,12 @@ class Settings(BaseSettings):
     notion_outbox_poll_seconds: int = Field(default=30, ge=1, le=300)
     notion_outbox_pass_timeout_seconds: int = Field(default=30, ge=1, le=300)
     notion_outbox_batch_size: int = Field(default=16, ge=1, le=16)
+    submission_outbox_enabled: bool = False
+    submission_outbox_root: str = ""
+    submission_outbox_queue_namespace: str = "ctcc-demo-submission-v1"
+    submission_outbox_poll_seconds: int = Field(default=30, ge=1, le=300)
+    submission_outbox_pass_timeout_seconds: int = Field(default=30, ge=1, le=300)
+    submission_outbox_batch_size: int = Field(default=16, ge=1, le=16)
 
     readiness_require_redis: bool = True
     readiness_require_database: bool = True
