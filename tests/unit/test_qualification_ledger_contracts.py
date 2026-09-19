@@ -3,7 +3,7 @@
 from datetime import UTC, datetime, timedelta, timezone, tzinfo
 from decimal import Context, Decimal, Inexact, localcontext
 from fractions import Fraction
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from zoneinfo import ZoneInfo
 
 import pytest
 from pydantic import create_model, model_serializer
@@ -438,15 +438,12 @@ def test_quote_hidden_metadata_is_rejected_without_truthiness_or_iteration(
     assert calls == []
 
 
-@pytest.mark.parametrize("zone_kind", ("fixed_offset", "zoneinfo"))
+@pytest.mark.parametrize("zone_kind", ("fixed_offset", "UTC", "Asia/Taipei"))
 def test_quote_standard_timezones_preserve_utc_normalized_roundtrip(fixture, zone_kind):
     if zone_kind == "fixed_offset":
         zone = timezone(timedelta(hours=8))
     else:
-        try:
-            zone = ZoneInfo("UTC")
-        except ZoneInfoNotFoundError:
-            pytest.skip("system ZoneInfo database unavailable")
+        zone = ZoneInfo(zone_kind)
     changes = {
         name: getattr(fixture.request.quote, name).astimezone(zone)
         for name, expected in module._QUOTE_SCALARS.items()

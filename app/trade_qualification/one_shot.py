@@ -19,7 +19,11 @@ from types import MappingProxyType
 from typing import Literal
 
 from app.domain.market import MarketSnapshot
-from app.trade_evidence.gates import EvidenceGateRun, publish_qualification_evidence
+from app.trade_evidence.gates import (
+    EvidenceGateRun,
+    publish_qualification_evidence,
+    verify_pre_evidence_versioned,
+)
 from app.trade_evidence.storage import actual_utc
 from app.trade_qualification import account_capture as accounts
 from app.trade_qualification import account_collector as private_capture
@@ -41,7 +45,16 @@ from app.trade_qualification.engine import (
     PreEvidencePolicy,
     PreEvidenceRun,
     _copy,
-    verify_pre_evidence,
+)
+from app.trade_qualification.history_engine import (
+    HistoryPreEvidencePolicyV2,
+    HistoryPreEvidenceRunV2,
+)
+from app.trade_qualification.history_engine import _copy as _history_copy
+from app.trade_qualification.history_prefix import (
+    HistoryEntryQualificationResultV2,
+    HistoryQualificationPrefixPolicyV2,
+    HistoryQualificationPrefixRunV2,
 )
 from app.trade_qualification.market_bridge import public_market_snapshot
 from app.trade_qualification.quote_collector import validate_collected_quote
@@ -50,6 +63,7 @@ from app.trade_qualification.recheck import (
     evaluate_recorded_recheck,
 )
 from app.trade_qualification.recheck_models import freeze_recheck_origin
+from app.trade_qualification.regime_admission import RegimeAdmissionResult
 from app.trade_qualification.service import (
     QualificationIntent,
     _bounded,
@@ -69,6 +83,12 @@ _ORIGINAL_KEYS = frozenset(
     }
 )
 _INPUT_MODELS = (
+    HistoryPreEvidencePolicyV2,
+    HistoryPreEvidenceRunV2,
+    HistoryQualificationPrefixPolicyV2,
+    HistoryQualificationPrefixRunV2,
+    HistoryEntryQualificationResultV2,
+    RegimeAdmissionResult,
     *data_models._MARKET_MODELS,
     data_models.WSReferenceObservation,
     data_models.DataQualificationPolicy,
@@ -287,9 +307,9 @@ def _original(market, run, values):
         or set(values) != _ORIGINAL_KEYS
     ):
         raise OneShotInputError("one_shot_original_input_envelope_invalid")
-    if (
-        type(values["intent"]) is not QualificationIntent
-        or type(run) is not PreEvidenceRun
+    if type(values["intent"]) is not QualificationIntent or type(run) not in (
+        PreEvidenceRun,
+        HistoryPreEvidenceRunV2,
     ):
         raise OneShotInputError("one_shot_intent_or_run_invalid")
     _guard_original(market)
@@ -309,12 +329,14 @@ def _original(market, run, values):
         "reference": None
         if values["reference"] is None
         else _bounded_scalars(values["reference"], WSReferenceObservation),
-        "policy": _copy(values["policy"], PreEvidencePolicy),
+        "policy": _history_copy(values["policy"], HistoryPreEvidencePolicyV2)
+        if type(run) is HistoryPreEvidenceRunV2
+        else _copy(values["policy"], PreEvidencePolicy),
         "risk_inputs": _copy(values["risk_inputs"], PortfolioInputs),
         "consumed_event_keys": _event_keys(values["consumed_event_keys"]),
         "evaluated_at": accounts._utc(values["evaluated_at"]),
     }
-    checked = verify_pre_evidence(run, market, **copied)
+    checked = verify_pre_evidence_versioned(run, market, **copied)
     return market, checked, copied
 
 

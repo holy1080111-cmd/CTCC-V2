@@ -1,7 +1,7 @@
 """Versioned history-aware G1--G11 computation with raw-source replay.
 
-Distinct contracts intentionally cannot be supplied to legacy G12/recheck.
-Only the owned prefix's G2 differs; G8--G11 use the original structural,
+V1 contracts remain unavailable to G12/recheck. V2 expansion has explicit
+downstream dispatch and source-derived G3 permission. G8--G11 use the original structural,
 economics and portfolio evaluators, retain first-failure order, and never
 reserve risk, emit evidence, submit orders, or authenticate account claims.
 """
@@ -34,11 +34,15 @@ from app.trade_qualification.engine import (
 from app.trade_qualification.event_models import Digest
 from app.trade_qualification.history_prefix import (
     HistoryEntryQualificationResult,
+    HistoryEntryQualificationResultV2,
     HistoryQualificationPrefixPolicy,
+    HistoryQualificationPrefixPolicyV2,
     HistoryQualificationPrefixRun,
+    HistoryQualificationPrefixRunV2,
     QualificationIntent,
     _plain,
     evaluate_history_qualification_prefix,
+    evaluate_history_qualification_prefix_v2,
 )
 from app.trade_qualification.history_prefix import (
     _bounded as _prefix_bounded,
@@ -89,6 +93,13 @@ class HistoryPreEvidencePolicy(QualificationModel):
     portfolio: PortfolioRiskPolicy | None
 
 
+class HistoryPreEvidencePolicyV2(HistoryPreEvidencePolicy):
+    contract_version: Literal["ctcc-history-pre-evidence-v2"] = (
+        "ctcc-history-pre-evidence-v2"
+    )
+    prefix: HistoryQualificationPrefixPolicyV2
+
+
 def _preflight(value, depth=0, budget=None):
     """Exact declared models and bounded raw fields, before any serializer."""
     if budget is None:
@@ -101,8 +112,10 @@ def _preflight(value, depth=0, budget=None):
         for allowed in (
             ProtectionPolicy,
             HistoryPreEvidencePolicy,
+            HistoryPreEvidencePolicyV2,
             PortfolioInputs,
             HistoryPreEvidenceRun,
+            HistoryPreEvidenceRunV2,
             EconomicsPolicy,
             EconomicsResult,
             PortfolioRiskPolicy,
@@ -356,7 +369,16 @@ class HistoryPreEvidenceRun(QualificationModel):
 
     @property
     def evaluation_sha256(self):
-        return _hash(_copy(self, HistoryPreEvidenceRun))
+        return _hash(_copy(self, type(self)))
+
+
+class HistoryPreEvidenceRunV2(HistoryPreEvidenceRun):
+    contract_version: Literal["ctcc-history-pre-evidence-v2"] = (
+        "ctcc-history-pre-evidence-v2"
+    )
+    prefix: HistoryQualificationPrefixRunV2
+    policy: HistoryPreEvidencePolicyV2
+    result: HistoryEntryQualificationResultV2
 
 
 def evaluate_history_pre_evidence(
@@ -370,10 +392,50 @@ def evaluate_history_pre_evidence(
     consumed_event_keys: frozenset[str],
     evaluated_at: datetime,
 ) -> HistoryPreEvidenceRun:
+    if type(policy) is not HistoryPreEvidencePolicy:
+        raise ValueError("exact v1 history pre-evidence policy required")
+    return _evaluate_history_pre_evidence(
+        market,
+        intent=intent,
+        quote=quote,
+        reference=reference,
+        policy=policy,
+        risk_inputs=risk_inputs,
+        consumed_event_keys=consumed_event_keys,
+        evaluated_at=evaluated_at,
+    )
+
+
+def evaluate_history_pre_evidence_v2(market, *, policy, **inputs):
+    if type(policy) is not HistoryPreEvidencePolicyV2:
+        raise ValueError("exact v2 history pre-evidence policy required")
+    return _evaluate_history_pre_evidence(market, policy=policy, **inputs)
+
+
+def _evaluate_history_pre_evidence(
+    market,
+    *,
+    intent,
+    quote,
+    reference,
+    policy,
+    risk_inputs,
+    consumed_event_keys,
+    evaluated_at,
+):
     """Re-run original G1--G7 inputs, then stop at the first failed G8--G11 gate."""
-    policy = _copy(policy, HistoryPreEvidencePolicy)
+    version2 = type(policy) is HistoryPreEvidencePolicyV2
+    policy = _copy(
+        policy, HistoryPreEvidencePolicyV2 if version2 else HistoryPreEvidencePolicy
+    )
+    run_type = HistoryPreEvidenceRunV2 if version2 else HistoryPreEvidenceRun
     risk_inputs = _copy(risk_inputs, PortfolioInputs)
-    prefix = evaluate_history_qualification_prefix(
+    prefix_evaluator = (
+        evaluate_history_qualification_prefix_v2
+        if version2
+        else evaluate_history_qualification_prefix
+    )
+    prefix = prefix_evaluator(
         market,
         intent=intent,
         quote=quote,
@@ -388,7 +450,7 @@ def evaluate_history_pre_evidence(
 
     def finish():
         values["gates"] = tuple(gates)
-        return HistoryPreEvidenceRun.model_validate(
+        return run_type.model_validate(
             _plain(
                 {
                     "prefix": prefix,
@@ -564,6 +626,14 @@ def verify_history_pre_evidence(
     """Re-execute all visited gates; self-consistent hashes alone are insufficient."""
     checked = _copy(run, HistoryPreEvidenceRun)
     replayed = evaluate_history_pre_evidence(market, **original_inputs)
+    if checked != replayed:
+        raise ValueError("history_pre_evidence_replay_mismatch")
+    return replayed
+
+
+def verify_history_pre_evidence_v2(run, market, **original_inputs):
+    checked = _copy(run, HistoryPreEvidenceRunV2)
+    replayed = evaluate_history_pre_evidence_v2(market, **original_inputs)
     if checked != replayed:
         raise ValueError("history_pre_evidence_replay_mismatch")
     return replayed

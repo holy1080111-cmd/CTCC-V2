@@ -16,13 +16,21 @@ D = Decimal
 
 
 async def capture_history_source(
-    strategy="structure_reversal", direction="long", *, bracket=False
+    strategy="structure_reversal",
+    direction="long",
+    *,
+    bracket=False,
+    expansion_entry=False,
 ):
     market = fixture(strategy, direction)
-    if strategy == "structure_reversal":
+    if strategy == "structure_reversal" or expansion_entry:
         # Shift the actual entire momentum tape inside the real 1H entry zone;
         # do not replace an event/zone/quote result or loosen the policy limits.
         shift = D("-.65") if direction == "long" else D(".65")
+        if expansion_entry:
+            if strategy != "volatility_expansion":
+                raise ValueError("expansion fixture only")
+            shift = D("-1.7") if direction == "long" else D("1.7")
         market.candles["5m"] = [
             row.model_copy(
                 update={
@@ -47,6 +55,14 @@ async def capture_history_source(
             for row in market.order_book.asks
         ]
         market.mark_price += shift
+        if expansion_entry:
+            last = market.candles["5m"][-1]
+            market.candles["5m"][-1] = last.model_copy(
+                update={
+                    field: getattr(last, field) * 3
+                    for field in ("volume_contracts", "volume_currency", "volume_quote")
+                }
+            )
     if bracket:
         rows = market.candles["4H"]
         for offset, field, price in (
@@ -98,8 +114,18 @@ async def capture_history_source(
     )
 
 
-def history_source(strategy="structure_reversal", direction="long", *, bracket=False):
-    return asyncio.run(capture_history_source(strategy, direction, bracket=bracket))
+def history_source(
+    strategy="structure_reversal",
+    direction="long",
+    *,
+    bracket=False,
+    expansion_entry=False,
+):
+    return asyncio.run(
+        capture_history_source(
+            strategy, direction, bracket=bracket, expansion_entry=expansion_entry
+        )
+    )
 
 
 def history_inputs(source):

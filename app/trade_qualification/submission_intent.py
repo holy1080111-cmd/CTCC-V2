@@ -47,7 +47,9 @@ from app.trade_qualification.reservations import (
 VERSION = "ctcc-demo-submit-intent-v1"
 VERSION_V2 = "ctcc-demo-submit-intent-v2"
 MAX_INTENT_BYTES = 32768
-MAX_V2_INTENT_BYTES = 32 * 1024 * 1024
+# DB0017 qualification_reservation_transitions.evidence_bound is 8 MiB.
+# The complete escaped journal, including every replay document, must fit it.
+MAX_V2_INTENT_BYTES = 8 * 1024 * 1024
 
 
 class SubmissionExecutionBinding(reservations.LedgerModel):

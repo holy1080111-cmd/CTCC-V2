@@ -54,10 +54,27 @@ def canonical(value: dict) -> bytes:
 def write_marker(path: Path, value: dict) -> None:
     raw = canonical(value)
     envelope = canonical({"body": value, "sha256": hashlib.sha256(raw).hexdigest()})
-    with path.open("xb") as stream:
-        stream.write(envelope)
-        stream.flush()
-        os.fsync(stream.fileno())
+    temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    try:
+        with temporary.open("xb") as stream:
+            stream.write(envelope)
+            stream.flush()
+            os.fsync(stream.fileno())
+        # Expose the ready filename only after complete fsync, with no clobber.
+        # The host may send SIGKILL immediately when this filename appears.
+        os.link(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+async def synthetic_ledger_fixture():
+    # The fixture owns synchronous asyncio.run() calls for synthetic source
+    # capture. Keep those outside the probe's running database event loop.
+    from tests.unit.qualification_ledger_fixtures import ledger_fixture
+
+    return await asyncio.to_thread(
+        ledger_fixture, account_id=f"987654321{uuid4().int % 10**12:012d}"
+    )
 
 
 async def probe(mode: str, marker: Path) -> None:
@@ -66,9 +83,7 @@ async def probe(mode: str, marker: Path) -> None:
     try:
         if mode == "seed":
             # Fixture claims are synthetic and can never prove source authenticity.
-            from tests.unit.qualification_ledger_fixtures import ledger_fixture
-
-            fixture = ledger_fixture(account_id=f"987654321{uuid4().int % 10**12:012d}")
+            fixture = await synthetic_ledger_fixture()
             repository = QualificationLedgerRepository(
                 sessions, clock=lambda: fixture.now
             )

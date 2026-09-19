@@ -1,4 +1,4 @@
-# Versioned history qualification through G11
+# Versioned history qualification and expansion recheck
 
 `history_prefix.py` and `history_engine.py` are explicit offline entry points.
 They integrate raw-source history admission into an ordered G1–G11 calculation;
@@ -47,17 +47,62 @@ guard; caller market quality remains ignored and recomputed by G1.
 No selector input is altered to remove a safety blocker. No stop/target or
 economics/risk permission is invented to force a full historical pass. The new
 classification is a bounded evidence-policy result, not exchange-authenticated
-market truth. Result records cannot contain G12 or execution-recheck gates.
+market truth. V1 result records cannot contain G12 or execution-recheck gates.
+
+## Explicit expansion V2 (2026-09-19)
+
+The separate `HistoryQualificationPrefixPolicyV2`,
+`HistoryQualificationPrefixRunV2`, `HistoryEntryQualificationResultV2`,
+`HistoryPreEvidencePolicyV2`, `HistoryPreEvidenceRunV2`, and
+`HistoryEvidenceGateRunV2` preserve all V1 serialized fields and hashes.
+The evaluator APIs end in `_v2`; V1 APIs reject V2 policies. V2 is scoped to
+`volatility_expansion`. Reversal protection and sweep HTF blockers above remain.
+
+The explicit policy `ctcc-expansion-htf-permission-v1` requires the existing
+source-derived Expansion route: aligned 4H, non-opposed 1H with a known long,
+short or neutral bias, directional 15m BOS, controlled high 15m volatility,
+and no analysis blockers. G2 must first prove the original Compression →
+Expansion chronology and event. G3 binds this permission to the exact G1 source,
+analysis digest and G2 history digest. It does not raise a score, relabel Unknown,
+replace an event, or weaken any later gate.
+
+`publish_qualification_evidence` now dispatches exact V2 runs to V2 source replay,
+then uses the existing structural replay, six-artifact renderer, no-clobber
+publisher and actual readback. Its V2 record retains original G1–G11 and all
+geometry. V1 history runs still cannot enter G12; old receipts cannot qualify a
+new invocation. The report snapshot records the V2 qualification contract.
+
+`freeze_recheck_origin` retains the typed V2 evidence and its pins.
+`evaluate_recorded_recheck` replays the original V2 inputs and dispatches current
+G1–G4 to `HistoryCurrentConditionsResultV2`. Current permission is recomputed
+from current raw data with original history/event/origin pins. It does not call
+the event extractor to replace the original event. The existing continuation,
+timing, zone, fixed protection and current economics/risk checks remain in
+order; changed HTF, stale capture, consumed event, expiry or original input
+mutation stops the run. The original deadline is retained, never extended.
+
+The owned `publish_capture_recheck` diagnostic orchestrator accepts exact V2
+original inputs and retains its publication barrier before any new capture.
+It is still not mounted in an execution route. Neither computational PASS,
+native publication nor readback grants source authenticity or order authority.
+
+The synthetic tests construct OHLC, volume and executable quotes before first
+qualification. They exercise long/short G1–G12, native file hashes/readback,
+post-publication recheck, JSON replay and denial of forged source/event/geometry,
+changed HTF, reused receipt, extended expiry and malformed chronology. These are
+engineering fixtures; they do not satisfy the original Notion real evidence
+examples, OOS, Demo or Live acceptance.
 
 ## Downstream work is explicitly not complete
 
-Legacy G12 publication, one-shot publication/capture and original pre-evidence
-verification reject these exact new types before filesystem, clock or capture
-work. No conversion shim, silent downgrade or runtime registration is provided.
-A reviewed versioned G12 snapshot/rendering/publication + current-history
-recheck integration remains necessary. So do the historical strategy's G8
-alignment policy decision, expansion G3 policy, sweep HTF policy, complete
-authenticated account evidence, atomic reservation and durable submit wiring.
+Legacy original pre-evidence verification and all V1 history contracts remain
+unchanged. The separate V2 path has no conversion shim or runtime registration.
+The historical reversal's G8 alignment policy, sweep HTF policy, complete
+authenticated account materialization, durable event-history scope, and final
+atomic reservation/intent/submit authority wiring remain required. V2 origin
+acceptance here does not extend the reservation or submission-intent model
+whitelists. Intrabar path completeness also remains unknown. No recheck record
+can resume a previous invocation into a new order.
 
 All execution/authenticity/reservation/recheck authority flags remain false.
 Synthetic typed complete/armed account fields in tests are fictional claims,

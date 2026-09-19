@@ -1,6 +1,8 @@
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 
+import pytest
+
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "manifest.py"
 SPEC = spec_from_file_location("ctcc_manifest", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
@@ -71,3 +73,28 @@ def test_runtime_trade_evidence_is_not_part_of_the_source_release(
     (packet / "summary.png").write_bytes(b"synthetic-png-not-a-real-trade")
 
     assert manifest.build_manifest(tmp_path).keys() == {"app.py"}
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        ".envrc",
+        ".ENV.live",
+        ".ENV.example",
+        "config/secret.TOKEN",
+        "PRIVATE-NOTION/binding.json",
+        "nested/Private-Notion/receipt.json",
+        "REPORTS/private.json",
+        "BACKUPS/account.json",
+    ],
+)
+def test_manifest_excludes_private_paths_independent_of_case(tmp_path, name):
+    private = tmp_path / name
+    private.parent.mkdir(parents=True, exist_ok=True)
+    private.write_bytes(b"synthetic-only")
+    assert manifest.build_manifest(tmp_path) == {}
+
+
+def test_manifest_preserves_only_exact_env_example_name(tmp_path):
+    (tmp_path / ".env.example").write_bytes(b"SYNTHETIC_ONLY=\n")
+    assert manifest.build_manifest(tmp_path).keys() == {".env.example"}

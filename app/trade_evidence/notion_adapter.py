@@ -401,6 +401,8 @@ class NotionDeliveryAdapter:
         )
         self._clock = clock
         self._busy = False
+        self.rate_limited = False
+        self.rate_limit_retry_after_seconds = None
 
     async def _request(self, method, path, body, *, policy, claim, proofs, not_before):
         task = asyncio.current_task()
@@ -437,6 +439,15 @@ class NotionDeliveryAdapter:
                 )
                 if task is not None and task.cancelling():
                     raise asyncio.CancelledError
+                if response.status_code == 429:
+                    self.rate_limited = True
+                    limits = response.headers.get_list("retry-after")
+                    limit = limits[0] if len(limits) == 1 else ""
+                    self.rate_limit_retry_after_seconds = (
+                        max(1, int(limit))
+                        if re.fullmatch(r"[0-9]{1,5}", limit)
+                        else None
+                    )
                 if len(response.headers.raw) > 128 or (
                     sum(len(key) + len(value) for key, value in response.headers.raw)
                     > 32768

@@ -255,10 +255,43 @@ class DemoAccountCapturePlan(_Record):
         return self
 
 
+class RegionalDemoAccountCapturePlan(DemoAccountCapturePlan):
+    """Explicit registration routing; the evidence pin is not authentication.
+
+    Kept separate so historical v2 plans and packets retain their exact hashes.
+    Registration must be established outside capture, never inferred from locale.
+    Official overview reviewed 2026-09-19; no redirects or alternate hosts.
+    """
+
+    registration_region: Literal["global", "us_au", "eea"]
+    origin: Literal[
+        "https://openapi.okx.com", "https://us.okx.com", "https://eea.okx.com"
+    ]
+    registration_evidence_sha256: Digest
+
+    @model_validator(mode="after")
+    def regional_origin(self):
+        if (
+            self.origin
+            != {
+                "global": "https://openapi.okx.com",
+                "us_au": "https://us.okx.com",
+                "eea": "https://eea.okx.com",
+            }[self.registration_region]
+        ):
+            _fail("registration_origin_mismatch")
+        return self
+
+
 class AccountRequest(_Record):
     stream: Stream
     method: Literal["GET"] = "GET"
-    origin: Literal["https://www.okx.com"] = "https://www.okx.com"
+    origin: Literal[
+        "https://www.okx.com",
+        "https://openapi.okx.com",
+        "https://us.okx.com",
+        "https://eea.okx.com",
+    ] = "https://www.okx.com"
     endpoint: Annotated[str, Field(max_length=96)]
     parameters: tuple[
         tuple[
@@ -326,10 +359,10 @@ class DemoAccountObservation(_Record):
 
 
 class DemoAccountPacket(_Record):
-    schema_version: Literal["ctcc.demo_account_capture.v2"] = (
-        "ctcc.demo_account_capture.v2"
-    )
-    plan: DemoAccountCapturePlan
+    schema_version: Literal[
+        "ctcc.demo_account_capture.v2", "ctcc.demo_account_capture.v3"
+    ] = "ctcc.demo_account_capture.v2"
+    plan: RegionalDemoAccountCapturePlan | DemoAccountCapturePlan
     plan_sha256: Digest
     observations: tuple[DemoAccountObservation, ...] = Field(
         min_length=len(STREAMS), max_length=256
@@ -369,6 +402,7 @@ class FrozenAccountPacket:
 
 _MODELS = {
     DemoAccountCapturePlan,
+    RegionalDemoAccountCapturePlan,
     AccountRequest,
     AccountNumber,
     AccountSourceTime,
@@ -478,11 +512,17 @@ def _digest_record(value, excluded=()):
 
 @_bounded_api
 def plan_sha256(plan: DemoAccountCapturePlan) -> str:
-    return _digest_record(_copy(plan, DemoAccountCapturePlan).__dict__)
+    return _digest_record(_copy_plan(plan).__dict__)
+
+
+def _copy_plan(plan):
+    if type(plan) is RegionalDemoAccountCapturePlan:
+        return _copy(plan, RegionalDemoAccountCapturePlan)
+    return _copy(plan, DemoAccountCapturePlan)
 
 
 def _checked_plan(plan, expected):
-    plan = _copy(plan, DemoAccountCapturePlan)
+    plan = _copy_plan(plan)
     if type(expected) is not str or re.fullmatch(r"[a-f0-9]{64}", expected) is None:
         _fail("external_plan_pin_invalid")
     if _digest_record(plan.__dict__) != expected:
@@ -499,7 +539,7 @@ def _milliseconds(value):
 def account_request(
     plan: DemoAccountCapturePlan, stream: str, after: str | None = None
 ) -> AccountRequest:
-    plan = _copy(plan, DemoAccountCapturePlan)
+    plan = _copy_plan(plan)
     if type(stream) is not str or stream not in STREAMS:
         _fail("stream_invalid")
     if after is not None and (type(after) is not str or _ID.fullmatch(after) is None):
@@ -523,6 +563,11 @@ def account_request(
         parameters["mgnMode"] = stream.removeprefix("leverage_")
     return AccountRequest(
         stream=stream,
+        origin=(
+            plan.origin
+            if type(plan) is RegionalDemoAccountCapturePlan
+            else "https://www.okx.com"
+        ),
         endpoint=_ENDPOINTS[stream],
         parameters=tuple(sorted(parameters.items())),
     )
@@ -1152,7 +1197,11 @@ def verify_demo_account_records(
     ):
         gaps.add("source_clock_coverage_incomplete")
     fields = {
-        "schema_version": "ctcc.demo_account_capture.v2",
+        "schema_version": (
+            "ctcc.demo_account_capture.v3"
+            if type(plan) is RegionalDemoAccountCapturePlan
+            else "ctcc.demo_account_capture.v2"
+        ),
         "plan": plan,
         "plan_sha256": expected_plan_sha256,
         "observations": verified,

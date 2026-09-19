@@ -54,6 +54,15 @@ from app.trade_qualification.engine import (
     verify_pre_evidence,
 )
 from app.trade_qualification.event_models import Digest
+from app.trade_qualification.history_engine import (
+    HistoryPreEvidencePolicyV2,
+    HistoryPreEvidenceRunV2,
+    verify_history_pre_evidence_v2,
+)
+from app.trade_qualification.history_engine import (
+    _preflight as _history_preflight,
+)
+from app.trade_qualification.history_prefix import HistoryEntryQualificationResultV2
 from app.trade_qualification.location import ExecutableQuote
 from app.trade_qualification.models import (
     EntryQualificationResult,
@@ -119,6 +128,7 @@ def _guard(value, depth=0, budget=None):
     if isinstance(value, BaseModel):
         if type(value) not in {
             EvidenceGateRun,
+            HistoryEvidenceGateRunV2,
             EvidenceSnapshot,
             EvidencePanel,
             EvidenceCandle,
@@ -127,7 +137,14 @@ def _guard(value, depth=0, budget=None):
             PublicationReceipt,
             PublishedFile,
         }:
-            _preflight(value)
+            if type(value) in (
+                HistoryPreEvidenceRunV2,
+                HistoryPreEvidencePolicyV2,
+                HistoryEntryQualificationResultV2,
+            ):
+                _history_preflight(value)
+            else:
+                _preflight(value)
             return
         if (
             set(value.__dict__) != set(type(value).model_fields)
@@ -291,7 +308,19 @@ class EvidenceGateRun(QualificationModel):
 
     @property
     def evaluation_sha256(self) -> str:
-        return _digest(_copy(self, EvidenceGateRun))
+        return _digest(_copy(self, type(self)))
+
+
+class HistoryEvidenceGateRunV2(EvidenceGateRun):
+    contract_version: Literal["ctcc-history-evidence-v2"]
+    pre_evidence: HistoryPreEvidenceRunV2
+    result: HistoryEntryQualificationResultV2
+
+
+def verify_pre_evidence_versioned(run, market, **inputs):
+    if type(run) is HistoryPreEvidenceRunV2:
+        return verify_history_pre_evidence_v2(run, market, **inputs)
+    return verify_pre_evidence(run, market, **inputs)
 
 
 def _expiry(run: PreEvidenceRun) -> datetime:
@@ -335,7 +364,7 @@ def publish_qualification_evidence(
     ):
         raise EvidenceGateError("evidence_preparation_policy_invalid")
     try:
-        pre = verify_pre_evidence(
+        pre = verify_pre_evidence_versioned(
             run,
             market,
             intent=intent,
@@ -349,6 +378,11 @@ def publish_qualification_evidence(
     except Exception as exc:
         raise EvidenceGateError("pre_evidence_replay_failed") from exc
     pin = pre.evaluation_sha256
+    gate_type = (
+        HistoryEvidenceGateRunV2
+        if type(pre) is HistoryPreEvidenceRunV2
+        else EvidenceGateRun
+    )
     snapshot = receipt = prepared_at = publication_started_at = None
     rendered_files = ()
 
@@ -385,10 +419,15 @@ def publish_qualification_evidence(
                     )
                 ),
             )
-            result = EntryQualificationResult.model_validate(values, strict=True)
-        return EvidenceGateRun.model_validate(
+            result = type(pre.result).model_validate(values, strict=True)
+        return gate_type.model_validate(
             _plain(
                 {
+                    **(
+                        {"contract_version": "ctcc-history-evidence-v2"}
+                        if gate_type is HistoryEvidenceGateRunV2
+                        else {}
+                    ),
                     "pre_evidence": pre,
                     "pre_evidence_sha256": pin,
                     "result": result,

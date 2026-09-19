@@ -13,7 +13,15 @@ from datetime import datetime
 from decimal import Context, DecimalException, localcontext
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, TypeAdapter, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    Discriminator,
+    Field,
+    Tag,
+    TypeAdapter,
+    field_validator,
+    model_validator,
+)
 
 from app.domain.analysis import MultiTimeframeAnalysis
 from app.domain.market import MarketSnapshot
@@ -26,10 +34,13 @@ from app.trade_qualification.continuation import (
 from app.trade_qualification.continuation import (
     _copy_result as _copy_continuation,
 )
+from app.trade_qualification.contract_dispatch import record_family
 from app.trade_qualification.current_conditions import (
     CurrentConditionsResult,
+    HistoryCurrentConditionsResultV2,
     copy_current_conditions,
     evaluate_current_conditions,
+    evaluate_history_current_conditions_v2,
 )
 from app.trade_qualification.current_risk import (
     CurrentRiskResult,
@@ -51,6 +62,7 @@ from app.trade_qualification.fixed_protection import (
 from app.trade_qualification.fixed_protection import (
     _copy as _copy_protection,
 )
+from app.trade_qualification.history_engine import HistoryPreEvidenceRunV2
 from app.trade_qualification.location import (
     LocationResult,
     evaluate_location,
@@ -127,6 +139,22 @@ class _Denied(ValueError):
     pass
 
 
+def _conditions_family(value):
+    return record_family(
+        value,
+        CurrentConditionsResult,
+        HistoryCurrentConditionsResultV2,
+        "ctcc-history-current-conditions-v2",
+    )
+
+
+RecheckConditions = Annotated[
+    Annotated[CurrentConditionsResult, Tag("legacy")]
+    | Annotated[HistoryCurrentConditionsResultV2, Tag("history_v2")],
+    Discriminator(_conditions_family),
+]
+
+
 def _utc(value):
     if type(value) is not datetime:
         raise ValueError("exact_recorded_recheck_clock_required")
@@ -153,6 +181,7 @@ def _guard(value):
     copiers = {
         RecheckOrigin: copy_recheck_origin,
         CurrentConditionsResult: copy_current_conditions,
+        HistoryCurrentConditionsResultV2: copy_current_conditions,
         ContinuationResult: _copy_continuation,
         FixedProtectionResult: lambda v: _copy_protection(v, FixedProtectionResult),
         CurrentRiskResult: copy_current_risk,
@@ -197,7 +226,7 @@ class RecordedRecheckAssessment(QualificationModel):
     captured_market_sha256: Digest | None = None
     consumed_event_keys_sha256: Digest | None = None
     current_risk_inputs_sha256: Digest | None = None
-    current_conditions: CurrentConditionsResult | None = None
+    current_conditions: RecheckConditions | None = None
     continuation: ContinuationResult | None = None
     timing: TimingResult | None = None
     location: LocationResult | None = None
@@ -250,7 +279,10 @@ class RecordedRecheckAssessment(QualificationModel):
             value = dict(value)
             models = {
                 "origin": RecheckOrigin,
-                "current_conditions": CurrentConditionsResult,
+                "current_conditions": HistoryCurrentConditionsResultV2
+                if (value.get("current_conditions") or {}).get("contract_version")
+                == "ctcc-history-current-conditions-v2"
+                else CurrentConditionsResult,
                 "continuation": ContinuationResult,
                 "timing": TimingResult,
                 "location": LocationResult,
@@ -339,6 +371,18 @@ class RecordedRecheckAssessment(QualificationModel):
         ):
             raise ValueError("recheck_capture_pins_missing")
         current = self.current_conditions
+        if (
+            current is not None
+            and type(pre) is HistoryPreEvidenceRunV2
+            and (
+                type(current) is not HistoryCurrentConditionsResultV2
+                or current.origin_sha256 != self.origin.evaluation_sha256
+                or current.original_event_key != self.origin.original_event_key
+                or current.history_admission_sha256
+                != pre.prefix.history_admission.evaluation_sha256
+            )
+        ):
+            raise ValueError("recheck_history_current_origin_mismatch")
         if current is not None and (
             current.intent != intent
             or current.policy != pre.policy.prefix
@@ -617,13 +661,23 @@ def evaluate_recorded_recheck(
         record("capture_barrier")
         pre = checked.evidence.pre_evidence
         intent, policy = pre.prefix.intent, pre.policy.prefix
-        current = evaluate_current_conditions(
-            market,
-            intent=intent,
-            quote=collected,
-            reference=ref,
-            policy=policy,
-            observed_at=now,
+        current = (
+            evaluate_history_current_conditions_v2(
+                market,
+                origin=checked,
+                quote=collected,
+                reference=ref,
+                observed_at=now,
+            )
+            if type(pre) is HistoryPreEvidenceRunV2
+            else evaluate_current_conditions(
+                market,
+                intent=intent,
+                quote=collected,
+                reference=ref,
+                policy=policy,
+                observed_at=now,
+            )
         )
         if not record("current_conditions", current):
             return finish()

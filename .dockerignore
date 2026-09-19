@@ -1,4 +1,9 @@
-.env*
+.[eE][nN][vV]*
+**/.[eE][nN][vV]*
+*.[tT][oO][kK][eE][nN]
+**/*.[tT][oO][kK][eE][nN]
+[pP][rR][iI][vV][aA][tT][eE]-[nN][oO][tT][iI][oO][nN]/
+**/[pP][rR][iI][vV][aA][tT][eE]-[nN][oO][tT][iI][oO][nN]/
 !.env.example
 .git
 .venv/

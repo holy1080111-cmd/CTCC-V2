@@ -8,9 +8,14 @@ package date nor an old successful test count selects the source.
 
 The initial source checkpoint contains both repositories' exact tracked working
 files, unstaged/staged patches, Git bundles, refs/reflogs and hashes. Credential
-files are excluded; only environment key names are recorded. Docker was offline,
-so the database and authenticated account/exposure checkpoint remain pending.
-No change to a deployed runtime is authorized by this source checkpoint alone.
+files are excluded; only environment key names are recorded. The stopped Docker
+Desktop disk has since been inspected read-only. Filesystem journal recovery ran
+only on a COW clone, and the actual CTCC PostgreSQL/Redis volumes were backed up.
+The PostgreSQL backup restored successfully in a network-disabled container at
+migration `0017`; private backups also passed Windows CurrentUser DPAPI round-trip
+verification. See [preservation and rollback](deployment_checkpoint.md).
+Authenticated current account/exposure reconciliation remains pending. Offline
+database state cannot authorize deployment or a claim of current flat exposure.
 
 ## Corrected durable intent identity
 
@@ -79,6 +84,32 @@ Local lint dispositions retain deliberate naive-time rejection fixtures,
 immutable Decimal defaults, established ValueError validation contracts and
 fail-closed IO exception handling. Previously silent auxiliary IO failures now
 log exception class only, without account data, credentials or request bodies.
+
+## Identified intermediate regression
+
+Commit `89843e6da3eb19677ee429f5b4d5d4a4e6adcf29`, tree
+`047512575ec6ecd9e8ddfa60c493f20054d4aac6`, passed its Windows full suite with
+9,763 passed, 30 skipped and no failures. Twenty-eight skips are explicit POSIX
+or Windows symlink privilege limitations; two are unavailable IANA ZoneInfo
+data and are being removed through a pinned validation dependency. Its exact
+Docker COPY/manifest/dependency checks, migration upgrade/downgrade/re-upgrade,
+schema drift checks and 32 PostgreSQL intent cases passed. Its Linux full suite
+passed with 9,755 passed and 38 platform-specific skips. The subsequent actual
+crash/restart stage failed before seeding durable state: the probe called an
+`asyncio.run` fixture inside its running event loop. The original failed run is
+preserved and its overall hermetic result remains FAIL. A corrected probe must
+complete actual interruption, database/cache restart and independent readback;
+unit-suite success cannot substitute for that stage.
+Later working-source changes require their own exact-source full rerun; these
+counts cannot be reused as their acceptance.
+
+The working branch adds explicit versioned expansion history dispatch through
+G12 and recorded Recheck, an owned regional account-capture/revision producer,
+and an independent default-off Notion reporting worker. Account admission still
+denies incomplete history/peak/accrual/product provenance. Live new-entry
+transport is also contained until genuine qualified one-shot authority exists.
+Neither a computational test nor an empty reporting queue proves Demo, Live,
+source completeness or actual Notion delivery.
 
 ## Outstanding source-independent evidence
 

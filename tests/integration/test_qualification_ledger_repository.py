@@ -30,6 +30,7 @@ from app.trade_qualification.reservations import (
     QualificationLedgerError,
     ReservationRequest,
     checked,
+    digest,
 )
 from app.trade_qualification.service import _plain
 from tests.unit.qualification_ledger_fixtures import ledger_fixture
@@ -398,3 +399,65 @@ async def test_duplicate_current_self_holds_cannot_be_stored_then_laundered(
     state = await repository.read_scope(fixture.request.scope)
     assert state.account_revision == 1 and state.ledger_revision == 2
     assert state.active[0].state == "reserved"
+
+
+async def test_capture_checkpoint_reads_persisted_revision_and_keeps_unresolved_hold(
+    database, fixture
+):
+    repository, clock = await initialize(database, fixture)
+    first = await repository.read_capture_checkpoint(fixture.request.scope)
+    assert first.state_sha256 == digest(first.state)
+    assert first.state.account_revision == first.state.ledger_revision == 1
+    assert first.observed_at == first.received_at == fixture.now
+    reserved = await repository.reserve(fixture.request)
+    restarted = QualificationLedgerRepository(database[1], clock=clock)
+    second = await restarted.read_capture_checkpoint(fixture.request.scope)
+    assert second.state_sha256 != first.state_sha256
+    assert second.state.active == (reserved,)
+    assert second.state.ledger_revision == 2
+    # A checkpoint is read-only; it cannot advance claims, release holds or arm.
+    third = await restarted.read_capture_checkpoint(fixture.request.scope)
+    assert third.state_sha256 == second.state_sha256
+    assert third.state.execution_authority is False
+
+
+@pytest.mark.parametrize("problem", ("clock", "claims_hash", "claims_scope"))
+async def test_capture_checkpoint_denies_bad_clock_and_persisted_claims(
+    database, fixture, problem
+):
+    repository, clock = await initialize(database, fixture)
+    if problem == "clock":
+        clock.value -= timedelta(seconds=1)
+        match = "ledger_clock_regressed"
+    else:
+        raw_claims = _plain(fixture.claims)
+        if problem == "claims_scope":
+            raw_claims["scope"]["account_id"] = "999999"
+        claims = AccountLedgerClaims.model_validate(raw_claims, strict=True)
+        from app.trade_qualification.reservations import canonical
+
+        async with database[1]() as session, session.begin():
+            await session.execute(
+                update(QualificationAccountScope)
+                .where(
+                    QualificationAccountScope.account_id
+                    == fixture.request.scope.account_id
+                )
+                .values(
+                    # Respect the DB0017 revision guard. This simulates corrupt
+                    # producer evidence, not a bypass of immutable SQL rules.
+                    account_revision=2,
+                    ledger_revision=2,
+                    claims_json=canonical(claims),
+                    claims_sha256=(
+                        "f" * 64 if problem == "claims_hash" else digest(claims)
+                    ),
+                )
+            )
+        match = (
+            "ledger_claim_digest_mismatch"
+            if problem == "claims_hash"
+            else "ledger_claim_scope_mismatch"
+        )
+    with pytest.raises(QualificationLedgerError, match=match):
+        await repository.read_capture_checkpoint(fixture.request.scope)

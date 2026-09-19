@@ -9,14 +9,16 @@ this record cannot establish that the current invocation crossed that barrier.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import field_validator, model_validator
+from pydantic import Discriminator, Tag, field_validator, model_validator
 
 from app.domain.market import MarketSnapshot
 from app.trade_evidence.gates import (
     EvidenceGateRun,
+    HistoryEvidenceGateRunV2,
     _digest,
+    verify_pre_evidence_versioned,
 )
 from app.trade_evidence.gates import (
     _copy as _copy_evidence,
@@ -25,11 +27,24 @@ from app.trade_evidence.gates import (
     _guard as _evidence_guard,
 )
 from app.trade_evidence.service import validate_snapshot
-from app.trade_qualification.engine import verify_pre_evidence
+from app.trade_qualification.contract_dispatch import record_family
 from app.trade_qualification.event_models import Digest
 from app.trade_qualification.models import QualificationModel, require_aware
 from app.trade_qualification.service import _plain
 from app.trade_qualification.timing import event_identity
+
+
+def _evidence_family(value):
+    return record_family(
+        value, EvidenceGateRun, HistoryEvidenceGateRunV2, "ctcc-history-evidence-v2"
+    )
+
+
+OriginEvidence = Annotated[
+    Annotated[EvidenceGateRun, Tag("legacy")]
+    | Annotated[HistoryEvidenceGateRunV2, Tag("history_v2")],
+    Discriminator(_evidence_family),
+]
 
 
 def _original_pins(evidence: EvidenceGateRun) -> dict:
@@ -78,7 +93,7 @@ def _origin_guard(value):
 class RecheckOrigin(QualificationModel):
     """Immutable original facts; no old-record-to-runtime admission API."""
 
-    evidence: EvidenceGateRun
+    evidence: OriginEvidence
     evidence_sha256: Digest
     pre_evidence_sha256: Digest
     original_source_sha256: Digest
@@ -152,7 +167,12 @@ def freeze_recheck_origin(evidence: EvidenceGateRun) -> RecheckOrigin:
     execution workflow. ``replay_recheck_origin`` additionally recomputes the
     original evaluators from original raw inputs.
     """
-    checked = _copy_evidence(evidence, EvidenceGateRun)
+    checked = _copy_evidence(
+        evidence,
+        HistoryEvidenceGateRunV2
+        if type(evidence) is HistoryEvidenceGateRunV2
+        else EvidenceGateRun,
+    )
     return RecheckOrigin.model_validate(
         _plain({"evidence": checked, **_original_pins(checked)}), strict=True
     )
@@ -163,7 +183,7 @@ def replay_recheck_origin(
 ) -> RecheckOrigin:
     """Replay original G1--G11 and snapshot, not the historical disk operation."""
     checked = copy_recheck_origin(origin)
-    verified = verify_pre_evidence(
+    verified = verify_pre_evidence_versioned(
         checked.evidence.pre_evidence, original_market, **original_inputs
     )
     if verified.evaluation_sha256 != checked.pre_evidence_sha256:

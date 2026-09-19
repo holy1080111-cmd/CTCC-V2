@@ -34,11 +34,15 @@ def archive_tree(archive: tarfile.TarFile) -> str:
             continue
         if (
             not item.isfile()
-            or path.name.startswith(".env")
+            or path.name.casefold().startswith(".env")
             and path.name != ".env.example"
+            or path.suffix.casefold() == ".token"
         ):
             raise ValueError("archive_non_source_entry")
-        if any(part in {".git", "reports", "backups", ".venv"} for part in path.parts):
+        if any(
+            part.casefold() in {".git", "reports", "backups", ".venv", "private-notion"}
+            for part in path.parts
+        ):
             raise ValueError("archive_runtime_or_git_entry")
         node = root
         for part in path.parts[:-1]:
@@ -201,6 +205,44 @@ def cleanup_resources(resources: list[tuple[str, str]], run_id: str) -> list[dic
             result["failure_type"] = type(error).__name__
         results.append(result)
     return results
+
+
+def wait_for_durable_seed(run: Run, container: str, marker: Path, *, timeout=120):
+    """Require a live seed process and a complete durable readback marker."""
+    deadline = time.monotonic() + timeout
+    while True:
+        inspected = subprocess.run(
+            ["docker", "inspect", "--format", "{{json .State}}", container],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=15,
+        )
+        state = json.loads(inspected.stdout)
+        if state.get("Running") is not True:
+            run.command("crash-seed-exited-log", ["docker", "logs", container])
+            run.command("crash-seed-exited-state", ["docker", "inspect", container])
+            raise RuntimeError("durable_seed_process_exited")
+        if marker.is_file():
+            raw = marker.read_bytes()
+            if len(raw) > 32768:
+                raise RuntimeError("durable_seed_marker_oversize")
+            envelope = json.loads(raw)
+            body = envelope["body"]
+            canonical = json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
+            if (
+                envelope["sha256"] != hashlib.sha256(canonical).hexdigest()
+                or body.get("schema") != "ctcc.synthetic.qualification.crash-probe.v1"
+                or body.get("execution_authority") is not False
+                or type(body.get("order_writes")) is not int
+                or body["order_writes"] != 0
+            ):
+                raise RuntimeError("durable_seed_marker_invalid")
+            return
+        if time.monotonic() >= deadline:
+            run.command("crash-seed-timeout-log", ["docker", "logs", container])
+            raise RuntimeError("durable_seed_marker_missing")
+        time.sleep(0.25)
 
 
 API_PROBE = """
@@ -481,14 +523,7 @@ def main():
                 "/probe/durable.json",
             ],
         )
-        deadline = time.monotonic() + 120
-        while not probe_marker.is_file():
-            if time.monotonic() >= deadline:
-                run.command(
-                    "crash-seed-timeout-log", ["docker", "logs", probe_container]
-                )
-                raise RuntimeError("durable_seed_marker_missing")
-            time.sleep(0.25)
+        wait_for_durable_seed(run, probe_container, probe_marker)
         run.command("crash-seed-readback-log", ["docker", "logs", probe_container])
         run.command(
             "process-sigkill", ["docker", "kill", "--signal=KILL", probe_container]

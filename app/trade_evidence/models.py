@@ -4,10 +4,19 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Annotated, Literal
 
-from pydantic import Field, StringConstraints, field_validator, model_validator
+from pydantic import (
+    Discriminator,
+    Field,
+    StringConstraints,
+    Tag,
+    field_validator,
+    model_validator,
+)
 
 from app.market.quality.candles import BAR_SECONDS
+from app.trade_qualification.contract_dispatch import record_family
 from app.trade_qualification.event_models import Digest, TriggerDetection
+from app.trade_qualification.history_prefix import HistoryEntryQualificationResultV2
 from app.trade_qualification.location import ExecutableQuote
 from app.trade_qualification.models import (
     EntryQualificationResult,
@@ -23,6 +32,22 @@ Purpose = Literal["synthetic_test", "observed"]
 Indicator = Annotated[Decimal, Field(gt=0, max_digits=140, decimal_places=120)]
 TIMEFRAMES = ("4H", "1H", "15m", "5m")
 MAX_SOURCE_BYTES = 8 * 1024 * 1024
+
+
+def _qualification_family(value):
+    return record_family(
+        value,
+        EntryQualificationResult,
+        HistoryEntryQualificationResultV2,
+        "ctcc-history-qualification-result-v2",
+    )
+
+
+EvidenceQualification = Annotated[
+    Annotated[EntryQualificationResult, Tag("legacy")]
+    | Annotated[HistoryEntryQualificationResultV2, Tag("history_v2")],
+    Discriminator(_qualification_family),
+]
 
 
 class EvidenceCandle(QualificationModel):
@@ -107,7 +132,7 @@ class EvidenceSnapshot(QualificationModel):
     symbol: Text
     strategy: Text
     direction: Literal["long", "short"]
-    qualification: EntryQualificationResult
+    qualification: EvidenceQualification
     detection: TriggerDetection | None
     quote: ExecutableQuote | None
     panels: tuple[EvidencePanel, ...] = Field(min_length=4, max_length=4)

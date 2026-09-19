@@ -1,11 +1,13 @@
 """Explicit FOK body journals from replayed synthetic inputs; no order permit."""
 
+import hashlib
 import json
 from decimal import Decimal
 
 import pytest
 
 from app.trade_qualification.submission_intent import (
+    MAX_V2_INTENT_BYTES,
     QualificationLedgerError,
     build_submission_intent,
     replay_submission_intent,
@@ -189,3 +191,16 @@ def test_foreign_binding_cannot_execute_callbacks(v2):
     with pytest.raises(QualificationLedgerError, match="submit_intent_input_invalid"):
         build_submission_intent(fixture.request, consumed, execution_binding=Foreign())
     assert calls == []
+
+
+def test_oversized_v2_record_is_rejected_before_json_or_database(v2):
+    fixture, _, _ = v2
+    raw = " " * (MAX_V2_INTENT_BYTES + 1)
+    with pytest.raises(
+        QualificationLedgerError, match="submit_intent_integrity_mismatch"
+    ):
+        replay_submission_intent(
+            raw,
+            fixture.request,
+            expected_sha256=hashlib.sha256(raw.encode()).hexdigest(),
+        )

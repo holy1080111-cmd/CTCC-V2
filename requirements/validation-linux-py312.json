@@ -4,9 +4,9 @@
   "architecture": "x86_64",
   "python": "3.12",
   "index": "https://pypi.org/simple",
-  "source_pyproject_sha256": "bef87f9bf3b7679a34cee149b13af726dbf3b97b11d2412f47a6c8c1fe76eb4a",
-  "lock_sha256": "96a223d8229569e3793124c9d234bc5b31f8f0344e576e05c128d54982f78aa1",
-  "resolver_input_sha256": "9066d25a73db62655ccd2f23991da16ce54db611c35f3c1d68c065fd0fe044c4",
+  "source_pyproject_sha256": "c47e6ba2cbb0f938ea961a7ff075e550e3c66c30b883e2d4fd1162ca94f83785",
+  "lock_sha256": "a44e649cb1d21d3790e132c21699cc172e77ed87682929320cf8f6190fe014e4",
+  "resolver_input_sha256": "500eccff35e08d5c47865b0a5f86ef3bd7b33b924574fa830247eb7a2c491249",
   "resolver_input": [
     "fastapi==0.139.2",
     "uvicorn[standard]==0.50.0",
@@ -21,10 +21,11 @@
     "pytest==9.1.1",
     "pytest-asyncio==1.4.0",
     "ruff==0.16.8",
+    "tzdata==2026.4",
     "pip==26.2.1",
     "setuptools==84.0.0"
   ],
-  "observed_at": "2026-09-19T09:35:35.168459+00:00",
+  "observed_at": "2026-09-19T10:22:25.941167+00:00",
   "packages": [
     {
       "name": "alembic",
@@ -457,6 +458,18 @@
       "url": "https://files.pythonhosted.org/packages/67/81/4add07e5172b7ac40d8ed5ff580409a7801a4fe26d529bdd915401dabfbe/typing_inspection-0.4.4-py3-none-any.whl",
       "official_metadata_url": "https://pypi.org/pypi/typing-inspection/0.4.4/json",
       "official_metadata_sha256": "0605416f2f37f2df04e45360cf5ce4ca5eeca6d414bb6ddb1ec5a9893c62ac30"
+    },
+    {
+      "name": "tzdata",
+      "distribution_name": "tzdata",
+      "version": "2026.4",
+      "filename": "tzdata-2026.4-py2.py3-none-any.whl",
+      "sha256": "c2169a8b0a7a5e9674da5a135ccdfb2b3e671b333ed9fed17b41f73c34476e81",
+      "byte_size": 347494,
+      "metadata_sha256": "b022fde14c390c66d53c9cbccf614ebfa7224c453b1b5bec11f2923beaa7c96a",
+      "url": "https://files.pythonhosted.org/packages/f9/bc/8737e8d54cf51106118039b83f485a4783112fab49ea9d044b234978a46e/tzdata-2026.4-py2.py3-none-any.whl",
+      "official_metadata_url": "https://pypi.org/pypi/tzdata/2026.4/json",
+      "official_metadata_sha256": "47765f2d72ad6d2568e3717c8ac15292dfa6e06cd89b3cd2cb15643cf42b3218"
     },
     {
       "name": "uvicorn",

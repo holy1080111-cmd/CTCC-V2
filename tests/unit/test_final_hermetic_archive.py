@@ -41,6 +41,11 @@ def archive(entries):
         ".git/config",
         "reports/private.json",
         "backups/database",
+        "config/runtime.token",
+        "config/RUNTIME.TOKEN",
+        "config/.ENV.live",
+        "private-notion/destination.json",
+        "PRIVATE-NOTION/nested/data.json",
     ),
 )
 def test_archive_refuses_non_source_paths(name):

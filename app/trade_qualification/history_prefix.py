@@ -1,8 +1,8 @@
 """Opt-in versioned G1--G7 history-route qualification, never order authority.
 
 The original service and its policy hashes are unchanged. This module uses the
-same individual gate evaluators but owns a distinct record/policy type: legacy
-G12 and recheck consumers must reject it until explicitly versioned integration.
+same individual gate evaluators but owns distinct record/policy types. V1 stays
+rejected downstream; V2 expansion has explicit evidence and recheck dispatch.
 Only structure reversal and volatility expansion gain a replayed history G2;
 sweep's unresolved HTF rule stays blocked. No route, score or PASS is input.
 """
@@ -25,6 +25,7 @@ from app.domain.analysis import MultiTimeframeAnalysis
 from app.domain.market import MarketSnapshot
 from app.strategies.base import StrategyContext
 from app.strategies.conditions import assess_conditions
+from app.strategies.mathematical_confirmation import mathematical_confirmation
 from app.strategies.regime import RouteDecision, route_regime
 from app.trade_qualification.data import (
     DataQualificationPolicy,
@@ -51,7 +52,6 @@ from app.trade_qualification.models import (
     Text,
     require_aware,
 )
-from app.trade_qualification.one_shot import _guard_original as _guard_source
 from app.trade_qualification.quote_collector import (
     CollectedQuote,
     validate_collected_quote,
@@ -72,6 +72,8 @@ from app.trade_qualification.timing import (
 )
 
 CONTRACT_VERSION = "ctcc-history-qualification-prefix-v1"
+CONTRACT_VERSION_V2 = "ctcc-history-qualification-prefix-v2"
+EXPANSION_HTF_POLICY = "ctcc-expansion-htf-permission-v1"
 _HISTORY_STRATEGIES = frozenset(
     ("structure_reversal", "volatility_expansion", "liquidity_sweep_reversal")
 )
@@ -79,6 +81,13 @@ _ENUM_TYPES = frozenset((QualificationGate, MarketRegime))
 D = Decimal
 _PREFIX = tuple(QualificationGate)[:7]
 _MAX_BYTES = 8 * 1024 * 1024
+
+
+def _guard_source(value):
+    # Late import keeps source guarding independent of evidence's version dispatch.
+    from app.trade_qualification.one_shot import _guard_original
+
+    _guard_original(value)
 
 
 def _time(value):
@@ -140,6 +149,47 @@ class HistoryQualificationPrefixPolicy(QualificationModel):
     )
 
 
+class HistoryEntryQualificationResultV2(HistoryEntryQualificationResult):
+    # Required at every serialized union boundary: a legacy dictionary must
+    # never acquire a new contract merely because a subtype supplies defaults.
+    contract_version: Literal["ctcc-history-qualification-result-v2"]
+    gates: tuple[GateAssessment, ...] = Field(default=(), max_length=12)
+
+
+class HistoryQualificationPrefixPolicyV2(HistoryQualificationPrefixPolicy):
+    contract_version: Literal["ctcc-history-qualification-prefix-v2"] = (
+        CONTRACT_VERSION_V2
+    )
+    expansion_htf_policy: Literal["ctcc-expansion-htf-permission-v1"] = (
+        EXPANSION_HTF_POLICY
+    )
+
+
+def expansion_htf_permission(analysis, route, direction):
+    """Deterministic existing Expansion route operands, never event detection.
+
+    Callers must separately replay original compression history. This helper
+    only evaluates present HTF permission; it neither repairs nor creates history.
+    """
+    h4, h1, m15 = (analysis.timeframe_analyses[tf] for tf in ("4H", "1H", "15m"))
+    opposite = "short" if direction == "long" else "long"
+    expected_bos = "up" if direction == "long" else "down"
+    math = mathematical_confirmation(analysis, direction)
+    return (
+        direction in ("long", "short")
+        and route.regime == MarketRegime.EXPANSION
+        and "breakout_continuation" in route.allowed_strategies
+        and h4.directional_bias == direction
+        and h1.directional_bias in (direction, "neutral")
+        and h1.directional_bias != opposite
+        and m15.structure.bos == expected_bos
+        and m15.volatility == "high"
+        and not analysis.blockers
+        and math.status not in ("unstable", "opposed")
+        and math.risk_grade != "blocked"
+    )
+
+
 def _bounded(value, depth=0, budget=None):
     """Reject bypass/hidden fields before serializers can erase or traverse them."""
     if budget is None:
@@ -154,9 +204,12 @@ def _bounded(value, depth=0, budget=None):
             RegimeAdmissionResult,
             HistoryQualificationPrefixPolicy,
             HistoryQualificationPrefixRun,
+            HistoryQualificationPrefixPolicyV2,
+            HistoryQualificationPrefixRunV2,
             DataQualificationPolicy,
             DataQualificationResult,
             HistoryEntryQualificationResult,
+            HistoryEntryQualificationResultV2,
             GateAssessment,
             EntryTrigger,
             EntryZone,
@@ -400,7 +453,33 @@ class HistoryQualificationPrefixRun(QualificationModel):
     @property
     def evaluation_sha256(self):
         """Consistency pin, not evidence that this function ran or can execute."""
-        return _digest(_copy(self, HistoryQualificationPrefixRun))
+        return _digest(_copy(self, type(self)))
+
+
+class HistoryQualificationPrefixRunV2(HistoryQualificationPrefixRun):
+    contract_version: Literal["ctcc-history-qualification-prefix-v2"] = (
+        CONTRACT_VERSION_V2
+    )
+    policy: HistoryQualificationPrefixPolicyV2
+    result: HistoryEntryQualificationResultV2
+
+    @model_validator(mode="after")
+    def expansion_policy_bound(self):
+        if (
+            self.intent.strategy == "volatility_expansion"
+            and len(self.result.gates) >= 3
+        ):
+            measured = self.result.gates[2].measured_values
+            if (
+                measured.get("expansion_htf_policy") != self.policy.expansion_htf_policy
+                or measured.get("history_evaluation_sha256")
+                != self.history_admission.evaluation_sha256
+                or measured.get("source_sha256") != self.data_result.source_sha256
+                or measured.get("analysis_sha256")
+                != self.result.gates[1].measured_values.get("analysis_sha256")
+            ):
+                raise ValueError("history_expansion_htf_source_binding_mismatch")
+        return self
 
 
 def _policy_digest(policy, timing_policy):
@@ -422,6 +501,35 @@ def evaluate_history_qualification_prefix(
     consumed_event_keys: frozenset[str],
     evaluated_at: datetime,
 ) -> HistoryQualificationPrefixRun:
+    if type(policy) is not HistoryQualificationPrefixPolicy:
+        raise ValueError("exact v1 history policy required")
+    return _evaluate_history_prefix(
+        market,
+        intent=intent,
+        quote=quote,
+        reference=reference,
+        policy=policy,
+        consumed_event_keys=consumed_event_keys,
+        evaluated_at=evaluated_at,
+    )
+
+
+def evaluate_history_qualification_prefix_v2(market, *, policy, **inputs):
+    if type(policy) is not HistoryQualificationPrefixPolicyV2:
+        raise ValueError("exact v2 history policy required")
+    return _evaluate_history_prefix(market, policy=policy, **inputs)
+
+
+def _evaluate_history_prefix(
+    market,
+    *,
+    intent,
+    quote,
+    reference,
+    policy,
+    consumed_event_keys,
+    evaluated_at,
+):
     """Execute the real ordered prefix at one explicit clock and source pin.
 
     Malformed intent/policy/ledger/time raises before a run can be emitted.
@@ -429,7 +537,23 @@ def evaluate_history_qualification_prefix(
     event, timing, zone, or prior passing result is accepted as an input.
     """
     intent = _copy(intent, QualificationIntent)
-    policy = _copy(policy, HistoryQualificationPrefixPolicy)
+    version2 = type(policy) is HistoryQualificationPrefixPolicyV2
+    if version2 and intent.strategy != "volatility_expansion":
+        raise ValueError("history_v2_expansion_only")
+    policy = _copy(
+        policy,
+        HistoryQualificationPrefixPolicyV2
+        if version2
+        else HistoryQualificationPrefixPolicy,
+    )
+    run_type = (
+        HistoryQualificationPrefixRunV2 if version2 else HistoryQualificationPrefixRun
+    )
+    result_type = (
+        HistoryEntryQualificationResultV2
+        if version2
+        else HistoryEntryQualificationResult
+    )
     consumed_event_keys = _event_keys(consumed_event_keys)
     now = _time(evaluated_at)
     for source_input in (market, quote, reference):
@@ -456,12 +580,14 @@ def evaluate_history_qualification_prefix(
         "raw_score": 0,
         "effective_score": 0,
     }
+    if version2:
+        values["contract_version"] = "ctcc-history-qualification-result-v2"
 
     def finish():
         values["history_admission_sha256"] = (
             history.evaluation_sha256 if history is not None else None
         )
-        return HistoryQualificationPrefixRun(
+        return run_type(
             history_admission=history,
             intent=intent,
             policy=policy,
@@ -469,7 +595,7 @@ def evaluate_history_qualification_prefix(
             policy_sha256=_policy_digest(policy, timing_policy),
             consumed_event_keys_sha256=_digest(sorted(consumed_event_keys)),
             data_result=data,
-            result=HistoryEntryQualificationResult(**values, gates=tuple(gates)),
+            result=result_type(**values, gates=tuple(gates)),
             detection=detection,
             timing=timing,
             location=location,
@@ -537,7 +663,7 @@ def evaluate_history_qualification_prefix(
             code,
             "Versioned history admission or unchanged legacy family route is required.",
             {
-                "contract_version": CONTRACT_VERSION,
+                "contract_version": policy.contract_version,
                 "regime": route.regime.value,
                 "route_decision": route.decision.value,
                 "allowed_strategies": ",".join(route.allowed_strategies) or "none",
@@ -569,6 +695,20 @@ def evaluate_history_qualification_prefix(
         )
         direction_matches = assessment.direction == intent.direction
         htf_ok = direction_matches and not htf_failures and (bool(htf) or range_htf)
+        expansion_values = {}
+        if version2 and intent.strategy == "volatility_expansion":
+            htf_ok = (
+                direction_matches
+                and history is not None
+                and history.admitted
+                and expansion_htf_permission(analysis, route, intent.direction)
+            )
+            expansion_values = {
+                "expansion_htf_policy": policy.expansion_htf_policy,
+                "history_evaluation_sha256": history.evaluation_sha256,
+                "source_sha256": data.source_sha256,
+                "analysis_sha256": route.snapshot_sha256,
+            }
         if htf_ok:
             values["htf_bias"] = "neutral" if range_htf else assessment.direction
         if not gate(
@@ -585,6 +725,7 @@ def evaluate_history_qualification_prefix(
                 "neutral_range_permission": range_htf,
                 "failed_htf_conditions": ",".join(htf_failures) or "none",
                 **{c.code: c.passed for c in htf},
+                **expansion_values,
             },
         ):
             return finish()
@@ -764,6 +905,14 @@ def verify_history_qualification_prefix(
     """
     checked = _copy(run, HistoryQualificationPrefixRun)
     replayed = evaluate_history_qualification_prefix(market, **inputs)
+    if checked != replayed:
+        raise ValueError("history_qualification_prefix_replay_mismatch")
+    return replayed
+
+
+def verify_history_qualification_prefix_v2(run, market, **inputs):
+    checked = _copy(run, HistoryQualificationPrefixRunV2)
+    replayed = evaluate_history_qualification_prefix_v2(market, **inputs)
     if checked != replayed:
         raise ValueError("history_qualification_prefix_replay_mismatch")
     return replayed

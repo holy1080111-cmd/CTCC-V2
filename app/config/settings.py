@@ -65,6 +65,17 @@ class Settings(BaseSettings):
     redis_url: str = "redis://redis:6379/0"
     api_token: SecretStr = SecretStr("")
 
+    # Independent reporting only. Missing external configuration is handled by
+    # the worker and must never abort trading-core/application startup.
+    notion_outbox_enabled: bool = False
+    notion_outbox_root: str = ""
+    notion_outbox_destination_file: str = ""
+    notion_outbox_destination_sha256: str = ""
+    notion_outbox_token_file: str = ""
+    notion_outbox_poll_seconds: int = Field(default=30, ge=1, le=300)
+    notion_outbox_pass_timeout_seconds: int = Field(default=30, ge=1, le=300)
+    notion_outbox_batch_size: int = Field(default=16, ge=1, le=16)
+
     readiness_require_redis: bool = True
     readiness_require_database: bool = True
 

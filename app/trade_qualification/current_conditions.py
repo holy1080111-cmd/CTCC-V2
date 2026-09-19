@@ -33,9 +33,20 @@ from app.trade_qualification.data import (
     evaluate_data,
 )
 from app.trade_qualification.event_models import Digest
+from app.trade_qualification.history_prefix import (
+    HistoryQualificationPrefixPolicyV2,
+    expansion_htf_permission,
+)
+from app.trade_qualification.history_prefix import (
+    _bounded as _history_bounded,
+)
+from app.trade_qualification.history_prefix import (
+    _copy as _history_copy,
+)
 from app.trade_qualification.models import (
     EntryQualificationResult,
     GateAssessment,
+    MarketRegime,
     QualificationGate,
     QualificationModel,
 )
@@ -60,8 +71,9 @@ _ORDER = tuple(QualificationGate)[:4]
 def _raw_record(value):
     if isinstance(value, BaseModel):
         if (
-            type(value) is not CurrentConditionsResult
-            or set(value.__dict__) != set(CurrentConditionsResult.model_fields)
+            type(value)
+            not in (CurrentConditionsResult, HistoryCurrentConditionsResultV2)
+            or set(value.__dict__) != set(type(value).model_fields)
             or value.__pydantic_extra__
         ):
             raise ValueError("exact current-conditions record required")
@@ -73,7 +85,10 @@ def _raw_record(value):
     for key, item in values.items():
         if type(key) is not str or len(key) > 128:
             raise ValueError("invalid current-conditions field")
-        _bounded(item)
+        if type(item) is HistoryQualificationPrefixPolicyV2:
+            _history_bounded(item)
+        else:
+            _bounded(item)
     return value
 
 
@@ -100,7 +115,13 @@ class CurrentConditionsResult(QualificationModel):
             value = dict(value)
             for field, model in (
                 ("intent", QualificationIntent),
-                ("policy", QualificationPrefixPolicy),
+                (
+                    "policy",
+                    HistoryQualificationPrefixPolicyV2
+                    if value.get("contract_version")
+                    == "ctcc-history-current-conditions-v2"
+                    else QualificationPrefixPolicy,
+                ),
                 ("data_result", DataQualificationResult),
                 ("result", EntryQualificationResult),
             ):
@@ -177,12 +198,26 @@ class CurrentConditionsResult(QualificationModel):
         return _digest(copy_current_conditions(self))
 
 
+class HistoryCurrentConditionsResultV2(CurrentConditionsResult):
+    contract_version: Literal["ctcc-history-current-conditions-v2"]
+    policy: HistoryQualificationPrefixPolicyV2
+    origin_sha256: Digest
+    original_event_key: Digest
+    history_admission_sha256: Digest
+
+    @model_validator(mode="after")
+    def expansion_only(self):
+        if self.intent.strategy != "volatility_expansion":
+            raise ValueError("history_current_conditions_expansion_only")
+        return self
+
+
 def copy_current_conditions(result) -> CurrentConditionsResult:
     """Strict, bounded consistency copy; this does not authenticate a PASS."""
-    if type(result) is not CurrentConditionsResult:
+    if type(result) not in (CurrentConditionsResult, HistoryCurrentConditionsResultV2):
         raise ValueError("exact current-conditions result required")
     _raw_record(result)
-    return CurrentConditionsResult.model_validate(_plain(result), strict=True)
+    return type(result).model_validate(_plain(result), strict=True)
 
 
 def evaluate_current_conditions(
@@ -194,6 +229,50 @@ def evaluate_current_conditions(
     policy: QualificationPrefixPolicy,
     observed_at: datetime,
 ) -> CurrentConditionsResult:
+    if type(policy) is not QualificationPrefixPolicy:
+        raise ValueError("exact legacy current-conditions policy required")
+    return _evaluate_current_conditions(
+        current_market,
+        intent=intent,
+        quote=quote,
+        reference=reference,
+        policy=policy,
+        observed_at=observed_at,
+    )
+
+
+def evaluate_history_current_conditions_v2(
+    current_market, *, origin, quote, reference, observed_at
+):
+    from app.trade_qualification.history_engine import HistoryPreEvidenceRunV2
+    from app.trade_qualification.recheck_models import copy_recheck_origin
+
+    original = copy_recheck_origin(origin)
+    pre = original.evidence.pre_evidence
+    if (
+        type(pre) is not HistoryPreEvidenceRunV2
+        or pre.result.strategy != "volatility_expansion"
+    ):
+        raise ValueError("history_current_conditions_origin_version_required")
+    return _evaluate_current_conditions(
+        current_market,
+        intent=pre.prefix.intent,
+        policy=pre.policy.prefix,
+        quote=quote,
+        reference=reference,
+        observed_at=observed_at,
+        history_pins={
+            "contract_version": "ctcc-history-current-conditions-v2",
+            "origin_sha256": original.evaluation_sha256,
+            "original_event_key": original.original_event_key,
+            "history_admission_sha256": pre.prefix.history_admission.evaluation_sha256,
+        },
+    )
+
+
+def _evaluate_current_conditions(
+    current_market, *, intent, quote, reference, policy, observed_at, history_pins=None
+):
     """Rebuild raw current G1, then stop at the first failure through G4.
 
     No caller analysis, route, score, event or prior passing G1 is accepted.
@@ -201,7 +280,15 @@ def evaluate_current_conditions(
     evidence is rejected by the real G1 before route or conditions are evaluated.
     """
     intent = _copy(intent, QualificationIntent)
-    policy = _copy(policy, QualificationPrefixPolicy)
+    version2 = type(policy) is HistoryQualificationPrefixPolicyV2
+    policy = (
+        _history_copy(policy, HistoryQualificationPrefixPolicyV2)
+        if version2
+        else _copy(policy, QualificationPrefixPolicy)
+    )
+    result_type = (
+        HistoryCurrentConditionsResultV2 if version2 else CurrentConditionsResult
+    )
     now = _time(observed_at)
     data = evaluate_data(
         current_market,
@@ -225,12 +312,13 @@ def evaluate_current_conditions(
     }
 
     def finish():
-        return CurrentConditionsResult(
+        return result_type(
             intent=intent,
             policy=policy,
             policy_sha256=_digest(policy),
             data_result=data,
             result=EntryQualificationResult(**values, gates=tuple(gates)),
+            **(history_pins or {}),
         )
 
     def gate(kind, code, reason, measured):
@@ -265,6 +353,12 @@ def evaluate_current_conditions(
             route.decision == RouteDecision.ALLOW_SCORING
             and intent.strategy in route.allowed_strategies
         )
+        if version2:
+            allowed = (
+                intent.strategy == "volatility_expansion"
+                and route.regime == MarketRegime.EXPANSION
+                and "breakout_continuation" in route.allowed_strategies
+            )
         values["market_regime"] = route.regime
         if not gate(
             QualificationGate.REGIME,
@@ -295,6 +389,18 @@ def evaluate_current_conditions(
         )
         direction_matches = assessment.direction == intent.direction
         htf_ok = direction_matches and not htf_failures and (bool(htf) or range_htf)
+        expansion_values = {}
+        if version2:
+            htf_ok = direction_matches and expansion_htf_permission(
+                analysis, route, intent.direction
+            )
+            expansion_values = {
+                "expansion_htf_policy": policy.expansion_htf_policy,
+                "history_admission_sha256": history_pins["history_admission_sha256"],
+                "original_event_key": history_pins["original_event_key"],
+                "current_source_sha256": data.source_sha256,
+                "current_analysis_sha256": route.snapshot_sha256,
+            }
         if htf_ok:
             values["htf_bias"] = "neutral" if range_htf else assessment.direction
         if not gate(
@@ -311,6 +417,7 @@ def evaluate_current_conditions(
                 "neutral_range_permission": range_htf,
                 "failed_htf_conditions": ",".join(htf_failures) or "none",
                 **{c.code: c.passed for c in htf},
+                **expansion_values,
             },
         ):
             return finish()

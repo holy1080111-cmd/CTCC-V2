@@ -5,6 +5,7 @@ import base64
 import hashlib
 import hmac
 import json
+import re
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
@@ -13,9 +14,29 @@ import httpx
 
 from app.config.settings import Settings, get_settings
 from app.exchange.okx.errors import OkxPrivateApiError
-from app.trade_qualification.execution_authority import enforce_demo_submission_boundary
+from app.trade_qualification.execution_authority import (
+    enforce_demo_submission_boundary,
+    enforce_live_submission_boundary,
+)
 
 Clock = Callable[[], datetime]
+
+
+def _validated_origin(value: str, hosts: frozenset[str]) -> str:
+    origin = httpx.URL(value)
+    if (
+        origin.scheme != "https"
+        or origin.host not in hosts
+        or origin.port not in (None, 443)
+        or origin.userinfo
+        or origin.raw_path not in (b"", b"/")
+        or origin.query
+        or origin.fragment
+    ):
+        raise OkxPrivateApiError(
+            "Private REST origin is invalid", code="private_transport_target_rejected"
+        )
+    return str(origin).rstrip("/")
 
 
 def utc_iso_timestamp(now: datetime | None = None) -> str:
@@ -83,6 +104,31 @@ class _OkxPrivateRestClientBase:
     def _before_send(self, *, method: str, path: str) -> None:
         """Environment-specific synchronous check at the actual HTTP boundary."""
 
+    def _validate_external_client(self, client: httpx.AsyncClient) -> None:
+        """Injected clients are a bounded, network-free test adapter only.
+
+        Runtime clients are owned here. An injected client may not change signed
+        requests through headers, default query/cookies, auth, hooks or mounted
+        network transports. Recheck after signing on every attempt.
+        """
+        if self._external_client is None:
+            return
+        allowed_headers = {"accept", "accept-encoding", "connection", "user-agent"}
+        if (
+            type(client) is not httpx.AsyncClient
+            or type(client._transport) is not httpx.MockTransport
+            or any(value is not None for value in client._mounts.values())
+            or client.auth is not None
+            or any(client.event_hooks.values())
+            or set(client.headers) - allowed_headers
+            or client.params
+            or client.cookies
+        ):
+            raise OkxPrivateApiError(
+                "Injected private transport is not a controlled test adapter",
+                code="private_transport_adapter_rejected",
+            )
+
     def _headers(self, *, method: str, request_path: str, body: str) -> dict[str, str]:
         api_key, api_secret, passphrase = self._credentials()
         timestamp = utc_iso_timestamp(self._clock())
@@ -115,6 +161,13 @@ class _OkxPrivateRestClientBase:
         write: bool = False,
     ) -> list[dict[str, Any]]:
         self._before_send(method=method, path=path)
+        if (
+            type(path) is not str
+            or re.fullmatch(r"/api/v5/[a-z0-9]+(?:[-/][a-z0-9]+)*", path) is None
+        ):
+            raise OkxPrivateApiError(
+                "Private REST path is invalid", code="private_transport_target_rejected"
+            )
         # Non-GET requests cannot gain retries by claiming to be reads.
         write = write or method.upper() != "GET"
         query = str(
@@ -123,6 +176,7 @@ class _OkxPrivateRestClientBase:
             )
         )
         request_path = path if not query else f"{path}?{query}"
+        request_url = self._rest_base_url() + request_path
         body_text = (
             ""
             if body is None
@@ -133,6 +187,8 @@ class _OkxPrivateRestClientBase:
         client = self._external_client or httpx.AsyncClient(
             base_url=self._rest_base_url(),
             timeout=httpx.Timeout(self._timeout_seconds()),
+            trust_env=False,
+            follow_redirects=False,
         )
         attempts = 1 if write else self._read_max_retries() + 1
         last_error: Exception | None = None
@@ -154,12 +210,15 @@ class _OkxPrivateRestClientBase:
                             write=write,
                         )
                     )
+                    self._validate_external_client(client)
                     self._before_send(method=method, path=path)
                     response = await client.request(
                         method.upper(),
-                        request_path,
+                        request_url,
                         headers=headers,
                         content=body_text if body is not None else None,
+                        auth=None,
+                        follow_redirects=False,
                     )
                     response.raise_for_status()
                     payload = response.json()
@@ -352,7 +411,10 @@ class OkxDemoPrivateRestClient(_OkxPrivateRestClientBase):
         )
 
     def _rest_base_url(self) -> str:
-        return self.settings.okx_demo_rest_base_url
+        return _validated_origin(
+            self.settings.okx_demo_rest_base_url,
+            frozenset({"openapi.okx.com", "www.okx.com", "us.okx.com"}),
+        )
 
     def _timeout_seconds(self) -> float:
         return self.settings.okx_demo_timeout_seconds
@@ -380,7 +442,10 @@ class OkxLivePrivateRestClient(_OkxPrivateRestClientBase):
         )
 
     def _rest_base_url(self) -> str:
-        return self.settings.okx_live_rest_base_url
+        return _validated_origin(
+            self.settings.okx_live_rest_base_url,
+            frozenset({"openapi.okx.com", "eea.okx.com"}),
+        )
 
     def _timeout_seconds(self) -> float:
         return self.settings.okx_live_timeout_seconds
@@ -419,6 +484,25 @@ class OkxLiveExecutionRestClient(_OkxPrivateRestClientBase):
     send non-GET requests.
     """
 
+    def _ensure_write_configuration(self) -> None:
+        if not (
+            self.settings.environment == "production"
+            and self.settings.trading_mode == "live"
+            and self.settings.okx_live_enabled
+            and self.settings.live_trading
+            and self.settings.okx_live_allow_order_writes
+            and self.settings.web_concurrency == 1
+        ):
+            raise OkxPrivateApiError(
+                "OKX Live execution transport is not enabled",
+                code="live_execution_not_enabled",
+            )
+
+    def _before_send(self, *, method: str, path: str) -> None:
+        if method.upper() != "GET":
+            self._ensure_write_configuration()
+        enforce_live_submission_boundary(method, path)
+
     def _credentials(self) -> tuple[str, str, str]:
         if not self.settings.okx_live_credentials_configured:
             raise OkxPrivateApiError(
@@ -432,7 +516,10 @@ class OkxLiveExecutionRestClient(_OkxPrivateRestClientBase):
         )
 
     def _rest_base_url(self) -> str:
-        return self.settings.okx_live_rest_base_url
+        return _validated_origin(
+            self.settings.okx_live_rest_base_url,
+            frozenset({"openapi.okx.com", "eea.okx.com"}),
+        )
 
     def _timeout_seconds(self) -> float:
         return self.settings.okx_live_timeout_seconds
@@ -462,18 +549,7 @@ class OkxLiveExecutionRestClient(_OkxPrivateRestClientBase):
         write: bool = False,
     ) -> list[dict[str, Any]]:
         if write or method.upper() != "GET":
-            if not (
-                self.settings.environment == "production"
-                and self.settings.trading_mode == "live"
-                and self.settings.okx_live_enabled
-                and self.settings.live_trading
-                and self.settings.okx_live_allow_order_writes
-                and self.settings.web_concurrency == 1
-            ):
-                raise OkxPrivateApiError(
-                    "OKX Live execution transport is not enabled",
-                    code="live_execution_not_enabled",
-                )
+            self._ensure_write_configuration()
             return await super()._request(
                 method,
                 path,

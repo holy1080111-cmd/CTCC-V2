@@ -36,10 +36,7 @@ async def test_execution_transport_has_no_demo_header_and_uses_live_endpoints() 
     def handler(request: httpx.Request) -> httpx.Response:
         assert "x-simulated-trading" not in request.headers
         seen.append((request.method, request.url.path))
-        if request.url.path == "/api/v5/trade/order":
-            assert request.headers["expTime"] == "1786276805000"
-        else:
-            assert "expTime" not in request.headers
+        assert "expTime" not in request.headers
         if request.url.path == "/api/v5/account/max-size":
             return httpx.Response(
                 200,
@@ -67,13 +64,16 @@ async def test_execution_transport_has_no_demo_header_and_uses_live_endpoints() 
         await live.max_order_size("BTC-USDT-SWAP", margin_mode="cross")
         await live.order_precheck({"instId": "BTC-USDT-SWAP", "sz": "1"})
         await live.cancel_all_after({"timeOut": "30", "tag": "CTCCV168"})
-        await live.place_order({"instId": "BTC-USDT-SWAP", "sz": "1"})
+        await live.cancel_order({"instId": "BTC-USDT-SWAP", "ordId": "synthetic"})
+        with pytest.raises(OkxPrivateApiError) as error:
+            await live.place_order({"instId": "BTC-USDT-SWAP", "sz": "1"})
+        assert error.value.code == "live_qualification_authority_unavailable"
 
     assert seen == [
         ("GET", "/api/v5/account/max-size"),
         ("POST", "/api/v5/trade/order-precheck"),
         ("POST", "/api/v5/trade/cancel-all-after"),
-        ("POST", "/api/v5/trade/order"),
+        ("POST", "/api/v5/trade/cancel-order"),
     ]
 
 
@@ -94,7 +94,7 @@ async def test_execution_write_transport_failure_is_never_retried() -> None:
         with pytest.raises(OkxPrivateApiError) as exc_info:
             await OkxLiveExecutionRestClient(
                 client, settings=execution_settings()
-            ).place_order({"instId": "BTC-USDT-SWAP"})
+            ).cancel_order({"instId": "BTC-USDT-SWAP", "ordId": "synthetic"})
 
     assert calls == 1
     assert exc_info.value.code == "transport_error"
@@ -159,3 +159,85 @@ async def test_empty_success_payload_after_write_is_ambiguous_and_not_retried() 
 
     assert calls == 1
     assert exc_info.value.code == "ambiguous_response"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "method,path",
+    [
+        ("POST", "/api/v5/trade/order"),
+        ("POST", "/api/v5/trade/batch-orders"),
+        ("POST", "/api/v5/trade/order-algo"),
+        ("POST", "/api/v5/trade/amend-order"),
+        ("POST", "/api/v5/trade/amend-algos"),
+        ("POST", "/api/v5/trade/unknown-write"),
+        ("PUT", "/api/v5/trade/cancel-order"),
+    ],
+)
+async def test_live_entry_cannot_bypass_qualification_with_flags_or_direct_call(
+    method: str,
+    path: str,
+) -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        pytest.fail("Unqualified Live request reached HTTP")
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="https://openapi.okx.com"
+    ) as client:
+        live = OkxLiveExecutionRestClient(client, settings=execution_settings())
+        with pytest.raises(OkxPrivateApiError) as error:
+            await live._request(
+                method,
+                path,
+                body={"passed": True, "reduceOnly": True, "armed": True},
+                write=False,
+            )
+    assert error.value.code == "live_qualification_authority_unavailable"
+    assert calls == 0
+
+
+@pytest.mark.asyncio
+async def test_live_configuration_is_checked_again_after_signing_before_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+    settings = execution_settings()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        pytest.fail("Disabled Live write reached HTTP")
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="https://openapi.okx.com"
+    ) as client:
+        live = OkxLiveExecutionRestClient(client, settings=settings)
+        original_headers = live._headers
+
+        def disable_after_signing(**kwargs: str) -> dict[str, str]:
+            result = original_headers(**kwargs)
+            settings.okx_live_allow_order_writes = False
+            return result
+
+        monkeypatch.setattr(live, "_headers", disable_after_signing)
+        with pytest.raises(OkxPrivateApiError) as error:
+            await live.cancel_order({"instId": "BTC-USDT-SWAP", "ordId": "synthetic"})
+    assert error.value.code == "live_execution_not_enabled"
+    assert calls == 0
+
+
+def test_live_expiry_header_does_not_itself_grant_dispatch_authority() -> None:
+    live = OkxLiveExecutionRestClient(
+        settings=execution_settings(),
+        clock=lambda: datetime(2026, 8, 9, 12, 0, tzinfo=UTC),
+    )
+    assert live._request_extra_headers(
+        method="POST", path="/api/v5/trade/order", write=True
+    ) == {"expTime": "1786276805000"}
+    with pytest.raises(OkxPrivateApiError) as error:
+        live._before_send(method="POST", path="/api/v5/trade/order")
+    assert error.value.code == "live_qualification_authority_unavailable"

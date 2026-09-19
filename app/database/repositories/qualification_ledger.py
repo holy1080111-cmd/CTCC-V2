@@ -4,6 +4,7 @@ All state mutations lock the same scope row BEFORE observing the supplied clock.
 Successful persistence is not an authenticated account snapshot or order permit.
 """
 
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from fractions import Fraction
 
@@ -40,6 +41,16 @@ from app.trade_qualification.submission_intent import (
     build_submission_intent,
     replay_submission_intent,
 )
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class LedgerCaptureCheckpoint:
+    """Observed DB read under the existing account lock; not account authority."""
+
+    state: LedgerScopeState
+    observed_at: datetime
+    received_at: datetime
+    state_sha256: str
 
 
 class QualificationLedgerRepository:
@@ -236,6 +247,31 @@ class QualificationLedgerRepository:
         async with self.session_factory() as session, session.begin():
             row = await self._locked(session, scope)
             return await self._state(session, scope, row)
+
+    async def read_capture_checkpoint(self, scope):
+        """Read DB-owned revision and holds, with actual bounded receipt times.
+
+        No caller claims, revision increments, reconciliation, hold release or
+        execution permission. The account lock covers every query in the read.
+        A later checkpoint must match before runtime mapping may use this one.
+        """
+        scope = checked(scope, LedgerScope)
+        async with self.session_factory() as session, session.begin():
+            row = await self._locked(session, scope)
+            observed = self._now(row)
+            # Validate persisted claims as well as their externally visible hash.
+            if self._claims(row).scope != scope:
+                raise QualificationLedgerError("ledger_claim_scope_mismatch")
+            state = checked(await self._state(session, scope, row), LedgerScopeState)
+            received = self._now(row)
+            if received < observed:
+                raise QualificationLedgerError("ledger_clock_regressed")
+        return LedgerCaptureCheckpoint(
+            state=state,
+            observed_at=observed,
+            received_at=received,
+            state_sha256=digest(state),
+        )
 
     @staticmethod
     def _coverage_caps(request, claims, active, coverage):

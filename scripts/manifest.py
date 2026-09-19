@@ -36,22 +36,32 @@ EXCLUDED_DIRECTORIES = {
     "node_modules",
     "pytest-of-root",
     "reports",
+    "private-notion",
 }
-EXCLUDED_FILES = {".coverage", ".env", ".git", "MANIFEST.sha256", "uv.lock"}
-EXCLUDED_SUFFIXES = {".bak", ".dump", ".log", ".patch", ".pyc", ".pyo", ".zip"}
+EXCLUDED_FILES = {".coverage", ".env", ".git", "manifest.sha256", "uv.lock"}
+EXCLUDED_SUFFIXES = {
+    ".bak",
+    ".dump",
+    ".log",
+    ".patch",
+    ".pyc",
+    ".pyo",
+    ".token",
+    ".zip",
+}
 
 
 def _excluded(path: Path, root: Path) -> bool:
     relative = path.relative_to(root)
     if any(
-        part in EXCLUDED_DIRECTORIES or part.endswith(".egg-info")
+        part.casefold() in EXCLUDED_DIRECTORIES or part.casefold().endswith(".egg-info")
         for part in relative.parts[:-1]
     ):
         return True
     return (
-        path.name in EXCLUDED_FILES
-        or (path.name.startswith(".env.") and path.name != ".env.example")
-        or ".backup-" in path.name
+        path.name.casefold() in EXCLUDED_FILES
+        or (path.name.casefold().startswith(".env") and path.name != ".env.example")
+        or ".backup-" in path.name.casefold()
         or path.suffix.lower() in EXCLUDED_SUFFIXES
     )
 

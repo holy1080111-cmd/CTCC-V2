@@ -58,6 +58,7 @@ _ERROR_CODES = frozenset(
         "client_not_isolated",
         "transport_not_isolated",
         "verified_tls_required",
+        "tls_response_evidence_missing",
         "cleanup_failed",
         "credential_echo_rejected",
         "batch_clock_reversed",
@@ -413,7 +414,7 @@ def _check_batch(now, started, previous, seconds):
 
 def _signed_request(spec, credentials, started, timeout):
     # spec is generated from the already copied/pinned plan, not caller metadata.
-    url = httpx.URL(BASE_URL + spec.endpoint, params=spec.parameters or None)
+    url = httpx.URL(spec.origin + spec.endpoint, params=spec.parameters or None)
     timestamp = started.isoformat(timespec="milliseconds").replace("+00:00", "Z")
     prehash = timestamp.encode("ascii") + b"GET" + url.raw_path
     signature = base64.b64encode(
@@ -458,6 +459,7 @@ async def _page(
     remaining_bytes,
     secret_tokens,
     wall_deadline,
+    capture_proofs,
 ):
     _client_guard(client, first=False)
     spec = capture.account_request(plan, stream, after)
@@ -497,6 +499,24 @@ async def _page(
                 or response.is_stream_consumed
             ):
                 raise AccountCollectionError("http_response_rejected")
+            # Runtime source provenance comes from this owned response, never a
+            # DTO's passed/complete flag. MockTransport can only record synthetic.
+            if type(client._transport) is httpx.MockTransport:
+                capture_proofs.append(None)
+            else:
+                network = response.extensions.get("network_stream")
+                tls = None if network is None else network.get_extra_info("ssl_object")
+                if (
+                    type(tls) is not ssl.SSLObject
+                    or tls.context is not client._transport._pool._ssl_context
+                    or tls.server_hostname != request.url.host
+                    or tls.version() not in {"TLSv1.2", "TLSv1.3"}
+                ):
+                    raise AccountCollectionError("tls_response_evidence_missing")
+                certificate = tls.getpeercert(binary_form=True)
+                if type(certificate) is not bytes or not certificate:
+                    raise AccountCollectionError("tls_response_evidence_missing")
+                capture_proofs.append(hashlib.sha256(certificate).hexdigest())
             if (
                 response.headers.get("content-type", "")
                 .split(";", 1)[0]
@@ -564,6 +584,32 @@ async def _page(
     return observation
 
 
+_CAPTURE_ISSUER = object()
+
+
+@dataclass(frozen=True, slots=True, repr=False, init=False)
+class _OwnedAccountCapture:
+    """Process-local result of actual owned IO; serialized packets cannot mint it.
+
+    This is an internal provenance carrier, not an order capability, portable TLS
+    attestation, bootstrap verification or complete portfolio snapshot.
+    """
+
+    packet: capture.DemoAccountPacket
+    completed_at: datetime
+    peer_certificate_sha256: tuple[str | None, ...]
+
+    def __init__(self, issuer, packet, completed_at, peer_certificate_sha256):
+        if issuer is not _CAPTURE_ISSUER:
+            raise AccountCollectionError("account_capture_invalid")
+        object.__setattr__(self, "packet", packet)
+        object.__setattr__(self, "completed_at", completed_at)
+        object.__setattr__(self, "peer_certificate_sha256", peer_certificate_sha256)
+
+    def __repr__(self):
+        return "<OwnedAccountCapture private>"
+
+
 async def collect_demo_account_records(
     *,
     credentials: DemoAccountCredentials,
@@ -572,6 +618,25 @@ async def collect_demo_account_records(
     expected_plan_sha256: str,
     barrier_completed_at: datetime,
 ) -> capture.DemoAccountPacket:
+    """Portable audit DTO; never carries process-local transport provenance."""
+    result = await _collect_owned_demo_account_records(
+        credentials=credentials,
+        clock=clock,
+        plan=plan,
+        expected_plan_sha256=expected_plan_sha256,
+        barrier_completed_at=barrier_completed_at,
+    )
+    return result.packet
+
+
+async def _collect_owned_demo_account_records(
+    *,
+    credentials: DemoAccountCredentials,
+    clock: Callable[[], datetime],
+    plan: capture.DemoAccountCapturePlan,
+    expected_plan_sha256: str,
+    barrier_completed_at: datetime,
+) -> _OwnedAccountCapture:
     """One owned client, fixed GET inventory, full replay, no partial packet.
 
     No external client/signer/URL can be supplied. Per-page clocks preserve source
@@ -611,6 +676,7 @@ async def collect_demo_account_records(
             raise AccountCollectionError("client_invalid")
         cancelled = False
         observations = []
+        capture_proofs = []
         rows = total_bytes = 0
         identity = None
         previous_time = batch_started
@@ -647,6 +713,7 @@ async def collect_demo_account_records(
                             remaining_bytes=selected.max_total_bytes - total_bytes,
                             secret_tokens=secret_tokens,
                             wall_deadline=wall_started + selected.max_batch_seconds,
+                            capture_proofs=capture_proofs,
                         )
                         if type(item) is AccountCollectionDiagnostic:
                             diagnostic = item
@@ -718,7 +785,9 @@ async def collect_demo_account_records(
         _check_batch(finished, batch_started, previous_time, selected.max_batch_seconds)
         if loop.time() - wall_started > selected.max_batch_seconds:
             raise AccountCollectionError("batch_deadline_exceeded")
-        return packet
+        return _OwnedAccountCapture(
+            _CAPTURE_ISSUER, packet, finished, tuple(capture_proofs)
+        )
     except asyncio.CancelledError:
         interrupted = True
     except AccountCollectionError as exc:

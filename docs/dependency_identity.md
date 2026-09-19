@@ -5,12 +5,19 @@ The supported locks are CPython 3.12 on Windows amd64 and Linux x86_64/glibc:
 - `requirements/validation-windows-py312.lock`
 - `requirements/validation-linux-py312.lock`
 
-Each pins all 40 selected wheel distributions and their SHA256 values. They
+Each pins all 41 selected wheel distributions and their SHA256 values. They
 include the existing primary requirements, the existing `test` extra, the new
-`validation` extra containing Ruff 0.16.8, pip 26.2.1 and setuptools 84.0.0.
+`validation` extra containing Ruff 0.16.8 and tzdata 2026.4, pip 26.2.1 and setuptools 84.0.0.
 Primary dependency declarations are unchanged. Platform resolution is native:
 Windows includes colorama; Linux includes uvloop. These files are not universal
 locks for other architectures, Python versions, or musl-based Linux images.
+
+The [official Python tzdata distribution](https://pypi.org/project/tzdata/2026.4/)
+supplies the IANA database on Windows, where Python does not provide a system
+database. The ledger's named `UTC` and `Asia/Taipei` round-trip cases are required
+tests on both supported platforms; missing timezone data is a failure. This
+validation-only addition preserves every version and wheel hash from the prior
+40-package locks. No timestamp tolerance or source timestamp is changed.
 
 The matching JSON records the exact pyproject SHA256, resolver input, wheel
 filename/size/hash, root wheel metadata hash, official PyPI release metadata hash

@@ -29,6 +29,7 @@ test = [
 ]
 validation = [
   "ruff==0.16.8",
+  "tzdata==2026.4",
 ]
 
 [tool.pytest.ini_options]

@@ -35,6 +35,7 @@ from app.trade_evidence.models import (
 )
 from app.trade_qualification.event_models import TriggerDetection
 from app.trade_qualification.events import _copy_source, extract_trigger
+from app.trade_qualification.history_prefix import HistoryEntryQualificationResultV2
 from app.trade_qualification.location import (
     ExecutableQuote,
     build_entry_zone,
@@ -347,7 +348,12 @@ def prepare_evidence(
         ):
             raise EvidenceError("invalid_preparation_policy")
         now = require_aware(prepared_at)
-        q = _copy(qualification, EntryQualificationResult)
+        q = _copy(
+            qualification,
+            HistoryEntryQualificationResultV2
+            if type(qualification) is HistoryEntryQualificationResultV2
+            else EntryQualificationResult,
+        )
         if q.evaluated_at > now or len(q.gates) > 11:
             raise EvidenceError("evidence_must_precede_g12_and_recheck")
         _guard(market)
