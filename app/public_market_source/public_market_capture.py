@@ -11,6 +11,7 @@ import httpcore
 import httpx
 
 from app.public_market_source.public_clock import (
+    _observe_owned_clock,
     clock_timezone,
     native_os_clock,
     native_stamp,
@@ -437,6 +438,15 @@ def replay_public_capture(receipt, raw_files):
     return plan, receipt
 
 
+def _capture_clock(attempt, stage):
+    if attempt is None or attempt.version == 1:
+        return native_os_clock()
+    result = attempt.record_clock(stage, _observe_owned_clock(attempt, stage))
+    if result["outcome"] != "accepted":
+        raise PublicReceiptError("os_clock_rejected")
+    return result["observation"]
+
+
 async def _collect_packet(plan, expected_plan_sha256, *, _attempt=None):
     from app.public_market_source.public_attempt_journal import _OwnedAttempt
 
@@ -449,7 +459,7 @@ async def _collect_packet(plan, expected_plan_sha256, *, _attempt=None):
     ):
         raise PublicReceiptError("plan_pin_mismatch")
     # Check OS before creating any network client. A stopped service sends no GET.
-    os_before = native_os_clock()
+    os_before = _capture_clock(_attempt, "before")
     client = _new_client()
     if type(client) is not httpx.AsyncClient:
         raise PublicReceiptError("public_client_not_isolated")
@@ -499,7 +509,7 @@ async def _collect_packet(plan, expected_plan_sha256, *, _attempt=None):
                 client, plan, endpoint=TIME_ENDPOINT, attempt=_attempt
             )
             files["time-after.raw"] = last_raw
-            os_after = native_os_clock()
+            os_after = _capture_clock(_attempt, "after")
     except asyncio.CancelledError:
         cancelled = True
         raise
@@ -560,10 +570,16 @@ async def collect_and_publish_public_minutes(*, plan, expected_plan_sha256, jour
                     if any(item["result"] == "incomplete" for item in attempt.requests)
                     else "rejected"
                 )
+                try:
+                    terminal_stamp = native_stamp()
+                except PublicReceiptError:
+                    if attempt.version != 2:
+                        raise
+                    terminal_stamp = None
                 attempt.seal(
                     disposition=disposition,
                     code=failure_code(exc),
-                    stamp=native_stamp(),
+                    stamp=terminal_stamp,
                 )
                 raise
             else:

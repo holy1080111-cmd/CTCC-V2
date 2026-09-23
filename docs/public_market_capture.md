@@ -106,6 +106,17 @@ bundle SHA256 `9f9acd4be0bbd1af40ad4cae59ca03bf3900f789c14e6745d6ea80d90f1f758a`
 
 ## 仍未完成
 
+新受控公開 minute acquisition journal 使用版本化 attempt v2，在 HTTP 前後透過
+固定 native adapter 保存時鐘觀察；失敗原始 stdout／stderr、實際反向時間、
+truncated／timeout 與缺少的 completion 都保留原樣。固定 sidecar 與 binding
+逐一 no-clobber publish、readback、hash 後才進入 summary／chain。
+失敗後的 terminal sample 若不可取得，負向 summary 明示 null，不補時間。
+before 失敗不發 HTTP；after 失敗保留先前 HTTP 與 before 觀察但不發布成功 capture。
+負向 attempt checkpoint 不產生 availability 或交易許可。
+詳見 [時鐘 v2 的失敗保存邊界](public_clock_v2.md)。
+此接線只保存 native adapter 已返回的觀察，不宣稱在其內部 process crash 前
+尚在 RAM 的 child output 已持久化；舊 v1 wire／replay 與全部健康硬閘維持不變。
+
 完整 R5 仍缺上述版本化 MarketSnapshot bridge、可信完整 Demo 帳戶與 instrument
 sources、分頁 cutoff／reconciliation revision、local uncertain 風險聯集與持久
 history／peak。R6 durable 原子 event／risk ledger 和 R7 本次 G12 後 one-shot

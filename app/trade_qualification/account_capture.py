@@ -835,6 +835,44 @@ def _required_text(row, key, *, identifier=False):
     return value
 
 
+def _fill_identifiers(row):
+    # Fills use billId for row identity and pagination. Exceptional trade/order
+    # IDs remain exact source strings, never synthetic lineage or cursor IDs.
+    trade_id = _required_text(row, "tradeId")
+    if trade_id.startswith("-"):
+        if _ID.fullmatch(trade_id[1:]) is None:
+            _fail("source_identifier_invalid")
+        if _required_text(row, "subType") not in {
+            "100",
+            "101",
+            "102",
+            "103",
+            "104",
+            "105",
+            "106",
+            "107",
+            "125",
+            "126",
+            "127",
+            "128",
+        }:
+            _fail("fill_identifier_context_invalid")
+    elif _ID.fullmatch(trade_id) is None:
+        _fail("source_identifier_invalid")
+    if type(row.get("ordId")) is str and row["ordId"] == "":
+        if _required_text(row, "subType") not in {
+            "204",
+            "205",
+            "206",
+            "207",
+            "208",
+            "209",
+        }:
+            _fail("fill_identifier_context_invalid")
+    else:
+        _required_text(row, "ordId", identifier=True)
+
+
 def _time_record(path, raw, semantics):
     if raw is None or raw == "":
         return AccountSourceTime(path=path, raw=raw, value=None, semantics=semantics)
@@ -987,8 +1025,7 @@ def _row_record(row, stream, plan, received):
                 )
             required_clocks = {"cTime"}
         elif stream in _FILL_STREAMS:
-            _required_text(row, "ordId", identifier=True)
-            _required_text(row, "tradeId", identifier=True)
+            _fill_identifiers(row)
             _required_text(row, "feeCcy")
             if _required_text(row, "side") not in {"buy", "sell"}:
                 _fail("order_side_invalid")

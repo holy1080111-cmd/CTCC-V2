@@ -262,7 +262,9 @@ class ControlledPublicReceiptJournal:
                 attempts.mkdir(name)
                 with (
                     attempts.child(name) as child,
-                    owned_attempt(child, plan, stamp=native_stamp()) as attempt,
+                    owned_attempt(
+                        child, plan, stamp=native_stamp(), version=2
+                    ) as attempt,
                 ):
                     try:
                         yield attempt

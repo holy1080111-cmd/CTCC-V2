@@ -338,6 +338,51 @@ containment group passes 234 cases (104 D0 and 130 existing boundary cases),
 with source pins unchanged. Four independent cancellation/error probes also
 pass without writes or authority; these are separate from real SQL acceptance.
 
+## Post-938634d account and clock repairs
+
+The sixth checkpoint is `938634d0cc89202c5f2e410f42fde2108a4dbb5e`, tree
+`a729b4b098cf790df9160b8583ba5ca124c04701`, migration head 0020. Its exact
+archive Windows suite is running separately; subsequent working changes below
+are not covered by that run and cannot borrow its counts. The previous full
+`fbe0729` suite remains FAIL: 10,624 passes, 89 failures, 104 errors and 137 skips.
+The original two research-boundary defects were fixed in the sixth checkpoint.
+Native ancestor permissions and unavailable isolated PostgreSQL remain separate
+unresolved acceptance requirements.
+
+Current OKX fill contracts permit bounded negative trade IDs for liquidation/ADL
+and explicitly empty order IDs for block activity. The account parser now
+preserves those source strings only with the documented subtype context; unknown,
+missing or contradictory exception context fails. Bill IDs remain positive row
+and pagination identities. No empty field becomes an invented order lineage.
+See [account coverage](qualification_account_v4.md). All 1,683 account/bootstrap/
+journal/forensic compatibility cases pass, including 110 new parser cases; no
+skips and unchanged source pins. Ordinary v2/v3/v4 complete frozen packets remain
+byte-identical. Twenty independent probes confirm raw negative IDs and unbound
+block fills cannot produce false order attribution or account authority.
+
+Versioned public attempt v2 now retains returned native-clock observations before
+and after collection, including failed/incomplete/truncated diagnostics. Each
+sidecar is published without clobbering, independently read back and hashed.
+An unavailable terminal clock stays null instead of reusing a prior timestamp.
+Negative evidence advances only the attempt audit; it cannot create a measured
+availability receipt or a healthy-clock claim. Raw bytes still inside an abruptly
+terminated native child process are not claimed durable.
+
+Independent review reproduced four carrier copying/serialization failures. The
+repair keeps payloads in a private identity registry, binds each carrier to one
+attempt/stage and consumes it before publication. Failed publication cannot make
+it reusable. Seven independent ownership probes and 43 negative tests pass.
+The implementation's disjoint focused/public groups have 269 passes, 17 native
+ancestor-handle failures and one platform skip. The 43 negative tests overlap
+that total. The failures remain FAIL; memory publishers do not certify native
+storage. Legacy v1 attempt files, existing complete v1/v2 capture packets and
+native health-check function ASTs are unchanged.
+
+Original Notion policy pages were read again on 2026-09-23. They require explicit
+strategy-specific reversal structure but do not supply the missing integrated
+range-protection implementation or complete sweep HTF formula. Existing policy
+denials remain; no unavailable source or permissive rule was substituted.
+
 ## Outstanding source-independent evidence
 
 The host was measured behind OKX public time and NTP. Windows denied this process

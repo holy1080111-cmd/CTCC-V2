@@ -17,7 +17,8 @@ import time
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from threading import Thread
+from threading import Lock, Thread
+from weakref import WeakKeyDictionary
 
 from app.public_market_source.public_market_receipts import (
     ClockStamp,
@@ -304,6 +305,173 @@ class NativeClockObservationError(PublicReceiptError):
     def __init__(self, code: str, observation: dict):
         super().__init__(code)
         self.observation_bytes = canonical(observation)
+
+
+_CLOCK_ISSUER = object()
+_CLOCK_RESULTS = WeakKeyDictionary()
+_CLOCK_RESULTS_LOCK = Lock()
+MAX_CLOCK_PAYLOAD = 512 * 1024
+CLOCK_RESULT_VERSION = "ctcc.public.owned_clock_observation.v1"
+
+
+class _OwnedClockObservation:
+    # Payload and scope live outside the carrier. Ordinary object copying or
+    # deserialization cannot mint an identity registered by the native adapter.
+    __slots__ = ("__weakref__",)
+
+    def __init__(self, issuer):
+        if issuer is not _CLOCK_ISSUER:
+            raise PublicReceiptError("owned_clock_observation_required")
+
+    def __copy__(self):
+        raise PublicReceiptError("owned_clock_observation_not_transferable")
+
+    def __deepcopy__(self, memo):
+        raise PublicReceiptError("owned_clock_observation_not_transferable")
+
+    def __reduce_ex__(self, protocol):
+        raise PublicReceiptError("owned_clock_observation_not_transferable")
+
+    def __reduce__(self):
+        raise PublicReceiptError("owned_clock_observation_not_transferable")
+
+
+def replay_clock_observation(payload):
+    """Negative observation integrity, never admission of an unhealthy clock."""
+    if type(payload) is not bytes or not 0 < len(payload) <= MAX_CLOCK_PAYLOAD:
+        raise PublicReceiptError("clock_observation_invalid")
+    value = decode(payload, MAX_CLOCK_PAYLOAD)
+    if (
+        canonical(value) != payload
+        or type(value) is not dict
+        or set(value) != {"schema_version", "outcome", "observation"}
+        or value["schema_version"] != CLOCK_RESULT_VERSION
+        or value["outcome"] not in {"accepted", "rejected", "unobserved"}
+    ):
+        raise PublicReceiptError("clock_observation_invalid")
+    observation = value["observation"]
+    if value["outcome"] == "unobserved":
+        if observation is not None:
+            raise PublicReceiptError("clock_observation_invalid")
+        return value
+    if value["outcome"] == "accepted":
+        validate_os_clock(observation)
+        return value
+    if type(observation) is not dict or set(observation) != {"diagnostic"}:
+        raise PublicReceiptError("clock_observation_invalid")
+    diagnostic = observation["diagnostic"]
+    if (
+        type(diagnostic) is not dict
+        or set(diagnostic)
+        != {
+            "schema_version",
+            "profile_id",
+            "resource_ids",
+            "clock_domain",
+            "host_before",
+            "status",
+            "host_after",
+        }
+        or diagnostic["schema_version"] != "ctcc.windows_clock_diagnostic.v2"
+        or diagnostic["profile_id"] != PROFILE_ID
+        or canonical(diagnostic["resource_ids"]) != canonical(RESOURCE_IDS)
+        or canonical(diagnostic["clock_domain"]) != canonical(_CLOCK_DOMAIN)
+    ):
+        raise PublicReceiptError("clock_observation_invalid")
+    missing = False
+    for name, command, encoding in (
+        ("host_before", "host_metadata.v2", "utf-8"),
+        ("status", "w32tm_status.v2", "cp950"),
+        ("host_after", "host_metadata.v2", "utf-8"),
+    ):
+        probe = diagnostic[name]
+        if probe is None:
+            missing = True
+            continue
+        if (
+            missing
+            or type(probe) is not dict
+            or set(probe)
+            != {
+                "schema_version",
+                "command_id",
+                "encoding",
+                "request_start",
+                "completed",
+                "outcome",
+                "exit_code",
+                "stdout",
+                "stderr",
+            }
+            or probe["schema_version"] != "ctcc.windows_clock_raw_probe.v1"
+            or probe["command_id"] != command
+            or probe["encoding"] != encoding
+            or probe["outcome"]
+            not in {
+                "complete",
+                "failed",
+                "timeout",
+                "incomplete",
+                "overflow",
+                "clock_failure",
+            }
+            or (probe["exit_code"] is not None and type(probe["exit_code"]) is not int)
+        ):
+            raise PublicReceiptError("clock_observation_invalid")
+        # Do not impose causal/health admission on retained negative samples.
+        ClockStamp.model_validate(probe["request_start"])
+        if probe["completed"] is not None:
+            ClockStamp.model_validate(probe["completed"])
+        for stream in (probe["stdout"], probe["stderr"]):
+            if type(stream) is not dict or type(stream.get("truncated")) is not bool:
+                raise PublicReceiptError("clock_observation_invalid")
+            _stream_bytes({**stream, "truncated": False})
+    return value
+
+
+def _owned_clock_payload(value, attempt, stage):
+    if type(value) is not _OwnedClockObservation:
+        raise PublicReceiptError("owned_clock_observation_required")
+    with _CLOCK_RESULTS_LOCK:
+        entry = _CLOCK_RESULTS.pop(value, None)
+    if entry is None or entry[0] is not attempt or entry[1] != stage:
+        raise PublicReceiptError("owned_clock_observation_required")
+    payload = entry[2]
+    replay_clock_observation(payload)
+    return payload
+
+
+def _observe_owned_clock(attempt, stage):
+    """No supplied exception, diagnostic, clock callback or path is accepted."""
+    from app.public_market_source.public_attempt_journal import _OwnedAttempt
+
+    if type(attempt) is not _OwnedAttempt or type(stage) is not str:
+        raise PublicReceiptError("owned_clock_observation_required")
+    with _CLOCK_RESULTS_LOCK:
+        attempt.claim_clock_stage(stage)
+    try:
+        observation = native_os_clock()
+        outcome = "accepted"
+    except NativeClockObservationError as exc:
+        if type(exc) is not NativeClockObservationError:
+            raise PublicReceiptError("owned_clock_observation_unavailable") from None
+        observation = decode(exc.observation_bytes, MAX_CLOCK_PAYLOAD)
+        outcome = "rejected"
+    except PublicReceiptError:
+        # Setup failed before there was a returned raw observation.
+        observation, outcome = None, "unobserved"
+    payload = canonical(
+        {
+            "schema_version": CLOCK_RESULT_VERSION,
+            "outcome": outcome,
+            "observation": observation,
+        }
+    )
+    replay_clock_observation(payload)
+    result = _OwnedClockObservation(_CLOCK_ISSUER)
+    with _CLOCK_RESULTS_LOCK:
+        _CLOCK_RESULTS[result] = (attempt, stage, payload)
+    return result
 
 
 def _stream_record(raw: bytes, *, truncated=False):

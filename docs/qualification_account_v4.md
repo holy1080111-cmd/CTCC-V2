@@ -46,6 +46,22 @@ recorded as unknown. The materializer retains unsupported non-SWAP current
 exposures with unknown risk, margin and contract quantity; it cannot mislabel a
 base/quote quantity as contracts or omit a non-SWAP history row.
 
+The recent/archive fill parser also preserves documented exceptional IDs, reviewed
+against the official transaction references on 2026-09-23. Negative `tradeId` is
+accepted only with liquidation subtypes 100–107 or ADL subtypes 125–128, using the
+existing bounded decimal magnitude. An explicitly empty `ordId` is accepted only
+for block subtypes 204–209. Missing IDs remain missing and rejected; no replacement
+ID or undocumented mandatory block ID is invented. Transfer subtypes 110/111 do
+not establish the documented negative-ID category and remain rejected when paired
+with a negative trade ID. Unknown or contradictory exception context fails closed.
+
+This applies to the existing v2/v3/v4 parsers without changing their wire format.
+Ordinary frozen packets remain byte-identical. Fill identity and pagination remain
+positive `billId`; neither exceptional field becomes a cursor. Raw strings remain
+in the canonical row. Acceptance of a source row does not prove attribution to a
+local order: block fills with no order ID require independent lineage evidence,
+and account completeness and execution authority remain false.
+
 This closes the missing standard-product history-query gap only. Empty terminals
 do not prove API retention, ingestion watermarks, continuous peaks, earlier loss
 streak seeds, funding accrual or account-wide product coverage. Recent fills have

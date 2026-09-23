@@ -71,19 +71,74 @@ def _stamp(value):
 class _OwnedAttempt:
     __slots__ = (
         "active",
+        "clock_started",
+        "clocks",
         "directory",
         "head",
         "plan",
         "requests",
         "started",
         "summary",
+        "version",
     )
 
-    def __init__(self, issuer, directory, plan, started):
+    def __init__(self, issuer, directory, plan, started, version=1):
         if issuer is not _ISSUER:
             raise PublicReceiptError("owned_attempt_required")
         self.directory, self.plan, self.started = directory, plan, started
         self.requests, self.active, self.summary, self.head = [], None, None, None
+        if type(version) is not int or version not in {1, 2}:
+            raise PublicReceiptError("attempt_version_invalid")
+        self.version, self.clocks = version, []
+        self.clock_started = set()
+
+    def claim_clock_stage(self, stage):
+        self.check_clock_stage(stage)
+        if stage in self.clock_started:
+            raise PublicReceiptError("attempt_clock_already_started")
+        self.clock_started.add(stage)
+
+    def check_clock_stage(self, stage):
+        if (
+            self.version != 2
+            or self.summary is not None
+            or self.active is not None
+            or type(stage) is not str
+            or len(self.clocks) >= 2
+            or stage != ("before", "after")[len(self.clocks)]
+            or (stage == "before" and self.requests)
+            or (stage == "after" and self.clocks[0]["outcome"] != "accepted")
+        ):
+            raise PublicReceiptError("attempt_clock_order_invalid")
+
+    def record_clock(self, stage, owned):
+        from app.public_market_source.public_clock import (
+            MAX_CLOCK_PAYLOAD,
+            _owned_clock_payload,
+            replay_clock_observation,
+        )
+
+        self.check_clock_stage(stage)
+        payload = _owned_clock_payload(owned, self, stage)
+        observation = replay_clock_observation(payload)
+        binding = {
+            "schema_version": "ctcc.public.attempt_clock_binding.v1",
+            "attempt_id": self.started["attempt_id"],
+            "plan_sha256": self.plan.canonical_sha256(),
+            "stage": stage,
+            "outcome": observation["outcome"],
+            "payload_sha256": sha(payload),
+            "payload_bytes": len(payload),
+        }
+        self.directory.publish(f"clock-{stage}.json", payload)
+        if self.directory.read(f"clock-{stage}.json", MAX_CLOCK_PAYLOAD) != payload:
+            raise PublicReceiptError("attempt_clock_readback_failed")
+        raw = canonical(binding)
+        self.directory.publish(f"clock-{stage}-binding.json", raw)
+        if self.directory.read(f"clock-{stage}-binding.json", MAX_RAW) != raw:
+            raise PublicReceiptError("attempt_clock_readback_failed")
+        self.clocks.append(binding)
+        return observation
 
     def begin_request(self, *, endpoint, query, stamp):
         if (
@@ -216,22 +271,36 @@ class _OwnedAttempt:
         if disposition == "completed_collection" and (
             not self.requests
             or any(item["result"] != "accepted" for item in self.requests)
+            or self.version == 2
+            and (
+                len(self.clocks) != 2
+                or any(item["outcome"] != "accepted" for item in self.clocks)
+            )
         ):
             raise PublicReceiptError("attempt_incomplete")
+        if stamp is None and (
+            self.version != 2 or disposition == "completed_collection"
+        ):
+            raise PublicReceiptError("attempt_terminal_clock_required")
         value = {
-            "schema_version": "ctcc.public.attempt.v1",
+            "schema_version": f"ctcc.public.attempt.v{self.version}",
             "attempt_id": self.started["attempt_id"],
             "plan_sha256": self.plan.canonical_sha256(),
             "started_sha256": sha(canonical(self.started)),
             "disposition": disposition,
             "error_code": code,
-            "completed": _stamp(stamp),
+            "completed": None if stamp is None else _stamp(stamp),
             "request_count": len(self.requests),
             "request_sha256s": tuple(sha(canonical(item)) for item in self.requests),
             "intended_receipt_sha256": receipt_sha256,
             "execution_authority": False,
             "measured_availability_eligible": False,
         }
+        if self.version == 2:
+            value.update(
+                clock_records=tuple(self.clocks),
+                terminal_clock="unavailable" if stamp is None else "observed",
+            )
         raw = canonical(value)
         self.directory.publish("summary.json", raw)
         if self.directory.read("summary.json", 8 * MAX_RAW) != raw:
@@ -252,7 +321,11 @@ def replay_attempt(directory, *, expected_plan=None):
     started, started_raw = _read(directory, "started.json")
     if (
         set(started) != {"schema_version", "attempt_id", "plan_sha256", "started"}
-        or started["schema_version"] != "ctcc.public.attempt_start.v1"
+        or started["schema_version"]
+        not in {
+            "ctcc.public.attempt_start.v1",
+            "ctcc.public.attempt_start.v2",
+        }
         or started["plan_sha256"] != sha(plan_raw)
     ):
         raise PublicReceiptError("attempt_start_invalid")
@@ -263,6 +336,7 @@ def replay_attempt(directory, *, expected_plan=None):
     ):
         raise PublicReceiptError("attempt_start_invalid")
     summary, summary_raw = _read(directory, "summary.json")
+    v2 = started["schema_version"] == "ctcc.public.attempt_start.v2"
     if (
         set(summary)
         != {
@@ -279,7 +353,9 @@ def replay_attempt(directory, *, expected_plan=None):
             "execution_authority",
             "measured_availability_eligible",
         }
-        or summary["schema_version"] != "ctcc.public.attempt.v1"
+        | ({"clock_records", "terminal_clock"} if v2 else set())
+        or summary["schema_version"]
+        != ("ctcc.public.attempt.v2" if v2 else "ctcc.public.attempt.v1")
         or summary["attempt_id"] != started["attempt_id"]
         or summary["started_sha256"] != sha(started_raw)
         or summary["plan_sha256"] != plan.canonical_sha256()
@@ -295,7 +371,16 @@ def replay_attempt(directory, *, expected_plan=None):
         or len(summary["request_sha256s"]) != count
     ):
         raise PublicReceiptError("attempt_request_inventory_invalid")
-    _stamp(summary["completed"])
+    if v2 and summary["completed"] is None:
+        if (
+            summary["terminal_clock"] != "unavailable"
+            or summary["disposition"] == "completed_collection"
+        ):
+            raise PublicReceiptError("attempt_terminal_clock_required")
+    else:
+        _stamp(summary["completed"])
+        if v2 and summary["terminal_clock"] != "observed":
+            raise PublicReceiptError("attempt_terminal_clock_invalid")
     if (
         summary["error_code"] not in _ERROR_CODES
         or any(not _digest(value) for value in summary["request_sha256s"])
@@ -305,14 +390,24 @@ def replay_attempt(directory, *, expected_plan=None):
         )
     ):
         raise PublicReceiptError("attempt_summary_invalid")
-    if set(directory.names()) != {
-        "plan.json",
-        "started.json",
-        "summary.json",
-        *(f"request-{i:03d}" for i in range(count)),
-    }:
+    clock_files, clock_bytes = (
+        _replay_clocks(directory, started, summary) if v2 else (set(), 0)
+    )
+    if (
+        set(directory.names())
+        != {
+            "plan.json",
+            "started.json",
+            "summary.json",
+            *(f"request-{i:03d}" for i in range(count)),
+        }
+        | clock_files
+    ):
         raise PublicReceiptError("attempt_file_inventory_invalid")
-    requests, total = [], len(plan_raw) + len(started_raw) + len(summary_raw)
+    requests, total = (
+        [],
+        len(plan_raw) + len(started_raw) + len(summary_raw) + clock_bytes,
+    )
     for index in range(count):
         with directory.child(f"request-{index:03d}") as child:
             result, result_raw = _read(child, "result.json")
@@ -590,6 +685,57 @@ def replay_attempt(directory, *, expected_plan=None):
     return summary, tuple(requests), total, sha(summary_raw)
 
 
+def _replay_clocks(directory, started, summary):
+    from app.public_market_source.public_clock import (
+        MAX_CLOCK_PAYLOAD,
+        replay_clock_observation,
+    )
+
+    records = summary["clock_records"]
+    if type(records) is not list or len(records) > 2:
+        raise PublicReceiptError("attempt_clock_inventory_invalid")
+    names, total = set(), 0
+    for stage, expected in zip(("before", "after"), records):
+        name, payload_name = f"clock-{stage}-binding.json", f"clock-{stage}.json"
+        binding, raw = _read(directory, name, MAX_RAW)
+        if (
+            binding != expected
+            or set(binding)
+            != {
+                "schema_version",
+                "attempt_id",
+                "plan_sha256",
+                "stage",
+                "outcome",
+                "payload_sha256",
+                "payload_bytes",
+            }
+            or binding["schema_version"] != "ctcc.public.attempt_clock_binding.v1"
+            or binding["attempt_id"] != started["attempt_id"]
+            or binding["plan_sha256"] != started["plan_sha256"]
+            or binding["stage"] != stage
+            or type(binding["payload_bytes"]) is not int
+        ):
+            raise PublicReceiptError("attempt_clock_binding_invalid")
+        payload = directory.read(payload_name, MAX_CLOCK_PAYLOAD)
+        observation = replay_clock_observation(payload)
+        if (
+            binding["payload_sha256"] != sha(payload)
+            or binding["payload_bytes"] != len(payload)
+            or binding["outcome"] != observation["outcome"]
+            or stage == "after"
+            and records[0]["outcome"] != "accepted"
+        ):
+            raise PublicReceiptError("attempt_clock_binding_invalid")
+        names.update((name, payload_name))
+        total += len(raw) + len(payload)
+    if summary["disposition"] == "completed_collection" and (
+        len(records) != 2 or any(item["outcome"] != "accepted" for item in records)
+    ):
+        raise PublicReceiptError("attempt_incomplete")
+    return names, total
+
+
 def replay_attempt_chain(directory, *, sequence, expected_head, genesis_sha256):
     if type(sequence) is not int or not 0 <= sequence <= MAX_ATTEMPTS:
         raise PublicReceiptError("attempt_sequence_invalid")
@@ -633,6 +779,26 @@ def bind_measured_attempt(receipt, raw_files, attempts):
         or summary["intended_receipt_sha256"] != unbound.canonical_sha256()
     ):
         raise PublicReceiptError("measured_attempt_binding_invalid")
+    if summary["schema_version"] == "ctcc.public.attempt.v2":
+        from app.public_market_source.public_clock import CLOCK_RESULT_VERSION
+
+        observations = (receipt.os_clock_before, receipt.os_clock_after)
+        if len(summary["clock_records"]) != 2 or any(
+            binding["payload_sha256"]
+            != sha(
+                canonical(
+                    {
+                        "schema_version": CLOCK_RESULT_VERSION,
+                        "outcome": "accepted",
+                        "observation": observed,
+                    }
+                )
+            )
+            for binding, observed in zip(
+                summary["clock_records"], observations, strict=True
+            )
+        ):
+            raise PublicReceiptError("measured_attempt_clock_mismatch")
     pages = (receipt.time_before, *receipt.pages, receipt.time_after)
     if len(requests) != len(pages):
         raise PublicReceiptError("measured_attempt_request_count")
@@ -677,13 +843,15 @@ class _WithoutChain:
 
 
 @contextmanager
-def owned_attempt(directory, plan, *, stamp):
+def owned_attempt(directory, plan, *, stamp, version=1):
+    if type(version) is not int or version not in {1, 2}:
+        raise PublicReceiptError("attempt_version_invalid")
     started = {
-        "schema_version": "ctcc.public.attempt_start.v1",
+        "schema_version": f"ctcc.public.attempt_start.v{version}",
         "attempt_id": uuid.uuid4().hex,
         "plan_sha256": plan.canonical_sha256(),
         "started": _stamp(stamp),
     }
     directory.publish("plan.json", plan.canonical_bytes())
     directory.publish("started.json", canonical(started))
-    yield _OwnedAttempt(_ISSUER, directory, plan, started)
+    yield _OwnedAttempt(_ISSUER, directory, plan, started, version)
