@@ -464,6 +464,7 @@ async def _page(
     secret_tokens,
     wall_deadline,
     capture_proofs,
+    _journal=None,
 ):
     _client_guard(client, first=False)
     spec = capture.account_request(plan, stream, after)
@@ -477,6 +478,16 @@ async def _page(
         spec, credentials, started, plan.max_request_seconds
     )
     secret_tokens.append(signature)
+    if _journal is not None:
+        await _journal.request(
+            stream=stream,
+            page_index=page_index,
+            after=after,
+            previous_sha=previous_sha,
+            identity=identity,
+            spec=spec,
+            started=started,
+        )
     maximum = min(plan.max_response_bytes, remaining_bytes)
     body = bytearray()
     async with asyncio.timeout_at(min(wall_deadline, request_wall_deadline)):
@@ -491,7 +502,14 @@ async def _page(
         )
         pending_cancel = False
         try:
-            received = _read_clock(clock)
+            try:
+                received = _read_clock(clock)
+            except Exception:
+                if _journal is not None and type(response) is httpx.Response:
+                    await _journal.headers(None, response.status_code)
+                raise
+            if _journal is not None and type(response) is httpx.Response:
+                await _journal.headers(received, response.status_code)
             if received < started:
                 raise AccountCollectionError("request_clock_reversed")
             if (
@@ -521,6 +539,8 @@ async def _page(
                 if type(certificate) is not bytes or not certificate:
                     raise AccountCollectionError("tls_response_evidence_missing")
                 capture_proofs.append(hashlib.sha256(certificate).hexdigest())
+            if _journal is not None:
+                _journal.transport(capture_proofs[-1])
             if (
                 response.headers.get("content-type", "")
                 .split(";", 1)[0]
@@ -544,9 +564,23 @@ async def _page(
                 raise AccountCollectionError("response_bytes_limit")
             # Direct stream reading avoids HTTPX's automatic EOF close race.
             async for chunk in response.stream:
+                if _journal is not None:
+                    try:
+                        chunk_received = _read_clock(clock)
+                    except Exception:
+                        await _journal.chunk(chunk, None)
+                        raise
+                    await _journal.chunk(chunk, chunk_received)
                 if type(chunk) is not bytes or len(body) + len(chunk) > maximum:
                     raise AccountCollectionError("response_bytes_limit")
                 body.extend(chunk)
+            if _journal is not None:
+                try:
+                    body_exhausted = _read_clock(clock)
+                except Exception:
+                    await _journal.body_complete(None)
+                    raise
+                await _journal.body_complete(body_exhausted)
         except asyncio.CancelledError:
             pending_cancel = True
             raise
@@ -585,6 +619,8 @@ async def _page(
             secret_tokens=secret_tokens,
         )
     _no_secret_json(observation.canonical_json, secret_tokens)
+    if _journal is not None:
+        await _journal.validated(observation)
     return observation
 
 
@@ -640,6 +676,7 @@ async def _collect_owned_demo_account_records(
     plan: capture.DemoAccountCapturePlan,
     expected_plan_sha256: str,
     barrier_completed_at: datetime,
+    _journal=None,
 ) -> _OwnedAccountCapture:
     """One owned client, fixed GET inventory, full replay, no partial packet.
 
@@ -651,6 +688,8 @@ async def _collect_owned_demo_account_records(
     error = None
     diagnostic = None
     interrupted = False
+    owned_result = None
+    active_journal = None
     try:
         selected = capture._checked_plan(plan, expected_plan_sha256)
         values = _credential_values(credentials)
@@ -662,6 +701,17 @@ async def _collect_owned_demo_account_records(
             credentials.api_secret,
             credentials.passphrase,
         ]
+        if _journal is not None:
+            from app.trade_qualification.account_capture_journal import (
+                _OwnedAccountJournal,
+            )
+
+            if type(_journal) is not _OwnedAccountJournal or _journal.closed:
+                raise AccountCollectionError("account_capture_invalid")
+            if capture.plan_sha256(_journal.plan) != expected_plan_sha256:
+                raise AccountCollectionError("account_capture_invalid")
+            active_journal = _journal
+            active_journal.bind_tokens(secret_tokens)
         _no_secret_json(
             capture._canonical(capture._json_value(selected)),
             secret_tokens,
@@ -718,6 +768,7 @@ async def _collect_owned_demo_account_records(
                             secret_tokens=secret_tokens,
                             wall_deadline=wall_started + selected.max_batch_seconds,
                             capture_proofs=capture_proofs,
+                            _journal=active_journal,
                         )
                         if type(item) is AccountCollectionDiagnostic:
                             diagnostic = item
@@ -789,7 +840,7 @@ async def _collect_owned_demo_account_records(
         _check_batch(finished, batch_started, previous_time, selected.max_batch_seconds)
         if loop.time() - wall_started > selected.max_batch_seconds:
             raise AccountCollectionError("batch_deadline_exceeded")
-        return _OwnedAccountCapture(
+        owned_result = _OwnedAccountCapture(
             _CAPTURE_ISSUER, packet, finished, tuple(capture_proofs)
         )
     except asyncio.CancelledError:
@@ -811,9 +862,27 @@ async def _collect_owned_demo_account_records(
         error = "account_transport_failed"
     except Exception:  # noqa: BLE001 -- never expose secret-bearing transport errors
         error = "account_capture_invalid"
+    if active_journal is not None:
+        from app.trade_qualification.account_capture_journal import bounded_finalization
+
+        if owned_result is not None:
+            try:
+                active_journal.bind_capture(owned_result)
+            except Exception:  # noqa: BLE001 -- finalize raw even after binding failure
+                owned_result, error = None, "account_capture_invalid"
+        try:
+            await bounded_finalization(
+                active_journal.close_acquisition(successful=owned_result is not None)
+            )
+        except asyncio.CancelledError:
+            interrupted = True
+        except Exception:  # noqa: BLE001 -- private persistence errors cannot escape
+            owned_result, error = None, "account_capture_invalid"
     # Outside except: no implicit HTTP exception chain containing auth headers.
     if interrupted:
         raise asyncio.CancelledError
+    if owned_result is not None:
+        return owned_result
     raise AccountCollectionError(
         error, diagnostic=diagnostic if error == "account_records_invalid" else None
     )

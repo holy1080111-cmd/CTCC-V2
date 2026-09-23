@@ -8,10 +8,17 @@ from pathlib import Path
 import httpx
 import pytest
 
-from app.research import public_market_capture as capture
-from app.research import public_receipt_storage as storage
-from app.research.public_attempt_journal import MAX_CHUNKS, replay_attempt_chain
-from app.research.public_market_receipts import PublicReceiptError, canonical, sha
+from app.public_market_source import public_market_capture as capture
+from app.public_market_source import public_receipt_storage as storage
+from app.public_market_source.public_attempt_journal import (
+    MAX_CHUNKS,
+    replay_attempt_chain,
+)
+from app.public_market_source.public_market_receipts import (
+    PublicReceiptError,
+    canonical,
+    sha,
+)
 from tests.unit.research.public_receipt_fixtures import storage_fixture_capture
 from tests.unit.research.test_public_journal_contracts import (
     MemoryDirectory,

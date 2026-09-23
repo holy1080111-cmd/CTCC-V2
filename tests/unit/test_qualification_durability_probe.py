@@ -12,7 +12,11 @@ from scripts import verify_final_hermetic as harness
 
 def marker_body():
     return {
-        "schema": "ctcc.synthetic.qualification.crash-probe.v2",
+        "schema": "ctcc.synthetic.qualification.crash-probe.v3",
+        "account_captures": [
+            {"scenario": label}
+            for label in ("safe_failed_capture", "unfinished_ram_prefix")
+        ],
         "controls": [
             {"scenario": label} for label in ("arm_intent", "estop", "cold_estop")
         ],
@@ -113,7 +117,10 @@ def test_live_seed_complete_marker_allows_host_crash_stage(tmp_path, monkeypatch
         "authority",
         "order_writes",
         "missing_control",
+        "missing_capture",
+        "duplicate_capture",
         "old_version",
+        "prior_version",
         "legacy_intent",
         "request_hash",
         "expired_arm",
@@ -127,6 +134,10 @@ def test_live_process_cannot_make_bad_marker_ready(tmp_path, monkeypatch, damage
         body["execution_authority"] = True
     elif damage == "order_writes":
         body["order_writes"] = 1
+    elif damage == "missing_capture":
+        body["account_captures"].pop()
+    elif damage == "duplicate_capture":
+        body["account_captures"][1] = body["account_captures"][0]
     elif damage == "missing_control":
         body["controls"].pop()
     elif damage == "legacy_intent":
@@ -135,6 +146,8 @@ def test_live_process_cannot_make_bad_marker_ready(tmp_path, monkeypatch, damage
         body["exchange_request_sha256"] = "x" * 64
     elif damage == "expired_arm":
         body["control_arm_intent_observed_before_publish"] = False
+    elif damage == "prior_version":
+        body["schema"] = "ctcc.synthetic.qualification.crash-probe.v2"
     elif damage == "old_version":
         body["schema"] = "ctcc.synthetic.qualification.crash-probe.v1"
     probe.write_marker(marker, body)
@@ -205,3 +218,78 @@ def test_probe_rejects_legacy_or_changed_request_identity(exact_intent, damage):
         probe.exact_request_identity(
             damaged, expected_uid=fixture.request.scope.account_id
         )
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "host=outside.invalid",
+        "host=ctcc-final-0123456789ab-postgres:5432&host=outside.invalid:5432",
+        "port=9999",
+        "database=outside",
+        "user=outside",
+        "password=synthetic-should-not-print",
+        "sslmode=disable",
+    ],
+)
+def test_isolated_probe_rejects_all_driver_query_overrides(monkeypatch, query):
+    base = "postgresql+asyncpg://ctcc@ctcc-final-0123456789ab-postgres:5432/ctcc"
+    _isolated_settings(monkeypatch)
+    monkeypatch.setenv("DATABASE_URL", base + "?" + query)
+    with pytest.raises(
+        RuntimeError, match="^isolated_credential_free_validation_required$"
+    ):
+        probe.isolated_database_url()
+
+
+def _isolated_settings(monkeypatch):
+    monkeypatch.setenv("CTCC_HERMETIC_DURABILITY", "1")
+    monkeypatch.setattr(
+        probe,
+        "Settings",
+        lambda **kwargs: SimpleNamespace(
+            environment="test",
+            trading_mode="analysis_only",
+            okx_demo_credentials_configured=False,
+            okx_live_credentials_configured=False,
+        ),
+    )
+    monkeypatch.setattr(probe, "enabled_execution_authority", lambda settings: False)
+
+
+def test_isolated_probe_exact_url_keeps_effective_asyncpg_destination(monkeypatch):
+    from sqlalchemy.dialects.postgresql.asyncpg import PGDialect_asyncpg
+    from sqlalchemy.engine import make_url
+
+    url = "postgresql+asyncpg://ctcc@ctcc-final-0123456789ab-postgres:5432/ctcc"
+    _isolated_settings(monkeypatch)
+    monkeypatch.setenv("DATABASE_URL", url)
+    accepted = probe.isolated_database_url()
+    args, kwargs = PGDialect_asyncpg().create_connect_args(make_url(accepted))
+    assert args == []
+    assert kwargs == {
+        "host": "ctcc-final-0123456789ab-postgres",
+        "database": "ctcc",
+        "user": "ctcc",
+        "port": 5432,
+    }
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "postgresql+asyncpg://other@ctcc-final-0123456789ab-postgres:5432/ctcc",
+        "postgresql+asyncpg://ctcc:synthetic-secret@ctcc-final-0123456789ab-postgres:5432/ctcc",
+        "postgresql+asyncpg://ctcc@ctcc-final-0123456789ab-postgres:5433/ctcc",
+        "postgresql+asyncpg://ctcc@ctcc-final-0123456789ab-postgres/ctcc",
+        "postgresql+asyncpg://ctcc@ctcc-final-review-postgres:5432/ctcc",
+        "postgresql+asyncpg://ctcc@ctcc-final-0123456789ab-postgres:5432/other",
+        "malformed-synthetic-secret",
+    ],
+)
+def test_isolated_probe_rejects_non_harness_urls_without_echo(monkeypatch, url):
+    _isolated_settings(monkeypatch)
+    monkeypatch.setenv("DATABASE_URL", url)
+    with pytest.raises(RuntimeError) as error:
+        probe.isolated_database_url()
+    assert str(error.value) == "isolated_credential_free_validation_required"

@@ -13,6 +13,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
@@ -25,6 +26,11 @@ from app.config.settings import Settings
 from app.database.repositories.qualification_ledger import QualificationLedgerRepository
 from app.trade_qualification.reservations import LedgerScope, QualificationLedgerError
 from app.trade_qualification.submission_intent import VERSION_V2
+from scripts.account_capture_durability_probe import (
+    confirm_ready_account_captures,
+    seed_account_captures,
+    verify_account_captures,
+)
 from scripts.control_durability_probe import (
     confirm_ready_controls,
     seed_controls,
@@ -35,16 +41,22 @@ from scripts.hermetic_pytest import enabled_execution_authority
 
 def isolated_database_url() -> str:
     url = os.environ.get("DATABASE_URL", "")
-    parsed = make_url(url)
-    settings = Settings(_env_file=None)
+    try:
+        parsed = make_url(url)
+        settings = Settings(_env_file=None)
+    except Exception:  # noqa: BLE001 -- do not expose private DSN/settings text
+        raise RuntimeError("isolated_credential_free_validation_required") from None
     if (
         os.environ.get("CTCC_HERMETIC_DURABILITY") != "1"
         or settings.environment != "test"
         or settings.trading_mode != "analysis_only"
         or enabled_execution_authority(settings)
         or parsed.drivername != "postgresql+asyncpg"
-        or not (parsed.host or "").startswith("ctcc-final-")
-        or not (parsed.host or "").endswith("-postgres")
+        or re.fullmatch(r"ctcc-final-[a-f0-9]{12}-postgres", parsed.host or "") is None
+        or parsed.username != "ctcc"
+        or parsed.password is not None
+        or parsed.port != 5432
+        or bool(parsed.query)
         or parsed.database != "ctcc"
         or settings.okx_demo_credentials_configured
         or settings.okx_live_credentials_configured
@@ -142,17 +154,20 @@ async def probe(mode: str, marker: Path) -> None:
             state = await repository.read_scope(held.scope)
             if state.active != (uncertain,) or state.ledger_revision != 4:
                 raise RuntimeError("seed_readback_mismatch")
+            account_seed = await seed_account_captures(sessions, scope=held.scope)
             control_seed = await seed_controls(
                 sessions, clock=lambda: fixture.now, active_uid=held.scope.account_id
             )
             confirm_ready_controls(
                 control_seed, expected_active_uid=held.scope.account_id
             )
+            confirm_ready_account_captures(account_seed)
             write_marker(
                 marker,
                 {
-                    "schema": "ctcc.synthetic.qualification.crash-probe.v2",
+                    "schema": "ctcc.synthetic.qualification.crash-probe.v3",
                     "controls": control_seed.records,
+                    "account_captures": account_seed.records,
                     "scope": held.scope.model_dump(mode="json"),
                     "event": held.original_event_key,
                     "reservation_id": held.reservation_id,
@@ -173,6 +188,10 @@ async def probe(mode: str, marker: Path) -> None:
                 # SIGKILL cannot run this cleanup; cooperative cancellation revokes.
                 for owner in control_seed.owners:
                     owner.revoke_now()
+                # Retain unfinished actual RAM buffers until interruption. No
+                # cancellation cleanup can manufacture a durable source receipt.
+                for owner in account_seed.owners:
+                    owner.closed = True
         else:
             raw = marker.read_bytes()
             if len(raw) > 32768:
@@ -181,7 +200,7 @@ async def probe(mode: str, marker: Path) -> None:
             body = envelope["body"]
             if envelope["sha256"] != hashlib.sha256(canonical(body)).hexdigest():
                 raise RuntimeError("probe_marker_digest_mismatch")
-            if body.get("schema") != "ctcc.synthetic.qualification.crash-probe.v2":
+            if body.get("schema") != "ctcc.synthetic.qualification.crash-probe.v3":
                 raise RuntimeError("probe_marker_version_invalid")
             scope = LedgerScope.model_validate(body["scope"])
             repository = QualificationLedgerRepository(
@@ -217,6 +236,10 @@ async def probe(mode: str, marker: Path) -> None:
                 raise RuntimeError("restart_consumed_twice")
             if await repository.read_scope(scope) != state:
                 raise RuntimeError("denied_replay_changed_hold")
+            await verify_account_captures(
+                sessions, body["account_captures"], scope=scope
+            )
+            print("ACCOUNT_CAPTURE_RESTART_RAW_AND_UNKNOWN_PREFIX=PASS")
             await verify_controls(
                 sessions, body["controls"], expected_active_uid=scope.account_id
             )

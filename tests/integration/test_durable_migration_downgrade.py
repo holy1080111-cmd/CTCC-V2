@@ -18,9 +18,13 @@ from sqlalchemy.pool import NullPool
 from app.database.repositories.demo_control import DemoControlRepository
 from app.trade_qualification.demo_control import ControlScope
 from tests.durable_migration_fixtures import (
+    DOWNGRADE_LOCKS,
     TABLES,
     RecordedDowngrade,
     load_migration,
+)
+from tests.integration import (
+    test_account_ingestion_journal_repository as capture_fixtures,
 )
 from tests.integration import test_qualification_ledger_repository as ledger_fixtures
 from tests.integration import test_submission_reporting_repository as report_fixtures
@@ -85,7 +89,37 @@ async def shape(engine):
                 WHERE n.nspname=current_schema() ORDER BY c.relname,k.conname
             """)
         )
-        return columns.all(), constraints.all()
+        indexes = await connection.execute(
+            text("""
+                SELECT tablename,indexname,indexdef FROM pg_indexes
+                WHERE schemaname=current_schema() ORDER BY tablename,indexname
+            """)
+        )
+        triggers = await connection.execute(
+            text("""
+                SELECT c.relname,t.tgname,pg_get_triggerdef(t.oid),t.tgenabled
+                FROM pg_trigger t JOIN pg_class c ON t.tgrelid=c.oid
+                JOIN pg_namespace n ON c.relnamespace=n.oid
+                WHERE n.nspname=current_schema() AND NOT t.tgisinternal
+                ORDER BY c.relname,t.tgname
+            """)
+        )
+        functions = await connection.execute(
+            text("""
+                SELECT p.proname,pg_get_function_identity_arguments(p.oid),
+                       pg_get_functiondef(p.oid)
+                FROM pg_proc p JOIN pg_namespace n ON p.pronamespace=n.oid
+                WHERE n.nspname=current_schema() AND p.prokind='f'
+                ORDER BY p.proname,pg_get_function_identity_arguments(p.oid)
+            """)
+        )
+        return (
+            columns.all(),
+            constraints.all(),
+            indexes.all(),
+            triggers.all(),
+            functions.all(),
+        )
 
 
 @pytest.mark.parametrize("revision", TABLES)
@@ -104,11 +138,7 @@ async def test_empty_actual_migration_downgrade_and_reupgrade_preserve_shape(
 
 
 LOCK_CASES = [
-    (revision, table)
-    for revision in TABLES
-    for table in (
-        TABLES["0017"] + TABLES[revision] if revision == "0018" else TABLES[revision]
-    )
+    (revision, table) for revision in TABLES for table in DOWNGRADE_LOCKS[revision]
 ]
 
 
@@ -161,14 +191,53 @@ def durable_fixture():
 
 @pytest.mark.parametrize(
     "revision,record_type",
-    [("0017", "scope"), ("0017", "intent"), ("0018", "outcome"), ("0019", "stop")],
+    [
+        ("0017", "scope"),
+        ("0017", "intent"),
+        ("0018", "outcome"),
+        ("0019", "stop"),
+        ("0020", "capture_start"),
+        ("0020", "capture_raw"),
+    ],
 )
 async def test_nonempty_downgrade_retains_exact_durable_records(
     sandbox, revision, record_type, durable_fixture
 ):
     engine, sessions = sandbox
     fixture = durable_fixture
-    if record_type == "stop":
+    if record_type.startswith("capture_"):
+        scope, ledger, repo, start = await capture_fixtures.initialize(sandbox)
+        checkpoint = await ledger.read_bootstrap_checkpoint(scope)
+        first = await repo._append(scope, start)
+        capture_id = capture_fixtures.journal.checked_event(start)["capture_id"]
+        if record_type == "capture_raw":
+            raw = b'{"code":"0","data":[]}'
+            await repo._append(
+                scope,
+                capture_fixtures.event(
+                    capture_id,
+                    2,
+                    capture_fixtures.journal.digest(first.event.event_json),
+                    "raw_finalized",
+                    {
+                        "raw_retention": "durable_secret_checked",
+                        "observed_bytes": len(raw),
+                        "source_state": "complete_page",
+                    },
+                    raw=raw,
+                ),
+            )
+
+        async def readback():
+            # Re-reading changes the observation time, never the committed event,
+            # raw bytes, DB timestamp, or untouched qualification checkpoint.
+            chain = await repo.read_chain(scope, capture_id)
+            current = await ledger.read_bootstrap_checkpoint(scope)
+            assert current.state == checkpoint.state
+            return tuple((item.event, item.db_recorded_at) for item in chain)
+
+        expected = await readback()
+    elif record_type == "stop":
         scope = ControlScope("demo", fixture.request.scope.account_id)
         repo = DemoControlRepository(sessions, clock=Clock())
         expected = await repo.latch_stop(scope, command_id=uuid4().hex * 2)

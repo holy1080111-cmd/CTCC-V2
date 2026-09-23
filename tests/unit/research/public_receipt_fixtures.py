@@ -7,8 +7,8 @@ import itertools
 
 import httpx
 
-from app.research import public_market_capture as capture
-from app.research.public_market_receipts import (
+from app.public_market_source import public_market_capture as capture
+from app.public_market_source.public_market_receipts import (
     MINUTE_NS,
     PublicMinuteCapturePlanV1,
     PublicRawReceiptV1,

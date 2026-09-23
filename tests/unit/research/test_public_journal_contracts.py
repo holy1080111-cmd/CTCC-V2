@@ -19,8 +19,8 @@ from app.mie.validation.batch_replay import (
 )
 from app.mie.validation.contracts import DatasetPartition, PartitionWindow
 from app.mie.validation.measured_public_replay import measured_public_minutes
-from app.research import public_receipt_storage as storage
-from app.research.public_market_receipts import (
+from app.public_market_source import public_receipt_storage as storage
+from app.public_market_source.public_market_receipts import (
     PublicReceiptError,
     canonical,
     sha,

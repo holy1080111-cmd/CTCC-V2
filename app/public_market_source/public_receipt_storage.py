@@ -18,8 +18,8 @@ from typing import Literal
 
 from pydantic import Field
 
-from app.research.public_clock import native_stamp
-from app.research.public_market_receipts import (
+from app.public_market_source.public_clock import native_stamp
+from app.public_market_source.public_market_receipts import (
     MAX_RAW,
     MeasuredPublicMinuteReceiptV1,
     PublicReceiptError,
@@ -92,7 +92,7 @@ def _receipt_from_json(raw):
 
 
 def _replay_directory(directory, checkpoint):
-    from app.research.public_market_capture import replay_public_capture
+    from app.public_market_source.public_market_capture import replay_public_capture
 
     checkpoint = checked(checkpoint, PublicJournalCheckpointV1)
     if _root_identity(directory.path) != (
@@ -113,7 +113,7 @@ def _replay_directory(directory, checkpoint):
     expected_names = {"genesis.json"}
     attempts, attempt_bytes = {}, 0
     if checkpoint.attempt_head_sha256 is not None:
-        from app.research.public_attempt_journal import replay_attempt_chain
+        from app.public_market_source.public_attempt_journal import replay_attempt_chain
 
         expected_names.add("attempts")
         with directory.child("attempts") as attempt_directory:
@@ -172,7 +172,9 @@ def _replay_directory(directory, checkpoint):
                 raise PublicReceiptError("journal_capture_incomplete")
             plan, receipt = replay_public_capture(receipt, raw_files)
             if receipt.attempt_sha256 is not None:
-                from app.research.public_attempt_journal import bind_measured_attempt
+                from app.public_market_source.public_attempt_journal import (
+                    bind_measured_attempt,
+                )
 
                 bind_measured_attempt(receipt, raw_files, attempts)
             validate_stamps(
@@ -239,7 +241,7 @@ class ControlledPublicReceiptJournal:
 
     @contextmanager
     def _begin_attempt(self, plan):
-        from app.research.public_attempt_journal import (
+        from app.public_market_source.public_attempt_journal import (
             MAX_ATTEMPTS,
             _WithoutChain,
             owned_attempt,
@@ -289,7 +291,7 @@ class ControlledPublicReceiptJournal:
                             self._checkpoint = next_checkpoint
 
     def _publish_owned(self, capture):
-        from app.research.public_market_capture import (
+        from app.public_market_source.public_market_capture import (
             _OwnedPublicCapture,
             replay_public_capture,
         )
@@ -306,7 +308,7 @@ class ControlledPublicReceiptJournal:
         with _root_context(self._root) as directory:
             entries, first_rows = _replay_directory(directory, checkpoint)
             if receipt.attempt_sha256 is not None:
-                from app.research.public_attempt_journal import (
+                from app.public_market_source.public_attempt_journal import (
                     bind_measured_attempt,
                     replay_attempt_chain,
                 )

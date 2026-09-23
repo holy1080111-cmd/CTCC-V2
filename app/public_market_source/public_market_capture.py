@@ -10,8 +10,13 @@ from dataclasses import dataclass
 import httpcore
 import httpx
 
-from app.research.public_clock import native_os_clock, native_stamp, validate_os_clock
-from app.research.public_market_receipts import (
+from app.public_market_source.public_clock import (
+    clock_timezone,
+    native_os_clock,
+    native_stamp,
+    validate_os_clock,
+)
+from app.public_market_source.public_market_receipts import (
     ENDPOINT,
     MINUTE_NS,
     TIME_ENDPOINT,
@@ -120,7 +125,7 @@ async def _close(resource, *, cancelled=False):
 async def _fetch(
     client, plan, *, endpoint, query=(), index=0, previous=None, attempt=None
 ):
-    from app.research.public_attempt_journal import failure_code
+    from app.public_market_source.public_attempt_journal import failure_code
 
     native = _client_guard(client)
     request = httpx.Request(
@@ -350,10 +355,12 @@ def replay_public_capture(receipt, raw_files):
     validate_os_clock(receipt.os_clock_before)
     validate_os_clock(receipt.os_clock_after)
     if (
-        receipt.os_clock_before["diagnostic"]["timezone_id"]
-        != receipt.os_clock_after["diagnostic"]["timezone_id"]
-        or receipt.os_clock_before["diagnostic"]["utc_offset_minutes"]
-        != receipt.os_clock_after["diagnostic"]["utc_offset_minutes"]
+        receipt.os_clock_before["schema_version"]
+        != receipt.os_clock_after["schema_version"]
+    ):
+        raise PublicReceiptError("clock_domain_changed_during_capture")
+    if clock_timezone(receipt.os_clock_before) != clock_timezone(
+        receipt.os_clock_after
     ):
         raise PublicReceiptError("timezone_changed_during_capture")
     stamps = [
@@ -431,7 +438,7 @@ def replay_public_capture(receipt, raw_files):
 
 
 async def _collect_packet(plan, expected_plan_sha256, *, _attempt=None):
-    from app.research.public_attempt_journal import _OwnedAttempt
+    from app.public_market_source.public_attempt_journal import _OwnedAttempt
 
     if _attempt is not None and type(_attempt) is not _OwnedAttempt:
         raise PublicReceiptError("owned_attempt_required")
@@ -525,11 +532,13 @@ async def _collect_packet(plan, expected_plan_sha256, *, _attempt=None):
 
 async def collect_and_publish_public_minutes(*, plan, expected_plan_sha256, journal):
     """No injected clock/client, automatic retry, credentials, OOS or orders."""
-    from app.research.public_receipt_storage import ControlledPublicReceiptJournal
+    from app.public_market_source.public_receipt_storage import (
+        ControlledPublicReceiptJournal,
+    )
 
     if type(journal) is not ControlledPublicReceiptJournal:
         raise PublicReceiptError("controlled_journal_required")
-    from app.research.public_attempt_journal import failure_code
+    from app.public_market_source.public_attempt_journal import failure_code
 
     selected = checked(plan, PublicMinuteCapturePlanV1)
     if (

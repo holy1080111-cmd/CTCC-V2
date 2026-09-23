@@ -173,7 +173,7 @@ def test_cli_denies_without_leaking_connection_or_unknown_error_text(
 
 def test_current_source_has_one_actual_head():
     identity = module.source_identity(ROOT)
-    assert identity.head == "0019"
+    assert identity.head == "0020"
     assert len(identity.sha256) == 64
 
 

@@ -6,8 +6,11 @@ import ssl
 import httpx
 import pytest
 
-from app.research import public_market_capture as capture
-from app.research.public_market_receipts import PublicReceiptError, canonical
+from app.public_market_source import public_market_capture as capture
+from app.public_market_source.public_market_receipts import (
+    PublicReceiptError,
+    canonical,
+)
 from tests.unit.research.public_receipt_fixtures import SyntheticCapture
 
 

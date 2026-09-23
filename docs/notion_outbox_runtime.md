@@ -63,14 +63,17 @@ python -m scripts.setup_notion_outbox `
   --outbox-root '<absolute existing persistent outbox directory>' `
   --database-id 13d5e61fce534184a42e0b01c4f372d3 `
   --data-source-id cbbdc739-2723-4e07-a5d7-7d4d1395658e `
-  --report-id-property-name '報告編號' `
+  --report-id-property-name '報告名稱' `
   --envelope-sha256-property-name 'Outbox Envelope SHA256' `
   --payload-sha256-property-name 'Outbox Payload SHA256' `
   --metadata-json-property-name 'Outbox Metadata JSON'
 ```
 
 The report-ID property must have `title` type and the other three must have
-`rich_text` type, as required by the reviewed adapter. The connector's generic
+`rich_text` type, as required by the reviewed adapter. The 2026-09-23 connector
+readback identifies `報告名稱` as the title field; `報告編號` is a separate text
+field and cannot bind this role. These names are selection hints only: the
+connector projection does not provide the four opaque property IDs. The connector's generic
 text-field description alone cannot attest those REST types. Generic interactive
 database/source/property selection is available when nonsecret options are omitted.
 

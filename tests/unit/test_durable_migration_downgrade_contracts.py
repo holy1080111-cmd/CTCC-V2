@@ -8,7 +8,7 @@ import re
 
 import pytest
 
-from tests.durable_migration_fixtures import TABLES, RecordedDowngrade
+from tests.durable_migration_fixtures import DOWNGRADE_LOCKS, TABLES, RecordedDowngrade
 
 
 @pytest.mark.parametrize("revision", TABLES)
@@ -17,16 +17,15 @@ def test_exclusive_nowait_locks_precede_any_read_or_drop(revision):
     kind, statement = commands[0]
     assert kind == "execute" and statement.startswith("LOCK TABLE ")
     assert statement.endswith("IN ACCESS EXCLUSIVE MODE NOWAIT")
-    expected = TABLES[revision]
-    if revision == "0018":
-        # DROP removes FKs into DB0017; avoid acquiring parent locks late.
-        expected = TABLES["0017"] + expected
+    # DROP removes FK triggers on parent tables; acquire their locks up front.
+    expected = DOWNGRADE_LOCKS[revision]
     actual = re.search(r"LOCK TABLE (.*?) IN ACCESS", statement, re.DOTALL)[1]
     assert tuple(item.strip() for item in actual.split(",")) == expected
     guard = commands[1][1]
     assert commands[1][0] == "execute" and "RAISE EXCEPTION" in guard
     assert (
-        tuple(re.findall(r"EXISTS \(SELECT 1 FROM (\w+)\)", guard)) == TABLES[revision]
+        tuple(re.findall(r"EXISTS\s*\(SELECT 1 FROM (\w+)\)", guard))
+        == TABLES[revision]
     )
     assert tuple(value for kind, value in commands if kind == "drop") == tuple(
         reversed(TABLES[revision])

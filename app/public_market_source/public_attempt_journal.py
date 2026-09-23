@@ -14,7 +14,7 @@ from contextlib import contextmanager
 
 import httpx
 
-from app.research.public_market_receipts import (
+from app.public_market_source.public_market_receipts import (
     ENDPOINT,
     MAX_RAW,
     TIME_ENDPOINT,
@@ -241,7 +241,9 @@ class _OwnedAttempt:
 
 
 def replay_attempt(directory, *, expected_plan=None):
-    from app.research.public_market_receipts import PublicMinuteCapturePlanV1
+    from app.public_market_source.public_market_receipts import (
+        PublicMinuteCapturePlanV1,
+    )
 
     plan_data, plan_raw = _read(directory, "plan.json")
     plan = PublicMinuteCapturePlanV1.model_validate(plan_data)

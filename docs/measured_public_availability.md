@@ -152,3 +152,12 @@ forged owned-labelled carriers to exercise replay/storage semantics. They are
 not native TLS, native filesystem or real market acceptance. The separate native
 filesystem tests exercise the real primitives and must pass in an eligible
 validation environment. No real public collection was performed in this slice.
+
+## Source package boundary
+
+Owned public GET acquisition, clock observations and immutable receipt journals
+live in `app.public_market_source`. The passive `app.research` package has no
+runtime consumer and retains its original import boundary. The only application
+consumer of the public source package is the offline MIE measured-minute adapter.
+This separation grants no account, qualification, execution or promotion authority.
+Existing receipt schemas and canonical bytes are unchanged by the module move.

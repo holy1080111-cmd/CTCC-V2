@@ -74,6 +74,7 @@ __all__ = [
     "AnalysisRun",
     "AuditLog",
     "ConfigurationVersion",
+    "DemoAccountCaptureEvent",
     "DemoAccountControl",
     "DemoAutomationFingerprint",
     "DemoAutomationRun",
@@ -123,3 +124,4 @@ __all__ = [
     "TradeCandidate",
     "TradeLifecycle",
 ]
+from app.database.models.account_capture_journal import DemoAccountCaptureEvent

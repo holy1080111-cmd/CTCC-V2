@@ -4,9 +4,9 @@ import copy
 
 import pytest
 
-from app.research.public_clock import validate_os_clock
-from app.research.public_market_capture import replay_public_capture
-from app.research.public_market_receipts import (
+from app.public_market_source.public_clock import validate_os_clock
+from app.public_market_source.public_market_capture import replay_public_capture
+from app.public_market_source.public_market_receipts import (
     PublicMinuteCapturePlanV1,
     PublicReceiptError,
     canonical,

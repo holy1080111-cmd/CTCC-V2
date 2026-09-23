@@ -161,7 +161,7 @@ handle is no longer present. A timed-out database port does not prove that its
 server stopped. No old image, earlier test count, original deployment or raw WSL
 disk has been substituted. The current source has no new Linux/Docker acceptance.
 
-The unsealed continuation adds the separate unknown-state account bootstrap,
+The fourth-checkpoint continuation adds the separate unknown-state account bootstrap,
 explicit range-anchor V4 restrictions, a durable Demo control journal through
 migration 0019, and measured public-minute receipt work. See
 [bootstrap capture](account_bootstrap_capture.md) and
@@ -219,6 +219,124 @@ an HTTP scheme prefix and empty CI settings. The actual deployment credential
 input is unavailable in this environment, so exact-secret comparison and the
 final release secret audit remain incomplete. No credential was copied into
 source or diagnostics for this review.
+
+## Preserved fourth checkpoint and collection repair
+
+The canonical source now resides in the independent `canonical-final` repository
+inside the final-completion workspace. The prior linked `canonical` worktree is
+preserved. Its Git metadata was outside the writable workspace; no reset,
+overwrite or remote-main checkout was used. A full-history bundle and 697-file
+working-source snapshot were verified before the move. Independent object and
+reflog review found no missing commits; Git archive line endings follow the
+existing attributes and are not claimed byte-identical to the raw working copy.
+
+Fourth checkpoint `79d5172d48045ab44b5c45516d58fb09eef60a21`, tree
+`2a0533d368eb6861658f66e517137743fb8d0e17`, preserves DB0019 and the reviewed
+bootstrap, range and measured-source changes. Its Windows regression failed
+collection because unit and integration tests had the same module basename.
+Zero tests executed in that failed run; its artifacts remain unchanged.
+
+The collection-only repair is `fbe0729e64c8e1904873a64f4d6ce6f170f01d02`, tree
+`81d7fd86adb208df0ad0a3a84a58cbd4a56fe0e6`. It renames the unit module and updates
+its manifest entry without changing runtime behavior. Its exact archive SHA256
+is `d20a9802390701d3b7c3ca405692c7c0bba0b3a5da44d657559910b6bfc2ca19` and
+manifest SHA256 is
+`76bd4a7386a179a87a5011b5c248996736111afb66e337f38baae7dda339b24f`.
+The isolated Windows run passed source/dependency/lint/format checks, then
+completed with 10,624 passes, 89 failures, 104 setup errors and 137 skips from
+10,954 cases. Its result is FAIL; XML SHA256 is
+`db140541a476174d5876fc5153cea01762c4995b50c7fc7a542d65000fe5234f`.
+Two failures expose public acquisition code placed across the passive research
+boundary. Independent trace review and 13 observation-only reruns confirm 76 native
+permission failures plus 104 setup errors, 11 database DNS failures, 108 missing
+PostgreSQL skips and 29 platform/privilege skips. The ancestor access failure
+persists with both current and narrower documented access requests; an
+attribute-only handle cannot prevent directory replacement, so it is not used
+to bypass the required lock. PostgreSQL, schema-drift, Linux and Docker acceptance for this
+checkpoint remain unavailable. Required PostgreSQL skips
+cannot be counted as acceptance and no historical passing counts are substituted.
+
+Further working changes, including the DB0020 private account ingestion journal,
+precise native clock observation and process-private dispatch ownership, are
+outside both sealed archives and require a new exact-source validation. The
+account crash harness now distinguishes finalized safe raw bytes from an
+unfinished RAM-only prefix. Its restart verifier preserves the old journal and
+records unknown missing bytes without inventing a completion time. Offline
+memory tests do not establish actual process/database restart acceptance.
+
+The Notion destination was independently fetched through the connector on
+2026-09-23. Setup documentation now selects title field `報告名稱`; the old
+`報告編號` selection was a text field and would be rejected by the existing
+adapter. Opaque REST property IDs and a runtime REST token remain unavailable;
+this correction neither establishes a real binding nor delivers a report.
+
+## DB0020 and native clock working continuation
+
+The [private account journal](account_capture_journal.md) records request/page
+progress under the existing qualification account lock. Its independent commit
+readback preserves exact bytes, sequence, predecessor and DB receipt time without
+issuing complete-history claims, changing risk revisions or enabling execution.
+Before signing stops, arbitrary source identities and queries are represented by
+hashes. Safe raw pages are finalized only after scanning against every signature
+issued by that invocation. A page containing a later signature is withheld;
+earlier immutable metadata cannot retain that plaintext.
+
+Independent review reproduced both a late-signature metadata leak and a temporary
+body-sample clock regression that had allowed a complete packet. The fixes retain
+the anomalous observed time and byte/hash evidence, stop acquisition and refuse
+the packet. The final account compatibility group passes 966 cases, including
+42 journal cases and the account crash-helper cases. A separate independent
+journal/bootstrap group passes 56 cases; these counts overlap and are not added.
+Both original reproductions and intermediate failing runs remain preserved.
+
+The crash probe separately retains a safely finalized failed page and an
+unfinished RAM prefix. Verification checks the recovery event again in a new
+session, including its DB receipt time and unknown tail. The synthetic database
+URL must have the exact isolated host/user/database/port and no query overrides.
+Neither memory tests nor disposing an engine count as an actual process restart.
+
+DB0020 downgrade locks its qualification parent before the journal and refuses
+any retained event. The shared PostgreSQL downgrade matrix now has 27 collected
+cases, including capture-start/raw retention, parent/child contention, and empty
+downgrade/re-upgrade. Schema comparisons include indexes, trigger definitions and
+functions as well as columns and constraints. Offline SQL generation passes;
+the new PostgreSQL cases and actual schema comparisons have not executed here.
+The hermetic acceptance verifier requires all ten relevant PostgreSQL modules to
+execute without skips. The source-head test now expects the actual DB0020 graph;
+its initial stale DB0019 assertion failure is retained separately. After fixing
+that assertion, all 151 root harness/migration checks pass with unchanged source
+pins during the run; this is still not PostgreSQL or process-restart acceptance.
+
+The [native clock v2 observer](public_clock_v2.md) uses the precise Windows UTC
+clock and a measured monotonic domain, preserving raw status output and pinned
+formatter semantics. It retains the existing time tolerances. Its 109 focused
+cases pass, while native observations still report W32Time stopped/manual.
+The public-clock/capture compatibility run has 214 passes, 17 native ancestor
+handle failures and one platform skip. Host synchronization and trusted public
+capture remain unaccepted. Previous clock wire bytes remain unchanged.
+
+The full regression boundary failures were repaired by moving the five public
+acquisition/clock/journal modules into `app.public_market_source`. The passive
+research boundary tests remain byte-identical. Additional checks constrain the
+new package to read-only acquisition and native clock/storage evidence, with
+`app.mie.validation.measured_public_replay` as its only application consumer.
+Module ASTs differ only in import namespaces; complete synthetic V1/V2 receipt
+and raw-byte bundles remain byte-identical. The relocated group has 226 passes,
+17 native ancestor-handle failures and one platform skip, with no source changes
+during the run. The failures remain FAIL; this is not native storage acceptance.
+A 712-file exact working archive precedes the relocation and preserves the
+unsealed clock/account work separately from the previous Git checkpoints.
+
+[D0 ownership](dispatch_ownership_d0.md) retains a bounded invocation's original
+candidate and separately reads back its committed v2 intent. Cancellation before
+task startup and cancellation swallowed by a database dependency both terminate
+the attempt; neither can restore ownership. This module has no READY issuer or
+order-writing transport. Source-owned account/public authority and the final
+guarded transport remain missing; these working changes do not establish Demo,
+Live, OOS, shadow, economics or release acceptance. The final D0/legacy
+containment group passes 234 cases (104 D0 and 130 existing boundary cases),
+with source pins unchanged. Four independent cancellation/error probes also
+pass without writes or authority; these are separate from real SQL acceptance.
 
 ## Outstanding source-independent evidence
 

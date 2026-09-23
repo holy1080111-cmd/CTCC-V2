@@ -66,7 +66,15 @@ async def collect_bootstrap(session, *, repository, clock, barrier_completed_at)
     raise runtime.AccountRuntimeError(error)
 
 
-async def _collect(session, repository, clock, barrier_completed_at):
+async def _collect(
+    session,
+    repository,
+    clock,
+    barrier_completed_at,
+    *,
+    _journal_repository=None,
+    _journal_slot=None,
+):
     if type(session) is not runtime.ControlledDemoAccountSession:
         raise runtime.AccountRuntimeError("account_runtime_invalid")
     if session._used:
@@ -87,15 +95,31 @@ async def _collect(session, repository, clock, barrier_completed_at):
     session._check_bootstrap_checkpoint(before, scope)
     if before.observed_at < start:
         raise runtime.AccountRuntimeError("runtime_clock_invalid")
+    journal = None
+    if _journal_repository is not None:
+        from app.trade_qualification.account_capture_journal import start_owned_journal
+
+        journal = await start_owned_journal(
+            repository=_journal_repository,
+            scope=scope,
+            plan=selected,
+            checkpoint=before.state_sha256,
+            clock=clock,
+            tokens=collector._credential_values(session._credentials)[:3],
+        )
+        _journal_slot.append(journal)
     # Unlike the execution materializer, raw bootstrap/reconciliation reads must
     # remain available when known local holds exist. They never retire those holds.
-    owned = await collector._collect_owned_demo_account_records(
-        credentials=session._credentials,
-        clock=clock,
-        plan=selected,
-        expected_plan_sha256=session._pin,
-        barrier_completed_at=barrier,
-    )
+    arguments = {
+        "credentials": session._credentials,
+        "clock": clock,
+        "plan": selected,
+        "expected_plan_sha256": session._pin,
+        "barrier_completed_at": barrier,
+    }
+    if journal is not None:
+        arguments["_journal"] = journal
+    owned = await collector._collect_owned_demo_account_records(**arguments)
     if type(owned) is not collector._OwnedAccountCapture:
         raise runtime.AccountRuntimeError("owned_capture_required")
     frozen = capture.freeze_demo_account_packet(
@@ -182,3 +206,73 @@ async def _collect(session, repository, clock, barrier_completed_at):
         receipt,
         hashlib.sha256(receipt).hexdigest(),
     )
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class RecordedBootstrapCaptureResult:
+    """Private bootstrap result plus a public-safe audit persistence receipt."""
+
+    bootstrap: DemoBootstrapCaptureResult
+    journal_receipt_json: bytes
+
+    @property
+    def account_complete(self):
+        return False
+
+    @property
+    def execution_authority(self):
+        return False
+
+    @property
+    def admission(self):
+        return "DENY"
+
+
+async def collect_bootstrap_recorded(
+    session, *, repository, journal_repository, clock, barrier_completed_at
+):
+    """Same one-use owned acquisition; no packet/transport flag accepted as input."""
+    from app.database.repositories.account_capture_journal import (
+        AccountCaptureJournalRepository,
+    )
+    from app.trade_qualification.account_capture_journal import bounded_finalization
+
+    if type(journal_repository) is not AccountCaptureJournalRepository:
+        raise runtime.AccountRuntimeError("account_runtime_invalid")
+    journals, result, failure, cancelled = [], None, None, False
+    try:
+        result = await _collect(
+            session,
+            repository,
+            clock,
+            barrier_completed_at,
+            _journal_repository=journal_repository,
+            _journal_slot=journals,
+        )
+    except asyncio.CancelledError:
+        cancelled = True
+        failure = asyncio.CancelledError()
+    except Exception:  # noqa: BLE001 -- no private SQL/HTTP/credential exception escapes
+        failure = RuntimeError("capture_failed")
+    receipt = None
+    if journals:
+        try:
+            receipt = await bounded_finalization(
+                journals[0].finish(result=result, error=failure)
+            )
+        except asyncio.CancelledError:
+            cancelled = True
+        except Exception:  # noqa: BLE001 -- durable events survive failed final receipt
+            result = None
+    if cancelled:
+        raise asyncio.CancelledError
+    if result is None or receipt is None:
+        raise runtime.AccountRuntimeError("account_runtime_invalid")
+    public_receipt = None
+    try:
+        public_receipt = receipt.receipt_json
+    except Exception:  # noqa: BLE001, S110 -- late rendering cannot leak private state
+        pass
+    if public_receipt is None:
+        raise runtime.AccountRuntimeError("account_runtime_invalid")
+    return RecordedBootstrapCaptureResult(result, public_receipt)

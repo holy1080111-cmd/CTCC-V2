@@ -302,7 +302,12 @@ def wait_for_durable_seed(run: Run, container: str, marker: Path, *, timeout=120
             canonical = json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
             if (
                 envelope["sha256"] != hashlib.sha256(canonical).hexdigest()
-                or body.get("schema") != "ctcc.synthetic.qualification.crash-probe.v2"
+                or body.get("schema") != "ctcc.synthetic.qualification.crash-probe.v3"
+                or type(body.get("account_captures")) is not list
+                or len(body["account_captures"]) != 2
+                or any(type(item) is not dict for item in body["account_captures"])
+                or {item.get("scenario") for item in body["account_captures"]}
+                != {"safe_failed_capture", "unfinished_ram_prefix"}
                 or type(body.get("controls")) is not list
                 or len(body["controls"]) != 3
                 or any(type(item) is not dict for item in body["controls"])
@@ -585,6 +590,8 @@ def main():
                 "tests/integration/test_demo_control_repository.py",
                 "tests/integration/test_demo_control_durability_probe.py",
                 "tests/integration/test_durable_migration_downgrade.py",
+                "tests/integration/test_account_ingestion_journal_repository.py",
+                "tests/integration/test_account_capture_crash_probe_repository.py",
             ],
             mounts=test_results_mount,
         )
@@ -599,6 +606,8 @@ def main():
                 "tests.integration.test_demo_control_repository",
                 "tests.integration.test_demo_control_durability_probe",
                 "tests.integration.test_durable_migration_downgrade",
+                "tests.integration.test_account_ingestion_journal_repository",
+                "tests.integration.test_account_capture_crash_probe_repository",
             ),
         )
         container(
