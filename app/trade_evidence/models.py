@@ -19,6 +19,7 @@ from app.trade_qualification.event_models import Digest, TriggerDetection
 from app.trade_qualification.history_prefix import (
     HistoryEntryQualificationResultV2,
     HistoryEntryQualificationResultV3,
+    HistoryEntryQualificationResultV4,
 )
 from app.trade_qualification.location import ExecutableQuote
 from app.trade_qualification.models import (
@@ -48,13 +49,19 @@ def _qualification_family(value):
             "ctcc-history-qualification-result-v3",
             "history_v3",
         ),
+        (
+            HistoryEntryQualificationResultV4,
+            "ctcc-history-qualification-result-v4",
+            "history_v4",
+        ),
     )
 
 
 EvidenceQualification = Annotated[
     Annotated[EntryQualificationResult, Tag("legacy")]
     | Annotated[HistoryEntryQualificationResultV2, Tag("history_v2")]
-    | Annotated[HistoryEntryQualificationResultV3, Tag("history_v3")],
+    | Annotated[HistoryEntryQualificationResultV3, Tag("history_v3")]
+    | Annotated[HistoryEntryQualificationResultV4, Tag("history_v4")],
     Discriminator(_qualification_family),
 ]
 

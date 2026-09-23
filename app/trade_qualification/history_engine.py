@@ -39,17 +39,21 @@ from app.trade_qualification.history_prefix import (
     HistoryEntryQualificationResult,
     HistoryEntryQualificationResultV2,
     HistoryEntryQualificationResultV3,
+    HistoryEntryQualificationResultV4,
     HistoryQualificationPrefixPolicy,
     HistoryQualificationPrefixPolicyV2,
     HistoryQualificationPrefixPolicyV3,
+    HistoryQualificationPrefixPolicyV4,
     HistoryQualificationPrefixRun,
     HistoryQualificationPrefixRunV2,
     HistoryQualificationPrefixRunV3,
+    HistoryQualificationPrefixRunV4,
     QualificationIntent,
     _plain,
     evaluate_history_qualification_prefix,
     evaluate_history_qualification_prefix_v2,
     evaluate_history_qualification_prefix_v3,
+    evaluate_history_qualification_prefix_v4,
 )
 from app.trade_qualification.history_prefix import (
     _bounded as _prefix_bounded,
@@ -112,6 +116,11 @@ class HistoryPreEvidencePolicyV3(HistoryPreEvidencePolicy):
     prefix: HistoryQualificationPrefixPolicyV3
 
 
+class HistoryPreEvidencePolicyV4(HistoryPreEvidencePolicy):
+    contract_version: Literal["ctcc-history-pre-evidence-v4"]
+    prefix: HistoryQualificationPrefixPolicyV4
+
+
 def _preflight(value, depth=0, budget=None):
     """Exact declared models and bounded raw fields, before any serializer."""
     if budget is None:
@@ -126,10 +135,12 @@ def _preflight(value, depth=0, budget=None):
             HistoryPreEvidencePolicy,
             HistoryPreEvidencePolicyV2,
             HistoryPreEvidencePolicyV3,
+            HistoryPreEvidencePolicyV4,
             PortfolioInputs,
             HistoryPreEvidenceRun,
             HistoryPreEvidenceRunV2,
             HistoryPreEvidenceRunV3,
+            HistoryPreEvidenceRunV4,
             EconomicsPolicy,
             EconomicsResult,
             PortfolioRiskPolicy,
@@ -460,6 +471,13 @@ class HistoryPreEvidenceRunV3(HistoryPreEvidenceRun):
         return self
 
 
+class HistoryPreEvidenceRunV4(HistoryPreEvidenceRun):
+    contract_version: Literal["ctcc-history-pre-evidence-v4"]
+    prefix: HistoryQualificationPrefixRunV4
+    policy: HistoryPreEvidencePolicyV4
+    result: HistoryEntryQualificationResultV4
+
+
 def evaluate_history_pre_evidence(
     market: MarketSnapshot,
     *,
@@ -497,6 +515,12 @@ def evaluate_history_pre_evidence_v3(market, *, policy, **inputs):
     return _evaluate_history_pre_evidence(market, policy=policy, **inputs)
 
 
+def evaluate_history_pre_evidence_v4(market, *, policy, **inputs):
+    if type(policy) is not HistoryPreEvidencePolicyV4:
+        raise ValueError("exact v4 history pre-evidence policy required")
+    return _evaluate_history_pre_evidence(market, policy=policy, **inputs)
+
+
 def _evaluate_history_pre_evidence(
     market,
     *,
@@ -511,16 +535,21 @@ def _evaluate_history_pre_evidence(
     """Re-run original G1--G7 inputs, then stop at the first failed G8--G11 gate."""
     version2 = type(policy) is HistoryPreEvidencePolicyV2
     version3 = type(policy) is HistoryPreEvidencePolicyV3
+    version4 = type(policy) is HistoryPreEvidencePolicyV4
     policy = _copy(
         policy,
-        HistoryPreEvidencePolicyV3
+        HistoryPreEvidencePolicyV4
+        if version4
+        else HistoryPreEvidencePolicyV3
         if version3
         else HistoryPreEvidencePolicyV2
         if version2
         else HistoryPreEvidencePolicy,
     )
     run_type = (
-        HistoryPreEvidenceRunV3
+        HistoryPreEvidenceRunV4
+        if version4
+        else HistoryPreEvidenceRunV3
         if version3
         else HistoryPreEvidenceRunV2
         if version2
@@ -528,7 +557,9 @@ def _evaluate_history_pre_evidence(
     )
     risk_inputs = _copy(risk_inputs, PortfolioInputs)
     prefix_evaluator = (
-        evaluate_history_qualification_prefix_v3
+        evaluate_history_qualification_prefix_v4
+        if version4
+        else evaluate_history_qualification_prefix_v3
         if version3
         else evaluate_history_qualification_prefix_v2
         if version2
@@ -553,7 +584,9 @@ def _evaluate_history_pre_evidence(
             _plain(
                 {
                     **(
-                        {"contract_version": "ctcc-history-pre-evidence-v3"}
+                        {"contract_version": "ctcc-history-pre-evidence-v4"}
+                        if version4
+                        else {"contract_version": "ctcc-history-pre-evidence-v3"}
                         if version3
                         else {}
                     ),
@@ -751,6 +784,14 @@ def verify_history_pre_evidence_v2(run, market, **original_inputs):
 def verify_history_pre_evidence_v3(run, market, **original_inputs):
     checked = _copy(run, HistoryPreEvidenceRunV3)
     replayed = evaluate_history_pre_evidence_v3(market, **original_inputs)
+    if checked != replayed:
+        raise ValueError("history_pre_evidence_replay_mismatch")
+    return replayed
+
+
+def verify_history_pre_evidence_v4(run, market, **inputs):
+    checked = _copy(run, HistoryPreEvidenceRunV4)
+    replayed = evaluate_history_pre_evidence_v4(market, **inputs)
     if checked != replayed:
         raise ValueError("history_pre_evidence_replay_mismatch")
     return replayed

@@ -18,6 +18,7 @@ from typing import Literal
 from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from app.database.repositories.qualification_ledger import (
+    LedgerBootstrapCheckpoint,
     LedgerCaptureCheckpoint,
     QualificationLedgerRepository,
 )
@@ -70,6 +71,7 @@ _ERRORS = frozenset(
         "bootstrap_history_coverage_incomplete",
         "bootstrap_invalid",
         "captured_metadata_invalid",
+        "bootstrap_checkpoint_invalid",
     }
 )
 
@@ -286,6 +288,22 @@ class ControlledDemoAccountSession:
 
     def __repr__(self):
         return "<ControlledDemoAccountSession redacted>"
+
+    async def collect_bootstrap(self, *, repository, clock, barrier_completed_at):
+        """Acquire authenticatable raw evidence before any complete claims exist.
+
+        This uses the same one-use session and native collector as normal capture.
+        It records unknown local initialization explicitly, accepts no portfolio
+        claims and does not publish an account revision, Arm or order authority.
+        """
+        from app.trade_qualification.account_bootstrap_runtime import collect_bootstrap
+
+        return await collect_bootstrap(
+            self,
+            repository=repository,
+            clock=clock,
+            barrier_completed_at=barrier_completed_at,
+        )
 
     async def collect_and_materialize(
         self,
@@ -519,6 +537,32 @@ class ControlledDemoAccountSession:
             or capture._utc(value.observed_at) > capture._utc(value.received_at)
         ):
             raise AccountRuntimeError("ledger_checkpoint_invalid")
+
+    @staticmethod
+    def _check_bootstrap_checkpoint(value, scope):
+        if type(value) is not LedgerBootstrapCheckpoint:
+            raise AccountRuntimeError("bootstrap_checkpoint_invalid")
+        scope = reservations.checked_bootstrap(scope, reservations.LedgerScope)
+        state = reservations.checked_bootstrap(
+            value.state, reservations.LedgerScopeState
+        )
+        if (
+            state.scope != scope
+            or type(value.state_sha256) is not str
+            or reservations.digest(state) != value.state_sha256
+            or capture._utc(value.observed_at) > capture._utc(value.received_at)
+            or state.ledger_revision < state.account_revision
+            or (
+                state.account_revision == 0
+                and (
+                    state.ledger_revision != 0
+                    or state.claims_sha256 is not None
+                    or state.active
+                )
+            )
+            or (state.account_revision > 0 and state.claims_sha256 is None)
+        ):
+            raise AccountRuntimeError("bootstrap_checkpoint_invalid")
 
     def _check_bootstrap(self, bootstrap, now):
         evidence, plan = bootstrap.evidence, self._plan

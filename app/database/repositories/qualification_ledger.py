@@ -29,6 +29,7 @@ from app.trade_qualification.reservations import (
     RiskCoverage,
     canonical,
     checked,
+    checked_bootstrap,
     claim_stamps,
     decode,
     digest,
@@ -52,6 +53,28 @@ class LedgerCaptureCheckpoint:
     observed_at: datetime
     received_at: datetime
     state_sha256: str
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class LedgerBootstrapCheckpoint:
+    """Real local journal observation, including explicit uninitialized state.
+
+    A zero local revision is not a zero balance or a complete account. This
+    separate type is never accepted by the existing portfolio materializer.
+    """
+
+    state: LedgerScopeState
+    observed_at: datetime
+    received_at: datetime
+    state_sha256: str
+
+    @property
+    def account_initialized(self):
+        return self.state.account_revision > 0
+
+    @property
+    def execution_authority(self):
+        return False
 
 
 class QualificationLedgerRepository:
@@ -291,6 +314,52 @@ class QualificationLedgerRepository:
             received_at=received,
             state_sha256=digest(state),
         )
+
+    async def _bootstrap_checkpoint(self, session, scope, row):
+        observed = self._now(row)
+        state = checked_bootstrap(
+            await self._state(session, scope, row), LedgerScopeState
+        )
+        if row.account_revision == 0:
+            if (
+                row.ledger_revision != 0
+                or row.claims_json is not None
+                or row.claims_sha256 is not None
+                or state.active
+            ):
+                raise QualificationLedgerError("ledger_uninitialized_state_invalid")
+        elif self._claims(row).scope != scope:
+            raise QualificationLedgerError("ledger_claim_scope_mismatch")
+        received = self._now(row)
+        if received < observed:
+            raise QualificationLedgerError("ledger_clock_regressed")
+        return LedgerBootstrapCheckpoint(state, observed, received, digest(state))
+
+    async def initialize_capture_scope(self, scope):
+        """Ensure only an unknown local scope, then read it in another session.
+
+        The existing DB0017 zero-revision/null-claims state breaks the cold-start
+        dependency without fabricating portfolio claims. Existing claims, holds,
+        revisions and tombstones are never overwritten. Commit/readback failure
+        gives the caller no successful checkpoint and never grants execution.
+        """
+        scope = checked_bootstrap(scope, LedgerScope)
+        async with self.session_factory() as session, session.begin():
+            row = await self._locked(session, scope, create=True)
+            before = await self._bootstrap_checkpoint(session, scope, row)
+        after = await self.read_bootstrap_checkpoint(scope)
+        if before.received_at > after.observed_at:
+            raise QualificationLedgerError("ledger_clock_regressed")
+        if before.state_sha256 != after.state_sha256:
+            raise QualificationLedgerError("ledger_bootstrap_revision_changed")
+        return after
+
+    async def read_bootstrap_checkpoint(self, scope):
+        """Observe unknown or initialized local state under the existing UID lock."""
+        scope = checked_bootstrap(scope, LedgerScope)
+        async with self.session_factory() as session, session.begin():
+            row = await self._locked(session, scope)
+            return await self._bootstrap_checkpoint(session, scope, row)
 
     @staticmethod
     def _coverage_caps(request, claims, active, coverage):

@@ -92,19 +92,29 @@ class _HistoryReplayInputsV3(_OriginalReplayInputs):
     policy: history_engine.HistoryPreEvidencePolicyV3
 
 
+class _HistoryReplayInputsV4(_OriginalReplayInputs):
+    policy: history_engine.HistoryPreEvidencePolicyV4
+
+
 _MODEL_TYPES = (
     gates.HistoryEvidenceGateRunV2,
     gates.HistoryEvidenceGateRunV3,
+    gates.HistoryEvidenceGateRunV4,
     history_engine.HistoryPreEvidencePolicyV2,
     history_engine.HistoryPreEvidencePolicyV3,
+    history_engine.HistoryPreEvidencePolicyV4,
     history_engine.HistoryPreEvidenceRunV2,
     history_engine.HistoryPreEvidenceRunV3,
+    history_engine.HistoryPreEvidenceRunV4,
     history_prefix.HistoryEntryQualificationResultV2,
     history_prefix.HistoryEntryQualificationResultV3,
+    history_prefix.HistoryEntryQualificationResultV4,
     history_prefix.HistoryQualificationPrefixPolicyV2,
     history_prefix.HistoryQualificationPrefixPolicyV3,
+    history_prefix.HistoryQualificationPrefixPolicyV4,
     history_prefix.HistoryQualificationPrefixRunV2,
     history_prefix.HistoryQualificationPrefixRunV3,
+    history_prefix.HistoryQualificationPrefixRunV4,
     RegimeAdmissionResult,
     SubmissionExecutionBinding,
     ReservationRequest,
@@ -238,6 +248,14 @@ def _json(value):
     )
 
 
+def _require_range_execution_binding(pre, binding):
+    """The newly admitted V4 schema cannot select legacy intent-v1 replay."""
+    if type(pre) is history_engine.HistoryPreEvidenceRunV4:
+        _guard(binding)
+        if type(binding) is not SubmissionExecutionBinding:
+            raise QualificationLedgerError("submit_range_execution_binding_required")
+
+
 def build_submission_intent(
     request, consumed, *, execution_binding: SubmissionExecutionBinding | None = None
 ):
@@ -247,6 +265,7 @@ def build_submission_intent(
     request = checked(request, ReservationRequest)
     consumed = checked(consumed, ReservationReceipt)
     origin = request.origin
+    _require_range_execution_binding(origin.evidence.pre_evidence, execution_binding)
     candidate = origin.candidate
     risk = request.risk_inputs
     if (
@@ -395,6 +414,10 @@ def _original_inputs_document(raw):
                 _HistoryReplayInputsV3,
                 "ctcc-history-qualification-prefix-v3",
             ),
+            "ctcc-history-pre-evidence-v4": (
+                _HistoryReplayInputsV4,
+                "ctcc-history-qualification-prefix-v4",
+            ),
         }
         if type(version) is not str or version not in variants:
             raise ValueError("original_policy_version_unsupported")
@@ -461,6 +484,12 @@ def _execution_body(request, consumed, supplied):
         )
         if not actual.computational_checks_passed:
             raise ValueError("recorded_recheck_denied")
+        if type(origin.evidence.pre_evidence) is history_engine.HistoryPreEvidenceRunV4:
+            reservations._check_original_range_location(
+                origin.evidence.pre_evidence,
+                request.quote,
+                observed_at=consumed.updated_at,
+            )
         config = [
             json.loads(page.rows[0].canonical_json)
             for page in packet.observations

@@ -8,6 +8,7 @@ from app.database.models.demo_automation import (
     DemoAutomationRun,
     DemoAutomationState,
 )
+from app.database.models.demo_control import DemoAccountControl, DemoControlJournal
 from app.database.models.observability import DemoObservabilityEvent, DemoSoakSession
 from app.database.models.okx_demo import (
     OkxDemoAlgoOrderState,
@@ -73,9 +74,11 @@ __all__ = [
     "AnalysisRun",
     "AuditLog",
     "ConfigurationVersion",
+    "DemoAccountControl",
     "DemoAutomationFingerprint",
     "DemoAutomationRun",
     "DemoAutomationState",
+    "DemoControlJournal",
     "DemoDailyPerformanceReport",
     "DemoObservabilityEvent",
     "DemoPerformanceSnapshot",

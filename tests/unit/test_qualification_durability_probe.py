@@ -12,7 +12,13 @@ from scripts import verify_final_hermetic as harness
 
 def marker_body():
     return {
-        "schema": "ctcc.synthetic.qualification.crash-probe.v1",
+        "schema": "ctcc.synthetic.qualification.crash-probe.v2",
+        "controls": [
+            {"scenario": label} for label in ("arm_intent", "estop", "cold_estop")
+        ],
+        "intent_version": "ctcc-demo-submit-intent-v2",
+        "exchange_request_sha256": "a" * 64,
+        "control_arm_intent_observed_before_publish": True,
         "execution_authority": False,
         "order_writes": 0,
     }
@@ -100,7 +106,19 @@ def test_live_seed_complete_marker_allows_host_crash_stage(tmp_path, monkeypatch
     harness.wait_for_durable_seed(SimpleNamespace(), "synthetic", marker)
 
 
-@pytest.mark.parametrize("damage", ("hash", "authority", "order_writes"))
+@pytest.mark.parametrize(
+    "damage",
+    (
+        "hash",
+        "authority",
+        "order_writes",
+        "missing_control",
+        "old_version",
+        "legacy_intent",
+        "request_hash",
+        "expired_arm",
+    ),
+)
 def test_live_process_cannot_make_bad_marker_ready(tmp_path, monkeypatch, damage):
     fake_running(monkeypatch, True)
     marker = tmp_path / "durable.json"
@@ -109,6 +127,16 @@ def test_live_process_cannot_make_bad_marker_ready(tmp_path, monkeypatch, damage
         body["execution_authority"] = True
     elif damage == "order_writes":
         body["order_writes"] = 1
+    elif damage == "missing_control":
+        body["controls"].pop()
+    elif damage == "legacy_intent":
+        body["intent_version"] = "ctcc-demo-submit-intent-v1"
+    elif damage == "request_hash":
+        body["exchange_request_sha256"] = "x" * 64
+    elif damage == "expired_arm":
+        body["control_arm_intent_observed_before_publish"] = False
+    elif damage == "old_version":
+        body["schema"] = "ctcc.synthetic.qualification.crash-probe.v1"
     probe.write_marker(marker, body)
     if damage == "hash":
         envelope = json.loads(marker.read_bytes())
@@ -116,3 +144,64 @@ def test_live_process_cannot_make_bad_marker_ready(tmp_path, monkeypatch, damage
         marker.write_bytes(probe.canonical(envelope))
     with pytest.raises(RuntimeError, match="durable_seed_marker_invalid"):
         harness.wait_for_durable_seed(SimpleNamespace(), "synthetic", marker)
+
+
+@pytest.fixture(scope="module")
+def exact_intent():
+    from app.trade_qualification.submission_intent import build_submission_intent
+    from tests.unit.qualification_execution_binding_fixtures import (
+        consumed_receipt,
+        execution_binding,
+    )
+    from tests.unit.qualification_ledger_fixtures import ledger_fixture
+
+    fixture = ledger_fixture(account_id="987654321000000000002")
+    return fixture, build_submission_intent(
+        fixture.request,
+        consumed_receipt(fixture),
+        execution_binding=execution_binding(fixture),
+    )
+
+
+def test_synthetic_probe_has_exact_fok_v2_intent(exact_intent):
+    fixture, intent = exact_intent
+    identity = probe.exact_request_identity(
+        intent, expected_uid=fixture.request.scope.account_id
+    )
+    assert identity["intent_version"] == "ctcc-demo-submit-intent-v2"
+    body = json.loads(intent.canonical_json)
+    assert body["exchange_request"]["body"]["ordType"] == "fok"
+    assert (
+        body["exchange_request"]["body"]["attachAlgoOrds"][0]["slTriggerPxType"]
+        == "mark"
+    )
+    assert not intent.execution_authority
+
+
+@pytest.mark.parametrize(
+    "damage", ("legacy", "uid", "request", "environment", "authority")
+)
+def test_probe_rejects_legacy_or_changed_request_identity(exact_intent, damage):
+    fixture, intent = exact_intent
+    body = json.loads(intent.canonical_json)
+    authority = False
+    if damage == "legacy":
+        body["version"] = "ctcc-demo-submit-intent-v1"
+        body.pop("exchange_request")
+    elif damage == "uid":
+        body["exchange_request"]["account_uid"] = "987654321000000000003"
+    elif damage == "request":
+        body["exchange_request"]["body"]["px"] = "1"
+    elif damage == "environment":
+        body["exchange_request"]["environment"] = "live"
+    else:
+        authority = True
+    damaged = SimpleNamespace(
+        canonical_json=json.dumps(body),
+        execution_authority=authority,
+        order_retry_authority=False,
+    )
+    with pytest.raises(RuntimeError, match="exact_v2_request_missing"):
+        probe.exact_request_identity(
+            damaged, expected_uid=fixture.request.scope.account_id
+        )

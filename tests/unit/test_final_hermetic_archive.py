@@ -175,7 +175,10 @@ def test_cleanup_does_not_treat_daemon_failure_as_resource_absence(monkeypatch):
 @pytest.mark.parametrize(
     "case", ("empty", "skipped", "missing_module", "failure", "false_count")
 )
-def test_required_postgres_evidence_cannot_pass_without_executed_cases(tmp_path, case):
+@pytest.mark.parametrize("allow_unrelated_skips", (False, True))
+def test_required_postgres_evidence_cannot_pass_without_executed_cases(
+    tmp_path, case, allow_unrelated_skips
+):
     from scripts.verify_final_hermetic import verify_pytest_report
 
     module = "required.pg.module" if case != "missing_module" else "unrelated"
@@ -193,7 +196,11 @@ def test_required_postgres_evidence_cannot_pass_without_executed_cases(tmp_path,
         f'<testsuites><testsuite tests="{count}" errors="0" failures="{int(case == "failure")}" skipped="{int(case == "skipped")}">{cases}</testsuite></testsuites>'
     )
     with pytest.raises(ValueError):
-        verify_pytest_report(path, required_modules=("required.pg.module",))
+        verify_pytest_report(
+            path,
+            required_modules=("required.pg.module",),
+            allow_unrelated_skips=allow_unrelated_skips,
+        )
 
 
 def test_full_suite_platform_skip_is_retained_but_not_counted_as_pass(tmp_path):
@@ -209,3 +216,125 @@ def test_full_suite_platform_skip_is_retained_but_not_counted_as_pass(tmp_path):
     result = verify_pytest_report(path)
     assert result["passed"] == 1 and result["skipped"] == 1
     assert result["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_full_suite_required_postgres_all_pass_with_unrelated_platform_skip(tmp_path):
+    from scripts.verify_final_hermetic import verify_pytest_report
+
+    path = tmp_path / "result.xml"
+    path.write_text(
+        '<testsuites><testsuite tests="4" errors="0" failures="0" skipped="1">'
+        '<testcase classname="required.pg.module" name="first"/>'
+        '<testcase classname="required.pg.module" name="second"/>'
+        '<testcase classname="required.pg.other" name="concurrent"/>'
+        '<testcase classname="platform" name="skipped"><skipped/></testcase>'
+        "</testsuite></testsuites>"
+    )
+    modules = ("required.pg.module", "required.pg.other")
+    # PG-only validation remains strict unless the caller explicitly identifies
+    # a full suite that can contain unrelated platform cases.
+    with pytest.raises(ValueError, match="required_execution_not_verified"):
+        verify_pytest_report(path, required_modules=modules)
+    result = verify_pytest_report(
+        path, required_modules=modules, allow_unrelated_skips=True
+    )
+    assert result["tests"] == 4 and result["passed"] == 3
+    assert result["skipped"] == 1
+    assert result["required_module_passed"] == {
+        "required.pg.module": 2,
+        "required.pg.other": 1,
+    }
+
+
+@pytest.mark.parametrize("separate_suites", (False, True))
+def test_one_pass_cannot_hide_skip_in_same_required_module(tmp_path, separate_suites):
+    from scripts.verify_final_hermetic import verify_pytest_report
+
+    passed = '<testcase classname="required.pg.module" name="ran"/>'
+    skipped = (
+        '<testcase classname="required.pg.module" name="missing"><skipped/></testcase>'
+    )
+    if separate_suites:
+        suites = (
+            '<testsuite tests="1" errors="0" failures="0" skipped="0">'
+            f"{passed}</testsuite>"
+            '<testsuite tests="1" errors="0" failures="0" skipped="1">'
+            f"{skipped}</testsuite>"
+        )
+    else:
+        suites = (
+            '<testsuite tests="2" errors="0" failures="0" skipped="1">'
+            f"{passed}{skipped}</testsuite>"
+        )
+    path = tmp_path / "result.xml"
+    path.write_text(f"<testsuites>{suites}</testsuites>")
+    with pytest.raises(ValueError, match="required_execution_not_verified"):
+        verify_pytest_report(
+            path,
+            required_modules=("required.pg.module",),
+            allow_unrelated_skips=True,
+        )
+
+
+def test_unrelated_failure_is_not_hidden_by_allow_unrelated_skips(tmp_path):
+    from scripts.verify_final_hermetic import verify_pytest_report
+
+    path = tmp_path / "result.xml"
+    path.write_text(
+        '<testsuites><testsuite tests="3" errors="0" failures="1" skipped="1">'
+        '<testcase classname="required.pg.module" name="ran"/>'
+        '<testcase classname="platform" name="skipped"><skipped/></testcase>'
+        '<testcase classname="unrelated" name="failed"><failure/></testcase>'
+        "</testsuite></testsuites>"
+    )
+    with pytest.raises(ValueError, match="required_execution_not_verified"):
+        verify_pytest_report(
+            path,
+            required_modules=("required.pg.module",),
+            allow_unrelated_skips=True,
+        )
+
+
+@pytest.mark.parametrize(
+    ("class_name", "expected_success"),
+    (("required.pg.module.SomeTests", False), ("required.pg.module_other", True)),
+)
+def test_required_module_class_skips_are_not_unrelated(
+    tmp_path, class_name, expected_success
+):
+    from scripts.verify_final_hermetic import verify_pytest_report
+
+    path = tmp_path / "result.xml"
+    path.write_text(
+        '<testsuites><testsuite tests="2" errors="0" failures="0" skipped="1">'
+        '<testcase classname="required.pg.module" name="ran"/>'
+        f'<testcase classname="{class_name}" name="missing"><skipped/></testcase>'
+        "</testsuite></testsuites>"
+    )
+    if expected_success:
+        result = verify_pytest_report(
+            path,
+            required_modules=("required.pg.module",),
+            allow_unrelated_skips=True,
+        )
+        assert result["passed"] == 1 and result["skipped"] == 1
+    else:
+        with pytest.raises(ValueError, match="required_execution_not_verified"):
+            verify_pytest_report(
+                path,
+                required_modules=("required.pg.module",),
+                allow_unrelated_skips=True,
+            )
+
+
+def test_required_module_execution_can_be_in_a_test_class(tmp_path):
+    from scripts.verify_final_hermetic import verify_pytest_report
+
+    path = tmp_path / "result.xml"
+    path.write_text(
+        '<testsuites><testsuite tests="1" errors="0" failures="0" skipped="0">'
+        '<testcase classname="required.pg.module.SomeTests" name="ran"/>'
+        "</testsuite></testsuites>"
+    )
+    result = verify_pytest_report(path, required_modules=("required.pg.module",))
+    assert result["required_module_passed"] == {"required.pg.module": 1}

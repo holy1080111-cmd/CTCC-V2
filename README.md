@@ -1,7 +1,7 @@
 # CTCC V2 v1.6.9 — Durable OKX Live Recovery
 
 **V2.0 production acceptance is incomplete.** The final-completion branch is
-undergoing new source-bound validation; [current status and boundaries](docs/final_completion_validation.md)
+undergoing new source-bound validation (2026-09-23 update); [current status and boundaries](docs/final_completion_validation.md)
 distinguish engineering checks from real Demo, OOS and Micro Live acceptance.
 Live remains default OFF and requires contemporaneous operator authorization.
 

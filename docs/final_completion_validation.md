@@ -126,18 +126,99 @@ permission check was relaxed. The pinned `tzdata` validation dependency removes
 the earlier two IANA-data skips; it does not change source timestamps.
 
 Later working-source changes require their own exact-source full rerun; these
-counts cannot be reused as their acceptance. The next checkpoint includes the
+counts cannot be reused as their acceptance. The third checkpoint includes the
 Windows repair, all-standard-product account packet v4, captured metadata,
 source-derived reversal V3, versioned history-intent replay, forensic cost
 decomposition and DB0018 reporting/unknown-result containment.
 
 The working branch adds explicit versioned expansion history dispatch through
-G12 and recorded Recheck, an owned regional account-capture/revision producer,
+G12 and recorded Recheck, an owned regional account capture bound to the recorded ledger revision,
 and an independent default-off Notion reporting worker. Account admission still
 denies incomplete history/peak/accrual/product provenance. Live new-entry
 transport is also contained until genuine qualified one-shot authority exists.
 Neither a computational test nor an empty reporting queue proves Demo, Live,
 source completeness or actual Notion delivery.
+
+## 2026-09-23 continuation and validation identity
+
+The third preserved engineering checkpoint is
+`037fca431657fd8c692b0ffa43e1539790d4ba60`, tree
+`569eb79f0d254f0ace2444fa24a9843b5513a967`. Its source archive SHA256 is
+`43ffa11c8545a5d24f7cc58ed7fc347081b7a33b343170ab2e3994e32ec831bc`.
+Its exact Windows full-suite XML records **10,437 passed, 28 platform skips,
+zero failures and zero errors**. All 67 required PostgreSQL cases ran and passed.
+The original driver nevertheless recorded FAIL because its result verifier
+rejected unrelated platform skips when PostgreSQL modules were required. That
+original identity and every result file remain unchanged. The corrected verifier
+requires every specified PostgreSQL module to run without skips, while explicitly
+allowing unrelated platform skips only for full-suite callers. An independent
+sidecar reassessment verifies the original artifact hashes and records the
+Windows suite outcome; it is not validation of later working-source changes.
+
+The exact third Linux/Docker run was launched, but its final result is currently
+unavailable. The resumed restricted environment denies WSL access; the old process
+handle is no longer present. A timed-out database port does not prove that its
+server stopped. No old image, earlier test count, original deployment or raw WSL
+disk has been substituted. The current source has no new Linux/Docker acceptance.
+
+The unsealed continuation adds the separate unknown-state account bootstrap,
+explicit range-anchor V4 restrictions, a durable Demo control journal through
+migration 0019, and measured public-minute receipt work. See
+[bootstrap capture](account_bootstrap_capture.md) and
+[range anchor V4](original_range_anchor_v4.md),
+[durable Demo controls](durable_demo_control.md), and
+[measured public availability](measured_public_availability.md). These remain engineering work,
+with no production account revision issuer or execution permit.
+
+Independent review reproduced a bootstrap cross-session clock regression,
+foreign scalar callbacks, and a queued Arm intent surviving local revocation.
+The working fixes reject these paths and retain the original failing artifacts.
+The bootstrap/account compatibility set passes 219 cases; both ordinary account
+runtime v3/v4 receipt bytes remain identical to the frozen third source. The
+migration identity module passes 47 cases after moving its temporary output into
+the writable workspace; its initial 15 temporary-directory setup errors remain
+recorded. Native safety-publisher checks still fail when the ancestor handle for
+`C:/Users/holy1` is denied. No ACL or native handle protection was relaxed.
+
+The hermetic harness now explicitly requires the new bootstrap/control
+PostgreSQL modules, and the full Linux report must also show those required
+modules executed. The process-kill probe now seeds three synthetic control
+scenarios: current Arm intention, EStop, and EStop before first ownership. After
+actual process/database/cache restart it must verify unchanged persisted state,
+new ownership without restored Arm, and preserved EStop. The seed keeps actual
+runtime owners alive until interruption, checks current Arm immediately before
+publication, and binds the Arm account to the qualification exact UID. It now
+requires the v2 exact FOK request and verifies its version and request SHA256
+after restart; legacy geometry-only intents cannot satisfy this probe. The
+pre-publication Arm observation does not claim instantaneous state at the later
+external process kill. This uses explicitly
+synthetic clocks and identities; it cannot establish real host-clock, account,
+Demo or Live acceptance. The new migration, PostgreSQL cases and expanded crash
+probe have not yet been executed against PostgreSQL in this resumed environment.
+
+The continuation also fixes destructive downgrade races in DB0017--DB0019.
+Each downgrade acquires non-waiting exclusive table locks before checking that
+all tables to be removed are empty, and holds them through transactional DDL.
+DB0018 locks its referenced parent tables first. A busy or populated database
+refuses rollback. Upgrade semantics remain unchanged, but migration source hashes
+changed and require fresh validation. The control/migration helper group passes
+121 cases. The 21 new real PostgreSQL downgrade cases have only been collected;
+one async fixture-construction defect found during review was fixed before sealing.
+
+The expanded harness tests pass 64 cases, including 26 targeted crash/readiness
+cases; these groups overlap. The range compatibility work passes 478 related
+cases and retains byte-identical ordinary/V2/V3 records against the third source.
+The measured-minute producer passes 105 pure cases and a separate 406-case
+compatibility run; those groups also overlap. Its two native filesystem tests
+fail at the existing ancestor handle access restriction. No failed native result
+has been converted into a skip or a passing memory-double result.
+
+The bounded source-pattern security review covers canonical Git history and
+working source. Its five non-fixture groups resolve to existing public examples,
+an HTTP scheme prefix and empty CI settings. The actual deployment credential
+input is unavailable in this environment, so exact-secret comparison and the
+final release secret audit remain incomplete. No credential was copied into
+source or diagnostics for this review.
 
 ## Outstanding source-independent evidence
 

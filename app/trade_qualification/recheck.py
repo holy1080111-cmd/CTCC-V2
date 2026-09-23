@@ -39,10 +39,12 @@ from app.trade_qualification.current_conditions import (
     CurrentConditionsResult,
     HistoryCurrentConditionsResultV2,
     HistoryCurrentConditionsResultV3,
+    HistoryCurrentConditionsResultV4,
     copy_current_conditions,
     evaluate_current_conditions,
     evaluate_history_current_conditions_v2,
     evaluate_history_current_conditions_v3,
+    evaluate_history_current_conditions_v4,
 )
 from app.trade_qualification.current_risk import (
     CurrentRiskResult,
@@ -69,6 +71,7 @@ from app.trade_qualification.fixed_protection import (
 from app.trade_qualification.history_engine import (
     HistoryPreEvidenceRunV2,
     HistoryPreEvidenceRunV3,
+    HistoryPreEvidenceRunV4,
 )
 from app.trade_qualification.location import (
     LocationResult,
@@ -157,13 +160,19 @@ def _conditions_family(value):
             "ctcc-history-current-conditions-v3",
             "history_v3",
         ),
+        (
+            HistoryCurrentConditionsResultV4,
+            "ctcc-history-current-conditions-v4",
+            "history_v4",
+        ),
     )
 
 
 RecheckConditions = Annotated[
     Annotated[CurrentConditionsResult, Tag("legacy")]
     | Annotated[HistoryCurrentConditionsResultV2, Tag("history_v2")]
-    | Annotated[HistoryCurrentConditionsResultV3, Tag("history_v3")],
+    | Annotated[HistoryCurrentConditionsResultV3, Tag("history_v3")]
+    | Annotated[HistoryCurrentConditionsResultV4, Tag("history_v4")],
     Discriminator(_conditions_family),
 ]
 
@@ -211,6 +220,7 @@ def _guard(value):
         CurrentConditionsResult: copy_current_conditions,
         HistoryCurrentConditionsResultV2: copy_current_conditions,
         HistoryCurrentConditionsResultV3: copy_current_conditions,
+        HistoryCurrentConditionsResultV4: copy_current_conditions,
         ContinuationResult: _copy_continuation,
         FixedProtectionResult: lambda v: _copy_protection(v, FixedProtectionResult),
         FixedProtectionResultV3: lambda v: _copy_protection(v, FixedProtectionResultV3),
@@ -309,7 +319,10 @@ class RecordedRecheckAssessment(QualificationModel):
             value = dict(value)
             models = {
                 "origin": RecheckOrigin,
-                "current_conditions": HistoryCurrentConditionsResultV3
+                "current_conditions": HistoryCurrentConditionsResultV4
+                if (value.get("current_conditions") or {}).get("contract_version")
+                == "ctcc-history-current-conditions-v4"
+                else HistoryCurrentConditionsResultV3
                 if (value.get("current_conditions") or {}).get("contract_version")
                 == "ctcc-history-current-conditions-v3"
                 else HistoryCurrentConditionsResultV2
@@ -408,7 +421,9 @@ class RecordedRecheckAssessment(QualificationModel):
             raise ValueError("recheck_capture_pins_missing")
         current = self.current_conditions
         expected_current = (
-            HistoryCurrentConditionsResultV3
+            HistoryCurrentConditionsResultV4
+            if type(pre) is HistoryPreEvidenceRunV4
+            else HistoryCurrentConditionsResultV3
             if type(pre) is HistoryPreEvidenceRunV3
             else HistoryCurrentConditionsResultV2
             if type(pre) is HistoryPreEvidenceRunV2
@@ -428,6 +443,15 @@ class RecordedRecheckAssessment(QualificationModel):
             )
         ):
             raise ValueError("recheck_history_current_origin_mismatch")
+        if (
+            current is not None
+            and type(pre) is HistoryPreEvidenceRunV4
+            and (
+                current.origin_sha256 != self.origin.evaluation_sha256
+                or current.original_event_key != self.origin.original_event_key
+            )
+        ):
+            raise ValueError("recheck_range_current_origin_mismatch")
         if current is not None and (
             current.intent != intent
             or current.policy != pre.policy.prefix
@@ -725,7 +749,9 @@ def evaluate_recorded_recheck(
         intent, policy = pre.prefix.intent, pre.policy.prefix
         current = (
             (
-                evaluate_history_current_conditions_v3
+                evaluate_history_current_conditions_v4
+                if type(pre) is HistoryPreEvidenceRunV4
+                else evaluate_history_current_conditions_v3
                 if type(pre) is HistoryPreEvidenceRunV3
                 else evaluate_history_current_conditions_v2
             )(
@@ -735,7 +761,12 @@ def evaluate_recorded_recheck(
                 reference=ref,
                 observed_at=now,
             )
-            if type(pre) in (HistoryPreEvidenceRunV2, HistoryPreEvidenceRunV3)
+            if type(pre)
+            in (
+                HistoryPreEvidenceRunV2,
+                HistoryPreEvidenceRunV3,
+                HistoryPreEvidenceRunV4,
+            )
             else evaluate_current_conditions(
                 market,
                 intent=intent,

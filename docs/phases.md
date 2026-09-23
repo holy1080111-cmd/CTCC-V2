@@ -1,6 +1,6 @@
 # Frozen implementation sequence
 
-2026-09-19 final-completion work is tracked in
+Final-completion work, including the 2026-09-23 continuation, is tracked in
 [source and validation state](final_completion_validation.md). The source has
 been preserved and isolated; engineering changes are undergoing a new exact
 source regression. Production, predictive OOS, Demo and manually armed Micro

@@ -102,7 +102,7 @@ class _OkxPrivateRestClientBase:
         return {}
 
     def _before_send(self, *, method: str, path: str) -> None:
-        """Environment-specific synchronous check at the actual HTTP boundary."""
+        """Synchronous application check; the HTTP client still has internal awaits."""
 
     def _validate_external_client(self, client: httpx.AsyncClient) -> None:
         """Injected clients are a bounded, network-free test adapter only.

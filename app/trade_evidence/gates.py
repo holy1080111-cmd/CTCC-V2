@@ -60,10 +60,13 @@ from app.trade_qualification.event_models import Digest
 from app.trade_qualification.history_engine import (
     HistoryPreEvidencePolicyV2,
     HistoryPreEvidencePolicyV3,
+    HistoryPreEvidencePolicyV4,
     HistoryPreEvidenceRunV2,
     HistoryPreEvidenceRunV3,
+    HistoryPreEvidenceRunV4,
     verify_history_pre_evidence_v2,
     verify_history_pre_evidence_v3,
+    verify_history_pre_evidence_v4,
 )
 from app.trade_qualification.history_engine import (
     _preflight as _history_preflight,
@@ -71,6 +74,7 @@ from app.trade_qualification.history_engine import (
 from app.trade_qualification.history_prefix import (
     HistoryEntryQualificationResultV2,
     HistoryEntryQualificationResultV3,
+    HistoryEntryQualificationResultV4,
 )
 from app.trade_qualification.location import ExecutableQuote
 from app.trade_qualification.models import (
@@ -139,6 +143,7 @@ def _guard(value, depth=0, budget=None):
             EvidenceGateRun,
             HistoryEvidenceGateRunV2,
             HistoryEvidenceGateRunV3,
+            HistoryEvidenceGateRunV4,
             EvidenceSnapshot,
             EvidencePanel,
             EvidenceCandle,
@@ -152,8 +157,11 @@ def _guard(value, depth=0, budget=None):
                 HistoryPreEvidencePolicyV2,
                 HistoryEntryQualificationResultV2,
                 HistoryPreEvidenceRunV3,
+                HistoryPreEvidenceRunV4,
                 HistoryPreEvidencePolicyV3,
+                HistoryPreEvidencePolicyV4,
                 HistoryEntryQualificationResultV3,
+                HistoryEntryQualificationResultV4,
             ):
                 _history_preflight(value)
             else:
@@ -336,7 +344,15 @@ class HistoryEvidenceGateRunV3(EvidenceGateRun):
     result: HistoryEntryQualificationResultV3
 
 
+class HistoryEvidenceGateRunV4(EvidenceGateRun):
+    contract_version: Literal["ctcc-history-evidence-v4"]
+    pre_evidence: HistoryPreEvidenceRunV4
+    result: HistoryEntryQualificationResultV4
+
+
 def verify_pre_evidence_versioned(run, market, **inputs):
+    if type(run) is HistoryPreEvidenceRunV4:
+        return verify_history_pre_evidence_v4(run, market, **inputs)
     if type(run) is HistoryPreEvidenceRunV3:
         return verify_history_pre_evidence_v3(run, market, **inputs)
     if type(run) is HistoryPreEvidenceRunV2:
@@ -400,7 +416,9 @@ def publish_qualification_evidence(
         raise EvidenceGateError("pre_evidence_replay_failed") from exc
     pin = pre.evaluation_sha256
     gate_type = (
-        HistoryEvidenceGateRunV3
+        HistoryEvidenceGateRunV4
+        if type(pre) is HistoryPreEvidenceRunV4
+        else HistoryEvidenceGateRunV3
         if type(pre) is HistoryPreEvidenceRunV3
         else HistoryEvidenceGateRunV2
         if type(pre) is HistoryPreEvidenceRunV2
@@ -447,7 +465,9 @@ def publish_qualification_evidence(
             _plain(
                 {
                     **(
-                        {"contract_version": "ctcc-history-evidence-v3"}
+                        {"contract_version": "ctcc-history-evidence-v4"}
+                        if gate_type is HistoryEvidenceGateRunV4
+                        else {"contract_version": "ctcc-history-evidence-v3"}
                         if gate_type is HistoryEvidenceGateRunV3
                         else {"contract_version": "ctcc-history-evidence-v2"}
                         if gate_type is HistoryEvidenceGateRunV2

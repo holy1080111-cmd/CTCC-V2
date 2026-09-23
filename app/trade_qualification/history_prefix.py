@@ -36,8 +36,10 @@ from app.trade_qualification.data import (
 from app.trade_qualification.event_models import Digest, TriggerDetection
 from app.trade_qualification.events import extract_trigger
 from app.trade_qualification.location import (
+    RANGE_ANCHOR_POLICY,
     LocationResult,
     build_entry_zone,
+    build_original_range_anchor_zone,
     evaluate_location,
 )
 from app.trade_qualification.models import (
@@ -179,6 +181,23 @@ class HistoryQualificationPrefixPolicyV3(HistoryQualificationPrefixPolicy):
     reversal_policy: Literal["ctcc-reversal-history-protection-v1"] = REVERSAL_POLICY
 
 
+class HistoryEntryQualificationResultV4(HistoryEntryQualificationResult):
+    contract_version: Literal["ctcc-history-qualification-result-v4"]
+    range_anchor_policy: Literal["ctcc-original-range-anchor-v1"]
+    gates: tuple[GateAssessment, ...] = Field(default=(), max_length=12)
+
+    @model_validator(mode="after")
+    def range_only(self):
+        if self.strategy != "range_reversal":
+            raise ValueError("history_v4_range_only")
+        return self
+
+
+class HistoryQualificationPrefixPolicyV4(HistoryQualificationPrefixPolicy):
+    contract_version: Literal["ctcc-history-qualification-prefix-v4"]
+    range_anchor_policy: Literal["ctcc-original-range-anchor-v1"]
+
+
 def expansion_htf_permission(analysis, route, direction):
     """Deterministic existing Expansion route operands, never event detection.
 
@@ -222,11 +241,14 @@ def _bounded(value, depth=0, budget=None):
             HistoryQualificationPrefixRunV2,
             HistoryQualificationPrefixPolicyV3,
             HistoryQualificationPrefixRunV3,
+            HistoryQualificationPrefixPolicyV4,
+            HistoryQualificationPrefixRunV4,
             DataQualificationPolicy,
             DataQualificationResult,
             HistoryEntryQualificationResult,
             HistoryEntryQualificationResultV2,
             HistoryEntryQualificationResultV3,
+            HistoryEntryQualificationResultV4,
             GateAssessment,
             EntryTrigger,
             EntryZone,
@@ -522,6 +544,38 @@ class HistoryQualificationPrefixRunV3(HistoryQualificationPrefixRun):
         return self
 
 
+class HistoryQualificationPrefixRunV4(HistoryQualificationPrefixRun):
+    contract_version: Literal["ctcc-history-qualification-prefix-v4"]
+    policy: HistoryQualificationPrefixPolicyV4
+    result: HistoryEntryQualificationResultV4
+
+    @model_validator(mode="after")
+    def range_policy_bound(self):
+        if self.intent.strategy != "range_reversal":
+            raise ValueError("history_v4_range_only")
+        if self.result.range_anchor_policy != self.policy.range_anchor_policy:
+            raise ValueError("range_anchor_policy_mismatch")
+        if len(self.result.gates) == 7:
+            zone, code = build_original_range_anchor_zone(
+                self.detection,
+                tick_size=self.policy.tick_size,
+                max_allowed_drift_bps=self.policy.max_allowed_drift_bps,
+                expires_at=self.timing.latest_valid_entry_time,
+            )
+            measured = self.result.gates[-1].measured_values
+            if (
+                zone != self.result.entry_zone
+                or measured.get("range_anchor_policy")
+                != self.policy.range_anchor_policy
+                or measured.get("original_event_key") != self.timing.event_key
+                or measured.get("source_sha256") != self.data_result.source_sha256
+                or measured.get("zone_sha256") != (_digest(zone) if zone else None)
+                or (zone is None and self.result.gates[-1].code != code)
+            ):
+                raise ValueError("range_anchor_source_zone_binding_mismatch")
+        return self
+
+
 def _policy_digest(policy, timing_policy):
     return _digest(
         {
@@ -566,6 +620,12 @@ def evaluate_history_qualification_prefix_v3(market, *, policy, **inputs):
     return _evaluate_history_prefix(market, policy=policy, **inputs)
 
 
+def evaluate_history_qualification_prefix_v4(market, *, policy, **inputs):
+    if type(policy) is not HistoryQualificationPrefixPolicyV4:
+        raise ValueError("exact v4 history policy required")
+    return _evaluate_history_prefix(market, policy=policy, **inputs)
+
+
 def _evaluate_history_prefix(
     market,
     *,
@@ -585,27 +645,36 @@ def _evaluate_history_prefix(
     intent = _copy(intent, QualificationIntent)
     version2 = type(policy) is HistoryQualificationPrefixPolicyV2
     version3 = type(policy) is HistoryQualificationPrefixPolicyV3
+    version4 = type(policy) is HistoryQualificationPrefixPolicyV4
+    if version4 and intent.strategy != "range_reversal":
+        raise ValueError("history_v4_range_only")
     if version2 and intent.strategy != "volatility_expansion":
         raise ValueError("history_v2_expansion_only")
     if version3 and intent.strategy != "structure_reversal":
         raise ValueError("history_v3_reversal_only")
     policy = _copy(
         policy,
-        HistoryQualificationPrefixPolicyV3
+        HistoryQualificationPrefixPolicyV4
+        if version4
+        else HistoryQualificationPrefixPolicyV3
         if version3
         else HistoryQualificationPrefixPolicyV2
         if version2
         else HistoryQualificationPrefixPolicy,
     )
     run_type = (
-        HistoryQualificationPrefixRunV3
+        HistoryQualificationPrefixRunV4
+        if version4
+        else HistoryQualificationPrefixRunV3
         if version3
         else HistoryQualificationPrefixRunV2
         if version2
         else HistoryQualificationPrefixRun
     )
     result_type = (
-        HistoryEntryQualificationResultV3
+        HistoryEntryQualificationResultV4
+        if version4
+        else HistoryEntryQualificationResultV3
         if version3
         else HistoryEntryQualificationResultV2
         if version2
@@ -642,13 +711,21 @@ def _evaluate_history_prefix(
     if version3:
         values["contract_version"] = "ctcc-history-qualification-result-v3"
 
+    if version4:
+        values.update(
+            contract_version="ctcc-history-qualification-result-v4",
+            range_anchor_policy=RANGE_ANCHOR_POLICY,
+        )
+
     def finish():
         values["history_admission_sha256"] = (
             history.evaluation_sha256 if history is not None else None
         )
         return run_type(
             **(
-                {"contract_version": "ctcc-history-qualification-prefix-v3"}
+                {"contract_version": "ctcc-history-qualification-prefix-v4"}
+                if version4
+                else {"contract_version": "ctcc-history-qualification-prefix-v3"}
                 if version3
                 else {}
             ),
@@ -933,19 +1010,36 @@ def _evaluate_history_prefix(
             },
         ):
             return finish()
-        zone, zone_code = build_entry_zone(
+        zone_builder = (
+            build_original_range_anchor_zone if version4 else build_entry_zone
+        )
+        zone, zone_code = zone_builder(
             detection,
             tick_size=policy.tick_size,
             max_allowed_drift_bps=policy.max_allowed_drift_bps,
             expires_at=timing.latest_valid_entry_time,
         )
         values["entry_zone"] = zone
+        range_values = (
+            {
+                "range_anchor_policy": policy.range_anchor_policy,
+                "original_event_key": timing.event_key,
+                "source_sha256": data.source_sha256,
+                "zone_sha256": _digest(zone) if zone else None,
+            }
+            if version4
+            else {}
+        )
         if zone is None:
             gate(
                 QualificationGate.LOCATION,
                 zone_code,
                 "A source-derived executable entry zone could not be built.",
-                {"source_sha256": data.source_sha256, "tick_size": policy.tick_size},
+                {
+                    "source_sha256": data.source_sha256,
+                    "tick_size": policy.tick_size,
+                    **range_values,
+                },
             )
             return finish()
         location = evaluate_location(
@@ -970,6 +1064,7 @@ def _evaluate_history_prefix(
                 "zone_low": zone.zone_low,
                 "zone_high": zone.zone_high,
                 "invalidation_price": zone.invalidation_price,
+                **range_values,
             },
         )
         return finish()
@@ -1001,6 +1096,14 @@ def verify_history_qualification_prefix_v2(run, market, **inputs):
 def verify_history_qualification_prefix_v3(run, market, **inputs):
     checked = _copy(run, HistoryQualificationPrefixRunV3)
     replayed = evaluate_history_qualification_prefix_v3(market, **inputs)
+    if checked != replayed:
+        raise ValueError("history_qualification_prefix_replay_mismatch")
+    return replayed
+
+
+def verify_history_qualification_prefix_v4(run, market, **inputs):
+    checked = _copy(run, HistoryQualificationPrefixRunV4)
+    replayed = evaluate_history_qualification_prefix_v4(market, **inputs)
     if checked != replayed:
         raise ValueError("history_qualification_prefix_replay_mismatch")
     return replayed

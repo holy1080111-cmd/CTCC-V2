@@ -222,7 +222,22 @@ def upgrade():
 
 
 def downgrade():
-    # Explicit schema rollback is not a runtime release/expiry operation.
+    # Retained scopes, reservations and intents may not be removed by rollback.
+    # Lock before the emptiness read and retain the locks through transactional
+    # DDL. A busy table denies rollback rather than waiting across writer locks.
+    op.execute("""
+        LOCK TABLE qualification_account_scopes, qualification_reservations,
+          qualification_reservation_transitions IN ACCESS EXCLUSIVE MODE NOWAIT
+    """)
+    op.execute("""
+        DO $$ BEGIN
+          IF EXISTS (SELECT 1 FROM qualification_account_scopes)
+             OR EXISTS (SELECT 1 FROM qualification_reservations)
+             OR EXISTS (SELECT 1 FROM qualification_reservation_transitions) THEN
+            RAISE EXCEPTION 'qualification_ledger_downgrade_requires_empty';
+          END IF;
+        END $$;
+    """)
     op.drop_table("qualification_reservation_transitions")
     op.drop_table("qualification_reservations")
     op.drop_table("qualification_account_scopes")

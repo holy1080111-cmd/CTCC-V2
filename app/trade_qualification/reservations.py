@@ -17,7 +17,13 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from app.trade_qualification.current_risk import evaluate_current_risk
 from app.trade_qualification.engine import PortfolioInputs, _copy, _preflight
-from app.trade_qualification.location import ExecutableQuote, _revalidate
+from app.trade_qualification.history_engine import HistoryPreEvidenceRunV4
+from app.trade_qualification.location import (
+    ExecutableQuote,
+    _revalidate,
+    build_original_range_anchor_zone,
+    evaluate_location,
+)
 from app.trade_qualification.models import Price, ReportId, require_aware
 from app.trade_qualification.portfolio import (
     DemoRiskAuthority,
@@ -253,6 +259,70 @@ def _quote_scalar_guard(quote):
                 raise QualificationLedgerError("exact_quote_timezone_required")
 
 
+def checked_bootstrap(value, expected):
+    """Reject foreign Python callbacks at the new cold-start read junction.
+
+    This guard is deliberately limited to the bootstrap scope/state tree. It
+    does not alter existing receipt schemas or confer authority on DB records.
+    """
+    if expected is not LedgerScope and expected is not LedgerScopeState:
+        raise QualificationLedgerError("exact_bootstrap_contract_required")
+    if type(value) is not expected:
+        raise QualificationLedgerError("exact_bootstrap_contract_required")
+
+    def guard(part, depth=0):
+        if depth > 8:
+            raise QualificationLedgerError("dirty_bootstrap_contract")
+        kind = type(part)
+        if any(
+            kind is model
+            for model in (
+                LedgerScope,
+                LedgerScopeState,
+                ReservationReceipt,
+                RiskCoverage,
+                ScenarioOperands,
+            )
+        ):
+            raw = object.__getattribute__(part, "__dict__")
+            fields = object.__getattribute__(part, "__pydantic_fields_set__")
+            if (
+                type(raw) is not dict
+                or any(type(key) is not str for key in raw)
+                or set(raw) != set(kind.model_fields)
+                or type(fields) is not set
+                or any(type(key) is not str for key in fields)
+                or not fields <= set(kind.model_fields)
+                or object.__getattribute__(part, "__pydantic_extra__") is not None
+                or object.__getattribute__(part, "__pydantic_private__") is not None
+            ):
+                raise QualificationLedgerError("dirty_bootstrap_contract")
+            for item in raw.values():
+                guard(item, depth + 1)
+            return
+        if kind is tuple and len(part) <= 2048:
+            for item in part:
+                guard(item, depth + 1)
+            return
+        if kind is datetime:
+            zone = part.tzinfo
+            if type(zone) is not timezone and type(zone) is not ZoneInfo:
+                raise QualificationLedgerError("exact_bootstrap_timezone_required")
+            return
+        if (
+            part is None
+            or kind is bool
+            or kind is int
+            or kind is Decimal
+            or kind is str
+        ):
+            return
+        raise QualificationLedgerError("exact_bootstrap_scalar_required")
+
+    guard(value)
+    return checked(value, expected)
+
+
 def checked(value, expected):
     """Context-specific exact class guards BEFORE serialization/revalidation."""
     if type(value) is not expected or expected not in _MODELS:
@@ -388,6 +458,56 @@ def reservation_id(scope, event_key):
     return hashlib.sha256((canonical(scope) + ":" + event_key).encode()).hexdigest()
 
 
+def _check_original_range_location(pre, quote, *, observed_at):
+    """Rebuild the original V4 band; consistency is never qualification authority.
+
+    Accepts honest G7/G8-denied diagnostics so this restriction can be tested
+    without fabricating a passing G12 origin. No original fact is rewritten.
+    """
+    from app.trade_qualification.history_engine import _copy as copy_history
+    from app.trade_qualification.one_shot import _guard_original
+
+    if type(pre) is not HistoryPreEvidenceRunV4 or type(quote) is not ExecutableQuote:
+        raise QualificationLedgerError("ledger_exact_range_contract_required")
+    _guard_original(pre)
+    _guard_original(observed_at)
+    _quote_scalar_guard(quote)
+    pre = copy_history(pre, HistoryPreEvidenceRunV4)
+    prefix = pre.prefix
+    if not prefix.prefix_complete:
+        raise QualificationLedgerError("ledger_original_range_prefix_incomplete")
+    zone, code = build_original_range_anchor_zone(
+        prefix.detection,
+        tick_size=prefix.policy.tick_size,
+        max_allowed_drift_bps=prefix.policy.max_allowed_drift_bps,
+        expires_at=prefix.timing.latest_valid_entry_time,
+    )
+    if code != "passed" or zone != pre.result.entry_zone:
+        raise QualificationLedgerError("ledger_original_range_zone_mismatch")
+    location = evaluate_location(
+        report_id=prefix.intent.report_id,
+        instrument_id=prefix.intent.instrument_id,
+        direction=prefix.intent.direction,
+        zone=zone,
+        candidate_entry=prefix.intent.candidate_entry,
+        quote=quote,
+        current_time=observed_at,
+        max_quote_age_seconds=prefix.policy.data.maximum_quote_age_seconds,
+    )
+    if not location.passed:
+        raise QualificationLedgerError("ledger_original_range_location_denied")
+    return location
+
+
+def _check_range_reservation_admission(pre, quote, *, observed_at):
+    _check_original_range_location(pre, quote, observed_at=observed_at)
+    # V4 currently specifies only an extra anchor restriction. Its complete
+    # range protection/alignment policy remains unverified, and this request
+    # lacks original quote/reference documents for full G1--G11 replay. Neither
+    # a structurally consistent origin nor a passing band grants admission.
+    raise QualificationLedgerError("ledger_range_policy_incomplete")
+
+
 def prepare_reservation(request, claims, active, *, observed_at):
     """Called again under the account lock, not a caller-written PASS input."""
     request = checked(request, ReservationRequest)
@@ -398,6 +518,12 @@ def prepare_reservation(request, claims, active, *, observed_at):
         or request.risk_inputs.authority != claims.authority
     ):
         raise QualificationLedgerError("ledger_current_claims_mismatch")
+    if type(request.origin.evidence.pre_evidence) is HistoryPreEvidenceRunV4:
+        _check_range_reservation_admission(
+            request.origin.evidence.pre_evidence,
+            request.quote,
+            observed_at=observed_at,
+        )
     if type(active) is not tuple or len(active) > 2048:
         raise QualificationLedgerError("bounded_ledger_holds_required")
     pending = {

@@ -18,6 +18,7 @@ from app.trade_evidence.gates import (
     EvidenceGateRun,
     HistoryEvidenceGateRunV2,
     HistoryEvidenceGateRunV3,
+    HistoryEvidenceGateRunV4,
     _digest,
     verify_pre_evidence_versioned,
 )
@@ -42,13 +43,15 @@ def _evidence_family(value):
         HistoryEvidenceGateRunV2,
         "ctcc-history-evidence-v2",
         (HistoryEvidenceGateRunV3, "ctcc-history-evidence-v3", "history_v3"),
+        (HistoryEvidenceGateRunV4, "ctcc-history-evidence-v4", "history_v4"),
     )
 
 
 OriginEvidence = Annotated[
     Annotated[EvidenceGateRun, Tag("legacy")]
     | Annotated[HistoryEvidenceGateRunV2, Tag("history_v2")]
-    | Annotated[HistoryEvidenceGateRunV3, Tag("history_v3")],
+    | Annotated[HistoryEvidenceGateRunV3, Tag("history_v3")]
+    | Annotated[HistoryEvidenceGateRunV4, Tag("history_v4")],
     Discriminator(_evidence_family),
 ]
 
@@ -175,7 +178,9 @@ def freeze_recheck_origin(evidence: EvidenceGateRun) -> RecheckOrigin:
     """
     checked = _copy_evidence(
         evidence,
-        HistoryEvidenceGateRunV3
+        HistoryEvidenceGateRunV4
+        if type(evidence) is HistoryEvidenceGateRunV4
+        else HistoryEvidenceGateRunV3
         if type(evidence) is HistoryEvidenceGateRunV3
         else HistoryEvidenceGateRunV2
         if type(evidence) is HistoryEvidenceGateRunV2

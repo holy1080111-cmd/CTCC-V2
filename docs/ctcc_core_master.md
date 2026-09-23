@@ -1,6 +1,6 @@
 # CTCC 核心總規格：123 專案整合
 
-2026-09-19 最終施工狀態見 [來源與驗證紀錄](final_completion_validation.md)。
+2026-09-23 最新施工與驗證限制見 [來源與驗證紀錄](final_completion_validation.md)。
 canonical 開發分支由 `016a358` 保留施工歷史後建立，未覆蓋原部署。
 每筆 structural risk 0.5%、portfolio stop risk 1%、300 USDT bucket 與
 60% aggregate margin 為本輪保守設定；continuous mode 不得跳過每日虧損或連敗。

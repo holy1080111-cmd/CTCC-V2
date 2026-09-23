@@ -365,6 +365,92 @@ def build_entry_zone(
         return None, "source_basis_invalid"
 
 
+RANGE_ANCHOR_POLICY = "ctcc-original-range-anchor-v1"
+
+
+def build_original_range_anchor_zone(
+    detection: TriggerDetection,
+    *,
+    tick_size: Decimal,
+    max_allowed_drift_bps: Decimal,
+    expires_at: datetime,
+) -> tuple[EntryZone | None, str]:
+    """Restrict the unchanged source zone to its original anchor's correct side.
+
+    The recorded setup ATR includes the setup close. It need not equal the
+    earlier ATR used to construct the original symmetric zone. Their intersection
+    never expands either allowance. This helper proves consistency only; callers
+    must replay the original raw source before relying on its detection.
+    """
+    from app.trade_qualification.one_shot import _guard_original
+
+    try:
+        if type(detection) is not TriggerDetection:
+            return None, "range_anchor_source_invalid"
+        _guard_original(detection)
+    except _INVALID:
+        return None, "range_anchor_source_invalid"
+    original, code = build_entry_zone(
+        detection,
+        tick_size=tick_size,
+        max_allowed_drift_bps=max_allowed_drift_bps,
+        expires_at=expires_at,
+    )
+    if original is None:
+        return None, code
+    try:
+        event = _revalidate(detection, TriggerDetection)
+        basis = dict(event.setup_basis)
+        if (
+            event.strategy != "range_reversal"
+            or event.setup_type != "confirmed_range_edge_reclaim"
+            or basis.get("setup_timeframe") != "15m"
+            or basis.get("prior_side") != "range_interior"
+            or basis.get("ohlc_ordering") != "close_confirmed_only"
+        ):
+            return None, "range_anchor_source_invalid"
+        if not {"level", "atr", "pivot_known_at"} <= basis.keys():
+            return None, "range_anchor_basis_missing"
+        level, atr = (_basis_price(basis[key]) for key in ("level", "atr"))
+        known_at = _utc(datetime.fromisoformat(basis["pivot_known_at"]))
+        if known_at >= event.setup_time:
+            return None, "range_anchor_chronology_invalid"
+        # The anchor is the setup's support/resistance, not its invalidation.
+        low, high = (_basis_price(basis[key]) for key in ("zone_low", "zone_high"))
+        close = _basis_price(basis["setup_close"])
+        with localcontext(Context(prec=100)):
+            if low >= level or high <= level:
+                return None, "range_anchor_original_band_invalid"
+            source_invalidation = _source_anchor(event, basis, close)
+            if source_invalidation != (low if event.direction == "long" else high):
+                return None, "range_anchor_invalidation_mismatch"
+            if event.direction == "long":
+                aligned_low = max(
+                    original.zone_low,
+                    (_ticks(level, tick_size, ceiling=False) + 1) * tick_size,
+                )
+                aligned_high = min(
+                    original.zone_high,
+                    _ticks(level + atr, tick_size, ceiling=False) * tick_size,
+                )
+            else:
+                aligned_low = max(
+                    original.zone_low,
+                    _ticks(level - atr, tick_size, ceiling=True) * tick_size,
+                )
+                aligned_high = min(
+                    original.zone_high,
+                    (_ticks(level, tick_size, ceiling=True) - 1) * tick_size,
+                )
+            if aligned_low <= 0 or aligned_low > aligned_high:
+                return None, "range_anchor_no_executable_tick"
+        values = original.model_dump(mode="python", round_trip=True)
+        values.update(zone_low=aligned_low, zone_high=aligned_high)
+        return EntryZone.model_validate(values, strict=True), "passed"
+    except _INVALID:
+        return None, "range_anchor_basis_invalid"
+
+
 def evaluate_location(
     *,
     report_id: str,

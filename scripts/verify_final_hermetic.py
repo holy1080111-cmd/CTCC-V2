@@ -113,17 +113,27 @@ def verify_copied_source(root: Path, manifest: Path, expected_sha256: str) -> in
     return len(files)
 
 
-def verify_pytest_report(path: Path, *, required_modules=()):
-    """Require executed tests, preserve platform skips, reject empty/false greens."""
+def verify_pytest_report(
+    path: Path, *, required_modules=(), allow_unrelated_skips=False
+):
+    """Verify execution, with explicit full-suite platform-skip handling.
+
+    Required modules must have passed cases and no skipped cases. A targeted
+    PostgreSQL report still rejects every skip by default. Full-suite callers
+    may retain skips outside those modules without claiming they passed.
+    """
     import xml.etree.ElementTree as ET
 
     if path.is_symlink() or not 0 < path.stat().st_size <= 64 * 1024 * 1024:
         raise ValueError("pytest_report_missing_or_unsafe")
-    root = ET.fromstring(path.read_bytes())
+    raw = path.read_bytes()
+    root = ET.fromstring(raw)
     if root.tag != "testsuites" or not len(root):
         raise ValueError("pytest_report_schema_invalid")
     total = {"tests": 0, "failures": 0, "errors": 0, "skipped": 0}
-    executed_modules = set()
+    required = set(required_modules)
+    required_counts = {module: 0 for module in sorted(required)}
+    required_skipped = False
     for suite in root:
         if suite.tag != "testsuite":
             raise ValueError("pytest_report_schema_invalid")
@@ -140,21 +150,36 @@ def verify_pytest_report(path: Path, *, required_modules=()):
         for key, value in counts.items():
             total[key] += value
         for case in cases:
+            module = case.get("classname")
+            matched_modules = (
+                {
+                    target
+                    for target in required
+                    if module == target or module.startswith(target + ".")
+                }
+                if module
+                else set()
+            )
+            if matched_modules and case.find("skipped") is not None:
+                required_skipped = True
             if all(case.find(tag) is None for tag in ("failure", "error", "skipped")):
-                executed_modules.add(case.get("classname"))
+                for target in matched_modules:
+                    required_counts[target] += 1
     passed = total["tests"] - total["failures"] - total["errors"] - total["skipped"]
     if (
         passed <= 0
         or total["failures"]
         or total["errors"]
-        or (required_modules and total["skipped"])
-        or not set(required_modules) <= executed_modules
+        or required_skipped
+        or (required and total["skipped"] and not allow_unrelated_skips)
+        or any(count <= 0 for count in required_counts.values())
     ):
         raise ValueError("pytest_required_execution_not_verified")
     return {
         **total,
         "passed": passed,
-        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "required_module_passed": required_counts,
+        "sha256": hashlib.sha256(raw).hexdigest(),
     }
 
 
@@ -277,7 +302,19 @@ def wait_for_durable_seed(run: Run, container: str, marker: Path, *, timeout=120
             canonical = json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
             if (
                 envelope["sha256"] != hashlib.sha256(canonical).hexdigest()
-                or body.get("schema") != "ctcc.synthetic.qualification.crash-probe.v1"
+                or body.get("schema") != "ctcc.synthetic.qualification.crash-probe.v2"
+                or type(body.get("controls")) is not list
+                or len(body["controls"]) != 3
+                or any(type(item) is not dict for item in body["controls"])
+                or {item.get("scenario") for item in body["controls"]}
+                != {"arm_intent", "estop", "cold_estop"}
+                or body.get("control_arm_intent_observed_before_publish") is not True
+                or body.get("intent_version") != "ctcc-demo-submit-intent-v2"
+                or type(body.get("exchange_request_sha256")) is not str
+                or len(body["exchange_request_sha256"]) != 64
+                or any(
+                    c not in "0123456789abcdef" for c in body["exchange_request_sha256"]
+                )
                 or body.get("execution_authority") is not False
                 or type(body.get("order_writes")) is not int
                 or body["order_writes"] != 0
@@ -544,6 +581,10 @@ def main():
                 "tests/integration/test_qualification_submission_intent_repository.py",
                 "tests/integration/test_history_submission_intent_repository.py",
                 "tests/integration/test_submission_reporting_repository.py",
+                "tests/integration/test_qualification_bootstrap_repository.py",
+                "tests/integration/test_demo_control_repository.py",
+                "tests/integration/test_demo_control_durability_probe.py",
+                "tests/integration/test_durable_migration_downgrade.py",
             ],
             mounts=test_results_mount,
         )
@@ -554,6 +595,10 @@ def main():
                 "tests.integration.test_qualification_submission_intent_repository",
                 "tests.integration.test_history_submission_intent_repository",
                 "tests.integration.test_submission_reporting_repository",
+                "tests.integration.test_qualification_bootstrap_repository",
+                "tests.integration.test_demo_control_repository",
+                "tests.integration.test_demo_control_durability_probe",
+                "tests.integration.test_durable_migration_downgrade",
             ),
         )
         container(
@@ -570,7 +615,13 @@ def main():
             ],
             mounts=test_results_mount,
         )
-        identity["linux_tests"] = verify_pytest_report(test_results / "linux-full.xml")
+        identity["linux_tests"] = verify_pytest_report(
+            test_results / "linux-full.xml",
+            required_modules=tuple(
+                identity["postgres_tests"]["required_module_passed"]
+            ),
+            allow_unrelated_skips=True,
+        )
         # Actual process death and server restarts, using explicitly synthetic
         # claims. This does not establish source, Demo or Live acceptance.
         probe_dir = args.output / "crash-probe"

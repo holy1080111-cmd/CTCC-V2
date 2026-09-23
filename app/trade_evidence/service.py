@@ -40,10 +40,12 @@ from app.trade_qualification.events import _copy_source, extract_trigger
 from app.trade_qualification.history_prefix import (
     HistoryEntryQualificationResultV2,
     HistoryEntryQualificationResultV3,
+    HistoryEntryQualificationResultV4,
 )
 from app.trade_qualification.location import (
     ExecutableQuote,
     build_entry_zone,
+    build_original_range_anchor_zone,
     inspect_executable_quote,
 )
 from app.trade_qualification.models import EntryQualificationResult, require_aware
@@ -372,7 +374,9 @@ def prepare_evidence(
         now = require_aware(prepared_at)
         q = _copy(
             qualification,
-            HistoryEntryQualificationResultV3
+            HistoryEntryQualificationResultV4
+            if type(qualification) is HistoryEntryQualificationResultV4
+            else HistoryEntryQualificationResultV3
             if type(qualification) is HistoryEntryQualificationResultV3
             else HistoryEntryQualificationResultV2
             if type(qualification) is HistoryEntryQualificationResultV2
@@ -399,7 +403,12 @@ def prepare_evidence(
         if q.entry_zone is not None:
             if tick is None:
                 raise EvidenceError("zone_tick_missing")
-            zone, code = build_entry_zone(
+            zone_builder = (
+                build_original_range_anchor_zone
+                if type(q) is HistoryEntryQualificationResultV4
+                else build_entry_zone
+            )
+            zone, code = zone_builder(
                 event,
                 tick_size=tick,
                 max_allowed_drift_bps=q.entry_zone.max_allowed_drift_bps,

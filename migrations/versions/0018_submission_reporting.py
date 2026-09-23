@@ -172,9 +172,19 @@ def upgrade():
 
 def downgrade():
     # Schema rollback destroys retained outcomes; only permitted when empty.
+    # Include FK parents before children: DROP removes their FK dependencies.
+    # NOWAIT avoids a wait cycle with a projection worker holding the spool.
+    op.execute("""
+        LOCK TABLE qualification_account_scopes, qualification_reservations,
+          qualification_reservation_transitions, qualification_submission_outcomes,
+          qualification_report_spool, qualification_report_projection_receipts
+          IN ACCESS EXCLUSIVE MODE NOWAIT
+    """)
     op.execute("""
         DO $$ BEGIN
-          IF EXISTS (SELECT 1 FROM qualification_submission_outcomes) THEN
+          IF EXISTS (SELECT 1 FROM qualification_submission_outcomes)
+             OR EXISTS (SELECT 1 FROM qualification_report_spool)
+             OR EXISTS (SELECT 1 FROM qualification_report_projection_receipts) THEN
             RAISE EXCEPTION 'submission_reporting_downgrade_requires_empty';
           END IF;
         END $$;
