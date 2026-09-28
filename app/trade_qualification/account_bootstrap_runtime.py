@@ -232,6 +232,20 @@ async def collect_bootstrap_recorded(
     session, *, repository, journal_repository, clock, barrier_completed_at
 ):
     """Same one-use owned acquisition; no packet/transport flag accepted as input."""
+    result, _ = await _collect_recorded(
+        session,
+        repository=repository,
+        journal_repository=journal_repository,
+        clock=clock,
+        barrier_completed_at=barrier_completed_at,
+    )
+    return result
+
+
+async def _collect_recorded(
+    session, *, repository, journal_repository, clock, barrier_completed_at
+):
+    """Internal owner survives finalization; legacy public result stays unchanged."""
     from app.database.repositories.account_capture_journal import (
         AccountCaptureJournalRepository,
     )
@@ -275,4 +289,105 @@ async def collect_bootstrap_recorded(
         pass
     if public_receipt is None:
         raise runtime.AccountRuntimeError("account_runtime_invalid")
-    return RecordedBootstrapCaptureResult(result, public_receipt)
+    return RecordedBootstrapCaptureResult(result, public_receipt), journals[0]
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class QueryVerifiedBootstrapCaptureResult:
+    """New private observation result; historical replay never becomes authority."""
+
+    recorded: RecordedBootstrapCaptureResult
+    query_verification: object
+    receipt_json: bytes
+
+    @property
+    def account_complete(self):
+        return False
+
+    @property
+    def execution_authority(self):
+        return False
+
+    @property
+    def admission(self):
+        return "DENY"
+
+
+async def collect_bootstrap_query_verified(
+    session, *, repository, journal_repository, clock, barrier_completed_at
+):
+    """Owned acquisition -> B1 finalization -> separate read -> B2a byte replay.
+
+    Accepts the original controlled session only. No BootstrapArtifact, packet,
+    caller coverage boolean, result DTO or current-authority claim is an input.
+    """
+    from app.trade_qualification import account_capture_journal as journal
+    from app.trade_qualification import account_history_query_verifier as verifier
+
+    if type(session) is not runtime.ControlledDemoAccountSession:
+        raise runtime.AccountRuntimeError("account_runtime_invalid")
+    if session._used:
+        raise runtime.AccountRuntimeError("account_session_already_used")
+    selected = capture._checked_plan(session._plan, session._pin)
+    if (
+        type(selected)
+        not in {
+            capture.RegionalDemoAccountCapturePlan,
+            capture.AllProductDemoAccountCapturePlan,
+        }
+        or selected.registration_region != "global"
+    ):
+        raise runtime.AccountRuntimeError("account_runtime_invalid")
+    recorded, owner = await _collect_recorded(
+        session,
+        repository=repository,
+        journal_repository=journal_repository,
+        clock=clock,
+        barrier_completed_at=barrier_completed_at,
+    )
+    result = None
+    try:
+        # This carrier was bound to the actual collector before the old DTO was
+        # constructed. Readback cannot create a new live owner or session.
+        if (
+            type(owner) is not journal._OwnedAccountJournal
+            or not owner.finished
+            or not owner.acquisition_ok
+            or owner.repository is not journal_repository
+        ):
+            raise runtime.AccountRuntimeError("account_runtime_invalid")
+        chain = await journal_repository.read_chain(owner.scope, owner.capture_id)
+        verified = verifier.verify_history_query_chain(
+            chain,
+            expected_head_sha256=owner.previous,
+            expected_plan_sha256=session._pin,
+            expected_packet_sha256=owner.owned_packet_sha256,
+            expected_account_id=selected.expected_uid,
+            expected_settlement_currency=selected.settlement_currency,
+        )
+        receipt = journal.canonical(
+            {
+                "schema_version": "ctcc.demo_bootstrap_query_observation.v1",
+                "capture_id": owner.capture_id,
+                "journal_head_sha256": owner.previous,
+                "plan_sha256": session._pin,
+                "packet_sha256": owner.owned_packet_sha256,
+                "query_verification_sha256": verified.receipt_sha256,
+                "policy_sha256": verifier.POLICY_SHA256,
+                "state": "recorded_generation_time_query_verified",
+                "account_complete": False,
+                "source_authenticity_verified": False,
+                "execution_authority": False,
+                "admission": "DENY",
+            }
+        )
+        collector._no_secrets(receipt, owner.tokens)
+        collector._no_secret_json(receipt, owner.tokens)
+        result = QueryVerifiedBootstrapCaptureResult(recorded, verified, receipt)
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001, S110 -- preserve journal; no private error logging
+        pass
+    if result is None:
+        raise runtime.AccountRuntimeError("account_runtime_invalid")
+    return result

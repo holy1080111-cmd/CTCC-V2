@@ -31,8 +31,20 @@ def test_public_source_imports_no_account_settings_strategy_or_execution_layer()
                     ), (path.name, name)
 
 
-def test_public_source_has_only_the_explicit_offline_mie_consumer():
+def test_public_source_has_only_explicit_reviewed_consumers():
     consumer = APP / "mie" / "validation" / "measured_public_replay.py"
+    allowed = {
+        consumer: ("public_market_receipts", "public_receipt_storage"),
+        APP / "trade_qualification" / "public_source_runtime.py": (
+            "public_clock",
+            "public_market_receipts",
+            "public_runtime_journal",
+        ),
+        APP / "trade_qualification" / "post_g12_public_runtime.py": (
+            "public_clock",
+            "public_market_receipts",
+        ),
+    }
     observed = set()
     for path in APP.rglob("*.py"):
         if path.is_relative_to(SOURCE):
@@ -40,15 +52,34 @@ def test_public_source_has_only_the_explicit_offline_mie_consumer():
         for node in nodes(path):
             for name in names(node):
                 if name.startswith("app.public_market_source"):
-                    assert path == consumer, (path, name)
-                    assert name.startswith(
-                        (
-                            "app.public_market_source.public_market_receipts",
-                            "app.public_market_source.public_receipt_storage",
-                        )
+                    assert path in allowed, (path, name)
+                    assert any(
+                        name == f"app.public_market_source.{module}"
+                        or name.startswith(f"app.public_market_source.{module}.")
+                        for module in allowed[path]
                     ), name
                     observed.add(path)
-    assert observed == {consumer}
+    assert observed == set(allowed)
+
+
+def test_runtime_consumers_cannot_access_private_writes_or_execution_authority():
+    for filename in ("public_source_runtime.py", "post_g12_public_runtime.py"):
+        for node in nodes(APP / "trade_qualification" / filename):
+            for name in names(node):
+                assert not any(
+                    part in name
+                    for part in (
+                        "execution_authority",
+                        "private_rest",
+                        "credentials",
+                        "submission_intent",
+                        "qualification_ledger",
+                        "account_runtime",
+                        "dispatch_ownership",
+                    )
+                ), (filename, name)
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                assert node.value not in {"POST", "PUT", "PATCH", "DELETE"}
 
 
 def test_public_source_io_capabilities_stay_in_reviewed_owners():

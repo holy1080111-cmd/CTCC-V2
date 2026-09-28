@@ -184,6 +184,22 @@ class ReversalStructuralProtectionSelection(StructuralProtectionSelection):
 
 
 @dataclass(frozen=True)
+class RangeStructuralProtectionSelection(StructuralProtectionSelection):
+    alignment_policy: Literal["ctcc-neutral-range-protection-v1"] = (
+        "ctcc-neutral-range-protection-v1"
+    )
+    range_permission_sha256: str | None = None
+    retained_analysis_blockers: tuple[str, ...] = ()
+
+    def to_audit_json(self) -> str:
+        payload = json.loads(super().to_audit_json())
+        payload["schema"] = "ctcc_structural_selection_range_v1"
+        return json.dumps(
+            payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+        )
+
+
+@dataclass(frozen=True)
 class _Policy:
     entry: Decimal
     direction: str
@@ -527,6 +543,18 @@ def select_reversal_structural_protection(detection, market, analysis, **inputs)
     )
 
 
+def select_range_structural_protection(detection, market, analysis, **inputs):
+    """Explicit neutral-range source replay; original selector remains unchanged."""
+    from app.trade_qualification.one_shot import _guard_original
+    from app.trade_qualification.range_policy import guard_range_analysis
+
+    _guard_original({"market": market, "event": detection})
+    guard_range_analysis(analysis)
+    return _select_structural_protection(
+        detection, market, analysis, _reversal=False, _range=True, **inputs
+    )
+
+
 def _select_structural_protection(
     detection: TriggerDetection,
     market: MarketSnapshot,
@@ -542,6 +570,7 @@ def _select_structural_protection(
     atr_buffer_multiplier: Decimal,
     minimum_buffer_bps: Decimal,
     _reversal: bool,
+    _range: bool = False,
 ) -> StructuralProtectionSelection:
     """Select a source-bound bracket without moving the supplied entry.
 
@@ -560,7 +589,9 @@ def _select_structural_protection(
         "evidence": "confirmed_ohlc",
     }
     result_type = (
-        ReversalStructuralProtectionSelection
+        RangeStructuralProtectionSelection
+        if _range
+        else ReversalStructuralProtectionSelection
         if _reversal
         else StructuralProtectionSelection
     )
@@ -645,7 +676,14 @@ def _select_structural_protection(
             direction=event.direction,
             source_sha256=digest,
         )
-        if _reversal:
+        if _range:
+            from app.trade_qualification.range_policy import replay_range_permission
+
+            identity["retained_analysis_blockers"] = tuple(analysis.blockers)
+            identity["range_permission_sha256"] = replay_range_permission(
+                market, analysis, event
+            )
+        elif _reversal:
             from app.trade_qualification.regime_admission import (
                 evaluate_regime_admission,
             )

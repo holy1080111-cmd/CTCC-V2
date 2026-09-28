@@ -21,8 +21,10 @@ from app.domain.market import MarketSnapshot
 from app.indicators.core import ema_series
 from app.market.quality.candles import BAR_SECONDS, candle_closed_at
 from app.strategies.structural_protection import (
+    RangeStructuralProtectionSelection,
     ReversalStructuralProtectionSelection,
     StructuralProtectionSelection,
+    select_range_structural_protection,
     select_reversal_structural_protection,
     select_structural_protection,
 )
@@ -41,6 +43,7 @@ from app.trade_qualification.history_prefix import (
     HistoryEntryQualificationResultV2,
     HistoryEntryQualificationResultV3,
     HistoryEntryQualificationResultV4,
+    HistoryEntryQualificationResultV5,
 )
 from app.trade_qualification.location import (
     ExecutableQuote,
@@ -288,9 +291,12 @@ def _protection(protection, event, market, analysis, qualification):
         if qualification.stop_loss is not None or qualification.take_profit is not None:
             raise EvidenceError("structural_evidence_missing")
         return None, None
+    range_profile = type(qualification) is HistoryEntryQualificationResultV5
     reversal = type(qualification) is HistoryEntryQualificationResultV3
     expected = (
-        ReversalStructuralProtectionSelection
+        RangeStructuralProtectionSelection
+        if range_profile
+        else ReversalStructuralProtectionSelection
         if reversal
         else StructuralProtectionSelection
     )
@@ -323,7 +329,9 @@ def _protection(protection, event, market, analysis, qualification):
     ):
         raise EvidenceError("structural_observation_invalid")
     selector = (
-        select_reversal_structural_protection
+        select_range_structural_protection
+        if range_profile
+        else select_reversal_structural_protection
         if reversal
         else select_structural_protection
     )
@@ -374,7 +382,9 @@ def prepare_evidence(
         now = require_aware(prepared_at)
         q = _copy(
             qualification,
-            HistoryEntryQualificationResultV4
+            HistoryEntryQualificationResultV5
+            if type(qualification) is HistoryEntryQualificationResultV5
+            else HistoryEntryQualificationResultV4
             if type(qualification) is HistoryEntryQualificationResultV4
             else HistoryEntryQualificationResultV3
             if type(qualification) is HistoryEntryQualificationResultV3
@@ -405,7 +415,11 @@ def prepare_evidence(
                 raise EvidenceError("zone_tick_missing")
             zone_builder = (
                 build_original_range_anchor_zone
-                if type(q) is HistoryEntryQualificationResultV4
+                if type(q)
+                in (
+                    HistoryEntryQualificationResultV4,
+                    HistoryEntryQualificationResultV5,
+                )
                 else build_entry_zone
             )
             zone, code = zone_builder(
@@ -517,7 +531,9 @@ def validate_snapshot(snapshot: EvidenceSnapshot) -> EvidenceSnapshot:
                 if key != "spread"
             }
             selector = (
-                select_reversal_structural_protection
+                select_range_structural_protection
+                if type(value.qualification) is HistoryEntryQualificationResultV5
+                else select_reversal_structural_protection
                 if type(value.qualification) is HistoryEntryQualificationResultV3
                 else select_structural_protection
             )

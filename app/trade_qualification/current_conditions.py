@@ -36,10 +36,13 @@ from app.trade_qualification.event_models import Digest
 from app.trade_qualification.history_prefix import (
     HistoryEntryQualificationResultV3,
     HistoryEntryQualificationResultV4,
+    HistoryEntryQualificationResultV5,
     HistoryQualificationPrefixPolicyV2,
     HistoryQualificationPrefixPolicyV3,
     HistoryQualificationPrefixPolicyV4,
+    HistoryQualificationPrefixPolicyV5,
     expansion_htf_permission,
+    range_current_permission,
 )
 from app.trade_qualification.history_prefix import (
     _bounded as _history_bounded,
@@ -85,6 +88,7 @@ def _raw_record(value):
                 HistoryCurrentConditionsResultV2,
                 HistoryCurrentConditionsResultV3,
                 HistoryCurrentConditionsResultV4,
+                HistoryCurrentConditionsResultV5,
             )
             or set(value.__dict__) != set(type(value).model_fields)
             or value.__pydantic_extra__
@@ -102,8 +106,10 @@ def _raw_record(value):
             HistoryQualificationPrefixPolicyV2,
             HistoryQualificationPrefixPolicyV3,
             HistoryQualificationPrefixPolicyV4,
+            HistoryQualificationPrefixPolicyV5,
             HistoryEntryQualificationResultV3,
             HistoryEntryQualificationResultV4,
+            HistoryEntryQualificationResultV5,
         ):
             _history_bounded(item)
         else:
@@ -136,7 +142,10 @@ class CurrentConditionsResult(QualificationModel):
                 ("intent", QualificationIntent),
                 (
                     "policy",
-                    HistoryQualificationPrefixPolicyV4
+                    HistoryQualificationPrefixPolicyV5
+                    if value.get("contract_version")
+                    == "ctcc-history-current-conditions-v5"
+                    else HistoryQualificationPrefixPolicyV4
                     if value.get("contract_version")
                     == "ctcc-history-current-conditions-v4"
                     else HistoryQualificationPrefixPolicyV3
@@ -150,7 +159,10 @@ class CurrentConditionsResult(QualificationModel):
                 ("data_result", DataQualificationResult),
                 (
                     "result",
-                    HistoryEntryQualificationResultV4
+                    HistoryEntryQualificationResultV5
+                    if value.get("contract_version")
+                    == "ctcc-history-current-conditions-v5"
+                    else HistoryEntryQualificationResultV4
                     if value.get("contract_version")
                     == "ctcc-history-current-conditions-v4"
                     else HistoryEntryQualificationResultV3
@@ -294,6 +306,25 @@ class HistoryCurrentConditionsResultV4(CurrentConditionsResult):
         return self
 
 
+class HistoryCurrentConditionsResultV5(CurrentConditionsResult):
+    contract_version: Literal["ctcc-history-current-conditions-v5"]
+    policy: HistoryQualificationPrefixPolicyV5
+    result: HistoryEntryQualificationResultV5
+    origin_sha256: Digest
+    original_event_key: Digest
+
+    @model_validator(mode="after")
+    def range_only(self):
+        if (
+            self.intent.strategy != "range_reversal"
+            or self.result.range_protection_policy
+            != self.policy.range_protection_policy
+            or self.result.range_anchor_policy != self.policy.range_anchor_policy
+        ):
+            raise ValueError("history_current_conditions_range_policy_required")
+        return self
+
+
 def copy_current_conditions(result) -> CurrentConditionsResult:
     """Strict, bounded consistency copy; this does not authenticate a PASS."""
     if type(result) not in (
@@ -301,6 +332,7 @@ def copy_current_conditions(result) -> CurrentConditionsResult:
         HistoryCurrentConditionsResultV2,
         HistoryCurrentConditionsResultV3,
         HistoryCurrentConditionsResultV4,
+        HistoryCurrentConditionsResultV5,
     ):
         raise ValueError("exact current-conditions result required")
     _raw_record(result)
@@ -414,6 +446,34 @@ def evaluate_history_current_conditions_v4(
     )
 
 
+def evaluate_history_current_conditions_v5(
+    current_market, *, origin, quote, reference, observed_at
+):
+    from app.trade_qualification.history_engine import HistoryPreEvidenceRunV5
+    from app.trade_qualification.recheck_models import copy_recheck_origin
+
+    original = copy_recheck_origin(origin)
+    pre = original.evidence.pre_evidence
+    if (
+        type(pre) is not HistoryPreEvidenceRunV5
+        or pre.result.strategy != "range_reversal"
+    ):
+        raise ValueError("history_current_conditions_origin_version_required")
+    return _evaluate_current_conditions(
+        current_market,
+        intent=pre.prefix.intent,
+        policy=pre.policy.prefix,
+        quote=quote,
+        reference=reference,
+        observed_at=observed_at,
+        history_pins={
+            "contract_version": "ctcc-history-current-conditions-v5",
+            "origin_sha256": original.evaluation_sha256,
+            "original_event_key": original.original_event_key,
+        },
+    )
+
+
 def _evaluate_current_conditions(
     current_market, *, intent, quote, reference, policy, observed_at, history_pins=None
 ):
@@ -426,9 +486,12 @@ def _evaluate_current_conditions(
     intent = _copy(intent, QualificationIntent)
     version2 = type(policy) is HistoryQualificationPrefixPolicyV2
     version3 = type(policy) is HistoryQualificationPrefixPolicyV3
+    version5 = type(policy) is HistoryQualificationPrefixPolicyV5
     version4 = type(policy) is HistoryQualificationPrefixPolicyV4
     policy = (
-        _history_copy(policy, HistoryQualificationPrefixPolicyV4)
+        _history_copy(policy, HistoryQualificationPrefixPolicyV5)
+        if version5
+        else _history_copy(policy, HistoryQualificationPrefixPolicyV4)
         if version4
         else _history_copy(policy, HistoryQualificationPrefixPolicyV3)
         if version3
@@ -437,7 +500,9 @@ def _evaluate_current_conditions(
         else _copy(policy, QualificationPrefixPolicy)
     )
     result_type = (
-        HistoryCurrentConditionsResultV4
+        HistoryCurrentConditionsResultV5
+        if version5
+        else HistoryCurrentConditionsResultV4
         if version4
         else HistoryCurrentConditionsResultV3
         if version3
@@ -468,6 +533,12 @@ def _evaluate_current_conditions(
     }
 
     def finish():
+        if version5:
+            values.update(
+                contract_version="ctcc-history-qualification-result-v5",
+                range_anchor_policy=policy.range_anchor_policy,
+                range_protection_policy=policy.range_protection_policy,
+            )
         if version4:
             values.update(
                 contract_version="ctcc-history-qualification-result-v4",
@@ -481,7 +552,9 @@ def _evaluate_current_conditions(
                 else None,
             )
         qualification_type = (
-            HistoryEntryQualificationResultV4
+            HistoryEntryQualificationResultV5
+            if version5
+            else HistoryEntryQualificationResultV4
             if version4
             else HistoryEntryQualificationResultV3
             if version3
@@ -603,6 +676,16 @@ def _evaluate_current_conditions(
                 "original_event_key": history_pins["original_event_key"],
                 "current_source_sha256": data.source_sha256,
                 "current_analysis_sha256": route.snapshot_sha256,
+                "retained_analysis_blockers": ",".join(analysis.blockers) or "none",
+            }
+        if version5:
+            htf_ok = direction_matches and range_current_permission(
+                analysis, rebuilt, route, intent.direction
+            )
+            expansion_values = {
+                "range_protection_policy": policy.range_protection_policy,
+                "original_event_key": history_pins["original_event_key"],
+                "current_source_sha256": data.source_sha256,
                 "retained_analysis_blockers": ",".join(analysis.blockers) or "none",
             }
         if htf_ok:

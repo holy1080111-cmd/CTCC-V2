@@ -25,13 +25,15 @@ from app.trade_qualification.reservations import (
     LedgerScopeState,
     QualificationLedgerError,
     ReservationReceipt,
-    ReservationRequest,
+    ReservationRequestV2,
     RiskCoverage,
     canonical,
     checked,
     checked_bootstrap,
+    checked_reservation_request,
     claim_stamps,
     decode,
+    decode_reservation_request,
     digest,
     prepare_reservation,
     reservation_id,
@@ -422,7 +424,7 @@ class QualificationLedgerRepository:
             raise QualificationLedgerError("ledger_rounded_coverage_exceeds_caps")
 
     async def reserve(self, request):
-        request = checked(request, ReservationRequest)
+        request = checked_reservation_request(request)
         async with self.session_factory() as session, session.begin():
             row = await self._locked(session, request.scope)
             await self._require_compatible_currency(session, request.scope)
@@ -516,12 +518,16 @@ class QualificationLedgerRepository:
             }
             if previous not in allowed[target]:
                 raise QualificationLedgerError("ledger_transition_denied")
-            request = decode(record.request_json, ReservationRequest)
+            request = decode_reservation_request(record.request_json)
             if digest(request) != record.request_sha256:
                 raise QualificationLedgerError("ledger_request_digest_mismatch")
             if target == "consumed":
                 await self._require_compatible_currency(session, scope)
                 current = self._claims(row)
+                if type(request) is ReservationRequestV2:
+                    self._revision(
+                        row.account_revision, request.expected_account_revision
+                    )
                 raw = _plain(request)
                 raw["risk_inputs"]["account"] = _plain(current.account)
                 raw["risk_inputs"]["authority"] = _plain(current.authority)
@@ -537,7 +543,7 @@ class QualificationLedgerRepository:
                 # it only for candidate re-evaluation (not from durable state).
                 current = self._without_self(current, self._receipt(record, row))
                 raw["risk_inputs"]["account"] = _plain(current.account)
-                fresh_request = ReservationRequest.model_validate(raw, strict=True)
+                fresh_request = type(request).model_validate(raw, strict=True)
                 coverage, _ = prepare_reservation(
                     fresh_request, current, active, observed_at=now
                 )
@@ -705,7 +711,7 @@ class QualificationLedgerRepository:
             ):
                 raise QualificationLedgerError("submit_intent_missing")
             entry = entries[0]
-            request = decode(record.request_json, ReservationRequest)
+            request = decode_reservation_request(record.request_json)
             if digest(request) != record.request_sha256:
                 raise QualificationLedgerError("ledger_request_digest_mismatch")
             intent, consumed = replay_submission_intent(

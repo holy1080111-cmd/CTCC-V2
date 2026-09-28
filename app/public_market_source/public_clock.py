@@ -449,6 +449,28 @@ def _observe_owned_clock(attempt, stage):
         raise PublicReceiptError("owned_clock_observation_required")
     with _CLOCK_RESULTS_LOCK:
         attempt.claim_clock_stage(stage)
+    payload = _native_observation_payload()
+    result = _OwnedClockObservation(_CLOCK_ISSUER)
+    with _CLOCK_RESULTS_LOCK:
+        _CLOCK_RESULTS[result] = (attempt, stage, payload)
+    return result
+
+
+def _observe_owned_runtime_clock(attempt, stage):
+    """Separate exact component-journal scope; no supplied diagnostic or clock."""
+    from app.public_market_source.public_runtime_journal import _claim_runtime_clock
+
+    _claim_runtime_clock(attempt, stage)
+    payload = _native_observation_payload()
+    result = _OwnedClockObservation(_CLOCK_ISSUER)
+    with _CLOCK_RESULTS_LOCK:
+        _CLOCK_RESULTS[result] = (attempt, stage, payload)
+    return result
+
+
+def _native_observation_payload():
+    # Only fixed native acquisition reaches registration. There is deliberately
+    # no payload/result parameter or caller-supplied native adapter.
     try:
         observation = native_os_clock()
         outcome = "accepted"
@@ -468,10 +490,7 @@ def _observe_owned_clock(attempt, stage):
         }
     )
     replay_clock_observation(payload)
-    result = _OwnedClockObservation(_CLOCK_ISSUER)
-    with _CLOCK_RESULTS_LOCK:
-        _CLOCK_RESULTS[result] = (attempt, stage, payload)
-    return result
+    return payload
 
 
 def _stream_record(raw: bytes, *, truncated=False):

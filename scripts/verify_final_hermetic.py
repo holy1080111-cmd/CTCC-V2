@@ -592,6 +592,8 @@ def main():
                 "tests/integration/test_durable_migration_downgrade.py",
                 "tests/integration/test_account_ingestion_journal_repository.py",
                 "tests/integration/test_account_capture_crash_probe_repository.py",
+                "tests/integration/test_account_history_query_verifier_repository.py",
+                "tests/integration/test_range_v5_reservation_repository.py",
             ],
             mounts=test_results_mount,
         )
@@ -608,6 +610,8 @@ def main():
                 "tests.integration.test_durable_migration_downgrade",
                 "tests.integration.test_account_ingestion_journal_repository",
                 "tests.integration.test_account_capture_crash_probe_repository",
+                "tests.integration.test_account_history_query_verifier_repository",
+                "tests.integration.test_range_v5_reservation_repository",
             ),
         )
         container(

@@ -29,6 +29,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from app.domain.analysis import MultiTimeframeAnalysis
 from app.domain.market import MarketSnapshot
 from app.strategies.structural_protection import (
+    select_range_structural_protection,
     select_reversal_structural_protection,
     select_structural_protection,
 )
@@ -61,12 +62,15 @@ from app.trade_qualification.history_engine import (
     HistoryPreEvidencePolicyV2,
     HistoryPreEvidencePolicyV3,
     HistoryPreEvidencePolicyV4,
+    HistoryPreEvidencePolicyV5,
     HistoryPreEvidenceRunV2,
     HistoryPreEvidenceRunV3,
     HistoryPreEvidenceRunV4,
+    HistoryPreEvidenceRunV5,
     verify_history_pre_evidence_v2,
     verify_history_pre_evidence_v3,
     verify_history_pre_evidence_v4,
+    verify_history_pre_evidence_v5,
 )
 from app.trade_qualification.history_engine import (
     _preflight as _history_preflight,
@@ -75,6 +79,7 @@ from app.trade_qualification.history_prefix import (
     HistoryEntryQualificationResultV2,
     HistoryEntryQualificationResultV3,
     HistoryEntryQualificationResultV4,
+    HistoryEntryQualificationResultV5,
 )
 from app.trade_qualification.location import ExecutableQuote
 from app.trade_qualification.models import (
@@ -144,6 +149,7 @@ def _guard(value, depth=0, budget=None):
             HistoryEvidenceGateRunV2,
             HistoryEvidenceGateRunV3,
             HistoryEvidenceGateRunV4,
+            HistoryEvidenceGateRunV5,
             EvidenceSnapshot,
             EvidencePanel,
             EvidenceCandle,
@@ -158,10 +164,13 @@ def _guard(value, depth=0, budget=None):
                 HistoryEntryQualificationResultV2,
                 HistoryPreEvidenceRunV3,
                 HistoryPreEvidenceRunV4,
+                HistoryPreEvidenceRunV5,
                 HistoryPreEvidencePolicyV3,
                 HistoryPreEvidencePolicyV4,
+                HistoryPreEvidencePolicyV5,
                 HistoryEntryQualificationResultV3,
                 HistoryEntryQualificationResultV4,
+                HistoryEntryQualificationResultV5,
             ):
                 _history_preflight(value)
             else:
@@ -350,7 +359,15 @@ class HistoryEvidenceGateRunV4(EvidenceGateRun):
     result: HistoryEntryQualificationResultV4
 
 
+class HistoryEvidenceGateRunV5(EvidenceGateRun):
+    contract_version: Literal["ctcc-history-evidence-v5"]
+    pre_evidence: HistoryPreEvidenceRunV5
+    result: HistoryEntryQualificationResultV5
+
+
 def verify_pre_evidence_versioned(run, market, **inputs):
+    if type(run) is HistoryPreEvidenceRunV5:
+        return verify_history_pre_evidence_v5(run, market, **inputs)
     if type(run) is HistoryPreEvidenceRunV4:
         return verify_history_pre_evidence_v4(run, market, **inputs)
     if type(run) is HistoryPreEvidenceRunV3:
@@ -416,7 +433,9 @@ def publish_qualification_evidence(
         raise EvidenceGateError("pre_evidence_replay_failed") from exc
     pin = pre.evaluation_sha256
     gate_type = (
-        HistoryEvidenceGateRunV4
+        HistoryEvidenceGateRunV5
+        if type(pre) is HistoryPreEvidenceRunV5
+        else HistoryEvidenceGateRunV4
         if type(pre) is HistoryPreEvidenceRunV4
         else HistoryEvidenceGateRunV3
         if type(pre) is HistoryPreEvidenceRunV3
@@ -465,7 +484,9 @@ def publish_qualification_evidence(
             _plain(
                 {
                     **(
-                        {"contract_version": "ctcc-history-evidence-v4"}
+                        {"contract_version": "ctcc-history-evidence-v5"}
+                        if gate_type is HistoryEvidenceGateRunV5
+                        else {"contract_version": "ctcc-history-evidence-v4"}
                         if gate_type is HistoryEvidenceGateRunV4
                         else {"contract_version": "ctcc-history-evidence-v3"}
                         if gate_type is HistoryEvidenceGateRunV3
@@ -534,7 +555,9 @@ def publish_qualification_evidence(
         if collected.bundle_sha256 != pre.prefix.data_result.quote_bundle_sha256:
             raise EvidenceGateError("evidence_quote_changed")
         selector = (
-            select_reversal_structural_protection
+            select_range_structural_protection
+            if type(pre) is HistoryPreEvidenceRunV5
+            else select_reversal_structural_protection
             if type(pre) is HistoryPreEvidenceRunV3
             else select_structural_protection
         )

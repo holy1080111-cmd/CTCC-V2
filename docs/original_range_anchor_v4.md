@@ -39,7 +39,10 @@ G8 currently retains the original `source_data_blockers` rejection for neutral
 range analysis with `multi_timeframe_not_aligned`. This change does not apply
 the reversal alignment selector to range or remove that diagnostic. The full
 integrated `range_alignment_permitted` policy still needs source verification
-before any separately versioned range structural permission can be implemented.
+before claiming an exact port of that legacy helper. This is not a requirement
+that prohibits a new explicitly versioned policy derived from the reviewed
+canonical strategy predicates; see `range_protection_v5.md`. V4 itself retains
+its historical denial and wire format.
 The retained installer patch contains only its call site and is insufficient to
 reconstruct the complete rule. Expected integrated source SHA-256:
 `6ce7a0252421c080bcc4f977b27b6eb22d3485fd4e2d8d6a2c3415f39936b0f1`.

@@ -61,12 +61,19 @@ rollback. Its migration and schema check also passed. The 44 new unit cases and
 next immutable checkpoint and cannot replace its full regression.
 
 This remains `durable_intent_not_execution_permission`. Source authenticity,
-complete account history, same-invocation publication ownership and all possible
-fill-price/intrabar coverage are not established by these stored inputs. A FOK
-limit bounds adverse price; favorable fills can still require protection and
-geometry checks. The v2 record keeps those claims false and the real Demo entry
-transport remains closed. Readback of a consumed, uncertain or expired intent
-is audit only and must never dispatch or retry an order.
+complete account history and same-invocation publication ownership are not
+established by these stored inputs. The required elapsed event history must also
+be checked through its actual source. The real Demo entry transport remains
+closed pending that owned runtime integration.
+
+The reservation covers exact worst sampled risk, margin and notional. Its
+`all_fill_prices_covered=False` limitation does not impose a pre-submit theorem
+about every possible future fill. A FOK limit bounds adverse price; actual full
+fill, price, RR, geometry, size, leverage, margin and protection still require
+verification, with partial/ambiguous/mismatched results stopping automation.
+Favorable execution cannot repair a failed original candidate. Readback of a
+consumed, uncertain or expired intent is audit only and must never dispatch or
+retry an order.
 
 Unit tests use fictional account bytes and real deterministic evaluators.
 PostgreSQL integration tests use isolated synthetic account scopes to verify

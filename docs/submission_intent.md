@@ -36,9 +36,16 @@ caller PASS、order callback／payload／ack，也不選新的 order type、marg
 ## 尚缺與驗收
 
 這一步補的是持久化與一次性消耗，不是完整 execution runtime。可信全帳戶與
-revision、所有可能成交價的風險覆蓋、本次 G12／完整 recheck 的受控接線、真正
+revision、本次 G12／完整 recheck 的受控接線、真正
 Demo submit／protection／ack reconciliation 和 post-submit worker lifecycle
 仍須獨立完成。不能因本元件通過就啟用新交易路徑。
+
+2026-09-23 範圍更正：主指令要求原 candidate 與新 executable reference 各自
+通過，再於原子 transaction 預留最差抽樣風險；不是送單前保證全部未來成交價
+或市場止損的實際損失。`all_fill_prices_covered=False` 如實保存此界線，並非
+必須改成 true 才能送單的 gate。FOK adverse price boundary、固定原 SL／TP、
+實際完整成交／價格／RR／size／margin／leverage 核對與 mismatch EStop 仍必須
+完成。較好的價格不能修復原 candidate 的失敗；此更正不授予 dispatch 權限。
 
 單元測試使用合成來源；新增 PostgreSQL 整合案例驗雙 worker、rollback、
 commit 後讀失敗、舊 consumption 拒絕補造及 uncertain hold。是否真正執行

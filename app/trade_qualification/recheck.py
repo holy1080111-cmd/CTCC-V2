@@ -40,11 +40,13 @@ from app.trade_qualification.current_conditions import (
     HistoryCurrentConditionsResultV2,
     HistoryCurrentConditionsResultV3,
     HistoryCurrentConditionsResultV4,
+    HistoryCurrentConditionsResultV5,
     copy_current_conditions,
     evaluate_current_conditions,
     evaluate_history_current_conditions_v2,
     evaluate_history_current_conditions_v3,
     evaluate_history_current_conditions_v4,
+    evaluate_history_current_conditions_v5,
 )
 from app.trade_qualification.current_risk import (
     CurrentRiskResult,
@@ -62,8 +64,10 @@ from app.trade_qualification.event_models import Digest
 from app.trade_qualification.fixed_protection import (
     FixedProtectionResult,
     FixedProtectionResultV3,
+    FixedProtectionResultV5,
     evaluate_fixed_protection,
     evaluate_fixed_protection_v3,
+    evaluate_fixed_protection_v5,
 )
 from app.trade_qualification.fixed_protection import (
     _copy as _copy_protection,
@@ -72,6 +76,7 @@ from app.trade_qualification.history_engine import (
     HistoryPreEvidenceRunV2,
     HistoryPreEvidenceRunV3,
     HistoryPreEvidenceRunV4,
+    HistoryPreEvidenceRunV5,
 )
 from app.trade_qualification.location import (
     LocationResult,
@@ -165,6 +170,11 @@ def _conditions_family(value):
             "ctcc-history-current-conditions-v4",
             "history_v4",
         ),
+        (
+            HistoryCurrentConditionsResultV5,
+            "ctcc-history-current-conditions-v5",
+            "history_v5",
+        ),
     )
 
 
@@ -172,7 +182,8 @@ RecheckConditions = Annotated[
     Annotated[CurrentConditionsResult, Tag("legacy")]
     | Annotated[HistoryCurrentConditionsResultV2, Tag("history_v2")]
     | Annotated[HistoryCurrentConditionsResultV3, Tag("history_v3")]
-    | Annotated[HistoryCurrentConditionsResultV4, Tag("history_v4")],
+    | Annotated[HistoryCurrentConditionsResultV4, Tag("history_v4")]
+    | Annotated[HistoryCurrentConditionsResultV5, Tag("history_v5")],
     Discriminator(_conditions_family),
 ]
 
@@ -181,13 +192,17 @@ def _fixed_family(value):
     return record_versions(
         value,
         FixedProtectionResult,
-        ((FixedProtectionResultV3, "ctcc-history-fixed-protection-v3", "history_v3"),),
+        (
+            (FixedProtectionResultV3, "ctcc-history-fixed-protection-v3", "history_v3"),
+            (FixedProtectionResultV5, "ctcc-history-fixed-protection-v5", "history_v5"),
+        ),
     )
 
 
 RecheckProtection = Annotated[
     Annotated[FixedProtectionResult, Tag("legacy")]
-    | Annotated[FixedProtectionResultV3, Tag("history_v3")],
+    | Annotated[FixedProtectionResultV3, Tag("history_v3")]
+    | Annotated[FixedProtectionResultV5, Tag("history_v5")],
     Discriminator(_fixed_family),
 ]
 
@@ -221,9 +236,11 @@ def _guard(value):
         HistoryCurrentConditionsResultV2: copy_current_conditions,
         HistoryCurrentConditionsResultV3: copy_current_conditions,
         HistoryCurrentConditionsResultV4: copy_current_conditions,
+        HistoryCurrentConditionsResultV5: copy_current_conditions,
         ContinuationResult: _copy_continuation,
         FixedProtectionResult: lambda v: _copy_protection(v, FixedProtectionResult),
         FixedProtectionResultV3: lambda v: _copy_protection(v, FixedProtectionResultV3),
+        FixedProtectionResultV5: lambda v: _copy_protection(v, FixedProtectionResultV5),
         CurrentRiskResult: copy_current_risk,
     }
     if type(value) in copiers:
@@ -319,7 +336,10 @@ class RecordedRecheckAssessment(QualificationModel):
             value = dict(value)
             models = {
                 "origin": RecheckOrigin,
-                "current_conditions": HistoryCurrentConditionsResultV4
+                "current_conditions": HistoryCurrentConditionsResultV5
+                if (value.get("current_conditions") or {}).get("contract_version")
+                == "ctcc-history-current-conditions-v5"
+                else HistoryCurrentConditionsResultV4
                 if (value.get("current_conditions") or {}).get("contract_version")
                 == "ctcc-history-current-conditions-v4"
                 else HistoryCurrentConditionsResultV3
@@ -332,7 +352,10 @@ class RecordedRecheckAssessment(QualificationModel):
                 "continuation": ContinuationResult,
                 "timing": TimingResult,
                 "location": LocationResult,
-                "fixed_protection": FixedProtectionResultV3
+                "fixed_protection": FixedProtectionResultV5
+                if (value.get("fixed_protection") or {}).get("contract_version")
+                == "ctcc-history-fixed-protection-v5"
+                else FixedProtectionResultV3
                 if (value.get("fixed_protection") or {}).get("contract_version")
                 == "ctcc-history-fixed-protection-v3"
                 else FixedProtectionResult,
@@ -421,7 +444,9 @@ class RecordedRecheckAssessment(QualificationModel):
             raise ValueError("recheck_capture_pins_missing")
         current = self.current_conditions
         expected_current = (
-            HistoryCurrentConditionsResultV4
+            HistoryCurrentConditionsResultV5
+            if type(pre) is HistoryPreEvidenceRunV5
+            else HistoryCurrentConditionsResultV4
             if type(pre) is HistoryPreEvidenceRunV4
             else HistoryCurrentConditionsResultV3
             if type(pre) is HistoryPreEvidenceRunV3
@@ -445,7 +470,7 @@ class RecordedRecheckAssessment(QualificationModel):
             raise ValueError("recheck_history_current_origin_mismatch")
         if (
             current is not None
-            and type(pre) is HistoryPreEvidenceRunV4
+            and type(pre) in (HistoryPreEvidenceRunV4, HistoryPreEvidenceRunV5)
             and (
                 current.origin_sha256 != self.origin.evaluation_sha256
                 or current.original_event_key != self.origin.original_event_key
@@ -500,7 +525,9 @@ class RecordedRecheckAssessment(QualificationModel):
             raise ValueError("recheck_location_quote_mismatch")
         fixed = self.fixed_protection
         expected_fixed = (
-            FixedProtectionResultV3
+            FixedProtectionResultV5
+            if type(pre) is HistoryPreEvidenceRunV5
+            else FixedProtectionResultV3
             if type(pre) is HistoryPreEvidenceRunV3
             else FixedProtectionResult
         )
@@ -516,6 +543,15 @@ class RecordedRecheckAssessment(QualificationModel):
             )
         ):
             raise ValueError("recheck_fixed_contract_mismatch")
+        if type(fixed) is FixedProtectionResultV5 and (
+            fixed.alignment_policy != pre.policy.prefix.range_protection_policy
+            or fixed.range_permission_sha256
+            not in (
+                None,
+                json.loads(pre.protection_audit_json).get("range_permission_sha256"),
+            )
+        ):
+            raise ValueError("recheck_fixed_range_binding_mismatch")
         if fixed is not None and (
             (fixed.report_id, fixed.instrument_id, fixed.direction)
             != (intent.report_id, intent.instrument_id, intent.direction)
@@ -749,7 +785,9 @@ def evaluate_recorded_recheck(
         intent, policy = pre.prefix.intent, pre.policy.prefix
         current = (
             (
-                evaluate_history_current_conditions_v4
+                evaluate_history_current_conditions_v5
+                if type(pre) is HistoryPreEvidenceRunV5
+                else evaluate_history_current_conditions_v4
                 if type(pre) is HistoryPreEvidenceRunV4
                 else evaluate_history_current_conditions_v3
                 if type(pre) is HistoryPreEvidenceRunV3
@@ -766,6 +804,7 @@ def evaluate_recorded_recheck(
                 HistoryPreEvidenceRunV2,
                 HistoryPreEvidenceRunV3,
                 HistoryPreEvidenceRunV4,
+                HistoryPreEvidenceRunV5,
             )
             else evaluate_current_conditions(
                 market,
@@ -822,7 +861,9 @@ def evaluate_recorded_recheck(
         if not record("location", location):
             return finish()
         fixed_evaluator = (
-            evaluate_fixed_protection_v3
+            evaluate_fixed_protection_v5
+            if type(pre) is HistoryPreEvidenceRunV5
+            else evaluate_fixed_protection_v3
             if type(pre) is HistoryPreEvidenceRunV3
             else evaluate_fixed_protection
         )

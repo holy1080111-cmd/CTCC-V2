@@ -50,21 +50,26 @@ from app.trade_qualification.history_engine import (
     HistoryPreEvidencePolicyV2,
     HistoryPreEvidencePolicyV3,
     HistoryPreEvidencePolicyV4,
+    HistoryPreEvidencePolicyV5,
     HistoryPreEvidenceRunV2,
     HistoryPreEvidenceRunV3,
     HistoryPreEvidenceRunV4,
+    HistoryPreEvidenceRunV5,
 )
 from app.trade_qualification.history_engine import _copy as _history_copy
 from app.trade_qualification.history_prefix import (
     HistoryEntryQualificationResultV2,
     HistoryEntryQualificationResultV3,
     HistoryEntryQualificationResultV4,
+    HistoryEntryQualificationResultV5,
     HistoryQualificationPrefixPolicyV2,
     HistoryQualificationPrefixPolicyV3,
     HistoryQualificationPrefixPolicyV4,
+    HistoryQualificationPrefixPolicyV5,
     HistoryQualificationPrefixRunV2,
     HistoryQualificationPrefixRunV3,
     HistoryQualificationPrefixRunV4,
+    HistoryQualificationPrefixRunV5,
 )
 from app.trade_qualification.market_bridge import public_market_snapshot
 from app.trade_qualification.quote_collector import validate_collected_quote
@@ -95,14 +100,19 @@ _ORIGINAL_KEYS = frozenset(
 _INPUT_MODELS = (
     HistoryPreEvidencePolicyV3,
     HistoryPreEvidencePolicyV4,
+    HistoryPreEvidencePolicyV5,
     HistoryPreEvidenceRunV3,
     HistoryPreEvidenceRunV4,
+    HistoryPreEvidenceRunV5,
     HistoryQualificationPrefixPolicyV3,
     HistoryQualificationPrefixPolicyV4,
+    HistoryQualificationPrefixPolicyV5,
     HistoryQualificationPrefixRunV3,
     HistoryQualificationPrefixRunV4,
+    HistoryQualificationPrefixRunV5,
     HistoryEntryQualificationResultV3,
     HistoryEntryQualificationResultV4,
+    HistoryEntryQualificationResultV5,
     HistoryPreEvidencePolicyV2,
     HistoryPreEvidenceRunV2,
     HistoryQualificationPrefixPolicyV2,
@@ -332,6 +342,7 @@ def _original(market, run, values):
         HistoryPreEvidenceRunV2,
         HistoryPreEvidenceRunV3,
         HistoryPreEvidenceRunV4,
+        HistoryPreEvidenceRunV5,
     ):
         raise OneShotInputError("one_shot_intent_or_run_invalid")
     _guard_original(market)
@@ -351,7 +362,9 @@ def _original(market, run, values):
         "reference": None
         if values["reference"] is None
         else _bounded_scalars(values["reference"], WSReferenceObservation),
-        "policy": _history_copy(values["policy"], HistoryPreEvidencePolicyV4)
+        "policy": _history_copy(values["policy"], HistoryPreEvidencePolicyV5)
+        if type(run) is HistoryPreEvidenceRunV5
+        else _history_copy(values["policy"], HistoryPreEvidencePolicyV4)
         if type(run) is HistoryPreEvidenceRunV4
         else _history_copy(values["policy"], HistoryPreEvidencePolicyV3)
         if type(run) is HistoryPreEvidenceRunV3

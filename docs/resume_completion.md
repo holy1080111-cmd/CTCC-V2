@@ -44,8 +44,9 @@ Notion 文件連線與 CTCC runtime REST token／四個 property-ID pins 仍是�
 
 1. 恢復受控測試環境，執行新版真 PostgreSQL／固定映像完整回歸；需要時另驗
    Windows 原生安全目錄與時間因果。不能以跳過防線當成功。
-2. 完整可信 account ingestion／history／peak／scope／revision，以及全部成交價
-   的風險覆蓋；串起本次 G12→新來源→完整 recheck→reservation→intent→Demo／
+2. 完整可信 account ingestion／history／peak／scope／revision，以及主指令要求
+   的原候選與新執行報價重算、最差抽樣風險原子預留；串起本次
+   G12→新來源→完整 recheck→reservation→intent→Demo／
    protection／uncertain reconciliation。舊 receipt 不可變成續行許可。
 3. history G12／圖後重查／合法 reversal protection policy 的完整版本化接線；
    明定 expansion／sweep HTF 規則，不擅自放行已被原安全条件拒絕的交易。
@@ -55,3 +56,16 @@ Notion 文件連線與 CTCC runtime REST token／四個 property-ID pins 仍是�
    Shadow／Demo 樣本仍 0／0，未開 Live，未執行本輪新交易。
 
 這些未完項目是明確的工程、環境及認證依賴，不會全部標成「只差使用者登入」。
+
+2026-09-23 更正上述第 2 項：先前「全部成交價的風險覆蓋」措辭超出主指令的
+最差抽樣預留要求。既有 coverage 明示 false 不變；受控 FOK 邊界與成交後真實
+price／RR／quantity／margin／leverage 核對、mismatch EStop 仍是必要驗收。
+此頁前段的日期、版本與環境描述是 2026-09-12 歷史紀錄，不是目前驗收結果。
+
+2026-09-28 續作：Docker Linux engine 已可使用，原部署容器仍停止。新建的
+隔離 PostgreSQL 已遷移至 0020，Range V5 六個真 SQL 測試通過。Windows 專用
+loopback 測試資料庫也完成 fresh migration／drift check；完整新版本回歸尚待
+執行。B2a 審查找出的列索引布林／數字混同與跨階段來源時間缺口已修正；同一組
+獨立反證由 16 項失敗改為 23 項全通過，舊測試成績不可代替修後驗證。
+W32Time 已經人工授權啟動，但實測仍落後交易所與 NTP 約 0.71
+秒，可信來源仍 fail closed。詳見 [本輪驗收紀錄](final_completion_validation.md)。

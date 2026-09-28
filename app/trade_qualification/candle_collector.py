@@ -611,7 +611,17 @@ def _isolated_client(client, *, require_empty_cookies=True):
 
 
 async def _fetch(
-    client, clock, instrument, timeframe, index, limit, after, policy, barrier, previous
+    client,
+    clock,
+    instrument,
+    timeframe,
+    index,
+    limit,
+    after,
+    policy,
+    barrier,
+    previous,
+    _source=None,
 ):
     _isolated_client(client, require_empty_cookies=False)
     started = _utc(clock())
@@ -631,60 +641,68 @@ async def _fetch(
         },
         extensions={"timeout": httpx.Timeout(policy.request_timeout_seconds).as_dict()},
     )
-    async with asyncio.timeout(policy.request_timeout_seconds):
-        response = await client.send(
-            request, auth=None, follow_redirects=False, stream=True
-        )
-        cancelled = False
-        try:
-            received = _utc(clock())
-            if received < started:
-                raise CandleCollectionError("request_clock_reversed")
-            if (
-                response.status_code != 200
-                or response.url != request.url
-                or response.history
-                or response.is_closed
-                or response.is_stream_consumed
-            ):
-                raise CandleCollectionError("http_response_rejected")
-            if (
-                response.headers.get("content-type", "")
-                .split(";", 1)[0]
-                .strip()
-                .lower()
-                != "application/json"
-            ):
-                raise CandleCollectionError("response_media_type_invalid")
-            if (
-                response.headers.get("content-encoding", "identity").lower()
-                != "identity"
-            ):
-                raise CandleCollectionError("response_encoding_rejected")
-            length = response.headers.get("content-length")
-            if length is not None and (
-                not length.isascii()
-                or not length.isdigit()
-                or len(length) > 10
-                or int(length) > policy.max_response_bytes
-            ):
-                raise CandleCollectionError("response_too_large")
-            body = bytearray()
-            async for chunk in response.stream:
+    if _source is None:
+        async with asyncio.timeout(policy.request_timeout_seconds):
+            response = await client.send(
+                request, auth=None, follow_redirects=False, stream=True
+            )
+            cancelled = False
+            try:
+                received = _utc(clock())
+                if received < started:
+                    raise CandleCollectionError("request_clock_reversed")
                 if (
-                    type(chunk) is not bytes
-                    or len(body) + len(chunk) > policy.max_response_bytes
+                    response.status_code != 200
+                    or response.url != request.url
+                    or response.history
+                    or response.is_closed
+                    or response.is_stream_consumed
+                ):
+                    raise CandleCollectionError("http_response_rejected")
+                if (
+                    response.headers.get("content-type", "")
+                    .split(";", 1)[0]
+                    .strip()
+                    .lower()
+                    != "application/json"
+                ):
+                    raise CandleCollectionError("response_media_type_invalid")
+                if (
+                    response.headers.get("content-encoding", "identity").lower()
+                    != "identity"
+                ):
+                    raise CandleCollectionError("response_encoding_rejected")
+                length = response.headers.get("content-length")
+                if length is not None and (
+                    not length.isascii()
+                    or not length.isdigit()
+                    or len(length) > 10
+                    or int(length) > policy.max_response_bytes
                 ):
                     raise CandleCollectionError("response_too_large")
-                body.extend(chunk)
-        except asyncio.CancelledError:
-            cancelled = True
-            raise
-        finally:
-            await _close_response(response, pending_cancel=cancelled)
-    completed = _utc(clock())
-    if length is not None and int(length) != len(body):
-        raise CandleCollectionError("response_length_mismatch")
+                body = bytearray()
+                async for chunk in response.stream:
+                    if (
+                        type(chunk) is not bytes
+                        or len(body) + len(chunk) > policy.max_response_bytes
+                    ):
+                        raise CandleCollectionError("response_too_large")
+                    body.extend(chunk)
+            except asyncio.CancelledError:
+                cancelled = True
+                raise
+            finally:
+                await _close_response(response, pending_cancel=cancelled)
+        completed = _utc(clock())
+        if length is not None and int(length) != len(body):
+            raise CandleCollectionError("response_length_mismatch")
+    else:
+        from app.trade_qualification.public_source_runtime import _fetch_http
+
+        raw, received, completed = await _fetch_http(
+            _source, client, request, started, policy
+        )
+        body = bytearray(raw)
     rows, canonical = _parse(bytes(body))
     return CandlePage(
         instrument_id=instrument,
@@ -713,6 +731,7 @@ async def collect_candles(
     instrument_id: str,
     policy: CandleCollectionPolicy,
     barrier_completed_at: datetime | None = None,
+    _source=None,
 ) -> CollectedCandles:
     """GET only, no retry/fallback/repair; return all four complete frame proofs."""
     try:
@@ -729,6 +748,16 @@ async def collect_candles(
             raise CandleCollectionError("clock_invalid")
         _isolated_client(client)
         barrier = None if barrier_completed_at is None else _utc(barrier_completed_at)
+        if _source is not None:
+            from app.trade_qualification.public_source_runtime import _check_inputs
+
+            _check_inputs(
+                _source,
+                clock=clock,
+                report_id=report,
+                instrument_id=instrument_id,
+                barrier_completed_at=barrier,
+            )
         frames, previous = [], None
         async with asyncio.timeout(checked.batch_timeout_seconds):
             for request in checked.requests:
@@ -749,6 +778,7 @@ async def collect_candles(
                         checked,
                         barrier,
                         previous,
+                        _source=_source,
                     )
                     pages.append(page)
                     rows, _ = _parse(page.response_body)

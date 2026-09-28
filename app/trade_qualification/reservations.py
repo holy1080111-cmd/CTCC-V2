@@ -17,7 +17,10 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from app.trade_qualification.current_risk import evaluate_current_risk
 from app.trade_qualification.engine import PortfolioInputs, _copy, _preflight
-from app.trade_qualification.history_engine import HistoryPreEvidenceRunV4
+from app.trade_qualification.history_engine import (
+    HistoryPreEvidenceRunV4,
+    HistoryPreEvidenceRunV5,
+)
 from app.trade_qualification.location import (
     ExecutableQuote,
     _revalidate,
@@ -97,6 +100,30 @@ class ReservationRequest(LedgerModel):
     risk_inputs: PortfolioInputs
     expected_account_revision: Revision
     expected_ledger_revision: Revision
+
+
+class ReservationReplayBindingV2(LedgerModel):
+    """Bounded raw replay inputs; serialization conveys no authority."""
+
+    contract_version: Literal["ctcc-reservation-replay-v2"]
+    original_market_json: str = Field(min_length=1, max_length=8 * 1024 * 1024)
+    current_market_json: str = Field(min_length=1, max_length=8 * 1024 * 1024)
+    original_inputs_json: str = Field(min_length=1, max_length=16 * 1024 * 1024)
+    quote_json: str = Field(min_length=1, max_length=1024 * 1024)
+    reference_json: str = Field(min_length=1, max_length=32768)
+    recheck_json: str = Field(min_length=1, max_length=16 * 1024 * 1024)
+    consumed_event_keys: tuple[Digest, ...] = Field(max_length=2048)
+
+
+class ReservationRequestV2(ReservationRequest):
+    contract_version: Literal["ctcc-reservation-request-v2"]
+    replay_binding: ReservationReplayBindingV2
+
+    @model_validator(mode="after")
+    def explicit_range_v5(self):
+        if type(self.origin.evidence.pre_evidence) is not HistoryPreEvidenceRunV5:
+            raise ValueError("ledger_v2_requires_range_v5")
+        return self
 
 
 class ScenarioOperands(LedgerModel):
@@ -185,6 +212,13 @@ _CHILDREN = {
         "quote": ExecutableQuote,
         "risk_inputs": PortfolioInputs,
     },
+    ReservationRequestV2: {
+        "scope": LedgerScope,
+        "origin": RecheckOrigin,
+        "quote": ExecutableQuote,
+        "risk_inputs": PortfolioInputs,
+        "replay_binding": ReservationReplayBindingV2,
+    },
     RiskCoverage: {"candidate": ScenarioOperands, "execution": ScenarioOperands},
     ReservationReceipt: {"scope": LedgerScope, "coverage": RiskCoverage},
     LedgerScopeState: {"scope": LedgerScope},
@@ -193,6 +227,8 @@ _MODELS = {
     LedgerScope,
     AccountLedgerClaims,
     ReservationRequest,
+    ReservationRequestV2,
+    ReservationReplayBindingV2,
     ScenarioOperands,
     RiskCoverage,
     ReservationReceipt,
@@ -327,6 +363,10 @@ def checked(value, expected):
     """Context-specific exact class guards BEFORE serialization/revalidation."""
     if type(value) is not expected or expected not in _MODELS:
         raise QualificationLedgerError("exact_ledger_contract_required")
+    if expected is ReservationRequestV2 or expected is ReservationReplayBindingV2:
+        from app.trade_qualification.submission_intent import _guard
+
+        _guard(value)
     if set(value.__dict__) != set(expected.model_fields) or value.__pydantic_extra__:
         raise QualificationLedgerError("dirty_ledger_contract")
     for name, child in _CHILDREN.get(expected, {}).items():
@@ -385,6 +425,37 @@ def decode(raw: str, expected):
         return result
     except (ValueError, TypeError, RecursionError) as exc:
         raise QualificationLedgerError("invalid_ledger_json") from exc
+
+
+def checked_reservation_request(value):
+    if type(value) is ReservationRequest:
+        return checked(value, ReservationRequest)
+    if type(value) is ReservationRequestV2:
+        # New source-bearing envelopes receive the exact raw-tree preflight
+        # before any legacy validation/serialization can inspect a callback.
+        from app.trade_qualification.submission_intent import _guard
+
+        _guard(value)
+        return checked(value, ReservationRequestV2)
+    raise QualificationLedgerError("exact_reservation_request_required")
+
+
+def decode_reservation_request(raw):
+    if type(raw) is not str or not 0 < len(raw) <= MAX_JSON_BYTES:
+        raise QualificationLedgerError("invalid_ledger_json")
+    try:
+        body = json.loads(raw)
+        if type(body) is not dict:
+            raise ValueError("shape")
+        if "contract_version" not in body:
+            kind = ReservationRequest
+        elif body["contract_version"] == "ctcc-reservation-request-v2":
+            kind = ReservationRequestV2
+        else:
+            raise ValueError("version")
+        return checked_reservation_request(decode(raw, kind))
+    except (ValueError, TypeError, RecursionError):
+        raise QualificationLedgerError("invalid_ledger_json") from None
 
 
 def _ceil(value: Fraction) -> Decimal:
@@ -467,12 +538,18 @@ def _check_original_range_location(pre, quote, *, observed_at):
     from app.trade_qualification.history_engine import _copy as copy_history
     from app.trade_qualification.one_shot import _guard_original
 
-    if type(pre) is not HistoryPreEvidenceRunV4 or type(quote) is not ExecutableQuote:
+    if (
+        not any(
+            type(pre) is model
+            for model in (HistoryPreEvidenceRunV4, HistoryPreEvidenceRunV5)
+        )
+        or type(quote) is not ExecutableQuote
+    ):
         raise QualificationLedgerError("ledger_exact_range_contract_required")
     _guard_original(pre)
     _guard_original(observed_at)
     _quote_scalar_guard(quote)
-    pre = copy_history(pre, HistoryPreEvidenceRunV4)
+    pre = copy_history(pre, type(pre))
     prefix = pre.prefix
     if not prefix.prefix_complete:
         raise QualificationLedgerError("ledger_original_range_prefix_incomplete")
@@ -508,9 +585,85 @@ def _check_range_reservation_admission(pre, quote, *, observed_at):
     raise QualificationLedgerError("ledger_range_policy_incomplete")
 
 
+def replay_range_reservation(request, *, observed_at):
+    """Recompute original G1--G12, recorded R7, and current locked-time R7.
+
+    This checks supplied source mathematics, not source authenticity. A copied
+    boolean or a new schema label cannot stand in for any replay document.
+    """
+    from app.domain.market import MarketSnapshot
+    from app.trade_qualification import data, quote_collector
+    from app.trade_qualification.recheck import (
+        RecordedRecheckAssessment,
+        evaluate_recorded_recheck,
+        verify_recorded_recheck,
+    )
+    from app.trade_qualification.submission_intent import (
+        _document,
+        _original_inputs_document,
+    )
+
+    if type(request) is not ReservationRequestV2:
+        raise QualificationLedgerError("ledger_range_replay_binding_required")
+    request = checked_reservation_request(request)
+    binding = request.replay_binding
+    try:
+        recorded = _document(binding.recheck_json, RecordedRecheckAssessment)
+        original = _original_inputs_document(binding.original_inputs_json)
+        quote = _document(binding.quote_json, quote_collector.CollectedQuote)
+        reference = _document(binding.reference_json, data.WSReferenceObservation)
+        before = _document(binding.original_market_json, MarketSnapshot)
+        after = _document(binding.current_market_json, MarketSnapshot)
+        if (
+            recorded.origin != request.origin
+            or quote.quote != request.quote
+            or not recorded.observed_at <= observed_at < request.origin.deadline
+            or len(set(binding.consumed_event_keys)) != len(binding.consumed_event_keys)
+        ):
+            raise ValueError("binding_mismatch")
+        inputs = {
+            "origin": request.origin,
+            "original_inputs": {
+                name: getattr(original, name) for name in type(original).model_fields
+            },
+            "quote": quote,
+            "reference": reference,
+            "current_risk_inputs": request.risk_inputs,
+            "consumed_event_keys": frozenset(binding.consumed_event_keys),
+        }
+        actual = verify_recorded_recheck(
+            recorded, before, after, **inputs, observed_at=recorded.observed_at
+        )
+        current = evaluate_recorded_recheck(
+            before, after, **inputs, observed_at=observed_at
+        )
+        if (
+            not actual.computational_checks_passed
+            or not current.computational_checks_passed
+        ):
+            raise ValueError("replay_denied")
+        _check_original_range_location(
+            request.origin.evidence.pre_evidence, request.quote, observed_at=observed_at
+        )
+        return current
+    except (
+        ValueError,
+        TypeError,
+        KeyError,
+        IndexError,
+        ArithmeticError,
+        RecursionError,
+    ):
+        raise QualificationLedgerError("ledger_range_replay_denied") from None
+
+
 def prepare_reservation(request, claims, active, *, observed_at):
     """Called again under the account lock, not a caller-written PASS input."""
-    request = checked(request, ReservationRequest)
+    request = checked_reservation_request(request)
+    if type(request) is ReservationRequestV2:
+        from app.trade_qualification.submission_intent import _guard
+
+        _guard(observed_at)
     claims = validate_claims(claims, observed_at)
     if (
         claims.scope != request.scope
@@ -524,6 +677,8 @@ def prepare_reservation(request, claims, active, *, observed_at):
             request.quote,
             observed_at=observed_at,
         )
+    if type(request.origin.evidence.pre_evidence) is HistoryPreEvidenceRunV5:
+        replay_range_reservation(request, observed_at=observed_at)
     if type(active) is not tuple or len(active) > 2048:
         raise QualificationLedgerError("bounded_ledger_holds_required")
     pending = {

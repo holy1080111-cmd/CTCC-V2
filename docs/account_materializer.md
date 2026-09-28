@@ -97,4 +97,4 @@ orders／fills／bills 的共同 cutoff、持久 history seed／peak 或 local l
 
 輸出含帳戶與曝險 ID／數字，即使沒有 credentials 仍屬 private account evidence。協調器可保留記憶體供重驗；不可因新增 freeze API 就自動發布真實帳戶資料。單元測試全部使用合成資料，沒有真正帳戶或權限驗收。
 
-未完成：可信 IO／source authenticity、帳戶級共同 revision、non-SWAP／advanced-product coverage、完整 history retention／ingestion／seed、continuous peak、持久 ledger 真實性及原子預留、真正 G12 續行與送單。同步時鐘、登入、部署或 Live 開關不在本模組範圍。
+未完成：可信 IO／source authenticity、由可信 observations 發行的本機帳戶 revision、non-SWAP／advanced-product coverage、完整所需 history ingestion／seed、明示版本的 peak／DD-window 政策、持久 ledger 真實性及原子預留、真正 G12 續行與送單。本機 revision 不冒稱交易所跨 endpoint 原子快照；measured HWM 不冒稱未抽樣最高淨值，舊 v1 continuous-peak 與完整帳戶 claims 仍 unknown／false。[B2a](account_history_query_verifier.md) 僅核驗已保存 fills／bills generation-time 查詢及保留範圍，不補出 loss window／seed／funding。同步時鐘、登入、部署或 Live 開關不在本模組範圍。

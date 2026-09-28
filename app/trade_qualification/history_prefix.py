@@ -58,6 +58,10 @@ from app.trade_qualification.quote_collector import (
     CollectedQuote,
     validate_collected_quote,
 )
+from app.trade_qualification.range_policy import (
+    RANGE_PROTECTION_POLICY,
+    range_current_permission,
+)
 from app.trade_qualification.regime_admission import (
     POLICY_ID as HISTORY_POLICY_ID,
 )
@@ -198,6 +202,25 @@ class HistoryQualificationPrefixPolicyV4(HistoryQualificationPrefixPolicy):
     range_anchor_policy: Literal["ctcc-original-range-anchor-v1"]
 
 
+class HistoryEntryQualificationResultV5(HistoryEntryQualificationResult):
+    contract_version: Literal["ctcc-history-qualification-result-v5"]
+    range_protection_policy: Literal["ctcc-neutral-range-protection-v1"]
+    range_anchor_policy: Literal["ctcc-original-range-anchor-v1"]
+    gates: tuple[GateAssessment, ...] = Field(default=(), max_length=12)
+
+    @model_validator(mode="after")
+    def range_only(self):
+        if self.strategy != "range_reversal":
+            raise ValueError("history_v5_range_only")
+        return self
+
+
+class HistoryQualificationPrefixPolicyV5(HistoryQualificationPrefixPolicy):
+    contract_version: Literal["ctcc-history-qualification-prefix-v5"]
+    range_protection_policy: Literal["ctcc-neutral-range-protection-v1"]
+    range_anchor_policy: Literal["ctcc-original-range-anchor-v1"]
+
+
 def expansion_htf_permission(analysis, route, direction):
     """Deterministic existing Expansion route operands, never event detection.
 
@@ -242,13 +265,16 @@ def _bounded(value, depth=0, budget=None):
             HistoryQualificationPrefixPolicyV3,
             HistoryQualificationPrefixRunV3,
             HistoryQualificationPrefixPolicyV4,
+            HistoryQualificationPrefixPolicyV5,
             HistoryQualificationPrefixRunV4,
+            HistoryQualificationPrefixRunV5,
             DataQualificationPolicy,
             DataQualificationResult,
             HistoryEntryQualificationResult,
             HistoryEntryQualificationResultV2,
             HistoryEntryQualificationResultV3,
             HistoryEntryQualificationResultV4,
+            HistoryEntryQualificationResultV5,
             GateAssessment,
             EntryTrigger,
             EntryZone,
@@ -576,6 +602,46 @@ class HistoryQualificationPrefixRunV4(HistoryQualificationPrefixRun):
         return self
 
 
+class HistoryQualificationPrefixRunV5(HistoryQualificationPrefixRun):
+    contract_version: Literal["ctcc-history-qualification-prefix-v5"]
+    policy: HistoryQualificationPrefixPolicyV5
+    result: HistoryEntryQualificationResultV5
+
+    @model_validator(mode="after")
+    def range_policy_bound(self):
+        if self.intent.strategy != "range_reversal":
+            raise ValueError("history_v5_range_only")
+        if self.result.range_protection_policy != self.policy.range_protection_policy:
+            raise ValueError("range_protection_policy_mismatch")
+        if (
+            len(self.result.gates) >= 3
+            and self.result.gates[2].measured_values.get("range_protection_policy")
+            != self.policy.range_protection_policy
+        ):
+            raise ValueError("range_protection_source_binding_mismatch")
+        if self.result.range_anchor_policy != self.policy.range_anchor_policy:
+            raise ValueError("range_anchor_policy_mismatch")
+        if len(self.result.gates) == 7:
+            zone, code = build_original_range_anchor_zone(
+                self.detection,
+                tick_size=self.policy.tick_size,
+                max_allowed_drift_bps=self.policy.max_allowed_drift_bps,
+                expires_at=self.timing.latest_valid_entry_time,
+            )
+            measured = self.result.gates[-1].measured_values
+            if (
+                zone != self.result.entry_zone
+                or measured.get("range_anchor_policy")
+                != self.policy.range_anchor_policy
+                or measured.get("original_event_key") != self.timing.event_key
+                or measured.get("source_sha256") != self.data_result.source_sha256
+                or measured.get("zone_sha256") != (_digest(zone) if zone else None)
+                or (zone is None and self.result.gates[-1].code != code)
+            ):
+                raise ValueError("range_anchor_source_zone_binding_mismatch")
+        return self
+
+
 def _policy_digest(policy, timing_policy):
     return _digest(
         {
@@ -626,6 +692,12 @@ def evaluate_history_qualification_prefix_v4(market, *, policy, **inputs):
     return _evaluate_history_prefix(market, policy=policy, **inputs)
 
 
+def evaluate_history_qualification_prefix_v5(market, *, policy, **inputs):
+    if type(policy) is not HistoryQualificationPrefixPolicyV5:
+        raise ValueError("exact v4 history policy required")
+    return _evaluate_history_prefix(market, policy=policy, **inputs)
+
+
 def _evaluate_history_prefix(
     market,
     *,
@@ -645,8 +717,9 @@ def _evaluate_history_prefix(
     intent = _copy(intent, QualificationIntent)
     version2 = type(policy) is HistoryQualificationPrefixPolicyV2
     version3 = type(policy) is HistoryQualificationPrefixPolicyV3
+    version5 = type(policy) is HistoryQualificationPrefixPolicyV5
     version4 = type(policy) is HistoryQualificationPrefixPolicyV4
-    if version4 and intent.strategy != "range_reversal":
+    if (version4 or version5) and intent.strategy != "range_reversal":
         raise ValueError("history_v4_range_only")
     if version2 and intent.strategy != "volatility_expansion":
         raise ValueError("history_v2_expansion_only")
@@ -654,7 +727,9 @@ def _evaluate_history_prefix(
         raise ValueError("history_v3_reversal_only")
     policy = _copy(
         policy,
-        HistoryQualificationPrefixPolicyV4
+        HistoryQualificationPrefixPolicyV5
+        if version5
+        else HistoryQualificationPrefixPolicyV4
         if version4
         else HistoryQualificationPrefixPolicyV3
         if version3
@@ -663,7 +738,9 @@ def _evaluate_history_prefix(
         else HistoryQualificationPrefixPolicy,
     )
     run_type = (
-        HistoryQualificationPrefixRunV4
+        HistoryQualificationPrefixRunV5
+        if version5
+        else HistoryQualificationPrefixRunV4
         if version4
         else HistoryQualificationPrefixRunV3
         if version3
@@ -672,7 +749,9 @@ def _evaluate_history_prefix(
         else HistoryQualificationPrefixRun
     )
     result_type = (
-        HistoryEntryQualificationResultV4
+        HistoryEntryQualificationResultV5
+        if version5
+        else HistoryEntryQualificationResultV4
         if version4
         else HistoryEntryQualificationResultV3
         if version3
@@ -711,6 +790,12 @@ def _evaluate_history_prefix(
     if version3:
         values["contract_version"] = "ctcc-history-qualification-result-v3"
 
+    if version5:
+        values.update(
+            contract_version="ctcc-history-qualification-result-v5",
+            range_anchor_policy=RANGE_ANCHOR_POLICY,
+            range_protection_policy=RANGE_PROTECTION_POLICY,
+        )
     if version4:
         values.update(
             contract_version="ctcc-history-qualification-result-v4",
@@ -723,7 +808,9 @@ def _evaluate_history_prefix(
         )
         return run_type(
             **(
-                {"contract_version": "ctcc-history-qualification-prefix-v4"}
+                {"contract_version": "ctcc-history-qualification-prefix-v5"}
+                if version5
+                else {"contract_version": "ctcc-history-qualification-prefix-v4"}
                 if version4
                 else {"contract_version": "ctcc-history-qualification-prefix-v3"}
                 if version3
@@ -862,6 +949,16 @@ def _evaluate_history_prefix(
             expansion_values = {
                 "reversal_policy": policy.reversal_policy,
                 "history_evaluation_sha256": history.evaluation_sha256,
+                "source_sha256": data.source_sha256,
+                "analysis_sha256": route.snapshot_sha256,
+                "retained_analysis_blockers": ",".join(analysis.blockers) or "none",
+            }
+        if version5:
+            htf_ok = direction_matches and range_current_permission(
+                analysis, rebuilt, route, intent.direction
+            )
+            expansion_values = {
+                "range_protection_policy": policy.range_protection_policy,
                 "source_sha256": data.source_sha256,
                 "analysis_sha256": route.snapshot_sha256,
                 "retained_analysis_blockers": ",".join(analysis.blockers) or "none",
@@ -1011,7 +1108,9 @@ def _evaluate_history_prefix(
         ):
             return finish()
         zone_builder = (
-            build_original_range_anchor_zone if version4 else build_entry_zone
+            build_original_range_anchor_zone
+            if version4 or version5
+            else build_entry_zone
         )
         zone, zone_code = zone_builder(
             detection,
@@ -1027,7 +1126,7 @@ def _evaluate_history_prefix(
                 "source_sha256": data.source_sha256,
                 "zone_sha256": _digest(zone) if zone else None,
             }
-            if version4
+            if version4 or version5
             else {}
         )
         if zone is None:

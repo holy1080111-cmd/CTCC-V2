@@ -62,10 +62,10 @@ registration bytes against the plan pin and names every missing artifact kind:
 | Artifact | Required source verifier / producer still missing |
 | --- | --- |
 | registration | Authenticate the account registration/region artifact through an owned setup session. |
-| history seed | Prove account inception or a reconciled immutable opening state; bind exact initial loss streak and all prior realized outcomes. |
+| history seed | Derive the required initial loss streak from verified inception, an immutable opening state, or a sourced strictly positive net reset and complete subsequent outcome chain. Preserve every outcome needed for daily/7d loss; a reset inside that window cannot be inserted as a zero seed at its earlier start. |
 | history retention | Verify endpoint-specific retained intervals against requested cutoffs and durable archives. Empty terminal pages do not prove older history absent. |
 | history ingestion watermark | Ingest all required products/pages, detect gaps/conflicts/late arrivals and bind closed immutable intervals. |
-| continuous peak window | Derive a conservative equity/high-water path from continuous measured account events and prices; finite balance samples are insufficient. |
+| continuous peak window | The old continuous-path claim remains unverified by finite samples. A new explicit measured-HWM/DD-window policy may be implemented without claiming an unsampled maximum; preserve old bytes and the accepted window/peak across restart. |
 | funding accrual | Link independent instrument accrual events and held-position intervals to bill identities; bill-generation `ts` is not accrual time. |
 | account product scope | Collect and verify all applicable products, liabilities and advanced-account inventory, including unsupported-product denial. |
 | instrument coverage | Verify metadata/cost/correlation and leverage coverage for every actual instrument, not only a caller-selected list. |
@@ -77,6 +77,13 @@ work, not merely absent user credentials. The next integration must consume thei
 owned verified outputs before changing runtime admission. Preserve existing DTO
 `account_complete=False` and all authority flags; do not turn a stored manifest,
 caller boolean, empty current inventory or sampled peak into account authority.
+
+[B2a observed history queries](account_history_query_verifier.md) now replay the
+finalized B1 raw journal in a separate session and derive bounded Global
+generation-time fills/bills query coverage. That source verifier does not clear
+the older bootstrap claims or issue account completeness. A later trusted local
+account revision can bind verified observations under a defined coherence policy;
+it need not claim a shared atomic exchange revision.
 
 The current runtime also conservatively denies any active reservation/intent;
 future non-flat operation needs exact persisted order/protection lineage and a

@@ -581,7 +581,7 @@ async def _close_response(response, *, pending_cancel=False):
 
 
 async def _collect_one(
-    client, clock, role, path, instrument, policy, barrier, previous
+    client, clock, role, path, instrument, policy, barrier, previous, _source=None
 ):
     _public_client(client, require_empty_cookies=False)
     started = _utc(clock())
@@ -603,62 +603,70 @@ async def _collect_one(
         },
         extensions={"timeout": httpx.Timeout(policy.request_timeout_seconds).as_dict()},
     )
-    async with asyncio.timeout(policy.request_timeout_seconds):
-        response = await client.send(
-            request, auth=None, follow_redirects=False, stream=True
-        )
-        pending_cancel = False
-        try:
-            received = _utc(clock())
-            if received < started:
-                raise QuoteCollectionError("request_clock_reversed")
-            if (
-                response.status_code != 200
-                or response.url != request.url
-                or response.history
-                or response.is_closed
-                or response.is_stream_consumed
-            ):
-                raise QuoteCollectionError("http_response_rejected")
-            if (
-                response.headers.get("content-type", "")
-                .split(";", 1)[0]
-                .strip()
-                .lower()
-                != "application/json"
-            ):
-                raise QuoteCollectionError("response_media_type_invalid")
-            if (
-                response.headers.get("content-encoding", "identity").lower()
-                != "identity"
-            ):
-                raise QuoteCollectionError("response_encoding_rejected")
-            length = response.headers.get("content-length")
-            if length is not None and (
-                not length.isascii()
-                or not length.isdigit()
-                or len(length) > 10
-                or int(length) > policy.max_response_bytes
-            ):
-                raise QuoteCollectionError("response_too_large")
-            body = bytearray()
-            # Do not use aiter_raw's automatic EOF close: cancellation inside
-            # that close would set is_closed without finishing stream cleanup.
-            async for chunk in response.stream:
-                if len(body) + len(chunk) > policy.max_response_bytes:
+    if _source is None:
+        async with asyncio.timeout(policy.request_timeout_seconds):
+            response = await client.send(
+                request, auth=None, follow_redirects=False, stream=True
+            )
+            pending_cancel = False
+            try:
+                received = _utc(clock())
+                if received < started:
+                    raise QuoteCollectionError("request_clock_reversed")
+                if (
+                    response.status_code != 200
+                    or response.url != request.url
+                    or response.history
+                    or response.is_closed
+                    or response.is_stream_consumed
+                ):
+                    raise QuoteCollectionError("http_response_rejected")
+                if (
+                    response.headers.get("content-type", "")
+                    .split(";", 1)[0]
+                    .strip()
+                    .lower()
+                    != "application/json"
+                ):
+                    raise QuoteCollectionError("response_media_type_invalid")
+                if (
+                    response.headers.get("content-encoding", "identity").lower()
+                    != "identity"
+                ):
+                    raise QuoteCollectionError("response_encoding_rejected")
+                length = response.headers.get("content-length")
+                if length is not None and (
+                    not length.isascii()
+                    or not length.isdigit()
+                    or len(length) > 10
+                    or int(length) > policy.max_response_bytes
+                ):
                     raise QuoteCollectionError("response_too_large")
-                body.extend(chunk)
-        except asyncio.CancelledError:
-            # Cancellation already delivered during body IO will not be raised
-            # again inside cleanup. Carry it explicitly so even a failed close
-            # cannot replace the caller's cancellation with an ordinary error.
-            pending_cancel = True
-            raise
-        finally:
-            await _close_response(response, pending_cancel=pending_cancel)
-    completed = _utc(clock())
-    if length is not None and len(body) != int(length):
-        raise QuoteCollectionError("response_length_mismatch")
+                body = bytearray()
+                # Do not use aiter_raw's automatic EOF close: cancellation inside
+                # that close would set is_closed without finishing stream cleanup.
+                async for chunk in response.stream:
+                    if len(body) + len(chunk) > policy.max_response_bytes:
+                        raise QuoteCollectionError("response_too_large")
+                    body.extend(chunk)
+            except asyncio.CancelledError:
+                # Cancellation already delivered during body IO will not be raised
+                # again inside cleanup. Carry it explicitly so even a failed close
+                # cannot replace the caller's cancellation with an ordinary error.
+                pending_cancel = True
+                raise
+            finally:
+                await _close_response(response, pending_cancel=pending_cancel)
+        completed = _utc(clock())
+        if length is not None and len(body) != int(length):
+            raise QuoteCollectionError("response_length_mismatch")
+    else:
+        from app.trade_qualification.public_source_runtime import _fetch_http
+
+        raw, received, completed = await _fetch_http(
+            _source, client, request, started, policy
+        )
+        body = bytearray(raw)
     payload, canonical = _parse(bytes(body))
     row = _row(payload, instrument)
     _values(role, row)
@@ -691,6 +699,7 @@ async def collect_executable_quote(
     instrument_id: str,
     policy: QuoteCollectionPolicy,
     barrier_completed_at: datetime | None = None,
+    _source=None,
 ) -> CollectedQuote:
     """Capture three public observations once. No retry, fallback, or authority."""
     try:
@@ -707,6 +716,16 @@ async def collect_executable_quote(
             raise QuoteCollectionError("clock_invalid")
         _public_client(client)
         barrier = None if barrier_completed_at is None else _utc(barrier_completed_at)
+        if _source is not None:
+            from app.trade_qualification.public_source_runtime import _check_inputs
+
+            _check_inputs(
+                _source,
+                clock=clock,
+                report_id=report,
+                instrument_id=instrument_id,
+                barrier_completed_at=barrier,
+            )
         observations = []
         async with asyncio.timeout(checked_policy.batch_timeout_seconds):
             for role, path in ENDPOINTS:
@@ -719,6 +738,7 @@ async def collect_executable_quote(
                     checked_policy,
                     barrier,
                     observations[-1].completed_at if observations else None,
+                    _source=_source,
                 )
                 observations.append(item)
         completed = _utc(clock())

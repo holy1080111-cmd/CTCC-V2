@@ -354,6 +354,7 @@ async def collect_ws_reference(
     instrument_id: str,
     policy: WSCollectionPolicy,
     barrier_completed_at: datetime | None = None,
+    _source=None,
 ) -> CollectedWSReference:
     """Perform a bounded, owned, public read once. Failure never grants authority."""
     try:
@@ -364,11 +365,28 @@ async def collect_ws_reference(
         if not callable(clock):
             raise WSCollectionError("ws_clock_invalid")
         barrier = None if barrier_completed_at is None else _utc(barrier_completed_at)
+        if _source is not None:
+            from app.trade_qualification.public_source_runtime import (
+                _check_inputs,
+                _receive_ws,
+                _ws_connected,
+                _ws_options,
+                _ws_record,
+            )
+
+            _check_inputs(
+                _source,
+                clock=clock,
+                report_id=report,
+                instrument_id=instrument_id,
+                barrier_completed_at=barrier,
+            )
         started = _utc(clock())
         if barrier is not None and started <= barrier:
             raise WSCollectionError("ws_publication_barrier_not_crossed")
         subscription_id = _subscription_id(report, instrument_id)
         body = _subscription(subscription_id, instrument_id)
+        native_options = {} if _source is None else _ws_options(_source, started)
         async with asyncio.timeout(checked.batch_timeout_seconds):
             socket = await _NoRedirectConnect(
                 PUBLIC_WS_URL,
@@ -381,34 +399,53 @@ async def collect_ws_reference(
                 close_timeout=checked.close_timeout_seconds,
                 max_size=checked.max_message_bytes,
                 max_queue=1,
+                **native_options,
             )
             pending_cancel = False
             try:
                 connected = _utc(clock())
                 if connected < started:
                     raise WSCollectionError("ws_capture_clock_reversed")
+                if _source is not None:
+                    _ws_connected(_source, socket)
                 subscribe_started = _utc(clock())
                 if subscribe_started < connected:
                     raise WSCollectionError("ws_capture_clock_reversed")
+                if _source is not None:
+                    _ws_record(_source, socket, "ws_subscribe", body)
                 await socket.send(body.decode("ascii"))
                 subscribe_completed = _utc(clock())
                 if subscribe_completed < subscribe_started:
                     raise WSCollectionError("ws_capture_clock_reversed")
-                raw_ack = await _receive(socket, checked)
+                if _source is not None:
+                    _ws_record(_source, socket, "ws_subscribed")
+                if _source is None:
+                    raw_ack = await _receive(socket, checked)
+                    ack_received = _utc(clock())
+                else:
+                    raw_ack, ack_received = await _receive_ws(
+                        _source, socket, checked, "ws_ack"
+                    )
                 ack = parse_ws_subscription_ack(
                     raw_ack,
                     instrument_id=instrument_id,
                     subscription_id=subscription_id,
-                    received_at=_utc(clock()),
+                    received_at=ack_received,
                 )
                 if ack.received_at < subscribe_completed:
                     raise WSCollectionError("ws_capture_clock_reversed")
-                raw_ticker = await _receive(socket, checked)
+                if _source is None:
+                    raw_ticker = await _receive(socket, checked)
+                    ticker_received = _utc(clock())
+                else:
+                    raw_ticker, ticker_received = await _receive_ws(
+                        _source, socket, checked, "ws_ticker"
+                    )
                 ticker = parse_ws_ticker_frame(
                     raw_ticker,
                     report_id=report,
                     instrument_id=instrument_id,
-                    received_at=_utc(clock()),
+                    received_at=ticker_received,
                 )
             except asyncio.CancelledError:
                 pending_cancel = True
@@ -416,6 +453,8 @@ async def collect_ws_reference(
             finally:
                 await _close_socket(socket, checked, pending_cancel=pending_cancel)
             closed = _utc(clock())
+            if _source is not None:
+                _ws_record(_source, socket, "ws_closed")
         completed = _utc(clock())
         values = {
             "report_id": report,

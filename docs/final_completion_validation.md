@@ -342,8 +342,9 @@ pass without writes or authority; these are separate from real SQL acceptance.
 
 The sixth checkpoint is `938634d0cc89202c5f2e410f42fde2108a4dbb5e`, tree
 `a729b4b098cf790df9160b8583ba5ca124c04701`, migration head 0020. Its exact
-archive Windows suite is running separately; subsequent working changes below
-are not covered by that run and cannot borrow its counts. The previous full
+archive Windows suite subsequently terminated with `TimeoutExpired`; it has no
+complete final XML and remains FAIL. Subsequent working changes below are not
+covered by that run and cannot borrow its counts. The previous full
 `fbe0729` suite remains FAIL: 10,624 passes, 89 failures, 104 errors and 137 skips.
 The original two research-boundary defects were fixed in the sixth checkpoint.
 Native ancestor permissions and unavailable isolated PostgreSQL remain separate
@@ -381,7 +382,19 @@ native health-check function ASTs are unchanged.
 Original Notion policy pages were read again on 2026-09-23. They require explicit
 strategy-specific reversal structure but do not supply the missing integrated
 range-protection implementation or complete sweep HTF formula. Existing policy
-denials remain; no unavailable source or permissive rule was substituted.
+denials remain. The missing integrated source prevents claiming an exact port;
+it does not prohibit a new explicitly versioned policy under the user's mandate
+to complete strategy-specific HTF/protection rules. A new policy must preserve old
+records, independently replay source conditions and retain all applicable vetoes.
+
+The directive requires atomic reservation of the worst sampled candidate/reference
+risk, bounded adverse FOK execution and actual-fill validation. A theorem covering
+every possible future fill price is an additional research design, not a required
+dispatch gate. The existing `all_fill_prices_covered=False` contract remains
+accurate. No code gate requires it to become true. Earlier documentation that
+listed universal fill-price coverage as a completion prerequisite is corrected;
+trusted account/public ownership, current controls and final dispatch integration
+remain real engineering requirements.
 
 ## Outstanding source-independent evidence
 
@@ -393,6 +406,42 @@ is repaired and directly remeasured.
 Existing retrospective holdout summaries have already been exposed. They cannot
 be resealed as unseen OOS or promoted from computational rehearsal to predictive
 evidence. Engineering tests and genuine statistical acceptance remain separate.
+
+## 2026-09-28 continuation
+
+The host can now reach Docker's Linux engine. Original deployment containers
+remain stopped. A fresh no-cache image from the exact `ced812c` archive built
+successfully with its existing manifest and hashed Linux dependency lock. This
+image is a validation baseline, not acceptance for later working changes.
+
+New PostgreSQL 17 and Redis 8 instances use the repository's pinned digests and
+synthetic state. Three databases migrated to 0020 inside an internal network.
+The first attempted Windows-host connection failed because that internal network
+did not expose its requested host ports; this failure is retained. Running the
+client inside the same internal network succeeded without adding egress.
+
+Frozen source overlays then executed six Range V5 SQL cases and two B2a query
+verifier SQL cases, all passing without skips. These are real database component
+tests with synthetic exchange inputs, not final source-COPY or account acceptance.
+Independent review subsequently found B2a boolean/integer equality defects in
+row-lineage checks and cross-stage clock fields that were not fully bound to
+their source events. Exact canonical comparisons and measured event/predecessor
+checks repair those joins. The unchanged independent probe moved from 16 failures
+and 7 passes on the frozen old source to 23 passes without skips on repaired
+source. The failures remain retained; pre-repair passes cannot certify the
+repaired source. The hermetic harness now requires both new SQL modules in its
+explicit no-skip acceptance list.
+
+Separate loopback-only synthetic PostgreSQL/Redis services are available for the
+native Windows suite. Their fresh 0020 migration and schema-drift check pass.
+They are distinct from the Linux internal-network hermetic environment.
+
+The operator-authorized Windows Time service repair started W32Time and changed
+its startup to Automatic. Actual native observation passes, but an independent
+OKX time response and NTP samples still measured the host roughly 0.71 seconds
+behind. Native health alone therefore does not establish public timestamp
+acceptance. A bounded native correction and fresh measurement remain required;
+no CTCC tolerance or retained source/receipt timestamp was changed.
 
 Live remains default OFF. No current completion, release or trading acceptance
 is asserted by this working document.

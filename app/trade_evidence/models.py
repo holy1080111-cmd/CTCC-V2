@@ -20,6 +20,7 @@ from app.trade_qualification.history_prefix import (
     HistoryEntryQualificationResultV2,
     HistoryEntryQualificationResultV3,
     HistoryEntryQualificationResultV4,
+    HistoryEntryQualificationResultV5,
 )
 from app.trade_qualification.location import ExecutableQuote
 from app.trade_qualification.models import (
@@ -54,6 +55,11 @@ def _qualification_family(value):
             "ctcc-history-qualification-result-v4",
             "history_v4",
         ),
+        (
+            HistoryEntryQualificationResultV5,
+            "ctcc-history-qualification-result-v5",
+            "history_v5",
+        ),
     )
 
 
@@ -61,7 +67,8 @@ EvidenceQualification = Annotated[
     Annotated[EntryQualificationResult, Tag("legacy")]
     | Annotated[HistoryEntryQualificationResultV2, Tag("history_v2")]
     | Annotated[HistoryEntryQualificationResultV3, Tag("history_v3")]
-    | Annotated[HistoryEntryQualificationResultV4, Tag("history_v4")],
+    | Annotated[HistoryEntryQualificationResultV4, Tag("history_v4")]
+    | Annotated[HistoryEntryQualificationResultV5, Tag("history_v5")],
     Discriminator(_qualification_family),
 ]
 

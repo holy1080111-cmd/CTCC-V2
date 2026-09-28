@@ -607,8 +607,16 @@ async def _close_client(client, seconds, *, pending_cancel=False):
         raise PublicMarketCollectionError("public_client_cleanup_failed") from None
 
 
-async def _http_capture(collector, close_seconds, **kwargs):
-    client = _new_client()
+async def _http_capture(
+    collector, close_seconds, *, _source=None, _role=None, **kwargs
+):
+    if _source is None:
+        client = _new_client()
+    else:
+        from app.trade_qualification.public_source_runtime import _new_owned_client
+
+        client = _new_owned_client(_source, _role)
+        kwargs["_source"] = _source
     pending_cancel = False
     try:
         return await collector(client=client, **kwargs)
@@ -637,7 +645,7 @@ def _component_failure(role, error):
     return role, "component_failed"
 
 
-async def _collect_components(policy, common):
+async def _collect_components(policy, common, *, _source=None):
     # Explicit ownership avoids TaskGroup's internal parent cancellation being
     # confused with caller cancellation during failure cleanup (Python 3.12).
     tasks = {}
@@ -653,12 +661,15 @@ async def _collect_components(policy, common):
                 _http_capture(
                     collector,
                     policy.client_close_timeout_seconds,
+                    _source=_source,
+                    _role=name,
                     policy=getattr(policy, name),
                     **common,
                 )
             )
+        ws_options = {} if _source is None else {"_source": _source}
         tasks["ws"] = asyncio.create_task(
-            ws.collect_ws_reference(policy=policy.ws, **common)
+            ws.collect_ws_reference(policy=policy.ws, **ws_options, **common)
         )
         pending = set(tasks.values())
         while pending:
@@ -700,6 +711,14 @@ async def _collect_components(policy, common):
             # Never stringify unknown exceptions, frames, models or arbitrary
             # args. A cancelled sibling is cleanup, not another source failure.
             failures.append(_component_failure(role, item))
+            if _source is not None:
+                from app.trade_qualification.public_source_runtime import _event
+
+                _event(
+                    _source,
+                    "component_failed",
+                    {"role": role, "code": "component_failed"},
+                )
         raise PublicMarketCollectionError(
             "public_component_capture_failed",
             component_failures=tuple(failures),
@@ -714,6 +733,7 @@ async def collect_public_market(
     instrument_id: str,
     policy: PublicMarketCollectionPolicy,
     barrier_completed_at: datetime | None = None,
+    _source=None,
 ) -> CollectedPublicMarket:
     """One attempt; component failure cancels and joins siblings before returning.
 
@@ -731,6 +751,16 @@ async def collect_public_market(
         barrier = (
             None if barrier_completed_at is None else quotes._utc(barrier_completed_at)
         )
+        if _source is not None:
+            from app.trade_qualification.public_source_runtime import _check_inputs
+
+            _check_inputs(
+                _source,
+                clock=clock,
+                report_id=report_id,
+                instrument_id=instrument_id,
+                barrier_completed_at=barrier,
+            )
         started = quotes._utc(clock())
         if barrier is not None and started <= barrier:
             raise PublicMarketCollectionError("public_publication_barrier_not_crossed")
@@ -741,7 +771,11 @@ async def collect_public_market(
             "barrier_completed_at": barrier,
         }
         async with asyncio.timeout(policy.total_timeout_seconds):
-            components = await _collect_components(policy, common)
+            components = (
+                await _collect_components(policy, common)
+                if _source is None
+                else await _collect_components(policy, common, _source=_source)
+            )
         values = dict(
             report_id=report_id,
             instrument_id=instrument_id,

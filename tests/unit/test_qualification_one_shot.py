@@ -569,14 +569,25 @@ async def test_external_cancel_during_failed_sibling_cleanup_is_not_swallowed(
     monkeypatch.setattr(module.public_capture, "collect_public_market", public)
     monkeypatch.setattr(module.private_capture, "collect_demo_account_records", private)
     task = asyncio.create_task(module.publish_capture_recheck(**args))
-    await asyncio.wait_for(closing.wait(), timeout=5)
-    task.cancel()
-    await asyncio.sleep(0)
-    assert not task.done()
-    release.set()
-    with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(task, timeout=5)
-    assert closed.is_set()
+    try:
+        # Let synchronous G12 replay/render finish before timing the asynchronous
+        # cleanup handshake. A busy renderer is not a stalled capture owner.
+        await asyncio.sleep(0)
+        await asyncio.wait_for(closing.wait(), timeout=5)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=5)
+        assert closed.is_set()
+    finally:
+        # Failed assertions/timeouts must also release this test-owned blocker;
+        # otherwise asyncio fixture teardown can wait forever for its cleanup.
+        release.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), timeout=5)
 
 
 @pytest.mark.asyncio
@@ -696,11 +707,18 @@ async def test_caller_cancellation_is_preserved_and_clients_joined(
     harness = CaptureHarness(monkeypatch, inputs[0], args["clock"])
     harness.public_hold = asyncio.Event()
     task = asyncio.create_task(module.publish_capture_recheck(**args))
-    await asyncio.wait_for(harness.started.wait(), timeout=5)
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
-    harness.assert_closed()
+    try:
+        await asyncio.sleep(0)
+        await asyncio.wait_for(harness.started.wait(), timeout=5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=5)
+        harness.assert_closed()
+    finally:
+        harness.public_hold.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), timeout=5)
 
 
 @pytest.mark.skipif(

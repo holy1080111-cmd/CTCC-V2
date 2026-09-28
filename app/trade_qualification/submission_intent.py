@@ -42,7 +42,9 @@ from app.trade_qualification.reservations import (
     QualificationLedgerError,
     ReservationReceipt,
     ReservationRequest,
+    ReservationRequestV2,
     checked,
+    checked_reservation_request,
     digest,
     reservation_id,
 )
@@ -96,27 +98,39 @@ class _HistoryReplayInputsV4(_OriginalReplayInputs):
     policy: history_engine.HistoryPreEvidencePolicyV4
 
 
+class _HistoryReplayInputsV5(_OriginalReplayInputs):
+    policy: history_engine.HistoryPreEvidencePolicyV5
+
+
 _MODEL_TYPES = (
     gates.HistoryEvidenceGateRunV2,
     gates.HistoryEvidenceGateRunV3,
     gates.HistoryEvidenceGateRunV4,
+    gates.HistoryEvidenceGateRunV5,
     history_engine.HistoryPreEvidencePolicyV2,
     history_engine.HistoryPreEvidencePolicyV3,
     history_engine.HistoryPreEvidencePolicyV4,
+    history_engine.HistoryPreEvidencePolicyV5,
     history_engine.HistoryPreEvidenceRunV2,
     history_engine.HistoryPreEvidenceRunV3,
     history_engine.HistoryPreEvidenceRunV4,
+    history_engine.HistoryPreEvidenceRunV5,
     history_prefix.HistoryEntryQualificationResultV2,
     history_prefix.HistoryEntryQualificationResultV3,
     history_prefix.HistoryEntryQualificationResultV4,
+    history_prefix.HistoryEntryQualificationResultV5,
     history_prefix.HistoryQualificationPrefixPolicyV2,
     history_prefix.HistoryQualificationPrefixPolicyV3,
     history_prefix.HistoryQualificationPrefixPolicyV4,
+    history_prefix.HistoryQualificationPrefixPolicyV5,
     history_prefix.HistoryQualificationPrefixRunV2,
     history_prefix.HistoryQualificationPrefixRunV3,
     history_prefix.HistoryQualificationPrefixRunV4,
+    history_prefix.HistoryQualificationPrefixRunV5,
     RegimeAdmissionResult,
     SubmissionExecutionBinding,
+    reservations.ReservationReplayBindingV2,
+    ReservationRequestV2,
     ReservationRequest,
     ReservationReceipt,
     reservations.LedgerScope,
@@ -250,7 +264,13 @@ def _json(value):
 
 def _require_range_execution_binding(pre, binding):
     """The newly admitted V4 schema cannot select legacy intent-v1 replay."""
-    if type(pre) is history_engine.HistoryPreEvidenceRunV4:
+    if any(
+        type(pre) is model
+        for model in (
+            history_engine.HistoryPreEvidenceRunV4,
+            history_engine.HistoryPreEvidenceRunV5,
+        )
+    ):
         _guard(binding)
         if type(binding) is not SubmissionExecutionBinding:
             raise QualificationLedgerError("submit_range_execution_binding_required")
@@ -262,7 +282,7 @@ def build_submission_intent(
     """Derive all facts from exact reservation records; performs no IO."""
     _guard(request)
     _guard(consumed)
-    request = checked(request, ReservationRequest)
+    request = checked_reservation_request(request)
     consumed = checked(consumed, ReservationReceipt)
     origin = request.origin
     _require_range_execution_binding(origin.evidence.pre_evidence, execution_binding)
@@ -292,6 +312,17 @@ def build_submission_intent(
         or consumed.ledger_revision <= request.expected_ledger_revision
     ):
         raise QualificationLedgerError("submit_intent_reservation_mismatch")
+    if type(origin.evidence.pre_evidence) is history_engine.HistoryPreEvidenceRunV5:
+        if consumed.account_revision != request.expected_account_revision:
+            raise QualificationLedgerError("submit_range_account_revision_changed")
+        reservations.replay_range_reservation(request, observed_at=consumed.updated_at)
+        if any(
+            getattr(execution_binding, name) != getattr(request.replay_binding, name)
+            for name in type(request.replay_binding).model_fields
+            if name not in reservations.LedgerModel.model_fields
+            and name != "contract_version"
+        ):
+            raise QualificationLedgerError("submit_range_replay_binding_changed")
     geometry = consumed.coverage.candidate
     if (
         geometry.entry != candidate.candidate_entry
@@ -418,6 +449,10 @@ def _original_inputs_document(raw):
                 _HistoryReplayInputsV4,
                 "ctcc-history-qualification-prefix-v4",
             ),
+            "ctcc-history-pre-evidence-v5": (
+                _HistoryReplayInputsV5,
+                "ctcc-history-qualification-prefix-v5",
+            ),
         }
         if type(version) is not str or version not in variants:
             raise ValueError("original_policy_version_unsupported")
@@ -484,7 +519,13 @@ def _execution_body(request, consumed, supplied):
         )
         if not actual.computational_checks_passed:
             raise ValueError("recorded_recheck_denied")
-        if type(origin.evidence.pre_evidence) is history_engine.HistoryPreEvidenceRunV4:
+        if any(
+            type(origin.evidence.pre_evidence) is model
+            for model in (
+                history_engine.HistoryPreEvidenceRunV4,
+                history_engine.HistoryPreEvidenceRunV5,
+            )
+        ):
             reservations._check_original_range_location(
                 origin.evidence.pre_evidence,
                 request.quote,

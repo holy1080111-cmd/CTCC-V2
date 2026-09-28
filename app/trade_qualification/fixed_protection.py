@@ -42,6 +42,7 @@ from app.indicators.core import atr
 from app.market.quality.candles import BAR_SECONDS, candle_closed_at, inspect_candles_at
 from app.strategies.structural_protection import (
     _source_anchors,
+    select_range_structural_protection,
     select_reversal_structural_protection,
     select_structural_protection,
 )
@@ -146,6 +147,7 @@ def _guard(value, depth=0, budget=None):
             FixedProtectionCheck,
             FixedProtectionResult,
             FixedProtectionResultV3,
+            FixedProtectionResultV5,
         }
         if type(value) not in allowed:
             raise FixedProtectionError("exact_fixed_protection_model_required")
@@ -394,6 +396,20 @@ class FixedProtectionResultV3(FixedProtectionResult):
         return self
 
 
+class FixedProtectionResultV5(FixedProtectionResult):
+    contract_version: Literal["ctcc-history-fixed-protection-v5"]
+    alignment_policy: Literal["ctcc-neutral-range-protection-v1"]
+    range_permission_sha256: Digest | None = None
+
+    @model_validator(mode="after")
+    def history_bound(self):
+        if self.strategy != "range_reversal" or (
+            self.passed and self.range_permission_sha256 is None
+        ):
+            raise ValueError("fixed_range_history_binding_required")
+        return self
+
+
 def _price(value):
     if (
         type(value) is not Decimal
@@ -461,6 +477,10 @@ def evaluate_fixed_protection_v3(*sources, **inputs):
     return _evaluate_fixed_protection(*sources, _reversal=True, **inputs)
 
 
+def evaluate_fixed_protection_v5(*sources, **inputs):
+    return _evaluate_fixed_protection(*sources, _reversal=False, _range=True, **inputs)
+
+
 def _evaluate_fixed_protection(
     original_market: MarketSnapshot,
     original_analysis: MultiTimeframeAnalysis,
@@ -478,6 +498,7 @@ def _evaluate_fixed_protection(
     quote: ExecutableQuote,
     observed_at: datetime,
     _reversal: bool,
+    _range: bool = False,
 ) -> FixedProtectionResult:
     """Compare original prices only; current-source history continuity is separate.
 
@@ -489,6 +510,8 @@ def _evaluate_fixed_protection(
     """
     try:
         event = _copy(detection, TriggerDetection)
+        if _range and event.strategy != "range_reversal":
+            raise FixedProtectionError("fixed_range_strategy_required")
         if _reversal and event.strategy != "structure_reversal":
             raise FixedProtectionError("fixed_reversal_strategy_required")
         chosen_policy = _bounded_scalars(policy, ProtectionPolicy)
@@ -514,7 +537,12 @@ def _evaluate_fixed_protection(
         raise FixedProtectionError("fixed_protection_input_invalid") from exc
     identity = {
         **(
-            {"contract_version": "ctcc-history-fixed-protection-v3"}
+            {
+                "contract_version": "ctcc-history-fixed-protection-v5",
+                "alignment_policy": "ctcc-neutral-range-protection-v1",
+            }
+            if _range
+            else {"contract_version": "ctcc-history-fixed-protection-v3"}
             if _reversal
             else {}
         ),
@@ -544,7 +572,13 @@ def _evaluate_fixed_protection(
         return code == "passed"
 
     def finish():
-        result_type = FixedProtectionResultV3 if _reversal else FixedProtectionResult
+        result_type = (
+            FixedProtectionResultV5
+            if _range
+            else FixedProtectionResultV3
+            if _reversal
+            else FixedProtectionResult
+        )
         return result_type.model_validate(
             _plain(
                 {
@@ -592,7 +626,9 @@ def _evaluate_fixed_protection(
         )
         try:
             selector = (
-                select_reversal_structural_protection
+                select_range_structural_protection
+                if _range
+                else select_reversal_structural_protection
                 if _reversal
                 else select_structural_protection
             )
@@ -611,6 +647,8 @@ def _evaluate_fixed_protection(
             ):
                 raise FixedProtectionError("original_selection_replay_mismatch")
             selected = original.selected
+            if _range:
+                evidence["range_permission_sha256"] = original.range_permission_sha256
             if _reversal:
                 evidence["history_admission_sha256"] = original.history_admission_sha256
             if (selected.stop.final_stop, selected.target.final_target) != (
