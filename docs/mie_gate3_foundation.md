@@ -148,3 +148,22 @@ predictive promotion.
 
 None of these steps needs or permits an exchange order. Gate 4 remains blocked
 until an independently reviewed real artifact exists.
+
+## 2026-10-06 bounded complete-window replay
+
+`app.mie.validation.blind_window_dataset` adds an offline binder for a sealed,
+minute-granularity window. It reopens every original public-capture byte through
+the controlled journal, checks externally supplied checkpoint and capture
+hashes, enforces exact per-minute and per-instrument coordinates, and rejects
+missing, late, duplicated, reordered or conflicting source rows. It emits
+canonical row and dataset hashes. Focused synthetic positive and failure-path
+tests passed (36 cases across the affected modules).
+
+Those external hashes have not been independently held, and evaluator first
+access has not been independently proved. The current files contain no complete
+real blind window or sealed Candidate V1 result. The dataset contract therefore
+fixes `predictive_oos_eligible=false`, `promotion_eligible=false`, and
+`execution_authority=false`; this is a computational integrity step, not Gate 3
+or sealed OOS acceptance. The historical `ALEMBIC_HEAD=0016` above describes
+the 2026-09-02 foundation run; the current source migration head is `0022` and
+requires its own exact-source PostgreSQL acceptance.

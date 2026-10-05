@@ -114,9 +114,11 @@ receipt/barrier. Both include explicit public packet, quote profile and transpor
 versions. The existing event/summary format remains v1 because its storage and
 native observation semantics did not change.
 
-New WebSocket acquisitions pin `wss://ws.okx.com:443/ws/v5/public`. Exact
-historical receipts using `:8443` remain replayable; the old port is never used
-for a new capture.
+The earlier V2 implementation pinned `wss://ws.okx.com:443/ws/v5/public` for
+new acquisitions. That is a Production socket and cannot establish an exact
+Demo source. New native V2 acquisition is now refused before journal creation
+or network I/O. Exact historical receipts using `:8443` remain replayable as
+`DENY` diagnostics; the old port is never used for a new capture.
 
 Native no-clobber storage retains actual attempted HTTP/WS bytes even on parser,
 clock, TLS, timeout or cancellation failure. A clock-failed receipt remains
@@ -195,3 +197,23 @@ admission remained `DENY`; source authenticity, measured availability,
 account completeness and execution authority remain false. No credentialed
 account request or order write occurred. This is one current acquisition and
 offline integrity check, not continuous-feed or trading acceptance.
+
+## 2026-10-06 Demo-origin correction
+
+The two native captures above used the Production public WebSocket while their
+plans said `demo`. Their raw bytes and replay evidence remain useful for
+diagnosis, but neither capture proves Demo-source authenticity. The official
+[OKX API overview](https://www.okx.com/docs-v5/) distinguishes Production
+`ws.okx.com` from Demo `wspap.okx.com`; its
+[WebSocket change log](https://www.okx.com/docs-v5/log_en/) confirms that port
+443 is available for the Demo domain. The regional overviews separately name
+the US/AU and EEA Demo domains.
+
+`demo_public_origin.py` now pins the reviewed global, US/AU and EEA Demo REST,
+WebSocket and TLS hosts and requires `x-simulated-trading: 1` on public REST
+requests. It is a transport policy only. No verified account-registration
+region or credential-session issuer feeds the native V2 collector, and that
+collector has not been fully wired to these routes. Therefore every new native
+V2 Demo capture remains `DENY` before I/O, even if a caller supplies an
+apparently correct region or route object. Focused policy and pre-I/O denial
+tests passed; R5 trusted Demo-source acceptance remains open.

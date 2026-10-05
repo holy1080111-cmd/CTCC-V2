@@ -1,7 +1,7 @@
 # CTCC V2 v1.6.9 — Durable OKX Live Recovery
 
 **V2.0 production acceptance is incomplete.** The final-completion branch is
-undergoing new source-bound validation (2026-09-23 update); [current status and boundaries](docs/final_completion_validation.md)
+undergoing new source-bound validation (2026-10-06 update); [current status and boundaries](docs/final_completion_validation.md)
 distinguish engineering checks from real Demo, OOS and Micro Live acceptance.
 Live remains default OFF and requires contemporaneous operator authorization.
 
@@ -13,6 +13,9 @@ This working branch currently refuses new Demo and Live entries at the HTTP
 transport boundary. The new qualified one-shot authority is not ready. Enabling
 configuration flags or completing the legacy Arm procedure cannot bypass that
 containment. Existing read, cancel, close and reconciliation controls are retained.
+New V2 Demo public capture is also blocked before network I/O: its earlier plan
+used a Production WebSocket and no authenticated Demo account-region binding.
+The [V2 source record](docs/public_source_runtime_v2.md) explains this boundary.
 
 The following sequence describes the preserved v1.6.9 Live control design; its
 submission step is blocked in this final-completion branch pending the new
@@ -105,11 +108,16 @@ Its containers remain stopped; current exchange exposure is unknown. Development
 schema changes are not deployed by running unit tests. Migration `0018` adds the
 immutable submission outcome/report spool and independent projection receipts;
 its new isolated acceptance is tracked in the final-completion record.
+Migration `0019` adds persistent Demo control epochs; `0020` and `0021` retain
+immutable account-capture and observed-history records; `0022` adds a one-attempt
+quarterly bill-archive claim. None of these tables grants source, reservation or
+order authority on its own.
 
-Expected migration after upgrade:
+Migration identities (the stopped local deployment is not silently upgraded):
 
 ```text
-0017 (head)
+Current final-completion source head: 0022
+Last independently restored local deployment: 0017
 ```
 
 ## Reviewed Demo and public-data universe

@@ -106,6 +106,11 @@ async def test_native_original_is_consumed_here_but_cannot_publish_g12(
         "receipt",
         "barrier",
         "passed",
+        "data_policy",
+        "g1_policy",
+        "g1_policy_sha256",
+        "analysis_version",
+        "source_authenticity_verified",
     ],
 )
 async def test_native_original_seam_accepts_no_caller_replay_inputs(tmp_path, supplied):

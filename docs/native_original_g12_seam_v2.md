@@ -35,6 +35,41 @@ post-publication, recheck, account, reservation, execution, and order flags
 remain false. The older `publish_capture_public_v2` remains a separate
 caller-origin diagnostic and is not promoted by this handoff.
 
+## Requirements before operational G1 registration
+
+The current repository has no eligible calibration source for a non-synthetic
+policy. The retained October 2026 BTC public replay explicitly records
+`original_source_verified=false` and `measured_availability_eligible=false`;
+it is a diagnostic packet, not a trusted Demo observation. The current native V2
+plan also pins the production public WS origin while labeling the capture Demo.
+That origin mismatch must be corrected and verified with a region-bound Demo
+transport before any new native sample can support operational policy review.
+The synthetic fixture policy in `full_public_numeric_v2_profile.py` cannot be
+copied or registered as the production policy, even if its digest matches.
+
+Registration requires a reviewed, immutable policy record prepared before the
+qualifying evaluation. It must pin the exact trusted source profile and region,
+the analysis implementation/source identity and `analysis_version`, and every
+`DataQualificationPolicy` field: at least 200 confirmed bars per 4H, 1H, 15m,
+and 5m timeframe; snapshot, ticker/mark, and independent WS-reference ages;
+candle-tail age; reference conflict; mark dislocation; spread; and absolute
+funding bounds. Each selected numerical limit needs a documented operational
+basis and failure rule from origin-verified, causally timed captures of the
+intended instruments and market conditions. The model's permitted ranges are
+input validation limits, not approved operating thresholds. No result from an
+already viewed diagnostic packet may be used to tune and then claim a sealed
+out-of-sample policy.
+
+After sealing, native initial capture must retain and replay the exact public
+raw bytes and receipt chain, verify exchange and host clock ordering, and
+evaluate G1 under the pinned policy in that same invocation. Tests must reject
+missing, stale, malformed, conflicted, or wrong-environment components and
+changed policy/version pins. Independent replay of the exact G1 result is
+required. A G1 PASS would remain a data-consistency result, not original-source
+verification, G12 completion, reservation, Demo submission, or Live permission.
+Until those prerequisites exist, this native entry continues to return the
+bounded `native_g1_policy_unregistered` DENY receipt.
+
 The focused synthetic unit tests check the native handoff, canonical bounded
 policy-gate receipt, forbidden fixture G1/G12/downstream calls, malformed and
 stale source rejection, forbidden caller replay inputs, foreign-task

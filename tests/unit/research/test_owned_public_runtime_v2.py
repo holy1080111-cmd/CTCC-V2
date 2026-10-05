@@ -43,6 +43,11 @@ def setup(monkeypatch, source, *, original=None):
     clock, directory, harness, publications = synthetic_runtime(
         monkeypatch, (source, None, None) if original is None else original
     )
+    # Exercise immutable historical v2 packet/journal behavior with synthetic
+    # transport only. Production has no bypass and still refuses new capture.
+    monkeypatch.setattr(
+        runtime, "_require_trusted_v2_demo_origin_profile", lambda _: None
+    )
     monkeypatch.setattr(initial, "native_stamp", clock.stamp)
     original_public = harness.public
 
@@ -82,6 +87,79 @@ async def invoke(root):
     return await initial.capture_initial_public_market_v2(
         root, instrument_id="BTC-USDT-SWAP", market_policy=policy()
     )
+
+
+@pytest.mark.asyncio
+async def test_unbound_v2_demo_capture_refuses_before_journal_or_network(
+    source, tmp_path, monkeypatch
+):
+    clock, directory, harness, _ = synthetic_runtime(monkeypatch, (source, None, None))
+    monkeypatch.setattr(initial, "native_stamp", clock.stamp)
+
+    def unexpected_io(*_args, **_kwargs):
+        raise AssertionError("v2_demo_capture_entered_io")
+
+    monkeypatch.setattr(runtime, "_runtime_attempt", unexpected_io)
+    monkeypatch.setattr(runtime, "_new_owned_client", unexpected_io)
+    monkeypatch.setattr(runtime, "_ws_options", unexpected_io)
+    result = await invoke(tmp_path)
+    assert result.code == "initial_public_v2_denied"
+    assert result.admission == "DENY" and result.execution_authority is False
+    assert result.packet is None and result.journal_sha256 is None
+    assert not harness.requests and not directory.content
+    empty_registries()
+
+
+def test_caller_origin_strings_cannot_create_trusted_demo_profile():
+    with pytest.raises(
+        runtime.PublicSourceRuntimeError, match="demo_public_origin_mismatch"
+    ):
+        runtime._require_trusted_v2_demo_origin_profile(
+            {"environment": "demo", "ws_origin": "wss://ws.okx.com:443/ws/v5/public"}
+        )
+    with pytest.raises(
+        runtime.PublicSourceRuntimeError,
+        match="trusted_demo_public_origin_profile_unavailable",
+    ):
+        runtime._require_trusted_v2_demo_origin_profile(
+            {
+                "environment": "demo",
+                "registration_region": "global",
+                "rest_origin": "https://openapi.okx.com",
+                "ws_origin": "wss://wspap.okx.com:443/ws/v5/public",
+                "trusted_demo_public_origin_profile": {"caller_supplied": True},
+            }
+        )
+
+
+@pytest.mark.asyncio
+async def test_post_g12_v2_demo_capture_refuses_before_new_public_io(
+    inputs, tmp_path, monkeypatch
+):
+    source, values, run = inputs
+    _, directory, harness, publications = synthetic_runtime(monkeypatch, inputs)
+
+    def unexpected_io(*_args, **_kwargs):
+        raise AssertionError("post_g12_v2_capture_entered_io")
+
+    monkeypatch.setattr(runtime, "_runtime_attempt", unexpected_io)
+    monkeypatch.setattr(runtime, "_new_owned_client", unexpected_io)
+    monkeypatch.setattr(runtime, "_ws_options", unexpected_io)
+    result = await coordinator.publish_capture_public_v2(
+        tmp_path / "g12",
+        tmp_path / "fresh",
+        source.market,
+        run=run,
+        original_inputs=values,
+        market_policy=policy(),
+    )
+    assert result.code == "public_v2_denied"
+    assert result.evidence is not None and result.evidence.result.evidence_complete
+    assert len(publications) == 1
+    assert result.admission == "DENY" and result.execution_authority is False
+    assert result.packet is None and result.journal_sha256 is None
+    assert not harness.requests and not directory.content
+    empty_registries()
 
 
 def replay(directory):
@@ -158,6 +236,15 @@ def test_initial_owner_replays_all_components_and_returns_no_permit(captured):
     )
     assert result.context.market.ticker.volume_quote_24h is None
     assert packet.packet_json == result.packet.packet_json
+
+
+def test_historical_v2_replay_remains_deny(captured):
+    result, content = captured
+    _, _, packet = replay(MemoryDirectory(content))
+    assert packet.admission == "DENY" and packet.execution_authority is False
+    assert result.context.admission == "DENY"
+    assert result.context.original_source_verified is False
+    assert result.context.execution_authority is False
 
 
 def test_v2_does_not_enter_old_packet_validator(captured):

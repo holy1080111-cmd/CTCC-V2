@@ -39,6 +39,7 @@ from app.public_market_source.public_runtime_journal import (
     replay_runtime_attempt,
 )
 from app.trade_qualification import candle_collector as candles
+from app.trade_qualification import demo_public_origin as demo_origin
 from app.trade_qualification import market_aux_collector as aux
 from app.trade_qualification import public_market_collector as public
 from app.trade_qualification import public_market_collector_v2 as public_v2
@@ -66,6 +67,32 @@ _SAFE_CLOCK_FAILURE_CODES = frozenset(
 
 class PublicSourceRuntimeError(ValueError):
     """Fixed local codes; never a transport exception or response body."""
+
+
+def _require_trusted_v2_demo_origin_profile(plan):
+    """Refuse new Demo capture until an account-bound origin can be enforced.
+
+    The v2 issuers currently label a Production WS socket as Demo. They also
+    have no trusted account-region pin or simulated-trading REST header. A
+    caller-supplied region/profile cannot repair that missing provenance.
+    Historical v2 journals remain replayable as DENY diagnostics.
+    """
+    if plan.get("environment") != "demo" or plan.get("ws_origin") == ws.PUBLIC_WS_URL:
+        raise PublicSourceRuntimeError("demo_public_origin_mismatch")
+    try:
+        route = demo_origin.reviewed_demo_public_route(plan.get("registration_region"))
+    except demo_origin.DemoPublicOriginError:
+        raise PublicSourceRuntimeError(
+            "trusted_demo_public_origin_profile_unavailable"
+        ) from None
+    if (
+        plan.get("rest_origin") != route.rest_origin
+        or plan.get("ws_origin") != route.ws_origin
+    ):
+        raise PublicSourceRuntimeError("demo_public_origin_mismatch")
+    # A reviewed route is only policy. No issuer currently binds it to an
+    # authenticated Demo account/credential session and a native v2 invocation.
+    raise PublicSourceRuntimeError("trusted_demo_public_origin_profile_unavailable")
 
 
 class _Source:
@@ -725,6 +752,9 @@ async def _capture_owned(scope, policy, root, *, stage, _version=1):
         or any(plan.get(key) != value for key, value in public_v2._plan_pins().items())
     ):
         raise PublicSourceRuntimeError("public_v2_owned_plan_required")
+    if _version == 2:
+        # This must precede journal creation, clock sampling and all network IO.
+        _require_trusted_v2_demo_origin_profile(plan)
     source = _Source(_ISSUER)
     state = {
         **claim,
