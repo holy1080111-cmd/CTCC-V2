@@ -26,7 +26,8 @@ if ($identity.schema -cne 'ctcc_offline_installer_identity_v1') {
 }
 $required = @(
     'Install-CTCC-HighVol-Momentum-V2.ps1', 'README.md', 'controller.py',
-    'patch.py', 'test_demo_high_volatility_v2.py', 'update_manifest.py'
+    'patch.py', 'test_demo_high_volatility_v2.py',
+    'test_installer_restart_disarm.py', 'update_manifest.py'
 )
 $seen = @{}
 foreach ($entry in $identity.files) {

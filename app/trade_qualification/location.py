@@ -451,6 +451,59 @@ def build_original_range_anchor_zone(
         return None, "range_anchor_basis_invalid"
 
 
+def _evaluate_location_numeric_tail(
+    *, entry, direction, zone, reference, bid, ask, mark_price, audit
+):
+    """Private arithmetic only; callers own validation and Context100."""
+    drift = abs(reference - entry) / entry * Decimal(10000)
+    audit["drift_bps"] = drift
+    anchor = zone.invalidation_price
+    if (
+        direction == "long"
+        and min(
+            entry,
+            bid,
+            ask,
+            mark_price,
+            zone.zone_low,
+        )
+        <= anchor
+    ) or (
+        direction == "short"
+        and max(
+            entry,
+            bid,
+            ask,
+            mark_price,
+            zone.zone_high,
+        )
+        >= anchor
+    ):
+        return (
+            "invalidation_crossed",
+            "Price or source-zone direction crosses the unchanged invalidation.",
+        )
+    if not zone.zone_low <= entry <= zone.zone_high:
+        return (
+            "candidate_outside_entry_zone",
+            "The original candidate is outside its source entry zone.",
+        )
+    if not zone.zone_low <= reference <= zone.zone_high:
+        return (
+            "reference_outside_entry_zone",
+            "Executable ask/bid is outside the source entry zone.",
+        )
+    if drift > zone.max_allowed_drift_bps:
+        return (
+            "entry_drift_exceeds_limit",
+            "Executable quote drift exceeds the recorded entry-zone limit.",
+        )
+    return (
+        "passed",
+        "Unchanged candidate and executable quote remain inside the valid source zone.",
+    )
+
+
 def evaluate_location(
     *,
     report_id: str,
@@ -564,51 +617,24 @@ def evaluate_location(
         return result("entry_zone_not_open", "The source entry zone has not opened.")
     if now >= checked_zone.expires_at:
         return result("entry_zone_expired", "The source entry zone has expired.")
+    measurements = {}
     try:
         with localcontext(Context(prec=100)):
-            drift = abs(reference - entry) / entry * Decimal(10000)
-            anchor = checked_zone.invalidation_price
-            if (
-                direction == "long"
-                and min(
-                    entry,
-                    checked_quote.bid,
-                    checked_quote.ask,
-                    checked_quote.mark_price,
-                    checked_zone.zone_low,
-                )
-                <= anchor
-            ) or (
-                direction == "short"
-                and max(
-                    entry,
-                    checked_quote.bid,
-                    checked_quote.ask,
-                    checked_quote.mark_price,
-                    checked_zone.zone_high,
-                )
-                >= anchor
-            ):
-                return result(
-                    "invalidation_crossed",
-                    "Price or source-zone direction crosses the unchanged invalidation.",
-                )
-            if not checked_zone.zone_low <= entry <= checked_zone.zone_high:
-                return result(
-                    "candidate_outside_entry_zone",
-                    "The original candidate is outside its source entry zone.",
-                )
-            if not checked_zone.zone_low <= reference <= checked_zone.zone_high:
-                return result(
-                    "reference_outside_entry_zone",
-                    "Executable ask/bid is outside the source entry zone.",
-                )
-            if drift > checked_zone.max_allowed_drift_bps:
-                return result(
-                    "entry_drift_exceeds_limit",
-                    "Executable quote drift exceeds the recorded entry-zone limit.",
-                )
+            code, reason = _evaluate_location_numeric_tail(
+                entry=entry,
+                direction=direction,
+                zone=checked_zone,
+                reference=reference,
+                bid=checked_quote.bid,
+                ask=checked_quote.ask,
+                mark_price=checked_quote.mark_price,
+                audit=measurements,
+            )
+            drift = measurements.get("drift_bps")
+            if code != "passed":
+                return result(code, reason)
     except _INVALID:
+        drift = measurements.get("drift_bps")
         return result(
             "candidate_entry_invalid", "Entry-location arithmetic failed validation."
         )

@@ -113,6 +113,62 @@ class EconomicsResult(QualificationModel):
         return self
 
 
+def _evaluate_economics_numeric_tail(
+    *, entry, direction, stop, target, bid, ask, funding_rate, checked_policy, evidence
+):
+    """Private arithmetic only; callers own validation and Context100."""
+    spread = (ask - bid) / entry * D(10000)
+    evidence["spread_bps"] = spread
+    if spread > checked_policy.maximum_spread_bps:
+        return (
+            "spread_above_limit",
+            "Observed spread exceeds the configured ceiling.",
+        )
+    adverse_rate = max(D(0), funding_rate * (1 if direction == "long" else -1))
+    funding = max(
+        checked_policy.funding_buffer_bps,
+        adverse_rate * D(10000) * checked_policy.funding_periods,
+    )
+    evidence["funding_bps"] = funding
+    if funding > checked_policy.maximum_funding_bps:
+        return (
+            "funding_above_limit",
+            "Projected adverse funding exceeds the total holding-period cap.",
+        )
+    non_spread_cost_bps = (
+        checked_policy.round_trip_fee_bps
+        + checked_policy.round_trip_slippage_bps
+        + funding
+    )
+    cost_bps = non_spread_cost_bps + spread
+    # Spread is already an exact money amount. Dividing by entry for
+    # audit bps and multiplying back can turn a repeating decimal's
+    # rounding residue into a whole extra cost quantum at CEILING.
+    # All operands are bounded finite decimal inputs; this direct
+    # money calculation is exact inside the 100-digit local context.
+    cost_per_base = (ask - bid + entry * non_spread_cost_bps / D(10000)).quantize(
+        D("1e-20"), rounding=ROUND_CEILING
+    )
+    risk, reward = abs(entry - stop), abs(target - entry)
+    gross = reward / risk
+    net = (reward - cost_per_base) / (risk + cost_per_base)
+    evidence.update(
+        total_cost_bps=cost_bps,
+        cost_per_base=cost_per_base,
+        gross_rr=gross,
+        net_rr=net,
+    )
+    if net < checked_policy.minimum_net_rr:
+        return (
+            "net_rr_below_minimum",
+            "Costs leave insufficient reward for the unchanged structural risk.",
+        )
+    return (
+        "passed",
+        "Explicit conservative costs pass the minimum net RR; other gates remain independent.",
+    )
+
+
 def evaluate_economics(
     *,
     report_id: str,
@@ -197,56 +253,19 @@ def evaluate_economics(
     evidence["quote_sha256"] = quote_fingerprint(checked_quote)
     try:
         with localcontext(Context(prec=100)):
-            spread = (checked_quote.ask - checked_quote.bid) / entry * D(10000)
-            evidence["spread_bps"] = spread
-            if spread > checked_policy.maximum_spread_bps:
-                return result(
-                    "spread_above_limit",
-                    "Observed spread exceeds the configured ceiling.",
-                )
-            adverse_rate = max(
-                D(0), checked_quote.funding_rate * (1 if direction == "long" else -1)
+            code, reason = _evaluate_economics_numeric_tail(
+                entry=entry,
+                direction=direction,
+                stop=stop,
+                target=target,
+                bid=checked_quote.bid,
+                ask=checked_quote.ask,
+                funding_rate=checked_quote.funding_rate,
+                checked_policy=checked_policy,
+                evidence=evidence,
             )
-            funding = max(
-                checked_policy.funding_buffer_bps,
-                adverse_rate * D(10000) * checked_policy.funding_periods,
-            )
-            evidence["funding_bps"] = funding
-            if funding > checked_policy.maximum_funding_bps:
-                return result(
-                    "funding_above_limit",
-                    "Projected adverse funding exceeds the total holding-period cap.",
-                )
-            non_spread_cost_bps = (
-                checked_policy.round_trip_fee_bps
-                + checked_policy.round_trip_slippage_bps
-                + funding
-            )
-            cost_bps = non_spread_cost_bps + spread
-            # Spread is already an exact money amount. Dividing by entry for
-            # audit bps and multiplying back can turn a repeating decimal's
-            # rounding residue into a whole extra cost quantum at CEILING.
-            # All operands are bounded finite decimal inputs; this direct
-            # money calculation is exact inside the 100-digit local context.
-            cost_per_base = (
-                checked_quote.ask
-                - checked_quote.bid
-                + entry * non_spread_cost_bps / D(10000)
-            ).quantize(D("1e-20"), rounding=ROUND_CEILING)
-            risk, reward = abs(entry - stop), abs(target - entry)
-            gross = reward / risk
-            net = (reward - cost_per_base) / (risk + cost_per_base)
-            evidence.update(
-                total_cost_bps=cost_bps,
-                cost_per_base=cost_per_base,
-                gross_rr=gross,
-                net_rr=net,
-            )
-            if net < checked_policy.minimum_net_rr:
-                return result(
-                    "net_rr_below_minimum",
-                    "Costs leave insufficient reward for the unchanged structural risk.",
-                )
+            if code != "passed":
+                return result(code, reason)
     except _INVALID:
         # Keep a valid envelope even if an arithmetic edge cannot fit contracts.
         evidence.pop("cost_per_base", None)

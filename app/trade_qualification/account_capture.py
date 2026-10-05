@@ -1,11 +1,13 @@
 """Offline Demo account receipts, not a trusted collector or portfolio snapshot.
 
 Only supplied bytes are parsed. No transport, credentials, settings, wall clock,
-database or execution imports exist. OKX primary documentation checked 2026-09-19:
+database or execution imports exist. OKX primary documentation checked 2026-10-05:
 https://www.okx.com/docs-v5/en/ and https://www.okx.com/docs-v5/trick_en/#pagination.
-Current exposure queries are unfiltered. Historical v2/v3 plans cover SWAP
-history; v4 requires six standard-product history chains and unfiltered recent
-fills. Instrument/leverage metadata remains scoped to SWAP.
+Current v5 exposure queries are unfiltered. Historical v2/v3 packets retain
+their original stream contract; immutable v4 packets retain the eight formerly
+requested algo filters for replay only. Current v5 uses four currently
+documented algo types and six standard-product history chains. Recent fills are
+unfiltered. Instrument/leverage metadata remains scoped to SWAP.
 An empty terminal page proves only the supplied query chain,
 not exchange retention, ingestion completeness, atomicity or account-wide risk.
 Source update/event times are preserved, never replaced by receipt time.
@@ -38,6 +40,9 @@ ALGO_ORDER_TYPES = (
     "oco",
     "trigger",
     "move_order_stop",
+)
+LEGACY_ALGO_ORDER_TYPES_V4 = (
+    *ALGO_ORDER_TYPES,
     "iceberg",
     "twap",
     "chase",
@@ -136,7 +141,8 @@ _ENDPOINTS = {
     "leverage_cross": "/api/v5/account/leverage-info",
     "leverage_isolated": "/api/v5/account/leverage-info",
     **{
-        f"algo_{kind}": "/api/v5/trade/orders-algo-pending" for kind in ALGO_ORDER_TYPES
+        f"algo_{kind}": "/api/v5/trade/orders-algo-pending"
+        for kind in LEGACY_ALGO_ORDER_TYPES_V4
     },
 }
 _CURSOR_FIELDS = {
@@ -168,7 +174,32 @@ V4_STREAMS = tuple(
         else (stream,)
     )
 )
-ALL_STREAMS = frozenset(STREAMS) | frozenset(V4_STREAMS)
+V5_BASE_STREAMS = tuple(
+    stream for stream in STREAMS if not stream.startswith("algo_")
+) + tuple(f"algo_{kind}" for kind in ALGO_ORDER_TYPES)
+V5_STREAMS = tuple(
+    item
+    for stream in V5_BASE_STREAMS
+    for item in (
+        tuple(f"{stream}_{kind.lower()}" for kind in INSTRUMENT_TYPES)
+        if stream
+        in {"fills_history", "orders_history_recent", "orders_history_archive"}
+        else (stream,)
+    )
+)
+V6_CURRENT_STREAMS = (
+    "config_before",
+    "account_position_risk",
+    "balance",
+    "positions",
+    "orders_pending",
+    *(f"algo_{kind}" for kind in ALGO_ORDER_TYPES),
+    "account_instruments",
+    "leverage_cross",
+    "leverage_isolated",
+    "config_after",
+)
+ALL_STREAMS = frozenset(STREAMS) | frozenset(V4_STREAMS) | frozenset(V5_STREAMS)
 _ENDPOINTS.update(
     {name: _ENDPOINTS[family] for name, (family, _) in _HISTORY_VARIANTS.items()}
 )
@@ -317,12 +348,15 @@ class RegionalDemoAccountCapturePlan(DemoAccountCapturePlan):
 
     Kept separate so historical v2 plans and packets retain their exact hashes.
     Registration must be established outside capture, never inferred from locale.
-    Official overview reviewed 2026-09-19; no redirects or alternate hosts.
+    Official regional overview reviewed 2026-10-05; no redirects or alternate hosts.
     """
 
-    registration_region: Literal["global", "us_au", "eea"]
+    registration_region: Literal["global", "us_au", "eea", "tr"]
     origin: Literal[
-        "https://openapi.okx.com", "https://us.okx.com", "https://eea.okx.com"
+        "https://openapi.okx.com",
+        "https://us.okx.com",
+        "https://eea.okx.com",
+        "https://tr.okx.com",
     ]
     registration_evidence_sha256: Digest
 
@@ -334,6 +368,7 @@ class RegionalDemoAccountCapturePlan(DemoAccountCapturePlan):
                 "global": "https://openapi.okx.com",
                 "us_au": "https://us.okx.com",
                 "eea": "https://eea.okx.com",
+                "tr": "https://tr.okx.com",
             }[self.registration_region]
         ):
             _fail("registration_origin_mismatch")
@@ -341,7 +376,37 @@ class RegionalDemoAccountCapturePlan(DemoAccountCapturePlan):
 
 
 class AllProductDemoAccountCapturePlan(RegionalDemoAccountCapturePlan):
-    """Versioned standard-product query scope, never whole-account authority."""
+    """Current documented standard-product scope, never account authority."""
+
+    contract_version: Literal["ctcc.demo_account_plan.v5"]
+    capture_scope: Literal["all_standard_products_v5_documented_algos"] = (
+        "all_standard_products_v5_documented_algos"
+    )
+
+    @model_validator(mode="after")
+    def inventory_budget(self):
+        if self.max_total_pages < len(V5_STREAMS):
+            _fail("plan_inventory_budget_invalid")
+        return self
+
+
+class CurrentDemoAccountCapturePlanV6(RegionalDemoAccountCapturePlan):
+    """Fresh current inventory only; historical cashflows need a separate join."""
+
+    contract_version: Literal["ctcc.demo_current_account_plan.v6"]
+    capture_scope: Literal["all_current_standard_products_v6"] = (
+        "all_current_standard_products_v6"
+    )
+
+    @model_validator(mode="after")
+    def inventory_budget(self):
+        if self.max_total_pages < len(V6_CURRENT_STREAMS):
+            _fail("plan_inventory_budget_invalid")
+        return self
+
+
+class HistoricalAllProductDemoAccountCapturePlanV4(RegionalDemoAccountCapturePlan):
+    """Read-only replay identity for immutable v4 packets; collection is disabled."""
 
     contract_version: Literal["ctcc.demo_account_plan.v4"]
     capture_scope: Literal["all_standard_products_v4_and_current_algos"] = (
@@ -356,7 +421,21 @@ class AllProductDemoAccountCapturePlan(RegionalDemoAccountCapturePlan):
 
 
 def streams_for_plan(plan):
-    return V4_STREAMS if type(plan) is AllProductDemoAccountCapturePlan else STREAMS
+    if type(plan) is CurrentDemoAccountCapturePlanV6:
+        return V6_CURRENT_STREAMS
+    if type(plan) is AllProductDemoAccountCapturePlan:
+        return V5_STREAMS
+    if type(plan) is HistoricalAllProductDemoAccountCapturePlanV4:
+        return V4_STREAMS
+    return STREAMS
+
+
+def is_all_product_plan(plan):
+    return type(plan) in {
+        CurrentDemoAccountCapturePlanV6,
+        AllProductDemoAccountCapturePlan,
+        HistoricalAllProductDemoAccountCapturePlanV4,
+    }
 
 
 class AccountRequest(_Record):
@@ -367,6 +446,7 @@ class AccountRequest(_Record):
         "https://openapi.okx.com",
         "https://us.okx.com",
         "https://eea.okx.com",
+        "https://tr.okx.com",
     ] = "https://www.okx.com"
     endpoint: Annotated[str, Field(max_length=96)]
     parameters: tuple[
@@ -439,15 +519,19 @@ class DemoAccountPacket(_Record):
         "ctcc.demo_account_capture.v2",
         "ctcc.demo_account_capture.v3",
         "ctcc.demo_account_capture.v4",
+        "ctcc.demo_account_capture.v5",
+        "ctcc.demo_current_account_capture.v6",
     ] = "ctcc.demo_account_capture.v2"
     plan: (
-        AllProductDemoAccountCapturePlan
+        CurrentDemoAccountCapturePlanV6
+        | AllProductDemoAccountCapturePlan
+        | HistoricalAllProductDemoAccountCapturePlanV4
         | RegionalDemoAccountCapturePlan
         | DemoAccountCapturePlan
     )
     plan_sha256: Digest
     observations: tuple[DemoAccountObservation, ...] = Field(
-        min_length=len(STREAMS), max_length=256
+        min_length=len(V6_CURRENT_STREAMS), max_length=256
     )
     barrier_completed_at: datetime
     completed_at: datetime
@@ -485,7 +569,9 @@ class FrozenAccountPacket:
 _MODELS = {
     DemoAccountCapturePlan,
     RegionalDemoAccountCapturePlan,
+    CurrentDemoAccountCapturePlanV6,
     AllProductDemoAccountCapturePlan,
+    HistoricalAllProductDemoAccountCapturePlanV4,
     AccountRequest,
     AccountNumber,
     AccountSourceTime,
@@ -599,8 +685,12 @@ def plan_sha256(plan: DemoAccountCapturePlan) -> str:
 
 
 def _copy_plan(plan):
+    if type(plan) is CurrentDemoAccountCapturePlanV6:
+        return _copy(plan, CurrentDemoAccountCapturePlanV6)
     if type(plan) is AllProductDemoAccountCapturePlan:
         return _copy(plan, AllProductDemoAccountCapturePlan)
+    if type(plan) is HistoricalAllProductDemoAccountCapturePlanV4:
+        return _copy(plan, HistoricalAllProductDemoAccountCapturePlanV4)
     if type(plan) is RegionalDemoAccountCapturePlan:
         return _copy(plan, RegionalDemoAccountCapturePlan)
     return _copy(plan, DemoAccountCapturePlan)
@@ -642,9 +732,7 @@ def account_request(
         parameters["instType"] = _HISTORY_VARIANTS[stream][1]
     elif stream in _FILL_STREAMS | _ORDER_HISTORY_STREAMS | {
         "account_instruments"
-    } and not (
-        type(plan) is AllProductDemoAccountCapturePlan and stream == "fills_recent"
-    ):
+    } and not (is_all_product_plan(plan) and stream == "fills_recent"):
         parameters["instType"] = "SWAP"
     if stream in _HISTORY_STREAMS:
         parameters["begin"] = _milliseconds(plan.history_start)
@@ -657,7 +745,12 @@ def account_request(
         origin=(
             plan.origin
             if type(plan)
-            in {RegionalDemoAccountCapturePlan, AllProductDemoAccountCapturePlan}
+            in {
+                CurrentDemoAccountCapturePlanV6,
+                RegionalDemoAccountCapturePlan,
+                AllProductDemoAccountCapturePlan,
+                HistoricalAllProductDemoAccountCapturePlanV4,
+            }
             else "https://www.okx.com"
         ),
         endpoint=_ENDPOINTS[stream],
@@ -954,7 +1047,7 @@ def _row_record(row, stream, plan, received):
         if stream not in _BILL_STREAMS:
             instrument = _required_text(row, "instId")
             kind = _required_text(row, "instType")
-            if type(plan) is AllProductDemoAccountCapturePlan:
+            if is_all_product_plan(plan):
                 if kind not in INSTRUMENT_TYPES:
                     _fail("source_instrument_type_invalid")
                 if stream == "positions" and kind == "SPOT":
@@ -1103,7 +1196,7 @@ def _row_record(row, stream, plan, received):
         _fail("source_lifecycle_reversed")
     amounts = {item.path: item.value for item in numbers}
     spot_market_order = (
-        type(plan) is AllProductDemoAccountCapturePlan
+        is_all_product_plan(plan)
         and row.get("instType") == "SPOT"
         and row.get("ordType") == "market"
         and stream in {"orders_pending"} | _ORDER_HISTORY_STREAMS
@@ -1362,9 +1455,11 @@ def verify_demo_account_records(
     if row_count > plan.max_total_rows:
         _fail("inventory_rows_limit")
     gaps = set(_BASE_GAPS)
-    if type(plan) is AllProductDemoAccountCapturePlan:
+    if is_all_product_plan(plan):
         gaps.remove("non_swap_history_not_requested")
         gaps.add("all_product_metadata_coverage_unverified")
+    if type(plan) is CurrentDemoAccountCapturePlanV6:
+        gaps.add("separate_history_source_join_required")
     if any(row.missing_fields for item in verified for row in item.rows):
         gaps.add("source_fields_missing")
     if any(
@@ -1375,8 +1470,12 @@ def verify_demo_account_records(
         gaps.add("source_clock_coverage_incomplete")
     fields = {
         "schema_version": (
-            "ctcc.demo_account_capture.v4"
+            "ctcc.demo_current_account_capture.v6"
+            if type(plan) is CurrentDemoAccountCapturePlanV6
+            else "ctcc.demo_account_capture.v5"
             if type(plan) is AllProductDemoAccountCapturePlan
+            else "ctcc.demo_account_capture.v4"
+            if type(plan) is HistoricalAllProductDemoAccountCapturePlanV4
             else "ctcc.demo_account_capture.v3"
             if type(plan) is RegionalDemoAccountCapturePlan
             else "ctcc.demo_account_capture.v2"

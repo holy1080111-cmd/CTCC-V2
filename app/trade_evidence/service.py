@@ -24,9 +24,11 @@ from app.strategies.structural_protection import (
     RangeStructuralProtectionSelection,
     ReversalStructuralProtectionSelection,
     StructuralProtectionSelection,
+    SweepStructuralProtectionSelection,
     select_range_structural_protection,
     select_reversal_structural_protection,
     select_structural_protection,
+    select_sweep_structural_protection,
 )
 from app.structure.engine import analyze_structure, find_swings
 from app.trade_evidence.models import (
@@ -44,6 +46,7 @@ from app.trade_qualification.history_prefix import (
     HistoryEntryQualificationResultV3,
     HistoryEntryQualificationResultV4,
     HistoryEntryQualificationResultV5,
+    HistoryEntryQualificationResultV6,
 )
 from app.trade_qualification.location import (
     ExecutableQuote,
@@ -293,8 +296,11 @@ def _protection(protection, event, market, analysis, qualification):
         return None, None
     range_profile = type(qualification) is HistoryEntryQualificationResultV5
     reversal = type(qualification) is HistoryEntryQualificationResultV3
+    sweep = type(qualification) is HistoryEntryQualificationResultV6
     expected = (
-        RangeStructuralProtectionSelection
+        SweepStructuralProtectionSelection
+        if sweep
+        else RangeStructuralProtectionSelection
         if range_profile
         else ReversalStructuralProtectionSelection
         if reversal
@@ -309,6 +315,15 @@ def _protection(protection, event, market, analysis, qualification):
         != qualification.history_admission_sha256
     ):
         raise EvidenceError("reversal_protection_history_mismatch")
+    if sweep and (
+        protection.sweep_permission_sha256 != qualification.history_admission_sha256
+        or protection.sweep_permission_policy_sha256
+        != qualification.sweep_permission_policy_sha256
+        or protection.selection_policy_sha256
+        != qualification.sweep_selection_policy_sha256
+        or protection.original_extreme_anchor_id is None
+    ):
+        raise EvidenceError("sweep_protection_history_mismatch")
     policy = dict(protection.policy_inputs)
     required = {
         "tick_size",
@@ -329,7 +344,9 @@ def _protection(protection, event, market, analysis, qualification):
     ):
         raise EvidenceError("structural_observation_invalid")
     selector = (
-        select_range_structural_protection
+        select_sweep_structural_protection
+        if sweep
+        else select_range_structural_protection
         if range_profile
         else select_reversal_structural_protection
         if reversal
@@ -382,7 +399,9 @@ def prepare_evidence(
         now = require_aware(prepared_at)
         q = _copy(
             qualification,
-            HistoryEntryQualificationResultV5
+            HistoryEntryQualificationResultV6
+            if type(qualification) is HistoryEntryQualificationResultV6
+            else HistoryEntryQualificationResultV5
             if type(qualification) is HistoryEntryQualificationResultV5
             else HistoryEntryQualificationResultV4
             if type(qualification) is HistoryEntryQualificationResultV4
@@ -531,7 +550,9 @@ def validate_snapshot(snapshot: EvidenceSnapshot) -> EvidenceSnapshot:
                 if key != "spread"
             }
             selector = (
-                select_range_structural_protection
+                select_sweep_structural_protection
+                if type(value.qualification) is HistoryEntryQualificationResultV6
+                else select_range_structural_protection
                 if type(value.qualification) is HistoryEntryQualificationResultV5
                 else select_reversal_structural_protection
                 if type(value.qualification) is HistoryEntryQualificationResultV3

@@ -19,11 +19,12 @@ services:
       wss_proxy: ""
       NO_PROXY: "*"
       no_proxy: "*"
+      DATABASE_URL: "postgresql+asyncpg://ctcc:${CTCC_GATE3_DB_PASSWORD:?Gate 3 runtime database secret required}@postgres:5432/ctcc"
   postgres:
     restart: "no"
     environment:
       POSTGRES_USER: ctcc
-      POSTGRES_PASSWORD: ctcc_dev_password
+      POSTGRES_PASSWORD: ${CTCC_GATE3_DB_PASSWORD:?Gate 3 runtime database secret required}
       POSTGRES_DB: ctcc
   redis:
     restart: "no"

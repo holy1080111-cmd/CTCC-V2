@@ -415,7 +415,7 @@ def _coverage(packet, raw_sequences):
     intervals = {}
     products = (
         capture.INSTRUMENT_TYPES
-        if type(packet.plan) is capture.AllProductDemoAccountCapturePlan
+        if capture.is_all_product_plan(packet.plan)
         else ("SWAP",)
     )
     for stream, pages in groups.items():

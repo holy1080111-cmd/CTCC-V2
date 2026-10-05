@@ -74,6 +74,7 @@ async def _collect(
     *,
     _journal_repository=None,
     _journal_slot=None,
+    _native_observer=None,
 ):
     if type(session) is not runtime.ControlledDemoAccountSession:
         raise runtime.AccountRuntimeError("account_runtime_invalid")
@@ -119,6 +120,8 @@ async def _collect(
     }
     if journal is not None:
         arguments["_journal"] = journal
+    if _native_observer is not None:
+        arguments["_native_observer"] = _native_observer
     owned = await collector._collect_owned_demo_account_records(**arguments)
     if type(owned) is not collector._OwnedAccountCapture:
         raise runtime.AccountRuntimeError("owned_capture_required")
@@ -243,7 +246,13 @@ async def collect_bootstrap_recorded(
 
 
 async def _collect_recorded(
-    session, *, repository, journal_repository, clock, barrier_completed_at
+    session,
+    *,
+    repository,
+    journal_repository,
+    clock,
+    barrier_completed_at,
+    _native_observer=None,
 ):
     """Internal owner survives finalization; legacy public result stays unchanged."""
     from app.database.repositories.account_capture_journal import (
@@ -262,6 +271,11 @@ async def _collect_recorded(
             barrier_completed_at,
             _journal_repository=journal_repository,
             _journal_slot=journals,
+            **(
+                {}
+                if _native_observer is None
+                else {"_native_observer": _native_observer}
+            ),
         )
     except asyncio.CancelledError:
         cancelled = True
@@ -271,9 +285,16 @@ async def _collect_recorded(
     receipt = None
     if journals:
         try:
-            receipt = await bounded_finalization(
-                journals[0].finish(result=result, error=failure)
-            )
+            finalization = journals[0].finish(result=result, error=failure)
+            if _native_observer is not None:
+                from app.trade_qualification.account_native_clock import (
+                    _finalization_awaitable,
+                )
+
+                finalization = _finalization_awaitable(
+                    _native_observer, journals[0], finalization
+                )
+            receipt = await bounded_finalization(finalization)
         except asyncio.CancelledError:
             cancelled = True
         except Exception:  # noqa: BLE001 -- durable events survive failed final receipt

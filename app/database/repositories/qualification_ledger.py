@@ -5,11 +5,14 @@ Successful persistence is not an authenticated account snapshot or order permit.
 """
 
 import hashlib
+import json
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from decimal import Decimal
 from fractions import Fraction
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import defer
 
@@ -18,6 +21,13 @@ from app.database.models.qualification_ledger import (
     QualificationReservation,
     QualificationReservationTransition,
 )
+from app.database.repositories.demo_control import DemoControlRepository
+from app.trade_qualification import control_bound_ledger as bound
+from app.trade_qualification.demo_control import ControlScope
+from app.trade_qualification.event_observation import (
+    VERSION as EVENT_OBSERVATION_VERSION,
+)
+from app.trade_qualification.event_observation import LedgerEventObservation
 from app.trade_qualification.models import require_aware
 from app.trade_qualification.reservations import (
     AccountLedgerClaims,
@@ -26,6 +36,7 @@ from app.trade_qualification.reservations import (
     QualificationLedgerError,
     ReservationReceipt,
     ReservationRequestV2,
+    ReservationRequestV3,
     RiskCoverage,
     canonical,
     checked,
@@ -45,6 +56,11 @@ from app.trade_qualification.submission_intent import (
     build_submission_intent,
     replay_submission_intent,
 )
+
+
+def _canonical_json_sha256(value: str) -> str:
+    """Hash canonical JSON already emitted or verified by the caller."""
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -77,6 +93,43 @@ class LedgerBootstrapCheckpoint:
     @property
     def execution_authority(self):
         return False
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class PortfolioLocalCheckpoint:
+    """Read-only all-currency/local-storage observation; never a source owner."""
+
+    document_json: bytes
+    observed_at: datetime
+    received_at: datetime
+
+    @property
+    def state_sha256(self):
+        return hashlib.sha256(self.document_json).hexdigest()
+
+    @property
+    def known_flat(self):
+        return not json.loads(self.document_json)["blocking_reasons"]
+
+
+def _portfolio_checkpoint_wire(value, depth=0):
+    if depth > 16:
+        raise QualificationLedgerError("portfolio_checkpoint_depth_bound")
+    kind = type(value)
+    if kind is dict and len(value) <= 4096 and all(type(key) is str for key in value):
+        return {
+            key: _portfolio_checkpoint_wire(item, depth + 1)
+            for key, item in value.items()
+        }
+    if kind in (tuple, list) and len(value) <= 4096:
+        return [_portfolio_checkpoint_wire(item, depth + 1) for item in value]
+    if kind is datetime:
+        return require_aware(value).isoformat()
+    if kind is Decimal and value.is_finite():
+        return str(value)
+    if value is None or kind in (str, int, bool):
+        return value
+    raise QualificationLedgerError("portfolio_checkpoint_scalar_invalid")
 
 
 class QualificationLedgerRepository:
@@ -292,6 +345,103 @@ class QualificationLedgerRepository:
             row = await self._locked(session, scope)
             return await self._state(session, scope, row)
 
+    @staticmethod
+    async def _event_rows_locked(session, scope, event_key):
+        """Caller holds the UID lock; only this key, every currency/state.
+
+        Two rows are enough to reject a legacy cross-currency collision. Large
+        request payloads and the account's lifetime event set are not loaded.
+        """
+        reservation_id(scope, event_key)  # Exact scope/key validation only.
+        return (
+            await session.scalars(
+                select(QualificationReservation)
+                .options(defer(QualificationReservation.request_json))
+                .where(
+                    QualificationReservation.environment == scope.environment,
+                    QualificationReservation.account_id == scope.account_id,
+                    QualificationReservation.original_event_key == event_key,
+                )
+                .order_by(
+                    QualificationReservation.settlement_currency,
+                    QualificationReservation.reservation_id,
+                )
+                .limit(2)
+            )
+        ).all()
+
+    async def read_event_observation(self, scope, event_key):
+        """Measured exact UID/event lookup, retaining terminal tombstones.
+
+        Read-only diagnostic, never an absence permit or issuer input. A bound
+        reserve independently repeats the same query inside its transaction.
+        Missing scopes/conflicts are errors, never an invented empty result.
+        """
+        scope = checked_bootstrap(scope, LedgerScope)
+        reservation_id(scope, event_key)
+        monotonic_started = time.monotonic_ns()
+        started = self.clock()
+        if type(started) is not datetime:
+            raise QualificationLedgerError("exact_ledger_clock_required")
+        started = require_aware(started)
+        async with self.session_factory() as session, session.begin():
+            row = await self._locked(session, scope)
+            observed = self._now(row)
+            records = await self._event_rows_locked(session, scope, event_key)
+            if len(records) > 1:
+                raise QualificationLedgerError("ledger_uid_event_scope_collision")
+            matched = None
+            if records:
+                record = records[0]
+                if (
+                    record.environment,
+                    record.account_id,
+                    record.original_event_key,
+                ) != (scope.environment, scope.account_id, event_key):
+                    raise QualificationLedgerError("ledger_event_row_scope_invalid")
+                actual_scope = LedgerScope(
+                    environment=record.environment,
+                    account_id=record.account_id,
+                    settlement_currency=record.settlement_currency,
+                )
+                actual_row = (
+                    row
+                    if actual_scope == scope
+                    else await self._locked(session, actual_scope)
+                )
+                if (
+                    actual_row.account_revision < 1
+                    or actual_row.ledger_revision < actual_row.account_revision
+                    or require_aware(actual_row.updated_at) > observed
+                ):
+                    raise QualificationLedgerError("ledger_event_actual_scope_invalid")
+                matched = self._receipt(record, actual_row)
+            received = self._now(row)
+            monotonic_received = time.monotonic_ns()
+            try:
+                result = LedgerEventObservation.model_validate(
+                    {
+                        "contract_version": EVENT_OBSERVATION_VERSION,
+                        "scope": _plain(scope),
+                        "original_event_key": event_key,
+                        "account_revision": row.account_revision,
+                        "ledger_revision": row.ledger_revision,
+                        "matched": None if matched is None else _plain(matched),
+                        "request_started_at": started,
+                        "observed_at": observed,
+                        "received_at": received,
+                        "monotonic_started_ns": monotonic_started,
+                        "monotonic_received_ns": monotonic_received,
+                    },
+                    strict=True,
+                )
+                _ = result.canonical_json  # Enforce the bounded detached schema.
+            except (ValueError, TypeError):
+                raise QualificationLedgerError(
+                    "ledger_event_observation_invalid"
+                ) from None
+        return result
+
     async def read_capture_checkpoint(self, scope):
         """Read DB-owned revision and holds, with actual bounded receipt times.
 
@@ -363,6 +513,243 @@ class QualificationLedgerRepository:
             row = await self._locked(session, scope)
             return await self._bootstrap_checkpoint(session, scope, row)
 
+    async def read_portfolio_checkpoint(self, scope):
+        """B5: observe every currency and legacy unknown under the UID lock.
+
+        Legacy tables have no UID and their old writers do not share this lock.
+        Short SHARE table locks make this individual read consistent; before/
+        after hashes detect observed changes, not exchange-wide atomicity or
+        future writer exclusion. Missing legacy initialization remains unknown.
+        """
+        from app.database.models.demo_automation import DemoAutomationState
+        from app.database.models.okx_demo import (
+            OkxDemoAlgoOrderState,
+            OkxDemoOrderState,
+            OkxDemoPositionState,
+            OkxDemoSyncCheckpoint,
+        )
+
+        scope = checked_bootstrap(scope, LedgerScope)
+        async with self.session_factory() as session, session.begin():
+            if session.get_bind().dialect.name != "postgresql":
+                raise QualificationLedgerError(
+                    "portfolio_checkpoint_postgresql_required"
+                )
+            selected = await self._locked(session, scope)
+            started = self._now(selected)
+            rows = (
+                await session.scalars(
+                    select(QualificationAccountScope)
+                    .where(
+                        QualificationAccountScope.environment == scope.environment,
+                        QualificationAccountScope.account_id == scope.account_id,
+                    )
+                    .order_by(QualificationAccountScope.settlement_currency)
+                    .limit(129)
+                    .with_for_update()
+                )
+            ).all()
+            if not rows or len(rows) > 128:
+                raise QualificationLedgerError("portfolio_checkpoint_scope_bound")
+            states = []
+            for row in rows:
+                row_scope = LedgerScope(
+                    environment=row.environment,
+                    account_id=row.account_id,
+                    settlement_currency=row.settlement_currency,
+                )
+                point = await self._bootstrap_checkpoint(session, row_scope, row)
+                states.append(_plain(point.state))
+            # Every durable consumed intent remains unresolved until its own
+            # reservation explicitly transitions to reconciled_flat. No TTL.
+            intents = (
+                await session.execute(
+                    select(
+                        QualificationReservation.reservation_id,
+                        QualificationReservation.settlement_currency,
+                        QualificationReservation.state,
+                        QualificationReservationTransition.state_revision,
+                        QualificationReservationTransition.reason_code,
+                    )
+                    .join(
+                        QualificationReservationTransition,
+                        QualificationReservationTransition.reservation_id
+                        == QualificationReservation.reservation_id,
+                    )
+                    .where(
+                        QualificationReservation.environment == scope.environment,
+                        QualificationReservation.account_id == scope.account_id,
+                        QualificationReservation.state != "reconciled_flat",
+                        QualificationReservationTransition.to_state == "consumed",
+                    )
+                    .order_by(
+                        QualificationReservation.reservation_id,
+                        QualificationReservationTransition.state_revision,
+                    )
+                    .limit(2049)
+                )
+            ).all()
+            if len(intents) > 2048:
+                raise QualificationLedgerError("portfolio_checkpoint_intent_bound")
+            await session.execute(
+                text(
+                    "LOCK TABLE demo_automation_state, okx_demo_sync_checkpoints, "
+                    "okx_demo_order_state, okx_demo_position_state, okx_demo_algo_order_state IN SHARE MODE"
+                )
+            )
+            automation_rows = (
+                await session.scalars(select(DemoAutomationState).limit(2))
+            ).all()
+            sync_rows = (
+                await session.scalars(select(OkxDemoSyncCheckpoint).limit(2))
+            ).all()
+            blocked = set()
+            legacy = {"automation": None, "sync_checkpoint": None}
+            if len(automation_rows) != 1 or automation_rows[0].id != 1:
+                blocked.add("legacy_automation_initialization_unknown")
+            else:
+                row = automation_rows[0]
+                legacy["automation"] = {
+                    name: getattr(row, name)
+                    for name in (
+                        "armed",
+                        "emergency_stop",
+                        "locked",
+                        "lock_reasons",
+                        "active_instrument_id",
+                        "active_client_order_id",
+                        "active_start_equity",
+                        "active_started_at",
+                        "active_trades",
+                        "last_started_at",
+                        "last_completed_at",
+                        "last_error",
+                        "updated_at",
+                    )
+                }
+                if (
+                    type(row.active_trades) not in (dict, list)
+                    or len(row.active_trades) != 0
+                    or any(
+                        getattr(row, name) is not None
+                        for name in (
+                            "active_instrument_id",
+                            "active_client_order_id",
+                            "active_start_equity",
+                            "active_started_at",
+                        )
+                    )
+                ):
+                    blocked.add("legacy_tracked_exposure_unattributed")
+                if (
+                    row.armed is not False
+                    or row.locked is not False
+                    or type(row.lock_reasons) is not list
+                    or row.lock_reasons
+                    or row.last_error not in (None, "")
+                    or (
+                        row.last_started_at is not None
+                        and (
+                            row.last_completed_at is None
+                            or row.last_started_at > row.last_completed_at
+                        )
+                    )
+                ):
+                    blocked.add("legacy_inflight_or_uncertain")
+            if len(sync_rows) != 1 or sync_rows[0].id != 1:
+                blocked.add("legacy_reconciliation_initialization_unknown")
+            else:
+                row = sync_rows[0]
+                legacy["sync_checkpoint"] = {
+                    name: getattr(row, name)
+                    for name in (
+                        "status",
+                        "order_count",
+                        "position_count",
+                        "algo_order_count",
+                        "last_error",
+                        "reconciled_at",
+                        "updated_at",
+                    )
+                }
+                if (
+                    row.status != "reconciled"
+                    or row.reconciled_at is None
+                    or row.last_error not in (None, "")
+                    or any(
+                        type(getattr(row, name)) is not int or getattr(row, name) != 0
+                        for name in (
+                            "order_count",
+                            "position_count",
+                            "algo_order_count",
+                        )
+                    )
+                ):
+                    blocked.add("legacy_reconciliation_incomplete_or_exposed")
+            for name, model, key, condition in (
+                (
+                    "positions",
+                    OkxDemoPositionState,
+                    OkxDemoPositionState.position_key,
+                    None,
+                ),
+                (
+                    "orders",
+                    OkxDemoOrderState,
+                    OkxDemoOrderState.order_id,
+                    OkxDemoOrderState.state.not_in(
+                        ("filled", "canceled", "mmp_canceled")
+                    ),
+                ),
+                (
+                    "algos",
+                    OkxDemoAlgoOrderState,
+                    OkxDemoAlgoOrderState.algo_order_id,
+                    OkxDemoAlgoOrderState.state.not_in(
+                        ("canceled", "order_failed", "effective")
+                    ),
+                ),
+            ):
+                statement = select(key).select_from(model).order_by(key).limit(2049)
+                if condition is not None:
+                    statement = statement.where(condition)
+                identities = (await session.scalars(statement)).all()
+                if len(identities) > 2048:
+                    raise QualificationLedgerError("portfolio_checkpoint_legacy_bound")
+                legacy[name] = list(identities)
+                if identities:
+                    blocked.add("legacy_unattributed_active_" + name)
+            if any(state["active"] for state in states):
+                blocked.add("all_currency_local_holds_unresolved")
+            if intents:
+                blocked.add("all_currency_local_intents_unresolved")
+            payload = json.dumps(
+                _portfolio_checkpoint_wire(
+                    {
+                        "schema_version": "ctcc.portfolio_local_checkpoint.v1",
+                        "environment": scope.environment,
+                        "account_id": scope.account_id,
+                        "requested_settlement_currency": scope.settlement_currency,
+                        "currency_states": states,
+                        "unresolved_intents": [list(item) for item in intents],
+                        "legacy": legacy,
+                        "blocking_reasons": sorted(blocked),
+                        "future_writer_exclusion": False,
+                        "execution_authority": False,
+                    }
+                ),
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+                allow_nan=False,
+            ).encode()
+            if len(payload) > 262144:
+                raise QualificationLedgerError("portfolio_checkpoint_byte_bound")
+            received = self._now(selected)
+            if received < started:
+                raise QualificationLedgerError("portfolio_checkpoint_clock_reversed")
+            return PortfolioLocalCheckpoint(payload, started, received)
+
     @staticmethod
     def _coverage_caps(request, claims, active, coverage):
         # Portfolio computations compare exact unrounded operands. Upward
@@ -424,9 +811,44 @@ class QualificationLedgerRepository:
             raise QualificationLedgerError("ledger_rounded_coverage_exceeds_caps")
 
     async def reserve(self, request):
+        return await self._reserve(request)
+
+    async def reserve_control_bound(self, request, *, control_expectation):
+        """Record current durable control with the hold; still DENY admission."""
+        return await self._reserve(
+            request, control_expectation=bound.freeze_expectation(control_expectation)
+        )
+
+    async def _control_locked(self, session, scope, expectation, *, request=None):
+        state, event_sha = await DemoControlRepository.read_in_transaction(
+            session, ControlScope(scope.environment, scope.account_id)
+        )
+        # Reentrant advisory lock in the SAME transaction; no nested session.
+        # The shared order is UID -> control row -> qualification scope row.
+        row = await self._locked(session, scope)
+        bound.guard_current_control(
+            state, event_sha, expectation, scope, now=self._now(row), request=request
+        )
+        return row, state, event_sha
+
+    async def _reserve(self, request, *, control_expectation=None):
         request = checked_reservation_request(request)
+        # Request models are frozen. Serialize and hash once before acquiring
+        # the account-scoped database lock; canonical() already validates the
+        # exact request contract and its size.
+        request_json = canonical(request)
+        request_sha256 = _canonical_json_sha256(request_json)
         async with self.session_factory() as session, session.begin():
-            row = await self._locked(session, request.scope)
+            if control_expectation is None:
+                row = await self._locked(session, request.scope)
+            else:
+                row, control_state, control_event = await self._control_locked(
+                    session, request.scope, control_expectation, request=request
+                )
+                if await self._event_rows_locked(
+                    session, request.scope, request.origin.original_event_key
+                ):
+                    raise QualificationLedgerError("ledger_uid_event_already_recorded")
             await self._require_compatible_currency(session, request.scope)
             self._revision(row.ledger_revision, request.expected_ledger_revision)
             self._revision(row.account_revision, request.expected_account_revision)
@@ -451,8 +873,8 @@ class QualificationLedgerRepository:
                 instrument_id=result.instrument_id,
                 direction=result.direction,
                 correlation_group=request.risk_inputs.instrument.correlation_group,
-                request_json=canonical(request),
-                request_sha256=digest(request),
+                request_json=request_json,
+                request_sha256=request_sha256,
                 coverage_json=canonical(coverage),
                 risk_amount=coverage.risk_amount,
                 margin_amount=coverage.margin_amount,
@@ -467,10 +889,37 @@ class QualificationLedgerRepository:
             row.updated_at = now
             session.add(record)
             await session.flush()
-            self._journal(session, record, None, "risk_reserved", now)
             receipt = self._receipt(record, row)
+            evidence = (
+                None
+                if control_expectation is None
+                else bound.build_reserved_evidence(
+                    request,
+                    receipt,
+                    control_state,
+                    control_event,
+                    checked_at=now,
+                )
+            )
+            self._journal(
+                session,
+                record,
+                None,
+                "risk_reserved" if evidence is None else bound.RESERVED_REASON,
+                now,
+                evidence,
+            )
             await session.flush()
             self._late_guard(row, request, claims)
+            if control_expectation is not None:
+                bound.guard_current_control(
+                    control_state,
+                    control_event,
+                    control_expectation,
+                    request.scope,
+                    now=self._now(row),
+                    request=request,
+                )
             return receipt
 
     @staticmethod
@@ -497,12 +946,18 @@ class QualificationLedgerRepository:
         claims=None,
         record_intent=False,
         execution_binding: SubmissionExecutionBinding | None = None,
+        control_expectation=None,
     ):
         scope = checked(scope, LedgerScope)
         if claims is not None:
             claims = checked(claims, AccountLedgerClaims)
         async with self.session_factory() as session, session.begin():
-            row = await self._locked(session, scope)
+            if control_expectation is None:
+                row = await self._locked(session, scope)
+            else:
+                row, control_state, control_event = await self._control_locked(
+                    session, scope, control_expectation
+                )
             self._revision(row.ledger_revision, expected_revision)
             now = self._now(row)
             record = await session.get(
@@ -518,13 +973,73 @@ class QualificationLedgerRepository:
             }
             if previous not in allowed[target]:
                 raise QualificationLedgerError("ledger_transition_denied")
-            request = decode_reservation_request(record.request_json)
-            if digest(request) != record.request_sha256:
+            request_json = record.request_json
+            request = decode_reservation_request(request_json)
+            if _canonical_json_sha256(request_json) != record.request_sha256:
                 raise QualificationLedgerError("ledger_request_digest_mismatch")
             if target == "consumed":
+                reserved_entry = await session.scalar(
+                    select(QualificationReservationTransition).filter_by(
+                        reservation_id=record.reservation_id, state_revision=1
+                    )
+                )
+                is_bound = reserved_entry is not None and (
+                    reserved_entry.reason_code == bound.RESERVED_REASON
+                    or reserved_entry.evidence_json is not None
+                )
+                if control_expectation is None and is_bound:
+                    raise QualificationLedgerError("bound_control_consume_required")
+                if control_expectation is not None:
+                    if (
+                        not is_bound
+                        or reserved_entry.reason_code != bound.RESERVED_REASON
+                        or reserved_entry.from_state is not None
+                        or reserved_entry.to_state != "reserved"
+                        or reserved_entry.occurred_at != record.created_at
+                        or not record_intent
+                        or execution_binding is None
+                    ):
+                        raise QualificationLedgerError(
+                            "bound_control_reservation_required"
+                        )
+                    reserved_receipt, reserved_control, reserved_event = (
+                        bound.replay_reserved_evidence(
+                            reserved_entry.evidence_json, request
+                        )
+                    )
+                    current_receipt = self._receipt(record, row)
+                    if (
+                        any(
+                            getattr(reserved_receipt, name)
+                            != getattr(current_receipt, name)
+                            for name in ReservationReceipt.model_fields
+                            if name != "ledger_revision"
+                        )
+                        or reserved_receipt.ledger_revision
+                        > current_receipt.ledger_revision
+                    ):
+                        raise QualificationLedgerError(
+                            "bound_control_reservation_changed"
+                        )
+                    bound.guard_current_control(
+                        reserved_control,
+                        reserved_event,
+                        control_expectation,
+                        scope,
+                        now=now,
+                        request=request,
+                    )
+                    bound.guard_current_control(
+                        control_state,
+                        control_event,
+                        control_expectation,
+                        scope,
+                        now=now,
+                        request=request,
+                    )
                 await self._require_compatible_currency(session, scope)
                 current = self._claims(row)
-                if type(request) is ReservationRequestV2:
+                if type(request) in (ReservationRequestV2, ReservationRequestV3):
                     self._revision(
                         row.account_revision, request.expected_account_revision
                     )
@@ -590,11 +1105,23 @@ class QualificationLedgerRepository:
                 if record_intent
                 else None
             )
+            if control_expectation is not None:
+                intent = bound.build_control_bound_intent(
+                    request,
+                    intent,
+                    reserved_entry.evidence_json,
+                    control_state,
+                    control_event,
+                )
             self._journal(
                 session,
                 record,
                 previous,
-                "consumed_with_submit_intent" if record_intent else target,
+                bound.CONSUMED_REASON
+                if control_expectation is not None
+                else "consumed_with_submit_intent"
+                if record_intent
+                else target,
                 now,
                 intent.canonical_json
                 if intent is not None
@@ -605,6 +1132,15 @@ class QualificationLedgerRepository:
             await session.flush()
             if target == "consumed":
                 self._late_guard(row, fresh_request, current)
+                if control_expectation is not None:
+                    bound.guard_current_control(
+                        control_state,
+                        control_event,
+                        control_expectation,
+                        scope,
+                        now=self._now(row),
+                        request=request,
+                    )
             return intent if intent is not None else receipt
 
     @staticmethod
@@ -679,6 +1215,48 @@ class QualificationLedgerRepository:
 
     async def read_submission_intent(self, scope, event_key, *, expected_sha256):
         """Historical committed readback only, never crash-recovery dispatch."""
+        return await self._read_submission_intent(
+            scope, event_key, expected_sha256=expected_sha256
+        )
+
+    async def consume_with_control_bound_submission_intent(
+        self,
+        scope,
+        event_key,
+        *,
+        expected_revision,
+        control_expectation,
+        execution_binding,
+    ):
+        """Atomic controlled consume plus separate-session replay; still DENY.
+
+        Unknown commit/readback outcomes retain the consumed reservation and
+        intent. No retry, issuer, source/config mapper or order IO exists here.
+        """
+        expectation = bound.freeze_expectation(control_expectation)
+        intent = await self._transition(
+            scope,
+            event_key,
+            expected_revision=expected_revision,
+            target="consumed",
+            record_intent=True,
+            execution_binding=execution_binding,
+            control_expectation=expectation,
+        )
+        return await self.read_control_bound_submission_intent(
+            scope, event_key, expected_sha256=intent.sha256
+        )
+
+    async def read_control_bound_submission_intent(
+        self, scope, event_key, *, expected_sha256
+    ):
+        return await self._read_submission_intent(
+            scope, event_key, expected_sha256=expected_sha256, control_bound=True
+        )
+
+    async def _read_submission_intent(
+        self, scope, event_key, *, expected_sha256, control_bound=False
+    ):
         scope = checked(scope, LedgerScope)
         if (
             type(expected_sha256) is not str
@@ -687,6 +1265,10 @@ class QualificationLedgerRepository:
         ):
             raise QualificationLedgerError("submit_intent_integrity_mismatch")
         async with self.session_factory() as session, session.begin():
+            if control_bound:
+                await DemoControlRepository.read_in_transaction(
+                    session, ControlScope(scope.environment, scope.account_id)
+                )
             scope_row = await self._locked(session, scope)
             record = await session.get(
                 QualificationReservation, reservation_id(scope, event_key)
@@ -704,19 +1286,54 @@ class QualificationLedgerRepository:
             ).all()
             if (
                 len(entries) != 1
-                or entries[0].reason_code != "consumed_with_submit_intent"
+                or entries[0].reason_code
+                != (
+                    bound.CONSUMED_REASON
+                    if control_bound
+                    else "consumed_with_submit_intent"
+                )
                 or entries[0].from_state != "reserved"
                 or entries[0].state_revision != 2
                 or entries[0].evidence_json is None
             ):
                 raise QualificationLedgerError("submit_intent_missing")
             entry = entries[0]
-            request = decode_reservation_request(record.request_json)
-            if digest(request) != record.request_sha256:
+            request_json = record.request_json
+            request = decode_reservation_request(request_json)
+            if _canonical_json_sha256(request_json) != record.request_sha256:
                 raise QualificationLedgerError("ledger_request_digest_mismatch")
-            intent, consumed = replay_submission_intent(
-                entry.evidence_json, request, expected_sha256=expected_sha256
-            )
+            if control_bound:
+                intent, consumed = bound.replay_control_bound_intent(
+                    entry.evidence_json, request, expected_sha256=expected_sha256
+                )
+                reserved_entry = await session.scalar(
+                    select(QualificationReservationTransition).filter_by(
+                        reservation_id=record.reservation_id, state_revision=1
+                    )
+                )
+                envelope = bound._document(intent.canonical_json)
+                if (
+                    reserved_entry is None
+                    or reserved_entry.from_state is not None
+                    or reserved_entry.to_state != "reserved"
+                    or reserved_entry.reason_code != bound.RESERVED_REASON
+                    or reserved_entry.evidence_json
+                    != envelope["reservation_binding_json"]
+                    or reserved_entry.occurred_at != record.created_at
+                ):
+                    raise QualificationLedgerError(
+                        "bound_control_reserved_journal_invalid"
+                    )
+                _, reserved_control, reserved_event = bound.replay_reserved_evidence(
+                    reserved_entry.evidence_json, request
+                )
+                await DemoControlRepository.verify_historical_binding(
+                    session, reserved_control, reserved_event
+                )
+            else:
+                intent, consumed = replay_submission_intent(
+                    entry.evidence_json, request, expected_sha256=expected_sha256
+                )
             current = self._receipt(record, scope_row)
             if (
                 any(

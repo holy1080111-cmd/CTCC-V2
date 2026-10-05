@@ -14,6 +14,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
+from gc import get_referents
 from pathlib import Path, PosixPath, WindowsPath
 from types import MappingProxyType
 from typing import Literal
@@ -51,10 +52,12 @@ from app.trade_qualification.history_engine import (
     HistoryPreEvidencePolicyV3,
     HistoryPreEvidencePolicyV4,
     HistoryPreEvidencePolicyV5,
+    HistoryPreEvidencePolicyV6,
     HistoryPreEvidenceRunV2,
     HistoryPreEvidenceRunV3,
     HistoryPreEvidenceRunV4,
     HistoryPreEvidenceRunV5,
+    HistoryPreEvidenceRunV6,
 )
 from app.trade_qualification.history_engine import _copy as _history_copy
 from app.trade_qualification.history_prefix import (
@@ -62,14 +65,17 @@ from app.trade_qualification.history_prefix import (
     HistoryEntryQualificationResultV3,
     HistoryEntryQualificationResultV4,
     HistoryEntryQualificationResultV5,
+    HistoryEntryQualificationResultV6,
     HistoryQualificationPrefixPolicyV2,
     HistoryQualificationPrefixPolicyV3,
     HistoryQualificationPrefixPolicyV4,
     HistoryQualificationPrefixPolicyV5,
+    HistoryQualificationPrefixPolicyV6,
     HistoryQualificationPrefixRunV2,
     HistoryQualificationPrefixRunV3,
     HistoryQualificationPrefixRunV4,
     HistoryQualificationPrefixRunV5,
+    HistoryQualificationPrefixRunV6,
 )
 from app.trade_qualification.market_bridge import public_market_snapshot
 from app.trade_qualification.quote_collector import validate_collected_quote
@@ -85,6 +91,7 @@ from app.trade_qualification.service import (
     _event_keys,
     _plain,
 )
+from app.trade_qualification.sweep_contract import SweepHistoryAdmissionRecord
 
 _ORIGINAL_KEYS = frozenset(
     {
@@ -98,6 +105,12 @@ _ORIGINAL_KEYS = frozenset(
     }
 )
 _INPUT_MODELS = (
+    HistoryPreEvidencePolicyV6,
+    HistoryPreEvidenceRunV6,
+    HistoryQualificationPrefixPolicyV6,
+    HistoryQualificationPrefixRunV6,
+    HistoryEntryQualificationResultV6,
+    SweepHistoryAdmissionRecord,
     HistoryPreEvidencePolicyV3,
     HistoryPreEvidencePolicyV4,
     HistoryPreEvidencePolicyV5,
@@ -184,6 +197,12 @@ def _guard_original(value, depth=0, budget=None):
                 continue
             _guard_original(item, depth + 1, budget)
     elif kind is dict or kind is MappingProxyType:
+        if kind is MappingProxyType:
+            # A native proxy may wrap a foreign Mapping whose len/items/iterator
+            # runs caller code. Check its native referent before accessing it.
+            referents = get_referents(value)
+            if len(referents) != 1 or type(referents[0]) is not dict:
+                raise OneShotInputError("one_shot_preflight_invalid")
         if len(value) > 2048 or any(type(key) is not str for key in value):
             raise OneShotInputError("one_shot_preflight_invalid")
         for key, item in value.items():
@@ -343,6 +362,7 @@ def _original(market, run, values):
         HistoryPreEvidenceRunV3,
         HistoryPreEvidenceRunV4,
         HistoryPreEvidenceRunV5,
+        HistoryPreEvidenceRunV6,
     ):
         raise OneShotInputError("one_shot_intent_or_run_invalid")
     _guard_original(market)
@@ -362,7 +382,9 @@ def _original(market, run, values):
         "reference": None
         if values["reference"] is None
         else _bounded_scalars(values["reference"], WSReferenceObservation),
-        "policy": _history_copy(values["policy"], HistoryPreEvidencePolicyV5)
+        "policy": _history_copy(values["policy"], HistoryPreEvidencePolicyV6)
+        if type(run) is HistoryPreEvidenceRunV6
+        else _history_copy(values["policy"], HistoryPreEvidencePolicyV5)
         if type(run) is HistoryPreEvidenceRunV5
         else _history_copy(values["policy"], HistoryPreEvidencePolicyV4)
         if type(run) is HistoryPreEvidenceRunV4

@@ -8,6 +8,11 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
+# Historical automation acceptance script. Its static confirmation cannot
+# provide a contemporaneous one-shot qualification for real-money entry.
+# Stop before reading credentials or making any API request.
+throw "CTCC_STOP:LIVE_QUALIFIED_ONE_SHOT_AUTHORITY_UNAVAILABLE"
+
 function Read-EnvValue([string]$Name) {
     $line = Get-Content -LiteralPath ".env" | Where-Object {
         $_ -match "^\s*$Name\s*="

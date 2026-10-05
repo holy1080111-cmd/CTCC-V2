@@ -136,17 +136,17 @@ def range_v5_ledger_fixture(direction, monkeypatch, *, account_id=None):
     )
     temporary = LedgerFixture(bare, claims, chain)
     binding = execution_binding(temporary)
-    replay = r.ReservationReplayBindingV2(
-        contract_version="ctcc-reservation-replay-v2",
+    replay = r.ReservationReplayBindingV3(
+        contract_version="ctcc-reservation-replay-v3",
         **{
             name: getattr(binding, name)
-            for name in r.ReservationReplayBindingV2.model_fields
+            for name in r.ReservationReplayBindingV3.model_fields
             if name not in r.LedgerModel.model_fields and name != "contract_version"
         },
     )
-    request = r.ReservationRequestV2(
+    request = r.ReservationRequestV3(
         **_plain(bare),
-        contract_version="ctcc-reservation-request-v2",
+        contract_version="ctcc-reservation-request-v3",
         replay_binding=replay,
     )
     return LedgerFixture(request, claims, chain), binding, content

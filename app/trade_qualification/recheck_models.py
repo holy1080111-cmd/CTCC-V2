@@ -20,6 +20,7 @@ from app.trade_evidence.gates import (
     HistoryEvidenceGateRunV3,
     HistoryEvidenceGateRunV4,
     HistoryEvidenceGateRunV5,
+    HistoryEvidenceGateRunV6,
     _digest,
     verify_pre_evidence_versioned,
 )
@@ -46,6 +47,7 @@ def _evidence_family(value):
         (HistoryEvidenceGateRunV3, "ctcc-history-evidence-v3", "history_v3"),
         (HistoryEvidenceGateRunV4, "ctcc-history-evidence-v4", "history_v4"),
         (HistoryEvidenceGateRunV5, "ctcc-history-evidence-v5", "history_v5"),
+        (HistoryEvidenceGateRunV6, "ctcc-history-evidence-v6", "history_v6"),
     )
 
 
@@ -54,7 +56,8 @@ OriginEvidence = Annotated[
     | Annotated[HistoryEvidenceGateRunV2, Tag("history_v2")]
     | Annotated[HistoryEvidenceGateRunV3, Tag("history_v3")]
     | Annotated[HistoryEvidenceGateRunV4, Tag("history_v4")]
-    | Annotated[HistoryEvidenceGateRunV5, Tag("history_v5")],
+    | Annotated[HistoryEvidenceGateRunV5, Tag("history_v5")]
+    | Annotated[HistoryEvidenceGateRunV6, Tag("history_v6")],
     Discriminator(_evidence_family),
 ]
 
@@ -181,7 +184,9 @@ def freeze_recheck_origin(evidence: EvidenceGateRun) -> RecheckOrigin:
     """
     checked = _copy_evidence(
         evidence,
-        HistoryEvidenceGateRunV5
+        HistoryEvidenceGateRunV6
+        if type(evidence) is HistoryEvidenceGateRunV6
+        else HistoryEvidenceGateRunV5
         if type(evidence) is HistoryEvidenceGateRunV5
         else HistoryEvidenceGateRunV4
         if type(evidence) is HistoryEvidenceGateRunV4

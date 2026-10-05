@@ -23,11 +23,13 @@ from app.trade_evidence.service import validate_snapshot
 
 D = Decimal
 RENDERER_VERSION = "ctcc-pillow-evidence-v1"
+LIQUIDITY_RENDERER_VERSION = "ctcc-pillow-evidence-liquidity-v2"
 PILLOW_VERSION = "12.3.0"
 FONT_SHA256 = "69853909b940023570964e29cffe30da95aea8de3627736b5cd15ab30143169f"
 IMAGE_NAMES = ("4h.png", "1h.png", "15m.png", "5m.png", "summary.png")
 PANEL_SIZE = (1600, 1000)
 SUMMARY_SIZE = (1600, 1100)
+LIQUIDITY_SUMMARY_SIZE = (1600, 1410)
 MAX_REPORT_BYTES = 8 * 1024 * 1024
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
 _INK = "#1c2d40"
@@ -105,9 +107,11 @@ def _font(size: int):
     return font
 
 
-def _renderer_identity():
+def _renderer_identity(*, liquidity_summary=False):
     return {
-        "renderer_version": RENDERER_VERSION,
+        "renderer_version": LIQUIDITY_RENDERER_VERSION
+        if liquidity_summary
+        else RENDERER_VERSION,
         "pillow_version": __version__,
         "font": "Pillow embedded Aileron Regular",
         "font_sha256": FONT_SHA256,
@@ -553,8 +557,8 @@ def _panel(snapshot, panel):
     return canvas
 
 
-def _summary(snapshot):
-    canvas = _Canvas(SUMMARY_SIZE)
+def _summary(snapshot, *, liquidity_summary=False):
+    canvas = _Canvas(LIQUIDITY_SUMMARY_SIZE if liquidity_summary else SUMMARY_SIZE)
     q = snapshot.qualification
     canvas.text((48, 30), "CTCC  |  Decision evidence summary", size=36, width=1250)
     canvas.text(
@@ -664,36 +668,65 @@ def _summary(snapshot):
         fill=_ORANGE,
         key="preparation_timing",
     )
+    footer_offset = 310 if liquidity_summary else 0
+    if liquidity_summary:
+        canvas.text(
+            (48, 937),
+            "LIQUIDITY - surviving source levels at each panel's confirmed close",
+            size=23,
+            fill=_GOLD,
+            width=1504,
+        )
+        for index, panel in enumerate(snapshot.panels):
+            levels = tuple(level for level in panel.levels if level.kind == "liquidity")
+            inventory = (
+                "; ".join(
+                    f"{_number(level.low, compact=True)} .. {_number(level.high, compact=True)} "
+                    f"(known {_at(level.known_at)}; source {level.source})"
+                    for level in levels
+                )
+                if levels
+                else "no detected liquidity levels in this source inventory"
+            )
+            canvas.paragraph(
+                (48, 976 + index * 55),
+                f"{panel.timeframe} as of {_at(panel.crop_end)}: {inventory}. "
+                "Current survival requires recheck.",
+                width=1504,
+                lines=2,
+                size=17,
+                key=f"liquidity_{panel.timeframe}",
+            )
     canvas.text(
-        (48, 943),
+        (48, 943 + footer_offset),
         f"Source SHA256 {snapshot.source_sha256}",
         size=17,
         fill=_MUTED,
         width=1504,
     )
     canvas.text(
-        (48, 974),
+        (48, 974 + footer_offset),
         f"Candidate SHA256 {snapshot.candidate_sha256}",
         size=17,
         fill=_MUTED,
         width=1504,
     )
     canvas.text(
-        (48, 1007),
+        (48, 1007 + footer_offset),
         "Coverage: four independent timeframe crops. Source authenticity / gate assessments remain unverified.",
         size=17,
         fill=_ORANGE,
         width=1504,
     )
-    canvas.text((48, 1040), _FOOTNOTE, size=17, fill=_MUTED, width=1504)
+    canvas.text((48, 1040 + footer_offset), _FOOTNOTE, size=17, fill=_MUTED, width=1504)
     return canvas
 
 
-def _png(canvas, snapshot, filename):
+def _png(canvas, snapshot, filename, *, renderer_version=RENDERER_VERSION):
     buffer = BytesIO()
     metadata = PngImagePlugin.PngInfo()
     for key, value in (
-        ("Software", RENDERER_VERSION),
+        ("Software", renderer_version),
         ("Report", snapshot.report_id),
         ("SourceSHA256", snapshot.source_sha256),
         ("Purpose", snapshot.purpose),
@@ -710,7 +743,9 @@ def _png(canvas, snapshot, filename):
     return payload
 
 
-def _render_evidence(snapshot: EvidenceSnapshot) -> Mapping[str, bytes]:
+def _render_evidence(
+    snapshot: EvidenceSnapshot, *, liquidity_summary=False
+) -> Mapping[str, bytes]:
     """Revalidate copied source evidence, then return exactly five PNGs and JSON.
 
     The caller publishes with a report-last logical completion marker and
@@ -722,7 +757,7 @@ def _render_evidence(snapshot: EvidenceSnapshot) -> Mapping[str, bytes]:
         "schema_version": "ctcc.trade_evidence.v1",
         "report_id": checked.report_id,
         "snapshot": checked.model_dump(mode="json", round_trip=True),
-        "renderer": _renderer_identity(),
+        "renderer": _renderer_identity(liquidity_summary=liquidity_summary),
         "images": {
             name: {"sha256": "0" * 64, "size_bytes": 99999999} for name in IMAGE_NAMES
         },
@@ -734,12 +769,19 @@ def _render_evidence(snapshot: EvidenceSnapshot) -> Mapping[str, bytes]:
         raise EvidenceRenderError("report_byte_limit_exceeded")
     output = {}
     notes = {}
+    version = LIQUIDITY_RENDERER_VERSION if liquidity_summary else RENDERER_VERSION
     for panel, name in zip(checked.panels, IMAGE_NAMES[:4], strict=True):
         canvas = _panel(checked, panel)
-        output[name] = _png(canvas, checked, name)
+        output[name] = _png(canvas, checked, name, renderer_version=version)
         notes[name] = sorted(set(canvas.truncated))
-    canvas = _summary(checked)
-    output["summary.png"] = _png(canvas, checked, "summary.png")
+    canvas = (
+        _summary(checked, liquidity_summary=True)
+        if liquidity_summary
+        else _summary(checked)
+    )
+    output["summary.png"] = _png(
+        canvas, checked, "summary.png", renderer_version=version
+    )
     notes["summary.png"] = sorted(set(canvas.truncated))
     report["images"] = {
         name: {
@@ -760,3 +802,13 @@ def render_evidence(snapshot: EvidenceSnapshot) -> Mapping[str, bytes]:
     """Render exactly six immutable byte artifacts, without publishing or gates."""
     with localcontext(Context(prec=100)):
         return _render_evidence(snapshot)
+
+
+def render_evidence_liquidity_v2(snapshot: EvidenceSnapshot) -> Mapping[str, bytes]:
+    """Explicit new display profile; preserve the v1 renderer's exact bytes.
+
+    Liquidity is copied from the revalidated source inventory, with its real
+    as-of/known-at times. This neither redetects a candidate nor grants a gate.
+    """
+    with localcontext(Context(prec=100)):
+        return _render_evidence(snapshot, liquidity_summary=True)

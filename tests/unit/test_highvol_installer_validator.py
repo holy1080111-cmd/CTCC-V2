@@ -16,6 +16,7 @@ NAMES = (
     "controller.py",
     "patch.py",
     "test_demo_high_volatility_v2.py",
+    "test_installer_restart_disarm.py",
     "update_manifest.py",
 )
 pytestmark = pytest.mark.skipif(POWERSHELL is None, reason="Native PowerShell required")

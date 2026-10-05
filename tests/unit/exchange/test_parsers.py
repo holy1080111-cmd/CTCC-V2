@@ -1,7 +1,9 @@
 from decimal import Decimal
 
+import pytest
+
 from app.exchange.okx.parsers import parse_candle, parse_instrument, parse_ticker
-from app.exchange.okx.private_parsers import parse_balance
+from app.exchange.okx.private_parsers import parse_balance, parse_position
 
 
 def test_parse_instrument_preserves_settlement_currency() -> None:
@@ -26,9 +28,10 @@ def test_parse_demo_balance_preserves_currency_available_equity() -> None:
     balance = parse_balance(
         {
             "totalEq": "81511.77052855614",
-            "adjEq": "",
-            "availEq": "",
+            "adjEq": "81000",
+            "availEq": "6000",
             "isoEq": "0",
+            "uTime": "1750000000000",
             "details": [
                 {
                     "ccy": "USDT",
@@ -44,9 +47,97 @@ def test_parse_demo_balance_preserves_currency_available_equity() -> None:
         }
     )
 
-    assert balance.available_equity == Decimal(0)
+    assert balance.available_equity == Decimal(6000)
+    assert balance.captured_at.timestamp() == 1750000000
     assert balance.details[0].available_equity == Decimal("4998.339000436543")
     assert balance.details[0].equity_usd == Decimal("4997.839166536499")
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("totalEq", ""),
+        ("adjEq", None),
+        ("availEq", ""),
+        ("isoEq", None),
+        ("uTime", ""),
+        ("details", None),
+        ("details", []),
+    ],
+)
+def test_missing_balance_risk_inputs_fail_closed(field, value) -> None:
+    row = {
+        "totalEq": "1000",
+        "adjEq": "900",
+        "availEq": "800",
+        "isoEq": "0",
+        "uTime": "1750000000000",
+        "details": [
+            {
+                "ccy": "USDT",
+                "eq": "1000",
+                "eqUsd": "1000",
+                "availEq": "800",
+                "availBal": "800",
+                "cashBal": "1000",
+                "frozenBal": "0",
+                "upl": "0",
+            }
+        ],
+    }
+    row[field] = value
+
+    with pytest.raises(ValueError):
+        parse_balance(row)
+
+
+@pytest.mark.parametrize("field", ["eq", "availEq", "availBal"])
+def test_missing_balance_detail_value_is_not_defaulted_to_zero(field) -> None:
+    row = {
+        "totalEq": "1000",
+        "adjEq": "900",
+        "availEq": "800",
+        "isoEq": "0",
+        "uTime": "1750000000000",
+        "details": [
+            {
+                "ccy": "USDT",
+                "eq": "1000",
+                "eqUsd": "1000",
+                "availEq": "800",
+                "availBal": "800",
+                "cashBal": "1000",
+                "frozenBal": "0",
+                "upl": "0",
+            }
+        ],
+    }
+    row["details"][0][field] = ""
+
+    with pytest.raises(ValueError):
+        parse_balance(row)
+
+
+def test_missing_position_size_or_identity_is_not_defaulted_to_flat() -> None:
+    row = {
+        "instId": "BTC-USDT-SWAP",
+        "instType": "SWAP",
+        "posSide": "net",
+        "mgnMode": "cross",
+        "pos": "0",
+        "availPos": "0",
+        "upl": "0",
+    }
+    assert parse_position(row).size == Decimal(0)
+
+    row.pop("pos")
+    with pytest.raises(ValueError):
+        parse_position(row)
+
+    row["pos"] = "1"
+    row.pop("instId")
+    with pytest.raises(ValueError):
+        parse_position(row)
 
 
 def test_parse_candle() -> None:

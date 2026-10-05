@@ -7,7 +7,11 @@ import pytest
 
 from app.config.settings import Settings
 from app.exchange.okx.errors import OkxPrivateApiError
-from app.exchange.okx.private_rest import OkxLiveExecutionRestClient
+from app.exchange.okx.private_rest import (
+    OkxLiveExecutionRestClient,
+    OkxLivePrivateRestClient,
+    _OkxPrivateRestClientBase,
+)
 
 
 def execution_settings(**updates) -> Settings:
@@ -26,6 +30,32 @@ def execution_settings(**updates) -> Settings:
     }
     values.update(updates)
     return Settings(_env_file=None, **values)
+
+
+@pytest.mark.asyncio
+async def test_read_only_live_client_blocks_explicit_shared_transport_order_call() -> (
+    None
+):
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        pytest.fail("Read-only Live client reached HTTP with an order")
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="https://openapi.okx.com"
+    ) as http:
+        client = OkxLivePrivateRestClient(http, settings=execution_settings())
+        with pytest.raises(OkxPrivateApiError) as error:
+            await _OkxPrivateRestClientBase._request(
+                client,
+                "POST",
+                "/api/v5/trade/order",
+                body={"instId": "BTC-USDT-SWAP", "sz": "1"},
+                write=False,
+            )
+    assert error.value.code == "live_writes_disabled"
+    assert requests == []
 
 
 @pytest.mark.asyncio

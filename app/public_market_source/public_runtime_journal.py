@@ -27,6 +27,12 @@ _LOCK = Lock()
 MAX_EVENTS = 4096
 MAX_RAW = 32 * 1024 * 1024
 MAX_TOTAL = 64 * 1024 * 1024
+_PUBLIC_WS_ORIGINS = frozenset(
+    {
+        "wss://ws.okx.com:443/ws/v5/public",
+        "wss://ws.okx.com:8443/ws/v5/public",  # historical replay only
+    }
+)
 _KINDS = frozenset(
     {
         "clock_before",
@@ -349,11 +355,7 @@ def _sealed_readback(attempt):
 def _runtime_attempt(root, plan):
     _validate_plan(plan)
     encoded = canonical(plan)
-    if (
-        len(encoded) > MAX_RAW
-        or type(plan) is not dict
-        or plan.get("schema_version") != "ctcc.public.runtime_plan.v1"
-    ):
+    if len(encoded) > MAX_RAW:
         raise PublicReceiptError("runtime_plan_invalid")
     with _root_context(root) as directory:
         if directory.names():
@@ -392,6 +394,16 @@ def _time(value):
 
 
 def _validate_plan(plan):
+    if type(plan) is dict and plan.get("schema_version") in {
+        "ctcc.public.initial_runtime_plan.v2",
+        "ctcc.public.runtime_plan.v2",
+    }:
+        return _validate_v2_plan(plan)
+    if (
+        type(plan) is dict
+        and plan.get("schema_version") == "ctcc.public.initial_runtime_plan.v1"
+    ):
+        return _validate_initial_plan(plan)
     keys = {
         "schema_version",
         "invocation_id",
@@ -416,7 +428,7 @@ def _validate_plan(plan):
         or plan["schema_version"] != "ctcc.public.runtime_plan.v1"
         or plan["environment"] != "demo"
         or plan["rest_origin"] != "https://www.okx.com"
-        or plan["ws_origin"] != "wss://ws.okx.com:8443/ws/v5/public"
+        or plan["ws_origin"] not in _PUBLIC_WS_ORIGINS
     ):
         raise PublicReceiptError("runtime_plan_invalid")
     if (
@@ -451,6 +463,101 @@ def _validate_plan(plan):
         raise PublicReceiptError("runtime_plan_chronology_invalid")
 
 
+def _validate_initial_plan(plan):
+    # No G12, candidate, event, or qualification-policy claim exists at this
+    # stage. An initial observation time must never stand in for publication.
+    if (
+        set(plan)
+        != {
+            "schema_version",
+            "stage",
+            "invocation_id",
+            "environment",
+            "report_id",
+            "instrument_id",
+            "invocation_started",
+            "expires_at",
+            "rest_origin",
+            "ws_origin",
+            "policy_sha256",
+        }
+        or plan["stage"] != "initial_public"
+        or plan["environment"] != "demo"
+        or plan["rest_origin"] != "https://www.okx.com"
+        or plan["ws_origin"] not in _PUBLIC_WS_ORIGINS
+        or type(plan["invocation_id"]) is not str
+        or re.fullmatch("[0-9a-f]{32}", plan["invocation_id"]) is None
+        or type(plan["instrument_id"]) is not str
+        or re.fullmatch("[A-Z0-9]{1,16}-USDT-SWAP", plan["instrument_id"]) is None
+        or type(plan["report_id"]) is not str
+        or plan["report_id"] != "initial-" + plan["invocation_id"]
+        or type(plan["policy_sha256"]) is not str
+        or re.fullmatch("[0-9a-f]{64}", plan["policy_sha256"]) is None
+    ):
+        raise PublicReceiptError("runtime_initial_plan_invalid")
+    ClockStamp.model_validate(plan["invocation_started"])
+    lifetime = (
+        _time(plan["expires_at"]) - utc_from_ns(plan["invocation_started"]["utc_ns"])
+    ).total_seconds()
+    if not 0 < lifetime <= 60:
+        raise PublicReceiptError("runtime_initial_plan_chronology_invalid")
+
+
+def _validate_v2_plan(plan):
+    initial = plan["schema_version"] == "ctcc.public.initial_runtime_plan.v2"
+    required = {
+        "public_packet_schema",
+        "quote_collector_schema",
+        "quote_profile_sha256",
+        "quote_transport_policy_sha256",
+        "stage",
+    }
+    if (
+        not required.issubset(plan)
+        or plan["stage"] != ("initial_public" if initial else "post_publication")
+        or plan["public_packet_schema"] != "ctcc.collected_public_market.v2"
+        or plan["quote_collector_schema"] != "ctcc.collected_executable_quote.v2"
+        or any(
+            type(plan[k]) is not str or re.fullmatch("[0-9a-f]{64}", plan[k]) is None
+            for k in ("quote_profile_sha256", "quote_transport_policy_sha256")
+        )
+    ):
+        raise PublicReceiptError("runtime_v2_plan_invalid")
+    # Reuse exact existing identity/chronology validation without changing those
+    # schemas or converting any source, publication receipt or capability.
+    base = {key: value for key, value in plan.items() if key not in required}
+    if initial:
+        base.update(
+            schema_version="ctcc.public.initial_runtime_plan.v1", stage="initial_public"
+        )
+        _validate_initial_plan(base)
+    else:
+        base["schema_version"] = "ctcc.public.runtime_plan.v1"
+        _validate_plan(base)
+
+
+def _plan_start(plan):
+    if plan["schema_version"] in {
+        "ctcc.public.initial_runtime_plan.v1",
+        "ctcc.public.initial_runtime_plan.v2",
+    }:
+        return plan["invocation_started"]
+    return plan["barrier"]
+
+
+def _packet_stage_matches(plan, barrier, *, exact=False):
+    if plan["schema_version"] in {
+        "ctcc.public.initial_runtime_plan.v1",
+        "ctcc.public.initial_runtime_plan.v2",
+    }:
+        return barrier is None
+    return barrier is not None and (
+        barrier == plan["publication_completed_at"]
+        if exact
+        else _time(barrier) == _time(plan["publication_completed_at"])
+    )
+
+
 def _tls(value, hostname):
     if (
         type(value) is not dict
@@ -475,7 +582,8 @@ def _tls(value, hostname):
 def _replay_semantics(plan, summary, events, payloads):
     """Audit integrity only; a forged/replayed document never issues a carrier."""
     requests, websocket, observations = {}, {}, []
-    last = plan["barrier"]
+    boundary = _plan_start(plan)
+    last = boundary
     complete = summary["disposition"] == "captured"
     before_seen, after_seen = False, False
     for event, raw in zip(events, payloads, strict=True):
@@ -771,13 +879,22 @@ def _replay_semantics(plan, summary, events, payloads):
             ):
                 raise PublicReceiptError("runtime_packet_invalid")
             observations.append(decode(raw, MAX_RAW))
-            if observations[0].get("bundle_sha256") != meta["bundle_sha256"]:
+            bundle_pin = (
+                sha(raw)
+                if plan["schema_version"]
+                in {
+                    "ctcc.public.initial_runtime_plan.v2",
+                    "ctcc.public.runtime_plan.v2",
+                }
+                else observations[0].get("bundle_sha256")
+            )
+            if bundle_pin != meta["bundle_sha256"]:
                 raise PublicReceiptError("runtime_packet_pin_mismatch")
         if stamp is not None:
             validate_stamps((last, stamp))
             if (
-                stamp["utc_ns"] <= plan["barrier"]["utc_ns"]
-                or stamp["monotonic_ns"] <= plan["barrier"]["monotonic_ns"]
+                stamp["utc_ns"] <= boundary["utc_ns"]
+                or stamp["monotonic_ns"] <= boundary["monotonic_ns"]
             ):
                 raise PublicReceiptError("runtime_before_barrier")
             last = stamp
@@ -805,11 +922,32 @@ def _replay_semantics(plan, summary, events, payloads):
 
 
 def _packet_join(plan, packet, requests, websocket):
+    if plan["schema_version"] in {
+        "ctcc.public.initial_runtime_plan.v2",
+        "ctcc.public.runtime_plan.v2",
+    } and (
+        packet.get("schema_version") != "ctcc.collected_public_market.v2"
+        or any(
+            packet.get(name) != plan[name]
+            for name in (
+                "stage",
+                "invocation_id",
+                "environment",
+                "policy_sha256",
+                "public_packet_schema",
+                "quote_collector_schema",
+                "quote_profile_sha256",
+                "quote_transport_policy_sha256",
+            )
+        )
+        or packet.get("quote", {}).get("schema_version")
+        != plan["quote_collector_schema"]
+    ):
+        raise PublicReceiptError("runtime_v2_packet_plan_mismatch")
     if (
         packet.get("report_id") != plan["report_id"]
         or packet.get("instrument_id") != plan["instrument_id"]
-        or _time(packet["barrier_completed_at"])
-        != _time(plan["publication_completed_at"])
+        or not _packet_stage_matches(plan, packet["barrier_completed_at"])
     ):
         raise PublicReceiptError("runtime_packet_scope_mismatch")
     for flag in (

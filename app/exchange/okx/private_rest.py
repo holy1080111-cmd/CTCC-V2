@@ -4,6 +4,7 @@ import asyncio
 import base64
 import hashlib
 import hmac
+import itertools
 import json
 import re
 from collections.abc import Callable
@@ -20,6 +21,9 @@ from app.trade_qualification.execution_authority import (
 )
 
 Clock = Callable[[], datetime]
+_ALGO_ORDER_TYPES = ("conditional", "oco", "trigger", "move_order_stop")
+_PRIVATE_PAGE_SIZE = 100
+_PRIVATE_MAX_PAGES = 16
 
 
 def _validated_origin(value: str, hosts: frozenset[str]) -> str:
@@ -277,6 +281,66 @@ class _OkxPrivateRestClientBase:
             if own_client:
                 await client.aclose()
 
+    async def _cursor_chain(
+        self,
+        path: str,
+        *,
+        params: dict[str, Any],
+        cursor_field: str,
+        page_size: int = 100,
+        max_pages: int = 16,
+    ) -> list[dict[str, Any]]:
+        """Read an ordered cursor chain through an explicit empty terminal page."""
+        collected: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        after = None
+        for _ in range(max_pages):
+            query = dict(params)
+            query["limit"] = str(page_size)
+            if after is not None:
+                query["after"] = after
+            page = await self._request("GET", path, params=query)
+            if not page:
+                return collected
+            if len(page) > page_size:
+                raise OkxPrivateApiError(
+                    "OKX private cursor page exceeds its declared limit",
+                    code="pagination_incomplete",
+                )
+            identities = [row.get(cursor_field) for row in page]
+            if any(
+                type(value) is not str
+                or re.fullmatch(r"[1-9][0-9]{0,39}", value) is None
+                for value in identities
+            ):
+                raise OkxPrivateApiError(
+                    "OKX private cursor identity is missing or invalid",
+                    code="pagination_incomplete",
+                )
+            numeric = [int(value) for value in identities]
+            if any(left <= right for left, right in itertools.pairwise(numeric)):
+                raise OkxPrivateApiError(
+                    "OKX private cursor page is not newest-first",
+                    code="pagination_incomplete",
+                )
+            if after is not None and any(value >= int(after) for value in numeric):
+                raise OkxPrivateApiError(
+                    "OKX private cursor did not advance",
+                    code="pagination_incomplete",
+                )
+            if any(value in seen for value in identities):
+                raise OkxPrivateApiError(
+                    "OKX private cursor chain contains duplicate identities",
+                    code="pagination_incomplete",
+                )
+            seen.update(identities)
+            collected.extend(page)
+            after = identities[-1]
+        raise OkxPrivateApiError(
+            "OKX private cursor chain did not reach an empty terminal page",
+            code="pagination_incomplete",
+        )
+
     async def account_config(self) -> list[dict[str, Any]]:
         return await self._request("GET", "/api/v5/account/config")
 
@@ -286,19 +350,23 @@ class _OkxPrivateRestClientBase:
         )
 
     async def positions(self, instrument_id: str | None = None) -> list[dict[str, Any]]:
+        params = {} if instrument_id is None else {"instId": instrument_id}
         return await self._request(
             "GET",
             "/api/v5/account/positions",
-            params={"instType": "SWAP", "instId": instrument_id},
+            params=params,
         )
 
     async def pending_orders(
         self, instrument_id: str | None = None
     ) -> list[dict[str, Any]]:
-        return await self._request(
-            "GET",
+        params = {} if instrument_id is None else {"instId": instrument_id}
+        return await self._cursor_chain(
             "/api/v5/trade/orders-pending",
-            params={"instType": "SWAP", "instId": instrument_id},
+            params=params,
+            cursor_field="ordId",
+            page_size=_PRIVATE_PAGE_SIZE,
+            max_pages=_PRIVATE_MAX_PAGES,
         )
 
     async def order_history(
@@ -313,11 +381,27 @@ class _OkxPrivateRestClientBase:
     async def pending_algo_orders(
         self, instrument_id: str | None = None
     ) -> list[dict[str, Any]]:
-        return await self._request(
-            "GET",
-            "/api/v5/trade/orders-algo-pending",
-            params={"ordType": "conditional,oco", "instId": instrument_id},
-        )
+        path = "/api/v5/trade/orders-algo-pending"
+        rows = []
+        seen: set[str] = set()
+        for order_type in _ALGO_ORDER_TYPES:
+            current = await self._cursor_chain(
+                path,
+                params={"ordType": order_type, "instId": instrument_id},
+                cursor_field="algoId",
+                page_size=_PRIVATE_PAGE_SIZE,
+                max_pages=_PRIVATE_MAX_PAGES,
+            )
+            for row in current:
+                identity = row["algoId"]
+                if identity in seen:
+                    raise OkxPrivateApiError(
+                        "OKX pending algo identity conflicts across order types",
+                        code="pagination_incomplete",
+                    )
+                seen.add(identity)
+            rows.extend(current)
+        return rows
 
     async def order_detail(
         self,
@@ -413,7 +497,15 @@ class OkxDemoPrivateRestClient(_OkxPrivateRestClientBase):
     def _rest_base_url(self) -> str:
         return _validated_origin(
             self.settings.okx_demo_rest_base_url,
-            frozenset({"openapi.okx.com", "www.okx.com", "us.okx.com"}),
+            frozenset(
+                {
+                    "openapi.okx.com",
+                    "www.okx.com",
+                    "us.okx.com",
+                    "eea.okx.com",
+                    "tr.okx.com",
+                }
+            ),
         )
 
     def _timeout_seconds(self) -> float:
@@ -428,6 +520,15 @@ class OkxDemoPrivateRestClient(_OkxPrivateRestClientBase):
 
 class OkxLivePrivateRestClient(_OkxPrivateRestClientBase):
     """Authenticated OKX Production REST client with writes hard-blocked."""
+
+    def _before_send(self, *, method: str, path: str) -> None:
+        # Keep the read-only invariant in the shared transport's final check.
+        # Explicit base-method dispatch must not bypass this client's _request.
+        if type(method) is not str or method.upper() != "GET":
+            raise OkxPrivateApiError(
+                "OKX Live write operations are disabled",
+                code="live_writes_disabled",
+            )
 
     def _credentials(self) -> tuple[str, str, str]:
         if not self.settings.okx_live_credentials_configured:

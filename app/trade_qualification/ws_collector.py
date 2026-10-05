@@ -35,7 +35,10 @@ from app.trade_qualification.ws_reference import (
     validate_ws_ticker_frame,
 )
 
-PUBLIC_WS_URL = "wss://ws.okx.com:8443/ws/v5/public"
+# OKX is retiring port 8443 after 2026-10-31. New captures use TLS port 443;
+# the former exact origin remains readable for immutable historical receipts.
+PUBLIC_WS_URL = "wss://ws.okx.com:443/ws/v5/public"
+LEGACY_PUBLIC_WS_URL = "wss://ws.okx.com:8443/ws/v5/public"
 _INST = re.compile(r"[A-Z0-9]{1,16}-[A-Z0-9]{1,16}-SWAP")
 _TIMES = (
     "connection_started_at",
@@ -145,7 +148,10 @@ class CollectedWSReference(QualificationModel):
     instrument_id: Annotated[
         str, Field(pattern=r"^[A-Z0-9]{1,16}-[A-Z0-9]{1,16}-SWAP$")
     ]
-    endpoint: Literal["wss://ws.okx.com:8443/ws/v5/public"] = PUBLIC_WS_URL
+    endpoint: Literal[
+        "wss://ws.okx.com:443/ws/v5/public",
+        "wss://ws.okx.com:8443/ws/v5/public",
+    ] = PUBLIC_WS_URL
     policy: WSCollectionPolicy
     barrier_completed_at: datetime | None
     connection_started_at: datetime

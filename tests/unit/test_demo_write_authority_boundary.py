@@ -192,7 +192,14 @@ async def test_entry_rechecks_current_policy_after_last_await_and_callback(when,
     order = request()
     if kind == "position_cap":
         private.position_rows = [
-            {"instId": "ETH-USDT-SWAP", "posSide": "net", "pos": "1", "availPos": "1"}
+            {
+                "instId": "ETH-USDT-SWAP",
+                "posSide": "net",
+                "mgnMode": "cross",
+                "pos": "1",
+                "availPos": "1",
+                "upl": "0",
+            }
         ]
     if kind == "protection":
         order = request(stop_loss=None, take_profit=None)

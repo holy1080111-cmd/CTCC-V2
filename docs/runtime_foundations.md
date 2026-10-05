@@ -6,9 +6,13 @@ collector、Notion adapter／one-pass worker、交易事後分析及送單權限
 
 2026-09-19 增量：帳戶 packet/plan v2 已擴至 23 個來源 streams（含八種 algo、
 instrument 與 leverage metadata），詳見 [帳戶來源方案](qualification_account_source_plan.md)。
-Windows no-clobber publisher 已修正並通過本機專項測試，詳見
-[事後報告](post_submit_reporting.md)。下列 13-stream／Windows failure 描述屬原 checkpoint，
-不代表目前版本狀態；可信帳戶完整性與交易放行仍未通過。
+2026-10-06 Windows publisher correction：目前以 `CREATE_NEW` 原子保留 final
+filename，完成寫入後仍須 flush、readback 及 receipt 才能接受；寫入期間的內容不保證
+對忽略 receipt 的 reader 不可見。晚期失敗的 journal bytes 保留並 fail closed。本機同步
+定向案例通過，但完整檔案模組仍受 junction/hardlink 建立權限限制；詳見
+[事後報告](post_submit_reporting.md)與[驗收紀錄](final_completion_validation.md)。
+下列 13-stream／Windows failure 描述屬原 checkpoint，不代表目前版本狀態；可信帳戶
+完整性與交易放行仍未通過。
 
 2026-09-12 開發 checkpoint。既有 `d984753` Demo 服務持續運行；本頁的新元件
 尚未部署，也沒有修改交易憑證、Live 權限、風控預算或重新送出維護平倉。

@@ -125,7 +125,7 @@ class AccountBootstrapEvidence(QualificationModel):
     account_id: capture.Identifier
     main_uid: capture.Identifier
     settlement_currency: capture.Currency
-    registration_region: Literal["global", "us_au", "eea"]
+    registration_region: Literal["global", "us_au", "eea", "tr"]
     instrument_ids: tuple[capture.Name, ...] = Field(min_length=1, max_length=128)
     sealed_at: datetime
     artifacts: tuple[BootstrapArtifact, ...] = Field(max_length=8)
@@ -269,6 +269,7 @@ class ControlledDemoAccountSession:
             if type(plan) not in {
                 capture.RegionalDemoAccountCapturePlan,
                 capture.AllProductDemoAccountCapturePlan,
+                capture.CurrentDemoAccountCapturePlanV6,
             }:
                 raise AccountRuntimeError("explicit_registration_region_required")
             selected = capture._checked_plan(plan, expected_plan_sha256)

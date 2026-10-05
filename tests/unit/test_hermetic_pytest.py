@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 
 import pytest
+from sqlalchemy.engine import make_url
 
 from app.config.settings import Settings
 from scripts.hermetic_pytest import (
@@ -12,6 +13,38 @@ from scripts.hermetic_pytest import (
 )
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_database_defaults_cannot_authenticate_without_explicit_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("database_url", raising=False)
+    settings = Settings(_env_file=None)
+    default_url = make_url(settings.database_url)
+    assert default_url.host == "invalid.invalid"
+    assert default_url.password is None
+
+    alembic_source = (ROOT / "alembic.ini").read_text(encoding="utf-8")
+    alembic_url = next(
+        line.partition("=")[2].strip()
+        for line in alembic_source.splitlines()
+        if line.startswith("sqlalchemy.url =")
+    )
+    assert make_url(alembic_url).host == "invalid.invalid"
+    assert make_url(alembic_url).password is None
+
+    compose = (ROOT / "compose.yaml").read_text(encoding="utf-8")
+    assert "POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?" in compose
+    assert "POSTGRES_PASSWORD:-" not in compose
+
+    example = (ROOT / ".env.example").read_text(encoding="utf-8")
+    assert [
+        line for line in example.splitlines() if line.startswith("POSTGRES_PASSWORD=")
+    ] == ["POSTGRES_PASSWORD="]
+    assert [
+        line for line in example.splitlines() if line.startswith("DATABASE_URL=")
+    ] == ["DATABASE_URL="]
 
 
 def test_hermetic_environment_preserves_only_test_infrastructure_settings() -> None:
@@ -148,6 +181,10 @@ def test_gate3_foundation_verifier_is_isolated_and_offline() -> None:
     assert "MIE_GATE3_RUNTIME_PROXIES_DISABLED=1" in source
     assert "[Environment]::SetEnvironmentVariable" in source
     assert "$savedEnvironment" in source
+    assert "RandomNumberGenerator" in source
+    assert '"CTCC_GATE3_DB_PASSWORD"' in source
+    assert '"POSTGRES_PASSWORD"' in source
+    assert "$env:POSTGRES_PASSWORD = $env:CTCC_GATE3_DB_PASSWORD" in source
     assert "Gate3ProspectiveEvidenceArtifact" in source
     assert "tests/unit/mie/test_gate3_prospective_evidence.py" in source
     assert "ArchiveBatchPlan" in source
@@ -167,7 +204,14 @@ def test_gate3_foundation_verifier_is_isolated_and_offline() -> None:
         assert "container_name: ${CTCC_API_CONTAINER_NAME:-ctcc-v2-api}" in compose
         assert "ports: !reset []" in override
         assert "internal: true" in override
-        assert "POSTGRES_PASSWORD: ctcc_dev_password" in override
+        assert "POSTGRES_PASSWORD: ${CTCC_GATE3_DB_PASSWORD:?" in override
+        assert (
+            'DATABASE_URL: "postgresql+asyncpg://ctcc:${CTCC_GATE3_DB_PASSWORD:?'
+            in override
+        )
+        assert [
+            line for line in profile.splitlines() if line.startswith("DATABASE_URL=")
+        ] == ["DATABASE_URL="]
         assert 'HTTP_PROXY: ""' in override
         assert 'NO_PROXY: "*"' in override
         for setting_name in (

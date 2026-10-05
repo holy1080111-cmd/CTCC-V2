@@ -5,6 +5,7 @@ import pickle
 
 import pytest
 
+from app.domain import native_clock as domain_clock
 from app.public_market_source import public_attempt_journal as attempts
 from app.public_market_source import public_clock as clock
 from app.public_market_source import public_market_capture as capture
@@ -70,7 +71,7 @@ def rejected_runtime(monkeypatch, *, stage="before", mode="stopped", terminal=Fa
             raise PublicReceiptError("native_clock_sample_unbounded")
         return original_stamp()
 
-    monkeypatch.setattr(clock, "native_os_clock", native)
+    monkeypatch.setattr(domain_clock, "native_os_clock", native)
     monkeypatch.setattr(capture, "_observe_owned_clock", clock._observe_owned_clock)
     monkeypatch.setattr(capture, "native_stamp", stamp)
     return fixture, directory, journal, observation, calls
@@ -138,7 +139,7 @@ def test_setup_without_raw_cannot_invent_a_diagnostic(monkeypatch):
     def unavailable():
         raise PublicReceiptError("PRIVATE_SETUP_VALUE")
 
-    monkeypatch.setattr(clock, "native_os_clock", unavailable)
+    monkeypatch.setattr(domain_clock, "native_os_clock", unavailable)
     with pytest.raises(PublicReceiptError, match="os_clock_rejected"):
         invoke(fixture, journal)
     result = decode(

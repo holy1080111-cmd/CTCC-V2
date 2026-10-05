@@ -2132,6 +2132,22 @@ class MemoryAutomationRepository:
 
 
 @pytest.mark.asyncio
+async def test_restart_does_not_restore_persisted_automation_arm():
+    repository = MemoryAutomationRepository()
+    repository.state = {"armed": True}
+    service = make_service(FakeDemo())
+    service.repository = repository
+
+    await service.recover()
+
+    status = await service.status()
+    assert status.recovered is True
+    assert status.armed is False
+    assert service.running is False
+    assert repository.state["armed"] is False
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("failure", [TimeoutError, RuntimeError])
 async def test_direct_submit_error_retains_possible_exposure_and_stops_other_symbols(
     failure,

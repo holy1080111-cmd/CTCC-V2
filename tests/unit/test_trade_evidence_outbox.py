@@ -1305,15 +1305,16 @@ def test_native_windows_owned_root_truthfully_records_pin_denial_or_real_success
     monkeypatch.setattr(module.storage._WindowsAPI, "open_directory", pin)
     monkeypatch.setattr(module.storage._WindowsDirectory, "publish", publish)
     if inject_late_denial:
-        original_link = module.storage._WindowsAPI.link_same_directory
 
-        def denied_envelope(api, fd, name):
+        def denied_envelope(directory, name, raw):
             if name == f"{REPORT}.json":
-                raise ctypes.WinError(32)
-            return original_link(api, fd, name)
+                error = ctypes.WinError(32)
+                publications.append((directory.path, name, "denied", error.winerror))
+                raise error
+            return publish(directory, name, raw)
 
         monkeypatch.setattr(
-            module.storage._WindowsAPI, "link_same_directory", denied_envelope
+            module.storage._WindowsDirectory, "publish", denied_envelope
         )
     initial_at = clock.now
     try:
@@ -1338,9 +1339,9 @@ def test_native_windows_owned_root_truthfully_records_pin_denial_or_real_success
                 "no artifact created; native publication unverified"
             )
         else:
-            # A root-level hardlink may fail with WinError 32 after the child
-            # journal has been fully published. That is retained evidence, NOT
-            # a successful enqueue and NOT permission to delete or reconstruct it.
+            # A root-level envelope publication may fail with WinError 32 after
+            # the child journal has been fully published. That is retained
+            # evidence, NOT a successful enqueue and NOT permission to delete it.
             assert getattr(error.__context__, "winerror", None) == 32
             assert publications == [
                 (
@@ -1414,6 +1415,55 @@ def test_native_windows_owned_root_truthfully_records_pin_denial_or_real_success
         assert (native_root / f"{REPORT}.state" / "00000001.json").is_file()
         assert module.read_job(native_root, REPORT, clock=clock) == result
         print("Native Windows outbox: real pinned publication and readback succeeded")
+
+
+@pytest.mark.skipif(
+    os.name != "nt", reason="Native Windows late-publication evidence retention"
+)
+def test_native_windows_late_envelope_denial_retains_state_journal(
+    native_root, clock, monkeypatch
+):
+    original_publish = module.storage._WindowsDirectory.publish
+
+    def deny_envelope(directory, name, raw):
+        if name == f"{REPORT}.json":
+            raise ctypes.WinError(32)
+        return original_publish(directory, name, raw)
+
+    monkeypatch.setattr(module.storage._WindowsDirectory, "publish", deny_envelope)
+    enqueued_at = clock.now
+    with pytest.raises(module.OutboxError) as rejected:
+        module.enqueue(native_root, payload(), clock=clock)
+
+    assert rejected.value.code == "outbox_storage_permission_denied"
+    assert getattr(rejected.value.__context__, "winerror", None) == 32
+    state_name = f"{REPORT}.state"
+    assert {item.name for item in native_root.iterdir()} == {state_name}
+    state = native_root / state_name
+    initial_file = state / "00000001.json"
+    original = initial_file.read_bytes()
+    assert {item.name for item in state.iterdir()} == {initial_file.name}
+
+    envelope = module._seal(
+        module.OutboxEnvelope,
+        {"payload": payload(), "policy": policy(), "enqueued_at": enqueued_at},
+        "envelope_sha256",
+    )
+    initial = module._event(envelope, None, "enqueue", enqueued_at)
+    assert original == module._wire(initial)
+    module._verify(envelope, (module._decode(original, module.OutboxEvent),))
+    assert initial.action == "enqueue" and initial.revision == 1
+    assert not (native_root / f"{REPORT}.json").exists()
+
+    clock.advance(1)
+    for value in (payload(), payload(order_reference="changed-local-claim")):
+        with pytest.raises(module.OutboxError, match="^outbox_enqueue_incomplete$"):
+            module.enqueue(native_root, value, clock=clock)
+    with pytest.raises(module.OutboxError, match="^outbox_storage_unavailable$"):
+        module.read_job(native_root, REPORT, clock=clock)
+    assert {item.name for item in native_root.iterdir()} == {state_name}
+    assert {item.name for item in state.iterdir()} == {initial_file.name}
+    assert initial_file.read_bytes() == original
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Required real Windows outbox acceptance")

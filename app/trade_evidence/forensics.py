@@ -626,52 +626,28 @@ def _inputs(packet, expected):
 
 
 def _inventory(packet):
-    candidate = packet.candidate
-    sign = 1 if candidate.direction == "long" else -1
-    unit = Fraction(candidate.contract_value_base)
-    lots = []
-    states = []
-    realized = Fraction(0)
-    entries = exits = entry_value = exit_value = Fraction(0)
-    closed = False
-    for fill in packet.fills:
-        expected_side = (
-            "buy"
-            if (candidate.direction == "long") == (fill.role == "entry")
-            else "sell"
+    from app.trade_evidence.inventory_math import InventoryMathError, reduce_inventory
+
+    try:
+        return reduce_inventory(
+            direction=packet.candidate.direction,
+            unit=Fraction(packet.candidate.contract_value_base),
+            fills=tuple(
+                (
+                    fill.role,
+                    fill.side,
+                    Fraction(fill.contracts),
+                    Fraction(fill.price),
+                    fill.occurred_at,
+                )
+                for fill in packet.fills
+            ),
+            funding_times=tuple(
+                flow.occurred_at for flow in packet.cashflows if flow.kind == "funding"
+            ),
         )
-        if fill.side != expected_side:
-            raise ForensicsError("fill_side_role_direction_conflict")
-        quantity, price = Fraction(fill.contracts), Fraction(fill.price)
-        if fill.role == "entry":
-            if closed:
-                raise ForensicsError("same_report_position_reopened")
-            lots.append([quantity, price])
-            entries += quantity
-            entry_value += quantity * price
-        else:
-            if quantity > entries - exits:
-                raise ForensicsError("exit_exceeds_known_inventory")
-            exits += quantity
-            exit_value += quantity * price
-            while quantity:
-                matched = min(quantity, lots[0][0])
-                realized += sign * matched * unit * (price - lots[0][1])
-                quantity -= matched
-                lots[0][0] -= matched
-                if not lots[0][0]:
-                    lots.pop(0)
-            closed = not lots
-        states.append((fill.occurred_at, realized, tuple((q, p) for q, p in lots)))
-    for flow in packet.cashflows:
-        if flow.kind != "funding":
-            continue
-        if any(flow.occurred_at == at for at, _, _ in states):
-            raise ForensicsError("funding_at_fill_time_is_ambiguous")
-        prior = [state for state in states if state[0] < flow.occurred_at]
-        if not prior or not prior[-1][2]:
-            raise ForensicsError("funding_outside_known_holding_period")
-    return entries, exits, entry_value, exit_value, realized, states
+    except InventoryMathError as exc:
+        raise ForensicsError(exc.args[0]) from None
 
 
 def _path_excursions(packet, states, fill_complete):

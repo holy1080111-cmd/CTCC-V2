@@ -32,6 +32,21 @@ def make_client(kind, client):
     )
 
 
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "https://openapi.okx.com",
+        "https://us.okx.com",
+        "https://eea.okx.com",
+        "https://tr.okx.com",
+    ],
+)
+def test_demo_transport_accepts_exact_official_region_origin(origin):
+    settings = Settings(_env_file=None, okx_demo_rest_base_url=origin)
+    private = OkxDemoPrivateRestClient(settings=settings)
+    assert private._rest_base_url() == origin
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("kind", ["demo", "readonly", "execution"])
 @pytest.mark.parametrize(

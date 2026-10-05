@@ -171,30 +171,25 @@ repair the root-level Windows sharing conflict, authorize deleting partial jobs,
 or establish successful native publication. A separately reviewed Windows storage
 design and native success acceptance were still needed at that checkpoint.
 
-### Same-directory Windows publication
+### Current Windows publication behavior (2026-10-06)
 
-The root publisher continues to hold its exclusive add-file lease and every
-ancestor handle without delete sharing. `CreateHardLink`/`os.link` with full paths
-reopens the destination parent and conflicts with that lease. The publisher now
-uses the documented same-directory form of
-[FILE_LINK_INFORMATION](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/ns-ntifs-_file_link_information):
-the already open and fsynced source file handle, a null `RootDirectory`, and a
-validated single destination filename. `ReplaceIfExists` is false. It does not
-release pins, broaden sharing, change ACLs, follow a path alias, overwrite an
-existing target, or fall back after an unavailable native operation.
+Windows publication now validates a single destination filename and opens the
+final name with `CREATE_NEW` while retaining the publisher lease and ancestor
+handles. The OS atomically reserves the name without replacing an existing
+entry. The publisher writes and flushes through that handle; journal acceptance
+still requires the caller's independent readback and receipt checks. This is
+atomic no-clobber name creation, not atomic visibility of complete file bytes:
+a reader that ignores the receipt could observe an incomplete file while a write
+is in progress.
 
-The source handle stays open through link publication, preventing its private
-temporary file from being replaced between writing and linking. Cleanup removes
-only that invocation's temporary name; accepted journal files remain immutable.
-The logical envelope commit marker is still written last, and actual readback
-remains required. Windows directory metadata power-loss guarantees are unchanged.
-
-Native acceptance includes root-level no-clobber publication with its publisher
-lease held, a complete enqueue/claim/dispatch/delivery/readback cycle, two-worker
-fencing, and injected late envelope failure that retains the exact first journal
-and cannot dispatch. Passing injected failure checks alone is not native success.
-Exact new-source test results belong in the current acceptance record, not the
-historical frozen-source result above.
+If writing or later envelope publication fails after a journal file was
+created, the file and its bytes are retained. The missing receipt/commit marker
+keeps the job unaccepted; retry cannot overwrite, reconstruct, or dispatch it.
+No hard-link or rename fallback, ACL change, or cleanup of accepted/partial
+journal entries is used. This supersedes the same-directory `FILE_LINK_INFORMATION`
+design described in the earlier 2026-10-05 checkpoint. The current native
+focused tests and the broader file-suite limitations are recorded in
+[the current acceptance record](final_completion_validation.md).
 
 Synthetic tests cover typed pin/identity/clock boundaries, JSON replay, acknowledged
 versus filled/protected state, unknown and rejected outcomes with no outbox IO,

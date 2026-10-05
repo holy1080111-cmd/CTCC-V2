@@ -33,6 +33,11 @@ Enabling the feature requires `OKX_DEMO_MAX_LEVERAGE=20`. Each structural
 risk band has a hard maximum of 0.5%; portfolio stop risk cannot exceed 1%.
 The weekly-loss backstop must cover the configured per-trade ceiling.
 Old profiles with 1.5%–6% structural risk or 10% portfolio risk are rejected.
+The dynamic profile also rejects an environment override above the selected
+300-USDT per-position margin bucket or 60% aggregate portfolio margin ceiling;
+lower values remain valid. The aggregate ceiling is checked during sizing, after
+contract rounding, after leverage configuration, and again at the final submit
+boundary.
 
 A read-only validation profile is:
 

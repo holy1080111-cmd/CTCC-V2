@@ -352,9 +352,12 @@ not committed:
 Copy-Item .env.example .env
 ```
 
-Set `POSTGRES_PASSWORD` and the password component of `DATABASE_URL` to the same
-value. Percent-encode reserved URL characters in `DATABASE_URL`; do not encode
-the standalone `POSTGRES_PASSWORD` value.
+The example file leaves `POSTGRES_PASSWORD` and `DATABASE_URL` blank. Set a
+new local PostgreSQL password in both fields before starting Compose;
+Compose refuses to start without `POSTGRES_PASSWORD`. Percent-encode reserved
+URL characters in `DATABASE_URL`; do not encode the standalone
+`POSTGRES_PASSWORD` value. The application and Alembic source defaults point
+to a non-routable host and cannot authenticate without explicit configuration.
 
 Back up the PostgreSQL volume before stopping or rebuilding services:
 

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Context, Decimal, DecimalException, localcontext
 from itertools import islice
@@ -25,6 +25,11 @@ from app.market.quality.candles import BAR_SECONDS, candle_closed_at
 from app.structure.engine import analyze_structure, find_swings
 from app.trade_qualification.event_models import TriggerDetection
 from app.trade_qualification.events import _checked_tree, _copy_source, extract_trigger
+from app.trade_qualification.sweep_contract import (
+    SWEEP_PERMISSION_SHA256,
+    SWEEP_SELECTION_POLICY,
+    SWEEP_SELECTION_SHA256,
+)
 from app.trade_qualification.timing import TIMING_POLICIES
 
 D = Decimal
@@ -194,6 +199,25 @@ class RangeStructuralProtectionSelection(StructuralProtectionSelection):
     def to_audit_json(self) -> str:
         payload = json.loads(super().to_audit_json())
         payload["schema"] = "ctcc_structural_selection_range_v1"
+        return json.dumps(
+            payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+        )
+
+
+@dataclass(frozen=True)
+class SweepStructuralProtectionSelection(StructuralProtectionSelection):
+    selection_policy: Literal["ctcc-sweep-original-extreme-selection-v1"] = (
+        SWEEP_SELECTION_POLICY
+    )
+    selection_policy_sha256: str = SWEEP_SELECTION_SHA256
+    sweep_permission_policy_sha256: str = SWEEP_PERMISSION_SHA256
+    sweep_permission_sha256: str | None = None
+    original_extreme_anchor_id: str | None = None
+    retained_analysis_blockers: tuple[str, ...] = ()
+
+    def to_audit_json(self) -> str:
+        payload = json.loads(super().to_audit_json())
+        payload["schema"] = "ctcc_structural_selection_sweep_v1"
         return json.dumps(
             payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")
         )
@@ -555,6 +579,52 @@ def select_range_structural_protection(detection, market, analysis, **inputs):
     )
 
 
+def select_sweep_structural_protection(detection, market, analysis, **inputs):
+    """New V6 policy, retaining the shared anchors/arithmetics and old selectors."""
+    return _select_structural_protection(
+        detection, market, analysis, _reversal=False, _sweep=True, **inputs
+    )
+
+
+def _restrict_sweep_stops(stops, event):
+    """Keep every pool/alternative; only the original extreme may be selected."""
+    raw = D(
+        dict(event.setup_basis).get(
+            "invalidation_unrounded", str(event.invalidation_price)
+        )
+    )
+    matching = [
+        anchor
+        for anchor in stops
+        if anchor.source == "sweep_extreme_invalidation"
+        and anchor.timeframe == "15m"
+        and anchor.known_at == event.setup_time
+        and anchor.anchor_price == raw
+    ]
+    original = matching[0] if len(matching) == 1 else None
+    return tuple(
+        anchor
+        if anchor is original
+        else replace(
+            anchor,
+            rejection_codes=tuple(
+                sorted(
+                    {
+                        *anchor.rejection_codes,
+                        "sweep_requires_original_extreme",
+                        *(
+                            {"sweep_original_extreme_missing_or_ambiguous"}
+                            if original is None
+                            else set()
+                        ),
+                    }
+                )
+            ),
+        )
+        for anchor in stops
+    ), original.anchor_id if original else None
+
+
 def _select_structural_protection(
     detection: TriggerDetection,
     market: MarketSnapshot,
@@ -571,6 +641,7 @@ def _select_structural_protection(
     minimum_buffer_bps: Decimal,
     _reversal: bool,
     _range: bool = False,
+    _sweep: bool = False,
 ) -> StructuralProtectionSelection:
     """Select a source-bound bracket without moving the supplied entry.
 
@@ -589,7 +660,9 @@ def _select_structural_protection(
         "evidence": "confirmed_ohlc",
     }
     result_type = (
-        RangeStructuralProtectionSelection
+        SweepStructuralProtectionSelection
+        if _sweep
+        else RangeStructuralProtectionSelection
         if _range
         else ReversalStructuralProtectionSelection
         if _reversal
@@ -622,6 +695,13 @@ def _select_structural_protection(
     except _INVALID:
         return failed("protection_input_invalid")
     try:
+        if _sweep:
+            from app.trade_qualification.range_policy import guard_range_analysis
+            from app.trade_qualification.regime_admission import _guard
+
+            _guard(detection)
+            _guard(market, source=True)
+            guard_range_analysis(analysis)
         if type(detection) is not TriggerDetection or set(detection.__dict__) != set(
             TriggerDetection.model_fields
         ):
@@ -676,7 +756,27 @@ def _select_structural_protection(
             direction=event.direction,
             source_sha256=digest,
         )
-        if _range:
+        if _sweep:
+            from app.trade_qualification.sweep_contract import derive_sweep_admission
+
+            identity["retained_analysis_blockers"] = tuple(analysis.blockers)
+            if event.strategy != "liquidity_sweep_reversal":
+                return failed("sweep_protection_strategy_mismatch")
+            admission = derive_sweep_admission(
+                market,
+                report_id=event.report_id,
+                direction=event.direction,
+                observed_at=event.observed_at,
+                analysis_version=analysis.version,
+            )
+            identity["sweep_permission_sha256"] = admission.evaluation_sha256
+            if (
+                not admission.admitted
+                or admission.detection != event
+                or admission.source_sha256 != digest
+            ):
+                return failed("sweep_protection_history_denied")
+        elif _range:
             from app.trade_qualification.range_policy import replay_range_permission
 
             identity["retained_analysis_blockers"] = tuple(analysis.blockers)
@@ -721,6 +821,9 @@ def _select_structural_protection(
             if cost < spread / price * D(10000) + slip:
                 return failed("cost_below_observed_friction")
             stops, targets = _source_anchors(frames, event)
+            if _sweep:
+                stops, original_anchor = _restrict_sweep_stops(stops, event)
+                identity["original_extreme_anchor_id"] = original_anchor
             thesis = D(
                 dict(event.setup_basis).get(
                     "invalidation_unrounded", str(event.invalidation_price)

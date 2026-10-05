@@ -46,6 +46,16 @@ def regional(**changes):
     )
 
 
+def current_v5(**changes):
+    values = capture._plain(regional())
+    values.update(
+        contract_version="ctcc.demo_account_plan.v5",
+        capture_scope="all_standard_products_v5_documented_algos",
+        **changes,
+    )
+    return capture.AllProductDemoAccountCapturePlan(**values)
+
+
 def bootstrap(selected=None, *, omit=(), **changes):
     selected = regional() if selected is None else selected
     artifacts = []
@@ -123,6 +133,7 @@ def setup(monkeypatch, *, selected=None, states=None, **harness_options):
         ("global", "https://openapi.okx.com"),
         ("us_au", "https://us.okx.com"),
         ("eea", "https://eea.okx.com"),
+        ("tr", "https://tr.okx.com"),
     ],
 )
 async def test_complete_synthetic_owned_capture_maps_real_db_revision_but_denies(
@@ -302,6 +313,8 @@ def test_region_is_explicit_matching_and_live_cannot_be_supplied():
     with pytest.raises((ValidationError, capture.AccountCaptureError)):
         regional(origin="https://eea.okx.com")
     with pytest.raises((ValidationError, capture.AccountCaptureError)):
+        regional(registration_region="tr", origin="https://openapi.okx.com")
+    with pytest.raises((ValidationError, capture.AccountCaptureError)):
         regional(registration_region="unknown")
     forged = credentials()
     object.__setattr__(forged, "environment", "live")
@@ -341,7 +354,7 @@ def test_bootstrap_pins_raw_bytes_and_never_accepts_caller_authority():
 async def test_native_tls_configuration_without_actual_peer_evidence_is_denied(
     monkeypatch,
 ):
-    session, harness, _, arguments = setup(monkeypatch)
+    session, harness, _, arguments = setup(monkeypatch, selected=current_v5())
     client = httpx.AsyncClient(
         transport=httpx.AsyncHTTPTransport(verify=True, trust_env=False, retries=0),
         trust_env=False,

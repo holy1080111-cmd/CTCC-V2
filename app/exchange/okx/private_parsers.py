@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from app.domain.okx_demo import (
@@ -18,6 +18,19 @@ def decimal_or_zero(value: Any) -> Decimal:
     if value in (None, ""):
         return Decimal(0)
     return Decimal(str(value))
+
+
+def decimal_required(value: Any) -> Decimal:
+    """Preserve a genuine source zero; never turn an absent value into zero."""
+    if value is None or value == "" or type(value) is bool:
+        raise ValueError("okx_required_decimal_missing")
+    try:
+        number = Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError):
+        raise ValueError("okx_required_decimal_invalid") from None
+    if not number.is_finite():
+        raise ValueError("okx_required_decimal_invalid")
+    return number
 
 
 def decimal_or_none(value: Any) -> Decimal | None:
@@ -49,48 +62,73 @@ def parse_account_config(row: dict[str, Any]) -> OkxDemoAccountConfig:
 
 
 def parse_balance(row: dict[str, Any]) -> OkxDemoBalanceSnapshot:
+    if type(row) is not dict:
+        raise ValueError("okx_balance_row_invalid")
+    source_time = datetime_from_ms(row.get("uTime"))
+    if source_time is None:
+        raise ValueError("okx_balance_update_time_missing")
+    raw_details = row.get("details")
+    if type(raw_details) is not list or not raw_details:
+        raise ValueError("okx_balance_details_missing")
     details: list[OkxDemoBalanceDetail] = []
-    for item in row.get("details", []) or []:
+    for item in raw_details:
+        if type(item) is not dict:
+            raise ValueError("okx_balance_detail_invalid")
         details.append(
             OkxDemoBalanceDetail(
-                currency=str(item.get("ccy") or ""),
-                equity=decimal_or_zero(item.get("eq")),
+                currency=_required_text(item.get("ccy")),
+                equity=decimal_required(item.get("eq")),
                 equity_usd=decimal_or_none(item.get("eqUsd")),
-                available_equity=decimal_or_zero(item.get("availEq")),
-                cash_balance=decimal_or_zero(item.get("cashBal")),
-                available_balance=decimal_or_zero(item.get("availBal")),
-                frozen_balance=decimal_or_zero(item.get("frozenBal")),
-                unrealized_pnl=decimal_or_zero(item.get("upl")),
+                available_equity=decimal_required(item.get("availEq")),
+                cash_balance=decimal_required(item.get("cashBal")),
+                available_balance=decimal_required(item.get("availBal")),
+                frozen_balance=decimal_required(item.get("frozenBal")),
+                unrealized_pnl=decimal_required(item.get("upl")),
             )
         )
-    captured_at = datetime_from_ms(row.get("uTime")) or datetime.now(UTC)
     return OkxDemoBalanceSnapshot(
-        total_equity=decimal_or_zero(row.get("totalEq")),
-        isolated_equity=decimal_or_zero(row.get("isoEq")),
-        adjusted_equity=decimal_or_zero(row.get("adjEq")),
-        available_equity=decimal_or_zero(row.get("availEq")),
+        total_equity=decimal_required(row.get("totalEq")),
+        isolated_equity=decimal_required(row.get("isoEq")),
+        adjusted_equity=decimal_required(row.get("adjEq")),
+        available_equity=decimal_required(row.get("availEq")),
         details=details,
-        captured_at=captured_at,
+        captured_at=source_time,
         raw=dict(row),
     )
 
 
 def parse_position(row: dict[str, Any]) -> OkxDemoPositionView:
+    if type(row) is not dict:
+        raise ValueError("okx_position_row_invalid")
+    instrument_id = _required_text(row.get("instId"))
+    position_side = _required_text(row.get("posSide"))
+    margin_mode = _required_text(row.get("mgnMode"))
+    if position_side not in {"net", "long", "short"} or margin_mode not in {
+        "cross",
+        "isolated",
+    }:
+        raise ValueError("okx_position_identity_invalid")
     return OkxDemoPositionView(
-        instrument_id=str(row.get("instId") or ""),
-        position_side=str(row.get("posSide") or "net"),
-        size=decimal_or_zero(row.get("pos")),
-        available_size=decimal_or_zero(row.get("availPos")),
+        instrument_id=instrument_id,
+        position_side=position_side,
+        size=decimal_required(row.get("pos")),
+        available_size=decimal_required(row.get("availPos")),
         average_price=decimal_or_none(row.get("avgPx")),
         mark_price=decimal_or_none(row.get("markPx")),
-        unrealized_pnl=decimal_or_zero(row.get("upl")),
+        unrealized_pnl=decimal_required(row.get("upl")),
         leverage=decimal_or_none(row.get("lever")),
-        margin_mode=row.get("mgnMode") or None,
+        margin_mode=margin_mode,
         liquidation_price=decimal_or_none(row.get("liqPx")),
         created_at=datetime_from_ms(row.get("cTime")),
         updated_at=datetime_from_ms(row.get("uTime")),
         raw=dict(row),
     )
+
+
+def _required_text(value: Any) -> str:
+    if type(value) is not str or not value:
+        raise ValueError("okx_required_text_missing")
+    return value
 
 
 def parse_order(row: dict[str, Any]) -> OkxDemoOrderView:

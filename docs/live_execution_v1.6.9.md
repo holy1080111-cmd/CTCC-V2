@@ -14,11 +14,12 @@ cd C:\CTCC-V2
 Copy-Item .env.example .env
 ```
 
-`POSTGRES_PASSWORD` is the literal PostgreSQL password. `DATABASE_URL` must use
-the same password, with reserved URL characters percent-encoded. For example,
-the literal password `p@ss%word` becomes `p%40ss%25word` only inside the URL.
-Alembic accepts URL-encoded passwords, but it cannot detect a mismatch between
-these two independently supplied values.
+The example file leaves `POSTGRES_PASSWORD` and `DATABASE_URL` blank. Set a new
+local PostgreSQL password in both fields before starting Compose. The URL must
+use the same password, with reserved characters percent-encoded. Alembic
+accepts URL-encoded passwords, but it cannot detect a mismatch between these
+two independently supplied values. The source defaults contain no usable
+database credential.
 
 Before every upgrade, create a database backup while the current stack is still
 available:

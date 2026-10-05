@@ -75,6 +75,17 @@ def test_runtime_trade_evidence_is_not_part_of_the_source_release(
     assert manifest.build_manifest(tmp_path).keys() == {"app.py"}
 
 
+def test_validation_results_are_not_part_of_the_source_manifest(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "app.py").write_text("pass\n", encoding="utf-8")
+    report = tmp_path / "validation-results" / "run-1" / "junit.xml"
+    report.parent.mkdir(parents=True)
+    report.write_text("<testsuite tests='1' />\n", encoding="utf-8")
+
+    assert manifest.build_manifest(tmp_path).keys() == {"app.py"}
+
+
 @pytest.mark.parametrize(
     "name",
     [
@@ -98,3 +109,53 @@ def test_manifest_excludes_private_paths_independent_of_case(tmp_path, name):
 def test_manifest_preserves_only_exact_env_example_name(tmp_path):
     (tmp_path / ".env.example").write_bytes(b"SYNTHETIC_ONLY=\n")
     assert manifest.build_manifest(tmp_path).keys() == {".env.example"}
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        ".key",
+        "secret.key",
+        "nested/client.p12",
+        "client.pfx",
+        "id_rsa",
+        "nested/id_ed25519",
+    ],
+)
+def test_manifest_fails_closed_on_private_key_file_names(tmp_path: Path, name: str):
+    private = tmp_path / name
+    private.parent.mkdir(parents=True, exist_ok=True)
+    private.write_bytes(b"synthetic-only")
+
+    with pytest.raises(ValueError, match="source private key material is forbidden"):
+        manifest.build_manifest(tmp_path)
+
+
+def test_manifest_keeps_public_pem_but_rejects_private_pem_material(tmp_path: Path):
+    public = tmp_path / "public-certificate.pem"
+    public.write_bytes(b"-----BEGIN CERTIFICATE-----\nsynthetic-only\n")
+    public_key = tmp_path / "id_rsa.pub"
+    public_key.write_bytes(b"synthetic-public-key")
+    assert manifest.build_manifest(tmp_path).keys() == {
+        "id_rsa.pub",
+        "public-certificate.pem",
+    }
+
+    private = tmp_path / "neutral-name.pem"
+    private.write_bytes(b"-----BEGIN " + b"PRIVATE KEY-----\nsynthetic-only\n")
+    with pytest.raises(ValueError, match="source private key material is forbidden"):
+        manifest.build_manifest(tmp_path)
+
+
+def test_manifest_rejects_unlisted_source_symlink(tmp_path):
+    source = tmp_path / "source.py"
+    source.write_text("pass\n", encoding="utf-8")
+    manifest_path = tmp_path / "MANIFEST.sha256"
+    manifest.write_manifest(tmp_path, manifest_path)
+    try:
+        (tmp_path / "alias.py").symlink_to(source)
+    except OSError:
+        pytest.skip("source symlink creation requires OS privilege")
+
+    with pytest.raises(ValueError, match="source symlink or junction cannot be hashed"):
+        manifest.check_manifest(tmp_path, manifest_path)

@@ -52,7 +52,8 @@ class DemoControlRepository:
         self.session_factory = session_factory
         self.clock = clock
 
-    async def _locked(self, session, scope):
+    @staticmethod
+    async def _locked(session, scope):
         checked(scope, ControlScope)
         if session.get_bind().dialect.name != "postgresql":
             raise DemoControlError("control_postgresql_required")
@@ -65,6 +66,61 @@ class DemoControlRepository:
             .filter_by(environment=scope.environment, account_id=scope.account_id)
             .with_for_update()
         )
+
+    @classmethod
+    async def read_in_transaction(cls, session, scope):
+        """Current control under this transaction's UID then control-row lock.
+
+        Does not open/commit another session. Used before the qualification scope
+        row lock; the caller retains both locks through its journal transition.
+        The returned state remains evidence, never dispatch authority.
+        """
+        if not session.in_transaction():
+            raise DemoControlError("control_active_transaction_required")
+        row = await cls._locked(session, scope)
+        state, event_sha256 = await cls._snapshot(session, row)
+        # The new binding additionally compares canonical typed journal bytes;
+        # Python dictionary equality alone conflates nested bool/int values.
+        await cls.verify_historical_binding(session, state, event_sha256)
+        return state, event_sha256
+
+    @staticmethod
+    async def verify_historical_binding(session, state, event_sha256):
+        """Replay an immutable past control event; does not require current Arm."""
+        checked(state, ControlState)
+        sha(event_sha256)
+        event = await session.get(
+            DemoControlJournal,
+            (state.scope.environment, state.scope.account_id, state.revision),
+        )
+        expected_state = canonical(document(state))
+        if event is None or (
+            event.event_sha256 != event_sha256
+            or digest(event.event_json) != event_sha256
+            or event.state_sha256 != digest(expected_state)
+            or event.occurred_at != state.updated_at
+            or event.event_json
+            != canonical(
+                {
+                    "version": "ctcc.demo_control_event.v1",
+                    "command_id": event.command_id,
+                    "action": event.action,
+                    "previous_sha256": event.previous_sha256,
+                    "state": document(state),
+                }
+            )
+        ):
+            raise DemoControlError("control_historical_binding_invalid")
+        prior = (
+            await session.get(
+                DemoControlJournal,
+                (state.scope.environment, state.scope.account_id, state.revision - 1),
+            )
+            if state.revision > 1
+            else None
+        )
+        if (None if prior is None else prior.event_sha256) != event.previous_sha256:
+            raise DemoControlError("control_historical_chain_invalid")
 
     @staticmethod
     async def _snapshot(session, row):

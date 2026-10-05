@@ -1,5 +1,13 @@
 .[eE][nN][vV]*
 *.[tT][oO][kK][eE][nN]
+*.[kK][eE][yY]
+*.[pP]12
+*.[pP][fF][xX]
+*[pP][rR][iI][vV][aA][tT][eE]*.[pP][eE][mM]
+[iI][dD]_[rR][sS][aA]
+[iI][dD]_[dD][sS][aA]
+[iI][dD]_[eE][cC][dD][sS][aA]
+[iI][dD]_[eE][dD]25519
 [pP][rR][iI][vV][aA][tT][eE]-[nN][oO][tT][iI][oO][nN]/
 __pycache__/
 *.py[cod]
@@ -7,6 +15,7 @@ __pycache__/
 /pytest-of-root/
 backups/
 /artifacts/
+/validation-results/
 *.dump
 *.zip
 !.env.example

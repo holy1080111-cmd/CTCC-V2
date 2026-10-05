@@ -59,10 +59,14 @@ candidate.
 
 ## Reservation and durable-intent boundary
 
-`ReservationRequestV2` is explicit and range-V5-only. Its mandatory
-`ReservationReplayBindingV2` includes bounded canonical original/current market,
-original inputs, raw collected quote, WS reference, recorded recheck and consumed
-event keys. Before caps, the shared reserve/consume preparation replays original
+`ReservationRequestV3` is explicit and range-V5-only. Its mandatory
+`ReservationReplayBindingV3` includes the bounded canonical account packet and
+its packet/plan hashes, plus canonical original/current market, original inputs,
+raw collected quote, WS reference, recorded recheck and consumed event keys.
+Control-bound reserve verifies that packet's exact UID, settlement currency, and
+credential-session pin before creating a hold. Historical V2 requests remain
+decodable, but lack the pre-reserve account packet and are rejected by the
+control-bound route. Before caps, the shared reserve/consume preparation replays original
 G1–G12 and the entire recorded R7, pins its exact origin/quote/risk inputs, and
 reruns R7 at the current locked observation time. Missing documents, mixed
 versions, duplicate event keys, changed claims, expiry and failed replay deny.

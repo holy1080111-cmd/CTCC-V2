@@ -63,6 +63,14 @@ stopped. Image build inputs may still use the normal dependency cache or
 registry; the hard network isolation applies to the running verification
 services, explicitly clears proxy injection, and blocks market/account egress:
 
+The verifier creates a fresh 256-bit PostgreSQL password in process memory for
+each run. The committed offline profile has no database password; Compose
+requires the generated value and gives the API the matching URL. The verifier
+restores the host process environment when it exits. The temporary password
+exists in the isolated containers' environment only until their cleanup; do
+not save rendered Compose configuration or container inspection output as
+evidence.
+
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass `
   -File .\scripts\verify_mie_gate3_foundation.ps1

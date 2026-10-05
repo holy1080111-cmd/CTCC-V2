@@ -7,6 +7,7 @@ import itertools
 
 import httpx
 
+from app.domain import native_clock as domain_clock
 from app.public_market_source import public_clock as clock
 from app.public_market_source import public_market_capture as capture
 from app.public_market_source.public_market_receipts import (
@@ -62,7 +63,9 @@ class SyntheticCapture:
             capture, "native_os_clock", lambda: os_evidence(self.stamp())
         )
         # Test-only adapter output; this fixture proves no native clock or IO.
-        monkeypatch.setattr(clock, "native_os_clock", lambda: capture.native_os_clock())
+        monkeypatch.setattr(
+            domain_clock, "native_os_clock", lambda: capture.native_os_clock()
+        )
         monkeypatch.setattr(
             capture,
             "_observe_owned_clock",

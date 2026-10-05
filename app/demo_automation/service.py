@@ -270,7 +270,6 @@ class SafeDemoAutomation:
             portfolio_max_margin_pct=(
                 D(str(self.settings.okx_demo_portfolio_max_margin_pct))
                 if self.settings.okx_demo_score_risk_enabled
-                and not self.settings.okx_demo_capital_bucket_enabled
                 else D("0")
             ),
             capital_bucket_enabled=self.settings.okx_demo_capital_bucket_enabled,

@@ -296,7 +296,12 @@ async def test_actual_completion_retention_edge_not_plan_creation(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "region,origin", [("us_au", "https://us.okx.com"), ("eea", "https://eea.okx.com")]
+    "region,origin",
+    [
+        ("us_au", "https://us.okx.com"),
+        ("eea", "https://eea.okx.com"),
+        ("tr", "https://tr.okx.com"),
+    ],
 )
 async def test_unsupported_region_rejected_before_any_acquisition(
     monkeypatch, region, origin

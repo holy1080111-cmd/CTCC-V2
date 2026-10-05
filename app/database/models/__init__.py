@@ -1,3 +1,9 @@
+from app.database.models.account_observation_index import (
+    DemoAccountObservationBatch,
+    DemoAccountObservationCoverage,
+    DemoAccountObservationFact,
+    DemoAccountObservationFinding,
+)
 from app.database.models.analysis import (
     AnalysisRun,
     StrategyEvaluation,
@@ -76,6 +82,10 @@ __all__ = [
     "ConfigurationVersion",
     "DemoAccountCaptureEvent",
     "DemoAccountControl",
+    "DemoAccountObservationBatch",
+    "DemoAccountObservationCoverage",
+    "DemoAccountObservationFact",
+    "DemoAccountObservationFinding",
     "DemoAutomationFingerprint",
     "DemoAutomationRun",
     "DemoAutomationState",

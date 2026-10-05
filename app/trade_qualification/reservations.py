@@ -126,6 +126,33 @@ class ReservationRequestV2(ReservationRequest):
         return self
 
 
+class ReservationReplayBindingV3(LedgerModel):
+    """Range V5 replay inputs plus the account packet pinned before reserve."""
+
+    contract_version: Literal["ctcc-reservation-replay-v3"]
+    account_packet_json: str = Field(min_length=1, max_length=16 * 1024 * 1024)
+    account_packet_sha256: Digest
+    account_plan_sha256: Digest
+    original_market_json: str = Field(min_length=1, max_length=8 * 1024 * 1024)
+    current_market_json: str = Field(min_length=1, max_length=8 * 1024 * 1024)
+    original_inputs_json: str = Field(min_length=1, max_length=16 * 1024 * 1024)
+    quote_json: str = Field(min_length=1, max_length=1024 * 1024)
+    reference_json: str = Field(min_length=1, max_length=32768)
+    recheck_json: str = Field(min_length=1, max_length=16 * 1024 * 1024)
+    consumed_event_keys: tuple[Digest, ...] = Field(max_length=2048)
+
+
+class ReservationRequestV3(ReservationRequest):
+    contract_version: Literal["ctcc-reservation-request-v3"]
+    replay_binding: ReservationReplayBindingV3
+
+    @model_validator(mode="after")
+    def explicit_range_v5(self):
+        if type(self.origin.evidence.pre_evidence) is not HistoryPreEvidenceRunV5:
+            raise ValueError("ledger_v3_requires_range_v5")
+        return self
+
+
 class ScenarioOperands(LedgerModel):
     entry: Price
     stop_loss: Price
@@ -219,6 +246,13 @@ _CHILDREN = {
         "risk_inputs": PortfolioInputs,
         "replay_binding": ReservationReplayBindingV2,
     },
+    ReservationRequestV3: {
+        "scope": LedgerScope,
+        "origin": RecheckOrigin,
+        "quote": ExecutableQuote,
+        "risk_inputs": PortfolioInputs,
+        "replay_binding": ReservationReplayBindingV3,
+    },
     RiskCoverage: {"candidate": ScenarioOperands, "execution": ScenarioOperands},
     ReservationReceipt: {"scope": LedgerScope, "coverage": RiskCoverage},
     LedgerScopeState: {"scope": LedgerScope},
@@ -229,6 +263,8 @@ _MODELS = {
     ReservationRequest,
     ReservationRequestV2,
     ReservationReplayBindingV2,
+    ReservationRequestV3,
+    ReservationReplayBindingV3,
     ScenarioOperands,
     RiskCoverage,
     ReservationReceipt,
@@ -363,7 +399,12 @@ def checked(value, expected):
     """Context-specific exact class guards BEFORE serialization/revalidation."""
     if type(value) is not expected or expected not in _MODELS:
         raise QualificationLedgerError("exact_ledger_contract_required")
-    if expected is ReservationRequestV2 or expected is ReservationReplayBindingV2:
+    if expected in (
+        ReservationRequestV2,
+        ReservationReplayBindingV2,
+        ReservationRequestV3,
+        ReservationReplayBindingV3,
+    ):
         from app.trade_qualification.submission_intent import _guard
 
         _guard(value)
@@ -437,6 +478,11 @@ def checked_reservation_request(value):
 
         _guard(value)
         return checked(value, ReservationRequestV2)
+    if type(value) is ReservationRequestV3:
+        from app.trade_qualification.submission_intent import _guard
+
+        _guard(value)
+        return checked(value, ReservationRequestV3)
     raise QualificationLedgerError("exact_reservation_request_required")
 
 
@@ -451,6 +497,8 @@ def decode_reservation_request(raw):
             kind = ReservationRequest
         elif body["contract_version"] == "ctcc-reservation-request-v2":
             kind = ReservationRequestV2
+        elif body["contract_version"] == "ctcc-reservation-request-v3":
+            kind = ReservationRequestV3
         else:
             raise ValueError("version")
         return checked_reservation_request(decode(raw, kind))
@@ -603,7 +651,7 @@ def replay_range_reservation(request, *, observed_at):
         _original_inputs_document,
     )
 
-    if type(request) is not ReservationRequestV2:
+    if type(request) not in (ReservationRequestV2, ReservationRequestV3):
         raise QualificationLedgerError("ledger_range_replay_binding_required")
     request = checked_reservation_request(request)
     binding = request.replay_binding
@@ -660,7 +708,7 @@ def replay_range_reservation(request, *, observed_at):
 def prepare_reservation(request, claims, active, *, observed_at):
     """Called again under the account lock, not a caller-written PASS input."""
     request = checked_reservation_request(request)
-    if type(request) is ReservationRequestV2:
+    if type(request) in (ReservationRequestV2, ReservationRequestV3):
         from app.trade_qualification.submission_intent import _guard
 
         _guard(observed_at)

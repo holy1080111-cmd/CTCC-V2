@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import re
 import sys
 from pathlib import Path
 
@@ -32,6 +33,7 @@ EXCLUDED_DIRECTORIES = {
     "build",
     "dist",
     "artifacts",
+    "validation-results",
     "htmlcov",
     "node_modules",
     "pytest-of-root",
@@ -49,13 +51,19 @@ EXCLUDED_SUFFIXES = {
     ".token",
     ".zip",
 }
+PRIVATE_KEY_NAMES = {"id_rsa", "id_dsa", "id_ecdsa", "id_ed25519"}
+PRIVATE_KEY_SUFFIXES = {".key", ".p12", ".pfx"}
+PRIVATE_KEY_PEM_HEADER = re.compile(
+    rb"-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY(?: BLOCK)?-----",
+    re.IGNORECASE,
+)
 
 
 def _excluded(path: Path, root: Path) -> bool:
     relative = path.relative_to(root)
     if any(
         part.casefold() in EXCLUDED_DIRECTORIES or part.casefold().endswith(".egg-info")
-        for part in relative.parts[:-1]
+        for part in relative.parts
     ):
         return True
     return (
@@ -67,14 +75,27 @@ def _excluded(path: Path, root: Path) -> bool:
 
 
 def source_files(root: Path) -> list[Path]:
-    return sorted(
-        (
-            path
-            for path in root.rglob("*")
-            if path.is_file() and not path.is_symlink() and not _excluded(path, root)
-        ),
-        key=lambda path: path.relative_to(root).as_posix(),
-    )
+    files = []
+    for path in root.rglob("*"):
+        if _excluded(path, root):
+            continue
+        if path.is_symlink() or path.is_junction():
+            raise ValueError(
+                f"source symlink or junction cannot be hashed: {path.relative_to(root).as_posix()}"
+            )
+        if path.is_file():
+            relative = path.relative_to(root).as_posix()
+            if (
+                path.name.casefold() in PRIVATE_KEY_NAMES
+                or path.name.casefold() in PRIVATE_KEY_SUFFIXES
+                or path.suffix.casefold() in PRIVATE_KEY_SUFFIXES
+                or PRIVATE_KEY_PEM_HEADER.search(path.read_bytes())
+            ):
+                raise ValueError(
+                    f"source private key material is forbidden: {relative}"
+                )
+            files.append(path)
+    return sorted(files, key=lambda path: path.relative_to(root).as_posix())
 
 
 def canonical_digest(path: Path) -> str:

@@ -1,5 +1,8 @@
 """B1 audit transactions under DB0017's UID lock; no claims/control mutation."""
 
+import json
+import re
+from dataclasses import dataclass
 from datetime import datetime
 
 from sqlalchemy import select
@@ -7,6 +10,8 @@ from sqlalchemy import select
 from app.database.models.account_capture_journal import DemoAccountCaptureEvent
 from app.database.repositories.qualification_ledger import QualificationLedgerRepository
 from app.trade_qualification import account_capture as capture
+from app.trade_qualification import account_current_history_join as source_join
+from app.trade_qualification import account_observation_index as observed
 from app.trade_qualification.account_capture_journal import (
     _ISSUER,
     MAX_CHAIN_BYTES,
@@ -19,6 +24,25 @@ from app.trade_qualification.account_capture_journal import (
     digest,
 )
 from app.trade_qualification.reservations import LedgerScope, checked_bootstrap
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class LockedAccountSourceJoinReadback:
+    """A local DB revision observation, never complete exchange account state."""
+
+    receipt_json: bytes
+
+    @property
+    def receipt_sha256(self):
+        return digest(self.receipt_json)
+
+    @property
+    def account_complete(self):
+        return False
+
+    @property
+    def execution_authority(self):
+        return False
 
 
 class AccountCaptureJournalRepository:
@@ -56,41 +80,122 @@ class AccountCaptureJournalRepository:
     async def read_chain(self, scope, capture_id):
         async with self.session_factory() as session, session.begin():
             await self._lock(session, scope)
-            rows = (
-                await session.scalars(
-                    select(DemoAccountCaptureEvent)
-                    .where(DemoAccountCaptureEvent.capture_id == capture_id)
-                    .order_by(DemoAccountCaptureEvent.sequence)
-                    .limit(MAX_EVENTS + 1)
-                )
-            ).all()
-            if not rows or len(rows) > MAX_EVENTS:
-                raise AccountJournalError("journal_capture_missing_or_bound")
-            result, previous, total_bytes, previous_db = [], None, 0, None
-            for index, row in enumerate(rows, 1):
-                event = self._event(row, scope)
-                record = checked_event(event)
-                if record["sequence"] != index or record["previous_sha256"] != previous:
-                    raise AccountJournalError("journal_chain_invalid")
-                total_bytes += (
-                    len(event.event_json)
-                    + len(event.raw_body or b"")
-                    + len(event.packet_payload or b"")
-                )
-                if (
-                    row.chain_bytes != total_bytes
-                    or total_bytes > MAX_CHAIN_BYTES
-                    or (previous_db is not None and row.db_recorded_at < previous_db)
-                ):
-                    raise AccountJournalError("journal_chain_byte_or_clock_bound")
-                previous_db = row.db_recorded_at
-                previous = digest(event.event_json)
-                result.append(
-                    JournalReadback(
-                        event, row.db_recorded_at, capture._utc(self.clock())
-                    )
-                )
-            return tuple(result)
+            return await self._read_chain_locked(session, scope, capture_id)
+
+    async def _read_chain_locked(self, session, scope, capture_id):
+        """Caller already owns the UID transaction lock and exact scope row."""
+        rows = (
+            await session.scalars(
+                select(DemoAccountCaptureEvent)
+                .where(DemoAccountCaptureEvent.capture_id == capture_id)
+                .order_by(DemoAccountCaptureEvent.sequence)
+                .limit(MAX_EVENTS + 1)
+            )
+        ).all()
+        if not rows or len(rows) > MAX_EVENTS:
+            raise AccountJournalError("journal_capture_missing_or_bound")
+        result, previous, total_bytes, previous_db = [], None, 0, None
+        for index, row in enumerate(rows, 1):
+            event = self._event(row, scope)
+            record = checked_event(event)
+            if record["sequence"] != index or record["previous_sha256"] != previous:
+                raise AccountJournalError("journal_chain_invalid")
+            total_bytes += (
+                len(event.event_json)
+                + len(event.raw_body or b"")
+                + len(event.packet_payload or b"")
+            )
+            if (
+                row.chain_bytes != total_bytes
+                or total_bytes > MAX_CHAIN_BYTES
+                or (previous_db is not None and row.db_recorded_at < previous_db)
+            ):
+                raise AccountJournalError("journal_chain_byte_or_clock_bound")
+            previous_db = row.db_recorded_at
+            previous = digest(event.event_json)
+            result.append(
+                JournalReadback(event, row.db_recorded_at, capture._utc(self.clock()))
+            )
+        return tuple(result)
+
+    async def read_locked_current_history_join(
+        self, scope, *, history_capture_id, current_capture_id
+    ):
+        """Reread both B1 chains and local revision under one fresh UID lock.
+
+        This diagnostic proves a local DB match at readback time only. It does
+        not close exchange history or publish complete account claims.
+        """
+        checked_bootstrap(scope, LedgerScope)
+        if (
+            any(
+                type(value) is not str or re.fullmatch(r"[a-f0-9]{32}", value) is None
+                for value in (history_capture_id, current_capture_id)
+            )
+            or history_capture_id == current_capture_id
+        ):
+            raise AccountJournalError("journal_join_capture_ids_invalid")
+        async with self.session_factory() as session, session.begin():
+            row = await self._lock(session, scope)
+            # Read the historical chain first to protect the current chain's
+            # original 30-second measured freshness budget.
+            history_chain = await self._read_chain_locked(
+                session, scope, history_capture_id
+            )
+            current_chain = await self._read_chain_locked(
+                session, scope, current_capture_id
+            )
+            checkpoint = await self.ledger._bootstrap_checkpoint(session, scope, row)
+            if checkpoint.observed_at < current_chain[-1].readback_at:
+                raise AccountJournalError("journal_join_readback_clock_regressed")
+            joined = source_join.join_recorded_account_sources(
+                history_chain=history_chain,
+                history_reference=observed.source_reference(history_chain),
+                current_chain=current_chain,
+                current_reference=observed.source_reference(current_chain),
+                scope=scope,
+                validated_at=checkpoint.received_at,
+            )
+            value = json.loads(joined.receipt_json)
+            if value["recorded_local_checkpoint_sha256"] != checkpoint.state_sha256:
+                raise AccountJournalError("journal_join_local_revision_changed")
+            # The pure join was evaluated before this DB readback. Keep its
+            # original blockers verbatim for provenance, but report the local
+            # revision requirement as resolved only in this locked observation.
+            recorded_blockers = value["blocking_reasons"]
+            locked_blockers = sorted(
+                set(recorded_blockers) - {"current_local_revision_readback_required"}
+            )
+            receipt = canonical(
+                {
+                    "schema_version": "ctcc.demo_account_locked_source_join.v2",
+                    "join_receipt_sha256": joined.receipt_sha256,
+                    "history_source_reference": value["history_source_reference"],
+                    "current_source_reference": value["current_source_reference"],
+                    "scope_sha256": value["scope_sha256"],
+                    "session_binding_sha256": value["session_binding_sha256"],
+                    "recorded_local_checkpoint_sha256": value[
+                        "recorded_local_checkpoint_sha256"
+                    ],
+                    "db_local_state_sha256": checkpoint.state_sha256,
+                    "db_account_revision": checkpoint.state.account_revision,
+                    "db_ledger_revision": checkpoint.state.ledger_revision,
+                    "db_active_hold_count": len(checkpoint.state.active),
+                    "readback_observed_at": checkpoint.observed_at.isoformat(),
+                    "readback_received_at": checkpoint.received_at.isoformat(),
+                    "recorded_pre_lock_blocking_reasons": recorded_blockers,
+                    "locked_readback_blocking_reasons": locked_blockers,
+                    "local_revision_readback_verified": True,
+                    "exchange_atomic_revision_verified": False,
+                    "history_tail_closed": False,
+                    "snapshot": None,
+                    "account_complete": False,
+                    "account_revision_published": False,
+                    "execution_authority": False,
+                    "admission": "DENY",
+                }
+            )
+        return LockedAccountSourceJoinReadback(receipt)
 
     async def _append(self, scope, event):
         record = checked_event(event)

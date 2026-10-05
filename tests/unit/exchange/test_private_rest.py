@@ -51,13 +51,13 @@ async def test_authenticated_get_includes_simulated_header_and_signed_query() ->
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/api/v5/account/positions"
-        assert request.url.query.decode() == "instType=SWAP&instId=BTC-USDT-SWAP"
+        assert request.url.query.decode() == "instId=BTC-USDT-SWAP"
         assert request.headers["x-simulated-trading"] == "1"
         timestamp = request.headers["OK-ACCESS-TIMESTAMP"]
         expected = build_signature(
             timestamp=timestamp,
             method="GET",
-            request_path="/api/v5/account/positions?instType=SWAP&instId=BTC-USDT-SWAP",
+            request_path="/api/v5/account/positions?instId=BTC-USDT-SWAP",
             body="",
             secret="demo-secret",
         )
@@ -75,14 +75,78 @@ async def test_authenticated_get_includes_simulated_header_and_signed_query() ->
 
 
 @pytest.mark.asyncio
-async def test_pending_algos_queries_conditional_and_oco_with_signed_query() -> None:
+async def test_unfiltered_positions_query_covers_all_position_instrument_types() -> (
+    None
+):
+    settings = demo_settings()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/v5/account/positions"
+        assert request.url.query == b""
+        return httpx.Response(
+            200,
+            json={"code": "0", "msg": "", "data": [{"instType": "FUTURES"}]},
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="https://www.okx.com",
+    ) as client:
+        rows = await OkxDemoPrivateRestClient(client, settings=settings).positions()
+
+    assert rows == [{"instType": "FUTURES"}]
+
+
+@pytest.mark.asyncio
+async def test_pending_orders_are_unfiltered_and_page_until_empty_terminal() -> None:
+    settings = demo_settings()
+    observed = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/v5/trade/orders-pending"
+        assert request.url.params.get("instType") is None
+        assert request.url.params.get("instId") is None
+        assert request.url.params["limit"] == "100"
+        after = request.url.params.get("after")
+        observed.append(after)
+        rows = {
+            None: [{"ordId": "200"}, {"ordId": "199"}],
+            "199": [{"ordId": "198"}],
+            "198": [],
+        }[after]
+        return httpx.Response(200, json={"code": "0", "msg": "", "data": rows})
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="https://www.okx.com",
+    ) as client:
+        rows = await OkxDemoPrivateRestClient(
+            client, settings=settings
+        ).pending_orders()
+
+    assert [row["ordId"] for row in rows] == ["200", "199", "198"]
+    assert observed == [None, "199", "198"]
+
+
+@pytest.mark.asyncio
+async def test_pending_algos_use_documented_types_and_empty_cursor_terminators() -> (
+    None
+):
     settings = demo_settings()
     fixed = datetime(2026, 8, 4, 13, 1, 2, 345000, tzinfo=UTC)
+    observed = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/api/v5/trade/orders-algo-pending"
-        assert request.url.params["ordType"] == "conditional,oco"
         assert request.url.params["instId"] == "BTC-USDT-SWAP"
+        assert request.url.params["limit"] == "100"
+        assert request.headers["x-simulated-trading"] == "1"
+        order_type = request.url.params["ordType"]
+        after = request.url.params.get("after")
+        observed.append((order_type, after))
+        assert order_type in {"conditional", "oco", "trigger", "move_order_stop"}
         query = request.url.query.decode()
         expected = build_signature(
             timestamp=request.headers["OK-ACCESS-TIMESTAMP"],
@@ -92,7 +156,17 @@ async def test_pending_algos_queries_conditional_and_oco_with_signed_query() -> 
             secret="demo-secret",
         )
         assert request.headers["OK-ACCESS-SIGN"] == expected
-        return httpx.Response(200, json={"code": "0", "msg": "", "data": []})
+        rows = {
+            ("conditional", None): [{"algoId": "100"}],
+            ("conditional", "100"): [{"algoId": "99"}],
+            ("conditional", "99"): [],
+            ("oco", None): [{"algoId": "80"}],
+            ("oco", "80"): [],
+            ("trigger", None): [],
+            ("move_order_stop", None): [{"algoId": "60"}],
+            ("move_order_stop", "60"): [],
+        }[(order_type, after)]
+        return httpx.Response(200, json={"code": "0", "msg": "", "data": rows})
 
     transport = httpx.MockTransport(handler)
     async with httpx.AsyncClient(
@@ -105,7 +179,49 @@ async def test_pending_algos_queries_conditional_and_oco_with_signed_query() -> 
             clock=lambda: fixed,
         ).pending_algo_orders("BTC-USDT-SWAP")
 
-    assert result == []
+    assert [row["algoId"] for row in result] == ["100", "99", "80", "60"]
+    assert observed == [
+        ("conditional", None),
+        ("conditional", "100"),
+        ("conditional", "99"),
+        ("oco", None),
+        ("oco", "80"),
+        ("trigger", None),
+        ("move_order_stop", None),
+        ("move_order_stop", "60"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_pending_algo_cursor_limit_without_empty_terminal_fails_closed() -> None:
+    settings = demo_settings()
+    fixed = datetime(2026, 8, 4, 13, 1, 2, 345000, tzinfo=UTC)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"code": "0", "msg": "", "data": [{"algoId": "100"}]},
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="https://www.okx.com",
+    ) as client:
+        reader = OkxDemoPrivateRestClient(
+            client,
+            settings=settings,
+            clock=lambda: fixed,
+        )
+        with pytest.raises(OkxPrivateApiError) as exc_info:
+            await reader._cursor_chain(
+                "/api/v5/trade/orders-algo-pending",
+                params={"ordType": "conditional"},
+                cursor_field="algoId",
+                max_pages=2,
+            )
+
+    assert exc_info.value.code == "pagination_incomplete"
 
 
 @pytest.mark.asyncio

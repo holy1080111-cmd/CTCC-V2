@@ -22,22 +22,14 @@ QUERIES = tuple(
     for family in FAMILIES
     for kind in PRODUCTS
 )
-EXPECTED_STREAMS = tuple(
-    name
-    for stream in old.STREAMS
-    for name in (
-        tuple(f"{stream}_{kind.lower()}" for kind in PRODUCTS)
-        if stream in FAMILIES
-        else (stream,)
-    )
-)
+EXPECTED_STREAMS = capture.V5_STREAMS
 
 
 def plan(**changes):
     values = capture._plain(regional())
     values.update(
-        contract_version="ctcc.demo_account_plan.v4",
-        capture_scope="all_standard_products_v4_and_current_algos",
+        contract_version="ctcc.demo_account_plan.v5",
+        capture_scope="all_standard_products_v5_documented_algos",
         **changes,
     )
     return capture.AllProductDemoAccountCapturePlan(**values)
@@ -62,12 +54,13 @@ def product_row(family, kind, **changes):
     )
 
 
-def script(*, pages=None, source=None):
+def script(*, pages=None, source=None, streams=None):
     pages = {} if pages is None else pages
     source = {} if source is None else source
+    streams = EXPECTED_STREAMS if streams is None else streams
     variants = {name: (family, kind) for name, family, kind in QUERIES}
     result = []
-    for stream in EXPECTED_STREAMS:
+    for stream in streams:
         if stream in pages:
             selected = pages[stream]
         elif stream in variants:
@@ -86,12 +79,12 @@ def script(*, pages=None, source=None):
     return result
 
 
-def records(*, selected=None, pages=None, source=None):
+def records(*, selected=None, pages=None, source=None, streams=None):
     selected = plan() if selected is None else selected
     items = []
     identity = None
     previous_stream = None
-    for stream, rows in script(pages=pages, source=source):
+    for stream, rows in script(pages=pages, source=source, streams=streams):
         if stream != previous_stream:
             index, after, previous = 0, None, None
         at = old.NOW + timedelta(milliseconds=10 + 3 * len(items))
@@ -125,14 +118,23 @@ def verify(**kwargs):
     return old.verify(*records(**kwargs))
 
 
-def test_v4_exact_inventory_replay_retains_all_types_without_authority():
+def historical_v4_plan():
+    values = capture._plain(regional())
+    values.update(
+        contract_version="ctcc.demo_account_plan.v4",
+        capture_scope="all_standard_products_v4_and_current_algos",
+    )
+    return capture.HistoricalAllProductDemoAccountCapturePlanV4(**values)
+
+
+def test_v5_exact_inventory_replay_retains_all_types_without_authority():
     packet = verify()
     assert (
         tuple(dict.fromkeys(p.request.stream for p in packet.observations))
         == EXPECTED_STREAMS
     )
-    assert len(EXPECTED_STREAMS) == 38
-    assert packet.schema_version == "ctcc.demo_account_capture.v4"
+    assert len(EXPECTED_STREAMS) == 34
+    assert packet.schema_version == "ctcc.demo_account_capture.v5"
     assert type(packet.plan) is capture.AllProductDemoAccountCapturePlan
     assert "non_swap_history_not_requested" not in packet.incomplete_reasons
     assert {
@@ -160,6 +162,67 @@ def test_v4_exact_inventory_replay_retains_all_types_without_authority():
     assert {
         row[1]["instType"] for row in mapping._records(packet)["fills_history"]
     } == set(PRODUCTS)
+
+
+def test_v4_packet_remains_immutable_historical_evidence():
+    selected = historical_v4_plan()
+    packet = verify(selected=selected, streams=capture.V4_STREAMS)
+    assert packet.schema_version == "ctcc.demo_account_capture.v4"
+    assert type(packet.plan) is capture.HistoricalAllProductDemoAccountCapturePlanV4
+    assert not packet.account_complete and not packet.execution_authority
+    frozen = capture.freeze_demo_account_packet(
+        packet, expected_plan_sha256=packet.plan_sha256
+    )
+    assert (
+        capture.verify_demo_account_packet(
+            frozen.payload,
+            expected_sha256=frozen.sha256,
+            expected_plan_sha256=packet.plan_sha256,
+        )
+        == packet
+    )
+    relabeled = packet.model_copy(
+        update={"schema_version": "ctcc.demo_account_capture.v5"}
+    )
+    with pytest.raises(capture.AccountCaptureError):
+        capture.freeze_demo_account_packet(
+            relabeled, expected_plan_sha256=packet.plan_sha256
+        )
+
+
+@pytest.mark.asyncio
+async def test_only_v5_plan_uses_the_owned_account_collector(monkeypatch):
+    source = source_pages()
+    harness = Harness(monkeypatch, pages=source)
+    selected = plan()
+    harness.script = script(source=source)
+    packet = await harness.collect(selected=selected)
+    assert type(packet.plan) is capture.AllProductDemoAccountCapturePlan
+    assert packet.schema_version == "ctcc.demo_account_capture.v5"
+    assert len(packet.observations) == len(harness.requests) == len(harness.script)
+    assert {
+        request.url.params.get("ordType")
+        for request in harness.requests
+        if request.url.path.endswith("/orders-algo-pending")
+    } <= set(capture.ALGO_ORDER_TYPES)
+    harness.assert_closed()
+
+
+@pytest.mark.asyncio
+async def test_historical_v4_plan_cannot_start_account_collection(monkeypatch):
+    harness = Harness(monkeypatch)
+    selected = historical_v4_plan()
+    with pytest.raises(
+        collector.AccountCollectionError, match="account_plan_version_retired"
+    ):
+        await collector.collect_demo_account_records(
+            credentials=credentials(),
+            clock=harness.clock,
+            plan=selected,
+            expected_plan_sha256=capture.plan_sha256(selected),
+            barrier_completed_at=old.BARRIER,
+        )
+    assert not harness.requests
 
 
 @pytest.mark.parametrize("stream,family,kind", QUERIES)
@@ -276,7 +339,7 @@ def test_new_plan_requires_explicit_version_and_sufficient_inventory_budget():
     with pytest.raises(ValidationError):
         capture.AllProductDemoAccountCapturePlan(**values)
     with pytest.raises(ValueError, match="plan_inventory_budget_invalid"):
-        plan(max_total_pages=37)
+        plan(max_total_pages=33)
     with pytest.raises(capture.AccountCaptureError, match="stream_invalid"):
         capture.account_request(regional(), "fills_history_spot")
     with pytest.raises(capture.AccountCaptureError, match="stream_invalid"):
@@ -304,7 +367,7 @@ def test_legacy_packet_bytes_match_ecda5214_checkpoint(selected, expected):
 
 
 @pytest.mark.asyncio
-async def test_owned_v4_collector_binds_actual_requested_queries_and_empty_terminals(
+async def test_owned_v5_collector_binds_actual_requested_queries_and_empty_terminals(
     monkeypatch,
 ):
     harness = Harness(monkeypatch)
@@ -342,7 +405,7 @@ async def test_runtime_preserves_non_swap_history_and_denies_unmapped_economics(
         ]
     harness.script = script(source=source_pages(), pages=pages)
     result = await session.collect_and_materialize(**arguments)
-    assert result.packet.schema_version == "ctcc.demo_account_capture.v4"
+    assert result.packet.schema_version == "ctcc.demo_account_capture.v5"
     assert result.admission == "DENY" and not result.execution_authority
     assert len(observed) == 2
     assert result.transport_provenance == "synthetic_transport"
@@ -382,7 +445,6 @@ async def test_non_swap_current_exposure_is_retained_with_unknown_risk(
     (
         ("positions", "SPOT", "net"),
         ("positions", "MARGIN", ""),
-        ("algo_chase", "SPOT", ""),
     ),
 )
 def test_product_specific_inventory_semantics_reject_malformed_source(
@@ -394,6 +456,12 @@ def test_product_specific_inventory_semantics_reject_malformed_source(
         match="source_instrument_type_invalid|position_side_invalid",
     ):
         verify(pages={stream: [[value]] if stream == "positions" else [[value], []]})
+
+
+@pytest.mark.parametrize("kind", ("iceberg", "twap", "chase", "smart_iceberg"))
+def test_current_algo_endpoint_rejects_undocumented_order_types(kind):
+    with pytest.raises(capture.AccountCaptureError, match="stream_invalid"):
+        capture.account_request(plan(), f"algo_{kind}")
 
 
 @pytest.mark.asyncio
@@ -429,7 +497,7 @@ async def test_unavailable_required_product_aborts_without_empty_substitution_or
 
 
 @pytest.mark.parametrize("mutate", ("plan_scope", "packet_version", "cached_plan"))
-def test_replayed_or_resigned_old_scope_cannot_gain_v4_coverage(mutate):
+def test_replayed_or_resigned_old_scope_cannot_gain_v5_coverage(mutate):
     packet = verify()
     if mutate == "plan_scope":
         packet = packet.model_copy(

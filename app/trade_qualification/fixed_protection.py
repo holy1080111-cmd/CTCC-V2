@@ -45,6 +45,7 @@ from app.strategies.structural_protection import (
     select_range_structural_protection,
     select_reversal_structural_protection,
     select_structural_protection,
+    select_sweep_structural_protection,
 )
 from app.trade_qualification.data import (
     DataQualificationPolicy,
@@ -73,6 +74,10 @@ from app.trade_qualification.models import (
     require_aware,
 )
 from app.trade_qualification.service import _plain
+from app.trade_qualification.sweep_contract import (
+    SWEEP_PERMISSION_SHA256,
+    SWEEP_SELECTION_SHA256,
+)
 from app.trade_qualification.timing import event_identity
 
 D = Decimal
@@ -148,6 +153,7 @@ def _guard(value, depth=0, budget=None):
             FixedProtectionResult,
             FixedProtectionResultV3,
             FixedProtectionResultV5,
+            FixedProtectionResultV6,
         }
         if type(value) not in allowed:
             raise FixedProtectionError("exact_fixed_protection_model_required")
@@ -410,6 +416,33 @@ class FixedProtectionResultV5(FixedProtectionResult):
         return self
 
 
+class FixedProtectionResultV6(FixedProtectionResult):
+    contract_version: Literal["ctcc-history-fixed-protection-v6"]
+    alignment_policy: Literal["ctcc-sweep-history-protection-v1"]
+    sweep_permission_policy_sha256: Digest
+    sweep_selection_policy_sha256: Digest
+    sweep_permission_sha256: Digest | None = None
+    original_extreme_anchor_id: Text | None = None
+
+    @model_validator(mode="after")
+    def history_bound(self):
+        if (
+            self.strategy != "liquidity_sweep_reversal"
+            or self.sweep_permission_policy_sha256 != SWEEP_PERMISSION_SHA256
+            or self.sweep_selection_policy_sha256 != SWEEP_SELECTION_SHA256
+            or (
+                len(self.checks) >= 2
+                and self.checks[1].passed
+                and (
+                    self.sweep_permission_sha256 is None
+                    or self.original_extreme_anchor_id is None
+                )
+            )
+        ):
+            raise ValueError("fixed_sweep_history_binding_required")
+        return self
+
+
 def _price(value):
     if (
         type(value) is not Decimal
@@ -481,6 +514,10 @@ def evaluate_fixed_protection_v5(*sources, **inputs):
     return _evaluate_fixed_protection(*sources, _reversal=False, _range=True, **inputs)
 
 
+def evaluate_fixed_protection_v6(*sources, **inputs):
+    return _evaluate_fixed_protection(*sources, _reversal=False, _sweep=True, **inputs)
+
+
 def _evaluate_fixed_protection(
     original_market: MarketSnapshot,
     original_analysis: MultiTimeframeAnalysis,
@@ -499,6 +536,7 @@ def _evaluate_fixed_protection(
     observed_at: datetime,
     _reversal: bool,
     _range: bool = False,
+    _sweep: bool = False,
 ) -> FixedProtectionResult:
     """Compare original prices only; current-source history continuity is separate.
 
@@ -510,6 +548,8 @@ def _evaluate_fixed_protection(
     """
     try:
         event = _copy(detection, TriggerDetection)
+        if _sweep and event.strategy != "liquidity_sweep_reversal":
+            raise FixedProtectionError("fixed_sweep_strategy_required")
         if _range and event.strategy != "range_reversal":
             raise FixedProtectionError("fixed_range_strategy_required")
         if _reversal and event.strategy != "structure_reversal":
@@ -538,6 +578,13 @@ def _evaluate_fixed_protection(
     identity = {
         **(
             {
+                "contract_version": "ctcc-history-fixed-protection-v6",
+                "alignment_policy": "ctcc-sweep-history-protection-v1",
+                "sweep_permission_policy_sha256": SWEEP_PERMISSION_SHA256,
+                "sweep_selection_policy_sha256": SWEEP_SELECTION_SHA256,
+            }
+            if _sweep
+            else {
                 "contract_version": "ctcc-history-fixed-protection-v5",
                 "alignment_policy": "ctcc-neutral-range-protection-v1",
             }
@@ -573,7 +620,9 @@ def _evaluate_fixed_protection(
 
     def finish():
         result_type = (
-            FixedProtectionResultV5
+            FixedProtectionResultV6
+            if _sweep
+            else FixedProtectionResultV5
             if _range
             else FixedProtectionResultV3
             if _reversal
@@ -626,7 +675,9 @@ def _evaluate_fixed_protection(
         )
         try:
             selector = (
-                select_range_structural_protection
+                select_sweep_structural_protection
+                if _sweep
+                else select_range_structural_protection
                 if _range
                 else select_reversal_structural_protection
                 if _reversal
@@ -647,6 +698,11 @@ def _evaluate_fixed_protection(
             ):
                 raise FixedProtectionError("original_selection_replay_mismatch")
             selected = original.selected
+            if _sweep:
+                evidence["sweep_permission_sha256"] = original.sweep_permission_sha256
+                evidence["original_extreme_anchor_id"] = (
+                    original.original_extreme_anchor_id
+                )
             if _range:
                 evidence["range_permission_sha256"] = original.range_permission_sha256
             if _reversal:

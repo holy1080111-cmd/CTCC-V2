@@ -32,6 +32,7 @@ from app.strategies.structural_protection import (
     select_range_structural_protection,
     select_reversal_structural_protection,
     select_structural_protection,
+    select_sweep_structural_protection,
 )
 from app.trade_evidence.models import (
     EvidenceCandle,
@@ -40,7 +41,7 @@ from app.trade_evidence.models import (
     EvidenceSnapshot,
     Purpose,
 )
-from app.trade_evidence.renderer import render_evidence
+from app.trade_evidence.renderer import render_evidence, render_evidence_liquidity_v2
 from app.trade_evidence.service import prepare_evidence, validate_snapshot
 from app.trade_evidence.storage import (
     FILE_NAMES,
@@ -63,14 +64,17 @@ from app.trade_qualification.history_engine import (
     HistoryPreEvidencePolicyV3,
     HistoryPreEvidencePolicyV4,
     HistoryPreEvidencePolicyV5,
+    HistoryPreEvidencePolicyV6,
     HistoryPreEvidenceRunV2,
     HistoryPreEvidenceRunV3,
     HistoryPreEvidenceRunV4,
     HistoryPreEvidenceRunV5,
+    HistoryPreEvidenceRunV6,
     verify_history_pre_evidence_v2,
     verify_history_pre_evidence_v3,
     verify_history_pre_evidence_v4,
     verify_history_pre_evidence_v5,
+    verify_history_pre_evidence_v6,
 )
 from app.trade_qualification.history_engine import (
     _preflight as _history_preflight,
@@ -80,6 +84,7 @@ from app.trade_qualification.history_prefix import (
     HistoryEntryQualificationResultV3,
     HistoryEntryQualificationResultV4,
     HistoryEntryQualificationResultV5,
+    HistoryEntryQualificationResultV6,
 )
 from app.trade_qualification.location import ExecutableQuote
 from app.trade_qualification.models import (
@@ -150,6 +155,7 @@ def _guard(value, depth=0, budget=None):
             HistoryEvidenceGateRunV3,
             HistoryEvidenceGateRunV4,
             HistoryEvidenceGateRunV5,
+            HistoryEvidenceGateRunV6,
             EvidenceSnapshot,
             EvidencePanel,
             EvidenceCandle,
@@ -165,12 +171,15 @@ def _guard(value, depth=0, budget=None):
                 HistoryPreEvidenceRunV3,
                 HistoryPreEvidenceRunV4,
                 HistoryPreEvidenceRunV5,
+                HistoryPreEvidenceRunV6,
                 HistoryPreEvidencePolicyV3,
                 HistoryPreEvidencePolicyV4,
                 HistoryPreEvidencePolicyV5,
+                HistoryPreEvidencePolicyV6,
                 HistoryEntryQualificationResultV3,
                 HistoryEntryQualificationResultV4,
                 HistoryEntryQualificationResultV5,
+                HistoryEntryQualificationResultV6,
             ):
                 _history_preflight(value)
             else:
@@ -365,7 +374,15 @@ class HistoryEvidenceGateRunV5(EvidenceGateRun):
     result: HistoryEntryQualificationResultV5
 
 
+class HistoryEvidenceGateRunV6(EvidenceGateRun):
+    contract_version: Literal["ctcc-history-evidence-v6"]
+    pre_evidence: HistoryPreEvidenceRunV6
+    result: HistoryEntryQualificationResultV6
+
+
 def verify_pre_evidence_versioned(run, market, **inputs):
+    if type(run) is HistoryPreEvidenceRunV6:
+        return verify_history_pre_evidence_v6(run, market, **inputs)
     if type(run) is HistoryPreEvidenceRunV5:
         return verify_history_pre_evidence_v5(run, market, **inputs)
     if type(run) is HistoryPreEvidenceRunV4:
@@ -401,6 +418,7 @@ def publish_qualification_evidence(
     purpose: Purpose,
     candle_limit: int = 80,
     clock: Callable[[], datetime] = actual_utc,
+    render_profile: str = "v1",
 ) -> EvidenceGateRun:
     """Recompute, prepare, render, publish/read back, then append G12 once.
 
@@ -415,6 +433,8 @@ def publish_qualification_evidence(
         or type(candle_limit) is not int
         or not 80 <= candle_limit <= 200
         or not callable(clock)
+        or type(render_profile) is not str
+        or render_profile not in {"v1", "liquidity_v2"}
     ):
         raise EvidenceGateError("evidence_preparation_policy_invalid")
     try:
@@ -433,7 +453,9 @@ def publish_qualification_evidence(
         raise EvidenceGateError("pre_evidence_replay_failed") from exc
     pin = pre.evaluation_sha256
     gate_type = (
-        HistoryEvidenceGateRunV5
+        HistoryEvidenceGateRunV6
+        if type(pre) is HistoryPreEvidenceRunV6
+        else HistoryEvidenceGateRunV5
         if type(pre) is HistoryPreEvidenceRunV5
         else HistoryEvidenceGateRunV4
         if type(pre) is HistoryPreEvidenceRunV4
@@ -484,7 +506,9 @@ def publish_qualification_evidence(
             _plain(
                 {
                     **(
-                        {"contract_version": "ctcc-history-evidence-v5"}
+                        {"contract_version": "ctcc-history-evidence-v6"}
+                        if gate_type is HistoryEvidenceGateRunV6
+                        else {"contract_version": "ctcc-history-evidence-v5"}
                         if gate_type is HistoryEvidenceGateRunV5
                         else {"contract_version": "ctcc-history-evidence-v4"}
                         if gate_type is HistoryEvidenceGateRunV4
@@ -555,7 +579,9 @@ def publish_qualification_evidence(
         if collected.bundle_sha256 != pre.prefix.data_result.quote_bundle_sha256:
             raise EvidenceGateError("evidence_quote_changed")
         selector = (
-            select_range_structural_protection
+            select_sweep_structural_protection
+            if type(pre) is HistoryPreEvidenceRunV6
+            else select_range_structural_protection
             if type(pre) is HistoryPreEvidenceRunV5
             else select_reversal_structural_protection
             if type(pre) is HistoryPreEvidenceRunV3
@@ -597,7 +623,11 @@ def publish_qualification_evidence(
         )
         return finish(code, _error_detail(exc))
     try:
-        packet = dict(render_evidence(snapshot))
+        packet = dict(
+            render_evidence_liquidity_v2(snapshot)
+            if render_profile == "liquidity_v2"
+            else render_evidence(snapshot)
+        )
         if set(packet) != set(FILE_NAMES) or any(
             type(item) is not bytes or not 0 < len(item) <= 8 * 1024 * 1024
             for item in packet.values()
@@ -663,3 +693,12 @@ def publish_qualification_evidence(
     if receipt.completed_at >= _expiry(pre):
         return finish("evidence_entry_expired")
     return finish("passed")
+
+
+def publish_qualification_evidence_liquidity_v2(
+    root: Path, market: MarketSnapshot, **inputs
+) -> EvidenceGateRun:
+    """Fixed v2 display route through the same replay, publication and readback."""
+    return publish_qualification_evidence(
+        root, market, render_profile="liquidity_v2", **inputs
+    )

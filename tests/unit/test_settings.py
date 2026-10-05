@@ -373,6 +373,20 @@ def test_demo_base_url_must_be_approved_okx_origin() -> None:
         Settings(_env_file=None, okx_demo_rest_base_url="https://example.com")
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://openapi.okx.com",
+        "https://us.okx.com",
+        "https://eea.okx.com",
+        "https://tr.okx.com",
+    ],
+)
+def test_demo_base_url_accepts_explicit_official_region(url: str) -> None:
+    settings = Settings(_env_file=None, okx_demo_rest_base_url=url)
+    assert settings.okx_demo_rest_base_url == url
+
+
 def test_demo_credentials_are_masked_in_repr() -> None:
     settings = Settings(
         _env_file=None,

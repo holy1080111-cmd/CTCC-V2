@@ -73,7 +73,19 @@ class FakePrivate:
                 "isoEq": "0",
                 "adjEq": "10000",
                 "availEq": "9000",
-                "details": [],
+                "uTime": "1785858063000",
+                "details": [
+                    {
+                        "ccy": "USDT",
+                        "eq": "10000",
+                        "eqUsd": "10000",
+                        "availEq": "9000",
+                        "availBal": "9000",
+                        "cashBal": "10000",
+                        "frozenBal": "1000",
+                        "upl": "0",
+                    }
+                ],
             }
         ]
 

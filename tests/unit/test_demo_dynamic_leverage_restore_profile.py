@@ -4,6 +4,7 @@ from decimal import Decimal
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from app.config.settings import Settings
 from app.demo_automation.risk_profile import (
@@ -31,23 +32,24 @@ def profile():
     return {key.lower(): value for key, value in pairs}
 
 
-def settings():
-    return Settings(
-        _env_file=None,
-        okx_demo_score_risk_enabled=True,
-        okx_demo_capital_bucket_enabled=True,
-        okx_demo_continuous_session_enabled=True,
-        okx_demo_trade_cooldown_seconds=0,
-        okx_demo_max_open_positions=8,
-        okx_demo_position_margin_bucket_usdt=D(300),
-        okx_demo_score_low_risk_pct=D("0.005"),
-        okx_demo_score_medium_risk_pct=D("0.005"),
-        okx_demo_score_high_risk_pct=D("0.005"),
-        okx_demo_score_low_leverage=1,
-        okx_demo_score_medium_leverage=1,
-        okx_demo_score_high_leverage=1,
+def settings(**overrides):
+    values = {
+        "okx_demo_score_risk_enabled": True,
+        "okx_demo_capital_bucket_enabled": True,
+        "okx_demo_continuous_session_enabled": True,
+        "okx_demo_trade_cooldown_seconds": 0,
+        "okx_demo_max_open_positions": 8,
+        "okx_demo_position_margin_bucket_usdt": D(300),
+        "okx_demo_score_low_risk_pct": D("0.005"),
+        "okx_demo_score_medium_risk_pct": D("0.005"),
+        "okx_demo_score_high_risk_pct": D("0.005"),
+        "okx_demo_score_low_leverage": 1,
+        "okx_demo_score_medium_leverage": 1,
+        "okx_demo_score_high_leverage": 1,
         **profile(),
-    )
+    }
+    values.update(overrides)
+    return Settings(_env_file=None, **values)
 
 
 def test_pending_overlay_has_no_permission_credentials_or_execution_controls():
@@ -87,6 +89,27 @@ def test_old_higher_structural_risk_defaults_are_not_restored():
     assert {tier.risk_pct for tier in tiers} == {D("0.005")}
     assert settings().okx_demo_require_protection
     assert settings().okx_demo_structural_min_net_risk_reward >= 2
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"okx_demo_position_margin_bucket_usdt": D("300.01")},
+        {"okx_demo_portfolio_max_margin_pct": D("0.6001")},
+    ],
+)
+def test_dynamic_profile_rejects_margin_caps_above_selected_policy(override):
+    with pytest.raises(ValidationError, match="structural Demo"):
+        settings(**override)
+
+
+def test_dynamic_profile_allows_tighter_margin_caps():
+    checked = settings(
+        okx_demo_position_margin_bucket_usdt=D(250),
+        okx_demo_portfolio_max_margin_pct=D("0.50"),
+    )
+    assert checked.okx_demo_position_margin_bucket_usdt == D(250)
+    assert checked.okx_demo_portfolio_max_margin_pct == D("0.50")
 
 
 def test_high_score_is_a_cap_not_a_forced_twenty_x_selection():

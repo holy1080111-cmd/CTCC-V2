@@ -60,7 +60,7 @@ class Settings(BaseSettings):
     web_concurrency: int = Field(default=1, ge=1, le=8)
 
     database_url: str = Field(
-        default="postgresql+asyncpg://ctcc:ctcc_dev_password@postgres:5432/ctcc"
+        default="postgresql+asyncpg://ctcc@invalid.invalid:5432/ctcc"
     )
     redis_url: str = "redis://redis:6379/0"
     api_token: SecretStr = SecretStr("")
@@ -96,7 +96,7 @@ class Settings(BaseSettings):
     okx_public_max_retries: int = 2
 
     okx_ws_enabled: bool = False
-    okx_ws_public_url: str = "wss://ws.okx.com:8443/ws/v5/public"
+    okx_ws_public_url: str = "wss://ws.okx.com:443/ws/v5/public"
     okx_ws_symbols: str = _REVIEWED_DEMO_SYMBOLS_CSV
     okx_ws_connect_timeout_seconds: float = Field(default=15, gt=1, le=120)
     okx_ws_receive_timeout_seconds: float = Field(default=25, gt=5, le=120)
@@ -638,7 +638,13 @@ class Settings(BaseSettings):
             raise ValueError(
                 "OKX_DEMO_REST_BASE_URL must be an HTTPS origin without a path"
             )
-        if parsed.hostname not in {"openapi.okx.com", "www.okx.com", "us.okx.com"}:
+        if parsed.hostname not in {
+            "openapi.okx.com",
+            "www.okx.com",
+            "us.okx.com",
+            "eea.okx.com",
+            "tr.okx.com",
+        }:
             raise ValueError("OKX_DEMO_REST_BASE_URL must use an approved OKX API host")
 
         if self.okx_demo_allow_order_writes:
@@ -773,6 +779,12 @@ class Settings(BaseSettings):
                     "OKX_DEMO_STRUCTURAL_DYNAMIC_LEVERAGE_ENABLED requires "
                     "OKX_DEMO_CAPITAL_BUCKET_ENABLED=true"
                 )
+            if self.okx_demo_position_margin_bucket_usdt > Decimal(300):
+                raise ValueError(
+                    "structural Demo position margin bucket cannot exceed 300 USDT"
+                )
+            if self.okx_demo_portfolio_max_margin_pct > Decimal("0.60"):
+                raise ValueError("structural Demo portfolio margin ceiling is 60%")
             if not self.okx_demo_continuous_session_enabled:
                 raise ValueError(
                     "OKX_DEMO_STRUCTURAL_DYNAMIC_LEVERAGE_ENABLED requires "

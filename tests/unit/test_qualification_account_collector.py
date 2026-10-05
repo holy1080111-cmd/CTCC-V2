@@ -186,6 +186,31 @@ def assert_secret_free(value):
 
 
 @pytest.mark.asyncio
+async def test_legacy_plan_is_rejected_before_private_https_request(monkeypatch):
+    harness = Harness(monkeypatch)
+    clients = []
+
+    def real_client():
+        client = httpx.AsyncClient(
+            transport=httpx.AsyncHTTPTransport(verify=True, trust_env=False, retries=0),
+            trust_env=False,
+            follow_redirects=False,
+            auth=None,
+        )
+        clients.append(client)
+        return client
+
+    monkeypatch.setattr(module, "_new_client", real_client)
+    with pytest.raises(
+        module.AccountCollectionError, match="account_plan_version_retired"
+    ):
+        await harness.collect(selected=plan())
+    assert len(clients) == 1 and clients[0].is_closed
+    assert harness.requests == []
+    harness.assert_closed()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("empty,expected_receipts", [(False, 38), (True, 23)])
 async def test_all_streams_fixed_gets_auth_signatures_and_incomplete_packet(
     monkeypatch, empty, expected_receipts

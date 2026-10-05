@@ -25,7 +25,7 @@ component 的原時間與各 TF 最新應收盤 tail。跨收盤邊界缺資料�
 - HTTP 只使用固定公開 GET；拒絕憑證、環境代理、已知明示代理／mount、
   redirect、底層 transport retries、初始化 cookie 或 event hooks。
   已收到的匿名 cookie 不會帶到後續 explicit Request。
-- WS 固定 `wss://ws.okx.com:8443/ws/v5/public`，關閉 proxy／compression／自動 ping；
+- WS 新擷取固定 `wss://ws.okx.com:443/ws/v5/public`，關閉 proxy／compression／自動 ping；舊封存只在精確 receipt replay 時接受原 `:8443` endpoint；
   不 login、重連、follow redirect、讀取舊 hub cache 或尋找下一筆「可過關」訊息。
 - 原始 JSON 必須有界、無 duplicate keys／非有限數值；無效或非預期 schema 即拒。
   所有 exact-model／nested scalar 檢查必須在 serializer 之前，避免非法

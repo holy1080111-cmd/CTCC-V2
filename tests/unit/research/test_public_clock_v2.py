@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.public_market_source import public_clock as clock
+from app.domain import native_clock as clock
 from app.public_market_source import public_market_capture as capture
 from app.public_market_source.public_market_receipts import (
     PublicReceiptError,

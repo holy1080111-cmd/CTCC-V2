@@ -45,6 +45,40 @@ def _original_price(value):
         return None
 
 
+def _compare_economics_numeric_tail(
+    stage,
+    *,
+    reference=None,
+    entry=None,
+    direction=None,
+    stop=None,
+    cost=None,
+    candidate_risk=None,
+    execution_risk=None,
+    candidate_net=None,
+    execution_net=None,
+):
+    """Private primitive arithmetic; callers retain ordered lazy model access."""
+    if stage == "entry":
+        delta = reference - entry
+        adverse = max(D(0), delta if direction == "long" else -delta)
+        return {
+            "entry_delta_per_base": delta,
+            "adverse_entry_delta_per_base": adverse,
+            "adverse_entry_delta_bps": adverse / entry * D(10000),
+        }
+    if stage == "cost":
+        return abs(entry - stop) + cost
+    if stage == "risk":
+        return max(candidate_risk, execution_risk)
+    if stage == "rr":
+        return {
+            "net_rr_delta": execution_net - candidate_net,
+            "worst_net_rr": min(candidate_net, execution_net),
+        }
+    raise ValueError("private_economics_comparison_stage_invalid")
+
+
 def _measurements(candidate, execution, reference):
     """Compose existing cost results; never duplicate fees/funding/RR formulas."""
     measurements = {
@@ -59,32 +93,46 @@ def _measurements(candidate, execution, reference):
     }
     with localcontext(Context(prec=100)):
         if reference is not None and candidate.candidate_entry is not None:
-            delta = reference - candidate.candidate_entry
-            adverse = max(D(0), delta if candidate.direction == "long" else -delta)
             measurements.update(
-                entry_delta_per_base=delta,
-                adverse_entry_delta_per_base=adverse,
-                adverse_entry_delta_bps=adverse / candidate.candidate_entry * D(10000),
+                _compare_economics_numeric_tail(
+                    "entry",
+                    reference=reference,
+                    entry=candidate.candidate_entry,
+                    direction=candidate.direction,
+                )
             )
         for label, result in (("candidate", candidate), ("execution", execution)):
             if result is not None and result.cost_per_base is not None:
                 measurements[f"{label}_cost_adjusted_risk_per_base"] = (
-                    abs(result.candidate_entry - result.stop_loss)
-                    + result.cost_per_base
+                    _compare_economics_numeric_tail(
+                        "cost",
+                        entry=result.candidate_entry,
+                        stop=result.stop_loss,
+                        cost=result.cost_per_base,
+                    )
                 )
         candidate_risk = measurements["candidate_cost_adjusted_risk_per_base"]
         execution_risk = measurements["execution_cost_adjusted_risk_per_base"]
         if candidate_risk is not None and execution_risk is not None:
-            measurements["worst_cost_adjusted_risk_per_base"] = max(
-                candidate_risk, execution_risk
+            measurements["worst_cost_adjusted_risk_per_base"] = (
+                _compare_economics_numeric_tail(
+                    "risk",
+                    candidate_risk=candidate_risk,
+                    execution_risk=execution_risk,
+                )
             )
         if (
             execution is not None
             and candidate.net_rr is not None
             and execution.net_rr is not None
         ):
-            measurements["net_rr_delta"] = execution.net_rr - candidate.net_rr
-            measurements["worst_net_rr"] = min(candidate.net_rr, execution.net_rr)
+            measurements.update(
+                _compare_economics_numeric_tail(
+                    "rr",
+                    candidate_net=candidate.net_rr,
+                    execution_net=execution.net_rr,
+                )
+            )
     return measurements
 
 

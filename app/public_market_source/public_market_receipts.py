@@ -6,14 +6,24 @@ portable contracts deliberately have no execution or predictive authority.
 
 from __future__ import annotations
 
-import hashlib
-import json
 import re
-from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Annotated, Literal, get_args, get_origin
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+import app.domain.source_primitives as _source_primitives
+from app.domain.source_primitives import (
+    PublicReceiptError,
+    _plain,
+    canonical,
+    decode,
+    sha,
+    validate_stamps,
+)
+
+ClockStamp = _source_primitives.ClockStamp
+utc_from_ns = _source_primitives.utc_from_ns
 
 Sha = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 Ns = Annotated[int, Field(ge=0, le=32_503_680_000_000_000_000)]
@@ -23,67 +33,6 @@ TIME_ENDPOINT = "/api/v5/public/time"
 MAX_RAW = 1024 * 1024
 MINUTE_NS = 60_000_000_000
 MAX_BATCH_NS = 60_000_000_000
-MAX_CLOCK_DEVIATION_NS = 5_000_000
-EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
-
-
-class PublicReceiptError(ValueError):
-    """Fixed local rejection codes, never raw transport or host diagnostics."""
-
-
-def sha(payload: bytes) -> str:
-    if type(payload) is not bytes:
-        raise PublicReceiptError("bytes_required")
-    return hashlib.sha256(payload).hexdigest()
-
-
-def _plain(value, depth=0):
-    if depth > 24:
-        raise PublicReceiptError("structure_limit")
-    kind = type(value)
-    if kind in (str, int, bool) or value is None:
-        return
-    if kind in (list, tuple):
-        if len(value) > 4096:
-            raise PublicReceiptError("structure_limit")
-        for item in value:
-            _plain(item, depth + 1)
-        return
-    if kind is dict:
-        if len(value) > 128 or any(type(key) is not str for key in value):
-            raise PublicReceiptError("structure_invalid")
-        for item in value.values():
-            _plain(item, depth + 1)
-        return
-    # Do not invoke arbitrary serializers, bytes.hex, Decimal, tzinfo or iterators.
-    raise PublicReceiptError("plain_scalar_required")
-
-
-def canonical(value) -> bytes:
-    _plain(value)
-    return json.dumps(
-        value, ensure_ascii=True, sort_keys=True, separators=(",", ":"), allow_nan=False
-    ).encode("ascii")
-
-
-def _pairs(pairs):
-    result = {}
-    for key, value in pairs:
-        if key in result:
-            raise PublicReceiptError("duplicate_json_key")
-        result[key] = value
-    return result
-
-
-def decode(raw: bytes, maximum=MAX_RAW):
-    if type(raw) is not bytes or not 0 < len(raw) <= maximum:
-        raise PublicReceiptError("raw_size_invalid")
-    try:
-        result = json.loads(raw.decode("utf-8"), object_pairs_hook=_pairs)
-        _plain(result)
-        return result
-    except (UnicodeError, ValueError, RecursionError) as exc:
-        raise PublicReceiptError("raw_json_invalid") from exc
 
 
 class ReceiptContract(BaseModel):
@@ -184,13 +133,6 @@ class PublicMinuteCapturePlanV1(ReceiptContract):
         return self
 
 
-def utc_from_ns(value: int) -> datetime:
-    if type(value) is not int or not 0 <= value <= 32_503_680_000_000_000_000:
-        raise PublicReceiptError("timestamp_invalid")
-    # Existing datetime contracts store microseconds. Round UP conservatively.
-    return EPOCH + timedelta(microseconds=(value + 999) // 1000)
-
-
 def request_query(plan: PublicMinuteCapturePlanV1, after: int, remaining: int):
     return (
         ("instId", plan.instrument_id),
@@ -252,37 +194,6 @@ def row_identity(plan, row):
 
 def row_content_sha(plan, row):
     return sha(canonical({"row_identity": row_identity(plan, row), "row": row}))
-
-
-class ClockStamp(ReceiptContract):
-    utc_ns: Ns
-    monotonic_ns: Ns
-
-
-def validate_stamps(stamps):
-    if type(stamps) not in (list, tuple) or not 2 <= len(stamps) <= 512:
-        raise PublicReceiptError("clock_sequence_invalid")
-    values = [ClockStamp.model_validate(item) for item in stamps]
-    first = values[0]
-    previous = first
-    for current in values[1:]:
-        if (
-            current.utc_ns < previous.utc_ns
-            or current.monotonic_ns < previous.monotonic_ns
-        ):
-            raise PublicReceiptError("clock_reversed")
-        if (
-            abs(
-                (current.utc_ns - first.utc_ns)
-                - (current.monotonic_ns - first.monotonic_ns)
-            )
-            > MAX_CLOCK_DEVIATION_NS
-        ):
-            raise PublicReceiptError("clock_jump")
-        if current.monotonic_ns - first.monotonic_ns > MAX_BATCH_NS:
-            raise PublicReceiptError("clock_lease_expired")
-        previous = current
-    return tuple(values)
 
 
 class PublicRawReceiptV1(ReceiptContract):

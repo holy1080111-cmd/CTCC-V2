@@ -7,18 +7,22 @@ rows now come directly from this invocation's replayed source packet. Caller
 instrument DTOs are optional exact assertions and cannot replace missing or
 conflicting source rows. Historical account packet v2/v3/v4 bytes are unchanged.
 
-The owned session also accepts the exact `AllProductDemoAccountCapturePlan` v4
-contract. It acquires 38 mandatory standard-product/current-inventory streams,
+The owned session now accepts the exact `AllProductDemoAccountCapturePlan` v5
+contract. It acquires 34 mandatory standard-product/current-inventory streams,
 then replays and maps every typed history row. See
-[v4 coverage and remaining gaps](qualification_account_v4.md). A v2/v3 packet
-cannot acquire v4 coverage by changing a version, scope, or receipt hash.
+[v5 coverage and remaining gaps](qualification_account_v5.md). Historical v4
+packets remain replay-only; a v2/v3/v4 packet cannot acquire v5 coverage by
+changing a version, scope, or receipt hash.
 
 `ControlledDemoAccountSession` owns a copied credential handle and a pinned
-`RegionalDemoAccountCapturePlan`. It connects the existing 23-stream collector to
-the existing account materializer and DB0017 qualification journal. It does not
-load credentials, create orders, arm, advance account claims, release holds, or
-issue a submission permit. A complete synthetic acquisition can finish mapping
-while admission remains `DENY`; this is not Demo acceptance.
+plan. Normal private HTTPS collection requires the exact v5 plan. The older
+regional v3 plan remains available only through the explicit synthetic
+`MockTransport` test seam; the collector rejects it before any real private
+request. The session connects capture to the existing account materializer and
+DB0017 qualification journal. It does not load credentials, create orders, arm,
+advance account claims, release holds, or issue a submission permit. A complete
+synthetic acquisition can finish mapping while admission remains `DENY`; this
+is not Demo acceptance.
 
 ## Acquisition and revision binding
 
@@ -26,7 +30,10 @@ The new regional plan produces `ctcc.demo_account_capture.v3`. Historical v2
 plans/packets retain their fields, default `www.okx.com` origin and exact hash
 calculation. A regional plan requires an explicit registration region, matching
 origin and registration-evidence hash. Reviewed official origins are global
-`openapi.okx.com`, US/AU `us.okx.com`, and EEA `eea.okx.com`.
+`openapi.okx.com`, US/AU `us.okx.com`, EEA `eea.okx.com`, and Turkey
+`tr.okx.com`.
+This expands exact read-only origin routing only; trusted bootstrap and native
+account-currentness proofs still reject non-global regions and remain fail-closed.
 Registration is never inferred from locale, redirects, a configured URL, or a
 successful HTTP response. The supplied registration artifact hash is still a
 claim until independently authenticated.
@@ -93,11 +100,13 @@ calls the older caller-claims `reconcile_scope` as a shortcut.
 
 ## Validation
 
-Synthetic tests exercise the complete owned legacy 23-stream and v4 38-stream flow for explicit
-region, exact UID mismatch, Live rejection, changed DB revision/claim hash,
-unresolved holds, clock reversal, foreign/replayed result, missing native TLS peer
-evidence, bootstrap tampering/scope/coverage, missing history, and secret redaction.
-Existing capture/collector/materializer/intent regression remains required.
+Synthetic tests exercise v5's 34-stream inventory, plus legacy 23-stream and
+v4 38-stream replay through `MockTransport`, for explicit region, exact UID
+mismatch, Live rejection, changed DB revision/claim hash, unresolved holds,
+clock reversal, foreign/replayed result, missing native TLS peer evidence,
+bootstrap tampering/scope/coverage, missing history, and secret redaction.
+These mock runs do not count as authenticated source or Demo acceptance.
+Existing collector/materializer/intent regression remains required.
 PostgreSQL tests exercise checkpoint reads, preserved holds, bad persisted claims,
 and clock failures with actual row locks; they require a dedicated isolated DB.
 

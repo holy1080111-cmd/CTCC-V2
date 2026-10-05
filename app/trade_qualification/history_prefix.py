@@ -3,8 +3,9 @@
 The original service and its policy hashes are unchanged. This module uses the
 same individual gate evaluators but owns distinct record/policy types. V1 stays
 rejected downstream; V2 expansion has explicit evidence and recheck dispatch.
-Only structure reversal and volatility expansion gain a replayed history G2;
-sweep's unresolved HTF rule stays blocked. No route, score or PASS is input.
+Old sweep versions retain their blocked HTF rule. Exact V6 adds a separate
+source-replayed sweep admission classification; the router remains Unknown.
+No route, score or PASS is input, and V6 downstream execution stays closed.
 """
 
 from __future__ import annotations
@@ -74,6 +75,13 @@ from app.trade_qualification.reversal_policy import (
     reversal_current_permission,
 )
 from app.trade_qualification.service import QualificationIntent
+from app.trade_qualification.sweep_contract import (
+    SWEEP_PERMISSION_SHA256,
+    SWEEP_SELECTION_SHA256,
+    SweepHistoryAdmissionRecord,
+    derive_sweep_admission,
+)
+from app.trade_qualification.sweep_history_permission import current_sweep_checks
 from app.trade_qualification.timing import (
     TIMING_POLICIES,
     TimingPolicy,
@@ -221,6 +229,62 @@ class HistoryQualificationPrefixPolicyV5(HistoryQualificationPrefixPolicy):
     range_anchor_policy: Literal["ctcc-original-range-anchor-v1"]
 
 
+class HistoryEntryQualificationResultV6(HistoryEntryQualificationResult):
+    contract_version: Literal["ctcc-history-qualification-result-v6"]
+    market_regime: MarketRegime | Literal["History Verified Sweep"] = (
+        MarketRegime.UNKNOWN
+    )
+    sweep_permission_policy_sha256: Digest
+    sweep_selection_policy_sha256: Digest
+    gates: tuple[GateAssessment, ...] = Field(default=(), max_length=12)
+
+    @model_validator(mode="after")
+    def sweep_only(self):
+        if (
+            self.strategy != "liquidity_sweep_reversal"
+            or self.sweep_permission_policy_sha256 != SWEEP_PERMISSION_SHA256
+            or self.sweep_selection_policy_sha256 != SWEEP_SELECTION_SHA256
+        ):
+            raise ValueError("history_v6_sweep_policy_required")
+        admitted = self._passed(QualificationGate.REGIME)
+        if admitted != (self.market_regime == "History Verified Sweep") or (
+            not admitted and self.market_regime != MarketRegime.UNKNOWN
+        ):
+            raise ValueError("history_v6_admission_classification_mismatch")
+        if admitted:
+            measured = self.gates[1].measured_values
+            if (
+                measured.get("actual_router_regime") != MarketRegime.UNKNOWN.value
+                or measured.get("history_admission_schema")
+                != "ctcc-sweep-history-admission-v1"
+                or measured.get("history_permission_schema")
+                != "ctcc.sweep_history_permission.v1"
+                or measured.get("history_classification") != "History Verified Sweep"
+                or measured.get("history_evaluation_sha256")
+                != self.history_admission_sha256
+            ):
+                raise ValueError("history_v6_admission_audit_mismatch")
+        return self
+
+
+class HistoryQualificationPrefixPolicyV6(HistoryQualificationPrefixPolicy):
+    contract_version: Literal["ctcc-history-qualification-prefix-v6"]
+    history_policy_id: Literal["ctcc-sweep-history-protection-v1"]
+    history_result_classification: Literal["History Verified Sweep"]
+    sweep_permission_policy_sha256: Digest
+    sweep_selection_policy: Literal["ctcc-sweep-original-extreme-selection-v1"]
+    sweep_selection_policy_sha256: Digest
+
+    @model_validator(mode="after")
+    def fixed_sweep_policies(self):
+        if (
+            self.sweep_permission_policy_sha256 != SWEEP_PERMISSION_SHA256
+            or self.sweep_selection_policy_sha256 != SWEEP_SELECTION_SHA256
+        ):
+            raise ValueError("history_v6_policy_pin_mismatch")
+        return self
+
+
 def expansion_htf_permission(analysis, route, direction):
     """Deterministic existing Expansion route operands, never event detection.
 
@@ -266,8 +330,11 @@ def _bounded(value, depth=0, budget=None):
             HistoryQualificationPrefixRunV3,
             HistoryQualificationPrefixPolicyV4,
             HistoryQualificationPrefixPolicyV5,
+            HistoryQualificationPrefixPolicyV6,
             HistoryQualificationPrefixRunV4,
             HistoryQualificationPrefixRunV5,
+            HistoryQualificationPrefixRunV6,
+            SweepHistoryAdmissionRecord,
             DataQualificationPolicy,
             DataQualificationResult,
             HistoryEntryQualificationResult,
@@ -275,6 +342,7 @@ def _bounded(value, depth=0, budget=None):
             HistoryEntryQualificationResultV3,
             HistoryEntryQualificationResultV4,
             HistoryEntryQualificationResultV5,
+            HistoryEntryQualificationResultV6,
             GateAssessment,
             EntryTrigger,
             EntryZone,
@@ -454,11 +522,21 @@ class HistoryQualificationPrefixRun(QualificationModel):
                         admission.instrument_id == "unknown"
                         and admission.source_sha256 is None
                         and admission.code
-                        in {
-                            "confirmed_tail_missing",
-                            "insufficient_history",
-                            "source_invalid",
-                        }
+                        in (
+                            {
+                                "confirmed_tail_missing",
+                                "insufficient_history",
+                                "source_invalid",
+                            }
+                            | (
+                                {
+                                    "source_history_incomplete",
+                                    "source_identity_mismatch",
+                                }
+                                if type(admission) is SweepHistoryAdmissionRecord
+                                else set()
+                            )
+                        )
                     )
                 )
                 or admission.strategy != intent.strategy
@@ -642,6 +720,43 @@ class HistoryQualificationPrefixRunV5(HistoryQualificationPrefixRun):
         return self
 
 
+class HistoryQualificationPrefixRunV6(HistoryQualificationPrefixRun):
+    contract_version: Literal["ctcc-history-qualification-prefix-v6"]
+    policy: HistoryQualificationPrefixPolicyV6
+    result: HistoryEntryQualificationResultV6
+    history_admission: SweepHistoryAdmissionRecord | None = None
+
+    @model_validator(mode="after")
+    def sweep_policy_bound(self):
+        if self.intent.strategy != "liquidity_sweep_reversal":
+            raise ValueError("history_v6_sweep_only")
+        if (
+            self.result.sweep_permission_policy_sha256
+            != self.policy.sweep_permission_policy_sha256
+            or self.result.sweep_selection_policy_sha256
+            != self.policy.sweep_selection_policy_sha256
+        ):
+            raise ValueError("history_v6_result_policy_mismatch")
+        if self.history_admission is not None and (
+            self.history_admission.policy_sha256
+            != self.policy.sweep_permission_policy_sha256
+        ):
+            raise ValueError("history_v6_admission_policy_mismatch")
+        if len(self.result.gates) >= 3:
+            measured = self.result.gates[2].measured_values
+            if (
+                measured.get("sweep_permission_policy_sha256")
+                != self.policy.sweep_permission_policy_sha256
+                or measured.get("history_evaluation_sha256")
+                != self.history_admission.evaluation_sha256
+                or measured.get("source_sha256") != self.data_result.source_sha256
+                or measured.get("analysis_sha256")
+                != self.result.gates[1].measured_values.get("analysis_sha256")
+            ):
+                raise ValueError("history_v6_htf_source_binding_mismatch")
+        return self
+
+
 def _policy_digest(policy, timing_policy):
     return _digest(
         {
@@ -698,6 +813,12 @@ def evaluate_history_qualification_prefix_v5(market, *, policy, **inputs):
     return _evaluate_history_prefix(market, policy=policy, **inputs)
 
 
+def evaluate_history_qualification_prefix_v6(market, *, policy, **inputs):
+    if type(policy) is not HistoryQualificationPrefixPolicyV6:
+        raise ValueError("exact_history_v6_policy_required")
+    return _evaluate_history_prefix(market, policy=policy, **inputs)
+
+
 def _evaluate_history_prefix(
     market,
     *,
@@ -719,6 +840,9 @@ def _evaluate_history_prefix(
     version3 = type(policy) is HistoryQualificationPrefixPolicyV3
     version5 = type(policy) is HistoryQualificationPrefixPolicyV5
     version4 = type(policy) is HistoryQualificationPrefixPolicyV4
+    version6 = type(policy) is HistoryQualificationPrefixPolicyV6
+    if version6 and intent.strategy != "liquidity_sweep_reversal":
+        raise ValueError("history_v6_sweep_only")
     if (version4 or version5) and intent.strategy != "range_reversal":
         raise ValueError("history_v4_range_only")
     if version2 and intent.strategy != "volatility_expansion":
@@ -727,7 +851,9 @@ def _evaluate_history_prefix(
         raise ValueError("history_v3_reversal_only")
     policy = _copy(
         policy,
-        HistoryQualificationPrefixPolicyV5
+        HistoryQualificationPrefixPolicyV6
+        if version6
+        else HistoryQualificationPrefixPolicyV5
         if version5
         else HistoryQualificationPrefixPolicyV4
         if version4
@@ -738,7 +864,9 @@ def _evaluate_history_prefix(
         else HistoryQualificationPrefixPolicy,
     )
     run_type = (
-        HistoryQualificationPrefixRunV5
+        HistoryQualificationPrefixRunV6
+        if version6
+        else HistoryQualificationPrefixRunV5
         if version5
         else HistoryQualificationPrefixRunV4
         if version4
@@ -749,7 +877,9 @@ def _evaluate_history_prefix(
         else HistoryQualificationPrefixRun
     )
     result_type = (
-        HistoryEntryQualificationResultV5
+        HistoryEntryQualificationResultV6
+        if version6
+        else HistoryEntryQualificationResultV5
         if version5
         else HistoryEntryQualificationResultV4
         if version4
@@ -801,6 +931,12 @@ def _evaluate_history_prefix(
             contract_version="ctcc-history-qualification-result-v4",
             range_anchor_policy=RANGE_ANCHOR_POLICY,
         )
+    if version6:
+        values.update(
+            contract_version="ctcc-history-qualification-result-v6",
+            sweep_permission_policy_sha256=policy.sweep_permission_policy_sha256,
+            sweep_selection_policy_sha256=policy.sweep_selection_policy_sha256,
+        )
 
     def finish():
         values["history_admission_sha256"] = (
@@ -808,7 +944,9 @@ def _evaluate_history_prefix(
         )
         return run_type(
             **(
-                {"contract_version": "ctcc-history-qualification-prefix-v5"}
+                {"contract_version": "ctcc-history-qualification-prefix-v6"}
+                if version6
+                else {"contract_version": "ctcc-history-qualification-prefix-v5"}
                 if version5
                 else {"contract_version": "ctcc-history-qualification-prefix-v4"}
                 if version4
@@ -864,11 +1002,17 @@ def _evaluate_history_prefix(
             and intent.strategy in route.allowed_strategies
         )
         values["market_regime"] = route.regime
+        if version6:
+            # The actual legacy route remains in G2. This separate history
+            # contract does not relabel an unknown or blocked regime as Trend.
+            values["market_regime"] = MarketRegime.UNKNOWN
         if intent.strategy in _HISTORY_STRATEGIES:
-            history = evaluate_regime_admission(
+            history = (
+                derive_sweep_admission if version6 else evaluate_regime_admission
+            )(
                 rebuilt,
                 report_id=intent.report_id,
-                strategy=intent.strategy,
+                **({} if version6 else {"strategy": intent.strategy}),
                 direction=intent.direction,
                 observed_at=now,
                 analysis_version=policy.data.analysis_version,
@@ -878,7 +1022,15 @@ def _evaluate_history_prefix(
             ):
                 raise ValueError("history source changed during qualification")
             code = "passed" if history.admitted else history.code
-            if history.admitted and route.regime == MarketRegime.UNKNOWN:
+            if version6 and history.admitted:
+                # A result classification records source-replayed admission;
+                # the actual router, raw source and G3 stay independently checked.
+                values["market_regime"] = policy.history_result_classification
+            if (
+                history.admitted
+                and route.regime == MarketRegime.UNKNOWN
+                and not version6
+            ):
                 if intent.strategy != "structure_reversal":
                     raise ValueError(
                         "no versioned history classification for this strategy"
@@ -904,6 +1056,16 @@ def _evaluate_history_prefix(
                     history.evaluation_sha256 if history else None
                 ),
                 "legacy_route_allowed": legacy_allowed,
+                **(
+                    {
+                        "actual_router_regime": route.regime.value,
+                        "history_admission_schema": history.contract_version,
+                        "history_permission_schema": "ctcc.sweep_history_permission.v1",
+                        "history_classification": policy.history_result_classification,
+                    }
+                    if version6
+                    else {}
+                ),
             },
         ):
             return finish()
@@ -963,8 +1125,23 @@ def _evaluate_history_prefix(
                 "analysis_sha256": route.snapshot_sha256,
                 "retained_analysis_blockers": ",".join(analysis.blockers) or "none",
             }
+        if version6:
+            current_code, _, _ = current_sweep_checks(
+                analysis, rebuilt, route, intent.direction
+            )
+            htf_ok = direction_matches and history.admitted and current_code == "passed"
+            expansion_values = {
+                "sweep_permission_policy_sha256": policy.sweep_permission_policy_sha256,
+                "history_evaluation_sha256": history.evaluation_sha256,
+                "source_sha256": data.source_sha256,
+                "analysis_sha256": route.snapshot_sha256,
+                "retained_analysis_blockers": ",".join(analysis.blockers) or "none",
+                "current_sweep_code": current_code,
+            }
         if htf_ok:
-            values["htf_bias"] = "neutral" if range_htf else assessment.direction
+            values["htf_bias"] = (
+                "neutral" if range_htf or version6 else assessment.direction
+            )
         if not gate(
             QualificationGate.HTF,
             "passed" if htf_ok else "htf_strategy_permission_denied",
@@ -1205,4 +1382,12 @@ def verify_history_qualification_prefix_v4(run, market, **inputs):
     replayed = evaluate_history_qualification_prefix_v4(market, **inputs)
     if checked != replayed:
         raise ValueError("history_qualification_prefix_replay_mismatch")
+    return replayed
+
+
+def verify_history_qualification_prefix_v6(run, market, **inputs):
+    checked = _copy(run, HistoryQualificationPrefixRunV6)
+    replayed = evaluate_history_qualification_prefix_v6(market, **inputs)
+    if checked != replayed:
+        raise ValueError("history_v6_source_replay_mismatch")
     return replayed

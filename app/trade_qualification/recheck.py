@@ -41,12 +41,14 @@ from app.trade_qualification.current_conditions import (
     HistoryCurrentConditionsResultV3,
     HistoryCurrentConditionsResultV4,
     HistoryCurrentConditionsResultV5,
+    HistoryCurrentConditionsResultV6,
     copy_current_conditions,
     evaluate_current_conditions,
     evaluate_history_current_conditions_v2,
     evaluate_history_current_conditions_v3,
     evaluate_history_current_conditions_v4,
     evaluate_history_current_conditions_v5,
+    evaluate_history_current_conditions_v6,
 )
 from app.trade_qualification.current_risk import (
     CurrentRiskResult,
@@ -65,9 +67,11 @@ from app.trade_qualification.fixed_protection import (
     FixedProtectionResult,
     FixedProtectionResultV3,
     FixedProtectionResultV5,
+    FixedProtectionResultV6,
     evaluate_fixed_protection,
     evaluate_fixed_protection_v3,
     evaluate_fixed_protection_v5,
+    evaluate_fixed_protection_v6,
 )
 from app.trade_qualification.fixed_protection import (
     _copy as _copy_protection,
@@ -77,6 +81,11 @@ from app.trade_qualification.history_engine import (
     HistoryPreEvidenceRunV3,
     HistoryPreEvidenceRunV4,
     HistoryPreEvidenceRunV5,
+    HistoryPreEvidenceRunV6,
+)
+from app.trade_qualification.history_prefix import (
+    HistoryEntryQualificationResultV6,
+    HistoryQualificationPrefixRunV6,
 )
 from app.trade_qualification.location import (
     LocationResult,
@@ -94,7 +103,7 @@ from app.trade_qualification.recheck_models import (
     replay_recheck_origin,
 )
 from app.trade_qualification.service import _bounded, _event_keys, _plain
-from app.trade_qualification.timing import TimingResult, evaluate_timing
+from app.trade_qualification.timing import TimingPolicy, TimingResult, evaluate_timing
 
 Step = Literal[
     "origin_replay",
@@ -175,6 +184,11 @@ def _conditions_family(value):
             "ctcc-history-current-conditions-v5",
             "history_v5",
         ),
+        (
+            HistoryCurrentConditionsResultV6,
+            "ctcc-history-current-conditions-v6",
+            "history_v6",
+        ),
     )
 
 
@@ -183,7 +197,8 @@ RecheckConditions = Annotated[
     | Annotated[HistoryCurrentConditionsResultV2, Tag("history_v2")]
     | Annotated[HistoryCurrentConditionsResultV3, Tag("history_v3")]
     | Annotated[HistoryCurrentConditionsResultV4, Tag("history_v4")]
-    | Annotated[HistoryCurrentConditionsResultV5, Tag("history_v5")],
+    | Annotated[HistoryCurrentConditionsResultV5, Tag("history_v5")]
+    | Annotated[HistoryCurrentConditionsResultV6, Tag("history_v6")],
     Discriminator(_conditions_family),
 ]
 
@@ -195,6 +210,7 @@ def _fixed_family(value):
         (
             (FixedProtectionResultV3, "ctcc-history-fixed-protection-v3", "history_v3"),
             (FixedProtectionResultV5, "ctcc-history-fixed-protection-v5", "history_v5"),
+            (FixedProtectionResultV6, "ctcc-history-fixed-protection-v6", "history_v6"),
         ),
     )
 
@@ -202,7 +218,8 @@ def _fixed_family(value):
 RecheckProtection = Annotated[
     Annotated[FixedProtectionResult, Tag("legacy")]
     | Annotated[FixedProtectionResultV3, Tag("history_v3")]
-    | Annotated[FixedProtectionResultV5, Tag("history_v5")],
+    | Annotated[FixedProtectionResultV5, Tag("history_v5")]
+    | Annotated[FixedProtectionResultV6, Tag("history_v6")],
     Discriminator(_fixed_family),
 ]
 
@@ -237,10 +254,12 @@ def _guard(value):
         HistoryCurrentConditionsResultV3: copy_current_conditions,
         HistoryCurrentConditionsResultV4: copy_current_conditions,
         HistoryCurrentConditionsResultV5: copy_current_conditions,
+        HistoryCurrentConditionsResultV6: copy_current_conditions,
         ContinuationResult: _copy_continuation,
         FixedProtectionResult: lambda v: _copy_protection(v, FixedProtectionResult),
         FixedProtectionResultV3: lambda v: _copy_protection(v, FixedProtectionResultV3),
         FixedProtectionResultV5: lambda v: _copy_protection(v, FixedProtectionResultV5),
+        FixedProtectionResultV6: lambda v: _copy_protection(v, FixedProtectionResultV6),
         CurrentRiskResult: copy_current_risk,
     }
     if type(value) in copiers:
@@ -270,6 +289,118 @@ def _guard(value):
         # Known evidence/prefix models and bounded plain trees only. Unknown
         # model subclasses, generators, recursive containers and serializers fail.
         _evidence_guard(value)
+
+
+def _checked_v6_json_output(value, expected):
+    """Check declared output fields against strict reconstruction, never ignore.
+
+    Only fixed V6 subcontracts and their timing records use this JSON path.
+    Unknown fields stay in the strict input and fail extra-forbid. Comparison
+    uses JSON bytes so false cannot be supplied as zero or a truthy string.
+    """
+    from app.trade_evidence.gates import HistoryEvidenceGateRunV6
+    from app.trade_evidence.models import EvidenceSnapshot
+
+    if (
+        not any(
+            expected is model
+            for model in (
+                HistoryEntryQualificationResultV6,
+                HistoryQualificationPrefixRunV6,
+                HistoryPreEvidenceRunV6,
+                HistoryEvidenceGateRunV6,
+                HistoryCurrentConditionsResultV6,
+                TimingPolicy,
+                TimingResult,
+                EvidenceSnapshot,
+                RecheckOrigin,
+            )
+        )
+        or type(value) is not dict
+    ):
+        raise ValueError("exact_v6_json_output_contract_required")
+    computed = expected.model_computed_fields
+    supplied = {name: value[name] for name in computed if name in value}
+    remaining = {name: item for name, item in value.items() if name not in computed}
+    rebuilt = expected.model_validate_json(
+        json.dumps(remaining, allow_nan=False), strict=True
+    )
+    actual = rebuilt.model_dump(mode="json")
+    for name, item in supplied.items():
+        if json.dumps(item, allow_nan=False, sort_keys=True) != json.dumps(
+            actual[name], allow_nan=False, sort_keys=True
+        ):
+            raise ValueError("v6_json_computed_output_mismatch")
+    return json.loads(rebuilt.model_dump_json(round_trip=True))
+
+
+def _restore_v6_recheck_json_outputs(value):
+    """Postorder reconstruction at fixed V6 paths; old/Python inputs untouched."""
+    from app.trade_evidence.gates import HistoryEvidenceGateRunV6
+    from app.trade_evidence.models import EvidenceSnapshot
+
+    origin = value.get("origin")
+    if type(origin) is not dict:
+        return value
+    evidence = origin.get("evidence")
+    if (
+        type(evidence) is not dict
+        or evidence.get("contract_version") != "ctcc-history-evidence-v6"
+    ):
+        return value
+    pre = evidence.get("pre_evidence")
+    prefix = pre.get("prefix") if type(pre) is dict else None
+    if (
+        type(pre) is not dict
+        or pre.get("contract_version") != "ctcc-history-pre-evidence-v6"
+        or type(prefix) is not dict
+        or prefix.get("contract_version") != "ctcc-history-qualification-prefix-v6"
+    ):
+        raise ValueError("v6_json_original_version_mismatch")
+    value, origin, evidence, pre, prefix = (
+        dict(item) for item in (value, origin, evidence, pre, prefix)
+    )
+    prefix["result"] = _checked_v6_json_output(
+        prefix.get("result"), HistoryEntryQualificationResultV6
+    )
+    prefix["timing_policy"] = _checked_v6_json_output(
+        prefix.get("timing_policy"), TimingPolicy
+    )
+    if prefix.get("timing") is not None:
+        prefix["timing"] = _checked_v6_json_output(prefix["timing"], TimingResult)
+    pre["prefix"] = _checked_v6_json_output(prefix, HistoryQualificationPrefixRunV6)
+    pre["result"] = _checked_v6_json_output(
+        pre.get("result"), HistoryEntryQualificationResultV6
+    )
+    evidence["pre_evidence"] = _checked_v6_json_output(pre, HistoryPreEvidenceRunV6)
+    evidence["result"] = _checked_v6_json_output(
+        evidence.get("result"), HistoryEntryQualificationResultV6
+    )
+    snapshot = evidence.get("snapshot")
+    if snapshot is not None:
+        if type(snapshot) is not dict:
+            raise ValueError("exact_v6_json_snapshot_required")
+        snapshot = dict(snapshot)
+        snapshot["qualification"] = _checked_v6_json_output(
+            snapshot.get("qualification"), HistoryEntryQualificationResultV6
+        )
+        evidence["snapshot"] = _checked_v6_json_output(snapshot, EvidenceSnapshot)
+    origin["evidence"] = _checked_v6_json_output(evidence, HistoryEvidenceGateRunV6)
+    value["origin"] = _checked_v6_json_output(origin, RecheckOrigin)
+    current = value.get("current_conditions")
+    if current is not None:
+        if type(current) is not dict:
+            raise ValueError("exact_v6_json_current_conditions_required")
+        current = dict(current)
+        current["result"] = _checked_v6_json_output(
+            current.get("result"), HistoryEntryQualificationResultV6
+        )
+        value["current_conditions"] = _checked_v6_json_output(
+            current, HistoryCurrentConditionsResultV6
+        )
+    if value.get("timing") is not None:
+        value["timing"] = _checked_v6_json_output(value["timing"], TimingResult)
+    return value
 
 
 class RecordedRecheckAssessment(QualificationModel):
@@ -330,13 +461,17 @@ class RecordedRecheckAssessment(QualificationModel):
             else:
                 _guard(item)
         if info.mode == "json":
+            value = _restore_v6_recheck_json_outputs(value)
             # Strict JSON has its own decimal/datetime/tuple decoding rules.
             # Restore ONLY the declared subcontracts through their JSON APIs;
             # Python callers never receive this coercion path.
             value = dict(value)
             models = {
                 "origin": RecheckOrigin,
-                "current_conditions": HistoryCurrentConditionsResultV5
+                "current_conditions": HistoryCurrentConditionsResultV6
+                if (value.get("current_conditions") or {}).get("contract_version")
+                == "ctcc-history-current-conditions-v6"
+                else HistoryCurrentConditionsResultV5
                 if (value.get("current_conditions") or {}).get("contract_version")
                 == "ctcc-history-current-conditions-v5"
                 else HistoryCurrentConditionsResultV4
@@ -352,7 +487,10 @@ class RecordedRecheckAssessment(QualificationModel):
                 "continuation": ContinuationResult,
                 "timing": TimingResult,
                 "location": LocationResult,
-                "fixed_protection": FixedProtectionResultV5
+                "fixed_protection": FixedProtectionResultV6
+                if (value.get("fixed_protection") or {}).get("contract_version")
+                == "ctcc-history-fixed-protection-v6"
+                else FixedProtectionResultV5
                 if (value.get("fixed_protection") or {}).get("contract_version")
                 == "ctcc-history-fixed-protection-v5"
                 else FixedProtectionResultV3
@@ -444,7 +582,9 @@ class RecordedRecheckAssessment(QualificationModel):
             raise ValueError("recheck_capture_pins_missing")
         current = self.current_conditions
         expected_current = (
-            HistoryCurrentConditionsResultV5
+            HistoryCurrentConditionsResultV6
+            if type(pre) is HistoryPreEvidenceRunV6
+            else HistoryCurrentConditionsResultV5
             if type(pre) is HistoryPreEvidenceRunV5
             else HistoryCurrentConditionsResultV4
             if type(pre) is HistoryPreEvidenceRunV4
@@ -458,7 +598,12 @@ class RecordedRecheckAssessment(QualificationModel):
             raise ValueError("recheck_current_contract_mismatch")
         if (
             current is not None
-            and type(pre) in (HistoryPreEvidenceRunV2, HistoryPreEvidenceRunV3)
+            and type(pre)
+            in (
+                HistoryPreEvidenceRunV2,
+                HistoryPreEvidenceRunV3,
+                HistoryPreEvidenceRunV6,
+            )
             and (
                 type(current) is not expected_current
                 or current.origin_sha256 != self.origin.evaluation_sha256
@@ -525,7 +670,9 @@ class RecordedRecheckAssessment(QualificationModel):
             raise ValueError("recheck_location_quote_mismatch")
         fixed = self.fixed_protection
         expected_fixed = (
-            FixedProtectionResultV5
+            FixedProtectionResultV6
+            if type(pre) is HistoryPreEvidenceRunV6
+            else FixedProtectionResultV5
             if type(pre) is HistoryPreEvidenceRunV5
             else FixedProtectionResultV3
             if type(pre) is HistoryPreEvidenceRunV3
@@ -552,6 +699,21 @@ class RecordedRecheckAssessment(QualificationModel):
             )
         ):
             raise ValueError("recheck_fixed_range_binding_mismatch")
+        if type(fixed) is FixedProtectionResultV6 and (
+            fixed.alignment_policy != pre.policy.prefix.history_policy_id
+            or fixed.sweep_permission_policy_sha256
+            != pre.policy.prefix.sweep_permission_policy_sha256
+            or fixed.sweep_selection_policy_sha256
+            != pre.policy.prefix.sweep_selection_policy_sha256
+            or fixed.sweep_permission_sha256
+            not in (None, pre.prefix.history_admission.evaluation_sha256)
+            or fixed.original_extreme_anchor_id
+            not in (
+                None,
+                json.loads(pre.protection_audit_json).get("original_extreme_anchor_id"),
+            )
+        ):
+            raise ValueError("recheck_fixed_sweep_binding_mismatch")
         if fixed is not None and (
             (fixed.report_id, fixed.instrument_id, fixed.direction)
             != (intent.report_id, intent.instrument_id, intent.direction)
@@ -785,7 +947,9 @@ def evaluate_recorded_recheck(
         intent, policy = pre.prefix.intent, pre.policy.prefix
         current = (
             (
-                evaluate_history_current_conditions_v5
+                evaluate_history_current_conditions_v6
+                if type(pre) is HistoryPreEvidenceRunV6
+                else evaluate_history_current_conditions_v5
                 if type(pre) is HistoryPreEvidenceRunV5
                 else evaluate_history_current_conditions_v4
                 if type(pre) is HistoryPreEvidenceRunV4
@@ -805,6 +969,7 @@ def evaluate_recorded_recheck(
                 HistoryPreEvidenceRunV3,
                 HistoryPreEvidenceRunV4,
                 HistoryPreEvidenceRunV5,
+                HistoryPreEvidenceRunV6,
             )
             else evaluate_current_conditions(
                 market,
@@ -861,7 +1026,9 @@ def evaluate_recorded_recheck(
         if not record("location", location):
             return finish()
         fixed_evaluator = (
-            evaluate_fixed_protection_v5
+            evaluate_fixed_protection_v6
+            if type(pre) is HistoryPreEvidenceRunV6
+            else evaluate_fixed_protection_v5
             if type(pre) is HistoryPreEvidenceRunV5
             else evaluate_fixed_protection_v3
             if type(pre) is HistoryPreEvidenceRunV3

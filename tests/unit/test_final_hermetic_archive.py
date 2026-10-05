@@ -3,7 +3,9 @@
 import hashlib
 import io
 import json
+import os
 import subprocess
+import sys
 import tarfile
 from types import SimpleNamespace
 
@@ -102,6 +104,104 @@ def test_actual_copied_bytes_cannot_rely_on_normalized_manifest(tmp_path):
     mapping.write_text("{}")
     with pytest.raises(ValueError, match="source_file_map_digest_mismatch"):
         verify_copied_source(source, mapping, digest)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX executable bits require Linux")
+@pytest.mark.parametrize("original_executable", (False, True))
+def test_copied_source_rejects_executable_bit_drift(tmp_path, original_executable):
+    source = tmp_path / "source"
+    source.mkdir()
+    copied = source / "example.sh"
+    copied.write_bytes(b"#!/bin/sh\nexit 0\n")
+    mapping = tmp_path / "source-files.json"
+    mapping.write_text(
+        json.dumps(
+            {
+                "example.sh": {
+                    "sha256": hashlib.sha256(copied.read_bytes()).hexdigest(),
+                    "executable": original_executable,
+                }
+            }
+        )
+    )
+    digest = hashlib.sha256(mapping.read_bytes()).hexdigest()
+    copied.chmod(0o755 if original_executable else 0o644)
+    assert verify_copied_source(source, mapping, digest) == 1
+    copied.chmod(0o644 if original_executable else 0o755)
+    with pytest.raises(ValueError, match="copied_source_mismatch"):
+        verify_copied_source(source, mapping, digest)
+
+
+def test_build_receives_admitted_archive_even_if_original_is_replaced(
+    tmp_path, monkeypatch
+):
+    from pathlib import Path
+
+    from scripts import verify_final_hermetic as verifier
+
+    content = io.BytesIO()
+    commit = "a" * 40
+    with tarfile.open(
+        fileobj=content, mode="w", pax_headers={"comment": commit}
+    ) as saved:
+        raw = b"FROM scratch\nCOPY example /example\n"
+        item = tarfile.TarInfo("Dockerfile")
+        item.size = len(raw)
+        item.mode = 0o644
+        saved.addfile(item, io.BytesIO(raw))
+        item = tarfile.TarInfo("example")
+        item.size = 3
+        item.mode = 0o755
+        saved.addfile(item, io.BytesIO(b"run"))
+    admitted = content.getvalue()
+    with tarfile.open(fileobj=io.BytesIO(admitted)) as saved:
+        tree = archive_tree(saved)
+    archive_path = tmp_path / "source.tar"
+    archive_path.write_bytes(admitted)
+    output = tmp_path / "results"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "verify_final_hermetic.py",
+            "--archive",
+            str(archive_path),
+            "--archive-sha256",
+            hashlib.sha256(admitted).hexdigest(),
+            "--commit",
+            commit,
+            "--tree",
+            tree,
+            "--output",
+            str(output),
+        ],
+    )
+    original_read = Path.read_bytes
+
+    def replaced_after_read(path):
+        raw = original_read(path)
+        if path == archive_path:
+            path.write_bytes(b"untrusted replacement after admission read")
+        return raw
+
+    monkeypatch.setattr(Path, "read_bytes", replaced_after_read)
+    calls = []
+
+    def stop_at_build(args, **kwargs):
+        calls.append((args, kwargs))
+        raise RuntimeError("test_stopped_before_docker")
+
+    monkeypatch.setattr(subprocess, "run", stop_at_build)
+    monkeypatch.setattr(verifier, "cleanup_resources", lambda *_: [])
+    with pytest.raises(RuntimeError, match="test_stopped_before_docker"):
+        verifier.main()
+    assert len(calls) == 1
+    args, kwargs = calls[0]
+    assert args[:2] == ["docker", "build"] and args[-1] == "-"
+    assert str(output / "source") not in args
+    assert kwargs["input"] == admitted
+    assert original_read(archive_path) != kwargs["input"]
+    assert (output / "source" / "example").read_bytes() == b"run"
 
 
 def test_command_timeout_is_durable_failed_step(tmp_path, monkeypatch):

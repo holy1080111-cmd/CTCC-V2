@@ -649,8 +649,6 @@ async def _collect_components(policy, common, *, _source=None):
     # Explicit ownership avoids TaskGroup's internal parent cancellation being
     # confused with caller cancellation during failure cleanup (Python 3.12).
     tasks = {}
-    interrupted = False
-    failed = False
     try:
         for name, collector in (
             ("quote", quotes.collect_executable_quote),
@@ -671,7 +669,22 @@ async def _collect_components(policy, common, *, _source=None):
         tasks["ws"] = asyncio.create_task(
             ws.collect_ws_reference(policy=policy.ws, **ws_options, **common)
         )
-        pending = set(tasks.values())
+    except asyncio.CancelledError:
+        return await _join_component_tasks(
+            tasks, _source=_source, already_failed=True, interrupted=True
+        )
+    except Exception:  # noqa: BLE001 -- no source exception detail escapes
+        return await _join_component_tasks(tasks, _source=_source, already_failed=True)
+    return await _join_component_tasks(tasks, _source=_source)
+
+
+async def _join_component_tasks(
+    tasks, *, _source=None, already_failed=False, interrupted=False
+):
+    """Shared bounded-owner child cleanup; no collector or authority callback."""
+    failed = already_failed
+    try:
+        pending = set() if failed else set(tasks.values())
         while pending:
             done, pending = await asyncio.wait(
                 pending, return_when=asyncio.FIRST_COMPLETED

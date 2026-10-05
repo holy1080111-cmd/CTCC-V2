@@ -1,6 +1,6 @@
 """Owned Demo-only GET capture, never a complete or authenticated risk snapshot.
 
-OKX primary contracts checked 2026-09-19:
+OKX primary contracts checked 2026-10-05:
 https://app.okx.com/docs-v5/en/#overview-rest-authentication
 https://app.okx.com/docs-v5/en/#overview-demo-trading-services
 https://app.okx.com/docs-v5/en/#trading-account-rest-api-get-account-configuration
@@ -13,8 +13,9 @@ loading, private SDK, DB, execution or retry integration exists here. Callers mu
 supply a dedicated Demo read credential through a separately reviewed integration.
 Tests replace ONLY the private client factory with synthetic MockTransport.
 
-All 23 legacy or 38 v4 streams and page chains are replayed by account_capture. A successful
-result is still records_verified_incomplete_account. Rate limiting, server errors
+Legacy 23-stream and v4 38-stream packets remain replayable; current v5 captures
+use 34 exact queries. A successful result is still
+records_verified_incomplete_account. Rate limiting, server errors
 and missing/unsupported coverage abort this attempt; no old mirror or zero fallback
 exists. Engineering bounds are inherited from the externally pinned capture plan.
 """
@@ -80,6 +81,7 @@ _ERROR_CODES = frozenset(
         "account_records_invalid",
         "account_transport_failed",
         "account_capture_invalid",
+        "account_plan_version_retired",
     }
 )
 # Explicit reviewed vocabulary, never derived from response keys, exception text,
@@ -409,6 +411,21 @@ def _read_clock(clock):
     return capture._utc(clock())
 
 
+def _phase_clock(clock, observer, *, phase, request_index, stream, page_index):
+    if observer is None:
+        return _read_clock(clock)
+    from app.trade_qualification.account_native_clock import _phase
+
+    return _phase(
+        observer,
+        clock,
+        phase=phase,
+        request_index=request_index,
+        stream=stream,
+        page_index=page_index,
+    )
+
+
 def _check_batch(now, started, previous, seconds):
     if now < previous:
         raise AccountCollectionError("batch_clock_reversed")
@@ -465,12 +482,21 @@ async def _page(
     wall_deadline,
     capture_proofs,
     _journal=None,
+    _native_observer=None,
+    _request_index=None,
 ):
     _client_guard(client, first=False)
     spec = capture.account_request(plan, stream, after)
     loop = asyncio.get_running_loop()
     request_wall_deadline = loop.time() + plan.max_request_seconds
-    started = _read_clock(clock)
+    started = _phase_clock(
+        clock,
+        _native_observer,
+        phase="request_start",
+        request_index=_request_index,
+        stream=stream,
+        page_index=page_index,
+    )
     _check_batch(started, batch_started, previous_time, plan.max_batch_seconds)
     if started <= barrier or started < plan.created_at:
         raise AccountCollectionError("publication_barrier_not_crossed")
@@ -497,13 +523,29 @@ async def _page(
             raise AccountCollectionError("batch_deadline_exceeded")
         if loop.time() >= request_wall_deadline:
             raise AccountCollectionError("request_deadline_exceeded")
+        if _native_observer is not None:
+            _phase_clock(
+                clock,
+                _native_observer,
+                phase="request_dispatch",
+                request_index=_request_index,
+                stream=stream,
+                page_index=page_index,
+            )
         response = await client.send(
             request, auth=None, follow_redirects=False, stream=True
         )
         pending_cancel = False
         try:
             try:
-                received = _read_clock(clock)
+                received = _phase_clock(
+                    clock,
+                    _native_observer,
+                    phase="headers_received",
+                    request_index=_request_index,
+                    stream=stream,
+                    page_index=page_index,
+                )
             except Exception:
                 if _journal is not None and type(response) is httpx.Response:
                     await _journal.headers(None, response.status_code)
@@ -576,7 +618,14 @@ async def _page(
                 body.extend(chunk)
             if _journal is not None:
                 try:
-                    body_exhausted = _read_clock(clock)
+                    body_exhausted = _phase_clock(
+                        clock,
+                        _native_observer,
+                        phase="body_exhausted",
+                        request_index=_request_index,
+                        stream=stream,
+                        page_index=page_index,
+                    )
                 except Exception:
                     await _journal.body_complete(None)
                     raise
@@ -586,7 +635,14 @@ async def _page(
             raise
         finally:
             await _close(response, pending_cancel=pending_cancel)
-    completed = _read_clock(clock)
+    completed = _phase_clock(
+        clock,
+        _native_observer,
+        phase="response_closed",
+        request_index=_request_index,
+        stream=stream,
+        page_index=page_index,
+    )
     _check_batch(completed, batch_started, received, plan.max_batch_seconds)
     if length is not None and len(body) != int(length):
         raise AccountCollectionError("response_length_mismatch")
@@ -677,6 +733,7 @@ async def _collect_owned_demo_account_records(
     expected_plan_sha256: str,
     barrier_completed_at: datetime,
     _journal=None,
+    _native_observer=None,
 ) -> _OwnedAccountCapture:
     """One owned client, fixed GET inventory, full replay, no partial packet.
 
@@ -691,6 +748,13 @@ async def _collect_owned_demo_account_records(
     owned_result = None
     active_journal = None
     try:
+        if type(plan) not in {
+            capture.DemoAccountCapturePlan,
+            capture.RegionalDemoAccountCapturePlan,
+            capture.AllProductDemoAccountCapturePlan,
+            capture.CurrentDemoAccountCapturePlanV6,
+        }:
+            raise AccountCollectionError("account_plan_version_retired")
         selected = capture._checked_plan(plan, expected_plan_sha256)
         values = _credential_values(credentials)
         credentials = DemoAccountCredentials(*values)  # private immutable snapshot
@@ -712,6 +776,12 @@ async def _collect_owned_demo_account_records(
                 raise AccountCollectionError("account_capture_invalid")
             active_journal = _journal
             active_journal.bind_tokens(secret_tokens)
+        if _native_observer is not None:
+            from app.trade_qualification.account_native_clock import _bind_collector
+
+            _bind_collector(
+                _native_observer, clock, expected_plan_sha256, active_journal
+            )
         _no_secret_json(
             capture._canonical(capture._json_value(selected)),
             secret_tokens,
@@ -737,6 +807,18 @@ async def _collect_owned_demo_account_records(
         algo_ids = set()
         try:
             _client_guard(client, first=True)
+            # Legacy plan contracts still support synthetic historical-parser
+            # fixtures, but their request inventory contains undocumented algo
+            # ordTypes. Only v5 may reach the owned HTTPS transport.
+            if (
+                type(selected)
+                not in {
+                    capture.AllProductDemoAccountCapturePlan,
+                    capture.CurrentDemoAccountCapturePlanV6,
+                }
+                and type(client._transport) is not httpx.MockTransport
+            ):
+                raise AccountCollectionError("account_plan_version_retired")
             if loop.time() - wall_started >= selected.max_batch_seconds:
                 raise AccountCollectionError("batch_deadline_exceeded")
             async with asyncio.timeout_at(wall_started + selected.max_batch_seconds):
@@ -769,6 +851,14 @@ async def _collect_owned_demo_account_records(
                             wall_deadline=wall_started + selected.max_batch_seconds,
                             capture_proofs=capture_proofs,
                             _journal=active_journal,
+                            **(
+                                {}
+                                if _native_observer is None
+                                else {
+                                    "_native_observer": _native_observer,
+                                    "_request_index": len(observations),
+                                }
+                            ),
                         )
                         if type(item) is AccountCollectionDiagnostic:
                             diagnostic = item
@@ -836,7 +926,14 @@ async def _collect_owned_demo_account_records(
             raise
         finally:
             await _close(client, pending_cancel=cancelled)
-        finished = _read_clock(clock)
+        finished = _phase_clock(
+            clock,
+            _native_observer,
+            phase="source_closed",
+            request_index=len(observations),
+            stream="account_source",
+            page_index=0,
+        )
         _check_batch(finished, batch_started, previous_time, selected.max_batch_seconds)
         if loop.time() - wall_started > selected.max_batch_seconds:
             raise AccountCollectionError("batch_deadline_exceeded")
@@ -871,9 +968,18 @@ async def _collect_owned_demo_account_records(
             except Exception:  # noqa: BLE001 -- finalize raw even after binding failure
                 owned_result, error = None, "account_capture_invalid"
         try:
-            await bounded_finalization(
-                active_journal.close_acquisition(successful=owned_result is not None)
+            closure = active_journal.close_acquisition(
+                successful=owned_result is not None
             )
+            if _native_observer is not None:
+                from app.trade_qualification.account_native_clock import (
+                    _finalization_awaitable,
+                )
+
+                closure = _finalization_awaitable(
+                    _native_observer, active_journal, closure, purpose="source"
+                )
+            await bounded_finalization(closure)
         except asyncio.CancelledError:
             interrupted = True
         except Exception:  # noqa: BLE001 -- private persistence errors cannot escape

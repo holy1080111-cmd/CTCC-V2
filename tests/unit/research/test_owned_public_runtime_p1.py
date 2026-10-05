@@ -11,6 +11,7 @@ from threading import get_ident
 import httpx
 import pytest
 
+from app.domain import native_clock as domain_clock
 from app.public_market_source import public_clock as clock_module
 from app.public_market_source import public_runtime_journal as journal
 from app.public_market_source.public_market_receipts import (
@@ -73,7 +74,7 @@ def synthetic_runtime(monkeypatch, inputs):
     monkeypatch.setattr(journal, "_root_context", root)
     monkeypatch.setattr(runtime, "native_stamp", clock.stamp)
     monkeypatch.setattr(coordinator, "native_stamp", clock.stamp)
-    monkeypatch.setattr(clock_module, "native_os_clock", clock.health)
+    monkeypatch.setattr(domain_clock, "native_os_clock", clock.health)
     harness = CaptureHarness(monkeypatch, source, clock)
     factory = runtime.public._new_client
     proof = {
@@ -185,7 +186,15 @@ async def test_same_invocation_raw_collectors_bridge_recheck_no_authority(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "failure", ["clock_before", "malformed", "header_clock", "chunk_clock", "overflow"]
+    "failure",
+    [
+        "clock_before",
+        "malformed",
+        "header_clock",
+        "chunk_clock",
+        "clock_sample_unbounded",
+        "overflow",
+    ],
 )
 async def test_real_returned_bytes_retained_on_rejection(
     inputs, tmp_path, monkeypatch, failure
@@ -193,7 +202,7 @@ async def test_real_returned_bytes_retained_on_rejection(
     clock, directory, harness, _packets = synthetic_runtime(monkeypatch, inputs)
     if failure == "clock_before":
         monkeypatch.setattr(
-            clock_module,
+            domain_clock,
             "native_os_clock",
             lambda: (_ for _ in ()).throw(PublicReceiptError("native_denied")),
         )
@@ -216,12 +225,15 @@ async def test_real_returned_bytes_retained_on_rejection(
                 if failure == "overflow":
                     runtime._state(owner)["expires_at"] = clock.last
                 else:
+                    code = (
+                        "native_clock_sample_unbounded"
+                        if failure == "clock_sample_unbounded"
+                        else "synthetic_receipt_clock_failed"
+                    )
                     monkeypatch.setattr(
                         runtime,
                         "native_stamp",
-                        lambda: (_ for _ in ()).throw(
-                            PublicReceiptError("synthetic_receipt_clock_failed")
-                        ),
+                        lambda: (_ for _ in ()).throw(PublicReceiptError(code)),
                     )
             return result
 
@@ -247,8 +259,34 @@ async def test_real_returned_bytes_retained_on_rejection(
             and e["raw_bytes"] > 0
             for e in events
         )
+        failed = [e for e in events if e["kind"] == "request_failed"]
+        assert failed
+        assert failed[-1]["metadata"]["code"] == (
+            "native_clock_sample_unbounded"
+            if failure == "clock_sample_unbounded"
+            else "source_or_transport_rejected"
+        )
     harness.assert_closed()
     assert not runtime._SOURCES and not runtime._RESULTS
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (
+            PublicReceiptError("native_clock_sample_unbounded"),
+            "native_clock_sample_unbounded",
+        ),
+        (PublicReceiptError("clock_reversed"), "clock_reversed"),
+        (
+            PublicReceiptError("untrusted raw response detail"),
+            "source_or_transport_rejected",
+        ),
+        (ValueError("untrusted private detail"), "source_or_transport_rejected"),
+    ],
+)
+def test_request_failure_code_only_retains_allowlisted_clock_codes(error, expected):
+    assert runtime._request_failure_code(error) == expected
 
 
 @pytest.mark.asyncio
@@ -303,7 +341,7 @@ async def test_before_health_must_be_after_barrier_even_when_healthy(
     stale = clock.health()
     stale["diagnostic"]["host_before"]["request_start"]["monotonic_ns"] = 0
     stale = resign(stale)
-    monkeypatch.setattr(clock_module, "native_os_clock", lambda: stale)
+    monkeypatch.setattr(domain_clock, "native_os_clock", lambda: stale)
     result = await invoke(inputs, tmp_path)
     assert result.code == "public_runtime_denied"
     assert not harness.requests and not harness.connections
@@ -442,7 +480,7 @@ async def test_after_clock_failure_retains_all_public_raw_and_denies(
             "synthetic_fixed_clock_denied", {"diagnostic": value["diagnostic"]}
         )
 
-    monkeypatch.setattr(clock_module, "native_os_clock", health)
+    monkeypatch.setattr(domain_clock, "native_os_clock", health)
     result = await invoke(inputs, tmp_path)
     assert result.code == "public_runtime_denied"
     summary, events = replay(directory)

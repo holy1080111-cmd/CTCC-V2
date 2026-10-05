@@ -4,6 +4,7 @@ import hashlib
 import json
 from datetime import timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 from pydantic import TypeAdapter
@@ -11,6 +12,7 @@ from pydantic import TypeAdapter
 from app.strategies.regime import route_regime
 from app.trade_evidence.models import EvidenceQualification
 from app.trade_evidence.storage import FILE_NAMES
+from app.trade_qualification import control_bound_ledger as bound
 from app.trade_qualification import history_engine as h
 from app.trade_qualification import reservations as r
 from app.trade_qualification import submission_intent as si
@@ -29,6 +31,11 @@ from tests.unit.qualification_range_v5_fixtures import (
     v5_inputs,
 )
 from tests.unit.test_range_boundary_v4 import input_document
+
+
+def test_v5_evaluator_rejects_wrong_policy_with_v5_specific_error():
+    with pytest.raises(ValueError, match="exact_history_v5_policy_required"):
+        h.evaluate_history_pre_evidence_v5(None, policy=object())
 
 
 @pytest.fixture(scope="module", params=("long", "short"))
@@ -164,9 +171,46 @@ def test_g12_memory_readback_and_r7_wire_roundtrip_are_exact(chain):
         )
     )
     assert r.decode_reservation_request(r.canonical(req)) == req
+    assert req.contract_version == "ctcc-reservation-request-v3"
+    assert req.replay_binding.account_packet_sha256 == binding.account_packet_sha256
+    assert req.replay_binding.account_plan_sha256 == binding.account_plan_sha256
     current = r.replay_range_reservation(req, observed_at=fixture.now)
     assert current == actual
     assert current.continuation.original_event_key == req.origin.original_event_key
+
+
+def test_legacy_v2_request_remains_readable_but_control_bound_reserve_denies(chain):
+    fixture, _, _ = chain
+    request = fixture.request
+    old_binding = r.ReservationReplayBindingV2(
+        contract_version="ctcc-reservation-replay-v2",
+        **{
+            name: getattr(request.replay_binding, name)
+            for name in r.ReservationReplayBindingV2.model_fields
+            if name not in r.LedgerModel.model_fields and name != "contract_version"
+        },
+    )
+    old_request = r.ReservationRequestV2(
+        **{
+            name: getattr(request, name)
+            for name in (
+                "scope",
+                "origin",
+                "quote",
+                "risk_inputs",
+                "expected_account_revision",
+                "expected_ledger_revision",
+            )
+        },
+        contract_version="ctcc-reservation-request-v2",
+        replay_binding=old_binding,
+    )
+    assert r.decode_reservation_request(r.canonical(old_request)) == old_request
+    with pytest.raises(
+        r.QualificationLedgerError,
+        match="bound_control_account_session_binding_missing",
+    ):
+        bound._guard_request_session(old_request, SimpleNamespace())
 
 
 @pytest.mark.parametrize(

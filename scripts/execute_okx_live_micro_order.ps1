@@ -28,6 +28,11 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
+# Historical manual acceptance script. It predates the G12/R7 one-shot
+# qualification authority, so its prompts and API Arm cannot authorize a
+# Live order. Stop before reading credentials or making any API request.
+throw "CTCC_STOP:LIVE_QUALIFIED_ONE_SHOT_AUTHORITY_UNAVAILABLE"
+
 function Read-EnvValue([string]$Name) {
     $line = Get-Content -LiteralPath ".env" | Where-Object {
         $_ -match "^\s*$Name\s*="

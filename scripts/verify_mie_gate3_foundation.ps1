@@ -22,7 +22,9 @@ $managedEnvironmentNames = @(
     "CTCC_ENV_FILE",
     "CTCC_API_CONTAINER_NAME",
     "CTCC_POSTGRES_CONTAINER_NAME",
-    "CTCC_REDIS_CONTAINER_NAME"
+    "CTCC_REDIS_CONTAINER_NAME",
+    "CTCC_GATE3_DB_PASSWORD",
+    "POSTGRES_PASSWORD"
 )
 $savedEnvironment = @{}
 foreach ($name in $managedEnvironmentNames) {
@@ -36,6 +38,19 @@ foreach ($name in $managedEnvironmentNames) {
 }
 
 try {
+$passwordBytes = New-Object byte[] 32
+$randomNumberGenerator = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+try {
+    $randomNumberGenerator.GetBytes($passwordBytes)
+}
+finally {
+    $randomNumberGenerator.Dispose()
+}
+$env:CTCC_GATE3_DB_PASSWORD = -join (
+    $passwordBytes | ForEach-Object { $_.ToString("x2") }
+)
+$env:POSTGRES_PASSWORD = $env:CTCC_GATE3_DB_PASSWORD
+[Array]::Clear($passwordBytes, 0, $passwordBytes.Length)
 $env:CTCC_ENV_FILE = $safeProfile
 $env:CTCC_API_CONTAINER_NAME = "ctcc-v2-gate3-api-$verificationSuffix"
 $env:CTCC_POSTGRES_CONTAINER_NAME = "ctcc-v2-gate3-postgres-$verificationSuffix"
@@ -151,7 +166,7 @@ foreach ($volumeName in $expectedVolumeNames) {
 $expectedApiEnvironment = @{
     ENVIRONMENT = "test"
     TRADING_MODE = "analysis_only"
-    DATABASE_URL = "postgresql+asyncpg://ctcc:ctcc_dev_password@postgres:5432/ctcc"
+    DATABASE_URL = "postgresql+asyncpg://ctcc:$($env:CTCC_GATE3_DB_PASSWORD)@postgres:5432/ctcc"
     REDIS_URL = "redis://redis:6379/0"
 }
 foreach ($name in $expectedApiEnvironment.Keys) {
@@ -163,7 +178,7 @@ foreach ($name in $expectedApiEnvironment.Keys) {
 
 $expectedPostgresEnvironment = @{
     POSTGRES_USER = "ctcc"
-    POSTGRES_PASSWORD = "ctcc_dev_password"
+    POSTGRES_PASSWORD = $env:CTCC_GATE3_DB_PASSWORD
     POSTGRES_DB = "ctcc"
 }
 foreach ($name in $expectedPostgresEnvironment.Keys) {

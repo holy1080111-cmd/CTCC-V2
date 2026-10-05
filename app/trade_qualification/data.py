@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Context, Decimal, DecimalException, localcontext
 from fractions import Fraction
@@ -449,49 +450,31 @@ def _indicator_values_valid(analysis, market):
     return True
 
 
-def evaluate_data(
-    market: MarketSnapshot,
-    *,
-    report_id: str,
-    instrument_id: str,
-    quote: CollectedQuote | None,
-    reference: WSReferenceObservation | None,
-    policy: DataQualificationPolicy | None,
-    evaluated_at: datetime,
-) -> DataQualificationResult:
-    """Recompute G1 only. A pass does not imply any later gate or authentic IO.
+@dataclass(frozen=True, slots=True)
+class _ValidatedQuoteOperands:
+    """Private arithmetic inputs, with no source or gate authority."""
 
-    No caller analysis is accepted. Missing WS evidence is a failure, not an
-    inferred REST/WS agreement. Legacy mark/funding/next-settlement fields are
-    retained in source history but never used as current component observations.
-    """
-    identity = {
-        "report_id": TypeAdapter(ReportId).validate_python(report_id, strict=True),
-        "instrument_id": TypeAdapter(Text).validate_python(instrument_id, strict=True),
-        "evaluated_at": _utc(evaluated_at),
-    }
-    now = identity["evaluated_at"]
+    bid: Decimal
+    ask: Decimal
+    mark_price: Decimal
+    funding_rate: Decimal
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedData:
+    code: str | None
+    reason: str | None
+    market: MarketSnapshot | None
+    policy: DataQualificationPolicy | None
+    evidence: dict
+
+
+def _prepare_market_data(market, *, instrument_id, policy, now):
+    """Shared bounded source preparation; wrappers own versioned quote replay."""
     evidence = {}
-    measured = {
-        "quality_recomputed": False,
-        "analysis_recomputed": False,
-        "source_authenticity_verified": False,
-        "execution_authority": False,
-    }
 
     def result(code, reason):
-        return DataQualificationResult(
-            **identity,
-            **evidence,
-            gate=GateAssessment(
-                report_id=report_id,
-                gate=QualificationGate.DATA,
-                passed=code == "passed",
-                code=code,
-                reason=reason,
-                measured_values=measured,
-            ),
-        )
+        return _PreparedData(code, reason, None, None, dict(evidence))
 
     try:
         checked_policy = _bounded_scalars(policy, DataQualificationPolicy)
@@ -550,31 +533,33 @@ def evaluate_data(
         return result(
             "stale_market_data", "Ticker or order book source observation is stale."
         )
-    try:
-        if type(quote) is not CollectedQuote:
-            raise ValueError("exact public capture required")
-        _bounded_scalars(quote.quote, ExecutableQuote)
-        collected = validate_collected_quote(quote)
-        current_quote, _ = inspect_executable_quote(
-            collected.quote,
-            current_time=now,
-            max_quote_age_seconds=checked_policy.maximum_quote_age_seconds,
-        )
-        if collected.completed_at > now or current_quote is None:
-            return result(
-                "stale_market_data", "Public quote is stale or after evaluation time."
-            )
-        if (
-            current_quote.report_id != report_id
-            or current_quote.instrument_id != instrument_id
-        ):
-            return result("identity_mismatch", "Collected quote identity differs.")
-        evidence["quote_bundle_sha256"] = collected.bundle_sha256
-    except _INVALID:
-        return result(
-            "quote_provenance_invalid",
-            "Independent public component observations are required.",
-        )
+    return _PreparedData(None, None, market, checked_policy, dict(evidence))
+
+
+@dataclass(frozen=True, slots=True)
+class _DataTail:
+    code: str
+    reason: str
+    measured: dict
+    evidence: dict
+
+
+def _evaluate_data_tail(
+    market, *, report_id, instrument_id, current_quote, reference, checked_policy, now
+):
+    """Shared exact arithmetic/indicator evaluation after versioned quote replay.
+
+    No caller callback, supplied analysis or gate result is accepted. This pure
+    helper's output is diagnostic data and cannot establish native ownership.
+    """
+    if type(current_quote) is not _ValidatedQuoteOperands:
+        raise ValueError("validated_quote_operands_required")
+    evidence = {}
+    measured = {"quality_recomputed": False, "analysis_recomputed": False}
+
+    def result(code, reason):
+        return _DataTail(code, reason, dict(measured), dict(evidence))
+
     if reference is None:
         return result(
             "reference_source_missing", "An independent WS observation is required."
@@ -727,3 +712,98 @@ def evaluate_data(
         "passed",
         "G1 data consistency passed; source adapters and later gates remain separate.",
     )
+
+
+def evaluate_data(
+    market: MarketSnapshot,
+    *,
+    report_id: str,
+    instrument_id: str,
+    quote: CollectedQuote | None,
+    reference: WSReferenceObservation | None,
+    policy: DataQualificationPolicy | None,
+    evaluated_at: datetime,
+) -> DataQualificationResult:
+    """Recompute G1 only. A pass does not imply any later gate or authentic IO.
+
+    No caller analysis is accepted. Missing WS evidence is a failure, not an
+    inferred REST/WS agreement. Legacy mark/funding/next-settlement fields are
+    retained in source history but never used as current component observations.
+    """
+    identity = {
+        "report_id": TypeAdapter(ReportId).validate_python(report_id, strict=True),
+        "instrument_id": TypeAdapter(Text).validate_python(instrument_id, strict=True),
+        "evaluated_at": _utc(evaluated_at),
+    }
+    now = identity["evaluated_at"]
+    evidence = {}
+    measured = {
+        "quality_recomputed": False,
+        "analysis_recomputed": False,
+        "source_authenticity_verified": False,
+        "execution_authority": False,
+    }
+
+    def result(code, reason):
+        return DataQualificationResult(
+            **identity,
+            **evidence,
+            gate=GateAssessment(
+                report_id=report_id,
+                gate=QualificationGate.DATA,
+                passed=code == "passed",
+                code=code,
+                reason=reason,
+                measured_values=measured,
+            ),
+        )
+
+    prepared = _prepare_market_data(
+        market, instrument_id=instrument_id, policy=policy, now=now
+    )
+    evidence.update(prepared.evidence)
+    if prepared.code is not None:
+        return result(prepared.code, prepared.reason)
+    market, checked_policy = prepared.market, prepared.policy
+    try:
+        if type(quote) is not CollectedQuote:
+            raise ValueError("exact public capture required")
+        _bounded_scalars(quote.quote, ExecutableQuote)
+        collected = validate_collected_quote(quote)
+        current_quote, _ = inspect_executable_quote(
+            collected.quote,
+            current_time=now,
+            max_quote_age_seconds=checked_policy.maximum_quote_age_seconds,
+        )
+        if collected.completed_at > now or current_quote is None:
+            return result(
+                "stale_market_data", "Public quote is stale or after evaluation time."
+            )
+        if (
+            current_quote.report_id != report_id
+            or current_quote.instrument_id != instrument_id
+        ):
+            return result("identity_mismatch", "Collected quote identity differs.")
+        evidence["quote_bundle_sha256"] = collected.bundle_sha256
+    except _INVALID:
+        return result(
+            "quote_provenance_invalid",
+            "Independent public component observations are required.",
+        )
+    tail = _evaluate_data_tail(
+        market,
+        report_id=report_id,
+        instrument_id=instrument_id,
+        current_quote=_ValidatedQuoteOperands(
+            current_quote.bid,
+            current_quote.ask,
+            current_quote.mark_price,
+            current_quote.funding_rate,
+        ),
+        reference=reference,
+        checked_policy=checked_policy,
+        now=now,
+    )
+    measured.update(tail.measured)
+    evidence.update(tail.evidence)
+    return result(tail.code, tail.reason)

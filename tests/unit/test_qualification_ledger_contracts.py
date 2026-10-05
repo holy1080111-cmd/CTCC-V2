@@ -8,7 +8,10 @@ from zoneinfo import ZoneInfo
 import pytest
 from pydantic import create_model, model_serializer
 
-from app.database.repositories.qualification_ledger import QualificationLedgerRepository
+from app.database.repositories.qualification_ledger import (
+    QualificationLedgerRepository,
+    _canonical_json_sha256,
+)
 from app.trade_qualification import reservations as module
 from app.trade_qualification.reservations import (
     AccountLedgerClaims,
@@ -70,6 +73,11 @@ def test_canonical_json_roundtrip_and_noncanonical_reject(fixture, kind):
     assert digest(value) == digest(decode(raw, kind))
     with pytest.raises(QualificationLedgerError):
         decode(" " + raw, kind)
+
+
+def test_hash_of_verified_canonical_text_matches_contract_digest(fixture):
+    raw = canonical(fixture.request)
+    assert _canonical_json_sha256(raw) == digest(fixture.request)
 
 
 @pytest.mark.parametrize(

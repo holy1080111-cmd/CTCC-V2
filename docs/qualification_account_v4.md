@@ -28,8 +28,9 @@ twap, chase and smart_iceberg. Chase applies only to FUTURES/SWAP. A required
 endpoint's rejection in a region or Demo environment aborts acquisition; it is
 never replaced by an empty set. No automatic retry, redirect, proxy or source
 substitution is introduced. Registration origin remains explicitly pinned:
-global `openapi.okx.com`, US/AU `us.okx.com`, EEA `eea.okx.com`; locale does not
-select it. Demo keeps `x-simulated-trading: 1`; this collector cannot acquire Live.
+global `openapi.okx.com`, US/AU `us.okx.com`, EEA `eea.okx.com`, Turkey
+`tr.okx.com`; locale does not select it. Demo keeps `x-simulated-trading: 1`;
+this collector cannot acquire Live.
 
 Each product chain must end with an explicit empty response even when its previous
 page had fewer than 100 rows. Each page retains its exact request, page index,

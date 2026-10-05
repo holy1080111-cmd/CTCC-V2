@@ -33,7 +33,7 @@ services:
     container_name: ${CTCC_POSTGRES_CONTAINER_NAME:-ctcc-v2-postgres}
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-ctcc}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ctcc_dev_password}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set an explicit PostgreSQL password}
       POSTGRES_DB: ${POSTGRES_DB:-ctcc}
     volumes:
       - ctcc_v2_postgres_data:/var/lib/postgresql/data

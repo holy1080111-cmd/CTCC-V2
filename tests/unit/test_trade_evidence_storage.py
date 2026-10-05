@@ -899,7 +899,9 @@ def test_native_windows_owned_root_handle_enforces_publisher_and_rename_exclusio
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Native Windows root publication")
-def test_native_windows_root_link_is_no_clobber_without_releasing_lease(storage_root):
+def test_native_windows_create_new_publish_is_no_clobber_without_releasing_lease(
+    storage_root,
+):
     with storage_module._windows_root(storage_root) as directory:
         directory.publish("receipt.json", b"accepted")
         assert directory.read("receipt.json", 1024) == b"accepted"
@@ -913,6 +915,27 @@ def test_native_windows_root_link_is_no_clobber_without_releasing_lease(storage_
             pytest.fail("root publisher lease was released during publication")
         assert directory.names() == ["receipt.json"]
     assert (storage_root / "receipt.json").stat().st_nlink == 1
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Native Windows late-write preservation")
+def test_native_windows_late_write_failure_preserves_durable_name_and_bytes(
+    storage_root, monkeypatch
+):
+    payload = b"durable journal bytes"
+    original_write = storage_module._write_fd
+
+    def fail_after_flush(fd, raw):
+        original_write(fd, raw)
+        raise OSError("synthetic late write rejection")
+
+    monkeypatch.setattr(storage_module, "_write_fd", fail_after_flush)
+    with storage_module._windows_root(storage_root) as directory:
+        with pytest.raises(OSError, match="synthetic late write rejection"):
+            directory.publish("journal.json", payload)
+        assert directory.read("journal.json", 1024) == payload
+        with pytest.raises(FileExistsError):
+            directory.publish("journal.json", b"replacement")
+        assert directory.read("journal.json", 1024) == payload
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Real Windows extended-length publication")
@@ -984,18 +1007,11 @@ def test_windows_long_path_spelling_preserves_unicode_and_drive_root():
         'quote"name',
     ),
 )
-def test_native_windows_link_rejects_other_directory_and_stream_names(
-    storage_root, name
-):
-    api = storage_module._WindowsAPI()
-    original = storage_root / "owned.partial"
-    fd = api.open_file(original, create=True)
-    try:
+def test_native_windows_publish_rejects_unsafe_names_before_io(storage_root, name):
+    with storage_module._windows_root(storage_root) as directory:
         with pytest.raises(EvidencePublicationError, match="unsafe Windows"):
-            api.link_same_directory(fd, name)
-        assert list(storage_root.iterdir()) == [original]
-    finally:
-        os.close(fd)
+            directory.publish(name, b"blocked")
+        assert directory.names() == []
 
 
 @pytest.fixture

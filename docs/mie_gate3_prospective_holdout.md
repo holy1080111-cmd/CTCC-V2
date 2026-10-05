@@ -80,6 +80,36 @@ acquisition receipt never evaluates a strategy or authorizes an order.
 
 ## Remaining evidence work
 
+### Blind in-window minute acquisition seam
+
+`app.mie.validation.blind_window_capture.bind_blind_window_minute` now binds **one**
+prospective OKX 1m observation to a pre-existing seal and the complete owned
+public-source journal. It requires independently retained hashes for the seal,
+preselected capture plan, accepted capture receipt, and latest journal
+checkpoint. The original bytes and attempt chain are replayed through the
+journal; a legacy receipt without a bound acquisition attempt is rejected. The
+minute must be planned before its opening, requested after it closes, validated
+within one minute of close, and lie inside the sealed future coordinates.
+A later duplicate capture cannot borrow the first observation's earlier
+availability timestamp. The
+result stores only row identity/hash, source-minute hash, causal timestamps,
+and source/journal hashes; it contains no OHLCV values or strategy output.
+
+This is a **computational-only acquisition audit**. The current prospective
+receipt's `first_accessed_at` still means post-window acquisition and requires
+the declared publication lag. This new in-window record is **not** passed to
+that receipt or relabelled as compliant with it. A later version must distinguish
+sealed automated acquisition during the window from the evaluator's first
+access after the window. It must also prove complete multi-instrument coverage,
+independent checkpoint retention and rotation, and an original-byte-derived
+dataset identity before any predictive claim is reviewed. There is currently
+no scheduler, no real prospective seal, no real in-window capture, and no
+candidate evaluation. The focused test uses synthetic owned-labelled source
+bytes and does not establish native TLS, clock, or operator non-access.
+The record keeps both in-process validation and later durable readback times;
+a future decision-time dataset builder must choose a reviewed conservative
+availability cutoff and must not infer that the receipt was durable earlier.
+
 1. Qualify row-level availability provenance and implement the offline replay
    adapter. Archive publication/observation timestamps do not prove when each
    historical bar was first observable. Assumed bar-close availability must

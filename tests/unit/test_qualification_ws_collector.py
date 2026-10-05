@@ -152,6 +152,7 @@ async def capture(fake, **kwargs):
 async def test_single_fixed_public_subscription_capture_and_fresh_copy(fake):
     socket, calls = fake
     result = await capture(fake)
+    assert module.PUBLIC_WS_URL == "wss://ws.okx.com:443/ws/v5/public"
     assert len(calls) == 1
     assert calls[0] == (
         module.PUBLIC_WS_URL,
@@ -189,6 +190,20 @@ async def test_single_fixed_public_subscription_capture_and_fresh_copy(fake):
         )
         == result
     )
+
+
+@pytest.mark.asyncio
+async def test_historical_8443_capture_remains_readback_compatible(fake):
+    current = await capture(fake)
+    payload = current.model_dump(mode="python", round_trip=True)
+    payload["endpoint"] = module.LEGACY_PUBLIC_WS_URL
+    payload["bundle_sha256"] = module._digest(
+        {key: value for key, value in payload.items() if key != "bundle_sha256"}
+    )
+
+    historical = CollectedWSReference.model_validate(payload, strict=True)
+    assert historical.endpoint == "wss://ws.okx.com:8443/ws/v5/public"
+    assert validate_collected_ws_reference(historical) == historical
 
 
 def test_redirect_hook_never_returns_new_url():

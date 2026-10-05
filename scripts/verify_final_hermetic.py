@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import re
 import stat
@@ -188,13 +189,14 @@ class Run:
         self.output = output
         self.steps = []
 
-    def command(self, name, args, *, timeout=3600):
+    def command(self, name, args, *, timeout=3600, input_bytes=None):
         start = time.monotonic()
         record = {"name": name, "exit_code": None}
         try:
             with (self.output / f"{name}.log").open("wb") as log:
                 result = subprocess.run(
                     args,
+                    input=input_bytes,
                     stdout=log,
                     stderr=subprocess.STDOUT,
                     timeout=timeout,
@@ -368,12 +370,16 @@ def main():
     for identity in (args.commit, args.tree):
         if not re.fullmatch("[a-f0-9]{40}", identity):
             raise ValueError("exact_git_identity_required")
-    if hashlib.sha256(args.archive.read_bytes()).hexdigest() != args.archive_sha256:
+    # Pin one byte buffer for admission and build. A Windows directory context
+    # does not retain archived POSIX executable bits, and rereading the archive
+    # after admission could submit different bytes to the builder.
+    archive_bytes = args.archive.read_bytes()
+    if hashlib.sha256(archive_bytes).hexdigest() != args.archive_sha256:
         raise ValueError("archive_digest_mismatch")
     args.output.mkdir(parents=True, exist_ok=False)
     source = args.output / "source"
     source.mkdir()
-    with tarfile.open(args.archive) as archive:
+    with tarfile.open(fileobj=io.BytesIO(archive_bytes)) as archive:
         if (
             archive.pax_headers.get("comment") != args.commit
             or archive_tree(archive) != args.tree
@@ -388,6 +394,8 @@ def main():
         "commit": args.commit,
         "tree": args.tree,
         "archive_sha256": args.archive_sha256,
+        "build_context": "admitted_archive_bytes_v1",
+        "runner_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         "source_files_sha256": file_map_sha256,
         "host_credentials": False,
         "host_env": False,
@@ -460,8 +468,9 @@ def main():
                 f"CTCC_SOURCE_TREE={args.tree}",
                 "-t",
                 image,
-                str(source),
+                "-",
             ],
+            input_bytes=archive_bytes,
         )
         run.command(
             "image-identity",
@@ -594,6 +603,9 @@ def main():
                 "tests/integration/test_account_capture_crash_probe_repository.py",
                 "tests/integration/test_account_history_query_verifier_repository.py",
                 "tests/integration/test_range_v5_reservation_repository.py",
+                "tests/integration/test_account_observation_index_repository.py",
+                "tests/integration/test_control_bound_ledger_repository.py",
+                "tests/integration/test_ledger_event_observation_repository.py",
             ],
             mounts=test_results_mount,
         )
@@ -612,6 +624,9 @@ def main():
                 "tests.integration.test_account_capture_crash_probe_repository",
                 "tests.integration.test_account_history_query_verifier_repository",
                 "tests.integration.test_range_v5_reservation_repository",
+                "tests.integration.test_account_observation_index_repository",
+                "tests.integration.test_control_bound_ledger_repository",
+                "tests.integration.test_ledger_event_observation_repository",
             ),
         )
         container(
