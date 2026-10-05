@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import secrets
 from uuid import uuid4
 
 import pytest
@@ -33,15 +32,15 @@ async def witness_database():
     if not raw_url:
         pytest.skip("explicit isolated DATABASE_URL required")
     role = f"ctcc_wit_{uuid4().hex[:18]}"
-    password = secrets.token_urlsafe(24)
     admin_engine = create_async_engine(raw_url, poolclass=NullPool)
     restricted_engine = None
     created = False
     try:
         async with admin_engine.begin() as connection:
-            await connection.execute(
-                text(f"CREATE ROLE {role} LOGIN PASSWORD '{password}'")
-            )
+            # The disposable hermetic PostgreSQL fixture uses trust auth. No
+            # password is created or logged; production must use independent
+            # authentication and a separately controlled restricted role.
+            await connection.execute(text(f"CREATE ROLE {role} LOGIN"))
             await connection.execute(text(f"GRANT USAGE ON SCHEMA public TO {role}"))
             await connection.execute(
                 text(
@@ -56,7 +55,7 @@ async def witness_database():
                 )
             )
         created = True
-        restricted_url = make_url(raw_url).set(username=role, password=password)
+        restricted_url = make_url(raw_url).set(username=role, password=None)
         restricted_engine = create_async_engine(restricted_url, poolclass=NullPool)
         repository = PublicReceiptWitnessRepository(
             async_sessionmaker(restricted_engine, expire_on_commit=False)
