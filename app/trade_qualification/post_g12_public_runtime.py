@@ -48,6 +48,7 @@ from app.trade_qualification.recheck_models import freeze_recheck_origin
 
 _ISSUER = object()
 _PUBLICATIONS = WeakKeyDictionary()
+_NATIVE_G1_RECEIPT_MAX_BYTES = 2048
 
 
 class _Publication:
@@ -308,6 +309,9 @@ class NativeOriginalPreparationDiagnosticV2:
     observed_at: datetime | None
     initial_packet_sha256: str | None = None
     journal_sha256: str | None = None
+    g1_receipt_json: bytes | None = field(default=None, repr=False)
+    g1_evaluated: Literal[False] = field(default=False, init=False)
+    g1_passed: Literal[False] = field(default=False, init=False)
     record_kind: str = field(
         default="native_original_g12_seam_diagnostic_v2", init=False
     )
@@ -322,6 +326,10 @@ class NativeOriginalPreparationDiagnosticV2:
     execution_authority: Literal[False] = field(default=False, init=False)
     order_submitted: Literal[False] = field(default=False, init=False)
 
+    @property
+    def g1_receipt_sha256(self) -> str | None:
+        return None if self.g1_receipt_json is None else sha(self.g1_receipt_json)
+
 
 async def capture_native_original_for_g12_v2(
     initial_root, *, instrument_id, market_policy
@@ -329,9 +337,10 @@ async def capture_native_original_for_g12_v2(
     """Consume an actual initial-public V2 carrier inside this task, then deny.
 
     No caller market, candidate, run, G12 receipt, or publication barrier enters.
-    A real G12 needs a source-derived candidate and account-owned instrument and
-    cost inputs that the initial public packet cannot establish. This seam does
-    not borrow the replayable inputs accepted by publish_capture_public_v2.
+    No non-synthetic native G1 data policy is registered. A valid native packet
+    therefore receives a bounded missing-policy receipt, not a fabricated G1
+    PASS. A real G12 also needs a source-derived candidate and account-owned
+    instrument/cost inputs. This seam cannot borrow caller replay inputs.
     """
     from app.trade_qualification import qualification_runtime as initial
     from app.trade_qualification.public_source_runtime import (
@@ -372,12 +381,35 @@ async def capture_native_original_for_g12_v2(
         )
         if context.packet_sha256 != packet.bundle_sha256:
             raise ValueError("native_original_g12_seam_context_mismatch")
+        # The only existing fixed G1 profile belongs to synthetic numeric
+        # fixtures. Its bounds must never be adopted as an operational policy.
+        # Record the exact first missing dependency without inventing a policy
+        # or exposing the consumed packet as a reusable capability.
+        g1_receipt = canonical(
+            {
+                "schema_version": "ctcc.native_initial_g1_policy_gate.v1",
+                "code": "native_g1_policy_unregistered",
+                "initial_report_id": report,
+                "initial_packet_sha256": packet.bundle_sha256,
+                "journal_sha256": journal,
+                "observed_at": at.isoformat(),
+                "g1_policy_sha256": None,
+                "g1_evaluation_sha256": None,
+                "g1_evaluated": False,
+                "g1_passed": False,
+                "admission": "DENY",
+                "execution_authority": False,
+            }
+        )
+        if len(g1_receipt) > _NATIVE_G1_RECEIPT_MAX_BYTES:
+            raise ValueError("native_original_g1_receipt_unbounded")
         return NativeOriginalPreparationDiagnosticV2(
-            "native_original_v2_candidate_source_required",
+            "native_original_v2_g1_policy_unregistered",
             report,
             at,
             packet.bundle_sha256,
             journal,
+            g1_receipt,
         )
     except asyncio.CancelledError:
         raise

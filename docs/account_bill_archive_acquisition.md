@@ -17,15 +17,44 @@ must not create a second durable apply claim for the same account-quarter.
 The private journal contains account identifiers and must be kept out of Git,
 reports, logs, Notion, screenshots, Docker context, and final bundles.
 
-An apply claim is an uncertain one-attempt tombstone **contract**, not a
-durably stored claim. This module performs no filesystem or database writes:
-it cannot safely choose a private storage root for exact UID/session data. It
-supports bounded canonical serialization and hash-chained replay, but cannot
-enforce uniqueness across workers, sessions, or restarts until a DB owner uses
-the account/quarter scope as a unique key, commits the claim, and independently
-reads it back. An ambiguous response cannot be treated as permission to retry.
-A future sender also needs controlled credential ownership and a separately
-reviewed exact endpoint allowance before any POST.
+An apply claim is an uncertain one-attempt tombstone contract. The acquisition
+module performs no filesystem or database writes: it cannot safely choose a
+private storage root for exact UID/session data. It supports bounded canonical
+serialization and hash-chained replay. The separate DB0022
+`AccountBillArchiveClaimRepository` now inserts that claim under the existing
+UID-scoped ledger lock, with an account/quarter primary key that excludes
+credential session and settlement currency. A second session cannot overwrite
+the immutable claim. The repository commits first and reads it back in a new
+transaction; a missing or changed readback fails closed. A known or ambiguous
+exchange response cannot turn the claim into permission to retry. The DB code
+has no HTTP or signer path. A future sender still needs controlled credential
+ownership and a separately reviewed exact endpoint allowance before any POST.
+Readback checks `apply_claimed.completed_at <= db_recorded_at <= readback_at`
+with no allowance for a future-dated claim, and requires DB insertion within
+two minutes of the host claim timestamp. If this fails after commit, the
+one-attempt row remains and no retry is authorized.
+Database open, lock, insert, commit, and readback failures return fixed
+`archive_claim_storage_uncertain` or `archive_claim_readback_storage_uncertain`
+codes with no chained SQL exception; neither path clears a committed claim or
+permits a retry. An ordinary duplicate retains `archive_claim_already_exists`,
+and a proven clock mismatch retains `archive_claim_readback_clock_invalid`.
+An unavailable or invalid pre-claim host clock returns the fixed
+`archive_claim_clock_source_invalid` before any DB session or apply attempt.
+
+DB0022's actual PostgreSQL migration, trigger, concurrency, restart, and
+downgrade behavior remain **unverified** in this revision because the isolated
+Docker daemon was unavailable during the focused work. The migration refuses
+downgrade while any claim row exists. Unit contracts and static migration
+identity do not substitute for PostgreSQL execution; no durable-claim
+production acceptance is asserted yet.
+
+The final hermetic runner now selects the DB0022 PostgreSQL claim tests and
+requires exact passing concurrent/restart and future-host-clock claim cases,
+plus an exact passing nonempty-downgrade retention case. Its empty-database
+path upgrades to the current head, downgrades to 0016, upgrades to head
+again, and compares migration identity and drift. These checks are wiring
+only until a fresh
+isolated PostgreSQL run actually passes on the final source revision.
 
 A status response can be recorded from the untouched plan as an isolated GET
 diagnostic. Once any status is recorded, this journal refuses an apply claim;

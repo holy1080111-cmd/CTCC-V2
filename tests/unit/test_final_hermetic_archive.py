@@ -438,3 +438,30 @@ def test_required_module_execution_can_be_in_a_test_class(tmp_path):
     )
     result = verify_pytest_report(path, required_modules=("required.pg.module",))
     assert result["required_module_passed"] == {"required.pg.module": 1}
+
+
+@pytest.mark.parametrize("case_name", ("other", "target"))
+def test_exact_required_archive_case_cannot_be_omitted(tmp_path, case_name):
+    from scripts.verify_final_hermetic import verify_pytest_report
+
+    path = tmp_path / "result.xml"
+    path.write_text(
+        '<testsuites><testsuite tests="1" errors="0" failures="0" skipped="0">'
+        f'<testcase classname="required.pg.module" name="{case_name}"/>'
+        "</testsuite></testsuites>"
+    )
+    required = (("required.pg.module", "target"),)
+    if case_name == "other":
+        with pytest.raises(ValueError, match="required_execution_not_verified"):
+            verify_pytest_report(
+                path,
+                required_modules=("required.pg.module",),
+                required_cases=required,
+            )
+    else:
+        result = verify_pytest_report(
+            path,
+            required_modules=("required.pg.module",),
+            required_cases=required,
+        )
+        assert result["required_case_passed"] == {"required.pg.module::target": 1}

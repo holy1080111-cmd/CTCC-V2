@@ -116,6 +116,34 @@ loop/PID/thread/cancellation, samples the independent reviewed OS clock and
 validates both expiry domains. No B5 component owner is registered or old HWM
 sample upgraded. Complete history/lifecycle/streak authority remains absent.
 
+## Same-invocation current/history diagnostic
+
+`capture_native_current_history_join` accepts one controlled v6 current Demo
+session, the configured PostgreSQL session factory, an empty native companion
+directory and a recorded v5 history capture ID used only as a lookup key. It
+uses the existing private native issuer and original B1 acquisition; no
+caller-supplied packet, receipt, owner, clock, HTTP client or account-complete
+flag is accepted. After native source/proof readback, it reads both original B1
+chains and the local checkpoint under the existing exact-UID account lock.
+The v5/v6 join independently checks exact UID, main UID, credential-session
+binding, region, account/position mode, source chronology and local revision.
+The locked read is bounded by the **original** v6 current-data monotonic lease.
+It then consumes the one-use native carrier in the same task; it never copies,
+exports, remints or renews that bearer. Mismatch, cancellation or expiry leaves
+no carrier and retains the already durable source/proof journal.
+
+The result is `ctcc.native_current_history_join_diagnostic.v1`, with both
+receipt hashes, source references and unresolved locked-readback reasons.
+It always has `owner=None`, `snapshot=None`, `account_complete=false`,
+`account_revision_published=false`, `execution_authority=false` and `DENY`.
+This is not a post-G12 account request: the existing initial stage supplies
+its own barrier, not the G12 publication barrier. It does not close late
+historical arrivals, attribute funding, derive net losses or streak seed, prove
+an historical native HWM, import quarterly bills archives, or reserve risk.
+The locked DB observation ends with its transaction and cannot authorize a
+later order. Mechanism tests use no account network or database requests;
+genuine controlled Demo acquisition and PostgreSQL acceptance remain pending.
+
 ## Controlled fresh-plan construction for later operator preflight
 
 The operator-controlled runtime prepares a new pinned

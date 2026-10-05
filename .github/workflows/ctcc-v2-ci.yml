@@ -70,3 +70,130 @@ jobs:
             ${{ runner.temp }}/ctcc-validation/test-results/*.xml
           if-no-files-found: error
           retention-days: 30
+
+  windows-regression:
+    name: Windows source-bound non-DB regression
+    runs-on: windows-2025
+    timeout-minutes: 90
+    steps:
+      - name: Checkout reviewed source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Select native CPython 3.12 x64
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+          architecture: x64
+
+      - name: Export and read back the exact tested Git source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $resultDir = Join-Path $env:RUNNER_TEMP 'ctcc-windows-regression'
+          $archive = Join-Path $resultDir 'source.zip'
+          $sourceRoot = Join-Path $resultDir 'source'
+          New-Item -ItemType Directory -Path $resultDir -ErrorAction Stop | Out-Null
+          $commit = (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $commit -ne $env:GITHUB_SHA) {
+            throw 'GITHUB_SOURCE_SHA_MISMATCH'
+          }
+          $tree = (git rev-parse 'HEAD^{tree}').Trim()
+          if ($LASTEXITCODE -ne 0) { throw 'GITHUB_SOURCE_TREE_UNAVAILABLE' }
+          git -c core.autocrlf=false -c core.eol=lf archive --format=zip --output="$archive" "$commit"
+          if ($LASTEXITCODE -ne 0) { throw 'GITHUB_SOURCE_ARCHIVE_FAILED' }
+          Expand-Archive -LiteralPath $archive -DestinationPath $sourceRoot
+          Set-Location -LiteralPath $sourceRoot
+          python -B scripts/manifest.py --check
+          if ($LASTEXITCODE -ne 0) { throw 'GITHUB_SOURCE_MANIFEST_MISMATCH' }
+          $identity = @{
+            schema = 'ctcc.windows_ci_source.v1'
+            commit = $commit
+            github_sha = $env:GITHUB_SHA
+            tree = $tree
+            archive_sha256 = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+            manifest_sha256 = (Get-FileHash -LiteralPath 'MANIFEST.sha256' -Algorithm SHA256).Hash.ToLowerInvariant()
+            runner_label = 'windows-2025'
+            runner_image_version = $env:ImageVersion
+          }
+          $identityPath = Join-Path $resultDir 'source-identity.json'
+          [System.IO.File]::WriteAllText(
+            $identityPath,
+            (($identity | ConvertTo-Json -Compress) + "`n"),
+            [System.Text.UTF8Encoding]::new($false)
+          )
+
+      - name: Install the exact Windows validation lock in a fresh environment
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $resultDir = Join-Path $env:RUNNER_TEMP 'ctcc-windows-regression'
+          Set-Location -LiteralPath (Join-Path $resultDir 'source')
+          $venv = Join-Path $resultDir 'venv'
+          python -m venv $venv
+          if ($LASTEXITCODE -ne 0) { throw 'WINDOWS_VENV_CREATION_FAILED' }
+          $py = Join-Path $venv 'Scripts\python.exe'
+          & $py -m pip --isolated install --require-hashes --only-binary=:all: -r requirements/validation-windows-py312.lock
+          if ($LASTEXITCODE -ne 0) { throw 'WINDOWS_LOCKED_INSTALL_FAILED' }
+          & $py -m pip --isolated install --no-deps --no-build-isolation '.[test,validation]'
+          if ($LASTEXITCODE -ne 0) { throw 'WINDOWS_SOURCE_INSTALL_FAILED' }
+          & $py -m pip check
+          if ($LASTEXITCODE -ne 0) { throw 'WINDOWS_PIP_CHECK_FAILED' }
+          $dependencyResult = & $py -B -m scripts.verify_dependency_lock --target windows
+          if ($LASTEXITCODE -ne 0) { throw 'WINDOWS_DEPENDENCY_IDENTITY_FAILED' }
+          [System.IO.File]::WriteAllText(
+            (Join-Path $resultDir 'dependency-result.json'),
+            (($dependencyResult -join "`n") + "`n"),
+            [System.Text.UTF8Encoding]::new($false)
+          )
+
+      - name: Run every reviewed Windows non-DB test module
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $resultDir = Join-Path $env:RUNNER_TEMP 'ctcc-windows-regression'
+          Set-Location -LiteralPath (Join-Path $resultDir 'source')
+          $py = Join-Path $resultDir 'venv\Scripts\python.exe'
+          $selection = & $py -B -m scripts.verify_windows_regression --list-tests
+          if ($LASTEXITCODE -ne 0) { throw 'WINDOWS_TEST_CLASSIFICATION_CHANGED' }
+          $junit = Join-Path $resultDir 'windows-junit.xml'
+          $collection = Join-Path $resultDir 'windows-collection.json'
+          & $py -B -m scripts.hermetic_pytest -p no:cacheprovider `
+            -p scripts.verify_windows_regression -ra `
+            "--ctcc-windows-collection-json=$collection" "--junitxml=$junit" @selection
+          if ($LASTEXITCODE -ne 0) { throw 'WINDOWS_NON_DB_REGRESSION_FAILED' }
+
+      - name: Verify test readback, approved skips, and exact source identity
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $resultDir = Join-Path $env:RUNNER_TEMP 'ctcc-windows-regression'
+          $sourceRoot = Join-Path $resultDir 'source'
+          Set-Location -LiteralPath $sourceRoot
+          $py = Join-Path $resultDir 'venv\Scripts\python.exe'
+          & $py -B -m scripts.verify_windows_regression `
+            --root $sourceRoot `
+            --archive (Join-Path $resultDir 'source.zip') `
+            --source-identity (Join-Path $resultDir 'source-identity.json') `
+            --dependency-result (Join-Path $resultDir 'dependency-result.json') `
+            --collection (Join-Path $resultDir 'windows-collection.json') `
+            --junit (Join-Path $resultDir 'windows-junit.xml') `
+            --output (Join-Path $resultDir 'windows-identity.json')
+          if ($LASTEXITCODE -ne 0) { throw 'WINDOWS_CI_EVIDENCE_REJECTED' }
+
+      - name: Preserve bounded Windows validation evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ctcc-windows-regression-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/ctcc-windows-regression/source.zip
+            ${{ runner.temp }}/ctcc-windows-regression/source-identity.json
+            ${{ runner.temp }}/ctcc-windows-regression/dependency-result.json
+            ${{ runner.temp }}/ctcc-windows-regression/windows-collection.json
+            ${{ runner.temp }}/ctcc-windows-regression/windows-junit.xml
+            ${{ runner.temp }}/ctcc-windows-regression/windows-identity.json
+          if-no-files-found: error
+          retention-days: 30

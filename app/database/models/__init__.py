@@ -1,3 +1,4 @@
+from app.database.models.account_bill_archive_claim import DemoAccountBillArchiveClaim
 from app.database.models.account_observation_index import (
     DemoAccountObservationBatch,
     DemoAccountObservationCoverage,
@@ -80,6 +81,7 @@ __all__ = [
     "AnalysisRun",
     "AuditLog",
     "ConfigurationVersion",
+    "DemoAccountBillArchiveClaim",
     "DemoAccountCaptureEvent",
     "DemoAccountControl",
     "DemoAccountObservationBatch",

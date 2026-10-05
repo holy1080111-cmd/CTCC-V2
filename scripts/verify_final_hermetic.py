@@ -19,6 +19,21 @@ import time
 from pathlib import Path, PurePosixPath
 from uuid import uuid4
 
+ARCHIVE_REQUIRED_CASES = (
+    (
+        "tests.integration.test_account_bill_archive_claim_repository",
+        "test_claim_is_one_across_sessions_and_survives_repository_restart",
+    ),
+    (
+        "tests.integration.test_account_bill_archive_claim_repository",
+        "test_future_host_clock_denies_readback_but_preserves_one_attempt_claim",
+    ),
+    (
+        "tests.integration.test_durable_migration_downgrade",
+        "test_nonempty_downgrade_retains_exact_durable_records[0022-archive_claim]",
+    ),
+)
+
 
 def git_object(kind: str, raw: bytes) -> bytes:
     return hashlib.sha1(f"{kind} {len(raw)}\0".encode() + raw).digest()
@@ -115,7 +130,7 @@ def verify_copied_source(root: Path, manifest: Path, expected_sha256: str) -> in
 
 
 def verify_pytest_report(
-    path: Path, *, required_modules=(), allow_unrelated_skips=False
+    path: Path, *, required_modules=(), required_cases=(), allow_unrelated_skips=False
 ):
     """Verify execution, with explicit full-suite platform-skip handling.
 
@@ -134,6 +149,7 @@ def verify_pytest_report(
     total = {"tests": 0, "failures": 0, "errors": 0, "skipped": 0}
     required = set(required_modules)
     required_counts = {module: 0 for module in sorted(required)}
+    case_counts = {tuple(case): 0 for case in required_cases}
     required_skipped = False
     for suite in root:
         if suite.tag != "testsuite":
@@ -152,6 +168,7 @@ def verify_pytest_report(
             total[key] += value
         for case in cases:
             module = case.get("classname")
+            exact_case = (module, case.get("name"))
             matched_modules = (
                 {
                     target
@@ -166,6 +183,8 @@ def verify_pytest_report(
             if all(case.find(tag) is None for tag in ("failure", "error", "skipped")):
                 for target in matched_modules:
                     required_counts[target] += 1
+                if exact_case in case_counts:
+                    case_counts[exact_case] += 1
     passed = total["tests"] - total["failures"] - total["errors"] - total["skipped"]
     if (
         passed <= 0
@@ -174,12 +193,17 @@ def verify_pytest_report(
         or required_skipped
         or (required and total["skipped"] and not allow_unrelated_skips)
         or any(count <= 0 for count in required_counts.values())
+        or any(count != 1 for count in case_counts.values())
     ):
         raise ValueError("pytest_required_execution_not_verified")
     return {
         **total,
         "passed": passed,
         "required_module_passed": required_counts,
+        "required_case_passed": {
+            f"{module}::{name}": count
+            for (module, name), count in sorted(case_counts.items())
+        },
         "sha256": hashlib.sha256(raw).hexdigest(),
     }
 
@@ -192,6 +216,7 @@ class Run:
     def command(self, name, args, *, timeout=3600, input_bytes=None):
         start = time.monotonic()
         record = {"name": name, "exit_code": None}
+        print(f"HERMETIC_STAGE_START={name}", flush=True)
         try:
             with (self.output / f"{name}.log").open("wb") as log:
                 result = subprocess.run(
@@ -210,6 +235,11 @@ class Run:
             record["elapsed_seconds"] = time.monotonic() - start
             self.steps.append(record)
             self.save()
+            print(
+                f"HERMETIC_STAGE_END={name}:"
+                f"{record['exit_code'] if record['exit_code'] is not None else record.get('failure_type', 'unknown')}",
+                flush=True,
+            )
         if result.returncode:
             raise RuntimeError(f"validation_step_failed:{name}")
 
@@ -604,6 +634,7 @@ def main():
                 "tests/integration/test_account_history_query_verifier_repository.py",
                 "tests/integration/test_range_v5_reservation_repository.py",
                 "tests/integration/test_account_observation_index_repository.py",
+                "tests/integration/test_account_bill_archive_claim_repository.py",
                 "tests/integration/test_control_bound_ledger_repository.py",
                 "tests/integration/test_ledger_event_observation_repository.py",
             ],
@@ -611,6 +642,7 @@ def main():
         )
         identity["postgres_tests"] = verify_pytest_report(
             test_results / "postgres-intent.xml",
+            required_cases=ARCHIVE_REQUIRED_CASES,
             required_modules=(
                 "tests.integration.test_qualification_ledger_repository",
                 "tests.integration.test_qualification_submission_intent_repository",
@@ -625,6 +657,7 @@ def main():
                 "tests.integration.test_account_history_query_verifier_repository",
                 "tests.integration.test_range_v5_reservation_repository",
                 "tests.integration.test_account_observation_index_repository",
+                "tests.integration.test_account_bill_archive_claim_repository",
                 "tests.integration.test_control_bound_ledger_repository",
                 "tests.integration.test_ledger_event_observation_repository",
             ),
@@ -645,6 +678,7 @@ def main():
         )
         identity["linux_tests"] = verify_pytest_report(
             test_results / "linux-full.xml",
+            required_cases=ARCHIVE_REQUIRED_CASES,
             required_modules=tuple(
                 identity["postgres_tests"]["required_module_passed"]
             ),

@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.database.repositories.account_capture_journal import (
     AccountCaptureJournalRepository,
+    LockedAccountSourceJoinReadback,
 )
 from app.database.repositories.qualification_ledger import QualificationLedgerRepository
 from app.domain.source_primitives import (
@@ -252,6 +253,33 @@ class _CurrentNativeHandoff:
 
 @dataclass(frozen=True, slots=True, repr=False)
 class InitialNativeAccountDiagnostic:
+    receipt_json: bytes
+
+    @property
+    def receipt_sha256(self):
+        return sha(self.receipt_json)
+
+    @property
+    def owner(self):
+        return None
+
+    @property
+    def snapshot(self):
+        return None
+
+    @property
+    def account_complete(self):
+        return False
+
+    @property
+    def execution_authority(self):
+        return False
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class NativeCurrentHistoryJoinDiagnostic:
+    """One native current source and one locked recorded history read, no claims."""
+
     receipt_json: bytes
 
     @property
@@ -636,6 +664,164 @@ async def capture_initial_native_account(session, *, session_factory, proof_root
                     "native_sampled_hwm_verified": False,
                     "snapshot": None,
                     "account_complete": False,
+                    "execution_authority": False,
+                    "admission": "DENY",
+                }
+            )
+        )
+    finally:
+        session._used = True
+        if carrier is not None:
+            stale = _CAPTURES.pop(carrier, None)
+            if stale is not None:
+                boundary._discard_boundary(stale.boundary)
+
+
+async def capture_native_current_history_join(
+    session, *, session_factory, proof_root, history_capture_id
+):
+    """Join a native v6 current capture to a recorded v5 history under one call.
+
+    The history ID is only a locator. The original B1 chains, exact session and
+    local checkpoint are reread under the UID lock. The native carrier is burned
+    in the same task after that read, within its original current-data lease.
+    This diagnostic cannot publish a risk snapshot or execution authority.
+    """
+    if (
+        type(session) is not ControlledDemoAccountSession
+        or session._used
+        or not _configured_factory(session_factory)
+        or type(proof_root) not in (PosixPath, WindowsPath)
+        or not proof_root.is_absolute()
+        or type(history_capture_id) is not str
+        or re.fullmatch(r"[a-f0-9]{32}", history_capture_id) is None
+    ):
+        raise proof.NativeAccountProofError(
+            "native_account_history_join_inputs_invalid"
+        )
+    selected = capture._checked_plan(session._plan, session._pin)
+    if (
+        type(selected) is not capture.CurrentDemoAccountCapturePlanV6
+        or selected.registration_region != "global"
+        or selected.settlement_currency != "USDT"
+    ):
+        raise proof.NativeAccountProofError(
+            "native_account_history_join_scope_unsupported"
+        )
+    scope = LedgerScope(
+        account_id=selected.expected_uid,
+        settlement_currency=selected.settlement_currency,
+    )
+    carrier = None
+    try:
+        with native._initial_stage(
+            plan_sha256=session._pin, scope_sha256=proof.scope_sha256(scope)
+        ) as stage:
+            state = native._state(stage)
+            carrier = await _capture_initial_current(
+                stage, session, session_factory, proof_root
+            )
+            pending = _CAPTURES.get(carrier)
+            if (
+                type(pending) is not _CurrentNativeHandoff
+                or pending.invocation is not state["invocation"]
+            ):
+                raise proof.NativeAccountProofError(
+                    "native_account_history_join_carrier_unavailable"
+                )
+            repository = AccountCaptureJournalRepository(
+                session_factory, clock=state["clock"]
+            )
+            before_lock = native._sample(stage)
+            deadline_ns = state.get("current_deadline")
+            if (
+                type(deadline_ns) is not int
+                or deadline_ns <= before_lock["monotonic_ns"]
+            ):
+                raise proof.NativeAccountProofError(
+                    "native_account_history_join_lease_expired"
+                )
+            remaining = (deadline_ns - before_lock["monotonic_ns"]) / 1_000_000_000
+            async with asyncio.timeout(remaining):
+                locked = await repository.read_locked_current_history_join(
+                    scope,
+                    history_capture_id=history_capture_id,
+                    current_capture_id=pending.reference.capture_id,
+                )
+            if type(locked) is not LockedAccountSourceJoinReadback:
+                raise proof.NativeAccountProofError(
+                    "native_account_history_join_readback_invalid"
+                )
+            locked_value = json.loads(locked.receipt_json)
+            native_value = json.loads(pending.receipt_json)
+            current_reference = observed.reference_document(pending.reference)
+            if (
+                locked_value.get("schema_version")
+                != "ctcc.demo_account_locked_source_join.v2"
+                or locked_value.get("current_source_reference") != current_reference
+                or native_value.get("source_reference") != current_reference
+                or native_value.get("schema_version")
+                != "ctcc.initial_native_account_diagnostic.v2"
+                or locked_value.get("admission") != "DENY"
+                or locked_value.get("snapshot") is not None
+                or locked_value.get("account_complete") is not False
+                or locked_value.get("execution_authority") is not False
+                or native_value.get("admission") != "DENY"
+                or native_value.get("snapshot") is not None
+                or native_value.get("account_complete") is not False
+                or native_value.get("execution_authority") is not False
+            ):
+                raise proof.NativeAccountProofError(
+                    "native_account_history_join_source_mismatch"
+                )
+            consumed = _consume_current_native_capture(
+                carrier,
+                invocation=state["invocation"],
+                expected_receipt_sha256=sha(pending.receipt_json),
+            )
+            if consumed is not pending:
+                raise proof.NativeAccountProofError(
+                    "native_account_history_join_carrier_mismatch"
+                )
+            receipt = canonical(
+                {
+                    "schema_version": "ctcc.native_current_history_join_diagnostic.v1",
+                    "native_current_receipt_sha256": sha(consumed.receipt_json),
+                    "locked_history_join_receipt_sha256": locked.receipt_sha256,
+                    "history_source_reference": locked_value[
+                        "history_source_reference"
+                    ],
+                    "current_source_reference": current_reference,
+                    "locked_readback_blocking_reasons": locked_value[
+                        "locked_readback_blocking_reasons"
+                    ],
+                    "history_tail_closed": False,
+                    "native_current_source_observed": True,
+                    "historical_native_source_observed": False,
+                    "snapshot": None,
+                    "account_complete": False,
+                    "account_revision_published": False,
+                    "execution_authority": False,
+                    "admission": "DENY",
+                }
+            )
+            return NativeCurrentHistoryJoinDiagnostic(receipt)
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001 -- source, SQL and credential details stay private
+        task = asyncio.current_task()
+        if task is not None and task.cancelling():
+            raise asyncio.CancelledError from None
+        return NativeCurrentHistoryJoinDiagnostic(
+            canonical(
+                {
+                    "schema_version": "ctcc.native_current_history_join_diagnostic.v1",
+                    "code": "native_account_history_join_denied",
+                    "native_current_source_observed": False,
+                    "historical_native_source_observed": False,
+                    "snapshot": None,
+                    "account_complete": False,
+                    "account_revision_published": False,
                     "execution_authority": False,
                     "admission": "DENY",
                 }

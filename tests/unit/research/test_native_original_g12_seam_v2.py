@@ -5,7 +5,9 @@ from dataclasses import fields
 
 import pytest
 
-from app.public_market_source.public_market_receipts import sha
+from app.public_market_source.public_market_receipts import canonical, decode, sha
+from app.trade_qualification import data_v2
+from app.trade_qualification import full_public_numeric_v2_profile as numeric_profile
 from app.trade_qualification import post_g12_public_runtime as coordinator
 from app.trade_qualification import public_source_runtime as runtime
 from app.trade_qualification import qualification_runtime as initial
@@ -35,15 +37,37 @@ async def test_native_original_is_consumed_here_but_cannot_publish_g12(
         coordinator, "publish_qualification_evidence_liquidity_v2", forbidden
     )
     monkeypatch.setattr(coordinator, "_capture_after_publication_v2", forbidden)
+    monkeypatch.setattr(data_v2, "evaluate_public_market_data_v2", forbidden)
+    monkeypatch.setattr(numeric_profile, "fixed_profile", forbidden)
     result = await coordinator.capture_native_original_for_g12_v2(
         tmp_path, instrument_id="BTC-USDT-SWAP", market_policy=policy()
     )
 
-    assert result.code == "native_original_v2_candidate_source_required"
+    assert result.code == "native_original_v2_g1_policy_unregistered"
     assert result.initial_report_id.startswith("initial-")
     assert result.initial_packet_sha256 is not None
     assert result.journal_sha256 is not None
     assert result.observed_at is not None
+    assert result.g1_evaluated is False and result.g1_passed is False
+    assert result.g1_receipt_json is not None
+    assert len(result.g1_receipt_json) <= coordinator._NATIVE_G1_RECEIPT_MAX_BYTES
+    assert result.g1_receipt_sha256 == sha(result.g1_receipt_json)
+    receipt = decode(result.g1_receipt_json)
+    assert canonical(receipt) == result.g1_receipt_json
+    assert receipt == {
+        "schema_version": "ctcc.native_initial_g1_policy_gate.v1",
+        "code": "native_g1_policy_unregistered",
+        "initial_report_id": result.initial_report_id,
+        "initial_packet_sha256": result.initial_packet_sha256,
+        "journal_sha256": result.journal_sha256,
+        "observed_at": result.observed_at.isoformat(),
+        "g1_policy_sha256": None,
+        "g1_evaluation_sha256": None,
+        "g1_evaluated": False,
+        "g1_passed": False,
+        "admission": "DENY",
+        "execution_authority": False,
+    }
     assert len(harness.requests) == 9
     assert not publications
     assert directory.content["plan.json"]
@@ -110,6 +134,7 @@ async def test_foreign_task_carrier_is_consumed_as_denial(
     )
     assert result.code == "native_original_v2_denied"
     assert result.initial_packet_sha256 is None
+    assert result.g1_receipt_json is None and result.g1_receipt_sha256 is None
     assert not publications
     assert directory.content["summary.json"]
     harness.assert_closed()
@@ -132,6 +157,7 @@ async def test_final_clock_expiry_cannot_reuse_initial_packet(
     )
     assert result.code == "native_original_v2_denied"
     assert result.initial_packet_sha256 is None
+    assert result.g1_receipt_json is None and result.g1_receipt_sha256 is None
     assert not publications
     assert directory.content["summary.json"]
     harness.assert_closed()
@@ -150,3 +176,50 @@ async def test_cancellation_propagates_without_publication(tmp_path, monkeypatch
         )
     assert not runtime._INITIAL_RESULTS
     assert not coordinator._PUBLICATIONS
+
+
+@pytest.mark.asyncio
+async def test_malformed_native_funding_never_gets_g1_policy_receipt(
+    source, tmp_path, monkeypatch
+):
+    _, directory, harness, publications = setup(monkeypatch, source)
+    original = harness.public
+
+    def malformed(request):
+        rows = original(request)
+        if request.url.path.endswith("/funding-rate"):
+            rows[0]["settState"] = "processing"
+        return rows
+
+    harness.public = malformed
+    result = await coordinator.capture_native_original_for_g12_v2(
+        tmp_path, instrument_id="BTC-USDT-SWAP", market_policy=policy()
+    )
+    assert result.code == "native_original_v2_denied"
+    assert result.g1_receipt_json is None and result.g1_receipt_sha256 is None
+    assert not publications
+    assert directory.content["summary.json"]
+    harness.assert_closed()
+    empty_registries()
+
+
+@pytest.mark.asyncio
+async def test_stale_native_packet_cannot_get_g1_policy_receipt(
+    source, tmp_path, monkeypatch
+):
+    clock, directory, harness, publications = setup(monkeypatch, source)
+
+    def stale_stamp():
+        clock.count += 6000
+        return clock.stamp()
+
+    monkeypatch.setattr(coordinator, "native_stamp", stale_stamp)
+    result = await coordinator.capture_native_original_for_g12_v2(
+        tmp_path, instrument_id="BTC-USDT-SWAP", market_policy=policy()
+    )
+    assert result.code == "native_original_v2_denied"
+    assert result.g1_receipt_json is None and result.g1_receipt_sha256 is None
+    assert not publications
+    assert directory.content["summary.json"]
+    harness.assert_closed()
+    empty_registries()

@@ -9,6 +9,7 @@ MIGRATIONS = {
     "0019": "0019_demo_control.py",
     "0020": "0020_account_capture_journal.py",
     "0021": "0021_account_observation_index.py",
+    "0022": "0022_account_bill_archive_claim.py",
 }
 TABLES = {
     "0017": (
@@ -29,12 +30,14 @@ TABLES = {
         "demo_account_observation_coverage",
         "demo_account_observation_findings",
     ),
+    "0022": ("demo_account_bill_archive_claims",),
 }
 DOWNGRADE_LOCKS = {
     **TABLES,
     "0018": TABLES["0017"] + TABLES["0018"],
     "0020": ("qualification_account_scopes",) + TABLES["0020"],
     "0021": TABLES["0020"] + TABLES["0021"],
+    "0022": ("qualification_account_scopes",) + TABLES["0022"],
 }
 
 

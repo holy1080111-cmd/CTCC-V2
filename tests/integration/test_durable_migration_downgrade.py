@@ -4,7 +4,9 @@ Requires an explicitly supplied isolated DATABASE_URL. No SQLite substitute,
 exchange connection, host restart, or deployed schema change is performed.
 """
 
+import json
 import re
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
@@ -15,7 +17,13 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
+from app.database.repositories.account_bill_archive_claim import (
+    AccountBillArchiveClaimRepository,
+)
 from app.database.repositories.demo_control import DemoControlRepository
+from app.trade_qualification.account_bill_archive_acquisition import (
+    DiagnosticArchivePlan,
+)
 from app.trade_qualification.demo_control import ControlScope
 from tests.durable_migration_fixtures import (
     DOWNGRADE_LOCKS,
@@ -198,6 +206,7 @@ def durable_fixture():
         ("0019", "stop"),
         ("0020", "capture_start"),
         ("0020", "capture_raw"),
+        ("0022", "archive_claim"),
     ],
 )
 async def test_nonempty_downgrade_retains_exact_durable_records(
@@ -205,7 +214,37 @@ async def test_nonempty_downgrade_retains_exact_durable_records(
 ):
     engine, sessions = sandbox
     fixture = durable_fixture
-    if record_type.startswith("capture_"):
+    if record_type == "archive_claim":
+        scope, _, _, _ = await capture_fixtures.initialize(sandbox)
+        archive_repo = AccountBillArchiveClaimRepository(
+            sessions, clock=lambda: datetime.now(UTC)
+        )
+        archive_plan = DiagnosticArchivePlan(
+            expected_uid=scope.account_id,
+            expected_main_uid=scope.account_id,
+            session_binding_id="synthetic-archive-claim",
+            registration_region="us_au",
+            origin="https://us.okx.com",
+            registration_evidence_sha256="a" * 64,
+            year=2024,
+            quarter=2,
+            created_at=datetime.now(UTC) - timedelta(minutes=1),
+        )
+        claimed = await archive_repo.claim_once(scope, archive_plan)
+        claim_data = json.loads(claimed.receipt_json)
+        expected = claim_data["claim_sha256"]
+
+        async def readback():
+            current = await archive_repo.read_claim(
+                scope,
+                year=archive_plan.year,
+                quarter=archive_plan.quarter,
+                expected_plan_sha256=claim_data["plan_sha256"],
+                expected_claim_sha256=expected,
+            )
+            return json.loads(current.receipt_json)["claim_sha256"]
+
+    elif record_type.startswith("capture_"):
         scope, ledger, repo, start = await capture_fixtures.initialize(sandbox)
         checkpoint = await ledger.read_bootstrap_checkpoint(scope)
         first = await repo._append(scope, start)

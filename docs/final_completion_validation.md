@@ -2903,3 +2903,56 @@ unformatted. The narrower local app/scripts/tests format check had omitted that
 Markdown file. The example was formatted and the exact repository-wide Ruff
 lint/format commands now pass locally; a new committed-source remote run is
 required. This first run is FAIL, not Docker hermetic acceptance.
+
+## 2026-10-06 pending source revision: DB0022, diagnostics, and Windows CI
+
+The working source has a DB0022 immutable, UID-and-quarter-unique one-attempt
+Demo bills-history-archive claim. A separate PostgreSQL session reads it back;
+host claim time must precede the database record within two minutes, and the
+database record must precede host readback. A forward-skewed host leaves the
+durable uncertain tombstone but receives no accepted readback. This is only a
+diagnostic claim: there is no authenticated OKX apply, generated file readback,
+complete bill history, account snapshot, or trading authority. The DB0022
+PostgreSQL tests, downgrade/re-upgrade, and schema drift have been added to the
+exact-source Linux verifier but have not yet run on this working revision.
+The repository now maps unexpected DB/commit/readback exceptions to fixed
+non-secret error codes outside the original exception handler. An ambiguous
+commit remains a one-attempt unknown, never an automatic retry. Scoped
+failure-path unit tests passed; actual PostgreSQL failure behavior still needs
+the exact-source remote run.
+An invalid host clock before the claim is separately sanitized and creates no
+database attempt.
+
+The same-task current-account/history join rereads a recorded history source
+and a new native current capture under the exact UID lock and original lease.
+It burns the current carrier and returns `DENY`, `snapshot=null`, and
+`account_complete=false`. A separate prospective Gate 3 timeline distinguishes
+automated in-window acquisition from caller-declared evaluator read; it still
+cannot prove a sealed historical or prospective predictive dataset. The
+default-off HighVol/Momentum observation pins the original timing policy and
+event/candidate deadlines, rejects drift, records the exact analysis version,
+and grants no qualification or order permission. It is not an installer route.
+
+The same-task initial native public V2 carrier now returns a bounded canonical
+receipt after raw/context readback that records the exact missing dependency:
+there is no registered non-synthetic G1 data policy and analysis version. The
+receipt sets `g1_evaluated=false`, `g1_passed=false`, and `admission=DENY`; it
+does not call G12, account acquisition, reservation, or exchange submit.
+Thirteen focused synthetic tests passed. This is not G1 PASS or full R7.
+
+A second GitHub job has been added to test the exact committed source on a
+Windows runner with the locked Windows dependencies, all unit tests, seven
+reviewed no-DB integration modules, strict native-case and platform-skip
+accounting, and archive readback. Its complete remote run has not happened.
+An independent review identified that collected cases must be compared with
+executed JUnit cases. The same pytest invocation now records its complete
+collection and the verifier requires an exact one-to-one JUnit match; this
+correction has passed focused synthetic and native Windows tests but not the
+full remote job. The existing Linux Docker job remains separately required.
+
+On this uncommitted working source, repository-wide Ruff lint and format passed.
+A low-load hermetic targeted selection of 165 cases yielded 163 passes and two
+explicit Windows/POSIX limitations. This is a scoped local result, not Windows
+full regression, PostgreSQL, Docker, Demo, Live, or release acceptance. The
+remote Linux run for earlier committed `abd3a96` is still in progress and would
+not validate the new working files even if it passes.

@@ -95,12 +95,13 @@ availability timestamp. The
 result stores only row identity/hash, source-minute hash, causal timestamps,
 and source/journal hashes; it contains no OHLCV values or strategy output.
 
-This is a **computational-only acquisition audit**. The current prospective
+This is a **computational-only acquisition audit**. The existing prospective
 receipt's `first_accessed_at` still means post-window acquisition and requires
 the declared publication lag. This new in-window record is **not** passed to
-that receipt or relabelled as compliant with it. A later version must distinguish
-sealed automated acquisition during the window from the evaluator's first
-access after the window. It must also prove complete multi-instrument coverage,
+that receipt or relabelled as compliant with it. The separate timeline below
+records automated acquisition and a declared evaluator read, but does not prove
+that the declaration was the first read. Gate 3 must also prove complete
+multi-instrument coverage,
 independent checkpoint retention and rotation, and an original-byte-derived
 dataset identity before any predictive claim is reviewed. There is currently
 no scheduler, no real prospective seal, no real in-window capture, and no
@@ -109,6 +110,29 @@ bytes and does not establish native TLS, clock, or operator non-access.
 The record keeps both in-process validation and later durable readback times;
 a future decision-time dataset builder must choose a reviewed conservative
 availability cutoff and must not infer that the receipt was durable earlier.
+
+### Separate automated acquisition and evaluator read
+
+`app.mie.validation.prospective_access_timeline` records one blind in-window
+minute and one separately declared evaluator read. It binds the already replayed
+`BlindWindowMinuteCapture` and the read declaration by their canonical SHA-256
+values. Freeze and readback require independently retained preregistration,
+capture, declaration and final artifact hashes. The read cannot be declared
+before the captured bytes were retained or before the seal's post-window
+publication lag. Changing and rehashing a nested declaration cannot satisfy
+the original external pin.
+
+This is a computational audit of **distinct times**, not proof that the
+declaration was the first human or model read. The evaluator access basis is
+fixed to `caller_declared_unverified`; `first_read_independently_verified`,
+`evaluator_first_read_proven`, `complete_dataset_proven`, and
+`predictive_oos_eligible` are fixed false. No controlled evaluator-access
+journal, complete multi-instrument dataset, prospective collector schedule,
+independent checkpoint store, or formal evaluation is connected. The existing
+`Gate3ProspectiveHoldoutReceipt` retains its post-window acquisition semantics;
+an in-window minute is not inserted into it or relabelled as post-window
+acquisition. A reviewed future receipt must represent the two access events
+separately before any predictive claim can be considered.
 
 1. Qualify row-level availability provenance and implement the offline replay
    adapter. Archive publication/observation timestamps do not prove when each
