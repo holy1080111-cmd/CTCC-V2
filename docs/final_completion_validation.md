@@ -3231,7 +3231,7 @@ the Git bundle verified. Its Windows dependency verifier retained
 secret-pattern scan found zero high-confidence matches across 2,097 blobs; it
 does not cover ignored files, unknown token formats, or remote artifacts.
 
-The latest pushed source in this record is
+The source checkpoint at this stage was
 `4c4c941c54067eca9f22b1a18aa4e85344b38072`, tree
 `d522097edf9ddcfe8a1b022797ba3b3536dfcac3`, with a clean working tree
 and 882-file manifest SHA256
@@ -3246,7 +3246,8 @@ dependency lock verifier passed its pinned inventory but still reports
 The local Git-object pattern scan covered 2,106 blobs with zero high-confidence
 matches under its stated limits. Remote GitHub Actions run
 [`37384534084`](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/37384534084)
-started at this exact commit and remains pending here. It cannot be counted as
+started at this exact commit and was later cancelled by a newer source push. It
+cannot be counted as
 Windows, Linux, PostgreSQL or Docker acceptance until completed and inspected.
 
 The preserved 9/15 integrated release contract at
@@ -3290,3 +3291,27 @@ blocked, read reconciliation is allowed, and the other-currency hold remains.
 No database constraint, guard order, or execution behavior changed. The three
 cases collect and 28 related offline unit cases pass, but the PostgreSQL
 assertions still need an actual isolated database rerun at the changed source.
+
+The subsequent `dde5823296754035dbf13f443082d08160981497` source has tree
+`a4422d1c30d180ae66401838388c1fc2ad10c70a`. Its exact archive rebuilt
+that tree, and its Git bundle verified. The preserved source checkpoint is
+`../validation-results/ctcc-source-dde5823-20261006/`; archive SHA256 is
+`8ab29a3d267a59d3a6cf0caa2a5f24cf6bf637e9b5e37dea12336ac8d9a839bb`,
+bundle SHA256 is `8f0b1c5240f295915f8b1d319c8045d1da5338bd8cfd6633efc43355d880255e`,
+and `identity.json` records manifest, dependency locks and migration head 0023.
+The identity file explicitly marks full validation incomplete. Matching remote
+CI run [`37385413695`](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/37385413695)
+is in progress at this writing; no pass is inferred from its running status.
+
+A read-only native W32Time v2 observation on this host passed the exact pinned
+Traditional Chinese profile with the service Running/Automatic. The 109 focused
+clock tests passed. This is a fresh local clock prerequisite only, not a blanket
+market-source or Gate 3 pass. One bounded real OKX public capture then used
+native TLS for `/public/time`, a one-row 1m BTC-USDT-SWAP history-candle GET,
+and `/public/time`; the closed source bar and receipt were retained under
+`../validation-results/prospective-public-1m-diagnostic-20261006/`. Its
+separate-process replay checked all 37 manifest files and one row. Receipt
+SHA256 is `507c99d02dfbb04fa2645bb99d6d82aa0e329ba4b1962e57b12910d16a4c1162`.
+The checkpoint is a sibling file, not independently protected service state;
+the report therefore sets PIT acceptance, predictive-OOS eligibility, and
+execution authority to false. No account credentials or order writes were used.

@@ -367,6 +367,59 @@ def _secret_checked(raw, tokens):
     collector._no_secret_json(raw, tokens)
 
 
+async def _recheck_original_db_chain(
+    repository, scope, original, reference, packet, *, proof_schema
+):
+    """Reread the original journal after file readback, before carrier issuance.
+
+    The repository takes the exact-UID lock in a fresh read-only transaction.
+    Receipt timestamps may advance, but original DB timestamps and all event,
+    raw-body and packet bytes must remain identical. This is only an original
+    source continuity check; it does not prove a complete account snapshot.
+    """
+    if (
+        type(repository) is not AccountCaptureJournalRepository
+        or type(original) is not tuple
+        or not original
+        or type(reference) is not observed.CaptureReference
+        or type(packet) is not capture.DemoAccountPacket
+    ):
+        raise proof.NativeAccountProofError(
+            "native_account_original_source_recheck_invalid"
+        )
+    confirmed = await repository.read_chain(scope, reference.capture_id)
+    if type(confirmed) is not tuple or len(confirmed) != len(original):
+        raise proof.NativeAccountProofError(
+            "native_account_original_source_recheck_changed"
+        )
+    for earlier, later in zip(original, confirmed, strict=True):
+        if (
+            type(earlier) is not journal.JournalReadback
+            or type(later) is not journal.JournalReadback
+        ):
+            raise proof.NativeAccountProofError(
+                "native_account_original_source_recheck_changed"
+            )
+        journal.JournalReadback(later.event, later.db_recorded_at, later.readback_at)
+        if (
+            earlier.event.event_json != later.event.event_json
+            or earlier.event.raw_body != later.event.raw_body
+            or earlier.event.packet_payload != later.event.packet_payload
+            or earlier.db_recorded_at != later.db_recorded_at
+            or later.readback_at < earlier.readback_at
+        ):
+            raise proof.NativeAccountProofError(
+                "native_account_original_source_recheck_changed"
+            )
+    reread_reference, reread_packet, _, _ = proof._source(
+        confirmed, scope, proof_schema=proof_schema
+    )
+    if reread_reference != reference or reread_packet != packet:
+        raise proof.NativeAccountProofError(
+            "native_account_original_source_recheck_changed"
+        )
+
+
 async def _capture_initial_current(stage, session, session_factory, root):
     """Only an active exact initial issuer reaches this actual acquisition."""
     state = native._state(stage)
@@ -507,6 +560,14 @@ async def _capture_initial_current(stage, session, session_factory, root):
         scope=scope,
         expected_proof_sha256=sha(raw),
         expected_readback_sha256=readback_pin,
+    )
+    await _recheck_original_db_chain(
+        journal_repository,
+        scope,
+        chain,
+        reference,
+        packet,
+        proof_schema=proof_schema,
     )
     issue = native._sample(stage)
     validate_stamps(

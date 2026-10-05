@@ -101,6 +101,15 @@ this ingress boundary without changing original B1 journal semantics.
 Source persistence, proof file flush/readback and a separately opened root
 readback all finish before the sole private current-only carrier issuance path.
 The readback receipt pins exact proof/clock inventory and original root identity.
+After that file readback, the issuer opens another original PostgreSQL journal
+read transaction under the exact-UID account lock. It requires the same chain
+length and head, every event/raw/packet byte, original DB-recorded timestamp,
+and nonregressing readback timestamps before issuing the diagnostic carrier.
+The second read is bounded by the original current-data clock lease and never
+reconstructs source evidence from a supplied packet or receipt. It strengthens
+original-source continuity but does not by itself verify a complete account,
+historical provenance, exchange-wide atomic revision, or
+`source_authenticity_verified` for execution.
 Proof, receipt and already saved source journal remain on any late failure.
 Existing Windows storage provides file flush/readback, without an atomic
 power-loss directory durability claim. Partial/source-only crash tails remain

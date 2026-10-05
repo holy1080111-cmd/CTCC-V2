@@ -17,6 +17,9 @@ import httpx
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.database.repositories.account_capture_journal import (
+    AccountCaptureJournalRepository,
+)
 from app.domain.source_primitives import canonical, sha, utc_from_ns
 from app.trade_qualification import account_bootstrap_runtime as bootstrap
 from app.trade_qualification import account_capture as capture
@@ -281,6 +284,63 @@ def replay(raw, files, chain, scope):
     return proof.replay_native_account_proof(
         raw, files=files, chain=chain, scope=scope, expected_proof_sha256=sha(raw)
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mutation",
+    [None, "changed_event", "changed_db_timestamp", "reversed_readback", "extended"],
+)
+async def test_post_companion_recheck_requires_fresh_exact_original_db_chain(
+    monkeypatch, mutation
+):
+    # The synthetic source tests only the strict comparison. A production
+    # repository read_chain opens a new transaction and exact-UID account lock.
+    raw, files, chain, scope, _ = await companion_fixture(monkeypatch)
+    replay(raw, files, chain, scope)
+    reference, packet, _, _ = proof._source(chain, scope)
+    confirmed = tuple(
+        replace(point, readback_at=point.readback_at + timedelta(milliseconds=1))
+        for point in chain
+    )
+    if mutation == "changed_event":
+        confirmed = (*confirmed[:-1], replace(confirmed[-1], event=chain[0].event))
+    elif mutation == "changed_db_timestamp":
+        confirmed = (
+            *confirmed[:-1],
+            replace(
+                confirmed[-1],
+                db_recorded_at=confirmed[-1].db_recorded_at + timedelta(microseconds=1),
+            ),
+        )
+    elif mutation == "reversed_readback":
+        confirmed = (
+            *confirmed[:-1],
+            replace(
+                confirmed[-1],
+                readback_at=chain[-1].readback_at - timedelta(microseconds=1),
+            ),
+        )
+    elif mutation == "extended":
+        confirmed = (*confirmed, confirmed[-1])
+    repository = object.__new__(AccountCaptureJournalRepository)
+    reads = []
+
+    async def read_chain(received_scope, capture_id):
+        reads.append((received_scope, capture_id))
+        return confirmed
+
+    repository.read_chain = read_chain
+    call = runtime._recheck_original_db_chain(
+        repository, scope, chain, reference, packet, proof_schema=proof.SCHEMA
+    )
+    if mutation is None:
+        await call
+    else:
+        with pytest.raises(proof.NativeAccountProofError):
+            await call
+    assert reads == [(scope, reference.capture_id)]
+    assert not runtime._CAPTURES and not boundary._BOUNDARIES
 
 
 @pytest.mark.asyncio

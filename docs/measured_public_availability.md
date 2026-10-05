@@ -119,28 +119,55 @@ checkpoint procedure.
 
 ## Clock platform limitation and remaining acceptance
 
-The first native OS adapter only recognizes the documented **English**
-`w32tm /query /status /verbose` field schema. Service Running/Automatic alone is
-insufficient: leap, stratum, source, last synchronization result and freshness
-are checked. Unknown language, stale/unknown synchronization, stopped service or
-failed query is a denial. It never changes the host time, service or language.
-The Windows system directory is obtained from the native API, not PATH or the
+The original v1 replay recognizes only English `w32tm /query /status /verbose`
+fields. The current native v2 adapter also recognizes the exact English and
+Traditional Chinese cp950 field families on the reviewed Windows build and
+resource profile described in [native clock v2](public_clock_v2.md). It retains
+the raw status bytes and verifies the executable and language resource hashes,
+versions, and signatures before and after the query. It does not translate or
+guess unknown labels. Service Running/Automatic alone is insufficient: leap,
+stratum, source, last synchronization result and freshness are checked. Unknown
+language or build, stale/unknown synchronization, stopped service or failed
+query is a denial. It never changes the host time, service or language. The
+Windows system directory is obtained from the native API, not PATH or the
 caller-controlled `SystemRoot` value.
+
+A read-only native observation on this host at 2026-10-05 22:57 UTC accepted
+the v2 clock prerequisite with W32Time Running/Automatic and retained a
+Traditional Chinese status stream (SHA256
+`3e758192e6a80599d2ad9d2c119741ab30276f06273bc028bde259b234ca6e95`).
+That result is ephemeral and does not certify later clock health, public market
+availability, or an execution decision. Every real capture still needs fresh
+before/after native observations and the independent exchange-time checks.
 
 Microsoft documents the fields in [Windows Time Service tools and settings](https://learn.microsoft.com/en-us/windows-server/networking/windows-time-service/windows-time-service-tools-and-settings).
 The language-independent [MS-W32T status structure](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-w32t/f60ebce0-df96-4c96-b40b-fdbd34a2c936)
 and [RPC operation](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-w32t/7e80a465-f5f4-4c3c-87ef-12f76e45f8d1)
-offer a future integration path, but a similarly named local DLL export must not
-be called using an assumed ABI. The observed local provider has Event 260 XML
+offer a future general-locale path, but an authenticated RPC/NDR client must be
+implemented and validated against the documented protocol. A similarly named
+local DLL export must not be called using an assumed ABI. The observed local
+provider has Event 260 XML
 fields such as `LeapIndicator`, `Stratum`, `LastSyncError` and
 `TimeSinceLastGoodSync`. Microsoft says [Event 260 is logged every eight hours](https://learn.microsoft.com/en-us/windows-server/networking/windows-time-service/windows-time-for-traceability),
 so its old timestamp cannot stand in for a fresh synchronization measurement.
 Neither alternative is silently used as a weaker fallback.
 
+A future structured adapter must call only the read-only status operation
+(Opnum 6), bind the response to measured native start/end clock samples, retain
+the exact response and transport outcome, and independently validate the
+documented leap indicator, stratum, current state, source, last synchronization
+result, and `tpTimeLastGoodSync` (100 ns units). It must add measured query lag
+to the last-good-sync age, retain the 900-second limit, and keep the original
+v1/v2 replay schemas immutable. Failure to authenticate, decode, or bound the
+RPC response remains a denial. No local RPC client/stub meeting these
+requirements is presently part of the reviewed source.
+
 Outstanding work before production acceptance:
 
-- A supported native clock health path for this host's actual locale, followed
-  by real service/time correction and fresh causal-probe acceptance.
+- A general locale-independent structured W32Time status path for other
+  Windows builds/locales; the reviewed local v2 profile currently admits this
+  host when synchronization is fresh. Real public source causal-probe
+  acceptance remains separate.
 - Independently protected service checkpoint configuration and recovery policy.
 - Actual native Windows and Linux publication/restart/host-crash acceptance,
   native TLS positive integration, and finally authorized real public capture.
