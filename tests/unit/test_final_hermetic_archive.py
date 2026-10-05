@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import tarfile
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -215,6 +216,89 @@ def test_command_timeout_is_durable_failed_step(tmp_path, monkeypatch):
     assert step["exit_code"] is None
     assert step["failure_type"] == "TimeoutExpired"
     assert step["name"] == "linux-full"
+    assert step["timeout_scope"] == "stage"
+
+
+def test_global_deadline_caps_stage_timeout_and_preserves_failed_step(
+    tmp_path, monkeypatch
+):
+    class Clock:
+        now = 10.0
+
+        def __call__(self):
+            return self.now
+
+    clock = Clock()
+
+    def timeout(*args, **kwargs):
+        assert kwargs["timeout"] == 7.0
+        raise subprocess.TimeoutExpired(args[0], kwargs["timeout"])
+
+    monkeypatch.setattr(subprocess, "run", timeout)
+    with pytest.raises(subprocess.TimeoutExpired):
+        Run(tmp_path, budget_seconds=7, clock=clock).command(
+            "linux-full", ["docker", "run"], timeout=3600
+        )
+    step = json.loads((tmp_path / "steps.json").read_text())[0]
+    assert step["failure_type"] == "TimeoutExpired"
+    assert step["timeout_scope"] == "validation"
+    assert step["exit_code"] is None
+    assert (tmp_path / "linux-full.log").exists()
+
+
+def test_expired_global_deadline_never_starts_docker(tmp_path, monkeypatch):
+    class Clock:
+        now = 0.0
+
+        def __call__(self):
+            return self.now
+
+    clock = Clock()
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("Docker must not start after the validation deadline")
+
+    monkeypatch.setattr(subprocess, "run", unexpected)
+    run = Run(tmp_path, budget_seconds=1, clock=clock)
+    clock.now = 2.0
+    with pytest.raises(TimeoutError, match="validation_deadline_exceeded"):
+        run.command("linux-full", ["docker", "run"])
+    step = json.loads((tmp_path / "steps.json").read_text())[0]
+    assert step["failure_type"] == "TimeoutError"
+    assert step["timeout_scope"] == "validation"
+    assert step["exit_code"] is None
+
+
+def test_stage_heartbeat_stops_before_command_returns(tmp_path, monkeypatch):
+    from scripts import verify_final_hermetic as verifier
+
+    observed = []
+    repeated_heartbeat_seen = threading.Event()
+
+    def capture(value, **kwargs):
+        observed.append(value)
+        if sum(value.startswith("HERMETIC_STAGE_ALIVE=") for value in observed) >= 2:
+            repeated_heartbeat_seen.set()
+
+    def complete_after_heartbeat(*args, **kwargs):
+        assert repeated_heartbeat_seen.wait(5)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(verifier, "print", capture, raising=False)
+    monkeypatch.setattr(subprocess, "run", complete_after_heartbeat)
+    Run(tmp_path, heartbeat_seconds=0.001).command("heartbeat-probe", ["docker", "run"])
+    assert (
+        sum(
+            value.startswith("HERMETIC_STAGE_ALIVE=heartbeat-probe:")
+            for value in observed
+        )
+        >= 2
+    )
+    assert observed[-1] == "HERMETIC_STAGE_END=heartbeat-probe:0"
+    assert not any(
+        thread.name == "ctcc-hermetic-heartbeat" and thread.is_alive()
+        for thread in threading.enumerate()
+    )
 
 
 def test_cleanup_reconciles_attempted_owned_start_even_if_ack_was_lost(monkeypatch):
@@ -270,6 +354,35 @@ def test_cleanup_does_not_treat_daemon_failure_as_resource_absence(monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", unavailable)
     assert cleanup_resources([("container", "new")], "run")[0]["status"] == "FAIL"
+
+
+def test_cleanup_deadline_marks_remaining_resources_failed_without_more_docker(
+    monkeypatch,
+):
+    class Clock:
+        now = 0.0
+
+        def __call__(self):
+            return self.now
+
+    clock = Clock()
+    calls = []
+
+    def docker(args, **kwargs):
+        calls.append((args, kwargs["timeout"]))
+        clock.now = 1.0
+        return SimpleNamespace(stdout="")
+
+    monkeypatch.setattr(subprocess, "run", docker)
+    result = cleanup_resources(
+        [("container", "first"), ("container", "second")],
+        "run",
+        budget_seconds=1,
+        clock=clock,
+    )
+    assert [item["status"] for item in result] == ["ABSENT", "FAIL"]
+    assert result[1]["failure_type"] == "TimeoutError"
+    assert len(calls) == 1 and calls[0][1] == 1
 
 
 @pytest.mark.parametrize(

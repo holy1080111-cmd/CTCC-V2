@@ -15,9 +15,16 @@ import re
 import stat
 import subprocess
 import tarfile
+import threading
 import time
 from pathlib import Path, PurePosixPath
 from uuid import uuid4
+
+# Leave time for bounded cleanup and `if: always()` evidence upload before the
+# 90-minute GitHub job cutoff; a budget failure is never a validation pass.
+VALIDATION_BUDGET_SECONDS = 78 * 60
+CLEANUP_BUDGET_SECONDS = 5 * 60
+HEARTBEAT_INTERVAL_SECONDS = 60
 
 ARCHIVE_REQUIRED_CASES = (
     (
@@ -209,30 +216,69 @@ def verify_pytest_report(
 
 
 class Run:
-    def __init__(self, output: Path):
+    def __init__(
+        self,
+        output: Path,
+        *,
+        budget_seconds: float = VALIDATION_BUDGET_SECONDS,
+        heartbeat_seconds: float = HEARTBEAT_INTERVAL_SECONDS,
+        clock=time.monotonic,
+    ):
+        if budget_seconds <= 0 or heartbeat_seconds <= 0:
+            raise ValueError("validation_timing_budget_invalid")
         self.output = output
         self.steps = []
+        self.clock = clock
+        self.deadline = clock() + budget_seconds
+        self.heartbeat_seconds = heartbeat_seconds
 
     def command(self, name, args, *, timeout=3600, input_bytes=None):
-        start = time.monotonic()
+        start = self.clock()
         record = {"name": name, "exit_code": None}
         print(f"HERMETIC_STAGE_START={name}", flush=True)
+        heartbeat_stop = threading.Event()
+
+        def heartbeat():
+            while not heartbeat_stop.wait(self.heartbeat_seconds):
+                if heartbeat_stop.is_set():
+                    return
+                print(
+                    f"HERMETIC_STAGE_ALIVE={name}:{int(self.clock() - start)}",
+                    flush=True,
+                )
+
+        heartbeat_thread = threading.Thread(
+            target=heartbeat, name="ctcc-hermetic-heartbeat", daemon=True
+        )
+        heartbeat_started = False
         try:
             with (self.output / f"{name}.log").open("wb") as log:
+                remaining = self.deadline - self.clock()
+                record["timeout_scope"] = (
+                    "validation" if remaining < timeout else "stage"
+                )
+                if remaining <= 0:
+                    raise TimeoutError("validation_deadline_exceeded")
+                effective_timeout = min(timeout, remaining)
+                heartbeat_thread.start()
+                heartbeat_started = True
                 result = subprocess.run(
                     args,
                     input=input_bytes,
                     stdout=log,
                     stderr=subprocess.STDOUT,
-                    timeout=timeout,
+                    timeout=effective_timeout,
                     check=False,
                 )
                 record["exit_code"] = result.returncode
-        except (OSError, subprocess.TimeoutExpired) as error:
+        except Exception as error:
             record["failure_type"] = type(error).__name__
             raise
         finally:
-            record["elapsed_seconds"] = time.monotonic() - start
+            heartbeat_stop.set()
+            if heartbeat_started:
+                heartbeat_thread.join(timeout=1)
+            record["elapsed_seconds"] = self.clock() - start
             self.steps.append(record)
             self.save()
             print(
@@ -247,13 +293,31 @@ class Run:
         (self.output / "steps.json").write_text(json.dumps(self.steps, indent=2))
 
 
-def cleanup_resources(resources: list[tuple[str, str]], run_id: str) -> list[dict]:
+def cleanup_resources(
+    resources: list[tuple[str, str]],
+    run_id: str,
+    *,
+    budget_seconds: float = CLEANUP_BUDGET_SECONDS,
+    clock=time.monotonic,
+) -> list[dict]:
     """Reconcile attempted creates, including timeouts, without touching others."""
+    if budget_seconds < 0:
+        raise ValueError("cleanup_timing_budget_invalid")
+    deadline = clock() + budget_seconds
+
+    def bounded_command(args, *, timeout, check, **kwargs):
+        remaining = deadline - clock()
+        if remaining <= 0:
+            raise TimeoutError("cleanup_deadline_exceeded")
+        return subprocess.run(
+            args, timeout=min(timeout, remaining), check=check, **kwargs
+        )
+
     results = []
     for kind, name in reversed(resources):
         result = {"kind": kind, "name": name, "status": "FAIL"}
         try:
-            listing = subprocess.run(
+            listing = bounded_command(
                 [
                     "docker",
                     kind,
@@ -270,7 +334,7 @@ def cleanup_resources(resources: list[tuple[str, str]], run_id: str) -> list[dic
             if name not in listing.stdout.splitlines():
                 result["status"] = "ABSENT"
             else:
-                inspected = subprocess.run(
+                inspected = bounded_command(
                     ["docker", kind, "inspect", name],
                     capture_output=True,
                     text=True,
@@ -283,7 +347,7 @@ def cleanup_resources(resources: list[tuple[str, str]], run_id: str) -> list[dic
                 ).get("Labels") or {}
                 if labels.get("org.ctcc.validation.run") != run_id:
                     raise ValueError("cleanup_resource_ownership_mismatch")
-                subprocess.run(
+                bounded_command(
                     [
                         "docker",
                         kind,
