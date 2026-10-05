@@ -160,6 +160,27 @@ def test_full_replay_and_json_record_are_not_runtime_permission(source, origin, 
         result.runtime_admissible = True
 
 
+@pytest.mark.parametrize(
+    "field",
+    ("setup_time", "trigger_time", "timing_window_type"),
+)
+def test_recorded_timing_cannot_rewrite_original_event_chronology(result, field):
+    changed = (
+        "changed_original_timing_policy"
+        if field == "timing_window_type"
+        else getattr(result.timing, field) + timedelta(microseconds=1)
+    )
+    timing = result.timing.model_copy(update={field: changed})
+    index = module.STEPS.index("timing")
+    checks = list(result.checks)
+    checks[index] = checks[index].model_copy(
+        update={"subresult_sha256": module._subhash(timing)}
+    )
+    forged = result.model_copy(update={"timing": timing, "checks": tuple(checks)})
+    with pytest.raises(ValueError, match="recheck_changed_original_timing"):
+        copy_recorded_recheck(forged)
+
+
 @pytest.mark.parametrize("direction", ("long", "short"))
 def test_next_boundary_continues_event_but_cannot_skip_new_target(
     direction, monkeypatch

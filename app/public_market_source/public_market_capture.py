@@ -540,7 +540,9 @@ async def _collect_packet(plan, expected_plan_sha256, *, _attempt=None):
     return packet, files
 
 
-async def collect_and_publish_public_minutes(*, plan, expected_plan_sha256, journal):
+async def collect_and_publish_public_minutes(
+    *, plan, expected_plan_sha256, journal, _witness=None
+):
     """No injected clock/client, automatic retry, credentials, OOS or orders."""
     from app.public_market_source.public_receipt_storage import (
         ControlledPublicReceiptJournal,
@@ -548,6 +550,13 @@ async def collect_and_publish_public_minutes(*, plan, expected_plan_sha256, jour
 
     if type(journal) is not ControlledPublicReceiptJournal:
         raise PublicReceiptError("controlled_journal_required")
+    if _witness is not None:
+        from app.public_market_source.public_checkpoint_hook import (
+            OwnedPublicCheckpointHook,
+        )
+
+        if type(_witness) is not OwnedPublicCheckpointHook:
+            raise PublicReceiptError("controlled_witness_required")
     from app.public_market_source.public_attempt_journal import failure_code
 
     selected = checked(plan, PublicMinuteCapturePlanV1)
@@ -557,42 +566,71 @@ async def collect_and_publish_public_minutes(*, plan, expected_plan_sha256, jour
     ):
         raise PublicReceiptError("plan_pin_mismatch")
     try:
-        with journal._begin_attempt(selected) as attempt:
-            try:
-                packet, files = await _collect_packet(
-                    selected, expected_plan_sha256, _attempt=attempt
-                )
-                if packet.transport_origin != "owned_native_tls":
-                    raise PublicReceiptError("native_public_capture_required")
-            except (Exception, asyncio.CancelledError) as exc:
-                disposition = (
-                    "incomplete"
-                    if any(item["result"] == "incomplete" for item in attempt.requests)
-                    else "rejected"
-                )
+        if _witness is not None:
+            await _witness.open(journal, selected)
+        attempt = None
+        try:
+            with journal._begin_attempt(selected) as attempt:
                 try:
-                    terminal_stamp = native_stamp()
-                except PublicReceiptError:
-                    if attempt.version != 2:
-                        raise
-                    terminal_stamp = None
-                attempt.seal(
-                    disposition=disposition,
-                    code=failure_code(exc),
-                    stamp=terminal_stamp,
-                )
-                raise
-            else:
-                attempt_sha = attempt.seal(
-                    disposition="completed_collection",
-                    code="none",
-                    stamp=native_stamp(),
-                    receipt_sha256=packet.canonical_sha256(),
-                )
+                    packet, files = await _collect_packet(
+                        selected, expected_plan_sha256, _attempt=attempt
+                    )
+                    if packet.transport_origin != "owned_native_tls":
+                        raise PublicReceiptError("native_public_capture_required")
+                except (Exception, asyncio.CancelledError) as exc:
+                    disposition = (
+                        "incomplete"
+                        if any(
+                            item["result"] == "incomplete" for item in attempt.requests
+                        )
+                        else "rejected"
+                    )
+                    try:
+                        terminal_stamp = native_stamp()
+                    except PublicReceiptError:
+                        if attempt.version != 2:
+                            raise
+                        terminal_stamp = None
+                    attempt.seal(
+                        disposition=disposition,
+                        code=failure_code(exc),
+                        stamp=terminal_stamp,
+                    )
+                    raise
+                else:
+                    attempt_sha = attempt.seal(
+                        disposition="completed_collection",
+                        code="none",
+                        stamp=native_stamp(),
+                        receipt_sha256=packet.canonical_sha256(),
+                    )
+        except (Exception, asyncio.CancelledError):
+            if (
+                _witness is not None
+                and attempt is not None
+                and attempt.summary is not None
+            ):
+                await _witness.after_attempt(journal, attempt.summary["disposition"])
+            raise
+        if _witness is not None:
+            await _witness.after_attempt(journal, "completed_collection")
         packet = MeasuredPublicMinuteReceiptV1.model_validate(
             {**packet.model_dump(), "attempt_sha256": attempt_sha}
         )
-        return journal._publish_owned(_OwnedPublicCapture(_ISSUER, packet, files))
+        try:
+            published = journal._publish_owned(
+                _OwnedPublicCapture(_ISSUER, packet, files)
+            )
+        except (Exception, asyncio.CancelledError):
+            if (
+                _witness is not None
+                and journal.checkpoint.sequence == _witness.before_capture_sequence + 1
+            ):
+                await _witness.after_capture(journal)
+            raise
+        if _witness is not None:
+            await _witness.after_capture(journal)
+        return published
     except (PublicReceiptError, asyncio.CancelledError):
         raise
     except Exception as exc:

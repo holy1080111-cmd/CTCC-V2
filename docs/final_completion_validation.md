@@ -3315,3 +3315,19 @@ SHA256 is `507c99d02dfbb04fa2645bb99d6d82aa0e329ba4b1962e57b12910d16a4c1162`.
 The checkpoint is a sibling file, not independently protected service state;
 the report therefore sets PIT acceptance, predictive-OOS eligibility, and
 execution authority to false. No account credentials or order writes were used.
+
+The subsequent source slice adds an opt-in PostgreSQL 0024 append-only public
+checkpoint witness, a restricted-function repository, and phase hooks that
+anchor an attempt before publishing its capture. Its result still fixes
+`independently_protected`, `predictive_oos_eligible`, and `execution_authority`
+to false. Focused native unit checks passed 78 cases with one Windows-only
+POSIX symlink skip; the new restricted-role PostgreSQL integration test
+collected but has not run against a real database on this overheated host.
+The final hermetic PostgreSQL selection now requires that module. Real role,
+WAL/OS isolation, crash/restart and exact-source migration acceptance remain
+open. A separate R7 record-consistency fix rejects rehashed timing results
+that change the original setup, trigger or policy; 36 targeted tests passed,
+without granting execution authority. Two targeted native Windows late-write
+tests and 57 direct submit-boundary tests passed locally. A broader ad hoc
+Windows selection was stopped early to limit host load and is not counted as a
+regression pass.

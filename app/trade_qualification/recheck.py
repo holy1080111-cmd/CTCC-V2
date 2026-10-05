@@ -657,6 +657,9 @@ class RecordedRecheckAssessment(QualificationModel):
             self.timing.report_id != intent.report_id
             or self.timing.current_time != self.observed_at
             or self.timing.event_key != self.origin.original_event_key
+            or self.timing.setup_time != pre.prefix.detection.setup_time
+            or self.timing.trigger_time != pre.prefix.detection.trigger.trigger_time
+            or self.timing.timing_window_type != pre.prefix.timing_policy.policy_id
             or self.timing.latest_valid_entry_time
             != pre.prefix.timing.latest_valid_entry_time
             or self.consumed_event_keys_sha256 is None

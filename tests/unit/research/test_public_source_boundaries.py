@@ -52,6 +52,16 @@ def test_public_source_has_only_explicit_reviewed_consumers():
             "public_market_receipts",
             "public_receipt_storage",
         ),
+        APP / "mie" / "validation" / "public_checkpoint_service.py": (
+            "public_checkpoint_hook",
+            "public_market_capture",
+            "public_market_receipts",
+            "public_receipt_storage",
+        ),
+        APP / "database" / "repositories" / "public_receipt_witness.py": (
+            "public_market_receipts",
+            "public_receipt_storage",
+        ),
         APP / "trade_qualification" / "public_source_runtime.py": (
             "public_clock",
             "public_runtime_journal",

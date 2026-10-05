@@ -28,6 +28,12 @@ new leverage, replacement report/event, renewed expiry, or changed policy to
 repair a rejected candidate. Original source replay uses the original inputs,
 not the later market snapshot.
 
+The recorded timing result also retains the original setup time, trigger time
+and timing-policy identity. Readback rejects a saved result that rewrites any of
+these fields, even if its subresult hash is recalculated. This is a record
+consistency check; it does not authenticate the original source or grant runtime
+execution authority.
+
 ## Closed history is not a complete price path
 
 The continuation check requires the complete original history and append-only

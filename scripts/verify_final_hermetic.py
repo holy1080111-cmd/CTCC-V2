@@ -713,6 +713,7 @@ def main():
                 "tests/integration/test_account_bill_archive_claim_repository.py",
                 "tests/integration/test_control_bound_ledger_repository.py",
                 "tests/integration/test_ledger_event_observation_repository.py",
+                "tests/integration/test_public_receipt_witness_repository.py",
             ],
             mounts=test_results_mount,
             timeout=POSTGRES_TEST_TIMEOUT_SECONDS,
@@ -737,6 +738,7 @@ def main():
                 "tests.integration.test_account_bill_archive_claim_repository",
                 "tests.integration.test_control_bound_ledger_repository",
                 "tests.integration.test_ledger_event_observation_repository",
+                "tests.integration.test_public_receipt_witness_repository",
             ),
         )
         container(
