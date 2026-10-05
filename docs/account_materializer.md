@@ -19,9 +19,9 @@
 
 `copy_materialization_inputs` 在任何 serializer 前拒絕 subclasses、hidden fields、opaque scalars、iterators、非有限數字和不可信 timezone callback，回傳重新建構的 immutable inputs。`materialization_inputs_sha256` 給外部 pin；有 IO 的協調器應在 IO 前固定 copy 和外部 SHA，完成後用同一份 copy 與 `expected_inputs_sha256` 重驗。純離線 API 省略此外部 pin 不代表輸入已認證。
 
-結果 `AccountMaterializationResult` 提供實際算出的 instruments、equity／available margin、positions、pending reservations、loss history、逐 row projections、缺口及可選既有 `PortfolioRiskSnapshot`。無法表示的值用 `None`／具體 reason，不填零。只有已映射的 rows 進入 exposure tuple；projections 保留未映射 rows，未映射不會被誤當完整集合。
+結果 `AccountMaterializationResult` 提供實際算出的 instruments、equity／available margin、positions、pending reservations、loss history、逐 row projections、原始 packet／inputs SHA 及缺口。無法表示的值用 `None`／具體 reason，不填零。只有已映射的 rows 進入 exposure tuple；projections 保留未映射 rows，未映射不會被誤當完整集合。
 
-結果固定 `state=recorded_mapping_incomplete_account`，`account_complete`、`source_authenticity_verified`、`execution_authority` 全為 false。即使全部必要欄位足以組出既有 snapshot，其四個 `EvidenceStamp.complete` 仍全為 false。沒有 caller `complete` 開關；既有 `evaluate_portfolio` 會拒絕這種不完整來源。
+結果固定 `state=recorded_mapping_incomplete_account`，`account_complete`、`source_authenticity_verified`、`execution_authority` 全為 false。只要 packet 有任何 `incomplete_reasons` 或映射留下任何缺口，`snapshot=None`，即使可算出部分帳戶數字或所有合成 row 都有形狀。現行驗證過的 packet 必然保留來源、歷史和跨讀取完整性缺口，因此不產生正式 `PortfolioRiskSnapshot`。沒有 caller `complete` 開關；診斷欄位不能交給 `evaluate_portfolio` 作完整風險快照。
 
 ## 已實作的 recorded 計算
 
@@ -31,7 +31,7 @@
 
 線性衍生品的 `ctVal` 為 base currency 單位，因此由 `ctValCcy` 取得 base；官方 `baseCcy`／`quoteCcy` 只適用 SPOT／MARGIN，可以缺少或為空，但若非空就必須一致。沒有拆 instrument 字串猜單位。價格 × contracts × ctVal 得到結算／報價幣 notional。公開 `lever`／`maxLmtSz` 僅形成已記錄規格，不是帳戶當下槓桿許可。[官方 instruments](https://app.okx.com/docs-v5/en/#public-data-rest-api-get-instruments)
 
-balance 只從唯一匹配的 `details.ccy` 讀取 `eq`／`availEq`；頂層 `totalEq`／`availEq` 及 `notionalUsd` 不改標 USDT。未知 liabilities／borrow scope 保留缺口，不宣告為零。snapshot 的 balance stamp 保守使用頂層與幣別 `uTime` 的較早者；缺 source clock 不用 receipt time 代替。[官方 balance](https://app.okx.com/docs-v5/en/#trading-account-rest-api-get-balance)
+balance 只從唯一匹配的 `details.ccy` 讀取 `eq`／`availEq`；頂層 `totalEq`／`availEq` 及 `notionalUsd` 不改標 USDT。未知 liabilities／borrow scope 保留缺口，不宣告為零。內部 balance 時鐘保守使用頂層與幣別 `uTime` 的較早者；缺 source clock 不用 receipt time 代替，也不產生正式 snapshot。[官方 balance](https://app.okx.com/docs-v5/en/#trading-account-rest-api-get-balance)
 
 持倉按真實 `posId`、net signed quantity 或 hedge `posSide` 判定方向，核對 raw `instType` 與 instrument 規格。notional 用當前 raw `markPx`；margin 必須有明確 raw `margin`，不由槓桿補猜。風險從 mark 到實際匹配 stop 的距離加明示每 base 成本計算。
 
@@ -81,7 +81,7 @@ materializer 在自身完成 raw replay 後執行同一檢查，將具體 blocki
 加入既有 incomplete reasons。**任何缺漏或矛盾都不建立 snapshot**，即使其他
 supplemental ledger／history／peak 都可映射；已算出的逐 row mapping 仍可供調查。
 已完整提供官方 anchor balance／margin mode 等合成欄位且無 finding 的 recorded
-測試依然可以形成四個 `complete=False` stamps 的舊 DTO。
+測試仍只保留診斷映射；原 packet 的未完成原因不會因合成補充資料而消失。
 
 這是必要的反證檢查，不是足夠的全帳戶證明：分次讀到相同數字仍可能有中間變動，
 沒有共同 exchange revision、可信 transport 認證、advanced／non-SWAP 全產品範圍、

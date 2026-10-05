@@ -71,11 +71,16 @@ class OkxPublicRestClient:
 
     async def ticker(self, instrument_id: str) -> Ticker | SwapTickerV2:
         rows = await self._request("/api/v5/market/ticker", {"instId": instrument_id})
-        if not rows:
-            raise OkxPublicApiError("ticker returned no data")
-        return parse_ticker(rows[0])
+        if len(rows) != 1:
+            raise OkxPublicApiError("ticker returned non-singleton data")
+        ticker = parse_ticker(rows[0])
+        if ticker.instrument_id != instrument_id:
+            raise OkxPublicApiError("ticker instrument mismatch")
+        return ticker
 
     async def candles(self, instrument_id: str, bar: str, limit: int) -> list[Candle]:
+        if not instrument_id.endswith("-SWAP"):
+            raise OkxPublicApiError("SWAP candle instrument required")
         rows = await self._request(
             "/api/v5/market/candles",
             {"instId": instrument_id, "bar": bar, "limit": str(limit)},

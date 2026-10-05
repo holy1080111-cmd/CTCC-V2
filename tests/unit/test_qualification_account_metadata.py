@@ -377,7 +377,9 @@ async def test_owned_runtime_materializes_captured_metadata_without_caller_rows(
     )
     result = await session.collect_and_materialize(**arguments)
     assert len(result.materialization_inputs.instruments) == 1
-    assert result.materialization.snapshot is not None
+    assert result.materialization.snapshot is None
+    assert result.materialization.incomplete_reasons
+    assert result.materialization.instruments
     assert result.transport_provenance == "synthetic_transport"
     assert result.admission == "DENY" and result.execution_authority is False
     receipt = json.loads(result.receipt_json)

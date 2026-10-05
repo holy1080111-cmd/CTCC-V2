@@ -1343,7 +1343,12 @@ def materialize_demo_portfolio_snapshot(
         item.kind == "position" and not item.reasons for item in projections
     )
     if (
-        config.get("acctLv") == "2"
+        # A well-shaped projection is still diagnostic when its packet or any
+        # mapping source reports incomplete coverage. Do not issue the formal
+        # portfolio DTO until every recorded gap has been resolved.
+        not packet.incomplete_reasons
+        and not gaps
+        and config.get("acctLv") == "2"
         and not metadata_gaps
         and not consistency.blocking_reasons
         and balance_reason is None

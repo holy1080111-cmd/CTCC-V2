@@ -7,6 +7,17 @@ Every result keeps source_authenticity_verified, original_source_verified and
 execution_authority exactly false, with admission DENY. A passing G1 record is a
 reproducible diagnostic result, not an execution permit.
 
+The older `OkxPublicRestClient` is a separate diagnostic path, not this V2
+source owner. Its SWAP candle parser now rejects missing or malformed price and
+volume fields instead of turning blank values into zero, and its ticker read
+requires one matching instrument row. The V2 bridge already keeps OKX SWAP
+`vol` as contracts, `volCcy` as base currency, and `volCcyQuote` as quote
+currency; ticker `vol24h` is contracts, `volCcy24h` is base currency, and ticker
+quote turnover remains unknown. These units follow the
+[OKX market-data definitions](https://app.okx.com/docs-v5/en/#order-book-trading-market-data-get-candlesticks).
+The older client still retries, sorts candles, and has unrelated optional-field
+zero defaults. It cannot supply R5 trusted-source or execution authority.
+
 ## Inputs and raw replay
 
 evaluate_public_market_data_v2 accepts an exact CollectedPublicMarketV2, an

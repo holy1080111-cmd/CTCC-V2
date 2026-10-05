@@ -39,17 +39,43 @@ def parse_instrument(row: dict[str, Any]) -> InstrumentInfo:
 
 
 def parse_candle(row: list[str]) -> Candle:
-    if len(row) < 9:
-        raise ValueError(f"invalid OKX candle length: {len(row)}")
+    # OKX SWAP rows are [ts,o,h,l,c,vol,volCcy,volCcyQuote,confirm].
+    # The three volume fields have different units; a missing field must not
+    # become zero through decimal_value's legacy optional-field default.
+    if (
+        type(row) is not list
+        or len(row) != 9
+        or any(type(item) is not str for item in row)
+    ):
+        raise ValueError("invalid OKX candle row")
+    if re.fullmatch(r"[1-9][0-9]{12}", row[0]) is None:
+        raise ValueError("invalid OKX candle timestamp")
+
+    def number(index: int, *, positive: bool) -> Decimal:
+        raw = row[index]
+        if re.fullmatch(r"[0-9]{1,40}(?:\.[0-9]{1,20})?", raw) is None:
+            raise ValueError("invalid OKX candle number")
+        value = Decimal(raw)
+        if positive and value <= 0:
+            raise ValueError("invalid OKX candle price")
+        return value
+
+    if row[8] not in {"0", "1"}:
+        raise ValueError("invalid OKX candle confirmation")
+    open_price, high, low, close = (
+        number(index, positive=True) for index in range(1, 5)
+    )
+    if low > min(open_price, close) or high < max(open_price, close):
+        raise ValueError("invalid OKX candle geometry")
     return Candle(
         timestamp=utc_from_ms(row[0]),
-        open=decimal_value(row[1]),
-        high=decimal_value(row[2]),
-        low=decimal_value(row[3]),
-        close=decimal_value(row[4]),
-        volume_contracts=decimal_value(row[5]),
-        volume_currency=decimal_value(row[6]),
-        volume_quote=decimal_value(row[7]),
+        open=open_price,
+        high=high,
+        low=low,
+        close=close,
+        volume_contracts=number(5, positive=False),
+        volume_currency=number(6, positive=False),
+        volume_quote=number(7, positive=False),
         confirmed=row[8] == "1",
     )
 

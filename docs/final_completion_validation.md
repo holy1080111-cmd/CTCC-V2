@@ -3074,3 +3074,26 @@ extra. That narrow source-extra allowance did not accept third-party drift.
 The later missing locked `tzdata==2026.4` wheel was repaired separately, but
 the current source still has no accepted full-validation dependency baseline
 or final release identity. `DEPENDENCY_IDENTITY` remains FAIL.
+
+## 2026-10-06 source parser and incomplete-account containment
+
+The separate legacy OKX public client now rejects SWAP candle rows with absent,
+malformed or impossible price/volume fields, and rejects a ticker unless the
+response has exactly one row for the requested instrument. Official OKX units
+were rechecked: SWAP candle `vol` is contracts, `volCcy` is base currency and
+`volCcyQuote` is quote currency; ticker `vol24h` is contracts and
+`volCcy24h` is base currency, with no ticker quote-turnover field. The existing
+V2 bridge already preserves these distinctions. The legacy client still has
+retries, candle sorting and unrelated optional-field zero defaults, and is
+not an R5 trusted source. Its four affected unit modules passed 170 tests with
+two recorded Windows/POSIX-only skips; this is not full regression.
+
+The Demo account materializer now withholds its formal
+`PortfolioRiskSnapshot` whenever the verified packet or any row mapping reports
+incomplete coverage. It retains original packet/input hashes, mapped values,
+row projections and specific reasons for diagnostic and reconciliation work;
+missing balance remains unknown. The current verified packet contract always
+has source/history/cross-read gaps, so no current account read can issue a
+complete risk snapshot or execution authority. Focused synthetic account
+selections passed 330 tests. Authenticated complete account ingestion and the
+PostgreSQL/CI full regression remain outstanding.

@@ -146,6 +146,51 @@ def test_parse_candle() -> None:
     )
     assert candle.confirmed is True
     assert candle.close == Decimal(105)
+    assert (candle.volume_contracts, candle.volume_currency, candle.volume_quote) == (
+        Decimal(12),
+        Decimal("1.2"),
+        Decimal(1260),
+    )
+
+
+@pytest.mark.parametrize("index", [5, 6, 7])
+@pytest.mark.parametrize("bad", ["", None, 0, "NaN", "Infinity", "-1", "1e2"])
+def test_parse_candle_missing_or_malformed_volume_fails_closed(index, bad) -> None:
+    row = ["1750000000000", "100", "110", "95", "105", "12", "1.2", "1260", "1"]
+    row[index] = bad
+    with pytest.raises(ValueError):
+        parse_candle(row)
+
+
+@pytest.mark.parametrize("bad", ["", "2"])
+def test_parse_candle_invalid_confirmation_fails_closed(bad) -> None:
+    row = ["1750000000000", "100", "110", "95", "105", "12", "1.2", "1260", bad]
+    with pytest.raises(ValueError):
+        parse_candle(row)
+
+
+@pytest.mark.parametrize("index", [1, 2, 3, 4])
+@pytest.mark.parametrize("bad", ["", "0", "NaN", "Infinity", "-1"])
+def test_parse_candle_missing_or_malformed_price_fails_closed(index, bad) -> None:
+    row = ["1750000000000", "100", "110", "95", "105", "12", "1.2", "1260", "1"]
+    row[index] = bad
+    with pytest.raises(ValueError):
+        parse_candle(row)
+
+
+@pytest.mark.parametrize("bad", ["", "1", "-1750000000000", "17500000000000"])
+def test_parse_candle_invalid_timestamp_fails_closed(bad) -> None:
+    row = [bad, "100", "110", "95", "105", "12", "1.2", "1260", "1"]
+    with pytest.raises(ValueError):
+        parse_candle(row)
+
+
+@pytest.mark.parametrize("index,value", [(2, "99"), (3, "106")])
+def test_parse_candle_invalid_geometry_fails_closed(index, value) -> None:
+    row = ["1750000000000", "100", "110", "95", "105", "12", "1.2", "1260", "1"]
+    row[index] = value
+    with pytest.raises(ValueError):
+        parse_candle(row)
 
 
 def test_parse_ticker_spread() -> None:

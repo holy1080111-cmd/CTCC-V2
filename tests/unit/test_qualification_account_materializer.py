@@ -13,7 +13,7 @@ from pydantic import ValidationError, model_serializer
 from app.trade_qualification import account_capture as capture
 from app.trade_qualification import account_materializer as module
 from app.trade_qualification import reservations
-from app.trade_qualification.portfolio import ObservedSource, PortfolioRiskSnapshot
+from app.trade_qualification.portfolio import ObservedSource
 from tests.unit.test_qualification_account_capture import (
     CURSORS,
     INSTRUMENT,
@@ -323,6 +323,9 @@ def test_missing_currency_detail_cannot_fall_back_to_top_level_usd_totals():
     result = materialize(source=packet(changes=change))
     assert result.equity is None and result.available_margin is None
     assert result.snapshot is None and result.incomplete_reasons
+    assert len(result.positions) == 1
+    assert projection(result, "positions").risk_amount == D("0.121")
+    assert "single_currency_balance_required" in result.incomplete_reasons
 
 
 @pytest.mark.parametrize("field", ["eq", "availEq", "liab", "borrowFroz", "uTime"])
@@ -869,37 +872,19 @@ def expired_hold(*, state="uncertain"):
     )
 
 
-def test_recorded_snapshot_uses_existing_dto_and_keeps_all_stamps_incomplete(source):
+def test_incomplete_packet_keeps_diagnostics_without_portfolio_snapshot(source):
     supplied = snapshot_inputs()
     result = materialize(source=source, supplied=supplied)
-    snapshot = result.snapshot
-    assert type(snapshot) is PortfolioRiskSnapshot
-    assert snapshot.account_id == UID and snapshot.settlement_currency == "USDT"
-    assert snapshot.equity == D("1000") and snapshot.available_margin == D("800")
-    assert snapshot.positions == result.positions
-    assert snapshot.pending_reservations == result.pending_reservations
-    assert snapshot.position_count == snapshot.pending_reservation_count == 1
-    assert snapshot.loss_history == result.loss_history == ()
-    assert snapshot.loss_streak_at_history_start == 2
-    assert snapshot.history_start == supplied.history.history_start
-    assert snapshot.history_end == supplied.history.history_end
-    assert snapshot.peak_equity == D("1200")
-    assert snapshot.peak_observed_at == NOW - timedelta(days=1)
-    assert snapshot.peak_window_started_at == NOW - timedelta(days=30)
-    for name in (
-        "balance_stamp",
-        "positions_stamp",
-        "history_stamp",
-        "reservations_stamp",
-    ):
-        stamp = getattr(snapshot, name)
-        assert stamp.complete is False
-        assert stamp.environment == "demo" and stamp.account_id == UID
-        assert stamp.observed_at <= stamp.received_at <= source[0].completed_at
-    assert snapshot.history_stamp.observed_at == snapshot.history_end
-    assert snapshot.reservations_stamp.source_sha256 == reservations.digest(
-        supplied.ledger.state
-    )
+    assert source[0].incomplete_reasons
+    assert result.packet_sha256 == source[1]
+    assert result.inputs_sha256 == module.materialization_inputs_sha256(supplied)
+    assert set(source[0].incomplete_reasons) <= set(result.incomplete_reasons)
+    assert result.equity == D("1000") and result.available_margin == D("800")
+    assert len(result.positions) == len(result.pending_reservations) == 1
+    assert result.loss_history == ()
+    assert projection(result, "positions").risk_amount == D("0.121")
+    assert projection(result, "orders_pending").risk_amount == D("0.0505")
+    assert result.snapshot is None
     assert result.account_complete is False
     assert result.source_authenticity_verified is False
     assert result.execution_authority is False
@@ -939,11 +924,11 @@ def test_expired_local_reservation_is_retained_at_full_dual_scenario_coverage(
     assert held.margin == D("0.202") == receipt.coverage.margin_amount
     assert held.risk_amount == D("0.0605") == receipt.coverage.risk_amount
     assert projection(result, "local_ledger").risk_amount == held.risk_amount
-    assert result.snapshot.pending_reservation_count == 2
-    assert result.snapshot.reservations_stamp.complete is False
+    assert result.snapshot is None
+    assert result.account_complete is False
 
 
-def test_recorded_snapshot_freeze_replay_preserves_seed_peak_and_false_stamps(source):
+def test_recorded_diagnostics_freeze_replay_preserves_pins_and_denial(source):
     supplied = snapshot_inputs()
     result = materialize(source=source, supplied=supplied)
     pins = {
@@ -961,18 +946,22 @@ def test_recorded_snapshot_freeze_replay_preserves_seed_peak_and_false_stamps(so
         **pins,
     )
     assert restored == result
-    assert restored.snapshot.loss_streak_at_history_start == 2
-    assert restored.snapshot.peak_equity == D("1200")
-    assert restored.snapshot.history_stamp.complete is False
+    assert restored.packet_sha256 == source[1]
+    assert restored.inputs_sha256 == module.materialization_inputs_sha256(supplied)
+    assert restored.snapshot is None
+    assert restored.positions == result.positions
+    assert restored.projections == result.projections
+    assert set(source[0].incomplete_reasons) <= set(restored.incomplete_reasons)
 
 
-def test_balance_source_stamp_uses_older_actual_currency_or_account_update():
+def test_older_balance_update_does_not_grant_complete_account():
     def change(pages):
         pages["balance"][0][0]["uTime"] = ms(NOW - timedelta(seconds=2))
 
     result = materialize(source=packet(changes=change), supplied=snapshot_inputs())
-    assert result.snapshot.balance_stamp.observed_at == NOW - timedelta(seconds=2)
-    assert result.snapshot.balance_stamp.complete is False
+    assert result.equity == D("1000")
+    assert result.snapshot is None
+    assert result.account_complete is False
 
 
 def test_peak_raw_identity_mismatch_is_not_hidden_by_matching_evidence_scope(source):
@@ -1087,9 +1076,8 @@ def test_nonempty_fills_derive_net_outcome_at_actual_exit_fill_time():
     assert outcome.closed_at == EXIT_FILL_AT
     assert outcome.closed_at != NOW - timedelta(days=1)
     assert outcome.sequence == 0
-    assert result.snapshot.loss_history == result.loss_history
-    assert result.snapshot.history_stamp.complete is False
-    assert result.snapshot.loss_streak_at_history_start == 2
+    assert result.snapshot is None
+    assert "history_ingestion_watermark_unverified" in result.incomplete_reasons
     assert result.account_complete is False
 
 
@@ -1240,8 +1228,8 @@ def test_maximum_legal_outcome_sequence_survives_frozen_json_roundtrip():
         frozen.payload, expected_sha256=frozen.sha256, **replay
     )
     assert restored == result
-    assert restored.snapshot.loss_history[0].sequence == 10**15
-    assert restored.snapshot.history_stamp.complete is False
+    assert restored.snapshot is None
+    assert restored.loss_history[0].sequence == 10**15
 
 
 @pytest.mark.parametrize("case", ["future", "missing", "before_window"])
@@ -1278,8 +1266,12 @@ def test_peak_uses_earlier_valid_currency_update_not_later_account_time(source):
     )
     evidence = evidence.model_copy(update={"samples": (evidence.samples[0], changed)})
     result = materialize(source=source, supplied=snapshot_inputs(peak=evidence))
-    assert result.snapshot is not None
-    assert result.snapshot.peak_equity == D("1200")
-    assert result.snapshot.peak_observed_at == currency_updated
-    assert result.snapshot.peak_observed_at != sample.observed_at
-    assert result.snapshot.balance_stamp.complete is False
+    assert result.snapshot is None
+    assert result.equity == D("1000")
+    assert "peak_sample_mapping_incomplete" not in result.incomplete_reasons
+    peak_gaps = set()
+    peak = module._peak(
+        snapshot_inputs(peak=evidence), result.equity, source[0], peak_gaps
+    )
+    assert peak[0] == D("1200")
+    assert peak[1] == currency_updated != sample.observed_at
