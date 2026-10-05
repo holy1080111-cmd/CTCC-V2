@@ -10,13 +10,22 @@ reproducible diagnostic result, not an execution permit.
 The older `OkxPublicRestClient` is a separate diagnostic path, not this V2
 source owner. Its SWAP candle parser now rejects missing or malformed price and
 volume fields instead of turning blank values into zero, and its ticker read
-requires one matching instrument row. The V2 bridge already keeps OKX SWAP
+requires one matching instrument row. Its mark, funding, open-interest and book
+reads also reject missing or malformed required fields, non-singleton rows,
+conflicting instrument IDs and impossible prices or depth. Actual zero funding
+and zero open interest remain valid. REST books do not echo an instrument ID, so
+their identity is only bound by the prevalidated SWAP request; this is
+insufficient for V2 source admission. The legacy funding tuple now pairs
+`fundingRate` with its own `fundingTime` rather than the later
+`nextFundingTime`. The V2 bridge already keeps OKX SWAP
 `vol` as contracts, `volCcy` as base currency, and `volCcyQuote` as quote
 currency; ticker `vol24h` is contracts, `volCcy24h` is base currency, and ticker
 quote turnover remains unknown. These units follow the
 [OKX market-data definitions](https://app.okx.com/docs-v5/en/#order-book-trading-market-data-get-candlesticks).
-The older client still retries, sorts candles, and has unrelated optional-field
-zero defaults. It cannot supply R5 trusted-source or execution authority.
+The older client still retries transient/API failures, sorts candles, and has
+unrelated optional-field zero defaults. It retains no raw-byte, causal clock,
+freshness or exact Demo-origin proof. It cannot supply R5 trusted-source or
+execution authority.
 
 ## Inputs and raw replay
 

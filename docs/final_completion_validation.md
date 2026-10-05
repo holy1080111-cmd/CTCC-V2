@@ -3097,3 +3097,37 @@ has source/history/cross-read gaps, so no current account read can issue a
 complete risk snapshot or execution authority. Focused synthetic account
 selections passed 330 tests. Authenticated complete account ingestion and the
 PostgreSQL/CI full regression remain outstanding.
+
+## 2026-10-06 legacy auxiliary public-read containment
+
+The separate legacy OKX public client now requires a single, shape-valid mark,
+funding, open-interest or book response. It rejects a missing or conflicting
+instrument identity where OKX echoes one, malformed numeric/time fields,
+nonpositive mark/depth, invalid book levels and absent funding timestamps.
+Signed or zero funding and genuine zero open interest remain valid. OKX REST
+books do not echo an instrument ID, so the request is the only identity pin on
+that legacy path; it is checked for SWAP before network I/O. The official
+four-element REST book level is respected, including a positive order count.
+The old funding tuple now pairs `fundingRate` with `fundingTime`, while
+`nextFundingTime` is checked as a later settlement forecast. A malformed
+HTTP-200 JSON body or non-string API code fails without retry.
+
+The initial 112 focused MockTransport tests passed before review. After the
+request-identity, funding and malformed-body fixes, root reran all four affected
+unit modules: 539 collected and passed. Repository-wide Ruff lint and format
+checks passed. These are synthetic checks of the legacy diagnostic client, not
+native OKX source capture. The client still lacks retained raw bytes, exact
+environment/region ownership, causal provenance and freshness, and therefore
+cannot be used for R5 or execution authority. Root-run exact-source checks and
+CI remain required before accepting this code checkpoint.
+
+A read-only submit-route audit traced the shipped Demo and Live manual,
+automation, scheduler and direct-service paths to the concrete private REST
+client. Its order, batch, algo and amend POSTs pass the same immediately-before-
+HTTP authority check and currently hard-DENY; no alternate shipped raw order
+POST was found. Exact maintenance writes have a separate policy, and the Live
+read-only client rejects non-GET requests. This establishes current no-order
+containment only. Registered-route and restart tests with concrete transports
+still need to prove that no route can evade the boundary, and a real G12/R7/R6/
+intent authority has not been built. `ALL_SUBMIT_ROUTES_GUARDED` remains FAIL
+for production acceptance.
