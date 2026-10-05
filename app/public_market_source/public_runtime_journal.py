@@ -33,6 +33,22 @@ _PUBLIC_WS_ORIGINS = frozenset(
         "wss://ws.okx.com:8443/ws/v5/public",  # historical replay only
     }
 )
+_SAFE_CLOCK_FAILURE_CODES = frozenset(
+    {
+        "clock_jump",
+        "clock_lease_expired",
+        "clock_reversed",
+        "native_clock_domain_unsupported",
+        "native_clock_filetime_invalid",
+        "native_clock_sample_unbounded",
+        "native_precise_clock_unavailable",
+        "timestamp_invalid",
+        "utc_conversion_failed",
+    }
+)
+_REQUEST_FAILURE_CODES = _SAFE_CLOCK_FAILURE_CODES | frozenset(
+    {"cancelled", "source_or_transport_rejected"}
+)
 _KINDS = frozenset(
     {
         "clock_before",
@@ -789,7 +805,8 @@ def _replay_semantics(plan, summary, events, payloads):
             else:
                 if (
                     set(meta) != {"id", "code"}
-                    or meta["code"] not in {"cancelled", "source_or_transport_rejected"}
+                    or type(meta["code"]) is not str
+                    or meta["code"] not in _REQUEST_FAILURE_CODES
                     or raw is not None
                     or complete
                 ):

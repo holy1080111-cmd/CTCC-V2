@@ -29,6 +29,7 @@ from app.public_market_source.public_clock import (
     _observe_owned_runtime_clock,
 )
 from app.public_market_source.public_runtime_journal import (
+    _SAFE_CLOCK_FAILURE_CODES,
     MAX_RAW,
     _append,
     _packet_stage_matches,
@@ -50,19 +51,6 @@ _ISSUER = object()
 _SOURCES = WeakKeyDictionary()
 _RESULTS = WeakKeyDictionary()
 _INITIAL_RESULTS = WeakKeyDictionary()
-_SAFE_CLOCK_FAILURE_CODES = frozenset(
-    {
-        "clock_jump",
-        "clock_lease_expired",
-        "clock_reversed",
-        "native_clock_domain_unsupported",
-        "native_clock_filetime_invalid",
-        "native_clock_sample_unbounded",
-        "native_precise_clock_unavailable",
-        "timestamp_invalid",
-        "utc_conversion_failed",
-    }
-)
 
 
 class PublicSourceRuntimeError(ValueError):

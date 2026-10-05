@@ -12,11 +12,12 @@ from uuid import uuid4
 import pytest
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
+from app.database.models.qualification_ledger import QualificationReservation
 from app.database.repositories.account_bill_archive_claim import (
     AccountBillArchiveClaimRepository,
 )
@@ -25,6 +26,7 @@ from app.trade_qualification.account_bill_archive_acquisition import (
     DiagnosticArchivePlan,
 )
 from app.trade_qualification.demo_control import ControlScope
+from app.trade_qualification.reservations import reservation_id
 from tests.durable_migration_fixtures import (
     DOWNGRADE_LOCKS,
     TABLES,
@@ -327,3 +329,121 @@ async def test_nonempty_downgrade_retains_exact_durable_records(
             await migration.run_sync(migrate, revision, "downgrade")
     assert await shape(engine) == before
     assert await readback() == expected
+
+
+@pytest.mark.parametrize("revision", ["0022"])
+async def test_uid_event_upgrade_refuses_legacy_cross_currency_collision(
+    sandbox, durable_fixture
+):
+    engine, sessions = sandbox
+    fixture = durable_fixture
+    repo, _ = await ledger_fixtures.initialize(sandbox, fixture)
+    receipt = await repo.reserve(fixture.request)
+    other_scope = receipt.scope.model_copy(update={"settlement_currency": "USDC"})
+    async with sessions() as session, session.begin():
+        await repo._locked(session, other_scope, create=True)
+        original = await session.get(QualificationReservation, receipt.reservation_id)
+        values = {
+            column.name: getattr(original, column.name)
+            for column in QualificationReservation.__table__.columns
+        }
+        values.update(
+            reservation_id=reservation_id(other_scope, receipt.original_event_key),
+            settlement_currency="USDC",
+        )
+        session.add(QualificationReservation(**values))
+    before = await shape(engine)
+    with pytest.raises(
+        DBAPIError, match="qualification_uid_event_duplicates_preexisting"
+    ):
+        async with engine.begin() as connection:
+            await connection.run_sync(migrate, "0023", "upgrade")
+    assert await shape(engine) == before
+    async with sessions() as session:
+        rows = (
+            await session.scalars(
+                select(QualificationReservation).filter_by(
+                    environment="demo",
+                    account_id=receipt.scope.account_id,
+                    original_event_key=receipt.original_event_key,
+                )
+            )
+        ).all()
+        assert {row.settlement_currency for row in rows} == {"USDT", "USDC"}
+
+
+@pytest.mark.parametrize("revision", ["0022"])
+async def test_uid_event_upgrade_fails_closed_if_writer_holds_table(sandbox):
+    engine, _ = sandbox
+    before = await shape(engine)
+    async with engine.begin() as writer:
+        await writer.execute(
+            text("LOCK TABLE qualification_reservations IN ROW EXCLUSIVE MODE")
+        )
+        with pytest.raises(DBAPIError) as denied:
+            async with engine.begin() as migration:
+                await migration.run_sync(migrate, "0023", "upgrade")
+        assert denied.value.orig.sqlstate == "55P03"  # lock_not_available
+        assert await shape(engine) == before
+    async with engine.begin() as migration:
+        await migration.run_sync(migrate, "0023", "upgrade")
+    assert await shape(engine) != before
+
+
+@pytest.mark.parametrize("revision", ["0022"])
+async def test_uid_event_upgrade_downgrade_and_truncate_guards_are_atomic(sandbox):
+    engine, _ = sandbox
+    before = await shape(engine)
+    async with engine.begin() as connection:
+        await connection.run_sync(migrate, "0023", "upgrade")
+    upgraded = await shape(engine)
+    assert upgraded != before
+    constraints = upgraded[1]
+    assert any(
+        name == "uq_qualification_reservations_uid_event"
+        and "UNIQUE (environment, account_id, original_event_key)" in definition
+        for _, name, definition in constraints
+    )
+    for table in (
+        "qualification_account_scopes",
+        "qualification_reservations",
+        "qualification_reservation_transitions",
+    ):
+        with pytest.raises(DBAPIError, match="qualification_ledger_immutable"):
+            async with engine.begin() as connection:
+                await connection.execute(text(f"TRUNCATE TABLE {table} CASCADE"))
+        assert await shape(engine) == upgraded
+    async with engine.begin() as connection:
+        await connection.run_sync(migrate, "0023", "downgrade")
+    assert await shape(engine) == before
+    async with engine.begin() as connection:
+        await connection.run_sync(migrate, "0023", "upgrade")
+    assert await shape(engine) == upgraded
+
+
+@pytest.mark.parametrize("revision", ["0022"])
+async def test_uid_event_downgrade_retains_reconciled_tombstone(
+    sandbox, durable_fixture
+):
+    engine, _ = sandbox
+    async with engine.begin() as connection:
+        await connection.run_sync(migrate, "0023", "upgrade")
+    repo, clock = await ledger_fixtures.initialize(sandbox, durable_fixture)
+    receipt = await repo.reserve(durable_fixture.request)
+    clock.value += timedelta(microseconds=1)
+    terminal = await repo.reconcile_reservation(
+        receipt.scope,
+        receipt.original_event_key,
+        claims=ledger_fixtures.refresh(durable_fixture.claims, clock.value),
+        expected_revision=2,
+    )
+    before = await shape(engine)
+    with pytest.raises(
+        DBAPIError, match="qualification_uid_event_downgrade_requires_empty"
+    ):
+        async with engine.begin() as connection:
+            await connection.run_sync(migrate, "0023", "downgrade")
+    assert await shape(engine) == before
+    assert (
+        await repo.read_event_observation(receipt.scope, receipt.original_event_key)
+    ).matched == terminal

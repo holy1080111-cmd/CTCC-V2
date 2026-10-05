@@ -42,6 +42,14 @@ ARCHIVE_REQUIRED_CASES = (
         "tests.integration.test_durable_migration_downgrade",
         "test_nonempty_downgrade_retains_exact_durable_records[0022-archive_claim]",
     ),
+    (
+        "tests.integration.test_durable_migration_downgrade",
+        "test_uid_event_upgrade_refuses_legacy_cross_currency_collision[0022]",
+    ),
+    (
+        "tests.integration.test_durable_migration_downgrade",
+        "test_uid_event_upgrade_downgrade_and_truncate_guards_are_atomic[0022]",
+    ),
 )
 
 

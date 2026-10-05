@@ -110,13 +110,17 @@ immutable submission outcome/report spool and independent projection receipts;
 its new isolated acceptance is tracked in the final-completion record.
 Migration `0019` adds persistent Demo control epochs; `0020` and `0021` retain
 immutable account-capture and observed-history records; `0022` adds a one-attempt
-quarterly bill-archive claim. None of these tables grants source, reservation or
-order authority on its own.
+quarterly bill-archive claim. Migration `0023` additionally enforces one
+qualification event per exact Demo account UID across settlement currencies and
+blocks truncation of the qualification ledger. It refuses upgrade if existing
+event collisions need forensic resolution, and refuses downgrade while any
+ledger record remains. None of these tables grants source, reservation or order
+authority on its own.
 
 Migration identities (the stopped local deployment is not silently upgraded):
 
 ```text
-Current final-completion source head: 0022
+Current final-completion source head: 0023
 Last independently restored local deployment: 0017
 ```
 

@@ -43,6 +43,15 @@ def test_public_source_has_only_explicit_reviewed_consumers():
     consumer = APP / "mie" / "validation" / "measured_public_replay.py"
     allowed = {
         consumer: ("public_market_receipts", "public_receipt_storage"),
+        APP / "mie" / "validation" / "blind_window_capture.py": (
+            "public_market_receipts",
+            "public_receipt_storage",
+        ),
+        APP / "mie" / "validation" / "blind_window_dataset.py": (
+            "public_market_capture",
+            "public_market_receipts",
+            "public_receipt_storage",
+        ),
         APP / "trade_qualification" / "public_source_runtime.py": (
             "public_clock",
             "public_runtime_journal",
@@ -56,6 +65,13 @@ def test_public_source_has_only_explicit_reviewed_consumers():
             for name in names(node):
                 if name.startswith("app.public_market_source"):
                     assert path in allowed, (path, name)
+                    if path.name == "blind_window_dataset.py" and name.startswith(
+                        "app.public_market_source.public_market_capture"
+                    ):
+                        assert name in {
+                            "app.public_market_source.public_market_capture",
+                            "app.public_market_source.public_market_capture.replay_public_capture",
+                        }, name
                     assert any(
                         name == f"app.public_market_source.{module}"
                         or name.startswith(f"app.public_market_source.{module}.")

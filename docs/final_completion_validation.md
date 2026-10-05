@@ -3131,3 +3131,43 @@ containment only. Registered-route and restart tests with concrete transports
 still need to prove that no route can evade the boundary, and a real G12/R7/R6/
 intent authority has not been built. `ALL_SUBMIT_ROUTES_GUARDED` remains FAIL
 for production acceptance.
+
+## 2026-10-06 source-bound CI failure repairs awaiting full rerun
+
+Remote run `37369288145` at earlier commit `ea81bcd` completed with failure.
+Windows collected 12,943 cases but the 90-minute job limit interrupted it after
+11,179 results: 11,161 passed, 15 skipped and 3 failed; 1,764 cases never ran.
+The two clock cases exposed an exact producer/replayer enum mismatch: the
+runtime retained `native_clock_sample_unbounded`, while its journal readback
+rejected that same fixed code. The shared allowlist now defines both sides,
+keeps arbitrary failure text out, and still cannot grant source or trading
+authority. The third case found new Gate 3 blind-window consumers missing from
+the explicit public-source import review. The now-reviewed capture and dataset
+replay imports are bounded in that review; no private or execution import was
+added. The local clock rejection and import-boundary selections passed after
+repair.
+
+The Windows CI timeout is raised to 180 minutes with the exact same reviewed
+test selection and JUnit readback; incomplete, failed or timed-out runs remain
+FAIL. This is based on the preserved old run's 12,943-case collection and
+1,764 unfinished cases, not a reduced acceptance requirement. New run
+`37378953509` started at source `d298c38` before these pending repairs and
+is not a final-source CI result. Its Linux and Windows jobs acquired runners;
+neither had completed when this record was written.
+
+Registered Demo and Live API order routes and Demo automation run-once now have
+additional synthetic concrete-transport tests. Together with existing
+transport tests, 71 cases passed and recorded zero unqualified OKX order HTTP.
+This proves the current hard-DENY containment at those routes. Live scheduler
+and restart-path integration still require further tests, and no true
+G12/R7/R6/intent admission exists.
+
+Pending DB0023 adds a database-level exact-UID/original-event unique constraint
+across currencies and all reservation states. It checks duplicates under
+non-waiting table locks, preserves the older scope constraint, adds TRUNCATE
+guards on the three ledger tables, and refuses a downgrade while they contain
+data. Existing collisions remain intact and block migration. Offline migration
+and verifier selections passed, and Alembic reports `0023` as source head.
+The new PostgreSQL integration cases were collected but not run against an
+isolated database; schema drift, downgrade and concurrency remain FAIL for
+this pending source.

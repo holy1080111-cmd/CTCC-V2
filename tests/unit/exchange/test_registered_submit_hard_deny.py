@@ -1,0 +1,212 @@
+"""Registered API order routes reach the concrete, fail-closed OKX transport.
+
+All account and market preflight inputs are synthetic. MockTransport records any
+private HTTP request and cannot reach the exchange; these tests establish only
+current hard denial, not qualified G12/R7/R6 execution authority.
+"""
+
+from __future__ import annotations
+
+import importlib
+import json
+
+import httpx
+import pytest
+
+from app.api.security import require_ctcc_token
+from app.domain.demo_automation import EXECUTE_PHRASE
+from app.domain.okx_live import LIVE_ARM_PHRASE, OkxLiveArmRequest
+from app.exchange.okx.private_rest import (
+    OkxDemoPrivateRestClient,
+    OkxLiveExecutionRestClient,
+)
+from app.main import app
+from app.okx_demo.service import OkxDemoService
+from tests.unit.test_demo_automation import FakeDemo, make_service
+from tests.unit.test_okx_demo_service import (
+    FakePrivate,
+    FakePublic,
+)
+from tests.unit.test_okx_demo_service import (
+    request as demo_order,
+)
+from tests.unit.test_okx_demo_service import (
+    settings as demo_settings,
+)
+from tests.unit.test_okx_live_service import live_order, service_fixture
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("order_type", ("market", "limit", "fok"))
+async def test_registered_demo_order_route_cannot_send_unqualified_entry(
+    monkeypatch: pytest.MonkeyPatch, order_type: str
+) -> None:
+    observed: list[httpx.Request] = []
+
+    def exchange_handler(request: httpx.Request) -> httpx.Response:
+        observed.append(request)
+        pytest.fail("unqualified Demo entry reached private HTTP")
+
+    config = demo_settings()
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(exchange_handler),
+        base_url="https://www.okx.com",
+    ) as exchange_http:
+        transport = OkxDemoPrivateRestClient(exchange_http, settings=config)
+
+        class PreflightPrivate(FakePrivate):
+            async def place_order(self, payload: dict[str, object]):
+                return await transport.place_order(payload)
+
+        service = OkxDemoService(
+            PreflightPrivate(), FakePublic(), None, settings=config
+        )
+        route = importlib.import_module("app.api.routers.okx_demo")
+        monkeypatch.setattr(route, "okx_demo_service", service)
+        app.dependency_overrides[require_ctcc_token] = lambda: None
+        try:
+            order = demo_order(
+                order_type=order_type,
+                price=None if order_type == "market" else "100010",
+            )
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://testserver",
+            ) as api_http:
+                response = await api_http.post(
+                    "/api/okx-demo/orders",
+                    json=order.model_dump(mode="json"),
+                )
+        finally:
+            app.dependency_overrides.pop(require_ctcc_token, None)
+
+    assert response.status_code == 502
+    assert response.json()["detail"]["exchange_code"] == (
+        "demo_qualification_authority_unavailable"
+    )
+    assert observed == []
+
+
+@pytest.mark.asyncio
+async def test_registered_live_order_route_cannot_send_after_full_preflight(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: list[httpx.Request] = []
+
+    def exchange_handler(request: httpx.Request) -> httpx.Response:
+        observed.append(request)
+        if request.url.path == "/api/v5/trade/order":
+            pytest.fail("unqualified Live entry reached private HTTP")
+        if request.url.path == "/api/v5/account/max-size":
+            return httpx.Response(
+                200, json={"code": "0", "data": [{"maxBuy": "10", "maxSell": "10"}]}
+            )
+        if request.url.path == "/api/v5/account/set-leverage":
+            body = json.loads(request.content)
+            return httpx.Response(
+                200,
+                json={"code": "0", "data": [{**body, "posSide": "net", "sCode": "0"}]},
+            )
+        if request.url.path in {
+            "/api/v5/trade/order-precheck",
+            "/api/v5/trade/cancel-all-after",
+        }:
+            return httpx.Response(200, json={"code": "0", "data": [{"sCode": "0"}]})
+        pytest.fail(f"unexpected private HTTP path: {request.url.path}")
+
+    service, _, _, intents, _ = service_fixture()
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(exchange_handler),
+        base_url="https://openapi.okx.com",
+    ) as exchange_http:
+        service.execution_client = OkxLiveExecutionRestClient(
+            exchange_http, settings=service.settings
+        )
+        await service.arm(
+            OkxLiveArmRequest(duration_seconds=60, confirmation=LIVE_ARM_PHRASE)
+        )
+        route = importlib.import_module("app.api.routers.okx_live")
+        monkeypatch.setattr(route, "okx_live_service", service)
+        app.dependency_overrides[require_ctcc_token] = lambda: None
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://testserver",
+            ) as api_http:
+                response = await api_http.post(
+                    "/api/okx-live/orders",
+                    json=live_order().model_dump(mode="json"),
+                )
+        finally:
+            app.dependency_overrides.pop(require_ctcc_token, None)
+
+    assert response.status_code == 502
+    # Live API intentionally withholds long internal exchange/safety codes.
+    assert response.json()["detail"] == {
+        "message": "okx_live_exchange_request_failed",
+        "exchange_code": None,
+    }
+    assert [request.url.path for request in observed] == [
+        "/api/v5/account/max-size",
+        "/api/v5/trade/order-precheck",
+        "/api/v5/account/set-leverage",
+        "/api/v5/trade/cancel-all-after",
+    ]
+    assert intents.rows["CTCCLabcdef"]["status"] == "rejected"
+    assert intents.rows["CTCCLabcdef"]["detail_codes"] == ["place_order_rejected"]
+    assert service.arm_status().armed is False
+
+
+@pytest.mark.asyncio
+async def test_registered_demo_automation_run_once_reaches_concrete_denial(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: list[httpx.Request] = []
+
+    def exchange_handler(request: httpx.Request) -> httpx.Response:
+        observed.append(request)
+        pytest.fail("unqualified automation entry reached private HTTP")
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(exchange_handler),
+        base_url="https://www.okx.com",
+    ) as exchange_http:
+        transport = OkxDemoPrivateRestClient(exchange_http, settings=demo_settings())
+
+        class AutomationPreflight(FakeDemo):
+            async def place_order(self, order, *, before_submit=None):
+                if before_submit is not None:
+                    before_submit()
+                self.place_calls.append(order)
+                return await transport.place_order(
+                    {"instId": order.instrument_id, "ordType": order.order_type}
+                )
+
+        preflight = AutomationPreflight()
+        service = make_service(preflight)
+        await service.recover()
+        await service.arm()
+        route = importlib.import_module("app.api.routers.demo_automation")
+        monkeypatch.setattr(route, "safe_demo_automation", service)
+        app.dependency_overrides[require_ctcc_token] = lambda: None
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://testserver",
+            ) as api_http:
+                response = await api_http.post(
+                    "/api/demo-automation/run-once",
+                    json={"execute": True, "confirmation": EXECUTE_PHRASE},
+                )
+        finally:
+            app.dependency_overrides.pop(require_ctcc_token, None)
+
+    assert response.status_code == 200
+    assert response.json()["results"][-1]["outcome"] == "error"
+    assert len(preflight.place_calls) == 1
+    assert preflight.place_calls[0].order_type == "fok"
+    assert observed == []
+    status = await service.status()
+    assert status.emergency_stop is True
+    assert status.armed is False
+    assert "order_submission_outcome_unconfirmed" in status.lock_reasons

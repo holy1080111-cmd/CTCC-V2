@@ -10,8 +10,11 @@ MIGRATIONS = {
     "0020": "0020_account_capture_journal.py",
     "0021": "0021_account_observation_index.py",
     "0022": "0022_account_bill_archive_claim.py",
+    "0023": "0023_qualification_uid_event.py",
 }
 TABLES = {
+    # 0023 is constraint/trigger-only and has dedicated upgrade/downgrade
+    # integration cases starting from the 0022 sandbox.
     "0017": (
         "qualification_account_scopes",
         "qualification_reservations",

@@ -10,10 +10,10 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import event, select
+from sqlalchemy.exc import DBAPIError
 
 from app.database.models.qualification_ledger import (
     QualificationReservation,
-    QualificationReservationTransition,
 )
 from app.database.repositories import qualification_ledger as repository_module
 from app.database.repositories.qualification_ledger import QualificationLedgerRepository
@@ -367,45 +367,56 @@ async def test_concurrent_legacy_and_bound_reserve_share_uid_event_lock(
         assert len(rows) == 1
 
 
-async def test_legacy_cross_currency_collision_is_reported_not_deduplicated(
-    database, fixture
+@pytest.mark.parametrize("terminal", (False, True))
+async def test_database_denies_direct_cross_currency_uid_event_duplicate(
+    database, fixture, terminal
 ):
-    repo, _ = await fixtures.initialize(database, fixture)
+    repo, clock = await fixtures.initialize(database, fixture)
     receipt = await repo.reserve(fixture.request)
+    if terminal:
+        clock.value += timedelta(microseconds=1)
+        receipt = await repo.reconcile_reservation(
+            receipt.scope,
+            receipt.original_event_key,
+            claims=fixtures.refresh(fixture.claims, clock.value),
+            expected_revision=2,
+        )
     raw = _plain(fixture.claims)
     raw["scope"]["settlement_currency"] = "USDC"
     raw["account"]["settlement_currency"] = "USDC"
     other_claims = AccountLedgerClaims.model_validate(raw, strict=True)
     await repo.reconcile_scope(other_claims, expected_revision=0)
-    # Isolated malformed legacy evidence: the source request is intentionally
-    # not promoted. Presence of two DB rows must produce a collision error.
-    async with database[1]() as session, session.begin():
-        await repo._locked(session, receipt.scope)
-        original = await session.get(QualificationReservation, receipt.reservation_id)
-        values = {
-            column.name: getattr(original, column.name)
-            for column in QualificationReservation.__table__.columns
-        }
-        values.update(
-            settlement_currency="USDC",
-            reservation_id=reservation_id(
-                other_claims.scope, receipt.original_event_key
-            ),
-        )
-        duplicate = QualificationReservation(**values)
-        session.add(duplicate)
-        other_row = await repo._locked(session, other_claims.scope)
-        other_row.ledger_revision += 1
-        await session.flush()
-        session.add(
-            QualificationReservationTransition(
-                reservation_id=duplicate.reservation_id,
-                state_revision=1,
-                from_state=None,
-                to_state="reserved",
-                reason_code="synthetic_legacy_collision",
-                occurred_at=duplicate.created_at,
+    # A direct SQL writer does not use the repository's UID advisory lock.
+    # The DB itself must retain the all-state event tombstone across currencies.
+    with pytest.raises(DBAPIError) as denied:
+        async with database[1]() as session, session.begin():
+            original = await session.get(
+                QualificationReservation, receipt.reservation_id
             )
-        )
-    with pytest.raises(QualificationLedgerError, match="uid_event_scope_collision"):
+            values = {
+                column.name: getattr(original, column.name)
+                for column in QualificationReservation.__table__.columns
+            }
+            values.update(
+                settlement_currency="USDC",
+                reservation_id=reservation_id(
+                    other_claims.scope, receipt.original_event_key
+                ),
+            )
+            session.add(QualificationReservation(**values))
+            await session.flush()
+    assert denied.value.orig.sqlstate == "23505"  # unique_violation
+    assert (
         await repo.read_event_observation(receipt.scope, receipt.original_event_key)
+    ).matched == receipt
+    async with database[1]() as session:
+        rows = (
+            await session.scalars(
+                select(QualificationReservation).filter_by(
+                    environment="demo",
+                    account_id=receipt.scope.account_id,
+                    original_event_key=receipt.original_event_key,
+                )
+            )
+        ).all()
+        assert len(rows) == 1

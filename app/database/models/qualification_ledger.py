@@ -71,6 +71,12 @@ class QualificationReservation(Base):
             "original_event_key",
             name="uq_qualification_reservations_scope_event",
         ),
+        UniqueConstraint(
+            "environment",
+            "account_id",
+            "original_event_key",
+            name="uq_qualification_reservations_uid_event",
+        ),
         CheckConstraint("environment = 'demo'", name="demo_only"),
         CheckConstraint("direction IN ('long','short')", name="direction"),
         CheckConstraint(
