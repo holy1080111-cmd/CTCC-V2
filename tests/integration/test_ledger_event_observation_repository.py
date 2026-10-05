@@ -258,6 +258,31 @@ async def test_new_bound_route_rechecks_terminal_cross_currency_after_earlier_ab
     )
 
 
+async def test_legacy_reserve_cannot_reuse_terminal_uid_event_in_another_currency(
+    database, currency_pair
+):
+    original, other = currency_pair
+    repo, clock = await fixtures.initialize(database, original)
+    await repo.reconcile_scope(other.claims, expected_revision=0)
+    receipt = await repo.reserve(original.request)
+    clock.value += timedelta(microseconds=1)
+    terminal = await repo.reconcile_reservation(
+        receipt.scope,
+        receipt.original_event_key,
+        claims=fixtures.refresh(original.claims, clock.value),
+        expected_revision=2,
+    )
+    assert terminal.state == "reconciled_flat"
+    assert terminal.report_id != other.request.origin.candidate.report_id
+    with pytest.raises(QualificationLedgerError, match="event_already_recorded"):
+        await repo.reserve(other.request)
+    assert (await repo.read_scope(other.request.scope)).active == ()
+    found = await repo.read_event_observation(
+        other.request.scope, receipt.original_event_key
+    )
+    assert found.matched == terminal
+
+
 async def test_concurrent_bound_same_uid_event_different_report_currency_has_exactly_one_winner(
     database, currency_pair
 ):
@@ -280,6 +305,52 @@ async def test_concurrent_bound_same_uid_event_different_report_currency_has_exa
     failures = [r for r in results if isinstance(r, QualificationLedgerError)]
     assert len(wins) == len(failures) == 1
     assert "uid_event_already_recorded" in str(failures[0])
+    assert wins[0].original_event_key == original.request.origin.original_event_key
+    async with database[1]() as session:
+        rows = (
+            await session.scalars(
+                select(QualificationReservation).where(
+                    QualificationReservation.environment == "demo",
+                    QualificationReservation.account_id
+                    == original.request.scope.account_id,
+                    QualificationReservation.original_event_key
+                    == original.request.origin.original_event_key,
+                )
+            )
+        ).all()
+        assert len(rows) == 1
+
+
+async def test_concurrent_legacy_and_bound_reserve_share_uid_event_lock(
+    database, currency_pair
+):
+    original, other = currency_pair
+    s = await controls.setup(database, original)
+    await s.ledger.reconcile_scope(other.claims, expected_revision=0)
+    async with database[1]() as session, session.begin():
+        await s.ledger._locked(session, original.request.scope)
+        legacy = asyncio.create_task(s.ledger.reserve(original.request))
+        bound = asyncio.create_task(
+            s.ledger.reserve_control_bound(
+                other.request, control_expectation=s.expected
+            )
+        )
+        await asyncio.sleep(0.05)
+        assert not legacy.done() and not bound.done()
+    results = await asyncio.wait_for(
+        asyncio.gather(
+            legacy,
+            bound,
+            return_exceptions=True,
+        ),
+        40,
+    )
+    wins = [result for result in results if not isinstance(result, BaseException)]
+    failures = [
+        result for result in results if isinstance(result, QualificationLedgerError)
+    ]
+    assert len(wins) == len(failures) == 1
+    assert "event_already_recorded" in str(failures[0])
     assert wins[0].original_event_key == original.request.origin.original_event_key
     async with database[1]() as session:
         rows = (

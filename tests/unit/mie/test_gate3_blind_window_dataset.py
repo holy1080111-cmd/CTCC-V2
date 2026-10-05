@@ -26,7 +26,7 @@ from tests.unit.research import public_receipt_fixtures as fixtures
 from tests.unit.research.test_public_journal_contracts import fixture_chain
 
 
-def fixture_inputs(monkeypatch):
+def fixture_inputs(monkeypatch, *, first_plan_created_ns=None):
     """Four forged owned-labelled minutes in four synthetic rotated journals."""
     start = datetime(2026, 10, 1, tzinfo=UTC)
     original_plan_for = fixtures.plan_for
@@ -40,10 +40,20 @@ def fixture_inputs(monkeypatch):
                 int((start + timedelta(minutes=minute)).timestamp()) * 1_000_000_000,
             )
 
-            def plan_for(rows, *, instrument=symbol):
+            def plan_for(rows, *, instrument=symbol, minute_index=minute):
                 old = original_plan_for(rows)
                 return PublicMinuteCapturePlanV1.model_validate(
-                    {**old.model_dump(), "instrument_id": f"{instrument}-USDT-SWAP"}
+                    {
+                        **old.model_dump(),
+                        "instrument_id": f"{instrument}-USDT-SWAP",
+                        "created_ns": (
+                            first_plan_created_ns
+                            if minute_index == 0
+                            and instrument == "BTC"
+                            and first_plan_created_ns is not None
+                            else old.start_ns - 1_000_000_000
+                        ),
+                    }
                 )
 
             monkeypatch.setattr(fixtures, "plan_for", plan_for)
@@ -132,6 +142,21 @@ def test_full_two_symbol_window_rotates_and_verifies_original_bytes(monkeypatch)
     )
 
 
+@pytest.mark.parametrize("created_at_boundary", ["before_seal", "first_event"])
+def test_plan_must_be_strictly_after_seal_and_before_first_event(
+    monkeypatch, created_at_boundary
+):
+    if created_at_boundary == "before_seal":
+        created_ns = (
+            int(datetime(2026, 9, 2, tzinfo=UTC).timestamp()) * 1_000_000_000 - 1
+        )
+    else:
+        created_ns = int(datetime(2026, 10, 1, tzinfo=UTC).timestamp()) * 1_000_000_000
+    args, _ = fixture_inputs(monkeypatch, first_plan_created_ns=created_ns)
+    with pytest.raises(BlindWindowDatasetError, match="source or pin"):
+        bind_complete_blind_window_dataset(**args)
+
+
 def test_missing_or_reordered_coordinate_fails_closed(monkeypatch):
     args, _ = fixture_inputs(monkeypatch)
     with pytest.raises(BlindWindowDatasetError, match="incomplete"):
@@ -182,6 +207,18 @@ def test_late_readback_and_conflicting_revision_fail_closed(monkeypatch):
     segment = args["segments"][-1]
     entries, first_rows = captures[id(segment.journal)]
     plan, receipt, files, entry = entries[0]
+    at_first_access = dict(entry)
+    at_first_access["payload_readback_complete"] = {
+        **at_first_access["payload_readback_complete"],
+        "utc_ns": int(datetime(2026, 10, 1, 0, 3, tzinfo=UTC).timestamp())
+        * 1_000_000_000,
+    }
+    captures[id(segment.journal)] = (
+        ((plan, receipt, files, at_first_access),),
+        first_rows,
+    )
+    with pytest.raises(ValidationError, match="sealed coordinates"):
+        bind_complete_blind_window_dataset(**args)
     late = dict(entry)
     late["payload_readback_complete"] = {
         **late["payload_readback_complete"],

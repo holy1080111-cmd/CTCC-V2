@@ -3,6 +3,7 @@
 from datetime import UTC, datetime, timedelta, timezone, tzinfo
 from decimal import Context, Decimal, Inexact, localcontext
 from fractions import Fraction
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -199,6 +200,53 @@ def test_event_key_independent_of_report_and_scope_separated(fixture):
     assert reservation_id(other_scope, key) != first
     # ID function deliberately has NO report input, expiry or current clock.
     assert reservation_id(fixture.request.scope, key) == first
+
+
+@pytest.mark.asyncio
+async def test_legacy_reserve_checks_uid_event_tombstone_before_risk(
+    fixture, monkeypatch
+):
+    class Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        def begin(self):
+            return self
+
+    session = Session()
+    repository = QualificationLedgerRepository(
+        lambda: session, clock=lambda: fixture.now
+    )
+    observed = []
+
+    async def locked(actual_session, scope):
+        assert actual_session is session and scope == fixture.request.scope
+        return object()
+
+    async def event_rows(actual_session, scope, event_key):
+        observed.append((actual_session, scope, event_key))
+        return [
+            SimpleNamespace(
+                state="reconciled_flat",
+                settlement_currency="USDC",
+                report_id="different-report-id",
+            )
+        ]
+
+    monkeypatch.setattr(repository, "_locked", locked)
+    monkeypatch.setattr(repository, "_event_rows_locked", event_rows)
+    with pytest.raises(QualificationLedgerError, match="event_already_recorded"):
+        await repository.reserve(fixture.request)
+    assert observed == [
+        (
+            session,
+            fixture.request.scope,
+            fixture.request.origin.original_event_key,
+        )
+    ]
 
 
 def test_receipt_and_coverage_cannot_underreserve(fixture):

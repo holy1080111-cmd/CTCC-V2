@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Literal
 
 from pydantic import Field, field_validator, model_validator
@@ -49,6 +49,7 @@ MAX_DATASET_ROWS = 4096
 MAX_SEGMENTS = 16
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _CAPTURE_ID = re.compile(r"[0-9a-f]{32}\Z")
+_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
 
 class BlindWindowDatasetError(ValueError):
@@ -128,6 +129,14 @@ def _rows_sha256(rows: tuple[BlindWindowDatasetRow, ...]) -> str:
     return digest.hexdigest()
 
 
+def _exact_datetime_ns(value: datetime) -> int:
+    """Convert a UTC contract timestamp without rounding through a float."""
+    delta = value - _EPOCH
+    return (
+        (delta.days * 86_400 + delta.seconds) * 1_000_000 + delta.microseconds
+    ) * 1_000
+
+
 class CompleteBlindWindowDataset(Gate3Contract):
     """Complete coordinate and hash inventory, without a predictive assertion."""
 
@@ -194,7 +203,7 @@ class CompleteBlindWindowDataset(Gate3Contract):
                 or row.journal_index >= len(self.journal_checkpoint_sha256s)
                 or row.journal_checkpoint_sha256
                 != self.journal_checkpoint_sha256s[row.journal_index]
-                or row.retained_at > self.first_permitted_evaluator_access_at
+                or row.retained_at >= self.first_permitted_evaluator_access_at
                 or (
                     previous_retained_at is not None
                     and row.retained_at < previous_retained_at
@@ -326,8 +335,8 @@ def bind_complete_blind_window_dataset(
                 or plan.instrument_id not in holdout.instrument_ids
                 or plan.expected_rows != 1
                 or len(receipt.rows) != 1
-                or utc_from_ns(plan.created_ns) < seal.created_at
-                or plan.created_ns > plan.start_ns
+                or plan.created_ns <= _exact_datetime_ns(seal.created_at)
+                or plan.created_ns >= plan.start_ns
             ):
                 raise BlindWindowDatasetError("blind capture source or pin differs")
             locator = receipt.rows[0]

@@ -3047,3 +3047,30 @@ selections passed 698 tests with 11 explicit platform-only skips. Actual
 PostgreSQL projection, Linux native storage, Notion REST property-ID binding,
 delivery and readback remain unverified on the eventual final source. These
 scoped passes do not make OUTBOX, FORENSICS or NOTION_SYNC production PASS.
+
+## 2026-10-06 event tombstone and blind-window boundary correction
+
+The qualification ledger now checks the original event across every settlement
+currency and reservation state under its account-UID transaction lock for both
+legacy and control-bound reservation calls. A reconciled-flat tombstone cannot
+be repackaged with another report ID and currency to reserve the event again.
+Focused offline tests passed; PostgreSQL terminal-reuse and mixed-route race
+tests were added but still require an isolated database execution. This is a
+specific fail-closed correction, not R6 production acceptance. A database
+unique constraint across the UID and event would additionally protect future
+writers that might omit the shared lock; it is not yet implemented or verified.
+
+The Gate 3 blind-window binder compares capture-plan creation to the seal and
+first event in exact integer nanoseconds, rejecting equality at either bound.
+Retained source readback must also finish strictly before the first permitted
+evaluator access. Focused synthetic replay tests passed. External pin custody,
+actual evaluator first-read time and a complete real holdout remain unproven;
+predictive, promotion and execution authority remain false.
+
+The preserved September integrated release contract explains its original
+dependency check: isolated discovery found the 39 expected distributions and
+normal discovery found one verified local `ctcc-v2==1.6.9` source metadata
+extra. That narrow source-extra allowance did not accept third-party drift.
+The later missing locked `tzdata==2026.4` wheel was repaired separately, but
+the current source still has no accepted full-validation dependency baseline
+or final release identity. `DEPENDENCY_IDENTITY` remains FAIL.

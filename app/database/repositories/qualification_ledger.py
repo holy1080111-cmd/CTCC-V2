@@ -845,10 +845,17 @@ class QualificationLedgerRepository:
                 row, control_state, control_event = await self._control_locked(
                     session, request.scope, control_expectation, request=request
                 )
-                if await self._event_rows_locked(
-                    session, request.scope, request.origin.original_event_key
-                ):
-                    raise QualificationLedgerError("ledger_uid_event_already_recorded")
+            # The UID lock covers every settlement currency and every state.
+            # A reconciled-flat tombstone must also reject a legacy reserve
+            # using a new report ID or a different currency for the event.
+            if await self._event_rows_locked(
+                session, request.scope, request.origin.original_event_key
+            ):
+                raise QualificationLedgerError(
+                    "ledger_uid_event_already_recorded"
+                    if control_expectation is not None
+                    else "ledger_event_already_recorded"
+                )
             await self._require_compatible_currency(session, request.scope)
             self._revision(row.ledger_revision, request.expected_ledger_revision)
             self._revision(row.account_revision, request.expected_account_revision)
