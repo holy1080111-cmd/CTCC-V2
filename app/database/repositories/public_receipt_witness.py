@@ -240,8 +240,20 @@ class PublicReceiptWitnessRepository:
                       OR has_table_privilege(current_user,c.oid,'UPDATE')
                       OR has_table_privilege(current_user,c.oid,'DELETE')
                       OR has_table_privilege(current_user,c.oid,'TRUNCATE')
+                      OR has_table_privilege(current_user,c.oid,'REFERENCES')
                       OR has_table_privilege(current_user,c.oid,'TRIGGER')
+                      OR has_table_privilege(current_user,c.oid,'MAINTAIN')
+                      OR has_any_column_privilege(current_user,c.oid,'SELECT')
+                      OR has_any_column_privilege(current_user,c.oid,'INSERT')
+                      OR has_any_column_privilege(current_user,c.oid,'UPDATE')
+                      OR has_any_column_privilege(current_user,c.oid,'REFERENCES')
                       AS direct_table_access,
+                    EXISTS (
+                      SELECT 1 FROM pg_catalog.pg_roles inherited
+                      WHERE inherited.oid <> r.oid
+                        AND pg_catalog.pg_has_role(
+                          current_user,inherited.oid,'MEMBER')
+                    ) AS member_of_other_role,
                     has_function_privilege(current_user,
                       'public.public_receipt_witness_read(text)'::regprocedure,
                       'EXECUTE') AS can_read,
@@ -261,6 +273,7 @@ class PublicReceiptWitnessRepository:
             row.direct_login
             and not row.privileged
             and not row.owner_member
+            and not row.member_of_other_role
             and row.can_read
             and row.can_append
             and not row.direct_table_access

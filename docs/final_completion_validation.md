@@ -3331,3 +3331,38 @@ without granting execution authority. Two targeted native Windows late-write
 tests and 57 direct submit-boundary tests passed locally. A broader ad hoc
 Windows selection was stopped early to limit host load and is not counted as a
 regression pass.
+
+The matching remote run at `dde5823` later completed its isolated PostgreSQL
+selection: 210/210 passed, with migration identity, upgrade, downgrade,
+re-upgrade and schema drift checks exiting successfully. This is scoped to that
+older source only. Its Linux full-test stage then failed during collection
+because an integration test and a unit test shared the basename
+`test_account_bill_archive_claim_repository.py`; no Linux full regression pass
+is claimed. The unit module was given a unique filename in the subsequent
+working source, and local full unit/integration collection exits successfully.
+The failing remote artifact preserved the exact `dde5823` source identity and
+isolated image digest
+`sha256:57534f85239eb4f6bb55813d9d6f70c251e1848df13158d9c3602b9beb53694a`.
+That image is not evidence for the later local source or migration 0024.
+
+The later working-source safety review found that old Demo/Live execution could
+call OKX set-leverage before the common order-create denial. The shared
+transport now denies set-leverage until trusted flat-account authority exists;
+cancel, close, cancel-all-after and precheck remain available under their
+existing guards. The direct-route and automation-focused selection passed 77
+synthetic cases; no exchange write was performed. The native Demo account
+parser now applies official Futures-mode field semantics to top-level balance
+`availEq` and account-position-risk `adjEq`, while requiring the exact
+settlement-currency `details[].availEq`; missing current source fields prevent
+even a diagnostic observed-flat claim. Account-focused selections passed 468
+cases, with account/execution authority still false. These selections do not
+prove authenticated account completeness.
+
+The new PostgreSQL 0024 witness role guard additionally rejects column grants,
+table `REFERENCES`/`MAINTAIN` rights and other role membership. Its 9 focused
+unit cases passed and 3 integration cases collected, but those integration
+assertions have not yet run on PostgreSQL. A migration-identity test's stale
+0023 head expectation was updated to 0024; its 47-case module passed. These
+counts overlap broader prior selections and are not a full Windows/Linux
+regression. No MIE Gate 3/OOS promotion, qualified Demo execution or Live
+readiness is inferred.

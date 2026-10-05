@@ -179,13 +179,7 @@ async def test_empty_success_payload_after_write_is_ambiguous_and_not_retried() 
         with pytest.raises(OkxPrivateApiError) as exc_info:
             await OkxLiveExecutionRestClient(
                 client, settings=execution_settings()
-            ).set_leverage(
-                {
-                    "instId": "BTC-USDT-SWAP",
-                    "lever": "1",
-                    "mgnMode": "cross",
-                }
-            )
+            ).cancel_order({"instId": "BTC-USDT-SWAP", "ordId": "synthetic"})
 
     assert calls == 1
     assert exc_info.value.code == "ambiguous_response"
@@ -201,6 +195,7 @@ async def test_empty_success_payload_after_write_is_ambiguous_and_not_retried() 
         ("POST", "/api/v5/trade/amend-order"),
         ("POST", "/api/v5/trade/amend-algos"),
         ("POST", "/api/v5/trade/unknown-write"),
+        ("POST", "/api/v5/account/set-leverage"),
         ("PUT", "/api/v5/trade/cancel-order"),
     ],
 )

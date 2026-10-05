@@ -8,7 +8,6 @@ current hard denial, not qualified G12/R7/R6 execution authority.
 from __future__ import annotations
 
 import importlib
-import json
 
 import httpx
 import pytest
@@ -101,12 +100,6 @@ async def test_registered_live_order_route_cannot_send_after_full_preflight(
             return httpx.Response(
                 200, json={"code": "0", "data": [{"maxBuy": "10", "maxSell": "10"}]}
             )
-        if request.url.path == "/api/v5/account/set-leverage":
-            body = json.loads(request.content)
-            return httpx.Response(
-                200,
-                json={"code": "0", "data": [{**body, "posSide": "net", "sCode": "0"}]},
-            )
         if request.url.path in {
             "/api/v5/trade/order-precheck",
             "/api/v5/trade/cancel-all-after",
@@ -149,11 +142,9 @@ async def test_registered_live_order_route_cannot_send_after_full_preflight(
     assert [request.url.path for request in observed] == [
         "/api/v5/account/max-size",
         "/api/v5/trade/order-precheck",
-        "/api/v5/account/set-leverage",
-        "/api/v5/trade/cancel-all-after",
     ]
     assert intents.rows["CTCCLabcdef"]["status"] == "rejected"
-    assert intents.rows["CTCCLabcdef"]["detail_codes"] == ["place_order_rejected"]
+    assert intents.rows["CTCCLabcdef"]["detail_codes"] == ["set_leverage_rejected"]
     assert service.arm_status().armed is False
 
 
@@ -210,3 +201,57 @@ async def test_registered_demo_automation_run_once_reaches_concrete_denial(
     assert status.emergency_stop is True
     assert status.armed is False
     assert "order_submission_outcome_unconfirmed" in status.lock_reasons
+
+
+@pytest.mark.asyncio
+async def test_registered_demo_automation_cannot_set_leverage_before_denied_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: list[httpx.Request] = []
+
+    def exchange_handler(request: httpx.Request) -> httpx.Response:
+        observed.append(request)
+        pytest.fail("unqualified Demo maintenance reached private HTTP")
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(exchange_handler),
+        base_url="https://www.okx.com",
+    ) as exchange_http:
+        transport = OkxDemoPrivateRestClient(exchange_http, settings=demo_settings())
+
+        class AutomationPreflight(FakeDemo):
+            async def set_leverage(self, request):
+                return await transport.set_leverage(
+                    {
+                        "instId": request.instrument_id,
+                        "lever": str(request.leverage),
+                        "mgnMode": request.margin_mode,
+                    }
+                )
+
+        preflight = AutomationPreflight()
+        service = make_service(preflight)
+        await service.recover()
+        await service.arm()
+        route = importlib.import_module("app.api.routers.demo_automation")
+        monkeypatch.setattr(route, "safe_demo_automation", service)
+        app.dependency_overrides[require_ctcc_token] = lambda: None
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://testserver",
+            ) as api_http:
+                response = await api_http.post(
+                    "/api/demo-automation/run-once",
+                    json={"execute": True, "confirmation": EXECUTE_PHRASE},
+                )
+        finally:
+            app.dependency_overrides.pop(require_ctcc_token, None)
+
+    assert response.status_code == 200
+    assert response.json()["results"][-1]["outcome"] == "error"
+    assert preflight.place_calls == []
+    assert observed == []
+    status = await service.status()
+    assert status.emergency_stop is True
+    assert status.armed is False

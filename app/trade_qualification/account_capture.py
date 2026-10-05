@@ -1030,7 +1030,10 @@ def _row_record(row, stream, plan, received):
                 identities.add(identity)
                 if name == "posData":
                     _required_text(item, "instId")
-        required_numbers = {"totalEq", "availEq"} if stream == "balance" else {"adjEq"}
+        # Top-level balance availEq and risk-anchor adjEq are inapplicable to
+        # Futures mode. Their mode-specific requirements are checked after
+        # config_before is pinned; never substitute totalEq for either value.
+        required_numbers = {"totalEq"} if stream == "balance" else set()
         required_clocks = {"uTime"} if stream == "balance" else {"ts"}
     elif stream == "account_instruments":
         instrument = _required_text(row, "instId")
@@ -1490,7 +1493,49 @@ def verify_demo_account_records(
         gaps.add("all_product_metadata_coverage_unverified")
     if type(plan) is CurrentDemoAccountCapturePlanV6:
         gaps.add("separate_history_source_join_required")
-    if any(row.missing_fields for item in verified for row in item.rows):
+    account_level = before["acctLv"]
+    if any(
+        set(row.missing_fields)
+        - (
+            {"availEq"}
+            if account_level == "2" and item.request.stream == "balance"
+            else {"adjEq"}
+            if account_level == "2" and item.request.stream == "account_position_risk"
+            else set()
+        )
+        for item in verified
+        for row in item.rows
+    ):
+        gaps.add("source_fields_missing")
+    balance_rows = groups["balance"][0].rows
+    if len(balance_rows) != 1:
+        gaps.add("source_fields_missing")
+    else:
+        balance = json.loads(balance_rows[0].canonical_json)
+        if account_level == "2":
+            settlement = [
+                item
+                for item in balance["details"]
+                if item["ccy"] == plan.settlement_currency
+            ]
+            if (
+                len(settlement) != 1
+                or _number_record(
+                    "details[].availEq", settlement[0].get("availEq")
+                ).value
+                is None
+            ):
+                gaps.add("source_fields_missing")
+        elif _number_record("availEq", balance.get("availEq")).value is None:
+            gaps.add("source_fields_missing")
+    risk_rows = groups["account_position_risk"][0].rows
+    if account_level != "2" and (
+        len(risk_rows) != 1
+        or _number_record(
+            "adjEq", json.loads(risk_rows[0].canonical_json).get("adjEq")
+        ).value
+        is None
+    ):
         gaps.add("source_fields_missing")
     if any(
         not row.source_times or any(time.value is None for time in row.source_times)

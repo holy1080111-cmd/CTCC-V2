@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 from uuid import uuid4
 
 import pytest
@@ -188,3 +189,56 @@ async def test_restricted_function_only_role_and_monotonic_cas(witness_database)
     )
     with pytest.raises(PublicWitnessError, match="restricted_witness_role_required"):
         await admin_repository.verify_role()
+
+
+async def test_restricted_role_rejects_direct_column_and_table_grants(
+    witness_database,
+):
+    repository, restricted_engine, admin_engine = witness_database
+    role = restricted_engine.url.username
+    assert re.fullmatch(r"ctcc_wit_[a-f0-9]{18}", role)
+    table = "public.public_receipt_witness_revisions"
+    grants = (
+        "SELECT (checkpoint_json)",
+        "INSERT (journal_key)",
+        "UPDATE (checkpoint_json)",
+        "REFERENCES (journal_key)",
+        "REFERENCES",
+        "MAINTAIN",
+    )
+    for privilege in grants:
+        async with admin_engine.begin() as connection:
+            await connection.execute(
+                text(f"GRANT {privilege} ON TABLE {table} TO {role}")
+            )
+        try:
+            with pytest.raises(
+                PublicWitnessError, match="restricted_witness_role_required"
+            ):
+                await repository.verify_role()
+        finally:
+            async with admin_engine.begin() as connection:
+                await connection.execute(
+                    text(f"REVOKE {privilege} ON TABLE {table} FROM {role}")
+                )
+        await repository.verify_role()
+
+
+async def test_restricted_role_rejects_other_role_membership(witness_database):
+    repository, restricted_engine, admin_engine = witness_database
+    role = restricted_engine.url.username
+    assert re.fullmatch(r"ctcc_wit_[a-f0-9]{18}", role)
+    other = f"ctcc_wit_group_{uuid4().hex[:16]}"
+    async with admin_engine.begin() as connection:
+        await connection.execute(text(f"CREATE ROLE {other} NOLOGIN"))
+        await connection.execute(text(f"GRANT {other} TO {role}"))
+    try:
+        with pytest.raises(
+            PublicWitnessError, match="restricted_witness_role_required"
+        ):
+            await repository.verify_role()
+    finally:
+        async with admin_engine.begin() as connection:
+            await connection.execute(text(f"REVOKE {other} FROM {role}"))
+            await connection.execute(text(f"DROP ROLE {other}"))
+    await repository.verify_role()

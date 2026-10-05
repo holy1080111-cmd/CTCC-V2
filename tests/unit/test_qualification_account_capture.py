@@ -1455,6 +1455,139 @@ def test_correct_present_nested_identity_is_retained_without_inventing_missing_i
     assert captured.identity_binding == "request_context"
 
 
+@pytest.mark.parametrize("top_level", ["", None])
+def test_futures_balance_uses_settlement_available_equity_not_top_level(top_level):
+    balance = row(
+        "balance",
+        details=[{"ccy": "USDT", "eq": "1000", "availEq": "800", "uTime": ms()}],
+    )
+    if top_level is None:
+        balance.pop("availEq")
+    else:
+        balance["availEq"] = top_level
+    selected, observations = records(
+        empty=True,
+        pages={
+            "account_position_risk": [[row("account_position_risk", adjEq="1000")]],
+            "balance": [[balance]],
+            "positions": [[]],
+        },
+    )
+    packet = verify(selected, observations)
+    assert "source_fields_missing" not in packet.incomplete_reasons
+    recorded = next(
+        item.rows[0] for item in packet.observations if item.request.stream == "balance"
+    )
+    assert json.loads(recorded.canonical_json) == balance
+    assert packet.account_complete is packet.execution_authority is False
+
+
+@pytest.mark.parametrize("nested_available", ["", None])
+def test_futures_balance_missing_settlement_available_equity_fails_closed(
+    nested_available,
+):
+    detail = {"ccy": "USDT", "eq": "1000", "uTime": ms()}
+    if nested_available is not None:
+        detail["availEq"] = nested_available
+    balance = row("balance", availEq="9999", details=[detail])
+    packet = verify(
+        *records(
+            empty=True,
+            pages={
+                "account_position_risk": [[row("account_position_risk", adjEq="1000")]],
+                "balance": [[balance]],
+                "positions": [[]],
+            },
+        )
+    )
+    assert "source_fields_missing" in packet.incomplete_reasons
+    assert packet.account_complete is packet.execution_authority is False
+
+
+@pytest.mark.parametrize("adjusted_equity", ["", None])
+def test_futures_risk_anchor_inapplicable_adjusted_equity_is_retained(
+    adjusted_equity,
+):
+    risk = row("account_position_risk")
+    if adjusted_equity is not None:
+        risk["adjEq"] = adjusted_equity
+    balance = row(
+        "balance",
+        availEq="",
+        details=[{"ccy": "USDT", "eq": "1000", "availEq": "800", "uTime": ms()}],
+    )
+    packet = verify(
+        *records(
+            empty=True,
+            pages={
+                "account_position_risk": [[risk]],
+                "balance": [[balance]],
+                "positions": [[]],
+            },
+        )
+    )
+    assert "source_fields_missing" not in packet.incomplete_reasons
+    recorded = next(
+        item.rows[0]
+        for item in packet.observations
+        if item.request.stream == "account_position_risk"
+    )
+    assert json.loads(recorded.canonical_json) == risk
+    assert packet.account_complete is packet.execution_authority is False
+
+
+def test_other_account_mode_still_requires_top_level_available_equity():
+    balance = row(
+        "balance",
+        availEq="",
+        details=[{"ccy": "USDT", "eq": "1000", "availEq": "800", "uTime": ms()}],
+    )
+    packet = verify(
+        *records(
+            empty=True,
+            pages={
+                "config_before": [[config(acctLv="3")]],
+                "account_position_risk": [[row("account_position_risk", adjEq="1000")]],
+                "balance": [[balance]],
+                "positions": [[]],
+                "config_after": [[config(acctLv="3")]],
+            },
+        )
+    )
+    assert "source_fields_missing" in packet.incomplete_reasons
+
+
+def test_other_account_mode_still_requires_risk_adjusted_equity():
+    packet = verify(
+        *records(
+            empty=True,
+            pages={
+                "config_before": [[config(acctLv="3")]],
+                "account_position_risk": [[row("account_position_risk", adjEq="")]],
+                "balance": [
+                    [
+                        row(
+                            "balance",
+                            availEq="800",
+                            details=[
+                                {
+                                    "ccy": "USDT",
+                                    "eq": "1000",
+                                    "availEq": "800",
+                                    "uTime": ms(),
+                                }
+                            ],
+                        )
+                    ]
+                ],
+                "positions": [[]],
+                "config_after": [[config(acctLv="3")]],
+            },
+        )
+    )
+    assert "source_fields_missing" in packet.incomplete_reasons
+
+
 def test_same_algo_id_in_distinct_type_queries_cannot_claim_disjoint_inventory():
     with pytest.raises(
         module.AccountCaptureError, match="conflicting_algo_type_identity"

@@ -5,6 +5,7 @@ from decimal import Decimal
 import httpx
 import pytest
 
+from app.domain.okx_demo import OkxDemoLeverageRequest
 from app.exchange.okx.errors import OkxPrivateApiError
 from app.exchange.okx.private_rest import OkxDemoPrivateRestClient
 from app.okx_demo.service import OkxDemoService
@@ -25,6 +26,7 @@ DENIED = "demo_qualification_authority_unavailable"
         "/api/v5/trade/order-algo",
         "/api/v5/trade/amend-order",
         "/api/v5/trade/unknown-new-write",
+        "/api/v5/account/set-leverage",
         "/api/v5/trade/cancel-order/../order",
         "/api/v5/trade/%6frder",
         "/api/v5/trade/order?passed=true",
@@ -125,7 +127,6 @@ async def test_manual_and_automation_service_entry_reaches_common_denial(
     (
         "cancel_order",
         "close_position",
-        "set_leverage",
         "cancel_all_after",
         "order_precheck",
     ),
@@ -148,6 +149,39 @@ async def test_existing_maintenance_transport_remains_single_attempt_and_simulat
     assert result == [{"sCode": "0"}]
     assert len(requests) == 1
     assert requests[0].method == "POST"
+
+
+@pytest.mark.asyncio
+async def test_manual_demo_leverage_cannot_write_before_qualified_flat_authority():
+    requests = []
+
+    def handler(value):
+        requests.append(value)
+        pytest.fail("unqualified Demo leverage change reached private HTTP")
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="https://www.okx.com"
+    ) as http:
+        config = settings()
+        transport = OkxDemoPrivateRestClient(http, settings=config)
+
+        class Private(FakePrivate):
+            async def set_leverage(self, payload):
+                return await transport.set_leverage(payload)
+
+        service = OkxDemoService(Private(), FakePublic(), None, settings=config)
+        with pytest.raises(OkxPrivateApiError) as caught:
+            await service.set_leverage(
+                OkxDemoLeverageRequest(
+                    instrument_id="BTC-USDT-SWAP",
+                    leverage=3,
+                    margin_mode="isolated",
+                    direction="long",
+                    confirmation="OKX_DEMO_ONLY",
+                )
+            )
+        assert caught.value.code == DENIED
+    assert requests == []
 
 
 @pytest.mark.asyncio

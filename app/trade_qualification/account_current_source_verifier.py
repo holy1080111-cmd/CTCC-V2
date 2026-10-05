@@ -281,6 +281,22 @@ def _verify(chain, reference, scope, validated_at, policy):
     if at - earliest_received > timedelta(seconds=30):
         blocked.add("measured_current_receipt_stale")
     config = json.loads(grouped["config_after"][0].rows[0].canonical_json)
+    # A packet-wide gap can come from a historical stream. The flat diagnostic
+    # concerns current inventory, so inspect its own row fields. Futures-mode
+    # inapplicable top-level equity fields remain visible in raw evidence.
+    current_field_missing = any(
+        set(row.missing_fields)
+        - (
+            {"availEq"}
+            if config["acctLv"] == "2" and stream == "balance"
+            else {"adjEq"}
+            if config["acctLv"] == "2" and stream == "account_position_risk"
+            else set()
+        )
+        for stream, stream_pages in grouped.items()
+        for page in stream_pages
+        for row in page.rows
+    )
     if config.get("acctLv") != "2" or config.get("posMode") not in {
         "net_mode",
         "long_short_mode",
@@ -320,6 +336,8 @@ def _verify(chain, reference, scope, validated_at, policy):
         for stream in INVENTORY_STREAMS
     }
     exchange_empty = not any(counts.values())
+    if exchange_empty and current_field_missing:
+        blocked.add("current_packet_source_fields_missing")
     if not exchange_empty:
         blocked.add("current_exposure_requires_protection_and_local_join")
     value = {
@@ -340,6 +358,7 @@ def _verify(chain, reference, scope, validated_at, policy):
         ),
         "capture_scope": packet.plan.capture_scope,
         "packet_schema_version": packet.schema_version,
+        "packet_incomplete_reasons": list(packet.incomplete_reasons),
         "identity": {
             "environment": scope.environment,
             "uid": config["uid"],

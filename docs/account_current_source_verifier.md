@@ -31,6 +31,20 @@ recently. Settlement `eq` and `availEq` are read from the exact currency detail;
 top-level USD values never substitute for missing USDT values. Missing operands,
 liability fields or anchor contradictions remain incomplete.
 
+For pinned Futures account level `2`, OKX marks top-level balance `availEq`
+and account-position-risk `adjEq` inapplicable while balance
+`details[].availEq` applies to Futures mode. The capture packet permits absent
+or empty top-level values only for that verified mode and requires the exact
+settlement-currency detail's available equity. Raw empty fields remain in the
+receipt. The current-source path supports only level `2`; the mode `3`/`4`
+capture checks still require their applicable top-level values, while level
+`1` remains conservatively incomplete for this SWAP path. The current-source
+receipt lists the original packet's incomplete reasons and denies
+`observed_flat` when a *current* source field is missing. A history-only gap
+remains visible but does not change the narrower current-inventory diagnostic.
+Neither condition grants account or execution authority. [OKX account balance
+and risk fields](https://www.okx.com/docs-v5/en/).
+
 The policy fixes a 120-second maximum current-response span and a 30-second
 maximum age of the earliest current body completion at the explicit validation
 cutoff. These are measurement-policy bounds, not exchange-global atomicity.
@@ -56,7 +70,7 @@ private account evidence and is not an automatic public report or Notion payload
 
 The authored tests cover empty-vs-missing current pages, all pending pages,
 unchanged old update times, receipt staleness, missing settlement equity,
-anchor contradiction, nonempty exposure, non-SWAP retention, wrong pins/scope,
+Futures-mode field applicability, packet source-field denial, anchor
+contradiction, nonempty exposure, non-SWAP retention, wrong pins/scope,
 replayed receipt input and preserved B1 bytes. They are synthetic and do not
-constitute native account acceptance. At initial authoring, execution is
-deferred while the host recovers from a verified thermal shutdown.
+constitute native account acceptance.

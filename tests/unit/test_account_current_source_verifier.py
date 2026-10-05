@@ -94,11 +94,51 @@ async def test_real_empty_pages_have_diagnostic_flat_only_with_exact_scope(
     assert not value["blocking_reasons"]
     assert all(count == 0 for count in value["inventory_row_counts"].values())
     assert value["packet_schema_version"].endswith("v5")
+    assert "source_fields_missing" not in value["packet_incomplete_reasons"]
     assert value["flat_start_permission"] is result.flat_start_permission is False
     assert value["execution_authority"] is result.execution_authority is False
     assert value["account_complete"] is result.account_complete is False
     assert "local_uncertain_or_untracked_exposure" in value["unverified"]
     assert tuple(item.event for item in chain) == before
+
+
+@pytest.mark.asyncio
+async def test_futures_inapplicable_top_level_available_equity_preserves_flat_diagnostic(
+    monkeypatch,
+):
+    pages = flat_pages()
+    pages["balance"][0][0]["availEq"] = ""
+    data = json.loads(verify(await recorded(monkeypatch, pages=pages)).receipt_json)
+    assert data["observed_flat"] is True
+    assert "source_fields_missing" not in data["packet_incomplete_reasons"]
+    assert data["balance"]["available_equity"] == {
+        "numerator": "800",
+        "denominator": "1",
+    }
+    assert data["account_complete"] is data["execution_authority"] is False
+
+
+@pytest.mark.asyncio
+async def test_futures_inapplicable_risk_adjusted_equity_preserves_flat_diagnostic(
+    monkeypatch,
+):
+    pages = flat_pages()
+    pages["account_position_risk"][0][0]["adjEq"] = ""
+    data = json.loads(verify(await recorded(monkeypatch, pages=pages)).receipt_json)
+    assert data["observed_flat"] is True
+    assert "source_fields_missing" not in data["packet_incomplete_reasons"]
+    assert data["account_complete"] is data["execution_authority"] is False
+
+
+@pytest.mark.asyncio
+async def test_incomplete_current_source_field_cannot_claim_observed_flat(monkeypatch):
+    pages = flat_pages()
+    pages["account_instruments"] = [[row("account_instruments", ctMult="")]]
+    data = json.loads(verify(await recorded(monkeypatch, pages=pages)).receipt_json)
+    assert data["observed_flat"] is False
+    assert "source_fields_missing" in data["packet_incomplete_reasons"]
+    assert "current_packet_source_fields_missing" in data["blocking_reasons"]
+    assert data["account_complete"] is data["execution_authority"] is False
 
 
 @pytest.mark.asyncio
