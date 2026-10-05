@@ -20,11 +20,14 @@ import time
 from pathlib import Path, PurePosixPath
 from uuid import uuid4
 
+# The two full PostgreSQL-bearing test runs can exceed 90 minutes together.
 # Leave time for bounded cleanup and `if: always()` evidence upload before the
-# 90-minute GitHub job cutoff; a budget failure is never a validation pass.
-VALIDATION_BUDGET_SECONDS = 78 * 60
+# 180-minute GitHub job cutoff; a budget failure is never a validation pass.
+VALIDATION_BUDGET_SECONDS = 165 * 60
 CLEANUP_BUDGET_SECONDS = 5 * 60
 HEARTBEAT_INTERVAL_SECONDS = 60
+POSTGRES_TEST_TIMEOUT_SECONDS = 75 * 60
+FULL_TEST_TIMEOUT_SECONDS = 100 * 60
 
 ARCHIVE_REQUIRED_CASES = (
     (
@@ -526,7 +529,7 @@ def main():
 
     # No exchange credential or write switch is passed. Settings defaults and the
     # hermetic pytest preflight both deny execution; the network has no egress.
-    def container(name, command, *, mounts=(), extra_environment=()):
+    def container(name, command, *, mounts=(), extra_environment=(), timeout=3600):
         container_name = f"ctcc-final-{suffix}-{name}"
         resources.append(("container", container_name))
         run.command(
@@ -547,6 +550,7 @@ def main():
                 image,
                 *command,
             ],
+            timeout=timeout,
         )
 
     try:
@@ -703,6 +707,7 @@ def main():
                 "tests/integration/test_ledger_event_observation_repository.py",
             ],
             mounts=test_results_mount,
+            timeout=POSTGRES_TEST_TIMEOUT_SECONDS,
         )
         identity["postgres_tests"] = verify_pytest_report(
             test_results / "postgres-intent.xml",
@@ -739,6 +744,7 @@ def main():
                 "tests",
             ],
             mounts=test_results_mount,
+            timeout=FULL_TEST_TIMEOUT_SECONDS,
         )
         identity["linux_tests"] = verify_pytest_report(
             test_results / "linux-full.xml",

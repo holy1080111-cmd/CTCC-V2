@@ -2950,9 +2950,23 @@ collection and the verifier requires an exact one-to-one JUnit match; this
 correction has passed focused synthetic and native Windows tests but not the
 full remote job. The existing Linux Docker job remains separately required.
 
-On this uncommitted working source, repository-wide Ruff lint and format passed.
+On this checkpoint source, repository-wide Ruff lint and format passed.
 A low-load hermetic targeted selection of 165 cases yielded 163 passes and two
 explicit Windows/POSIX limitations. This is a scoped local result, not Windows
-full regression, PostgreSQL, Docker, Demo, Live, or release acceptance. The
-remote Linux run for earlier committed `abd3a96` is still in progress and would
-not validate the new working files even if it passes.
+full regression, PostgreSQL, Docker, Demo, Live, or release acceptance.
+
+The earlier exact-source GitHub run `37360626840` used commit `abd3a96` and
+was cancelled after its single opaque workflow step exceeded 71 minutes. Its
+retained artifact and JUnit show that the isolated image, COPY identity,
+dependency lock, migration/re-upgrade and schema checks completed, followed
+by 193/193 PostgreSQL integration passes in 2946.27 seconds. The subsequent
+full Linux suite had started but did not complete. The cancelled run is **not**
+hermetic acceptance, and none of its counts apply to DB0022 or Windows CI.
+
+The Linux job now allows 180 minutes, with a 165-minute monotonic verification
+budget, explicit 75-minute PostgreSQL and 100-minute full-suite stage caps,
+per-minute stage heartbeat, and a five-minute bounded cleanup. The same test
+lists and JUnit readbacks remain required; a timeout stays FAIL. These limits
+are based on the retained run's actual duration, not a relaxed acceptance gate.
+The updated source still requires its own complete remote result and final
+source-bound regression after later engineering changes.
