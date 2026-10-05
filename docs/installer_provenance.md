@@ -59,3 +59,18 @@ package-wide PowerShell parser pass and the canonical verifier dry-run both
 passed on 2026-10-05. PSScriptAnalyzer is not installed. No installer code was
 executed; this does not accept install/reinstall/upgrade/rollback or canonical
 trading integration.
+
+## 2026-10-06 reviewed-package verification
+
+The original preserved script still reproduces the parser error at `$Mode:`;
+the reviewed script uses `${Mode}:` and parses with zero errors (2,529 tokens).
+All seven package members match their pinned source hashes. Two repeated
+read-only identity/dry-run checks and 11 focused validator/controller tests
+passed; the final reviewed package identity SHA256 is
+`34ef5b12fa3855977d784d31803e0e1c7cb871959609f68a29cca2efcbffd722`.
+The reviewed package README now explicitly describes verification only and its
+default deployment guard. PSScriptAnalyzer is unavailable on this machine.
+
+No install, reinstall, upgrade, rollback or canonical qualification integration
+was executed. These remain `NOT_ACCEPTED`; the reviewed package is retained as
+repair evidence and cannot be treated as a V2 deployment path.

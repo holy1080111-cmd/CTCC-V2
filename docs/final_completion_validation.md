@@ -2970,3 +2970,80 @@ lists and JUnit readbacks remain required; a timeout stays FAIL. These limits
 are based on the retained run's actual duration, not a relaxed acceptance gate.
 The updated source still requires its own complete remote result and final
 source-bound regression after later engineering changes.
+
+## 2026-10-06 fail-closed Demo origin and blind-window checkpoint
+
+The earlier native V2 public diagnostic used Production public WebSocket
+`ws.okx.com` under a `demo` label. Its original bytes and independent replay
+remain preserved, but this is not an exact Demo source. The current native V2
+capture now refuses before journal creation, clock sampling and network I/O.
+Separately reviewed global, US/AU and EEA Demo route pairs require the Demo
+WebSocket/TLS host and `x-simulated-trading: 1` on public REST. The route policy
+alone cannot authenticate a caller-supplied registration region or bind the
+account credential session, so even a correctly shaped route cannot enable
+capture. Historical V2 replay remains `DENY`.
+
+The offline Gate 3 complete-window binder replays each original public-capture
+byte under sealed minute/symbol coordinates, externally supplied journal and
+capture pins, first-observation indexes and strict acquisition chronology.
+Missing, late, duplicate, conflicting or reordered rows are denied. Its
+canonical row/dataset hashes do not prove independent external pin custody,
+evaluator first access, or a real blind window. Predictive OOS and execution
+eligibility remain fixed false. The native G1 seam likewise rejects externally
+injected policy/version/source claims; no non-synthetic operational G1 policy is
+registered. R7 still has no source-derived original candidate, complete fresh
+account snapshot or qualified same-invocation continuation.
+
+Focused R5 Demo-origin selection passed 34 cases, Gate 3 binder and adjacent
+modules passed 36, and native G1 seam passed 18. These are separate scoped
+selections, not the final regression. Repository-wide Ruff lint and format,
+`git diff --check`, and the 870-file source manifest passed on the new local
+commit `c09e7d70ecbea1d85dfc9f5aa117885f76fd5a80` (tree
+`2b058cb627594cf5adfec59178d5830f69c4ce28`). Its exact archive and
+complete-history bundle were read back and verified at
+`validation-results/ctcc-source-c09e7d7-20261006/`; archive SHA256 is
+`dafe5224d6dd58a4e00666123d55e03440a610a05a64c601b4624cb5a8c08bc8`,
+bundle SHA256 is
+`b3e16dde595228ac1d1f31f5850d10a4b458ec8c64c70736d7d59a3d5933c0e4`,
+and manifest SHA256 is
+`6a4d8c9b22e032b62df6d17c0ec248f26b49f9e8b2b87b4acad7162926f54de0`.
+This is a rollback/checkpoint identity, not a release or Docker image.
+
+Remote run `37369288145` is bound to its earlier commit `ea81bcd`, not the
+new checkpoint. The Linux job was cancelled before it acquired a hosted runner
+or ran a step; its check annotation says runner acquisition failed after
+multiple attempts. The [GitHub Status page](https://www.githubstatus.com/)
+reported an Actions hosted-runner assignment incident during this period.
+The Windows job was still running when this entry was written. Neither job
+establishes CI acceptance for the new source; a complete exact-source rerun is
+required. No Demo or Live order was submitted.
+
+## 2026-10-06 local Demo alignment and safety audits
+
+An offline preflight now compares an unused controlled Demo account session to
+a native Demo private REST client: exact credential values, reviewed REST
+region and simulated-trading header must agree. It rejects wrong credentials,
+cross-region settings, unsupported regions and injected transports, but issues
+only a `DENY` diagnostic. The region evidence in the account plan is still a
+caller claim, and the two clients have no shared nontransferable authenticated
+session. The preflight cannot establish account/source authenticity or authorize
+a public capture or order. Its route and adjacent account/private-client
+selections passed 78 tests across two separate batches.
+
+The repaired HighVol installer copy passed native PowerShell parsing, repeated
+seven-file identity/dry-run checks and 11 focused tests. Its README and package
+identity were updated outside the canonical source; identity SHA256 is
+`34ef5b12fa3855977d784d31803e0e1c7cb871959609f68a29cca2efcbffd722`.
+PSScriptAnalyzer is unavailable locally. Install, reinstall, upgrade, rollback
+and integration with the canonical trading chain remain unaccepted.
+
+Read-only forensics review found matched fill/fee and original page hashes, but
+no running complete lineage through real position, protection, funding accrual
+and close. The source-aware replay keeps these quantities unknown; no Demo
+realized result is claimed. Three scoped forensics modules passed 363 tests.
+The Windows outbox audit found the native `CREATE_NEW` publisher preserves its
+durable journal on late failure and refuses an incomplete envelope. Its unit
+selections passed 698 tests with 11 explicit platform-only skips. Actual
+PostgreSQL projection, Linux native storage, Notion REST property-ID binding,
+delivery and readback remain unverified on the eventual final source. These
+scoped passes do not make OUTBOX, FORENSICS or NOTION_SYNC production PASS.

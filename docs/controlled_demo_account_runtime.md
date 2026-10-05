@@ -121,3 +121,22 @@ these tests. No full trusted-account or final submit-route PASS is claimed.
 Official contracts reviewed 2026-09-19: [overview and registration routing](https://www.okx.com/docs-v5/en/#overview),
 [Demo services](https://www.okx.com/docs-v5/en/#overview-demo-trading-services),
 [pagination](https://www.okx.com/docs-v5/trick_en/#pagination).
+
+## 2026-10-06 Demo session/route preflight
+
+The offline `demo_session_route_preflight` checks that an unused controlled
+account session and a native Demo private REST client hold the same three
+credential values, a reviewed Demo REST region and the simulated-trading
+header. It rejects mismatches, unreviewed regions and injected test transports
+without making a network request. The returned diagnostic fixes
+`source_authenticated=false`, `registration_region_verified=false`,
+`same_task_session_verified=false`, `execution_authority=false` and
+`admission=DENY`; 39 targeted route/preflight tests passed.
+
+This equality check is not a trusted credential-session issuer. The account
+capture plan's registration region and evidence hash are still caller claims,
+and the private REST client does not share a nontransferable authenticated
+account handle with the capture. An authenticated response at the selected
+origin and exact UID readback will need an independently controlled regional
+registration source and same-invocation binding before any public capture,
+portfolio snapshot, reservation or order route can use it as authority.
