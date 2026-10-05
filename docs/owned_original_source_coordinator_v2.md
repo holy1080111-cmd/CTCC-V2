@@ -22,3 +22,11 @@ the real path currently reports `original_source_public_unavailable`. Synthetic
 join tests check only the handoff mechanism. A reviewed account-bound Demo
 public origin issuer and full source-derived gate chain remain prerequisites
 before this handoff can participate in a qualified candidate flow.
+
+The reviewed Demo REST route check is offline policy only. It requires the
+session-bound region, Demo header, exact expected SWAP instrument and an exact
+role-specific query (including candle bar/limit/cursor or books size), and
+rejects duplicate or extra parameters. It does not replace the native REST/WS
+request issuer, TLS peer verification, journal replay or source authenticity
+proof. The native hard refusal stays in place until all of those roles use the
+same controlled Demo origin and independently verified account region.

@@ -38,25 +38,45 @@ def test_unreviewed_region_is_not_inferred(region):
 
 
 @pytest.mark.parametrize(
-    "role,path",
+    "role,path,params",
     [
-        ("quote", "/api/v5/market/ticker"),
-        ("quote", "/api/v5/public/mark-price"),
-        ("quote", "/api/v5/public/funding-rate"),
-        ("candles", "/api/v5/market/candles"),
-        ("market_aux", "/api/v5/market/books"),
-        ("market_aux", "/api/v5/public/open-interest"),
+        ("quote", "/api/v5/market/ticker", {"instId": "BTC-USDT-SWAP"}),
+        (
+            "quote",
+            "/api/v5/public/mark-price",
+            {"instId": "BTC-USDT-SWAP", "instType": "SWAP"},
+        ),
+        ("quote", "/api/v5/public/funding-rate", {"instId": "BTC-USDT-SWAP"}),
+        (
+            "candles",
+            "/api/v5/market/candles",
+            {"instId": "BTC-USDT-SWAP", "bar": "4H", "limit": "300"},
+        ),
+        (
+            "market_aux",
+            "/api/v5/market/books",
+            {"instId": "BTC-USDT-SWAP", "sz": "5"},
+        ),
+        (
+            "market_aux",
+            "/api/v5/public/open-interest",
+            {"instId": "BTC-USDT-SWAP", "instType": "SWAP"},
+        ),
     ],
 )
-def test_demo_rest_policy_requires_simulated_header_and_exact_region(role, path):
+def test_demo_rest_policy_requires_simulated_header_and_exact_region(
+    role, path, params
+):
     route = origin.reviewed_demo_public_route("eea")
     request = httpx.Request(
         "GET",
         route.rest_origin + path,
-        params={"instId": "BTC-USDT-SWAP"},
+        params=params,
         headers=origin.demo_public_headers(route, role),
     )
-    origin.validate_demo_public_request(route, role, request)
+    origin.validate_demo_public_request(
+        route, role, request, expected_instrument_id="BTC-USDT-SWAP"
+    )
     assert request.headers["x-simulated-trading"] == "1"
 
 
@@ -101,11 +121,109 @@ def test_demo_rest_policy_rejects_source_or_header_substitution(mutation):
         headers = tuple(headers.items()) + (("x-simulated-trading", "1"),)
     else:
         headers["X-Forwarded-Host"] = "openapi.okx.com"
-    request = httpx.Request(method, base + path, headers=headers)
+    request = httpx.Request(
+        method, base + path, params={"instId": "BTC-USDT-SWAP"}, headers=headers
+    )
     with pytest.raises(
         origin.DemoPublicOriginError, match="demo_public_request_invalid"
     ):
-        origin.validate_demo_public_request(route, "quote", request)
+        origin.validate_demo_public_request(
+            route, "quote", request, expected_instrument_id="BTC-USDT-SWAP"
+        )
+
+
+@pytest.mark.parametrize(
+    ("role", "path", "params"),
+    [
+        ("quote", "/api/v5/market/ticker", {}),
+        ("quote", "/api/v5/market/ticker", {"instId": "ETH-USDT-SWAP"}),
+        (
+            "quote",
+            "/api/v5/market/ticker",
+            (("instId", "BTC-USDT-SWAP"), ("instId", "BTC-USDT-SWAP")),
+        ),
+        (
+            "quote",
+            "/api/v5/market/ticker",
+            {"instId": "BTC-USDT-SWAP", "extra": "1"},
+        ),
+        ("quote", "/api/v5/public/mark-price", {"instId": "BTC-USDT-SWAP"}),
+        (
+            "market_aux",
+            "/api/v5/market/books",
+            {"instId": "BTC-USDT-SWAP", "sz": "10"},
+        ),
+        (
+            "market_aux",
+            "/api/v5/public/open-interest",
+            {"instId": "BTC-USDT-SWAP", "instType": "FUTURES"},
+        ),
+        (
+            "candles",
+            "/api/v5/market/candles",
+            {"instId": "BTC-USDT-SWAP", "limit": "300"},
+        ),
+        (
+            "candles",
+            "/api/v5/market/candles",
+            {"instId": "BTC-USDT-SWAP", "bar": "1m", "limit": "300"},
+        ),
+        (
+            "candles",
+            "/api/v5/market/candles",
+            {"instId": "BTC-USDT-SWAP", "bar": "4H", "limit": "301"},
+        ),
+        (
+            "candles",
+            "/api/v5/market/candles",
+            {"instId": "BTC-USDT-SWAP", "bar": "4H", "limit": "0300"},
+        ),
+        (
+            "candles",
+            "/api/v5/market/candles",
+            {
+                "instId": "BTC-USDT-SWAP",
+                "bar": "4H",
+                "limit": "300",
+                "after": "old-cursor",
+            },
+        ),
+    ],
+)
+def test_demo_rest_policy_rejects_wrong_or_duplicate_query(role, path, params):
+    route = origin.reviewed_demo_public_route("global")
+    request = httpx.Request(
+        "GET",
+        route.rest_origin + path,
+        params=params,
+        headers=origin.demo_public_headers(route, role),
+    )
+    with pytest.raises(origin.DemoPublicOriginError, match="request_invalid"):
+        origin.validate_demo_public_request(
+            route, role, request, expected_instrument_id="BTC-USDT-SWAP"
+        )
+
+
+def test_demo_candle_cursor_is_bounded_and_instrument_pin_required():
+    route = origin.reviewed_demo_public_route("us_au")
+    request = httpx.Request(
+        "GET",
+        route.rest_origin + "/api/v5/market/candles",
+        params={
+            "instId": "BTC-USDT-SWAP",
+            "bar": "15m",
+            "limit": "100",
+            "after": "1770000000000",
+        },
+        headers=origin.demo_public_headers(route, "candles"),
+    )
+    origin.validate_demo_public_request(
+        route, "candles", request, expected_instrument_id="BTC-USDT-SWAP"
+    )
+    with pytest.raises(origin.DemoPublicOriginError, match="request_invalid"):
+        origin.validate_demo_public_request(
+            route, "candles", request, expected_instrument_id="BTCUSDT"
+        )
 
 
 @pytest.mark.parametrize(

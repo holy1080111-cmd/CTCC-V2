@@ -7,6 +7,7 @@ No caller-supplied route, packet, or receipt can act as that session binding.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from urllib.parse import urlsplit
@@ -58,6 +59,8 @@ _USER_AGENTS = MappingProxyType(
         "market_aux": "CTCC-source-market-aux/1",
     }
 )
+_INSTRUMENT = re.compile(r"[A-Z0-9]{1,16}-[A-Z0-9]{1,16}-SWAP")
+_CANDLE_BARS = frozenset({"4H", "1H", "15m", "5m"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,11 +133,19 @@ def demo_public_headers(route: ReviewedDemoPublicRoute, role: str) -> dict[str, 
 
 
 def validate_demo_public_request(
-    route: ReviewedDemoPublicRoute, role: str, request: httpx.Request
+    route: ReviewedDemoPublicRoute,
+    role: str,
+    request: httpx.Request,
+    *,
+    expected_instrument_id: str,
 ) -> None:
-    """Reject wrong host, route, Demo header, method, or hidden auth before IO."""
+    """Reject wrong Demo route, headers, instrument or query before any IO."""
     expected = demo_public_headers(route, role)
-    if type(request) is not httpx.Request:
+    if (
+        type(request) is not httpx.Request
+        or type(expected_instrument_id) is not str
+        or _INSTRUMENT.fullmatch(expected_instrument_id) is None
+    ):
         raise DemoPublicOriginError("demo_public_request_invalid")
     try:
         body = request.content
@@ -154,10 +165,46 @@ def validate_demo_public_request(
         or request.url.path not in _PATHS[role]
         or request.url.username
         or request.url.password
+        or len(request.url.query) > 512
         or body
         or len(headers) != len(header_items)
         or headers != required
     ):
+        raise DemoPublicOriginError("demo_public_request_invalid")
+    pairs = tuple(request.url.params.multi_items())
+    query = dict(pairs)
+    if len(query) != len(pairs):
+        raise DemoPublicOriginError("demo_public_request_invalid")
+    wanted = {"instId": expected_instrument_id}
+    if request.url.path == "/api/v5/public/mark-price":
+        wanted["instType"] = "SWAP"
+    elif request.url.path == "/api/v5/market/books":
+        wanted["sz"] = "5"
+    elif request.url.path == "/api/v5/public/open-interest":
+        wanted["instType"] = "SWAP"
+    elif request.url.path == "/api/v5/market/candles":
+        bar, limit = query.get("bar"), query.get("limit")
+        if (
+            bar not in _CANDLE_BARS
+            or type(limit) is not str
+            or not limit.isascii()
+            or not limit.isdigit()
+            or not 1 <= int(limit) <= 300
+            or str(int(limit)) != limit
+        ):
+            raise DemoPublicOriginError("demo_public_request_invalid")
+        wanted.update(bar=bar, limit=limit)
+        if "after" in query:
+            after = query["after"]
+            if (
+                type(after) is not str
+                or not after.isascii()
+                or not after.isdigit()
+                or not 1 <= len(after) <= 20
+            ):
+                raise DemoPublicOriginError("demo_public_request_invalid")
+            wanted["after"] = after
+    if query != wanted:
         raise DemoPublicOriginError("demo_public_request_invalid")
 
 

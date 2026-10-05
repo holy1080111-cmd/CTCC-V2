@@ -88,7 +88,9 @@ async def test_each_controlled_region_rejects_other_rest_and_ws_routes(
         headers=origin.demo_public_headers(route, "quote"),
     )
     with pytest.raises(origin.DemoPublicOriginError, match="request_invalid"):
-        origin.validate_demo_public_request(route, "quote", request)
+        origin.validate_demo_public_request(
+            route, "quote", request, expected_instrument_id="BTC-USDT-SWAP"
+        )
     with pytest.raises(origin.DemoPublicOriginError, match="ws_origin_mismatch"):
         origin.validate_demo_public_ws(route, other_ws, httpx.URL(other_ws).host)
     with pytest.raises(

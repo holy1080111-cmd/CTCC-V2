@@ -3208,3 +3208,24 @@ while fan health is uncertain; remote CI is being used for source-bound checks.
 No authenticated Demo order or real-money Micro Live order was submitted. No
 complete account snapshot, OOS/shadow/economic acceptance, current-source full
 regression, release, or final completion is claimed.
+
+The next offline source-bound review tightened the reviewed Demo REST policy:
+it now requires the fixed instrument and the exact endpoint query, including
+SWAP type, five-level books size, and bounded candle bar/limit/cursor. Missing,
+duplicate, extra, or cross-instrument parameters are rejected. This policy is
+still not connected to the native V2 REST/WS issuer or journal. The account
+gap inventory separately replays the pinned packet and materialization inputs,
+lists unresolved capture/mapping proof classes without raw account identifiers,
+and keeps account completeness and execution authority false. Root reran 67
+public-origin/coordinator tests with one Windows symlink-privilege skip and
+149 account-materializer/inventory tests with no skips; Ruff checks passed.
+These scoped synthetic results do not promote Demo capture or account authority.
+
+The local `ea3a562dc69e0faa48ef61a56bf86b4e43b2304b` checkpoint has
+tree `8e9be3a759374fc6988cdce6fb71f82d9022ddb2` and a byte-exact Git
+archive at `../validation-results/ctcc-source-ea3a562-20261006/`.
+The archive's embedded commit and reconstructed tree matched those values, and
+the Git bundle verified. Its Windows dependency verifier retained
+`accepted_full_validation_baseline=false`. The scoped all-local-Git-object
+secret-pattern scan found zero high-confidence matches across 2,097 blobs; it
+does not cover ignored files, unknown token formats, or remote artifacts.
