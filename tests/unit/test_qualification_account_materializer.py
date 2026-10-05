@@ -1095,6 +1095,32 @@ def test_recent_fills_are_accounted_and_identical_history_overlap_is_not_double_
     assert result.account_complete is False
 
 
+@pytest.mark.parametrize("truncated", ["start", "end"])
+def test_history_seed_must_cover_exact_pinned_query_window(truncated):
+    groups = nonempty_history_inputs().history.groups
+    if truncated == "start":
+        evidence = history_evidence(
+            history_start=NOW - timedelta(days=6), groups=groups
+        )
+    else:
+        shortened_end = NOW - timedelta(seconds=2)
+        evidence = history_evidence(
+            history_end=shortened_end,
+            groups=groups,
+            source=ObservedSource(
+                source_sha256="e" * 64,
+                observed_at=shortened_end,
+                received_at=NOW,
+            ),
+        )
+    result = materialize(
+        source=history_source(), supplied=snapshot_inputs(history=evidence)
+    )
+    assert result.loss_history == ()
+    assert result.snapshot is None
+    assert "history_recorded_window_incomplete" in result.incomplete_reasons
+
+
 def test_conflicting_recent_and_archive_fill_is_incomplete_without_selecting_a_winner():
     result = materialize(
         source=history_source(overlap_conflict=True), supplied=nonempty_history_inputs()

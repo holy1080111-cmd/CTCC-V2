@@ -3171,3 +3171,40 @@ and verifier selections passed, and Alembic reports `0023` as source head.
 The new PostgreSQL integration cases were collected but not run against an
 isolated database; schema drift, downgrade and concurrency remain FAIL for
 this pending source.
+
+## 2026-10-06 current committed source and outstanding acceptance
+
+The currently pushed feature source is `656371b23f833e14c3881396565d685f552d790b`.
+It includes DB0023, the clock-code replay and Gate 3 import-boundary repairs,
+and expanded no-order transport checks. GitHub Actions run
+[`37380901159`](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/37380901159)
+is validating that exact pushed commit; its Docker and Windows jobs were still
+running at this record. A running job is not a PASS. This run cannot validate
+any later local source revision.
+
+Local commits `ce01603` and `61f8c63` retain additional account-source
+rejections: partial or malformed OKX gateway `inTime`/`outTime` provenance and
+current-position rows in increasing creation-time order are incomplete, never
+silently reordered. The account-focused Windows selections passed 698 and 700
+tests respectively, with Ruff checks, but they are not full-source acceptance.
+The exact local source still needs a new manifest, archive, remote CI run, and
+PostgreSQL integration after all pending files are reviewed and committed.
+
+Current working-source development adds a narrow, read-only original public
+and account handoff and a controlled Demo route declaration check. Both remain
+non-authoritative. The native V2 public issuer still refuses its Demo-labelled
+Production socket before network I/O, so this is no evidence of a trusted Demo
+market snapshot, G1–G12 qualification, post-G12 execution recheck, reservation,
+intent, or order eligibility. The account materializer also rejects a recorded
+history seed that covers less than the exact fixed packet query window. These
+working files and their synthetic tests require final review and exact-source
+validation before any status change.
+
+After two spontaneous thermal shutdowns, the host is kept at low load. Windows
+Time Service now runs automatically and reported a successful `time.windows.com`
+sync at 06:11:56 Taipei on 2026-10-06. This does not replace per-request
+exchange-time causality checks. Docker/WSL local acceptance remains deferred
+while fan health is uncertain; remote CI is being used for source-bound checks.
+No authenticated Demo order or real-money Micro Live order was submitted. No
+complete account snapshot, OOS/shadow/economic acceptance, current-source full
+regression, release, or final completion is claimed.

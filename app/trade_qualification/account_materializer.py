@@ -1073,6 +1073,14 @@ def _history(inputs, records, specs, packet, gaps):
     ):
         gaps.add("history_recorded_window_invalid")
         return (), None
+    if (
+        evidence.history_start != packet.plan.history_start
+        or evidence.history_end != packet.plan.history_end
+    ):
+        # A proper subset cannot seed the packet's requested rolling loss
+        # window, even if every row inside that subset maps successfully.
+        gaps.add("history_recorded_window_incomplete")
+        return (), None
     used_fills, used_funding, outcomes = set(), set(), []
     groups = sorted(evidence.groups, key=lambda item: item.sequence)
     if len({group.outcome_id for group in groups}) != len(groups):
