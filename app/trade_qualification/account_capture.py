@@ -1324,6 +1324,18 @@ def parse_demo_account_observation(
     ids = tuple(row.row_id for row in rows)
     if len(set(ids)) != len(ids):
         _fail("duplicate_source_identity")
+    if stream == "positions":
+        # OKX documents this unpaginated inventory in reverse cTime order.
+        # Preserve the wire order; reject a contradictory source response.
+        creation_times = tuple(
+            next(time.value for time in row.source_times if time.path == "cTime")
+            for row in rows
+        )
+        if any(
+            earlier is not None and later is not None and earlier < later
+            for earlier, later in itertools.pairwise(creation_times)
+        ):
+            _fail("source_position_order_invalid")
     if stream in _CURSOR_FIELDS:
         numeric_ids = tuple(int(value) for value in ids)
         if any(left <= right for left, right in itertools.pairwise(numeric_ids)):

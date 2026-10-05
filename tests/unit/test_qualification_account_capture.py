@@ -879,6 +879,25 @@ def test_current_position_required_identity_and_mode_cannot_be_missing(field, va
         stream_observation("positions", [row("positions", **{field: value})])
 
 
+def test_positions_preserve_okx_reverse_creation_order_and_reject_reversal():
+    newer = row("positions", "901", cTime=ms(NOW - timedelta(minutes=30)))
+    older = row("positions", "900", cTime=ms(NOW - timedelta(hours=1)))
+    accepted = stream_observation("positions", [newer, older])
+    assert [item.row_id for item in accepted.rows] == ["901", "900"]
+    with pytest.raises(
+        module.AccountCaptureError, match="source_position_order_invalid"
+    ):
+        stream_observation("positions", [older, newer])
+
+
+def test_position_order_with_missing_creation_time_remains_explicitly_incomplete():
+    missing = row("positions", "901", cTime="")
+    known = row("positions", "900", cTime=ms(NOW - timedelta(hours=1)))
+    accepted = stream_observation("positions", [missing, known])
+    assert "cTime" in accepted.rows[0].missing_fields
+    assert [item.row_id for item in accepted.rows] == ["901", "900"]
+
+
 @pytest.mark.parametrize("stream", ["fills_history", "orders_history_archive"])
 def test_swap_history_cannot_be_labeled_as_other_product(stream):
     with pytest.raises(ValueError):

@@ -163,6 +163,7 @@ _CAPTURE_REASONS = frozenset(
         "response_gateway_time_invalid",
         "response_row_limit",
         "response_cardinality_invalid",
+        "source_position_order_invalid",
         "source_cursor_order_invalid",
         "source_cursor_not_exclusive",
         "observation_replay_mismatch",

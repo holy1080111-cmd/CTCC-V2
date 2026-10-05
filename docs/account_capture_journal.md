@@ -34,6 +34,11 @@ Unix microsecond strings and must satisfy request start <= gateway receive <=
 gateway send <= observed headers receipt. Missing, malformed, reversed or future
 gateway times reject the page. Their optional presence does not establish
 account completeness or exchange authentication.
+The unpaginated current positions response retains wire order and rejects a
+known increase in `cTime`, contrary to OKX's reverse creation-time order.
+Missing `cTime` remains explicit missing source evidence; it is never inferred
+from position identity or receipt time.
+The unit and ordering semantics follow the [current OKX API guide](https://www.okx.com/docs-v5/en/).
 
 Non-200 status, media/encoding/size/TLS rejection before reading retains the known
 headers-receipt time and bounded status only. Its body is **not_read**, with zero
