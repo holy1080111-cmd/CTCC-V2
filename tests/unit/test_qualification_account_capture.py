@@ -74,6 +74,11 @@ def ms(moment=NOW - timedelta(seconds=1)):
     )
 
 
+def us(moment):
+    delta = moment - datetime(1970, 1, 1, tzinfo=UTC)
+    return str(delta.days * 86400000000 + delta.seconds * 1000000 + delta.microseconds)
+
+
 def plan(**changes):
     return module.DemoAccountCapturePlan(
         **{
@@ -463,6 +468,44 @@ def test_malformed_raw_envelope_never_becomes_account_evidence(body):
     with pytest.raises(ValueError) as caught:
         observe(body)
     assert "sensitive upstream detail" not in str(caught.value)
+
+
+def test_optional_okx_gateway_microsecond_times_are_preserved_when_causal():
+    started = NOW + timedelta(milliseconds=10)
+    raw = wire(
+        [config()],
+        inTime=us(started + timedelta(microseconds=100)),
+        outTime=us(started + timedelta(microseconds=300)),
+    )
+    receipt = observe(raw)
+    assert receipt.response_body == raw
+    assert receipt.body_sha256 == hashlib.sha256(raw).hexdigest()
+
+
+def test_optional_okx_gateway_times_fail_closed_on_missing_or_invalid_pair():
+    started = NOW + timedelta(milliseconds=10)
+    received = NOW + timedelta(milliseconds=11)
+    inside = us(started + timedelta(microseconds=100))
+    outside = us(received + timedelta(microseconds=1))
+    invalid = (
+        {"inTime": inside},
+        {"outTime": inside},
+        {"inTime": inside, "outTime": ""},
+        {"inTime": inside, "outTime": None},
+        {"inTime": inside, "outTime": inside[:-3]},  # milliseconds
+        {"inTime": inside, "outTime": "9" * 64},
+        {"inTime": outside, "outTime": outside},
+        {"inTime": inside, "outTime": outside},
+        {"inTime": inside, "outTime": us(started)},
+        {"inTime": us(started - timedelta(microseconds=1)), "outTime": inside},
+    )
+    for fields in invalid:
+        with pytest.raises(
+            module.AccountCaptureError, match="response_gateway_time_invalid"
+        ):
+            observe(wire([config()], **fields))
+    with pytest.raises(module.AccountCaptureError, match="json_number_invalid"):
+        observe(wire([config()], inTime=inside, outTime=123))
 
 
 @pytest.mark.parametrize(

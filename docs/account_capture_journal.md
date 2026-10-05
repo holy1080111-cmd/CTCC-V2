@@ -29,6 +29,11 @@ unsafe values remain withheld. Exact safe row identities remain in the final
 private raw/packet. Matching immutable-history overlaps have original row locators; conflicting
 content denies completed recording. No malformed source is sorted, deduplicated,
 filled or replaced. An absent request is unknown, not an empty account.
+When an OKX REST envelope includes `inTime` and `outTime`, both must be decimal
+Unix microsecond strings and must satisfy request start <= gateway receive <=
+gateway send <= observed headers receipt. Missing, malformed, reversed or future
+gateway times reject the page. Their optional presence does not establish
+account completeness or exchange authentication.
 
 Non-200 status, media/encoding/size/TLS rejection before reading retains the known
 headers-receipt time and bounded status only. Its body is **not_read**, with zero

@@ -160,6 +160,7 @@ _CAPTURE_REASONS = frozenset(
         "request_deadline_exceeded",
         "response_envelope_invalid",
         "response_envelope_fields_invalid",
+        "response_gateway_time_invalid",
         "response_row_limit",
         "response_cardinality_invalid",
         "source_cursor_order_invalid",

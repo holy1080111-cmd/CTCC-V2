@@ -978,6 +978,17 @@ def _time_record(path, raw, semantics):
     return AccountSourceTime(path=path, raw=raw, value=value, semantics=semantics)
 
 
+def _gateway_time(raw):
+    # OKX REST envelope inTime/outTime are Unix microseconds, unlike row
+    # timestamps. Never coerce milliseconds, floats, or malformed strings.
+    if type(raw) is not str or re.fullmatch(r"[1-9][0-9]{0,16}", raw) is None:
+        _fail("response_gateway_time_invalid")
+    try:
+        return _EPOCH + timedelta(microseconds=int(raw))
+    except (OverflowError, ValueError):
+        _fail("response_gateway_time_invalid")
+
+
 def _number_record(path, raw):
     if raw is None or raw == "":
         return AccountNumber(path=path, raw=raw, value=None)
@@ -1293,6 +1304,13 @@ def parse_demo_account_observation(
         _fail("response_envelope_invalid")
     if set(payload) - {"code", "msg", "data", "inTime", "outTime"}:
         _fail("response_envelope_fields_invalid")
+    if ("inTime" in payload) != ("outTime" in payload):
+        _fail("response_gateway_time_invalid")
+    if "inTime" in payload:
+        gateway_in = _gateway_time(payload["inTime"])
+        gateway_out = _gateway_time(payload["outTime"])
+        if not started <= gateway_in <= gateway_out <= received:
+            _fail("response_gateway_time_invalid")
     raw_rows = payload["data"]
     maximum = plan.page_size if stream in _CURSOR_FIELDS else 2048
     if len(raw_rows) > maximum:
