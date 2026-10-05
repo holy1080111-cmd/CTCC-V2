@@ -2892,3 +2892,14 @@ authority. Eleven focused synthetic tests passed. The adjacent broader V2
 module was stopped before completion for host thermal safety and is not counted
 as passed. Full G1-G11 original candidate, owned account inputs and R7 remain
 engineering blockers.
+
+## 2026-10-06 first remote exact-source CI attempt
+
+GitHub Actions run `37359893808` checked out interim commit `51c69d4` and
+passed archive/image COPY identity, isolated service startup, manifest,
+dependency lock and Ruff lint. It failed at the repository-wide Ruff format
+step because a fenced Python example in `docs/public_source_runtime.md` was
+unformatted. The narrower local app/scripts/tests format check had omitted that
+Markdown file. The example was formatted and the exact repository-wide Ruff
+lint/format commands now pass locally; a new committed-source remote run is
+required. This first run is FAIL, not Docker hermetic acceptance.

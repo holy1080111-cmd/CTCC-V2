@@ -41,7 +41,9 @@ import asyncio
 from pathlib import Path
 
 from app.trade_qualification.candle_collector import (
-    CandleCollectionPolicy, FrameRequest, TIMEFRAMES,
+    CandleCollectionPolicy,
+    FrameRequest,
+    TIMEFRAMES,
 )
 from app.trade_qualification.market_aux_collector import MarketAuxCollectionPolicy
 from app.trade_qualification.public_market_collector import PublicMarketCollectionPolicy
@@ -51,19 +53,23 @@ from app.trade_qualification.ws_collector import WSCollectionPolicy
 
 policy = PublicMarketCollectionPolicy(
     quote=QuoteCollectionPolicy(max_age_seconds=5),
-    candles=CandleCollectionPolicy(requests=tuple(
-        FrameRequest(timeframe=frame, requested_confirmed_bars=240)
-        for frame in TIMEFRAMES
-    )),
+    candles=CandleCollectionPolicy(
+        requests=tuple(
+            FrameRequest(timeframe=frame, requested_confirmed_bars=240)
+            for frame in TIMEFRAMES
+        )
+    ),
     market_aux=MarketAuxCollectionPolicy(max_age_seconds=5),
     ws=WSCollectionPolicy(max_age_seconds=5),
 )
 # Replace this with a newly created, controlled, empty absolute directory.
-result = asyncio.run(capture_initial_public_market(
-    Path("C:/CTCC-Evidence/initial-attempt-unique"),
-    instrument_id="BTC-USDT-SWAP",
-    market_policy=policy,
-))
+result = asyncio.run(
+    capture_initial_public_market(
+        Path("C:/CTCC-Evidence/initial-attempt-unique"),
+        instrument_id="BTC-USDT-SWAP",
+        market_policy=policy,
+    )
+)
 print(result.code, result.admission, result.journal_sha256)
 ```
 
