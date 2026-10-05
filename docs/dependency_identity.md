@@ -87,6 +87,17 @@ baseline for these locks. The independently measured Windows environment had
 actual transitive differences, including greenlet and idna. Matching the primary
 pyproject declarations did not make those inventories equivalent.
 
+The preserved September 15 integrated release contract pins its 582 source
+files and candidate/validation ZIP hashes, but does not identify a matching Git
+tree. Its specific 40-versus-39 normal/isolated discovery discrepancy was an
+extra local `ctcc_v2.egg-info` project metadata record in the normal scan; no
+pinned third-party version changed in that comparison. This narrow source-only
+metadata exclusion is independently checked by the current verifier. It does
+not make the historical 39-distribution Linux environment, the Windows
+environment, or either current 41-wheel lock interchangeable. A later Windows
+failure was a missing already-pinned `tzdata` wheel; repairing that isolated
+environment likewise does not establish a new full-validation baseline.
+
 Every new lock provenance record and verifier result deliberately retains
 `accepted_full_validation_baseline=false`. Hash-verified installation, successful
 `pip check`, targeted tests, and an exact installed inventory establish dependency

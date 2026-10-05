@@ -3174,31 +3174,32 @@ this pending source.
 
 ## 2026-10-06 current committed source and outstanding acceptance
 
-The currently pushed feature source is `656371b23f833e14c3881396565d685f552d790b`.
+The first pushed feature source in this sequence was
+`656371b23f833e14c3881396565d685f552d790b`.
 It includes DB0023, the clock-code replay and Gate 3 import-boundary repairs,
 and expanded no-order transport checks. GitHub Actions run
 [`37380901159`](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/37380901159)
-is validating that exact pushed commit; its Docker and Windows jobs were still
-running at this record. A running job is not a PASS. This run cannot validate
-any later local source revision.
+started validating that exact pushed commit. Its Docker and Windows jobs were
+later cancelled by the newer source push; it is not a PASS and cannot validate
+any later source revision.
 
-Local commits `ce01603` and `61f8c63` retain additional account-source
+Subsequent commits `ce01603` and `61f8c63` retain additional account-source
 rejections: partial or malformed OKX gateway `inTime`/`outTime` provenance and
 current-position rows in increasing creation-time order are incomplete, never
 silently reordered. The account-focused Windows selections passed 698 and 700
 tests respectively, with Ruff checks, but they are not full-source acceptance.
-The exact local source still needs a new manifest, archive, remote CI run, and
-PostgreSQL integration after all pending files are reviewed and committed.
+At that point the changed source still needed a new manifest, archive, remote
+CI run, and PostgreSQL integration; the later checkpoint below supplies the
+first three identity steps, not a passing regression.
 
-Current working-source development adds a narrow, read-only original public
+The next committed source update adds a narrow, read-only original public
 and account handoff and a controlled Demo route declaration check. Both remain
 non-authoritative. The native V2 public issuer still refuses its Demo-labelled
 Production socket before network I/O, so this is no evidence of a trusted Demo
 market snapshot, G1–G12 qualification, post-G12 execution recheck, reservation,
 intent, or order eligibility. The account materializer also rejects a recorded
-history seed that covers less than the exact fixed packet query window. These
-working files and their synthetic tests require final review and exact-source
-validation before any status change.
+history seed that covers less than the exact fixed packet query window. Its
+synthetic tests do not establish exact-source full acceptance.
 
 After two spontaneous thermal shutdowns, the host is kept at low load. Windows
 Time Service now runs automatically and reported a successful `time.windows.com`
@@ -3229,3 +3230,63 @@ the Git bundle verified. Its Windows dependency verifier retained
 `accepted_full_validation_baseline=false`. The scoped all-local-Git-object
 secret-pattern scan found zero high-confidence matches across 2,097 blobs; it
 does not cover ignored files, unknown token formats, or remote artifacts.
+
+The latest pushed source in this record is
+`4c4c941c54067eca9f22b1a18aa4e85344b38072`, tree
+`d522097edf9ddcfe8a1b022797ba3b3536dfcac3`, with a clean working tree
+and 882-file manifest SHA256
+`e18d3b154baab90ea52db0e73ea6d498cd9026fb8b65e93d6bca37709d5113cd`.
+Its exact archive, verified Git bundle, dependency identities, and scoped
+secret-scan report are retained under
+`../validation-results/ctcc-source-4c4c941-20261006/`; the source archive SHA256
+is `e8fc0c820b393c94924463b4ec0723da50dfa317797799347eee9db546a93de7`.
+The archive reconstructed exactly the recorded commit/tree. The Windows
+dependency lock verifier passed its pinned inventory but still reports
+`accepted_full_validation_baseline=false`; no release baseline is declared.
+The local Git-object pattern scan covered 2,106 blobs with zero high-confidence
+matches under its stated limits. Remote GitHub Actions run
+[`37384534084`](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/37384534084)
+started at this exact commit and remains pending here. It cannot be counted as
+Windows, Linux, PostgreSQL or Docker acceptance until completed and inspected.
+
+The preserved 9/15 integrated release contract at
+`C:\Users\holy1\AppData\Local\CTCC\Demo-Integrated\907285d56e2045759c9219b300b52b6a\release-contract.json`
+has SHA256 `f8d31e56f2231826d0e891de941f76efeb27de1ec38771383e534ee407f7fa8a`.
+Its pinned candidate ZIP SHA256 is
+`1a8d0b511a8e8ef7106b5cc6734ac0e017e0ce46072fc4426400b77781715eca`,
+and the historical validation ZIP SHA256 is
+`828abf8ae5da8c25949b13580da2f7e11d8e795a383bbef3ce1b095506240795`.
+A read-only audit rehashed all 582 cached package-source files and 278
+candidate-map files against that contract with zero mismatches. The contract
+proves a package source-file identity, not a Git commit/tree: its file map has
+no modes, and none of six tested Git refs matched all 582 package files, even
+after LF normalization (the closest inspected deployment ref matched 556).
+The originating literal `PROVENANCE_RESULT=CANDIDATE_MATCH_FOUND` output is
+still absent, so that label cannot be assigned to an invented Git tree. The
+9/15 dependency count discrepancy was one extra `ctcc_v2.egg-info` source
+metadata record in normal discovery, with no pinned package-version change.
+The separate later Windows lock-environment gap was the already-pinned
+`tzdata` wheel; installation repaired that environment only. Neither point
+accepts the current full-validation dependency baseline.
+
+Cancelled exact-source CI run `37380901159` at `656371b` preserved a partial
+Linux hermetic artifact. Its build/COPY/manifest/lock/Ruff and migration
+upgrade, identity, drift, downgrade and re-upgrade stages exited successfully.
+The 210-case PostgreSQL integration selection then printed three failures
+before cancellation. Exact collection order places them at
+`test_other_currency_exposure_denies_entry_but_not_read_reconciliation` with
+`reserved`, `consumed`, and `uncertain` parameters. This is a high-confidence
+index inference, not a captured traceback; the replacement run at `4c4c941`
+must supply the actual error. The cancelled Windows artifact recorded 2,304
+cases with zero failures and one skip, far short of its 13,201 planned cases.
+Neither partial job is a PASS.
+
+Source review found the three inferred PostgreSQL failures shared one legacy
+test setup: the attempted new reserve reused the original event, so the
+correct UID/event tombstone guard rejects it before the cross-currency exposure
+guard. The cross-currency test now submits its existing second, independent
+event on the same exact UID; it retains checks that consuming the original is
+blocked, read reconciliation is allowed, and the other-currency hold remains.
+No database constraint, guard order, or execution behavior changed. The three
+cases collect and 28 related offline unit cases pass, but the PostgreSQL
+assertions still need an actual isolated database rerun at the changed source.

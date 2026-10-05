@@ -578,7 +578,7 @@ async def test_advisory_lock_serializes_exact_uid_across_settlement_scopes(datab
 
 @pytest.mark.parametrize("state", ("reserved", "consumed", "uncertain"))
 async def test_other_currency_exposure_denies_entry_but_not_read_reconciliation(
-    database, fixture, state
+    database, fixture, other, state
 ):
     import hashlib
 
@@ -600,9 +600,13 @@ async def test_other_currency_exposure_denies_entry_but_not_read_reconciliation(
             state=state,
         )
         session.add(QualificationReservation(**data))
+    # Use an independent event: replaying the original is correctly rejected
+    # first by the UID/event tombstone before the currency-exposure check.
+    assert other.request.scope == hold.scope
+    assert other.request.origin.original_event_key != hold.original_event_key
     with pytest.raises(reservations.QualificationLedgerError, match="cross_currency"):
         await ledger.reserve(
-            fixture.request.model_copy(update={"expected_ledger_revision": 2})
+            other.request.model_copy(update={"expected_ledger_revision": 2})
         )
     with pytest.raises(reservations.QualificationLedgerError, match="cross_currency"):
         await ledger.consume_once(
