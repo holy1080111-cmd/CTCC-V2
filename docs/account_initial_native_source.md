@@ -22,6 +22,18 @@ issuer rather than a supplied datetime. Historical proof replay never remints a
 current carrier. The public result is always a source diagnostic with `DENY`,
 `owner=None`, `snapshot=None`, no account revision and no order authority.
 
+Both native entrypoints synchronously burn the controlled session before the
+first native sample, host probe or await. A private in-memory claim binds that
+exact session, plan and credential object to the original task, loop, PID and
+thread. Only the matching initial stage's private observer may adopt it once
+for the original B1 bootstrap. A concurrent caller, used boolean, foreign
+observer or changed session cannot substitute for this handoff. Failure and
+cancellation leave the session used; the private claim is removed on exit and
+is never returned, persisted or reused after restart. Ordinary bootstrap and
+materialization retain their existing early one-use behavior. This ownership
+mechanism does not authenticate registration, create an account-complete
+snapshot or grant public-source or order authority.
+
 ## Source phases and original B1 compatibility
 
 The additive private collector/bootstrap observer defaults to `None`. Existing

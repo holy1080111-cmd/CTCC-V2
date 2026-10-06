@@ -4,7 +4,7 @@ import hashlib
 import json
 from collections.abc import Sequence
 from datetime import datetime, timedelta
-from decimal import Decimal
+from decimal import ROUND_HALF_EVEN, Context, Decimal, localcontext
 from itertools import pairwise
 from typing import Literal
 
@@ -168,6 +168,130 @@ class ForwardDirectionLabel(ReplayContract):
             raise ValueError("outcome timestamp must match the declared horizon")
         if self.available_at < self.outcome_at:
             raise ValueError("outcome cannot be available before its timestamp")
+        if self.positive != (self.forward_return > self.positive_threshold):
+            raise ValueError("outcome direction disagrees with its frozen threshold")
+        return self
+
+
+class FrozenFeatureReplayPlanV2(ReplayContract):
+    """Independently pinned feature parameters for a measured-receipt label."""
+
+    schema_version: Literal["ctcc.mie.feature_replay_plan.v2"] = (
+        "ctcc.mie.feature_replay_plan.v2"
+    )
+    decimal_precision: Literal[28] = 28
+    bar_horizon: ForecastHorizon
+    outcome_horizon_seconds: int = Field(ge=1)
+    positive_threshold: Decimal
+    history_bars: int = Field(ge=21, le=10_000)
+    signal_alpha: Decimal = Field(gt=0, le=1)
+    dynamics_window: int = Field(ge=5)
+    momentum_fast_bars: int = Field(ge=2)
+    momentum_slow_bars: int = Field(ge=3)
+    pivot_left_bars: int = Field(ge=1)
+    pivot_right_bars: int = Field(ge=1)
+    feature_version: Literal["mie-gate2-features-v1"] = "mie-gate2-features-v1"
+    authority: Literal["offline_shadow_only"] = "offline_shadow_only"
+    runtime_consumers: Literal[0] = 0
+    execution_authority: Literal[False] = False
+
+    @field_validator("signal_alpha", "positive_threshold")
+    @classmethod
+    def validate_decimals(cls, value: Decimal) -> Decimal:
+        if not value.is_finite():
+            raise ValueError("frozen feature or outcome decimal must be finite")
+        return value
+
+    @model_validator(mode="after")
+    def validate_dependencies(self) -> FrozenFeatureReplayPlanV2:
+        if self.outcome_horizon_seconds % self.bar_horizon.seconds:
+            raise ValueError("frozen outcome horizon must align to the bar horizon")
+        if self.momentum_fast_bars >= self.momentum_slow_bars:
+            raise ValueError("frozen momentum fast window must precede slow window")
+        if self.history_bars < max(
+            5, self.dynamics_window, self.momentum_slow_bars + 1
+        ):
+            raise ValueError("frozen history cannot satisfy feature dependencies")
+        return self
+
+    @property
+    def canonical_sha256(self) -> str:
+        return _canonical_sha256(self.model_dump(mode="json"))
+
+
+class ForwardDirectionLabelV2(ReplayContract):
+    """Offline label whose decision and outcome receipts remain distinct."""
+
+    schema_version: Literal["ctcc.mie.forward_direction_label.v2"] = (
+        "ctcc.mie.forward_direction_label.v2"
+    )
+    instrument_id: str = Field(
+        min_length=3,
+        max_length=64,
+        pattern=r"^[A-Z0-9]+(?:-[A-Z0-9]+)+$",
+    )
+    base_bar_closed_at: datetime
+    base_available_at: datetime
+    decision_at: datetime
+    outcome_at: datetime
+    outcome_available_at: datetime
+    read_at: datetime
+    bar_horizon_seconds: int = Field(ge=1)
+    horizon_seconds: int = Field(ge=1)
+    positive_threshold: Decimal
+    forward_return: Decimal
+    positive: StrictBool
+    base_row_sha256: str = Field(pattern=SHA256_PATTERN)
+    outcome_row_sha256: str = Field(pattern=SHA256_PATTERN)
+    base_bar_sha256: str = Field(pattern=SHA256_PATTERN)
+    outcome_bar_sha256: str = Field(pattern=SHA256_PATTERN)
+    outcome_window_rows_sha256: str = Field(pattern=SHA256_PATTERN)
+    feature_source_rows_sha256: str = Field(pattern=SHA256_PATTERN)
+    feature_replay_sha256: str = Field(pattern=SHA256_PATTERN)
+    feature_plan_sha256: str = Field(pattern=SHA256_PATTERN)
+    authority: Literal["offline_label_only"] = "offline_label_only"
+    runtime_consumers: Literal[0] = 0
+    execution_authority: Literal[False] = False
+
+    @field_validator(
+        "base_bar_closed_at",
+        "base_available_at",
+        "decision_at",
+        "outcome_at",
+        "outcome_available_at",
+        "read_at",
+    )
+    @classmethod
+    def validate_timestamps(cls, value: datetime, info) -> datetime:
+        return require_utc(value, info.field_name)
+
+    @field_validator("positive_threshold", "forward_return")
+    @classmethod
+    def validate_decimals(cls, value: Decimal) -> Decimal:
+        if not value.is_finite():
+            raise ValueError("outcome label decimals must be finite")
+        return value
+
+    @model_validator(mode="after")
+    def validate_label_boundary(self) -> ForwardDirectionLabelV2:
+        if self.horizon_seconds % self.bar_horizon_seconds:
+            raise ValueError("outcome horizon must align to the bar horizon")
+        if self.base_available_at < self.base_bar_closed_at:
+            raise ValueError("base bar cannot be available before it closes")
+        if (
+            not self.base_available_at
+            <= self.decision_at
+            < (self.base_bar_closed_at + timedelta(seconds=self.bar_horizon_seconds))
+        ):
+            raise ValueError("decision must follow base receipt before the next close")
+        if self.outcome_at != self.base_bar_closed_at + timedelta(
+            seconds=self.horizon_seconds
+        ):
+            raise ValueError("outcome timestamp must match the declared horizon")
+        if self.outcome_available_at < self.outcome_at:
+            raise ValueError("outcome cannot be available before its timestamp")
+        if self.read_at < max(self.decision_at, self.outcome_available_at):
+            raise ValueError("outcome was read before decision or availability")
         if self.positive != (self.forward_return > self.positive_threshold):
             raise ValueError("outcome direction disagrees with its frozen threshold")
         return self
@@ -360,4 +484,138 @@ def forward_direction_label(
         positive=forward_return > positive_threshold,
         base_row_sha256=base.source_row_sha256,
         outcome_row_sha256=outcome.source_row_sha256,
+    )
+
+
+def forward_direction_label_v2(
+    records: Sequence[PointInTimeBar],
+    *,
+    replay_snapshot: PointInTimeReplaySnapshot,
+    feature_plan: FrozenFeatureReplayPlanV2,
+    expected_feature_plan_sha256: str,
+    decision_at: datetime,
+    read_at: datetime,
+    bar_horizon: ForecastHorizon,
+    outcome_horizon_seconds: int,
+    positive_threshold: Decimal = D("0"),  # noqa: B008 - D constructs immutable exact Decimal values.
+) -> ForwardDirectionLabelV2:
+    """Label a measured decision only after a pinned source replay and outcome read.
+
+    The plan SHA256 must be retained independently of these caller-supplied
+    objects. This pure function does not authenticate the original market bytes.
+    """
+
+    if type(feature_plan) is not FrozenFeatureReplayPlanV2:
+        raise ReplayValidationError("V2 label requires the exact feature plan")
+    try:
+        plan = FrozenFeatureReplayPlanV2.model_validate(
+            feature_plan.model_dump(mode="python")
+        )
+        snapshot = PointInTimeReplaySnapshot.model_validate(
+            replay_snapshot.model_dump(mode="python")
+        )
+        horizon = ForecastHorizon.model_validate(bar_horizon.model_dump(mode="python"))
+    except (AttributeError, ValidationError, ValueError) as exc:
+        raise ReplayValidationError(
+            "V2 label input contract validation failed"
+        ) from exc
+    if (
+        type(expected_feature_plan_sha256) is not str
+        or plan.canonical_sha256 != expected_feature_plan_sha256
+    ):
+        raise ReplayValidationError("frozen V2 feature plan pin changed")
+    decision = require_utc(decision_at, "decision_at")
+    read = require_utc(read_at, "read_at")
+    if snapshot.as_of != decision:
+        raise ReplayValidationError("feature replay decision time differs")
+    if snapshot.feature_snapshot.feature_version != plan.feature_version:
+        raise ReplayValidationError("feature replay version differs from frozen plan")
+    if (
+        horizon != plan.bar_horizon
+        or outcome_horizon_seconds != plan.outcome_horizon_seconds
+        or positive_threshold != plan.positive_threshold
+    ):
+        raise ReplayValidationError("V2 label definition differs from frozen plan")
+    if (
+        isinstance(outcome_horizon_seconds, bool)
+        or not isinstance(outcome_horizon_seconds, int)
+        or outcome_horizon_seconds < 1
+        or outcome_horizon_seconds % horizon.seconds
+    ):
+        raise ReplayValidationError("outcome horizon must align to the bar horizon")
+    if type(positive_threshold) is not Decimal or not positive_threshold.is_finite():
+        raise ReplayValidationError("outcome threshold must be a finite Decimal")
+
+    base_closed_at = snapshot.data_cutoff
+    target_at = base_closed_at + timedelta(seconds=outcome_horizon_seconds)
+    if (
+        not base_closed_at
+        <= decision
+        < (base_closed_at + timedelta(seconds=horizon.seconds))
+    ):
+        raise ReplayValidationError("decision must precede the next bar close")
+    try:
+        causal_rows = tuple(row for row in records if row.bar.closed_at <= target_at)
+    except (AttributeError, TypeError) as exc:
+        raise ReplayValidationError("V2 label source row validation failed") from exc
+    rows = _validate_records(causal_rows, bar_horizon=horizon)
+    by_closed_at = {row.bar.closed_at: row for row in rows}
+    try:
+        base = by_closed_at[base_closed_at]
+        outcome = by_closed_at[target_at]
+    except KeyError as exc:
+        raise ReplayValidationError(
+            "V2 outcome label requires exact boundary rows"
+        ) from exc
+    if base.instrument_id != snapshot.instrument_id:
+        raise ReplayValidationError("V2 label instrument differs from feature replay")
+    if base.available_at > decision:
+        raise ReplayValidationError("base row was not available at decision time")
+    if any(row.available_at > read for row in rows):
+        raise ReplayValidationError("outcome was read before it became available")
+
+    with localcontext(Context(prec=plan.decimal_precision, rounding=ROUND_HALF_EVEN)):
+        rebuilt = replay_features_at(
+            rows,
+            as_of=decision,
+            bar_horizon=horizon,
+            history_bars=plan.history_bars,
+            signal_alpha=plan.signal_alpha,
+            dynamics_window=plan.dynamics_window,
+            momentum_fast_bars=plan.momentum_fast_bars,
+            momentum_slow_bars=plan.momentum_slow_bars,
+            pivot_left_bars=plan.pivot_left_bars,
+            pivot_right_bars=plan.pivot_right_bars,
+        )
+    if rebuilt != snapshot or rebuilt.replay_sha256 != snapshot.replay_sha256:
+        raise ReplayValidationError("V2 feature replay differs from original source")
+
+    with localcontext(Context(prec=50, rounding=ROUND_HALF_EVEN)):
+        forward_return = outcome.bar.close / base.bar.close - D("1")
+    outcome_window = tuple(
+        row for row in rows if base_closed_at <= row.bar.closed_at <= target_at
+    )
+    return ForwardDirectionLabelV2(
+        instrument_id=base.instrument_id,
+        base_bar_closed_at=base_closed_at,
+        base_available_at=base.available_at,
+        decision_at=decision,
+        outcome_at=target_at,
+        outcome_available_at=outcome.available_at,
+        read_at=read,
+        bar_horizon_seconds=horizon.seconds,
+        horizon_seconds=outcome_horizon_seconds,
+        positive_threshold=positive_threshold,
+        forward_return=forward_return,
+        positive=forward_return > positive_threshold,
+        base_row_sha256=base.source_row_sha256,
+        outcome_row_sha256=outcome.source_row_sha256,
+        base_bar_sha256=_canonical_sha256(base.bar.model_dump(mode="json")),
+        outcome_bar_sha256=_canonical_sha256(outcome.bar.model_dump(mode="json")),
+        outcome_window_rows_sha256=_canonical_sha256(
+            [row.model_dump(mode="json") for row in outcome_window]
+        ),
+        feature_source_rows_sha256=rebuilt.source_rows_sha256,
+        feature_replay_sha256=rebuilt.replay_sha256,
+        feature_plan_sha256=plan.canonical_sha256,
     )

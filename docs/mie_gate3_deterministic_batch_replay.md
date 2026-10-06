@@ -30,6 +30,42 @@ continues enforcing its dependency, purge and embargo rules. No candidate,
 probability model, fitted trial, cost schedule or economic threshold is selected
 by this adapter.
 
+## Measured-receipt forward labels
+
+`ForwardDirectionLabelV2` preserves separate UTC times for the base bar close,
+its measured availability, the decision, the exact outcome bar close, its
+measured availability, and the outcome read. A decision must occur after the
+base receipt and before the next bar closes. The complete outcome series must
+be available by the read time. The original `ForwardDirectionLabel` and
+`forward_direction_label` retain their existing bar-close semantics unchanged.
+
+The V2 label also hashes the modeled base and outcome `FeatureBar` contents
+separately. Its `outcome_window_rows_sha256` covers every validated
+`PointInTimeBar` from the base through the exact outcome, inclusive, in original
+chronological order. Each digest is SHA256 of UTF-8 JSON with sorted object
+keys, compact separators, no NaN and the model's JSON serialization. This
+detects a changed modeled price or intermediate bar even if a caller repeats
+the old self-asserted `source_row_sha256`. It does not establish that the bytes
+came from an exchange: a caller who controls both modeled rows and label can
+regenerate these hashes. An independently anchored raw-row journal and
+previously retained receipt are still required to detect source revision.
+
+`forward_direction_label_v2` requires a separately retained SHA256 pin of
+`FrozenFeatureReplayPlanV2`. That plan fixes the exact bar horizon, outcome
+horizon, positive threshold, feature parameters and Decimal precision before
+an outcome is read. The label function rejects any later change to those
+definitions. It revalidates the source rows and replays their
+features under the plan's fixed Decimal context, then compares the entire
+recomputed snapshot and digest with the supplied snapshot. The snapshot must
+have `as_of=decision_at` and `data_cutoff=base_bar_closed_at`; a changed source,
+feature plan, instrument, missing bar, late base receipt or unrevealed outcome
+is rejected. The resulting label binds the base and outcome row hashes, the
+feature-source hash, replay hash, and plan hash. Neither the function nor a
+caller-created plan hash authenticates raw exchange bytes or independent custody
+of the pin. A controlled receipt journal and protected checkpoint remain
+prerequisites for a real predictive dataset. The label is always offline-only,
+has zero runtime consumers and grants no execution authority.
+
 For a future fixed multi-instrument plan,
 `grouped_purged_walk_forward_folds` splits complete event-time groups rather than
 individual symbol rows. Every declared symbol must occur exactly once at each

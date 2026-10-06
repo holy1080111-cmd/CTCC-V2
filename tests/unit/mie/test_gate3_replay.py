@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, localcontext
 
 import pytest
 from pydantic import ValidationError
@@ -10,9 +11,12 @@ from pydantic import ValidationError
 from app.mie.contracts import ForecastHorizon
 from app.mie.features import FeatureBar
 from app.mie.validation import (
+    ForwardDirectionLabelV2,
+    FrozenFeatureReplayPlanV2,
     PointInTimeBar,
     ReplayValidationError,
     forward_direction_label,
+    forward_direction_label_v2,
     replay_features_at,
     replay_features_walk_forward,
 )
@@ -24,6 +28,18 @@ HORIZON = ForecastHorizon(label="15m", seconds=900)
 
 def digest(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def canonical_digest(value: object) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            value,
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
 
 
 def replay_rows(
@@ -262,3 +278,312 @@ def test_forward_label_requires_exact_aligned_boundary_rows() -> None:
             bar_horizon=HORIZON,
             outcome_horizon_seconds=HORIZON.seconds,
         )
+
+
+def v2_feature_plan() -> FrozenFeatureReplayPlanV2:
+    return FrozenFeatureReplayPlanV2(
+        bar_horizon=HORIZON,
+        outcome_horizon_seconds=HORIZON.seconds * 2,
+        positive_threshold=D("0"),
+        history_bars=24,
+        signal_alpha=D("0.25"),
+        dynamics_window=21,
+        momentum_fast_bars=5,
+        momentum_slow_bars=20,
+        pivot_left_bars=2,
+        pivot_right_bars=2,
+    )
+
+
+def delayed_v2_source():
+    rows = list(replay_rows(40))
+    base = rows[29]
+    target = rows[31]
+    decision = base.bar.closed_at + timedelta(minutes=3)
+    read = target.bar.closed_at + timedelta(minutes=4)
+    rows[29] = base.model_copy(update={"available_at": decision})
+    rows[31] = target.model_copy(update={"available_at": read})
+    return tuple(rows), decision, read
+
+
+def v2_label(rows, decision, read, *, snapshot=None, plan=None):
+    frozen = v2_feature_plan() if plan is None else plan
+    replay = (
+        replay_features_at(
+            rows,
+            as_of=decision,
+            bar_horizon=HORIZON,
+            history_bars=frozen.history_bars,
+        )
+        if snapshot is None
+        else snapshot
+    )
+    return forward_direction_label_v2(
+        rows,
+        replay_snapshot=replay,
+        feature_plan=frozen,
+        expected_feature_plan_sha256=frozen.canonical_sha256,
+        decision_at=decision,
+        read_at=read,
+        bar_horizon=HORIZON,
+        outcome_horizon_seconds=HORIZON.seconds * 2,
+    )
+
+
+def test_v2_label_keeps_actual_decision_and_outcome_receipts_separate() -> None:
+    rows, decision, read = delayed_v2_source()
+    label = v2_label(rows, decision, read)
+    repeated = v2_label(rows, decision, read)
+
+    assert type(label) is ForwardDirectionLabelV2
+    assert label == repeated
+    assert label.base_bar_closed_at == rows[29].bar.closed_at
+    assert label.base_available_at == label.decision_at == decision
+    assert label.outcome_at == rows[31].bar.closed_at
+    assert label.outcome_available_at == label.read_at == read
+    assert label.feature_plan_sha256 == v2_feature_plan().canonical_sha256
+    assert label.base_bar_sha256 == canonical_digest(
+        rows[29].bar.model_dump(mode="json")
+    )
+    assert label.outcome_bar_sha256 == canonical_digest(
+        rows[31].bar.model_dump(mode="json")
+    )
+    assert label.outcome_window_rows_sha256 == canonical_digest(
+        [row.model_dump(mode="json") for row in rows[29:32]]
+    )
+    assert ForwardDirectionLabelV2.model_validate_json(label.model_dump_json()) == label
+    assert (
+        label.feature_source_rows_sha256
+        == replay_features_at(
+            rows,
+            as_of=decision,
+            bar_horizon=HORIZON,
+            history_bars=24,
+        ).source_rows_sha256
+    )
+    assert label.authority == "offline_label_only"
+    assert label.runtime_consumers == 0
+    assert label.execution_authority is False
+    frozen_snapshot = replay_features_at(
+        rows,
+        as_of=decision,
+        bar_horizon=HORIZON,
+        history_bars=24,
+    )
+    with localcontext() as context:
+        context.prec = 4
+        assert v2_label(rows, decision, read, snapshot=frozen_snapshot) == label
+    payload = label.model_dump(mode="python")
+    payload["execution_authority"] = True
+    with pytest.raises(ValidationError):
+        ForwardDirectionLabelV2.model_validate(payload)
+
+    # The old API deliberately retains its exact bar-close decision semantics.
+    with pytest.raises(ReplayValidationError, match="causally available"):
+        forward_direction_label(
+            rows,
+            feature_cutoff=rows[29].bar.closed_at,
+            read_at=read,
+            bar_horizon=HORIZON,
+            outcome_horizon_seconds=HORIZON.seconds * 2,
+        )
+
+
+def test_v2_label_rejects_decision_before_receipt_or_after_next_close() -> None:
+    rows, decision, read = delayed_v2_source()
+    snapshot = replay_features_at(
+        rows,
+        as_of=decision,
+        bar_horizon=HORIZON,
+        history_bars=24,
+    )
+
+    with pytest.raises(ReplayValidationError, match="decision time differs"):
+        v2_label(
+            rows,
+            rows[29].bar.closed_at,
+            read,
+            snapshot=snapshot,
+        )
+    late_decision = rows[30].bar.closed_at
+    late_snapshot = snapshot.model_copy(
+        update={
+            "as_of": late_decision,
+            "feature_snapshot": snapshot.feature_snapshot.model_copy(
+                update={"as_of": late_decision}
+            ),
+        }
+    )
+    with pytest.raises(ReplayValidationError, match="next bar close"):
+        v2_label(rows, late_decision, read, snapshot=late_snapshot)
+
+
+def test_v2_label_rejects_unavailable_or_missing_outcome() -> None:
+    rows, decision, read = delayed_v2_source()
+    snapshot = replay_features_at(
+        rows,
+        as_of=decision,
+        bar_horizon=HORIZON,
+        history_bars=24,
+    )
+
+    with pytest.raises(ReplayValidationError, match="before it became available"):
+        v2_label(rows, decision, read - timedelta(microseconds=1), snapshot=snapshot)
+    late_intermediate = list(rows)
+    late_intermediate[30] = rows[30].model_copy(
+        update={"available_at": read + timedelta(seconds=1)}
+    )
+    with pytest.raises(ReplayValidationError, match="before it became available"):
+        v2_label(tuple(late_intermediate), decision, read, snapshot=snapshot)
+    with pytest.raises(ReplayValidationError, match="exact boundary rows"):
+        v2_label(
+            (*rows[:31], *rows[32:]),
+            decision,
+            read,
+            snapshot=snapshot,
+        )
+
+
+def test_v2_label_recomputes_pinned_snapshot_from_original_source() -> None:
+    rows, decision, read = delayed_v2_source()
+    snapshot = replay_features_at(
+        rows,
+        as_of=decision,
+        bar_horizon=HORIZON,
+        history_bars=24,
+    )
+    changed = list(rows)
+    changed[20] = rows[20].model_copy(
+        update={"source_row_sha256": digest("revised-source-row-20")}
+    )
+    with pytest.raises(ReplayValidationError, match="differs from original source"):
+        v2_label(tuple(changed), decision, read, snapshot=snapshot)
+
+    forged_snapshot = snapshot.model_copy(update={"source_rows_sha256": "0" * 64})
+    with pytest.raises(ReplayValidationError, match="differs from original source"):
+        v2_label(rows, decision, read, snapshot=forged_snapshot)
+
+    changed_parameters = v2_feature_plan().model_copy(update={"signal_alpha": D("0.5")})
+    with pytest.raises(ReplayValidationError, match="differs from original source"):
+        v2_label(
+            rows,
+            decision,
+            read,
+            snapshot=snapshot,
+            plan=changed_parameters,
+        )
+
+    frozen = v2_feature_plan()
+    with pytest.raises(ReplayValidationError, match="plan pin changed"):
+        forward_direction_label_v2(
+            rows,
+            replay_snapshot=snapshot,
+            feature_plan=frozen,
+            expected_feature_plan_sha256="0" * 64,
+            decision_at=decision,
+            read_at=read,
+            bar_horizon=HORIZON,
+            outcome_horizon_seconds=HORIZON.seconds * 2,
+        )
+
+
+def test_v2_label_definition_is_frozen_before_outcome_read() -> None:
+    rows, decision, read = delayed_v2_source()
+    frozen = v2_feature_plan()
+    snapshot = replay_features_at(
+        rows,
+        as_of=decision,
+        bar_horizon=HORIZON,
+        history_bars=24,
+    )
+    common = {
+        "replay_snapshot": snapshot,
+        "feature_plan": frozen,
+        "expected_feature_plan_sha256": frozen.canonical_sha256,
+        "decision_at": decision,
+        "read_at": read,
+        "bar_horizon": HORIZON,
+    }
+    with pytest.raises(ReplayValidationError, match="definition differs"):
+        forward_direction_label_v2(
+            rows,
+            outcome_horizon_seconds=HORIZON.seconds * 3,
+            **common,
+        )
+    with pytest.raises(ReplayValidationError, match="definition differs"):
+        forward_direction_label_v2(
+            rows,
+            outcome_horizon_seconds=HORIZON.seconds * 2,
+            positive_threshold=D("0.01"),
+            **common,
+        )
+    different_bar = v2_feature_plan().model_copy(
+        update={"bar_horizon": ForecastHorizon(label="900s", seconds=900)}
+    )
+    with pytest.raises(ReplayValidationError, match="definition differs"):
+        forward_direction_label_v2(
+            rows,
+            replay_snapshot=snapshot,
+            feature_plan=different_bar,
+            expected_feature_plan_sha256=different_bar.canonical_sha256,
+            decision_at=decision,
+            read_at=read,
+            bar_horizon=HORIZON,
+            outcome_horizon_seconds=HORIZON.seconds * 2,
+        )
+
+
+def test_v2_label_ignores_future_mutations_beyond_frozen_outcome() -> None:
+    rows, decision, read = delayed_v2_source()
+    snapshot = replay_features_at(
+        rows,
+        as_of=decision,
+        bar_horizon=HORIZON,
+        history_bars=24,
+    )
+    changed = list(rows)
+    changed[35] = rows[35].model_copy(
+        update={"source_row_sha256": digest("future-row-after-outcome")}
+    )
+    assert v2_label(rows, decision, read, snapshot=snapshot) == v2_label(
+        tuple(changed), decision, read, snapshot=snapshot
+    )
+
+
+def test_v2_label_hashes_actual_outcome_content_even_if_claimed_hash_is_reused() -> (
+    None
+):
+    rows, decision, read = delayed_v2_source()
+    snapshot = replay_features_at(
+        rows,
+        as_of=decision,
+        bar_horizon=HORIZON,
+        history_bars=24,
+    )
+    original = v2_label(rows, decision, read, snapshot=snapshot)
+    changed = list(rows)
+    changed[31] = rows[31].model_copy(
+        update={
+            "bar": rows[31].bar.model_copy(
+                update={"close": rows[31].bar.close + D("0.001")}
+            )
+        }
+    )
+    revised = v2_label(tuple(changed), decision, read, snapshot=snapshot)
+
+    assert revised.outcome_row_sha256 == original.outcome_row_sha256
+    assert revised.outcome_bar_sha256 != original.outcome_bar_sha256
+    assert revised.outcome_window_rows_sha256 != original.outcome_window_rows_sha256
+    assert revised.forward_return != original.forward_return
+    assert revised.base_bar_sha256 == original.base_bar_sha256
+
+    changed[30] = rows[30].model_copy(
+        update={
+            "bar": rows[30].bar.model_copy(
+                update={"close": rows[30].bar.close + D("0.001")}
+            )
+        }
+    )
+    intermediate = v2_label(tuple(changed), decision, read, snapshot=snapshot)
+    assert intermediate.outcome_bar_sha256 == revised.outcome_bar_sha256
+    assert intermediate.outcome_window_rows_sha256 != revised.outcome_window_rows_sha256

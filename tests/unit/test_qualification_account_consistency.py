@@ -158,7 +158,14 @@ def test_documented_anchor_balance_shape_does_not_require_cash_balance():
 
     source = packet(changes=change)
     assert reconcile(source).findings == ()
-    assert materialize(source=source, supplied=snapshot_inputs()).snapshot is not None
+    recorded = materialize(source=source, supplied=snapshot_inputs())
+    baseline = materialize(supplied=snapshot_inputs())
+    assert (recorded.equity, recorded.available_margin) == (
+        baseline.equity,
+        baseline.available_margin,
+    )
+    assert recorded.incomplete_reasons == baseline.incomplete_reasons
+    assert recorded.snapshot is None
 
 
 @pytest.mark.parametrize(
@@ -289,16 +296,15 @@ def test_materializer_integrates_crosschecks_and_refuses_even_incomplete_snapsho
     assert result.account_complete is result.execution_authority is False
 
 
-def test_good_recorded_snapshot_still_has_all_four_incomplete_stamps():
+def test_supplied_local_seeds_cannot_issue_snapshot_from_incomplete_account():
     result = materialize(supplied=snapshot_inputs())
-    assert result.snapshot is not None
-    for name in (
-        "balance_stamp",
-        "positions_stamp",
-        "history_stamp",
-        "reservations_stamp",
-    ):
-        assert getattr(result.snapshot, name).complete is False
+    assert result.snapshot is None
+    assert {
+        "source_fields_missing",
+        "source_authenticity_unverified",
+        "history_ingestion_watermark_unverified",
+        "local_uncertain_ledger_missing",
+    } <= set(result.incomplete_reasons)
     assert result.account_complete is result.source_authenticity_verified is False
 
 

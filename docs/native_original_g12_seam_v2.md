@@ -1,5 +1,28 @@
 # Native original public handoff before G12
 
+## Frozen Demo public-route policy (offline only)
+
+`demo_public_origin_policy_v2.freeze_demo_public_origin_policy_v2` now records
+the exact reviewed regional REST/WS origins, TLS hostnames, GET path inventory,
+role-specific headers and `x-simulated-trading: 1` as bounded canonical V2 bytes.
+The [OKX API guide](https://www.okx.com/docs-v5/) documents the regional
+Demo domains and simulated-trading header; its
+[2026-09-30 WebSocket change](https://www.okx.com/docs-v5/log_en/) says port
+443 already works and port 8443 will stop accepting connections on
+2026-10-31. The policy pins explicit `:443` endpoints.
+Its replay requires an independently selected expected region and rejects changed
+origins, Production WS, omitted simulated-trading headers, noncanonical bytes and
+caller claims of authenticated source, account, or execution authority. The V2
+table is frozen separately from later route policy so old V2 policy bytes remain
+replayable after a future route revision; a changed current route cannot issue a
+new V2 record. Existing public capture packets and receipts are unchanged.
+
+This is a route **policy** only. It observes no credential, network request,
+response or account registration; a caller can choose a reviewed region and
+produce matching policy bytes. The native V2 Demo public-source pre-I/O hard DENY
+and both Demo/Live order hard DENYs remain in force. Matching policy bytes do not
+unlock G1, G12, recheck, reservation, intent, or execution.
+
 `capture_native_original_for_g12_v2` is a diagnostic-only entry in the post-G12
 runtime module. It accepts an empty initial capture root, one reviewed instrument,
 and the fixed V2 public collection policy. It accepts no market snapshot, run,

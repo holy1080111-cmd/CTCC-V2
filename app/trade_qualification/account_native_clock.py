@@ -20,6 +20,7 @@ from app.trade_qualification.account_capture_journal import _OwnedAccountJournal
 _ISSUER = object()
 _STAGES = WeakKeyDictionary()
 _OBSERVERS = WeakKeyDictionary()
+_SESSION_CLAIMS = {}
 _B1_FINALIZER_CODES = {
     "source": _OwnedAccountJournal.close_acquisition.__code__,
     "journal": _OwnedAccountJournal.finish.__code__,
@@ -86,12 +87,87 @@ def _sample(stage, *, _clock_dependency=False):
     return stamp
 
 
+def _session_claim(session):
+    from app.trade_qualification.account_runtime import ControlledDemoAccountSession
+
+    if type(session) is not ControlledDemoAccountSession:
+        raise NativeAccountClockError("native_account_session_claim_invalid")
+    value = _SESSION_CLAIMS.get(session)
+    task = asyncio.current_task()
+    if (
+        value is None
+        or task is None
+        or task.cancelling()
+        or value["parent"] is not task
+        or value["loop"] is not asyncio.get_running_loop()
+        or value["pid"] != os.getpid()
+        or value["thread"] != get_ident()
+        or session._used is not True
+        or session._plan is not value["plan"]
+        or type(session._pin) is not str
+        or session._pin != value["plan_sha256"]
+        or session._credentials is not value["credentials"]
+    ):
+        raise NativeAccountClockError("native_account_session_claim_invalid")
+    return value
+
+
 @contextmanager
-def _initial_stage(*, plan_sha256, scope_sha256):
+def _claim_initial_session(session):
+    """Burn once before native sampling or await; no transferable claim exists."""
+    from app.trade_qualification.account_runtime import ControlledDemoAccountSession
+
+    task = asyncio.current_task()
+    if (
+        type(session) is not ControlledDemoAccountSession
+        or session._used is not False
+        or session in _SESSION_CLAIMS
+        or task is None
+        or task.cancelling()
+    ):
+        raise NativeAccountClockError("native_account_session_claim_invalid")
+    value = {
+        "parent": task,
+        "loop": asyncio.get_running_loop(),
+        "pid": os.getpid(),
+        "thread": get_ident(),
+        "plan": session._plan,
+        "plan_sha256": session._pin,
+        "credentials": session._credentials,
+        "bootstrap_used": False,
+    }
+    session._used = True
+    _SESSION_CLAIMS[session] = value
+    try:
+        yield
+    finally:
+        _SESSION_CLAIMS.pop(session, None)
+
+
+def _claim_collector_session(observer, session):
+    """Adopt only the initial issuer's exact session once in its parent task."""
+    if type(observer) is not _PhaseObserver:
+        raise NativeAccountClockError("native_account_session_claim_invalid")
+    value = _state(_OBSERVERS.get(observer))
+    claim = value.get("session_claim")
+    if claim is None or session is not value["session"] or claim["bootstrap_used"]:
+        raise NativeAccountClockError("native_account_session_claim_invalid")
+    claim["bootstrap_used"] = True
+    if _session_claim(session) is not claim:
+        raise NativeAccountClockError("native_account_session_claim_invalid")
+
+
+@contextmanager
+def _initial_stage(*, plan_sha256, scope_sha256, _claimed_session=None):
     """Internal issuer. No caller callback, boundary stamp or proof is accepted."""
     task = asyncio.current_task()
     if task is None or task.cancelling():
         raise NativeAccountClockError("native_account_stage_context_invalid")
+    claim = None
+    if _claimed_session is not None:
+        claim = _session_claim(_claimed_session)
+        if claim["plan_sha256"] != plan_sha256:
+            raise NativeAccountClockError("native_account_session_claim_invalid")
     started = clock.native_stamp()
     stage = object.__new__(_InitialAccountStage)
     observer = object.__new__(_PhaseObserver)
@@ -114,6 +190,8 @@ def _initial_stage(*, plan_sha256, scope_sha256):
         "finalizers": set(),
         "finalization_witnesses": [],
         "observer": observer,
+        "session_claim": claim,
+        "session": _claimed_session,
     }
 
     # Exact private function identity is checked by the source adapter. Its

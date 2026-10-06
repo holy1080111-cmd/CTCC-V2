@@ -193,9 +193,14 @@ async def companion_fixture(
         native.clock, "native_os_clock", lambda: synthetic_host(samples)
     )
     scope = LedgerScope(account_id=UID, settlement_currency="USDT")
-    with native._initial_stage(
-        plan_sha256=session._pin, scope_sha256=proof.scope_sha256(scope)
-    ) as stage:
+    with (
+        native._claim_initial_session(session),
+        native._initial_stage(
+            plan_sha256=session._pin,
+            scope_sha256=proof.scope_sha256(scope),
+            _claimed_session=session,
+        ) as stage,
+    ):
         state = native._state(stage)
         files = {"host-before.json": native._host_observation(stage, "before")}
         plan = proof._exchange_plan(state["started"])

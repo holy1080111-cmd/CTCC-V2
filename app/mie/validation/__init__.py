@@ -129,10 +129,13 @@ from app.mie.validation.qualification import (
 )
 from app.mie.validation.replay import (
     ForwardDirectionLabel,
+    ForwardDirectionLabelV2,
+    FrozenFeatureReplayPlanV2,
     PointInTimeBar,
     PointInTimeReplaySnapshot,
     ReplayValidationError,
     forward_direction_label,
+    forward_direction_label_v2,
     replay_features_at,
     replay_features_walk_forward,
 )
@@ -182,6 +185,8 @@ __all__ = [
     "FeatureSpec",
     "FormalEvaluationReservation",
     "ForwardDirectionLabel",
+    "ForwardDirectionLabelV2",
+    "FrozenFeatureReplayPlanV2",
     "FrozenGate3Artifact",
     "FrozenParameter",
     "FrozenTrial",
@@ -240,6 +245,7 @@ __all__ = [
     "evaluate_costed_return_path",
     "expected_calibration_error",
     "forward_direction_label",
+    "forward_direction_label_v2",
     "freeze_archive_batch_manifest",
     "freeze_archive_batch_plan",
     "freeze_archive_observation_receipt",

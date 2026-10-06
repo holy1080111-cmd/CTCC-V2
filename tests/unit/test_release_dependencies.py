@@ -203,7 +203,7 @@ v=importlib.util.module_from_spec(spec);spec.loader.exec_module(v)
 sys.path[:]=[p for p in sys.path if 'site-packages' not in p]
 sys.path.insert(1,SITE_PATH)
 rows=v._dependency_inventory()
-source=[r for r in rows if pathlib.Path(r['metadata_path']).resolve()==pathlib.Path.cwd()/'ctcc_v2.egg-info']
+source=[r for r in rows if pathlib.Path(r['metadata_path']).resolve()==(pathlib.Path.cwd()/'ctcc_v2.egg-info').resolve()]
 assert len(source)==1,rows
 installed=[r for r in rows if r not in source]
 contract={'dependencies':[[r['name'],r['version']] for r in installed],'python':sys.version}

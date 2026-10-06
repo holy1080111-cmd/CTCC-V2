@@ -423,6 +423,11 @@ async def _recheck_original_db_chain(
 async def _capture_initial_current(stage, session, session_factory, root):
     """Only an active exact initial issuer reaches this actual acquisition."""
     state = native._state(stage)
+    if (
+        state.get("session_claim") is not native._session_claim(session)
+        or state.get("session") is not session
+    ):
+        raise proof.NativeAccountProofError("native_account_initial_session_mismatch")
     owned_clock = state["clock"]
     repository = QualificationLedgerRepository(session_factory, clock=owned_clock)
     journal_repository = AccountCaptureJournalRepository(
@@ -689,9 +694,14 @@ async def capture_initial_native_account(session, *, session_factory, proof_root
     )
     carrier = None
     try:
-        with native._initial_stage(
-            plan_sha256=session._pin, scope_sha256=proof.scope_sha256(scope)
-        ) as stage:
+        with (
+            native._claim_initial_session(session),
+            native._initial_stage(
+                plan_sha256=session._pin,
+                scope_sha256=proof.scope_sha256(scope),
+                _claimed_session=session,
+            ) as stage,
+        ):
             state = native._state(stage)
             carrier = await _capture_initial_current(
                 stage, session, session_factory, proof_root
@@ -775,9 +785,14 @@ async def capture_native_current_history_join(
     )
     carrier = None
     try:
-        with native._initial_stage(
-            plan_sha256=session._pin, scope_sha256=proof.scope_sha256(scope)
-        ) as stage:
+        with (
+            native._claim_initial_session(session),
+            native._initial_stage(
+                plan_sha256=session._pin,
+                scope_sha256=proof.scope_sha256(scope),
+                _claimed_session=session,
+            ) as stage,
+        ):
             state = native._state(stage)
             carrier = await _capture_initial_current(
                 stage, session, session_factory, proof_root

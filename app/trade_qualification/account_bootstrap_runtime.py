@@ -78,9 +78,20 @@ async def _collect(
 ):
     if type(session) is not runtime.ControlledDemoAccountSession:
         raise runtime.AccountRuntimeError("account_runtime_invalid")
-    if session._used:
-        raise runtime.AccountRuntimeError("account_session_already_used")
-    session._used = True
+    if _native_observer is None:
+        if session._used:
+            raise runtime.AccountRuntimeError("account_session_already_used")
+        session._used = True
+    else:
+        from app.trade_qualification.account_native_clock import (
+            NativeAccountClockError,
+            _claim_collector_session,
+        )
+
+        try:
+            _claim_collector_session(_native_observer, session)
+        except NativeAccountClockError:
+            raise runtime.AccountRuntimeError("account_runtime_invalid") from None
     if type(repository) is not QualificationLedgerRepository:
         raise runtime.AccountRuntimeError("owned_qualification_repository_required")
     selected = capture._checked_plan(session._plan, session._pin)

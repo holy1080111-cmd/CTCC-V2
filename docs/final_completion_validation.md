@@ -3392,3 +3392,72 @@ same source error. The subsequent source places the names in canonical order;
 local whole-project Ruff check and format check both pass. This does not turn
 the failed `7ed9f5b` job into a PASS; the corrected exact source still needs
 its own remote run and all remaining stages.
+
+## 2026-10-06 exact-source checkpoint and Windows failure diagnosis
+
+The corrected source `98af1ee24bf015ab6149f7ed7e6e7597573d9ef8` has tree
+`d40f1766896d6713f823e0819708781dfb2df534`. Its verified source archive,
+complete Git bundle, identity record, and scoped Git-object pattern scan are
+retained under `../validation-results/ctcc-source-98af1ee-20261006/`. The
+archive SHA256 is `9d98564c35f0194f887125e45820b17ef298776fe3d06341b5e68da3c4c4baed`;
+the bundle SHA256 is `604f0bb043e801fb391bbe0e8655892d4879fe2347db7d47f72cb2c16f9b393f`.
+The archive reconstructed all 892 Git blobs and the recorded tree. The pattern
+scan found no high-confidence key prefixes in 2,167 local Git blobs; it does
+not cover unprefixed secrets or all report, log, ZIP and remote-only contents.
+Full validation and execution authority remain false. Matching remote
+validation run [`37394781841`](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/37394781841)
+was still running when this section was written; no pass is inferred.
+
+The older `dde5823` remote Windows run
+[`37385413695`](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/37385413695)
+completed 13,249 tests with 13,217 passed, 29 skipped, three failed and zero
+errors. Its artifact source/tree and manifest match that older commit, so the
+result is a source-bound FAIL, not current-source acceptance. Two failed tests
+expected a formal portfolio snapshot from a synthetic account whose packet and
+mapping report unresolved source/history/local-hold gaps. Current materializer
+policy correctly keeps that snapshot absent. The local follow-up assertions now
+preserve their balance-shape and fail-closed intent; the 100-case consistency
+module passes on the working source. The third failure compared a resolved
+Windows temporary source path with its unresolved 8.3-path spelling in a test;
+the local follow-up resolves both operands. The dependency verifier and its
+extra-metadata rejection are unchanged; the 17 executable cases in that test
+module pass locally, with two existing skips. These local targeted results do
+not convert the old remote failure or the still-running exact-source run into
+a Windows full-regression pass.
+
+The next working-source slice adds a private, one-use native Demo account
+session claim before its first host sample or await. Both initial-current and
+current/history entrypoints reject a concurrent second owner; cancellation or
+first-sample failure burns the session. The ordinary bootstrap path retains its
+existing early-burn behavior, while only the matching private native observer
+may adopt the original claim once. The final scoped account selection passed
+79 cases, including 14 new ownership and failure-path cases, with no real
+account, database or exchange call. Its source/test receipt is
+`../validation-results/account-native-session-claim-source-and-tests-20261006.json`
+(SHA256 `689f0d5a0c3c0e1976015d75e33197c8ba66e3f163924c555763be0cafaae2d4`).
+This is not account-source authentication, region proof or execution permission.
+
+A separate offline MIE V2 label now distinguishes measured base receipt,
+decision, outcome availability and read time; its pinned plan fixes feature
+parameters, bar/outcome horizons and label threshold. Replayed model-content
+hashes make later bar changes visible without treating caller-provided row
+hashes as authenticated exchange facts. Its 57 focused replay-adjacent tests
+and the broader Windows MIE unit directory passed locally. A versioned Demo
+public-route policy likewise records reviewed regional routes but remains a
+hard DENY and grants no public-source or order authority; its focused source
+tests passed locally. These additions are not MIE Gate 3, OOS, Demo or Live
+acceptance, and they still require exact-source remote regression.
+
+At 2026-10-06 01:11 UTC, a bounded unauthenticated production-public full
+collector diagnostic returned `public_component_capture_failed`, with the
+quote leaf reporting `public_quote_capture_invalid`; no packet or raw source
+archive was published. In a separate quote-only diagnostic at 01:13 UTC,
+ticker, mark and funding leaf records validated, but funding's reported source
+time was about 51 seconds before receipt while that diagnostic used a common
+five-second age limit. The final quote record still rejected. This local
+observation is not a proof that the earlier September `future_component_timestamp`
+has been repaired for every source. Do not widen the ticker/mark age or rewrite
+funding timestamps to make the batch pass; component-specific semantics and
+source-owned raw capture still need validation. W32Time was observed
+Running/Automatic with an NTP sync from `time.windows.com` at 2026-10-06
+09:02:36 Asia/Taipei, but host sync alone is not R5 acceptance.
