@@ -24,6 +24,41 @@ Clock = Callable[[], datetime]
 _ALGO_ORDER_TYPES = ("conditional", "oco", "trigger", "move_order_stop")
 _PRIVATE_PAGE_SIZE = 100
 _PRIVATE_MAX_PAGES = 16
+_CANCEL_ALL_AFTER_PATH = "/api/v5/trade/cancel-all-after"
+
+
+def _validate_cancel_all_after_dispatch(
+    *, method: str, path: str, request_path: str, body_text: str
+) -> None:
+    """Validate the immutable bytes-to-send after signing and before HTTP IO."""
+    if method.upper() != "POST" or path != _CANCEL_ALL_AFTER_PATH:
+        return
+    try:
+        payload = json.loads(body_text)
+    except (TypeError, ValueError) as exc:
+        raise OkxPrivateApiError(
+            "Cancel All After payload is invalid",
+            code="cancel_all_after_payload_rejected",
+        ) from exc
+    if (
+        request_path != path
+        or type(payload) is not dict
+        or set(payload) not in ({"timeOut"}, {"timeOut", "tag"})
+        or type(payload.get("timeOut")) is not str
+        or re.fullmatch(r"[1-9][0-9]{1,2}", payload["timeOut"]) is None
+        or not 10 <= int(payload["timeOut"]) <= 120
+        or (
+            "tag" in payload
+            and (
+                type(payload["tag"]) is not str
+                or re.fullmatch(r"[A-Za-z0-9]{1,16}", payload["tag"]) is None
+            )
+        )
+    ):
+        raise OkxPrivateApiError(
+            "Cancel All After payload is invalid",
+            code="cancel_all_after_payload_rejected",
+        )
 
 
 def _validated_origin(value: str, hosts: frozenset[str]) -> str:
@@ -216,6 +251,15 @@ class _OkxPrivateRestClientBase:
                     )
                     self._validate_external_client(client)
                     self._before_send(method=method, path=path)
+                    # `body_text` is the same immutable string signed above and
+                    # passed to HTTPX below. A caller's mutable dict cannot
+                    # change the CAA timeout after this final dispatch check.
+                    _validate_cancel_all_after_dispatch(
+                        method=method,
+                        path=path,
+                        request_path=request_path,
+                        body_text=body_text,
+                    )
                     response = await client.request(
                         method.upper(),
                         request_url,

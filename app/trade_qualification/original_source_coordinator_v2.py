@@ -27,7 +27,9 @@ from app.domain.source_primitives import (
 from app.exchange.okx.symbols import REVIEWED_DEMO_INSTRUMENT_IDS
 from app.trade_qualification import account_capture as capture
 from app.trade_qualification import account_native_runtime as account_native
+from app.trade_qualification import data_v2
 from app.trade_qualification import demo_public_origin_preflight as origin_preflight
+from app.trade_qualification import native_original_g1_policy_v1 as native_g1
 from app.trade_qualification import public_market_collector_v2 as public_v2
 from app.trade_qualification import qualification_runtime as initial
 from app.trade_qualification.account_observation_index import (
@@ -179,6 +181,173 @@ class InitialOwnedSourcesDiagnosticV2:
         return False
 
 
+_V3_G1_FIELDS = frozenset(
+    {
+        "g1_policy_record_sha256",
+        "g1_policy_sha256",
+        "g1_source_sha256",
+        "g1_result_sha256",
+        "g1_result_code",
+        "g1_evaluated_at",
+        "g1_evaluated",
+        "g1_passed",
+    }
+)
+_V3_CODES = {
+    "original_source_public_unavailable",
+    "original_source_account_unavailable",
+    "original_g1_unavailable",
+    "original_g1_rejected",
+    "original_sources_g1_observed_candidate_required",
+}
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class InitialOwnedSourcesDiagnosticV3:
+    """Replayed native G1 arithmetic, still no original candidate or authority."""
+
+    receipt_json: bytes
+
+    def __post_init__(self):
+        try:
+            if (
+                type(self.receipt_json) is not bytes
+                or not 0 < len(self.receipt_json) <= _MAX_RECEIPT_BYTES
+            ):
+                raise ValueError
+            raw = decode(self.receipt_json, _MAX_RECEIPT_BYTES)
+            if (
+                type(raw) is not dict
+                or set(raw) != _RECEIPT_FIELDS | _V3_G1_FIELDS
+                or canonical(raw) != self.receipt_json
+                or raw["schema_version"] != "ctcc.original_owned_sources_diagnostic.v3"
+                or type(raw["code"]) is not str
+                or raw["code"] not in _V3_CODES
+                or raw["admission"] != "DENY"
+                or any(raw[name] is not False for name in _FALSE_FIELDS)
+                or raw["g1_policy_record_sha256"] != native_g1.POLICY_RECORD_SHA256
+                or raw["g1_policy_sha256"] != native_g1.DATA_POLICY_SHA256
+                or type(raw["g1_evaluated"]) is not bool
+                or type(raw["g1_passed"]) is not bool
+            ):
+                raise ValueError
+            # Reuse the old exact receipt checks without altering V2 bytes.
+            base = {name: raw[name] for name in _RECEIPT_FIELDS}
+            base["schema_version"] = "ctcc.original_owned_sources_diagnostic.v2"
+            base["code"] = (
+                "original_source_public_unavailable"
+                if raw["code"] == "original_source_public_unavailable"
+                else "original_sources_observed_g1_candidate_required"
+                if raw["code"] == "original_sources_g1_observed_candidate_required"
+                else "original_source_account_unavailable"
+            )
+            InitialOwnedSourcesDiagnosticV2(canonical(base))
+            for name in ("g1_policy_record_sha256", "g1_policy_sha256"):
+                _digest(raw[name])
+            source = raw["g1_source_sha256"]
+            if source is not None and (_digest(source) != raw["public_packet_sha256"]):
+                raise ValueError
+            if raw["public_packet_sha256"] is None and source is not None:
+                raise ValueError
+            if raw["public_packet_sha256"] is not None and source is None:
+                raise ValueError
+            if raw["g1_evaluated"]:
+                _digest(raw["g1_result_sha256"])
+                if (
+                    source is None
+                    or raw["g1_evaluated_at"] is None
+                    or type(raw["g1_result_code"]) is not str
+                    or not 1 <= len(raw["g1_result_code"]) <= 96
+                    or any(
+                        char not in "abcdefghijklmnopqrstuvwxyz0123456789_"
+                        for char in raw["g1_result_code"]
+                    )
+                    or raw["g1_passed"] != (raw["g1_result_code"] == "passed")
+                ):
+                    raise ValueError
+                _utc_text(raw["g1_evaluated_at"])
+            elif (
+                any(
+                    raw[name] is not None
+                    for name in (
+                        "g1_result_sha256",
+                        "g1_result_code",
+                        "g1_evaluated_at",
+                    )
+                )
+                or raw["g1_passed"]
+            ):
+                raise ValueError
+            if raw["code"] == "original_g1_unavailable" and (
+                source is None
+                or raw["g1_evaluated"]
+                or raw["account_receipt_sha256"] is not None
+                or raw["account_packet_sha256"] is not None
+            ):
+                raise ValueError
+            if raw["code"] == "original_g1_rejected" and (
+                not raw["g1_evaluated"]
+                or raw["g1_passed"]
+                or raw["account_receipt_sha256"] is not None
+                or raw["account_packet_sha256"] is not None
+            ):
+                raise ValueError
+            if raw["code"] == "original_source_public_unavailable" and (
+                source is not None or raw["g1_evaluated"] or raw["g1_passed"]
+            ):
+                raise ValueError
+            if raw["code"] == "original_source_account_unavailable" and (
+                not raw["g1_evaluated"]
+                or not raw["g1_passed"]
+                or raw["account_receipt_sha256"] is not None
+                or raw["account_packet_sha256"] is not None
+            ):
+                raise ValueError
+            if raw["code"] == "original_sources_g1_observed_candidate_required" and (
+                not raw["g1_evaluated"] or not raw["g1_passed"]
+            ):
+                raise ValueError
+            if raw["g1_evaluated"] and _utc_text(raw["g1_evaluated_at"]) > _utc_text(
+                raw["observed_at"]
+            ):
+                raise ValueError
+        except Exception:  # noqa: BLE001 -- never expose source or account content
+            raise OriginalSourceCoordinatorError(
+                "original_source_g1_receipt_invalid"
+            ) from None
+
+    @property
+    def receipt_sha256(self) -> str:
+        return sha(self.receipt_json)
+
+    @property
+    def admission(self) -> Literal["DENY"]:
+        return "DENY"
+
+    @property
+    def execution_authority(self) -> Literal[False]:
+        return False
+
+
+def _digest(value):
+    if (
+        type(value) is not str
+        or len(value) != 64
+        or any(char not in "0123456789abcdef" for char in value)
+    ):
+        raise ValueError("digest_invalid")
+    return value
+
+
+def _utc_text(value):
+    if type(value) is not str or len(value) > 40:
+        raise ValueError("utc_invalid")
+    at = datetime.fromisoformat(value)
+    if at.utcoffset() is None or at.utcoffset().total_seconds() != 0:
+        raise ValueError("utc_invalid")
+    return at
+
+
 def _roots(public_root, account_root):
     if any(
         type(root) not in (PosixPath, WindowsPath) or not root.is_absolute()
@@ -287,6 +456,54 @@ async def capture_owned_original_sources_v2(
     client is accepted. The account session is burned on any attempted capture.
     All source/DB/host failures yield a bounded DENY receipt; cancellation escapes.
     """
+    return await _capture_owned_original_sources(
+        public_root,
+        account_root,
+        instrument_id=instrument_id,
+        market_policy=market_policy,
+        account_session=account_session,
+        session_factory=session_factory,
+        inspect_g1=False,
+    )
+
+
+async def capture_owned_original_sources_v3(
+    public_root,
+    account_root,
+    *,
+    instrument_id,
+    market_policy,
+    account_session,
+    session_factory,
+) -> InitialOwnedSourcesDiagnosticV3:
+    """Evaluate fixed diagnostic G1 from this invocation's native source only.
+
+    The result never supplies a candidate, G12, risk reservation, intent or order
+    permission. The V2 method and its exact receipt bytes remain unchanged.
+    """
+    return await _capture_owned_original_sources(
+        public_root,
+        account_root,
+        instrument_id=instrument_id,
+        market_policy=market_policy,
+        account_session=account_session,
+        session_factory=session_factory,
+        inspect_g1=True,
+    )
+
+
+async def _capture_owned_original_sources(
+    public_root,
+    account_root,
+    *,
+    instrument_id,
+    market_policy,
+    account_session,
+    session_factory,
+    inspect_g1,
+):
+    if type(inspect_g1) is not bool:
+        raise OriginalSourceCoordinatorError("original_g1_mode_invalid")
     _roots(public_root, account_root)
     if (
         type(instrument_id) is not str
@@ -307,6 +524,7 @@ async def capture_owned_original_sources_v2(
                 "original_source_account_scope_unsupported"
             )
         selected = public_v2._policy_copy(market_policy)
+        g1_policy = native_g1.fixed_native_original_g1_policy() if inspect_g1 else None
         prepared = origin_preflight._prepare_controlled_demo_route(account_session)
         route, bound_plan_pin = origin_preflight._consume_controlled_demo_route(
             prepared, account_session
@@ -335,35 +553,55 @@ async def capture_owned_original_sources_v2(
     code = "original_source_public_unavailable"
     report = public_pin = public_journal = account_pin = account_packet_pin = None
     started = public_observed = finished = None
+    g1_source_pin = g1_result_pin = g1_result_code = g1_evaluated_at = None
+    g1_evaluated = g1_passed = False
 
     def result():
-        receipt = canonical(
-            {
-                "schema_version": "ctcc.original_owned_sources_diagnostic.v2",
-                "code": code,
-                "account_plan_sha256": plan_pin,
-                "declared_demo_route_policy_sha256": route_pin,
-                "public_report_id": report,
-                "public_packet_sha256": public_pin,
-                "public_journal_sha256": public_journal,
-                "account_receipt_sha256": account_pin,
-                "account_packet_sha256": account_packet_pin,
-                "observed_at": None
-                if finished is None
-                else utc_from_ns(finished["utc_ns"]).isoformat(),
-                "candidate_created": False,
-                "g1_g11_complete": False,
-                "g12_published": False,
-                "account_complete": False,
-                "source_authenticity_verified": False,
-                "execution_recheck_performed": False,
-                "atomic_risk_reserved": False,
-                "execution_authority": False,
-                "order_submitted": False,
-                "admission": "DENY",
-            }
+        fields = {
+            "schema_version": (
+                "ctcc.original_owned_sources_diagnostic.v3"
+                if inspect_g1
+                else "ctcc.original_owned_sources_diagnostic.v2"
+            ),
+            "code": code,
+            "account_plan_sha256": plan_pin,
+            "declared_demo_route_policy_sha256": route_pin,
+            "public_report_id": report,
+            "public_packet_sha256": public_pin,
+            "public_journal_sha256": public_journal,
+            "account_receipt_sha256": account_pin,
+            "account_packet_sha256": account_packet_pin,
+            "observed_at": None
+            if finished is None
+            else utc_from_ns(finished["utc_ns"]).isoformat(),
+            "candidate_created": False,
+            "g1_g11_complete": False,
+            "g12_published": False,
+            "account_complete": False,
+            "source_authenticity_verified": False,
+            "execution_recheck_performed": False,
+            "atomic_risk_reserved": False,
+            "execution_authority": False,
+            "order_submitted": False,
+            "admission": "DENY",
+        }
+        if inspect_g1:
+            fields.update(
+                g1_policy_record_sha256=native_g1.POLICY_RECORD_SHA256,
+                g1_policy_sha256=native_g1.DATA_POLICY_SHA256,
+                g1_source_sha256=g1_source_pin,
+                g1_result_sha256=g1_result_pin,
+                g1_result_code=g1_result_code,
+                g1_evaluated_at=g1_evaluated_at,
+                g1_evaluated=g1_evaluated,
+                g1_passed=g1_passed,
+            )
+        receipt = canonical(fields)
+        return (
+            InitialOwnedSourcesDiagnosticV3(receipt)
+            if inspect_g1
+            else InitialOwnedSourcesDiagnosticV2(receipt)
         )
-        return InitialOwnedSourcesDiagnosticV2(receipt)
 
     try:
         started = native_stamp()
@@ -396,6 +634,40 @@ async def capture_owned_original_sources_v2(
         public_pin = packet.bundle_sha256
         public_journal = journal
         code = "original_source_account_unavailable"
+        if inspect_g1:
+            # The one-use carrier above supplied this exact native packet. The
+            # fixed policy is rebuilt in preflight; no caller G1/market/PASS
+            # value enters this calculation or its independent raw-byte replay.
+            g1_source_pin = public_pin
+            finished = public_observed
+            code = "original_g1_unavailable"
+            evaluated = data_v2.evaluate_public_market_data_v2(
+                packet,
+                expected_bundle_sha256=public_pin,
+                policy=g1_policy,
+                evaluated_at=at,
+            )
+            replayed = data_v2.verify_public_market_data_v2(
+                evaluated,
+                packet,
+                expected_bundle_sha256=public_pin,
+                policy=g1_policy,
+                evaluated_at=at,
+            )
+            if (
+                replayed.public_bundle_sha256 != public_pin
+                or replayed.policy_sha256 != native_g1.DATA_POLICY_SHA256
+            ):
+                raise OriginalSourceCoordinatorError("original_g1_replay_mismatch")
+            g1_result_pin = replayed.evaluation_sha256
+            g1_result_code = replayed.gate.code
+            g1_evaluated_at = at.isoformat()
+            g1_evaluated = True
+            g1_passed = replayed.passed
+            if not g1_passed:
+                code = "original_g1_rejected"
+                return result()
+            code = "original_source_account_unavailable"
         _roots(public_root, account_root)
         account = await account_native.capture_initial_native_account(
             account_session, session_factory=session_factory, proof_root=account_root
@@ -416,7 +688,11 @@ async def capture_owned_original_sources_v2(
         )
         account_pin = account.receipt_sha256
         account_packet_pin = reference.packet_sha256
-        code = "original_sources_observed_g1_candidate_required"
+        code = (
+            "original_sources_g1_observed_candidate_required"
+            if inspect_g1
+            else "original_sources_observed_g1_candidate_required"
+        )
         return result()
     except asyncio.CancelledError:
         raise

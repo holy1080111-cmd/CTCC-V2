@@ -6,7 +6,7 @@ It exposes no price, dataset partition, predictive claim, or runtime authority.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Literal
 
 from pydantic import Field, field_validator, model_validator
@@ -33,6 +33,15 @@ from app.public_market_source.public_receipt_storage import (
 SOURCE = "okx.public_market_source"
 SOURCE_VERSION = "okx.history_candles.nine_strings.v1"
 MAX_OBSERVATION_LAG = timedelta(minutes=1)
+_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+
+
+def _exact_datetime_ns(value: datetime) -> int:
+    """Compare a UTC contract timestamp with source nanoseconds exactly."""
+    delta = value - _EPOCH
+    return (
+        (delta.days * 86_400 + delta.seconds) * 1_000_000 + delta.microseconds
+    ) * 1_000
 
 
 class BlindWindowMinuteCapture(Gate3Contract):
@@ -188,8 +197,8 @@ def bind_blind_window_minute(
     if (
         utc_from_ns(plan.start_ns) < holdout.start_at
         or utc_from_ns(plan.end_ns) > holdout.end_at
-        or plan.created_ns > plan.start_ns
-        or utc_from_ns(plan.created_ns) < sealed.created_at
+        or plan.created_ns >= plan.start_ns
+        or plan.created_ns <= _exact_datetime_ns(sealed.created_at)
     ):
         raise PublicReceiptError("blind_capture_not_preplanned_in_window")
     minutes = measured_public_minutes(

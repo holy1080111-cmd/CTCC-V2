@@ -92,7 +92,6 @@ async def test_execution_transport_has_no_demo_header_and_uses_live_endpoints() 
             clock=lambda: fixed,
         )
         await live.max_order_size("BTC-USDT-SWAP", margin_mode="cross")
-        await live.order_precheck({"instId": "BTC-USDT-SWAP", "sz": "1"})
         await live.cancel_all_after({"timeOut": "30", "tag": "CTCCV168"})
         await live.cancel_order({"instId": "BTC-USDT-SWAP", "ordId": "synthetic"})
         with pytest.raises(OkxPrivateApiError) as error:
@@ -101,10 +100,88 @@ async def test_execution_transport_has_no_demo_header_and_uses_live_endpoints() 
 
     assert seen == [
         ("GET", "/api/v5/account/max-size"),
-        ("POST", "/api/v5/trade/order-precheck"),
         ("POST", "/api/v5/trade/cancel-all-after"),
         ("POST", "/api/v5/trade/cancel-order"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_direct_live_order_precheck_has_zero_http_io() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        pytest.fail("unqualified Live precheck reached private HTTP")
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="https://openapi.okx.com"
+    ) as http:
+        client = OkxLiveExecutionRestClient(http, settings=execution_settings())
+        with pytest.raises(OkxPrivateApiError) as caught:
+            await client.order_precheck({"instId": "BTC-USDT-SWAP", "sz": "1"})
+    assert caught.value.code == "live_qualification_authority_unavailable"
+    assert requests == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("payload", "params"),
+    (
+        ({"timeOut": "0"}, None),
+        ({"timeOut": 0}, None),
+        ({"timeOut": "121"}, None),
+        ({"timeOut": "30", "unexpected": True}, None),
+        ({"timeOut": "30", "tag": "bad!"}, None),
+        ({"timeOut": "30"}, {"timeOut": "0"}),
+    ),
+)
+async def test_live_caa_invalid_or_query_overridden_body_has_zero_http(payload, params):
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        pytest.fail("invalid Live CAA reached private HTTP")
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="https://openapi.okx.com"
+    ) as http:
+        client = OkxLiveExecutionRestClient(http, settings=execution_settings())
+        with pytest.raises(OkxPrivateApiError) as caught:
+            await client._request(
+                "POST", "/api/v5/trade/cancel-all-after", body=payload, params=params
+            )
+    assert caught.value.code == "cancel_all_after_payload_rejected"
+    assert requests == []
+
+
+@pytest.mark.asyncio
+async def test_live_caa_rejects_signed_zero_even_if_caller_mutates_dict_to_positive(
+    monkeypatch,
+):
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        pytest.fail("zero-timeout Live CAA reached private HTTP")
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="https://openapi.okx.com"
+    ) as http:
+        client = OkxLiveExecutionRestClient(http, settings=execution_settings())
+        payload = {"timeOut": "0"}
+        original_headers = client._headers
+
+        def mutate_after_serialization(**kwargs):
+            result = original_headers(**kwargs)
+            payload["timeOut"] = "30"
+            return result
+
+        monkeypatch.setattr(client, "_headers", mutate_after_serialization)
+        with pytest.raises(OkxPrivateApiError) as caught:
+            await client.cancel_all_after(payload)
+    assert payload == {"timeOut": "30"}
+    assert caught.value.code == "cancel_all_after_payload_rejected"
+    assert requests == []
 
 
 @pytest.mark.asyncio
@@ -190,6 +267,7 @@ async def test_empty_success_payload_after_write_is_ambiguous_and_not_retried() 
     "method,path",
     [
         ("POST", "/api/v5/trade/order"),
+        ("POST", "/api/v5/trade/order-precheck"),
         ("POST", "/api/v5/trade/batch-orders"),
         ("POST", "/api/v5/trade/order-algo"),
         ("POST", "/api/v5/trade/amend-order"),

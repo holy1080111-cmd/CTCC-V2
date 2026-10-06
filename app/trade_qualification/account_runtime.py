@@ -262,7 +262,7 @@ class ControlledDemoAccountSession:
     accepted. The repository remains the existing DB0017 journal.
     """
 
-    __slots__ = ("_credentials", "_pin", "_plan", "_used")
+    __slots__ = ("__weakref__", "_credentials", "_pin", "_plan", "_used")
 
     def __init__(self, *, credentials, plan, expected_plan_sha256):
         try:

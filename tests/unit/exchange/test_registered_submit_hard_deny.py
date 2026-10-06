@@ -15,6 +15,7 @@ import pytest
 from app.api.security import require_ctcc_token
 from app.domain.demo_automation import EXECUTE_PHRASE
 from app.domain.okx_live import LIVE_ARM_PHRASE, OkxLiveArmRequest
+from app.exchange.okx.errors import OkxPrivateApiError
 from app.exchange.okx.private_rest import (
     OkxDemoPrivateRestClient,
     OkxLiveExecutionRestClient,
@@ -100,11 +101,6 @@ async def test_registered_live_order_route_cannot_send_after_full_preflight(
             return httpx.Response(
                 200, json={"code": "0", "data": [{"maxBuy": "10", "maxSell": "10"}]}
             )
-        if request.url.path in {
-            "/api/v5/trade/order-precheck",
-            "/api/v5/trade/cancel-all-after",
-        }:
-            return httpx.Response(200, json={"code": "0", "data": [{"sCode": "0"}]})
         pytest.fail(f"unexpected private HTTP path: {request.url.path}")
 
     service, _, _, intents, _ = service_fixture()
@@ -141,11 +137,52 @@ async def test_registered_live_order_route_cannot_send_after_full_preflight(
     }
     assert [request.url.path for request in observed] == [
         "/api/v5/account/max-size",
-        "/api/v5/trade/order-precheck",
     ]
     assert intents.rows["CTCCLabcdef"]["status"] == "rejected"
-    assert intents.rows["CTCCLabcdef"]["detail_codes"] == ["set_leverage_rejected"]
+    assert intents.rows["CTCCLabcdef"]["detail_codes"] == ["order_precheck_rejected"]
     assert service.arm_status().armed is False
+
+
+@pytest.mark.asyncio
+async def test_live_service_rejects_unqualified_precheck_before_caa_or_order():
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        pytest.fail(
+            f"unqualified Live request reached private HTTP: {request.url.path}"
+        )
+
+    service, read, fake_execution, _, _ = service_fixture()
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="https://openapi.okx.com"
+    ) as exchange_http:
+        transport = OkxLiveExecutionRestClient(exchange_http, settings=service.settings)
+
+        class ServiceExecution:
+            def __getattr__(self, name):
+                return getattr(fake_execution, name)
+
+            async def order_precheck(self, payload):
+                return await transport.order_precheck(payload)
+
+            async def cancel_all_after(self, payload):
+                return await transport.cancel_all_after(payload)
+
+            async def place_order(self, payload):
+                return await transport.place_order(payload)
+
+        service.execution_client = ServiceExecution()
+        await service.arm(
+            OkxLiveArmRequest(duration_seconds=60, confirmation=LIVE_ARM_PHRASE)
+        )
+        with pytest.raises(OkxPrivateApiError) as caught:
+            await service.place_order(live_order())
+
+    assert caught.value.code == "live_qualification_authority_unavailable"
+    assert seen == []
+    assert service.arm_status().armed is False
+    assert read.position_rows == []
 
 
 @pytest.mark.asyncio

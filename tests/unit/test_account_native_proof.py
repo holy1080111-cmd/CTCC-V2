@@ -126,6 +126,7 @@ def synthetic_tls_chain(chain):
         if "tls_provenance" in data and data["tls_provenance"] == "synthetic_transport":
             data["tls_provenance"] = "owned_signed_verified_tls"
             data["tls_certificate_sha256"] = "d" * 64
+            data["tls_hostname"] = "openapi.okx.com"
         event = journal._JournalEvent(
             journal._ISSUER,
             journal.canonical(record),

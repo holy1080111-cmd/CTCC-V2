@@ -2,10 +2,13 @@
 
 import asyncio
 import json
+import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import PosixPath, WindowsPath
-from weakref import WeakKeyDictionary
+from threading import get_ident
+from weakref import WeakKeyDictionary, ref
 
 import httpx
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
@@ -36,6 +39,38 @@ from app.trade_qualification.account_runtime import ControlledDemoAccountSession
 from app.trade_qualification.reservations import LedgerScope
 
 _CAPTURES = WeakKeyDictionary()
+_ORIGIN_LEASES = WeakKeyDictionary()
+
+
+class NativeAccountOriginError(ValueError):
+    """A private account-route observation cannot grant public-source authority."""
+
+
+class _OriginLease:
+    __slots__ = ("__weakref__",)
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class _ObservedDemoAccountOrigin:
+    """One consumed native observation; registration and public IO remain unproved."""
+
+    private_origin: str
+    tls_hostname: str
+    simulated_trading_header: str
+    uid: str
+    main_uid: str
+    session_binding_id: str
+    account_plan_sha256: str
+    account_packet_sha256: str
+    native_proof_sha256: str
+    native_readback_sha256: str
+    observed_at: datetime
+    expires_at: datetime
+    signed_account_config_observed: bool = True
+    registration_region_verified: bool = False
+    public_source_authenticity_verified: bool = False
+    execution_authority: bool = False
+    admission: str = "DENY"
 
 
 class _TimeProbeTrace:
@@ -249,11 +284,13 @@ class _CurrentNativeHandoff:
     receipt_json: bytes
     boundary: object
     invocation: object
+    origin_lease: object | None = None
 
 
 @dataclass(frozen=True, slots=True, repr=False)
 class InitialNativeAccountDiagnostic:
     receipt_json: bytes
+    _origin_lease: object | None = field(default=None, repr=False, compare=False)
 
     @property
     def receipt_sha256(self):
@@ -274,6 +311,174 @@ class InitialNativeAccountDiagnostic:
     @property
     def execution_authority(self):
         return False
+
+
+def _mint_demo_account_origin(
+    stage,
+    session,
+    packet,
+    reference,
+    joins,
+    *,
+    receipt_json,
+    proof_sha256,
+    readback_sha256,
+    issued,
+    expires,
+    deadline,
+):
+    """Issue only inside the successful native source/readback path.
+
+    The config request's origin is tied to the actual signed HTTP request by
+    the native collector's TLS server-host equality check. This does not prove
+    the account's registration region or authenticate any later public bytes.
+    """
+    try:
+        state = native._state(stage)
+        plan = capture._checked_plan(session._plan, session._pin)
+        if (
+            type(session) is not ControlledDemoAccountSession
+            or session._used is not False
+            or type(packet) is not capture.DemoAccountPacket
+            or type(plan) is not capture.CurrentDemoAccountCapturePlanV6
+            or packet.plan != plan
+            or packet.plan_sha256 != session._pin
+            or reference.plan_sha256 != session._pin
+            or reference.packet_sha256
+            != capture.freeze_demo_account_packet(
+                packet, expected_plan_sha256=session._pin
+            ).sha256
+            or state.get("session") is not session
+            or state.get("parent") is not asyncio.current_task()
+            or state.get("closed") is not True
+            or type(joins) is not list
+            or type(receipt_json) is not bytes
+            or type(proof_sha256) is not str
+            or type(readback_sha256) is not str
+            or any(
+                re.fullmatch(r"[a-f0-9]{64}", value) is None
+                for value in (proof_sha256, readback_sha256)
+            )
+            or type(issued) is not dict
+            or type(deadline) is not int
+            or utc_from_ns(issued["utc_ns"]) >= expires
+            or issued["monotonic_ns"] >= deadline
+        ):
+            raise ValueError
+        configs = {}
+        for index, page in enumerate(packet.observations):
+            if page.request.origin != plan.origin:
+                raise ValueError
+            if page.request.stream not in {"config_before", "config_after"}:
+                continue
+            if (
+                page.request.stream in configs
+                or page.request.endpoint != "/api/v5/account/config"
+                or len(page.rows) != 1
+                or page.session_binding_id != plan.session_binding_id
+            ):
+                raise ValueError
+            joined = [item for item in joins if item.get("request_index") == index]
+            if (
+                len(joined) != 1
+                or re.fullmatch(r"[a-f0-9]{64}", joined[0].get("tls_peer_sha256", ""))
+                is None
+                or joined[0].get("tls_hostname") != httpx.URL(plan.origin).host
+            ):
+                raise ValueError
+            config = json.loads(page.rows[0].canonical_json)
+            if (
+                type(config) is not dict
+                or config.get("uid") != plan.expected_uid
+                or config.get("mainUid") != plan.expected_main_uid
+            ):
+                raise ValueError
+            request, _signature = collector._signed_request(
+                page.request,
+                session._credentials,
+                page.request_started_at,
+                plan.max_request_seconds,
+            )
+            if (
+                request.url.host != httpx.URL(plan.origin).host
+                or request.url.path != "/api/v5/account/config"
+                or request.headers.get("x-simulated-trading") != "1"
+            ):
+                raise ValueError
+            configs[page.request.stream] = config
+        if set(configs) != {"config_before", "config_after"} or any(
+            configs["config_before"][name] != configs["config_after"][name]
+            for name in ("uid", "mainUid", "acctLv", "posMode")
+        ):
+            raise ValueError
+        origin = _ObservedDemoAccountOrigin(
+            private_origin=plan.origin,
+            tls_hostname=httpx.URL(plan.origin).host,
+            simulated_trading_header="1",
+            uid=plan.expected_uid,
+            main_uid=plan.expected_main_uid,
+            session_binding_id=plan.session_binding_id,
+            account_plan_sha256=session._pin,
+            account_packet_sha256=reference.packet_sha256,
+            native_proof_sha256=proof_sha256,
+            native_readback_sha256=readback_sha256,
+            observed_at=utc_from_ns(issued["utc_ns"]),
+            expires_at=expires,
+        )
+        lease = _OriginLease()
+        _ORIGIN_LEASES[lease] = {
+            "origin": origin,
+            "session": ref(session),
+            "credential_id": id(session._credentials),
+            "task": ref(state["parent"]),
+            "loop": state["loop"],
+            "pid": state["pid"],
+            "thread": state["thread"],
+            "receipt_sha256": sha(receipt_json),
+            "issued": issued,
+            "deadline": deadline,
+        }
+        return lease
+    except Exception:  # noqa: BLE001 -- private source and credential details stay private
+        raise NativeAccountOriginError("native_account_origin_unavailable") from None
+
+
+def _consume_demo_account_origin(diagnostic, session):
+    """One same-task read of a non-authoritative native observation."""
+    lease = (
+        diagnostic._origin_lease
+        if type(diagnostic) is InitialNativeAccountDiagnostic
+        else None
+    )
+    state = _ORIGIN_LEASES.pop(lease, None) if type(lease) is _OriginLease else None
+    try:
+        task = asyncio.current_task()
+        if (
+            state is None
+            or task is None
+            or task.cancelling()
+            or task is not state["task"]()
+            or asyncio.get_running_loop() is not state["loop"]
+            or os.getpid() != state["pid"]
+            or get_ident() != state["thread"]
+            or session is not state["session"]()
+            or session._used is not True
+            or id(session._credentials) != state["credential_id"]
+            or capture._checked_plan(session._plan, session._pin) != session._plan
+            or session._pin != state["origin"].account_plan_sha256
+            or sha(diagnostic.receipt_json) != state["receipt_sha256"]
+        ):
+            raise ValueError
+        observed = native.clock.native_stamp()
+        validate_stamps((state["issued"], observed))
+        if (
+            observed["monotonic_ns"] >= state["deadline"]
+            or utc_from_ns(observed["utc_ns"]) >= state["origin"].expires_at
+        ):
+            raise ValueError
+        return state["origin"]
+    except Exception:  # noqa: BLE001 -- no private plan or credential errors escape
+        raise NativeAccountOriginError("native_account_origin_unavailable") from None
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -609,6 +814,23 @@ async def _capture_initial_current(stage, session, session_factory, root):
         }
     )
     _secret_checked(receipt, owner.tokens)
+    origin_lease = (
+        _mint_demo_account_origin(
+            stage,
+            session,
+            replay.packet,
+            reference,
+            joins,
+            receipt_json=receipt,
+            proof_sha256=sha(raw),
+            readback_sha256=readback_pin,
+            issued=issue,
+            expires=expires,
+            deadline=deadline,
+        )
+        if type(selected) is capture.CurrentDemoAccountCapturePlanV6
+        else None
+    )
     # This is the sole minting path, reachable only after actual private source,
     # original phase completeness, current admission and durable separate reads.
     fence = object.__new__(boundary._AccountClockBoundary)
@@ -628,7 +850,7 @@ async def _capture_initial_current(stage, session, session_factory, root):
     )
     carrier = object.__new__(_CapturedCurrentNativeAccount)
     _CAPTURES[carrier] = _CurrentNativeHandoff(
-        packet, reference, receipt, fence, state["invocation"]
+        packet, reference, receipt, fence, state["invocation"], origin_lease
     )
     return carrier
 
@@ -710,7 +932,9 @@ async def capture_initial_native_account(session, *, session_factory, proof_root
             handoff = _consume_current_native_capture(
                 carrier, invocation=state["invocation"], expected_receipt_sha256=pin
             )
-            return InitialNativeAccountDiagnostic(handoff.receipt_json)
+            return InitialNativeAccountDiagnostic(
+                handoff.receipt_json, handoff.origin_lease
+            )
     except asyncio.CancelledError:
         raise
     except Exception:  # noqa: BLE001 -- preserve all original evidence, no private errors

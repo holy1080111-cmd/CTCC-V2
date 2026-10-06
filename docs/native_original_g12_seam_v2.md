@@ -34,10 +34,12 @@ Cross-task use, expiry, or a changed lineage returns a fixed denial; cancellatio
 propagates. The result exposes only the initial report and source/journal hashes,
 not a reusable packet or capability.
 
-This handoff deliberately stops before G1 and G12. The only fixed G1 data
-policy currently in the source is part of the explicitly synthetic numeric
-profile. No native operational G1 policy is registered, so the runtime does not
-borrow the fixture's thresholds or accept a caller-provided policy. After a
+This V2 handoff deliberately stops before G1 and G12. Its original fixed G1
+data policy was part of the explicitly synthetic numeric profile. It does not
+borrow the fixture's thresholds or accept a caller-provided policy. A separate
+[V3 native G1 inspection diagnostic](native_original_g1_diagnostic_v1.md) now
+recomputes G1 under fixed versioned inspection bounds in the same-task
+public/account coordinator; it is not a calibrated trading policy. After a
 valid same-task source readback, it returns
 `native_original_v2_g1_policy_unregistered` and a bounded canonical
 `ctcc.native_initial_g1_policy_gate.v1` receipt containing the original public
@@ -46,9 +48,9 @@ and explicit `g1_evaluated=false`, `g1_passed=false`, `DENY`. Its SHA-256 is a
 local receipt identity, never a permission. Malformed, stale, expired or
 foreign-task captures return a denial without this receipt.
 
-An operational G1 policy must be reviewed and registered separately before the
-same-task carrier may drive `data_v2.evaluate_public_market_data_v2` and its
-verifier. Even then, a native initial public packet alone cannot create the
+An admission-eligible operational G1 policy must still be calibrated, reviewed
+and registered separately. The V3 inspection bounds do not meet that standard.
+Even then, a native initial public packet alone cannot create the
 complete original candidate: the V2 precursor also requires captured Demo
 instrument metadata, while full G1–G11 qualification, account-specific costs,
 and source-derived protection are not yet owned by the same invocation. Calling

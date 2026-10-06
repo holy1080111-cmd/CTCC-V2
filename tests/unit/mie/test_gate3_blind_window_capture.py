@@ -11,19 +11,41 @@ from app.mie.validation.blind_window_capture import (
 )
 from app.mie.validation.prospective import Gate3ProspectivePreregistration
 from app.public_market_source import public_receipt_storage as storage
-from app.public_market_source.public_market_receipts import PublicReceiptError
-from tests.unit.mie.test_gate3_prospective import valid_prospective_preregistration
+from app.public_market_source.public_market_receipts import (
+    PublicMinuteCapturePlanV1,
+    PublicReceiptError,
+)
+from tests.unit.mie.test_gate3_prospective import (
+    CREATED_AT,
+    valid_prospective_preregistration,
+)
 from tests.unit.research import public_receipt_fixtures
 from tests.unit.research.test_public_journal_contracts import fixture_chain
 
 
-def fixture_inputs(monkeypatch):
+def fixture_inputs(monkeypatch, *, plan_created_ns=None):
     # Deliberately forged owned labels exercise binding without claiming native
     # source authenticity or a real future candidate seal.
     start = datetime(2026, 10, 1, tzinfo=UTC)
     monkeypatch.setattr(
         public_receipt_fixtures, "START", int(start.timestamp()) * 1_000_000_000
     )
+    original_plan_for = public_receipt_fixtures.plan_for
+
+    def plan_for(rows):
+        old = original_plan_for(rows)
+        return PublicMinuteCapturePlanV1.model_validate(
+            {
+                **old.model_dump(),
+                "created_ns": (
+                    old.start_ns - 1_000_000_000
+                    if plan_created_ns is None
+                    else plan_created_ns
+                ),
+            }
+        )
+
+    monkeypatch.setattr(public_receipt_fixtures, "plan_for", plan_for)
     _, _, directory, checkpoint = fixture_chain(monkeypatch, rows=1)
     entries, first_rows = storage._replay_directory(directory, checkpoint)
     plan, receipt, files, entry = entries[0]
@@ -172,3 +194,24 @@ def test_late_or_unsealed_observation_cannot_be_relabeled_prompt(monkeypatch):
                 "holdout_start_at": result.bar_closed_at,
             }
         )
+
+
+@pytest.mark.parametrize(
+    ("created_ns", "accepted"),
+    [
+        (int(CREATED_AT.timestamp()) * 1_000_000_000 - 1, False),
+        (int(CREATED_AT.timestamp()) * 1_000_000_000, False),
+        (int(CREATED_AT.timestamp()) * 1_000_000_000 + 1, True),
+        (int(datetime(2026, 10, 1, tzinfo=UTC).timestamp()) * 1_000_000_000, False),
+    ],
+)
+def test_plan_creation_strictly_between_seal_and_first_event(
+    monkeypatch, created_ns, accepted
+):
+    args = fixture_inputs(monkeypatch, plan_created_ns=created_ns)
+    if accepted:
+        result = bind_blind_window_minute(**args)
+        assert result.predictive_oos_eligible is False
+    else:
+        with pytest.raises(PublicReceiptError, match="not_preplanned_in_window"):
+            bind_blind_window_minute(**args)

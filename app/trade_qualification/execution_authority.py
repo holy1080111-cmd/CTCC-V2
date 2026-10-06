@@ -4,7 +4,8 @@ G12 receipts, recorded rechecks, and DB0017 durable intent records are evidence,
 not permission to dispatch an order. There is deliberately no permit issuer,
 configuration bypass, payload flag, or historical-receipt admission here.
 
-Existing cancel, close, and precheck operations keep their service safety gates.
+Existing cancel and close operations keep their service safety gates.
+Order precheck belongs to order submission and remains denied without authority.
 Set-leverage remains denied while the trusted flat-account authority is absent:
 legacy execution can reach it before the later order-create denial. These
 boundaries do not arm maintenance operations or grant Demo or Live authority.
@@ -17,7 +18,6 @@ _MAINTENANCE_POST_PATHS = frozenset(
         "/api/v5/trade/cancel-order",
         "/api/v5/trade/close-position",
         "/api/v5/trade/cancel-all-after",
-        "/api/v5/trade/order-precheck",
     }
 )
 

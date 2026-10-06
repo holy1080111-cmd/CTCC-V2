@@ -3461,3 +3461,60 @@ funding timestamps to make the batch pass; component-specific semantics and
 source-owned raw capture still need validation. W32Time was observed
 Running/Automatic with an NTP sync from `time.windows.com` at 2026-10-06
 09:02:36 Asia/Taipei, but host sync alone is not R5 acceptance.
+
+## 2026-10-06 native diagnostic and maintenance-boundary continuation
+
+The working source after `d7df266` adds a fixed, versioned **inspection-only**
+native G1 policy. In the same-task original-source coordinator, V3 consumes the
+one-use native V2 public packet, recomputes and independently replays G1 from
+its raw bytes, and records the policy, source and result hashes. A rejected G1
+stops before the private account read. The old V2 receipt is unchanged. The
+numerical G1 inspection bounds have no measured trading calibration, and the
+native Demo public issuer still hard-denies capture before I/O. Every V3
+diagnostic remains `DENY`, with no candidate, G12, reservation or execution
+authority. Its focused V3/V2/seam selection passed 41 cases with one Windows
+POSIX-symlink skip.
+
+The native current V6 Demo account path now records the TLS hostname observed
+by the owned collector in new raw-finalization journal events. Only after the
+signed account capture, separate proof readback and original DB-chain check
+may it mint a private, one-use, same-task account-origin observation. The
+observation binds the two `account/config` UID/mainUid rows, pinned origin,
+simulated header, TLS peer/hostname, packet/plan/proof/readback digests and
+credential session with UTC and monotonic expiry. Its session and task links
+are weak references. Old journals still replay under their old contract but
+cannot mint the new observation. This is not independent registration-region
+proof, a trusted Demo public route or complete account materialization; all
+source, account and execution authority flags remain false. Forty focused
+synthetic origin/native/journal checks passed before the final weak-task
+change; the eight-case origin module, including GC denial, passed afterward.
+
+The blind-window Gate 3 minute binder now requires the capture plan to be
+created strictly after the seal and strictly before the first event, using
+exact UTC-to-nanosecond comparison consistent with the complete-window binder.
+Its three adjacent modules passed 36 synthetic cases. Caller-provided hashes
+and local seal storage still cannot prove independent first access, so
+predictive OOS eligibility remains false.
+
+An independent MockTransport audit found that direct Demo/Live clients could
+send `cancel-all-after` with `timeOut=0`, which [OKX documents as disabling
+Cancel All After](https://www.okx.com/docs-v5/en/). The common private
+transport now checks the exact immutable body after signing and immediately
+before dispatch; only a 10–120 second string timeout and bounded optional tag
+are accepted, with malformed/query-altered requests rejected before HTTP.
+The direct `order-precheck` POST was removed from the maintenance exception
+list. New exposure POSTs and set-leverage remain hard-denied. The focused
+exchange selection passed 121 cases; no exchange write occurred. Direct
+cancel-order and close-position clients still lack a service-issued,
+account-bound durable maintenance permit, so all maintenance routes are **not**
+accepted as guarded. They remain available under existing service controls
+to avoid severing emergency reduction before a reviewed replacement exists.
+
+A combined five-module offline selection passed 108/108 with zero failures,
+errors or skips; its JUnit SHA256 is
+`d5b6ff340fdd7289f597a9ba7f0c3ae6dec5e495a5a5c3adc0d4c59010571b51`.
+Whole-project Ruff check and format check passed on the working source. A wider
+local account selection was interrupted because this host has a history of
+thermal shutdown; its partial output is not a regression pass. Exact-source
+Windows/Linux, PostgreSQL and Docker validation, authenticated Demo reads,
+true Gate 3/OOS, Live readiness and release acceptance remain open.

@@ -569,6 +569,7 @@ async def _page(
             # DTO's passed/complete flag. MockTransport can only record synthetic.
             if type(client._transport) is httpx.MockTransport:
                 capture_proofs.append(None)
+                tls_hostname = None
             else:
                 network = response.extensions.get("network_stream")
                 tls = None if network is None else network.get_extra_info("ssl_object")
@@ -583,8 +584,9 @@ async def _page(
                 if type(certificate) is not bytes or not certificate:
                     raise AccountCollectionError("tls_response_evidence_missing")
                 capture_proofs.append(hashlib.sha256(certificate).hexdigest())
+                tls_hostname = tls.server_hostname
             if _journal is not None:
-                _journal.transport(capture_proofs[-1])
+                _journal.transport(capture_proofs[-1], tls_hostname=tls_hostname)
             if (
                 response.headers.get("content-type", "")
                 .split(";", 1)[0]

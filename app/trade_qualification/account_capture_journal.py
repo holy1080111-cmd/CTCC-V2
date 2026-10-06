@@ -13,6 +13,7 @@ import re
 import uuid
 from dataclasses import dataclass
 from datetime import timedelta
+from urllib.parse import urlsplit
 
 from app.trade_qualification import account_capture as capture
 
@@ -425,6 +426,7 @@ class _OwnedAccountJournal:
             "prefix_sha256": digest(b""),
             "buffer_complete": True,
             "tls_provenance": "unobserved",
+            "tls_hostname": None,
             "clock_order": "observed",
         }
         self.pages.append(
@@ -455,8 +457,19 @@ class _OwnedAccountJournal:
         if not clock_ok:
             raise AccountJournalError("journal_source_clock_order")
 
-    def transport(self, proof):
+    def transport(self, proof, *, tls_hostname=None):
+        if proof is None:
+            if tls_hostname is not None:
+                raise AccountJournalError("journal_tls_hostname_invalid")
+        elif (
+            type(proof) is not str
+            or re.fullmatch(r"[a-f0-9]{64}", proof) is None
+            or type(tls_hostname) is not str
+            or tls_hostname != urlsplit(self.plan.origin).hostname
+        ):
+            raise AccountJournalError("journal_tls_hostname_invalid")
         self.current["metadata"]["tls_certificate_sha256"] = proof
+        self.current["metadata"]["tls_hostname"] = tls_hostname
         self.current["metadata"]["tls_provenance"] = (
             "synthetic_transport" if proof is None else "owned_signed_verified_tls"
         )

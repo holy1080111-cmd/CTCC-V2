@@ -4,6 +4,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 from itertools import pairwise
+from urllib.parse import urlsplit
 
 from app.domain import native_clock as public_clock
 from app.domain.source_primitives import (
@@ -245,6 +246,14 @@ def _source(chain, scope, *, proof_schema=SCHEMA):
         if transport.get("tls_provenance") != "owned_signed_verified_tls":
             raise NativeAccountProofError("native_account_original_tls_required")
         journal._sha(peer)
+        hostname = transport.get("tls_hostname")
+        if hostname is not None and (
+            type(hostname) is not str
+            or hostname != urlsplit(page.request.origin).hostname
+        ):
+            raise NativeAccountProofError(
+                "native_account_original_tls_hostname_invalid"
+            )
         joins.append(
             {
                 "request_index": index,
@@ -256,6 +265,7 @@ def _source(chain, scope, *, proof_schema=SCHEMA):
                 "raw_sha256": journal.digest(page.response_body),
                 "page_receipt_sha256": page.receipt_sha256,
                 "tls_peer_sha256": peer,
+                **({"tls_hostname": hostname} if hostname is not None else {}),
                 "original_event_sha256": {
                     kind: journal.digest(journal.canonical(items[0]))
                     for kind, items in matching.items()

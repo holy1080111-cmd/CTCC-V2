@@ -22,6 +22,7 @@ DENIED = "demo_qualification_authority_unavailable"
     "path",
     (
         "/api/v5/trade/order",
+        "/api/v5/trade/order-precheck",
         "/api/v5/trade/batch-orders",
         "/api/v5/trade/order-algo",
         "/api/v5/trade/amend-order",
@@ -82,6 +83,24 @@ async def test_entry_is_refused_before_credential_access_or_payload_callbacks():
 
 
 @pytest.mark.asyncio
+async def test_direct_demo_order_precheck_has_zero_http_io():
+    requests = []
+
+    def handler(value):
+        requests.append(value)
+        pytest.fail("unqualified Demo precheck reached private HTTP")
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="https://www.okx.com"
+    ) as http:
+        client = OkxDemoPrivateRestClient(http, settings=demo_settings())
+        with pytest.raises(OkxPrivateApiError) as caught:
+            await client.order_precheck({"instId": "BTC-USDT-SWAP", "sz": "1"})
+    assert caught.value.code == DENIED
+    assert requests == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("order_type", ("market", "limit", "fok"))
 @pytest.mark.parametrize("automation_callback", (True, False))
 async def test_manual_and_automation_service_entry_reaches_common_denial(
@@ -128,7 +147,6 @@ async def test_manual_and_automation_service_entry_reaches_common_denial(
         "cancel_order",
         "close_position",
         "cancel_all_after",
-        "order_precheck",
     ),
 )
 async def test_existing_maintenance_transport_remains_single_attempt_and_simulated(
@@ -145,10 +163,96 @@ async def test_existing_maintenance_transport_remains_single_attempt_and_simulat
         transport=httpx.MockTransport(handler), base_url="https://www.okx.com"
     ) as http:
         client = OkxDemoPrivateRestClient(http, settings=demo_settings())
-        result = await getattr(client, operation)({"instId": "BTC-USDT-SWAP"})
+        payload = (
+            {"timeOut": "30", "tag": "CTCCV11"}
+            if operation == "cancel_all_after"
+            else {"instId": "BTC-USDT-SWAP"}
+        )
+        result = await getattr(client, operation)(payload)
     assert result == [{"sCode": "0"}]
     assert len(requests) == 1
     assert requests[0].method == "POST"
+
+
+@pytest.mark.asyncio
+async def test_demo_caa_positive_timeout_remains_available_with_order_writes_off():
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(200, json={"code": "0", "data": [{"sCode": "0"}]})
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="https://www.okx.com"
+    ) as http:
+        client = OkxDemoPrivateRestClient(
+            http, settings=demo_settings(okx_demo_allow_order_writes=False)
+        )
+        await client.cancel_all_after({"timeOut": "30", "tag": "CTCCV11"})
+    assert len(requests) == 1
+    assert requests[0].content == b'{"timeOut":"30","tag":"CTCCV11"}'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("payload", "params"),
+    (
+        ({"timeOut": "0"}, None),
+        ({"timeOut": 0}, None),
+        ({"timeOut": "09"}, None),
+        ({"timeOut": "121"}, None),
+        ({"timeOut": "30", "side": "buy"}, None),
+        ({"timeOut": "30", "tag": "bad!"}, None),
+        ({}, None),
+        ({"timeOut": "30"}, {"timeOut": "0"}),
+    ),
+)
+async def test_demo_caa_invalid_or_query_overridden_body_has_zero_http(payload, params):
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        pytest.fail("invalid CAA reached private HTTP")
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="https://www.okx.com"
+    ) as http:
+        client = OkxDemoPrivateRestClient(http, settings=demo_settings())
+        with pytest.raises(OkxPrivateApiError) as caught:
+            await client._request(
+                "POST", "/api/v5/trade/cancel-all-after", body=payload, params=params
+            )
+    assert caught.value.code == "cancel_all_after_payload_rejected"
+    assert requests == []
+
+
+@pytest.mark.asyncio
+async def test_demo_caa_checks_serialized_body_after_mutable_payload_changes(
+    monkeypatch,
+):
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(200, json={"code": "0", "data": [{"sCode": "0"}]})
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="https://www.okx.com"
+    ) as http:
+        client = OkxDemoPrivateRestClient(http, settings=demo_settings())
+        payload = {"timeOut": "30"}
+        original_headers = client._headers
+
+        def mutate_after_serialization(**kwargs):
+            result = original_headers(**kwargs)
+            payload["timeOut"] = "0"
+            return result
+
+        monkeypatch.setattr(client, "_headers", mutate_after_serialization)
+        await client.cancel_all_after(payload)
+    assert payload == {"timeOut": "0"}
+    assert len(requests) == 1
+    assert requests[0].content == b'{"timeOut":"30"}'
 
 
 @pytest.mark.asyncio

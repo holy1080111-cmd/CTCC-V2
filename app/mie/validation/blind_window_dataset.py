@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Literal
 
 from pydantic import Field, field_validator, model_validator
@@ -20,6 +20,7 @@ from app.mie.validation.blind_window_capture import (
     MAX_OBSERVATION_LAG,
     SOURCE,
     SOURCE_VERSION,
+    _exact_datetime_ns,
 )
 from app.mie.validation.contracts import (
     Gate3Claim,
@@ -49,7 +50,6 @@ MAX_DATASET_ROWS = 4096
 MAX_SEGMENTS = 16
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _CAPTURE_ID = re.compile(r"[0-9a-f]{32}\Z")
-_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
 
 class BlindWindowDatasetError(ValueError):
@@ -127,14 +127,6 @@ def _rows_sha256(rows: tuple[BlindWindowDatasetRow, ...]) -> str:
         digest.update(len(payload).to_bytes(8, "big"))
         digest.update(payload)
     return digest.hexdigest()
-
-
-def _exact_datetime_ns(value: datetime) -> int:
-    """Convert a UTC contract timestamp without rounding through a float."""
-    delta = value - _EPOCH
-    return (
-        (delta.days * 86_400 + delta.seconds) * 1_000_000 + delta.microseconds
-    ) * 1_000
 
 
 class CompleteBlindWindowDataset(Gate3Contract):
