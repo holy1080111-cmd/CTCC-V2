@@ -3382,3 +3382,13 @@ predictive OOS. Every returned claim remains computational, with predictive
 and execution authority false. The two focused test modules passed 29 cases;
 the broader Windows MIE unit directory also passed, while current-source
 Windows/Linux full regression and PostgreSQL 0024 execution remain open.
+
+The exact `7ed9f5b` validation branch started matching remote run
+`37394395421`. Its Docker job verified source/tree, archive and dependency
+identity, then failed before migrations and PostgreSQL at whole-project Ruff:
+`app/database/models/__init__.py` placed `PublicReceiptWitnessRevision` before
+`ProtectiveOrder` in `__all__`. The generated `build/lib` mirror showed the
+same source error. The subsequent source places the names in canonical order;
+local whole-project Ruff check and format check both pass. This does not turn
+the failed `7ed9f5b` job into a PASS; the corrected exact source still needs
+its own remote run and all remaining stages.
