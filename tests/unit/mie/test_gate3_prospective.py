@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
@@ -18,12 +20,14 @@ from app.mie.validation import (
     DevelopmentValidationSplit,
     EvaluationPlan,
     FeatureSpec,
+    FormalEvaluationReservation,
     FrozenParameter,
     FrozenTrial,
     Gate3Claim,
     Gate3Metric,
     Gate3ProspectiveHoldoutReceipt,
     Gate3ProspectivePreregistration,
+    Gate3SealLedger,
     MultipleTestingCorrection,
     OutcomeKind,
     OutcomeLabelSpec,
@@ -31,6 +35,9 @@ from app.mie.validation import (
     ProspectiveAccessOutcome,
     ProspectiveHoldoutSpec,
     ProspectiveHoldoutState,
+    PublishedReceipt,
+    PublishedSeal,
+    SealLedgerError,
     TrialRegistry,
     UncertaintyPlan,
     freeze_prospective_holdout_receipt,
@@ -358,3 +365,149 @@ def test_prospective_contracts_have_no_order_or_sizing_geometry() -> None:
         Gate3ProspectiveHoldoutReceipt,
     ):
         assert forbidden.isdisjoint(contract_type.model_fields)
+
+
+def test_local_seal_publication_is_no_clobber_and_read_back(
+    tmp_path, monkeypatch
+) -> None:
+    from app.mie.validation import seal_ledger
+
+    monkeypatch.setattr(seal_ledger, "_utc_now", lambda: CREATED_AT + timedelta(days=1))
+    path = tmp_path / "gate3.sqlite3"
+    ledger = Gate3SealLedger(path)
+    preregistration = valid_prospective_preregistration()
+    published = ledger.publish_seal(preregistration)
+
+    assert published.sha256 == preregistration.canonical_sha256()
+    assert published.predictive_oos_eligible is False
+    assert published.execution_authority is False
+    assert Gate3SealLedger(path).read_seal(published.sha256)[0] == preregistration
+    with pytest.raises(SealLedgerError, match="already published"):
+        ledger.publish_seal(preregistration)
+
+    renamed = preregistration.model_copy(
+        update={"preregistration_id": "gate3:prospective:fixture:other"}
+    )
+    with pytest.raises(SealLedgerError, match="already published"):
+        ledger.publish_seal(renamed)
+    aliased_holdout = preregistration.prospective_holdout.model_copy(
+        update={"holdout_id": "binance:btc_eth:1m:2026-10:alias"}
+    )
+    alias = preregistration.model_copy(
+        update={
+            "preregistration_id": "gate3:prospective:fixture:alias",
+            "prospective_holdout": aliased_holdout,
+        }
+    )
+    with pytest.raises(SealLedgerError, match="already published"):
+        ledger.publish_seal(alias)
+    version_aliased_holdout = preregistration.prospective_holdout.model_copy(
+        update={
+            "holdout_id": "binance:btc_eth:1m:2026-10:version-alias",
+            "source_version": "futures_um.daily.klines.v2",
+        }
+    )
+    version_alias = preregistration.model_copy(
+        update={
+            "preregistration_id": "gate3:prospective:fixture:version-alias",
+            "prospective_holdout": version_aliased_holdout,
+        }
+    )
+    with pytest.raises(SealLedgerError, match="already published"):
+        ledger.publish_seal(version_alias)
+    with pytest.raises(SealLedgerError, match="not published"):
+        ledger.read_seal(sha("unknown-seal"))
+
+    with sqlite3.connect(path) as db:
+        db.execute(
+            "UPDATE seals SET payload=? WHERE seal_sha256=?",
+            (b"{}", published.sha256),
+        )
+    with pytest.raises(SealLedgerError, match="failed readback"):
+        ledger.read_seal(published.sha256)
+
+
+def test_late_seal_and_unknown_schema_fail_closed(tmp_path, monkeypatch) -> None:
+    from app.mie.validation import seal_ledger
+
+    path = tmp_path / "late.sqlite3"
+    ledger = Gate3SealLedger(path)
+    monkeypatch.setattr(
+        seal_ledger, "_utc_now", lambda: HOLDOUT_START + timedelta(seconds=1)
+    )
+    with pytest.raises(SealLedgerError, match="outside future window"):
+        ledger.publish_seal(valid_prospective_preregistration())
+    with pytest.raises(SealLedgerError, match="not published"):
+        ledger.read_seal(valid_prospective_preregistration().canonical_sha256())
+
+    with sqlite3.connect(path) as db:
+        db.execute("CREATE VIEW unexpected AS SELECT 1 AS value")
+    with pytest.raises(SealLedgerError, match="schema drift"):
+        ledger.read_seal(sha("unknown-seal"))
+
+    unknown_path = tmp_path / "unknown.sqlite3"
+    with sqlite3.connect(unknown_path) as db:
+        db.execute("CREATE TABLE unrelated (id INTEGER PRIMARY KEY)")
+    with pytest.raises(SealLedgerError, match="schema drift"):
+        Gate3SealLedger(unknown_path)
+
+
+def test_one_formal_evaluation_is_durable_across_workers_and_restart(
+    tmp_path, monkeypatch
+) -> None:
+    from app.mie.validation import seal_ledger
+
+    path = tmp_path / "one-evaluation.sqlite3"
+    ledger = Gate3SealLedger(path)
+    monkeypatch.setattr(seal_ledger, "_utc_now", lambda: CREATED_AT + timedelta(days=1))
+    seal = ledger.publish_seal(valid_prospective_preregistration())
+    monkeypatch.setattr(
+        seal_ledger, "_utc_now", lambda: FIRST_ACCESS + timedelta(days=1)
+    )
+    receipt = valid_receipt()
+    published_receipt = ledger.publish_receipt(
+        receipt, expected_seal_sha256=seal.sha256
+    )
+    assert receipt.predictive_oos_eligible is True
+    assert published_receipt.predictive_oos_eligible is False
+    assert ledger.read_receipt(seal.sha256, published_receipt.sha256)[0] == receipt
+    with pytest.raises(SealLedgerError, match="already published"):
+        ledger.publish_receipt(receipt, expected_seal_sha256=seal.sha256)
+
+    def attempt() -> object:
+        try:
+            return Gate3SealLedger(path).reserve_formal_evaluation(
+                expected_seal_sha256=seal.sha256,
+                expected_receipt_sha256=published_receipt.sha256,
+            )
+        except SealLedgerError as exc:
+            return exc
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outcomes = list(pool.map(lambda _: attempt(), range(2)))
+    accepted = [item for item in outcomes if not isinstance(item, SealLedgerError)]
+    rejected = [item for item in outcomes if isinstance(item, SealLedgerError)]
+    assert len(accepted) == len(rejected) == 1
+    assert "already consumed" in str(rejected[0])
+    assert accepted[0].predictive_oos_eligible is False
+    assert accepted[0].execution_authority is False
+    assert Gate3SealLedger(path).read_evaluation(seal.sha256) == accepted[0]
+    with pytest.raises(SealLedgerError, match="already consumed"):
+        Gate3SealLedger(path).reserve_formal_evaluation(
+            expected_seal_sha256=seal.sha256,
+            expected_receipt_sha256=published_receipt.sha256,
+        )
+
+
+def test_local_ledger_result_authority_fields_cannot_be_supplied() -> None:
+    examples = (
+        (PublishedSeal, (sha("seal"), CREATED_AT)),
+        (PublishedReceipt, (sha("receipt"), sha("seal"), CREATED_AT)),
+        (
+            FormalEvaluationReservation,
+            ("a" * 32, sha("seal"), sha("receipt"), FIRST_ACCESS),
+        ),
+    )
+    for model, positional in examples:
+        with pytest.raises(TypeError, match="predictive_oos_eligible"):
+            model(*positional, predictive_oos_eligible=True)

@@ -28,6 +28,18 @@ class PurgedWalkForwardFold:
     validation_end_at: datetime
 
 
+@dataclass(frozen=True, slots=True)
+class GroupedPurgedWalkForwardFold:
+    """One event-time fold expanded to complete, simultaneous symbol rows."""
+
+    event_fold: PurgedWalkForwardFold
+    training_indices: tuple[int, ...]
+    validation_indices: tuple[int, ...]
+    purged_indices: tuple[int, ...]
+    prior_embargoed_indices: tuple[int, ...]
+    embargoed_indices: tuple[int, ...]
+
+
 def _validated_timestamps(
     timestamps: Sequence[datetime],
 ) -> tuple[datetime, ...]:
@@ -49,6 +61,124 @@ def _validated_timestamps(
 def _validate_positive(name: str, value: int) -> None:
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise ValueError(f"{name} must be a positive integer")
+
+
+def _validated_symbol_events(
+    observations: Sequence[tuple[datetime, str]],
+    symbols: Sequence[str],
+) -> tuple[datetime, ...]:
+    """Require a complete, canonical symbol group at every event time.
+
+    Sorting or filling missing observations here would conceal a malformed
+    source and let synchronized instruments straddle a fold boundary.
+    """
+    names = tuple(symbols)
+    if (
+        not names
+        or any(type(name) is not str or not name for name in names)
+        or names != tuple(sorted(set(names)))
+    ):
+        raise ValueError("walk-forward symbols must be unique and sorted")
+    rows = tuple(observations)
+    width = len(names)
+    if not rows or len(rows) % width:
+        raise ValueError("walk-forward event groups must be complete")
+    events: list[datetime] = []
+    for start in range(0, len(rows), width):
+        group = rows[start : start + width]
+        if any(type(row) is not tuple or len(row) != 2 for row in group):
+            raise ValueError("walk-forward observations must be timestamp/symbol pairs")
+        timestamp = group[0][0]
+        if any(row[0] != timestamp for row in group):
+            raise ValueError("walk-forward event groups must be complete")
+        if tuple(row[1] for row in group) != names:
+            raise ValueError("walk-forward event groups must contain each symbol once")
+        events.append(timestamp)
+    return _validated_timestamps(events)
+
+
+def _expand_group_indices(indices: tuple[int, ...], width: int) -> tuple[int, ...]:
+    return tuple(
+        row for event in indices for row in range(event * width, (event + 1) * width)
+    )
+
+
+def grouped_purged_walk_forward_folds(
+    observations: Sequence[tuple[datetime, str]],
+    *,
+    symbols: Sequence[str],
+    minimum_training_events: int,
+    validation_events: int,
+    feature_dependency_seconds: int,
+    label_dependency_seconds: int,
+    purge_seconds: int,
+    embargo_seconds: int,
+    step_events: int | None = None,
+    maximum_folds: int | None = None,
+) -> tuple[GroupedPurgedWalkForwardFold, ...]:
+    """Split complete multi-symbol event groups, never individual symbol rows.
+
+    Counts are event times rather than rows. Returned row indices address the
+    original canonical observation sequence; no source rows are reordered.
+    """
+    names = tuple(symbols)
+    event_times = _validated_symbol_events(observations, names)
+    event_folds = purged_walk_forward_folds(
+        event_times,
+        minimum_training_observations=minimum_training_events,
+        validation_observations=validation_events,
+        feature_dependency_seconds=feature_dependency_seconds,
+        label_dependency_seconds=label_dependency_seconds,
+        purge_seconds=purge_seconds,
+        embargo_seconds=embargo_seconds,
+        step_observations=step_events,
+        maximum_folds=maximum_folds,
+    )
+    width = len(names)
+    return tuple(
+        GroupedPurgedWalkForwardFold(
+            event_fold=fold,
+            training_indices=_expand_group_indices(fold.training_indices, width),
+            validation_indices=_expand_group_indices(fold.validation_indices, width),
+            purged_indices=_expand_group_indices(fold.purged_indices, width),
+            prior_embargoed_indices=_expand_group_indices(
+                fold.prior_embargoed_indices, width
+            ),
+            embargoed_indices=_expand_group_indices(fold.embargoed_indices, width),
+        )
+        for fold in event_folds
+    )
+
+
+def assert_no_grouped_temporal_leakage(
+    observations: Sequence[tuple[datetime, str]],
+    folds: Sequence[GroupedPurgedWalkForwardFold],
+    *,
+    symbols: Sequence[str],
+    minimum_training_events: int,
+    validation_events: int,
+    feature_dependency_seconds: int,
+    label_dependency_seconds: int,
+    purge_seconds: int,
+    embargo_seconds: int,
+    step_events: int | None = None,
+    maximum_folds: int | None = None,
+) -> None:
+    """Verify persisted row membership against the exact frozen split plan."""
+    expected = grouped_purged_walk_forward_folds(
+        observations,
+        symbols=symbols,
+        minimum_training_events=minimum_training_events,
+        validation_events=validation_events,
+        feature_dependency_seconds=feature_dependency_seconds,
+        label_dependency_seconds=label_dependency_seconds,
+        purge_seconds=purge_seconds,
+        embargo_seconds=embargo_seconds,
+        step_events=step_events,
+        maximum_folds=maximum_folds,
+    )
+    if type(folds) not in (tuple, list) or tuple(folds) != expected:
+        raise ValueError("grouped walk-forward fold membership differs from plan")
 
 
 def purged_walk_forward_folds(

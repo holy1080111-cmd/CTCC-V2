@@ -57,9 +57,39 @@ Both contracts are immutable, canonical JSON/SHA-256 artifacts. Freeze and
 verification revalidate the exact schema before accepting bytes, so nested,
 copy, subclass, noncanonical-JSON, and hash tampering fail closed.
 
+## Offline publication and one-attempt ledger
+
+`app.mie.validation.seal_ledger.Gate3SealLedger` provides a dedicated local
+SQLite publication store. `publish_seal` accepts the exact prospective schema,
+freezes canonical bytes, requires the local publication time to precede the
+future holdout window, and commits the seal under unique digest,
+preregistration ID, holdout ID, and source/instrument/calendar window. A second
+publication, including a changed candidate or renamed ID for the same window,
+is rejected. It then verifies the stored
+bytes and timestamp through a separate database connection. The same
+no-clobber/readback rule applies to a later matching acquisition receipt.
+
+`reserve_formal_evaluation` is called **before** evaluation data is read by a
+consumer using this interface. A database transaction consumes the seal's
+single evaluation slot and retains the reservation across process restart or
+crash. Two workers racing for the same seal yield at most one reservation.
+Neither a caller-provided eligibility flag nor the receipt's own
+`predictive_oos_eligible` claim can change the publisher or reservation's
+fixed `computational`/`predictive_oos_eligible=false` result. The ledger stores
+no market data, credential, account, or order authority.
+
+This is a local coordination mechanism, **not** independent seal-time
+attestation or proof of first evaluator access. The host clock and SQLite file
+must be protected and backed up as one source of evidence; an evaluator could
+read data outside this interface. A real controlled access service, independent
+time/hash pins, complete source-qualified holdout, and actual candidate
+evaluation remain necessary. No real seal or receipt has been published by
+this change.
+
 ## Current evidence status
 
-This change implements and tests the seal and receipt machinery; it does not
+This change implements and tests the seal and receipt machinery and its local
+publication ledger; it does not
 declare a real future window, freeze a real candidate, acquire a new artifact,
 or evaluate a holdout. The current claim remains `computational`.
 
@@ -74,8 +104,9 @@ The prospective models have
 `authority=offline_shadow_only` where applicable,
 `runtime_consumers=0`, `execution_authority=false`, `reference_only=true`, and
 `promotion_eligible=false`. They contain no account, order, quantity, contract,
-leverage, margin, exchange payload, API route, database write, or runtime
-consumer. Creating a seal never downloads market data, and creating an
+leverage, margin, exchange payload, API route, or runtime consumer. The
+separate offline publisher writes only the local seal/receipt/reservation
+database. Creating a seal never downloads market data, and creating an
 acquisition receipt never evaluates a strategy or authorizes an order.
 
 ## Remaining evidence work
@@ -126,8 +157,8 @@ This is a computational audit of **distinct times**, not proof that the
 declaration was the first human or model read. The evaluator access basis is
 fixed to `caller_declared_unverified`; `first_read_independently_verified`,
 `evaluator_first_read_proven`, `complete_dataset_proven`, and
-`predictive_oos_eligible` are fixed false. No controlled evaluator-access
-journal, complete multi-instrument dataset, prospective collector schedule,
+`predictive_oos_eligible` are fixed false. The local one-attempt ledger above
+does not independently prove first access. No complete multi-instrument dataset, prospective collector schedule,
 independent checkpoint store, or formal evaluation is connected. The existing
 `Gate3ProspectiveHoldoutReceipt` retains its post-window acquisition semantics;
 an in-window minute is not inserted into it or relabelled as post-window

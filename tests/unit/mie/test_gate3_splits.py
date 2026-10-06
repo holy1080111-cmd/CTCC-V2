@@ -6,7 +6,9 @@ from datetime import UTC, datetime, timedelta, timezone
 import pytest
 
 from app.mie.validation.splits import (
+    assert_no_grouped_temporal_leakage,
     assert_no_temporal_leakage,
+    grouped_purged_walk_forward_folds,
     purged_walk_forward_folds,
 )
 
@@ -135,4 +137,111 @@ def test_leakage_assertion_rejects_tampered_persisted_indexes() -> None:
             (corrupted,),
             purge_seconds=7_200,
             embargo_seconds=7_200,
+        )
+
+
+SYMBOLS = ("BTC-USDT-SWAP", "ETH-USDT-SWAP")
+
+
+def grouped_observations(count: int) -> tuple[tuple[datetime, str], ...]:
+    return tuple(
+        (timestamp, symbol)
+        for timestamp in hourly_timestamps(count)
+        for symbol in SYMBOLS
+    )
+
+
+def grouped_split(observations, **overrides):
+    parameters = {
+        "symbols": SYMBOLS,
+        "minimum_training_events": 5,
+        "validation_events": 3,
+        "feature_dependency_seconds": 7_200,
+        "label_dependency_seconds": 3_600,
+        "purge_seconds": 7_200,
+        "embargo_seconds": 7_200,
+        "step_events": 3,
+    }
+    parameters.update(overrides)
+    return grouped_purged_walk_forward_folds(observations, **parameters)
+
+
+def test_grouped_split_keeps_simultaneous_symbols_in_one_fold() -> None:
+    observations = grouped_observations(24)
+    folds = grouped_split(observations, maximum_folds=2)
+
+    assert folds == grouped_split(observations, maximum_folds=2)
+    assert folds[0].training_indices == tuple(range(10))
+    assert folds[0].purged_indices == tuple(range(10, 14))
+    assert folds[0].validation_indices == tuple(range(14, 20))
+    assert folds[0].embargoed_indices == tuple(range(20, 24))
+    assert folds[1].prior_embargoed_indices == tuple(range(20, 24))
+    for fold in folds:
+        groups = (
+            fold.training_indices,
+            fold.validation_indices,
+            fold.purged_indices,
+            fold.prior_embargoed_indices,
+            fold.embargoed_indices,
+        )
+        assert all(set(group) == {index ^ 1 for index in group} for group in groups)
+        assert set(fold.training_indices).isdisjoint(fold.validation_indices)
+    assert_no_grouped_temporal_leakage(
+        observations,
+        folds,
+        symbols=SYMBOLS,
+        minimum_training_events=5,
+        validation_events=3,
+        feature_dependency_seconds=7_200,
+        label_dependency_seconds=3_600,
+        purge_seconds=7_200,
+        embargo_seconds=7_200,
+        step_events=3,
+        maximum_folds=2,
+    )
+
+
+@pytest.mark.parametrize(
+    ("mutator", "error"),
+    [
+        (lambda rows: rows[:-1], "complete"),
+        (lambda rows: (rows[0], rows[0], *rows[2:]), "each symbol once"),
+        (lambda rows: (rows[1], rows[0], *rows[2:]), "each symbol once"),
+        (
+            lambda rows: (*rows[:2], (rows[2][0], "DOGE-USDT-SWAP"), *rows[3:]),
+            "each symbol once",
+        ),
+        (
+            lambda rows: (*rows[:3], (rows[0][0], rows[3][1]), *rows[4:]),
+            "complete",
+        ),
+    ],
+)
+def test_grouped_split_rejects_incomplete_or_conflicting_source(
+    mutator, error: str
+) -> None:
+    with pytest.raises(ValueError, match=error):
+        grouped_split(mutator(grouped_observations(24)))
+
+
+def test_grouped_split_rejects_wrong_symbol_plan_or_tampered_fold() -> None:
+    observations = grouped_observations(24)
+    with pytest.raises(ValueError, match="unique and sorted"):
+        grouped_split(observations, symbols=tuple(reversed(SYMBOLS)))
+
+    fold = grouped_split(observations, maximum_folds=1)[0]
+    tampered = replace(fold, validation_indices=fold.validation_indices[:-1])
+    with pytest.raises(ValueError, match="membership differs"):
+        assert_no_grouped_temporal_leakage(
+            observations,
+            (tampered,),
+            symbols=SYMBOLS,
+            minimum_training_events=5,
+            validation_events=3,
+            feature_dependency_seconds=7_200,
+            label_dependency_seconds=3_600,
+            purge_seconds=7_200,
+            embargo_seconds=7_200,
+            step_events=3,
+            maximum_folds=1,
         )

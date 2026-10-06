@@ -30,6 +30,14 @@ continues enforcing its dependency, purge and embargo rules. No candidate,
 probability model, fitted trial, cost schedule or economic threshold is selected
 by this adapter.
 
+For a future fixed multi-instrument plan,
+`grouped_purged_walk_forward_folds` splits complete event-time groups rather than
+individual symbol rows. Every declared symbol must occur exactly once at each
+UTC event time in canonical order; missing, duplicate, extra or reordered source
+rows fail. The verifier recomputes exact row membership from the frozen plan,
+including cross-symbol purge and embargo. This is an offline primitive only; the
+current rehearsal has not fitted a candidate or evaluated a sealed holdout.
+
 ## Actual public archive rehearsal
 
 The script below verifies the previously frozen public preparation identities,

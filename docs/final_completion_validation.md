@@ -3366,3 +3366,19 @@ assertions have not yet run on PostgreSQL. A migration-identity test's stale
 counts overlap broader prior selections and are not a full Windows/Linux
 regression. No MIE Gate 3/OOS promotion, qualified Demo execution or Live
 readiness is inferred.
+
+The next offline MIE source slice adds an event-time grouped walk-forward
+splitter. It requires every declared instrument exactly once at each UTC event
+time and maps purge, validation and embargo to complete symbol groups;
+persisted row membership is recomputed from the same plan. The new local
+SQLite Gate 3 seal ledger publishes a preregistration and later receipt with
+unique no-clobber rows, reads them through separate connections, rejects a
+second seal for the same source/instruments/calendar window even if a caller
+changes the source version or identifiers, and permits only one durable formal
+evaluation reservation per seal across workers and restart. These are
+computational controls: local time and a locally accessible database do not
+prove independent custody, first holdout access, genuine row availability or
+predictive OOS. Every returned claim remains computational, with predictive
+and execution authority false. The two focused test modules passed 29 cases;
+the broader Windows MIE unit directory also passed, while current-source
+Windows/Linux full regression and PostgreSQL 0024 execution remain open.
