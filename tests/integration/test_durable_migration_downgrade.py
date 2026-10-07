@@ -12,12 +12,16 @@ from uuid import uuid4
 import pytest
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
-from sqlalchemy import select, text
+from sqlalchemy import select, text, update
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from app.database.models.qualification_ledger import QualificationReservation
+from app.database.models.qualification_ledger import (
+    QualificationAccountScope,
+    QualificationReservation,
+    QualificationReservationTransition,
+)
 from app.database.repositories.account_bill_archive_claim import (
     AccountBillArchiveClaimRepository,
 )
@@ -29,7 +33,10 @@ from app.trade_qualification.account_bill_archive_acquisition import (
     DiagnosticArchivePlan,
 )
 from app.trade_qualification.demo_control import ControlScope
-from app.trade_qualification.reservations import reservation_id
+from app.trade_qualification.reservations import (
+    QualificationLedgerError,
+    reservation_id,
+)
 from tests.durable_migration_fixtures import (
     DOWNGRADE_LOCKS,
     TABLES,
@@ -55,6 +62,27 @@ def migrate(connection, revision, direction):
     module = load_migration(revision)
     module.op = Operations(MigrationContext.configure(connection))
     getattr(module, direction)()
+
+
+async def migrate_public_qualified_guard_in_sandbox(connection, direction):
+    """Run 0027's actual SQL with public mapped only to disposable test schema."""
+
+    class RecordedOperations:
+        def __init__(self):
+            self.statements = []
+
+        def execute(self, statement):
+            self.statements.append(str(statement))
+
+    module = load_migration("0027")
+    recorded = RecordedOperations()
+    module.op = recorded
+    getattr(module, direction)()
+    schema = (await connection.execute(text("SELECT current_schema()"))).scalar_one()
+    assert re.fullmatch(r"ctcc_migration_test_[a-f0-9]{32}", schema)
+    assert recorded.statements and all("public." in sql for sql in recorded.statements)
+    for sql in recorded.statements:
+        await connection.execute(text(sql.replace("public.", f'"{schema}".')))
 
 
 @pytest.fixture
@@ -168,6 +196,238 @@ async def test_control_bound_reporting_function_downgrade_reupgrade_when_empty(
     async with engine.begin() as connection:
         await connection.run_sync(migrate, "0025", "upgrade")
     assert await shape(engine) == current
+
+
+@pytest.mark.parametrize("revision", ("0017",))
+async def test_post_submit_closure_guard_empty_downgrade_restores_exact_shape(
+    sandbox, revision
+):
+    engine, _ = sandbox
+    before = await shape(engine)
+    async with engine.begin() as connection:
+        await migrate_public_qualified_guard_in_sandbox(connection, "upgrade")
+    guarded = await shape(engine)
+    assert guarded != before
+    async with engine.begin() as connection:
+        await migrate_public_qualified_guard_in_sandbox(connection, "downgrade")
+    assert await shape(engine) == before
+    async with engine.begin() as connection:
+        await migrate_public_qualified_guard_in_sandbox(connection, "upgrade")
+    assert await shape(engine) == guarded
+
+
+@pytest.mark.parametrize("revision", ("0017",))
+async def test_post_submit_closure_guard_refuses_nonempty_rollback_and_direct_update(
+    sandbox, revision, durable_fixture
+):
+    engine, sessions = sandbox
+    async with engine.begin() as connection:
+        await migrate_public_qualified_guard_in_sandbox(connection, "upgrade")
+    repo, clock = await ledger_fixtures.initialize(sandbox, durable_fixture)
+    hold = await repo.reserve(durable_fixture.request)
+    await repo.consume_with_submission_intent(
+        hold.scope, hold.original_event_key, expected_revision=2
+    )
+    before = await repo.read_scope(hold.scope)
+    assert before.active[0].state == "consumed"
+    clock.value += timedelta(seconds=1)
+    claims = ledger_fixtures.refresh(durable_fixture.claims, clock.value)
+    with pytest.raises(
+        QualificationLedgerError, match="post_submit_closure_witness_missing"
+    ):
+        await repo.reconcile_reservation(
+            hold.scope,
+            hold.original_event_key,
+            claims=claims,
+            expected_revision=3,
+        )
+    with pytest.raises(DBAPIError, match="qualification_reservation_update_denied"):
+        async with sessions() as session, session.begin():
+            await session.execute(
+                update(QualificationReservation)
+                .where(QualificationReservation.reservation_id == hold.reservation_id)
+                .values(
+                    state="reconciled_flat",
+                    state_revision=3,
+                    updated_at=clock.value,
+                )
+            )
+    guarded = await shape(engine)
+    with pytest.raises(
+        DBAPIError, match="post_submit_closure_guard_downgrade_requires_empty"
+    ):
+        async with engine.begin() as connection:
+            await migrate_public_qualified_guard_in_sandbox(connection, "downgrade")
+    assert await shape(engine) == guarded
+    assert await repo.read_scope(hold.scope) == before
+
+
+@pytest.mark.parametrize("revision", ("0017",))
+@pytest.mark.parametrize("legacy_state", ("consumed", "uncertain"))
+async def test_post_submit_closure_guard_upgrade_refuses_legacy_terminal(
+    sandbox, revision, durable_fixture, legacy_state
+):
+    engine, sessions = sandbox
+    repo, clock = await ledger_fixtures.initialize(sandbox, durable_fixture)
+    hold = await repo.reserve(durable_fixture.request)
+    await repo.consume_with_submission_intent(
+        hold.scope, hold.original_event_key, expected_revision=2
+    )
+    if legacy_state == "uncertain":
+        await repo.mark_uncertain(
+            hold.scope, hold.original_event_key, expected_revision=3
+        )
+    before = await repo.read_scope(hold.scope)
+    assert before.active[0].state == legacy_state
+    clock.value += timedelta(seconds=1)
+    # Synthesize a pre-0027 terminal transition using the actual DB0017 SQL
+    # guard and immutable journal. The current repository correctly denies it.
+    async with sessions() as session, session.begin():
+        record = await session.get(QualificationReservation, hold.reservation_id)
+        scope = await session.get(
+            QualificationAccountScope,
+            (
+                hold.scope.environment,
+                hold.scope.account_id,
+                hold.scope.settlement_currency,
+            ),
+        )
+        assert record is not None and scope is not None
+        record.state = "reconciled_flat"
+        record.state_revision += 1
+        record.updated_at = clock.value
+        scope.ledger_revision += 1
+        scope.updated_at = clock.value
+        session.add(
+            QualificationReservationTransition(
+                reservation_id=hold.reservation_id,
+                state_revision=record.state_revision,
+                from_state=legacy_state,
+                to_state="reconciled_flat",
+                reason_code="synthetic_legacy_caller_flat",
+                evidence_json=None,
+                occurred_at=clock.value,
+            )
+        )
+    legacy_shape = await shape(engine)
+    legacy = await repo.read_event_observation(hold.scope, hold.original_event_key)
+    assert legacy.matched is not None and legacy.matched.state == "reconciled_flat"
+    with pytest.raises(
+        DBAPIError, match="post_submit_closure_legacy_terminal_unresolved"
+    ):
+        async with engine.begin() as connection:
+            await migrate_public_qualified_guard_in_sandbox(connection, "upgrade")
+    assert await shape(engine) == legacy_shape
+    assert (
+        await repo.read_event_observation(hold.scope, hold.original_event_key)
+    ) == legacy
+    async with sessions() as session:
+        transitions = (
+            await session.scalars(
+                select(QualificationReservationTransition)
+                .filter_by(reservation_id=hold.reservation_id)
+                .order_by(QualificationReservationTransition.state_revision)
+            )
+        ).all()
+        assert [item.to_state for item in transitions] == (
+            ["reserved", "consumed", "reconciled_flat"]
+            if legacy_state == "consumed"
+            else ["reserved", "consumed", "uncertain", "reconciled_flat"]
+        )
+
+
+@pytest.mark.parametrize("revision", ("0017",))
+async def test_post_submit_closure_guard_upgrade_refuses_reserved_only_terminal(
+    sandbox, revision, durable_fixture
+):
+    engine, _ = sandbox
+    repo, clock = await ledger_fixtures.initialize(sandbox, durable_fixture)
+    hold = await repo.reserve(durable_fixture.request)
+    clock.value += timedelta(seconds=1)
+    terminal = await repo.reconcile_reservation(
+        hold.scope,
+        hold.original_event_key,
+        claims=ledger_fixtures.refresh(
+            durable_fixture.claims, clock.value, armed=False
+        ),
+        expected_revision=2,
+    )
+    assert terminal.state == "reconciled_flat"
+    before = await shape(engine)
+    observation = await repo.read_event_observation(hold.scope, hold.original_event_key)
+    with pytest.raises(
+        DBAPIError, match="post_submit_closure_legacy_terminal_unresolved"
+    ):
+        async with engine.begin() as connection:
+            await migrate_public_qualified_guard_in_sandbox(connection, "upgrade")
+    assert await shape(engine) == before
+    assert (
+        await repo.read_event_observation(hold.scope, hold.original_event_key)
+    ) == observation
+
+
+@pytest.mark.parametrize("revision", ("0017",))
+async def test_post_submit_closure_guard_upgrade_refuses_incomplete_legacy_journal(
+    sandbox, revision, durable_fixture
+):
+    engine, sessions = sandbox
+    repo, clock = await ledger_fixtures.initialize(sandbox, durable_fixture)
+    hold = await repo.reserve(durable_fixture.request)
+    scope_key = (
+        hold.scope.environment,
+        hold.scope.account_id,
+        hold.scope.settlement_currency,
+    )
+    # The old SQL trigger permits both state changes even when a direct writer
+    # omits the consumed journal. No migration may treat that omission as proof
+    # of a never-submitted cancellation.
+    for state, state_revision in (("consumed", 2), ("reconciled_flat", 3)):
+        clock.value += timedelta(seconds=1)
+        async with sessions() as session, session.begin():
+            record = await session.get(QualificationReservation, hold.reservation_id)
+            scope = await session.get(QualificationAccountScope, scope_key)
+            assert record is not None and scope is not None
+            record.state = state
+            record.state_revision = state_revision
+            record.updated_at = clock.value
+            scope.ledger_revision += 1
+            scope.updated_at = clock.value
+            if state == "reconciled_flat":
+                session.add(
+                    QualificationReservationTransition(
+                        reservation_id=hold.reservation_id,
+                        state_revision=state_revision,
+                        from_state="consumed",
+                        to_state="reconciled_flat",
+                        reason_code="synthetic_incomplete_legacy_journal",
+                        evidence_json=None,
+                        occurred_at=clock.value,
+                    )
+                )
+    async with sessions() as session:
+        transitions = (
+            await session.scalars(
+                select(QualificationReservationTransition)
+                .filter_by(reservation_id=hold.reservation_id)
+                .order_by(QualificationReservationTransition.state_revision)
+            )
+        ).all()
+        assert [item.to_state for item in transitions] == [
+            "reserved",
+            "reconciled_flat",
+        ]
+    before = await shape(engine)
+    terminal = await repo.read_event_observation(hold.scope, hold.original_event_key)
+    assert terminal.matched is not None and terminal.matched.state == "reconciled_flat"
+    with pytest.raises(
+        DBAPIError, match="post_submit_closure_legacy_terminal_unresolved"
+    ):
+        async with engine.begin() as connection:
+            await migrate_public_qualified_guard_in_sandbox(connection, "upgrade")
+    assert await shape(engine) == before
+    assert (
+        await repo.read_event_observation(hold.scope, hold.original_event_key)
+    ) == terminal
 
 
 @pytest.fixture

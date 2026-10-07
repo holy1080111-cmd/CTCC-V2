@@ -956,8 +956,6 @@ class QualificationLedgerRepository:
         control_expectation=None,
     ):
         scope = checked(scope, LedgerScope)
-        if claims is not None:
-            claims = checked(claims, AccountLedgerClaims)
         async with self.session_factory() as session, session.begin():
             if control_expectation is None:
                 row = await self._locked(session, scope)
@@ -980,6 +978,16 @@ class QualificationLedgerRepository:
             }
             if previous not in allowed[target]:
                 raise QualificationLedgerError("ledger_transition_denied")
+            if target == "reconciled_flat" and previous in {"consumed", "uncertain"}:
+                # Fresh caller claims, including an empty current inventory, do
+                # not prove that a submitted order cannot appear later. Retain
+                # the hold and intent until an owned post-submit chronology can
+                # establish a separate durable closure witness.
+                raise QualificationLedgerError(
+                    "ledger_post_submit_closure_witness_missing"
+                )
+            if claims is not None:
+                claims = checked(claims, AccountLedgerClaims)
             request_json = record.request_json
             request = decode_reservation_request(request_json)
             if _canonical_json_sha256(request_json) != record.request_sha256:

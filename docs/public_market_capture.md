@@ -47,6 +47,25 @@ ticker 和 books ts 是資料生成時間；REST mark／funding／OI ts 為各�
 觀測，並非值最後變動時間。Funding settlement／next time 不是 freshness。
 WS ack 沒有 source ts；ticker push 沒有 connId，兩者都不能自行補造。
 
+### 封存時間診斷 v2（不授予交易權限）
+
+`public_temporal_evidence_v2.inspect_runtime_temporal_evidence_v2` 只讀既有 sealed
+public runtime journal，先重播完整 plan／event／raw／packet chain，再將 HTTP request
+dispatch、headers receipt、body EOF、response close 與 WS connect／message receipt／close
+的 native UTC＋monotonic stamps 分開核對。原始 `ts` 及 raw SHA256 保留；`ts` 早於
+request start 時標為 `pre_request_cached_content`，不得稱為「這次請求才生成」。
+來源時間晚於自身 headers／WS 訊息收訊、超過原有來源年齡上限、時鐘倒退、或
+G12 barrier 後的 dispatch 未嚴格跨過 barrier，均拒絕。Post-G12 若要求 ticker、
+books 或 WS ticker 是 barrier 後**新生成內容**，其生成 `ts` 還須嚴格大於 barrier；
+mark、funding、OI 的 `exchange_data_return` 時間不被改稱生成時間。
+
+舊 v1/v2 封包格式與回放保持原樣。診斷 receipt 有固定版本與 policy hash，始終
+`admission=DENY`、`execution_authority=false`；封存 journal 自身無法獨立證明原生
+TLS／時鐘／來源，也沒有每筆線上 parser 驗證的精確 instant。receipt 使用封包
+線上驗證後、封存前的 measured sample 檢查當時來源年齡；後續 journal readback
+重驗發生在該 sample 之後，未量到其完成 instant，不能拿這個 sample 假稱
+readback 當下新鮮。精確 per-component validation instant 明示 `null`。
+
 SWAP 的 bid／ask size、book size、OHLC vol、ticker vol24h、OI oi 以合約計；
 OHLC volCcy、ticker volCcy24h、OI oiCcy 以本位幣計；OHLC volCcyQuote 是報價幣，
 可選 oiUsd 是 USD。原始資料不把 missing OI 當 0，合法明示零 OI 可保留。

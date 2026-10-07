@@ -52,6 +52,11 @@ def test_public_source_has_only_explicit_reviewed_consumers():
             "public_market_receipts",
             "public_receipt_storage",
         ),
+        # Pure future-window planning reuses the exact V1 minute-plan contract;
+        # this consumer owns no market I/O or execution authority.
+        APP / "mie" / "validation" / "prospective_capture_schedule.py": (
+            "public_market_receipts",
+        ),
         APP / "mie" / "validation" / "public_checkpoint_service.py": (
             "public_checkpoint_hook",
             "public_market_capture",

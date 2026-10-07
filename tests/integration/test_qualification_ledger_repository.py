@@ -220,7 +220,7 @@ async def test_account_revision_and_current_disarm_invalidate_reservation(
     assert not (await repository.read_scope(fixture.request.scope)).active
 
 
-async def test_confirmed_flat_explicit_reconciliation_releases_but_tombstone_remains(
+async def test_caller_flat_claims_cannot_retire_uncertain_hold_or_tombstone(
     database, fixture
 ):
     repository, clock = await initialize(database, fixture)
@@ -228,7 +228,11 @@ async def test_confirmed_flat_explicit_reconciliation_releases_but_tombstone_rem
     await repository.mark_uncertain(
         fixture.request.scope, receipt.original_event_key, expected_revision=2
     )
-    with pytest.raises(QualificationLedgerError, match="not_newer"):
+    before = await repository.read_scope(fixture.request.scope)
+    assert before.active[0].state == "uncertain"
+    with pytest.raises(
+        QualificationLedgerError, match="post_submit_closure_witness_missing"
+    ):
         await repository.reconcile_reservation(
             fixture.request.scope,
             receipt.original_event_key,
@@ -237,28 +241,88 @@ async def test_confirmed_flat_explicit_reconciliation_releases_but_tombstone_rem
         )
     clock.value += timedelta(seconds=1)
     claims = refresh(fixture.claims, clock.value, armed=False)
-    final = await repository.reconcile_reservation(
-        fixture.request.scope,
-        receipt.original_event_key,
-        claims=claims,
-        expected_revision=3,
+    restarted = QualificationLedgerRepository(database[1], clock=clock)
+    with pytest.raises(
+        QualificationLedgerError, match="post_submit_closure_witness_missing"
+    ):
+        await restarted.reconcile_reservation(
+            fixture.request.scope,
+            receipt.original_event_key,
+            claims=claims,
+            expected_revision=3,
+        )
+    # A missing/forged caller claim is not even inspected after the durable
+    # submitted/uncertain state is found.
+    with pytest.raises(
+        QualificationLedgerError, match="post_submit_closure_witness_missing"
+    ):
+        await restarted.reconcile_reservation(
+            fixture.request.scope,
+            receipt.original_event_key,
+            claims=object(),
+            expected_revision=3,
+        )
+    assert await restarted.read_scope(fixture.request.scope) == before
+    observed = await restarted.read_event_observation(
+        receipt.scope, receipt.original_event_key
     )
-    assert final.state == "reconciled_flat" and final.account_revision == 2
-    assert not (await repository.read_scope(fixture.request.scope)).active
-    again = fixture.request.model_copy(
-        update={"expected_account_revision": 2, "expected_ledger_revision": 4}
-    )
+    assert observed.matched == before.active[0]
+    again = fixture.request.model_copy(update={"expected_ledger_revision": 3})
     with pytest.raises(QualificationLedgerError, match="event_already_recorded"):
         await repository.reserve(again)
     async with database[1]() as session:
         record = await session.get(QualificationReservation, receipt.reservation_id)
-        assert record is not None and record.state == "reconciled_flat"
+        assert record is not None and record.state == "uncertain"
         count = await session.scalar(
             select(func.count())
             .select_from(QualificationReservationTransition)
             .filter_by(reservation_id=receipt.reservation_id)
         )
-        assert count == 3
+        assert count == 2
+
+
+@pytest.mark.parametrize("state", ("consumed", "uncertain"))
+async def test_database_rejects_direct_post_submit_flat_transition(
+    database, fixture, state
+):
+    repository, clock = await initialize(database, fixture)
+    receipt = await repository.reserve(fixture.request)
+    await repository.consume_once(
+        receipt.scope, receipt.original_event_key, expected_revision=2
+    )
+    if state == "uncertain":
+        await repository.mark_uncertain(
+            receipt.scope, receipt.original_event_key, expected_revision=3
+        )
+    before = await repository.read_scope(receipt.scope)
+    assert before.active[0].state == state
+    clock.value += timedelta(seconds=1)
+    with pytest.raises(DBAPIError, match="qualification_reservation_update_denied"):
+        async with database[1]() as session, session.begin():
+            await session.execute(
+                update(QualificationReservation)
+                .where(
+                    QualificationReservation.reservation_id == receipt.reservation_id
+                )
+                .values(
+                    state="reconciled_flat",
+                    state_revision=before.active[0].state_revision + 1,
+                    updated_at=clock.value,
+                )
+            )
+    assert await repository.read_scope(receipt.scope) == before
+    async with database[1]() as session:
+        count = await session.scalar(
+            select(func.count())
+            .select_from(QualificationReservationTransition)
+            .filter_by(reservation_id=receipt.reservation_id)
+        )
+        assert count == (2 if state == "consumed" else 3)
+    assert (
+        await repository.read_event_observation(
+            receipt.scope, receipt.original_event_key
+        )
+    ).matched == before.active[0]
 
 
 async def test_failed_journal_insert_rolls_back_reservation_and_revision(

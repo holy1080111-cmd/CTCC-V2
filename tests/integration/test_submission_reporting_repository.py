@@ -781,6 +781,67 @@ async def test_legacy_consumed_without_intent_also_inhibits_new_entry(
     assert state.ledger_revision == 3 and state.active[0].state == "consumed"
 
 
+@pytest.mark.parametrize("status", ("acknowledged", "uncertain"))
+async def test_caller_flat_cannot_retire_intent_before_or_after_delayed_observation(
+    database, fixture, status
+):
+    # This is a synthetic delayed response, not a Demo order or account proof.
+    ledger, reporter, clock, hold, args = await setup(database, fixture, status=status)
+    before = await ledger.read_scope(hold.scope)
+    assert before.active[0].state == "consumed"
+    assert before.ledger_revision == 3
+    clock.value += timedelta(seconds=1)
+    claims = fixtures.refresh(fixture.claims, clock.value, armed=False)
+    restarted = QualificationLedgerRepository(database[1], clock=clock)
+    with pytest.raises(
+        reservations.QualificationLedgerError,
+        match="post_submit_closure_witness_missing",
+    ):
+        await restarted.reconcile_reservation(
+            hold.scope,
+            hold.original_event_key,
+            claims=claims,
+            expected_revision=3,
+        )
+    assert await restarted.read_scope(hold.scope) == before
+    async with database[1]() as session:
+        assert (
+            await session.scalar(
+                select(func.count())
+                .select_from(QualificationSubmissionOutcome)
+                .where(
+                    QualificationSubmissionOutcome.reservation_id == hold.reservation_id
+                )
+            )
+            == 0
+        )
+
+    # An original response can be recorded after the empty claim was refused.
+    # Acknowledgement still proves neither fill finality nor flat exposure.
+    observed = await reporter.record_observation(
+        hold.scope, hold.original_event_key, **args
+    )
+    assert observed.status == status
+    later = await restarted.read_scope(hold.scope)
+    assert later.active[0].state == (
+        "uncertain" if status == "uncertain" else "consumed"
+    )
+    with pytest.raises(
+        reservations.QualificationLedgerError,
+        match="post_submit_closure_witness_missing",
+    ):
+        await restarted.reconcile_reservation(
+            hold.scope,
+            hold.original_event_key,
+            claims=claims,
+            expected_revision=later.ledger_revision,
+        )
+    assert await restarted.read_scope(hold.scope) == later
+    assert (
+        await restarted.read_event_observation(hold.scope, hold.original_event_key)
+    ).matched == later.active[0]
+
+
 async def test_advisory_lock_serializes_exact_uid_across_settlement_scopes(database):
     from datetime import UTC, datetime
 

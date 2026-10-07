@@ -33,6 +33,31 @@ caller PASS、order callback／payload／ack，也不選新的 order type、marg
 或較新市價。`execution_authority`、`order_retry_authority`、
 `all_fill_prices_covered` 保持 false；hash 或可讀回記錄不能變成可重用許可。
 
+## 0027 送單後結案保護（待完整驗收）
+
+舊 `reconcile_reservation` 可用呼叫者提供的較新空倉 claims，將已
+`consumed` 或 `uncertain` 的預留標成 `reconciled_flat`。空的當前庫存並不能
+排除延遲出現的訂單。0027 在 repository 讀取這類 claims 前拒絕上述轉換，
+並將同一拒絕加入 `public.qualification_reservation_update()` 資料庫觸發器；
+直接 SQL 也不能繞過。拒絕時原預留、送單意圖、修訂號與事件 tombstone
+保持不變，重啟或期限屆滿也不自動釋放。
+
+升級前會在同一個 NOWAIT 表鎖下稽核既存 terminal 預留。任何已是
+`reconciled_flat` 的舊列都會使 0027 升級失敗，即使看起來只是
+`reserved` 未送單取消；缺少送單轉移紀錄不能證明從未送單。升級不改寫、
+刪除或自動隔離舊資料。目前部署資料庫是否含此類舊列仍未知；若有，既有
+immutable ledger 無法靠一般 UPDATE／DELETE 清除 blocker。必須另外審查
+來源證據及獨立的 disposition／quarantine migration，並保留原事件與意圖
+可鑑識性；本 0027 不提供該遷移或 override。失敗狀態不得冒稱 schema
+已受 0027 保護。
+
+從未消耗的 `reserved` 預留仍可沿用既有的本地未送單取消語意；這不證明
+交易所全帳戶已清倉，也不會使呼叫者 claims 成為可信帳戶來源。正式的
+送單後結案仍缺受控、已認證的確切 Demo UID/session、最後送單嘗試後的
+完整訂單／成交／倉位／保護分頁時間序和可驗證的結果終局。尤其不確定的
+exchange response 不能靠一頁空資料或逾時自動解除。現有 Demo/Live
+送單硬閘保持拒絕；0027 不授予交易權限或宣稱 Demo 驗收通過。
+
 ## 尚缺與驗收
 
 這一步補的是持久化與一次性消耗，不是完整 execution runtime。可信全帳戶與
