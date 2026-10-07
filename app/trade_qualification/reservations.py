@@ -640,7 +640,7 @@ def replay_range_reservation(request, *, observed_at):
     boolean or a new schema label cannot stand in for any replay document.
     """
     from app.domain.market import MarketSnapshot
-    from app.trade_qualification import data, quote_collector
+    from app.trade_qualification import account_capture, data, quote_collector
     from app.trade_qualification.recheck import (
         RecordedRecheckAssessment,
         evaluate_recorded_recheck,
@@ -662,6 +662,19 @@ def replay_range_reservation(request, *, observed_at):
         reference = _document(binding.reference_json, data.WSReferenceObservation)
         before = _document(binding.original_market_json, MarketSnapshot)
         after = _document(binding.current_market_json, MarketSnapshot)
+        if type(request) is ReservationRequestV3:
+            packet = account_capture.verify_demo_account_packet(
+                binding.account_packet_json.encode("utf-8"),
+                expected_sha256=binding.account_packet_sha256,
+                expected_plan_sha256=binding.account_plan_sha256,
+            )
+            if (
+                packet.barrier_completed_at != request.origin.publication_completed_at
+                or packet.plan.expected_uid != request.scope.account_id
+                or packet.plan.settlement_currency != request.scope.settlement_currency
+                or packet.completed_at > recorded.observed_at
+            ):
+                raise ValueError("account_recheck_causality")
         if (
             recorded.origin != request.origin
             or quote.quote != request.quote

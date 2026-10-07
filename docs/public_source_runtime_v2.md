@@ -236,6 +236,14 @@ refusal. Legacy Production packets retain their previous bytes and hash; legacy
 quote and aggregate public validators explicitly reject regional provenance,
 while historical Production `:8443` WS receipts remain replayable as diagnostics.
 
+The source journal replays the frozen V2 route, header and transport-policy
+identity from pure `app.domain.source_primitives` declarations. It has no
+dependency on the trade-qualification package and derives TLS hostnames from
+the exact reviewed route table, without parsing a caller URL. Focused parity
+tests compare all three regional declarations and hashes with the independent
+qualification policy. This repairs a public-source dependency-boundary failure
+found by CI; it does not remove the pre-I/O Demo refusal.
+
 Synthetic region, cross-region, forged direct-call, header, proxy, redirect,
 TLS and historical replay tests passed locally. No authenticated registration
 proof, real Demo V2 capture or trading authority was produced; source

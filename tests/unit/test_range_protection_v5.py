@@ -2,7 +2,7 @@
 
 import hashlib
 import json
-from datetime import timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -257,6 +257,59 @@ def test_v3_account_packet_causality_is_checked_before_reservation(chain, change
         match="bound_control_account_packet_causality_invalid",
     ):
         bound._guard_request_session(changed, state, now=fixture.now)
+
+
+def test_v3_account_capture_must_finish_before_recorded_recheck(chain):
+    fixture, binding, _ = chain
+    request = fixture.request
+    completed = datetime.fromisoformat(
+        json.loads(binding.account_packet_json)["completed_at"]
+    )
+    delay = fixture.now - completed
+    assert delay >= timedelta()
+
+    def with_delay(offset):
+        altered = execution_binding(fixture, account_start_delay=offset)
+        replay = request.replay_binding.model_copy(
+            update={
+                name: getattr(altered, name)
+                for name in (
+                    "account_packet_json",
+                    "account_packet_sha256",
+                    "account_plan_sha256",
+                )
+            }
+        )
+        return r.checked_reservation_request(
+            request.model_copy(update={"replay_binding": replay})
+        ), altered
+
+    exact, exact_binding = with_delay(delay)
+    assert (
+        datetime.fromisoformat(
+            json.loads(exact_binding.account_packet_json)["completed_at"]
+        )
+        == fixture.now
+    )
+    assert r.replay_range_reservation(
+        exact, observed_at=fixture.now
+    ).computational_checks_passed
+
+    late, late_binding = with_delay(delay + timedelta(milliseconds=1))
+    assert datetime.fromisoformat(
+        json.loads(late_binding.account_packet_json)["completed_at"]
+    ) == fixture.now + timedelta(milliseconds=1)
+    locked_at = fixture.now + timedelta(milliseconds=2)
+    state = SimpleNamespace(
+        pins=SimpleNamespace(
+            credential_session_sha256=bound.control.digest(
+                json.loads(binding.account_packet_json)["plan"]["session_binding_id"]
+            )
+        )
+    )
+    bound._guard_request_session(late, state, now=locked_at)
+    with pytest.raises(r.QualificationLedgerError, match="ledger_range_replay_denied"):
+        r.replay_range_reservation(late, observed_at=locked_at)
 
 
 @pytest.mark.parametrize(

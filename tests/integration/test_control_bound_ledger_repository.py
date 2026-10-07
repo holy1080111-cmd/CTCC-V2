@@ -7,7 +7,7 @@ Durable tombstones are retained; the harness owns the disposable test database.
 import asyncio
 import json
 from dataclasses import dataclass, replace
-from datetime import timedelta
+from datetime import datetime, timedelta
 from uuid import uuid4
 
 import pytest
@@ -509,6 +509,49 @@ async def test_range_v5_stale_account_packet_cannot_create_event_hold(
     with pytest.raises(
         QualificationLedgerError, match="bound_control_account_packet_causality_invalid"
     ):
+        await s.ledger.reserve_control_bound(request, control_expectation=s.expected)
+    state = await s.ledger.read_scope(request.scope)
+    assert not state.active and state.ledger_revision == 1
+    rid = reservation_id(request.scope, request.origin.original_event_key)
+    async with database[1]() as session:
+        assert await session.get(QualificationReservation, rid) is None
+        assert (
+            await session.scalar(
+                select(QualificationReservationTransition).filter_by(reservation_id=rid)
+            )
+            is None
+        )
+
+
+async def test_range_v5_account_completed_after_recheck_cannot_create_event_hold(
+    database, range_chain
+):
+    fixture, binding = range_chain
+    s = await setup(database, fixture)
+    packet_completed = datetime.fromisoformat(
+        json.loads(binding.account_packet_json)["completed_at"]
+    )
+    delay = fixture.now - packet_completed + timedelta(milliseconds=1)
+    assert delay > timedelta()
+    altered = execution_binding(fixture, account_start_delay=delay)
+    assert datetime.fromisoformat(
+        json.loads(altered.account_packet_json)["completed_at"]
+    ) == fixture.now + timedelta(milliseconds=1)
+    changed_binding = fixture.request.replay_binding.model_copy(
+        update={
+            name: getattr(altered, name)
+            for name in (
+                "account_packet_json",
+                "account_packet_sha256",
+                "account_plan_sha256",
+            )
+        }
+    )
+    request = checked_reservation_request(
+        fixture.request.model_copy(update={"replay_binding": changed_binding})
+    )
+    s.clock.value = fixture.now + timedelta(milliseconds=2)
+    with pytest.raises(QualificationLedgerError, match="ledger_range_replay_denied"):
         await s.ledger.reserve_control_bound(request, control_expectation=s.expected)
     state = await s.ledger.read_scope(request.scope)
     assert not state.active and state.ledger_revision == 1

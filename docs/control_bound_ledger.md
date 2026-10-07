@@ -42,16 +42,18 @@ Its page-chain barrier must equal this request's G12 publication time, and the
 packet must be complete by the transaction's observed time. These checks run
 again during reserved-evidence replay and final control verification; a packet
 from a different publication or the future cannot create an event hold.
+The V3 replay also requires account capture to finish no later than the
+recorded post-G12 recheck, before recomputing that recheck or reserving risk.
 Historical `ReservationRequestV2` payloads remain readable but have no
 pre-reserve packet and are rejected by the control-bound route with a stable
 missing-binding code. Legacy requests make no claim that account-session
 equality has already been verified at reserve. This comparison does not turn an
 unauthenticated packet, journal, or identifier into authority.
 
-The new barrier/completion negative cases passed focused synthetic unit checks.
-Their PostgreSQL counterparts are collected but have not yet run against a real
-database for this source revision. Neither result establishes native account
-authenticity or Demo order authority.
+The barrier and recheck-order negative cases passed focused synthetic unit
+checks. Their PostgreSQL counterparts are collected but have not yet run
+against a real database for this source revision. Neither result establishes
+native account authenticity or Demo order authority.
 
 `read_control_bound_submission_intent(..., expected_sha256=...)` is historical
 evidence readback, including after stop, expiry, restart, or a later uncertain

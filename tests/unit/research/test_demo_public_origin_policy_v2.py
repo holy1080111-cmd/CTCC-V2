@@ -5,10 +5,34 @@ from types import MappingProxyType
 
 import pytest
 
+from app.domain import source_primitives as primitives
 from app.domain.source_primitives import canonical, sha
 from app.trade_qualification import demo_public_origin as origin
 from app.trade_qualification import demo_public_origin_policy_v2 as policy
 from app.trade_qualification import public_source_runtime
+from app.trade_qualification import quote_collector_v2 as quote_v2
+
+
+@pytest.mark.parametrize("region", ("global", "us_au", "eea"))
+def test_source_owned_v2_replay_contract_matches_qualification_policy(region):
+    """Neither package may silently change this version's route or hashes."""
+    route = origin.reviewed_demo_public_route(region)
+    assert primitives.demo_public_v2_route(region) == (
+        route.rest_origin,
+        route.ws_origin,
+        route.rest_hostname,
+        route.ws_hostname,
+    )
+    assert primitives.demo_public_v2_policy_sha256(region) == sha(
+        policy.freeze_demo_public_origin_policy_v2(region)
+    )
+    assert primitives.demo_public_v2_quote_transport_sha256(
+        region
+    ) == quote_v2._transport_policy_sha256(route)
+    for role in ("quote", "candles", "market_aux"):
+        assert primitives.demo_public_v2_headers(
+            region, role
+        ) == origin.demo_public_headers(route, role)
 
 
 @pytest.mark.parametrize(

@@ -8,9 +8,14 @@ import re
 from contextlib import contextmanager
 from datetime import datetime
 from threading import Lock
-from urllib.parse import urlsplit
 from weakref import WeakKeyDictionary
 
+from app.domain.source_primitives import (
+    demo_public_v2_headers,
+    demo_public_v2_policy_sha256,
+    demo_public_v2_quote_transport_sha256,
+    demo_public_v2_route,
+)
 from app.public_market_source.public_market_receipts import (
     ClockStamp,
     PublicReceiptError,
@@ -548,17 +553,14 @@ def _validate_v2_plan(plan):
     ):
         raise PublicReceiptError("runtime_v2_plan_invalid")
     if routed:
-        from app.trade_qualification import demo_public_origin as demo_origin
-        from app.trade_qualification import demo_public_origin_policy_v2 as demo_policy
-        from app.trade_qualification import quote_collector_v2 as quote_v2
-
         try:
-            route = demo_origin.reviewed_demo_public_route(plan["registration_region"])
+            region = plan["registration_region"]
+            rest_origin, ws_origin, _, _ = demo_public_v2_route(region)
             if (
                 not route_fields.issubset(plan)
                 or plan["registration_region_authenticated"] is not False
-                or plan["rest_origin"] != route.rest_origin
-                or plan["ws_origin"] != route.ws_origin
+                or plan["rest_origin"] != rest_origin
+                or plan["ws_origin"] != ws_origin
                 or any(
                     type(plan[name]) is not str
                     or re.fullmatch("[0-9a-f]{64}", plan[name]) is None
@@ -568,16 +570,12 @@ def _validate_v2_plan(plan):
                     )
                 )
                 or plan["demo_public_origin_policy_sha256"]
-                != sha(
-                    demo_policy.freeze_demo_public_origin_policy_v2(
-                        route.registration_region
-                    )
-                )
+                != demo_public_v2_policy_sha256(region)
                 or plan["quote_transport_policy_sha256"]
-                != quote_v2._transport_policy_sha256(route)
+                != demo_public_v2_quote_transport_sha256(region)
             ):
                 raise ValueError
-        except (KeyError, ValueError):
+        except (KeyError, ValueError, PublicReceiptError):
             raise PublicReceiptError("runtime_v2_route_plan_invalid") from None
     # Reuse exact existing identity/chronology validation without changing those
     # schemas or converting any source, publication receipt or capability.
@@ -606,6 +604,23 @@ def _plan_start(plan):
     }:
         return plan["invocation_started"]
     return plan["barrier"]
+
+
+def _plan_tls_hostnames(plan):
+    """Use the validated exact route table; do not parse a caller URL here."""
+    if "registration_region" in plan:
+        rest, ws, rest_hostname, ws_hostname = demo_public_v2_route(
+            plan["registration_region"]
+        )
+        if plan["rest_origin"] != rest or plan["ws_origin"] != ws:
+            raise PublicReceiptError("runtime_v2_route_plan_invalid")
+        return rest_hostname, ws_hostname
+    if (
+        plan["rest_origin"] != "https://www.okx.com"
+        or plan["ws_origin"] not in _PUBLIC_WS_ORIGINS
+    ):
+        raise PublicReceiptError("runtime_plan_invalid")
+    return "www.okx.com", "ws.okx.com"
 
 
 def _packet_stage_matches(plan, barrier, *, exact=False):
@@ -644,13 +659,12 @@ def _tls(value, hostname):
 
 def _routed_request_headers(plan, role):
     """Public-only header receipt expected from one reviewed Demo route."""
-    from app.trade_qualification import demo_public_origin as demo_origin
-
-    route = demo_origin.reviewed_demo_public_route(plan["registration_region"])
-    if plan["rest_origin"] != route.rest_origin:
+    region = plan["registration_region"]
+    rest_origin, _, rest_hostname, _ = demo_public_v2_route(region)
+    if plan["rest_origin"] != rest_origin:
         raise PublicReceiptError("runtime_demo_request_headers_invalid")
-    headers = demo_origin.demo_public_headers(route, role)
-    headers["Host"] = route.rest_hostname
+    headers = demo_public_v2_headers(region, role)
+    headers["Host"] = rest_hostname
     return [
         [name.lower(), value]
         for name, value in sorted(headers.items(), key=lambda pair: pair[0].lower())
@@ -660,6 +674,7 @@ def _routed_request_headers(plan, role):
 def _replay_semantics(plan, summary, events, payloads):
     """Audit integrity only; a forged/replayed document never issues a carrier."""
     requests, websocket, observations = {}, {}, []
+    rest_hostname, ws_hostname = _plan_tls_hostnames(plan)
     boundary = _plan_start(plan)
     last = boundary
     complete = summary["disposition"] == "captured"
@@ -789,7 +804,7 @@ def _replay_semantics(plan, summary, events, payloads):
                     or type(meta["truncated"]) is not bool
                 ):
                     raise PublicReceiptError("runtime_headers_invalid")
-                verified = _tls(meta["tls"], urlsplit(plan["rest_origin"]).hostname)
+                verified = _tls(meta["tls"], rest_hostname)
                 headers = meta["safe_headers"]
                 if (
                     type(headers) is not list
@@ -924,7 +939,7 @@ def _replay_semantics(plan, summary, events, payloads):
             elif kind == "ws_connected":
                 if (
                     set(meta) != {"connected", "tls"}
-                    or not _tls(meta["tls"], urlsplit(plan["ws_origin"]).hostname)
+                    or not _tls(meta["tls"], ws_hostname)
                     or raw is not None
                 ):
                     raise PublicReceiptError("runtime_ws_tls_invalid")

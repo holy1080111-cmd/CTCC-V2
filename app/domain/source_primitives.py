@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import UTC, datetime, timedelta
+from types import MappingProxyType
 from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -56,6 +57,136 @@ def canonical(value) -> bytes:
     return json.dumps(
         value, ensure_ascii=True, sort_keys=True, separators=(",", ":"), allow_nan=False
     ).encode("ascii")
+
+
+# Immutable, public-only Demo V2 route identity shared by the source journal
+# and qualification's independent route policy. These declarations neither
+# attest an account's registration region nor grant network or order authority.
+_DEMO_V2_ROUTES = MappingProxyType(
+    {
+        "global": (
+            "https://openapi.okx.com",
+            "wss://wspap.okx.com:443/ws/v5/public",
+            "openapi.okx.com",
+            "wspap.okx.com",
+        ),
+        "us_au": (
+            "https://us.okx.com",
+            "wss://wsuspap.okx.com:443/ws/v5/public",
+            "us.okx.com",
+            "wsuspap.okx.com",
+        ),
+        "eea": (
+            "https://eea.okx.com",
+            "wss://wseeapap.okx.com:443/ws/v5/public",
+            "eea.okx.com",
+            "wseeapap.okx.com",
+        ),
+    }
+)
+_DEMO_V2_ROLE_PATHS = MappingProxyType(
+    {
+        "quote": (
+            "/api/v5/market/ticker",
+            "/api/v5/public/funding-rate",
+            "/api/v5/public/mark-price",
+        ),
+        "candles": ("/api/v5/market/candles",),
+        "market_aux": (
+            "/api/v5/market/books",
+            "/api/v5/public/open-interest",
+        ),
+    }
+)
+_DEMO_V2_USER_AGENTS = MappingProxyType(
+    {
+        "quote": "CTCC-source-quote/1",
+        "candles": "CTCC-source-candles/1",
+        "market_aux": "CTCC-source-market-aux/1",
+    }
+)
+_DEMO_V2_QUOTE_ORDER = (
+    ("funding", "/api/v5/public/funding-rate"),
+    ("mark", "/api/v5/public/mark-price"),
+    ("ticker", "/api/v5/market/ticker"),
+)
+
+
+def demo_public_v2_route(region: str) -> tuple[str, str, str, str]:
+    """Frozen route declaration for replay; the region is an untrusted claim."""
+    if type(region) is not str or region not in _DEMO_V2_ROUTES:
+        raise PublicReceiptError("demo_public_v2_region_invalid")
+    return _DEMO_V2_ROUTES[region]
+
+
+def demo_public_v2_headers(region: str, role: str) -> dict[str, str]:
+    demo_public_v2_route(region)
+    if type(role) is not str or role not in _DEMO_V2_USER_AGENTS:
+        raise PublicReceiptError("demo_public_v2_role_invalid")
+    return {
+        "Accept": "application/json",
+        "Accept-Encoding": "identity",
+        "User-Agent": _DEMO_V2_USER_AGENTS[role],
+        "x-simulated-trading": "1",
+    }
+
+
+def demo_public_v2_policy_document(region: str) -> dict:
+    rest, ws, rest_host, ws_host = demo_public_v2_route(region)
+    return {
+        "schema_version": "ctcc.demo_public_origin_policy.v2",
+        "environment": "demo",
+        "registration_region": region,
+        "rest_origin": rest,
+        "rest_tls_hostname": rest_host,
+        "ws_origin": ws,
+        "ws_tls_hostname": ws_host,
+        "rest_roles": {
+            role: {
+                "methods": ["GET"],
+                "paths": list(paths),
+                "headers": demo_public_v2_headers(region, role),
+            }
+            for role, paths in _DEMO_V2_ROLE_PATHS.items()
+        },
+        "request_observed": False,
+        "response_observed": False,
+        "account_region_authenticated": False,
+        "source_authenticity_verified": False,
+        "execution_authority": False,
+        "admission": "DENY",
+    }
+
+
+def demo_public_v2_policy_sha256(region: str) -> str:
+    return sha(canonical(demo_public_v2_policy_document(region)))
+
+
+def demo_public_v2_quote_transport_sha256(region: str) -> str:
+    """Hash the historical V3 quote transport declaration without IO imports."""
+    rest, _, _, _ = demo_public_v2_route(region)
+    return sha(
+        canonical(
+            {
+                "version": "ctcc.raw_quote_transport.v3",
+                "origin": rest,
+                "method": "GET",
+                "request_order": _DEMO_V2_QUOTE_ORDER,
+                "request_timeout_seconds": 2,
+                "batch_timeout_seconds": 6,
+                "max_response_bytes": 32768,
+                "retries": 0,
+                "redirects": False,
+                "proxy": False,
+                "native_journal": "existing_owned_source_fetch_http",
+                "registration_region": region,
+                "request_headers": demo_public_v2_headers(region, "quote"),
+                "demo_public_origin_policy_sha256": demo_public_v2_policy_sha256(
+                    region
+                ),
+            }
+        )
+    )
 
 
 def _pairs(pairs):
