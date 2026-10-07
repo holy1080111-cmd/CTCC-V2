@@ -1,12 +1,14 @@
 """Synthetic original journals only; no account/DB/native-clock acceptance."""
 
 import json
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import pytest
 
 from app.trade_qualification import account_bootstrap_runtime as bootstrap
 from app.trade_qualification import account_capture as capture
+from app.trade_qualification import account_capture_journal as journal
+from app.trade_qualification import account_collector as collector
 from app.trade_qualification import account_current_history_join as joined
 from app.trade_qualification import account_current_source_verifier as current
 from app.trade_qualification import account_observation_index as observed
@@ -41,6 +43,7 @@ async def recorded_current(
     pages=None,
     plan_changes=None,
     states=None,
+    delayed_first_close_seconds=None,
 ):
     session, harness, _, args, events = setup(monkeypatch, states=states)
     selected = current_plan(**(plan_changes or {}))
@@ -59,6 +62,18 @@ async def recorded_current(
             for index in range(300)
         }
     )
+    if delayed_first_close_seconds is not None:
+        original_close = collector._close
+
+        async def delayed_first_close(response, *, pending_cancel=False):
+            await original_close(response, pending_cancel=pending_cancel)
+            if len(harness.streams) == 1:
+                for index in range(harness.clock.calls, 300):
+                    harness.clock.overrides[index] += timedelta(
+                        seconds=delayed_first_close_seconds
+                    )
+
+        monkeypatch.setattr(collector, "_close", delayed_first_close)
     await bootstrap.collect_bootstrap_recorded(session, **args)
     harness.assert_closed()
     return tuple(events), harness
@@ -105,11 +120,68 @@ async def test_v6_collects_only_complete_current_pages_and_keeps_history_unknown
     assert "separate_history_source_join_required" in packet.incomplete_reasons
     assert packet.account_complete is packet.execution_authority is False
     proof = json.loads(verify_current(chain).receipt_json)
-    assert proof["schema_version"] == "ctcc.current_account_source_observation.v3"
+    assert proof["schema_version"] == "ctcc.current_account_source_observation.v4"
+    assert proof["observation_interval"]["freshness_basis"] == (
+        "replay_verified_B1_body_complete_EOF"
+    )
     assert proof["observed_flat"] is True
     assert proof["history_query_verifier_sha256"] is None
     assert proof["history_join_state"] == "separate_original_history_required"
     assert proof["account_complete"] is proof["execution_authority"] is False
+
+
+@pytest.mark.asyncio
+async def test_v6_freshness_uses_verified_eof_when_first_response_close_is_delayed(
+    monkeypatch,
+):
+    chain, _ = await recorded_current(monkeypatch, delayed_first_close_seconds=1)
+    eof_record = next(
+        journal.checked_event(item.event)
+        for item in chain
+        if journal.checked_event(item.event)["kind"] == "body_complete"
+    )
+    eof = capture._utc(datetime.fromisoformat(eof_record["observed_at"]))
+    cutoff = eof + timedelta(seconds=30, milliseconds=500)
+    pins = {
+        "reference": observed.source_reference(chain),
+        "scope": SCOPE,
+        "validated_at": cutoff,
+    }
+    legacy = json.loads(
+        current.verify_current_account_sources(
+            chain,
+            expected_policy_sha256=current.V6_LEGACY_POLICY_SHA256,
+            **pins,
+        ).receipt_json
+    )
+    fresh_contract = json.loads(
+        current.verify_current_account_sources(
+            chain, expected_policy_sha256=current.V6_POLICY_SHA256, **pins
+        ).receipt_json
+    )
+    first_closed = capture._utc(
+        datetime.fromisoformat(fresh_contract["current_pages"][0]["body_completed_at"])
+    )
+    assert eof + timedelta(seconds=30) < cutoff < first_closed + timedelta(seconds=30)
+    assert legacy["schema_version"] == "ctcc.current_account_source_observation.v3"
+    assert current.V6_LEGACY_POLICY_SHA256 == (
+        "375b6c7429273718d81edb995e9433669f3fc941cb07f0042cad21fbbfede642"
+    )
+    assert legacy["observed_flat"] is True
+    assert "body_exhausted_at" not in legacy["current_pages"][0]
+    assert (
+        legacy["current_pages"][0]["body_completed_at"]
+        == (fresh_contract["current_pages"][0]["body_completed_at"])
+    )
+    assert (
+        fresh_contract["schema_version"] == "ctcc.current_account_source_observation.v4"
+    )
+    assert fresh_contract["current_pages"][0]["body_exhausted_at"] == eof.isoformat()
+    assert fresh_contract["observed_flat"] is False
+    assert "measured_current_receipt_stale" in fresh_contract["blocking_reasons"]
+    assert fresh_contract["admission"] == "DENY"
+    assert fresh_contract["account_complete"] is False
+    assert fresh_contract["execution_authority"] is False
 
 
 @pytest.mark.asyncio

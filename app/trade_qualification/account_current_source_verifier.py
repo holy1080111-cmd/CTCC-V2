@@ -57,13 +57,29 @@ POLICY_BYTES = journal.canonical(
     }
 )
 POLICY_SHA256 = journal.digest(POLICY_BYTES)
-V6_POLICY_BYTES = journal.canonical(
+V6_LEGACY_POLICY_BYTES = journal.canonical(
     {
         "version": "ctcc.current_account_source_policy.v3",
         "prior_current_policy_sha256": POLICY_SHA256,
         "capture_plan_contract": "ctcc.demo_current_account_plan.v6",
         "current_streams": list(capture.V6_CURRENT_STREAMS),
         "original_journal": "complete_B1_page_chain_and_terminal_replay_required",
+        "exact_identity": "environment_uid_main_uid_session_region_mode_currency",
+        "history": "separate_original_source_join_required",
+        "account_complete": False,
+        "execution_authority": False,
+    }
+)
+V6_LEGACY_POLICY_SHA256 = journal.digest(V6_LEGACY_POLICY_BYTES)
+V6_POLICY_BYTES = journal.canonical(
+    {
+        "version": "ctcc.current_account_source_policy.v4",
+        "prior_current_policy_sha256": V6_LEGACY_POLICY_SHA256,
+        "capture_plan_contract": "ctcc.demo_current_account_plan.v6",
+        "current_streams": list(capture.V6_CURRENT_STREAMS),
+        "original_journal": "complete_B1_page_chain_and_terminal_replay_required",
+        "maximum_measured_receipt_age_seconds": 30,
+        "freshness_basis": "replay_verified_B1_body_complete_EOF_not_response_close",
         "exact_identity": "environment_uid_main_uid_session_region_mode_currency",
         "history": "separate_original_source_join_required",
         "account_complete": False,
@@ -127,7 +143,7 @@ def verify_current_account_sources(
         raise CurrentAccountSourceError("current_source_verification_invalid") from None
 
 
-def _verify_current_only_chain(chain, reference, scope):
+def _verify_current_only_chain(chain, reference, scope, *, with_eof=False):
     """Replay the complete B1 current-only journal, without inventing history."""
     records = history._chain(chain, reference.head_sha256)
     packets = [item.event.packet_payload for item in chain if item.event.packet_payload]
@@ -156,13 +172,41 @@ def _verify_current_only_chain(chain, reference, scope):
         _deny("current_source_capture_binding_mismatch")
     journal._sha(initial.get("local_checkpoint_sha256"))
     history._joined_pages(records, chain, packet)
+    eof_times = []
+    if with_eof:
+        # The packet's body_completed_at is the response-close upper bound.
+        # B1's body_complete is measured EOF, already checked against original
+        # page bytes, stage order and packet by _joined_pages.
+        eof_records = [item for item in records if item["kind"] == "body_complete"]
+        if len(eof_records) != len(packet.observations):
+            _deny("current_source_eof_witness_missing")
+        for index, (record, page) in enumerate(
+            zip(eof_records, packet.observations, strict=True)
+        ):
+            data = record["data"]
+            if (
+                type(data.get("request_index")) is not int
+                or data["request_index"] != index
+                or data.get("stream") != page.request.stream
+                or type(data.get("page_index")) is not int
+                or data["page_index"] != page.page_index
+                or data.get("body_exhaustion_observed") is not True
+            ):
+                _deny("current_source_eof_witness_mismatch")
+            eof = history._time(record["observed_at"])
+            if (
+                data.get("body_completed_at") != eof.isoformat()
+                or not page.headers_received_at <= eof <= page.body_completed_at
+            ):
+                _deny("current_source_eof_witness_mismatch")
+            eof_times.append(eof)
     if (
         records[-2]["data"].get("plan_sha256") != reference.plan_sha256
         or records[-2]["data"].get("local_checkpoint_sha256")
         != initial["local_checkpoint_sha256"]
     ):
         _deny("current_source_checkpoint_mismatch")
-    return packet
+    return tuple(eof_times) if with_eof else packet
 
 
 def _verify(chain, reference, scope, validated_at, policy):
@@ -171,7 +215,7 @@ def _verify(chain, reference, scope, validated_at, policy):
     if (
         type(validated_at) is not datetime
         or type(policy) is not str
-        or policy not in {POLICY_SHA256, V6_POLICY_SHA256}
+        or policy not in {POLICY_SHA256, V6_LEGACY_POLICY_SHA256, V6_POLICY_SHA256}
     ):
         _deny("current_source_policy_or_validation_invalid")
     at = capture._utc(validated_at)
@@ -194,8 +238,14 @@ def _verify(chain, reference, scope, validated_at, policy):
         expected_sha256=reference.packet_sha256,
         expected_plan_sha256=reference.plan_sha256,
     )
-    if policy == V6_POLICY_SHA256:
-        _verify_current_only_chain(chain, reference, scope)
+    current_replay = (
+        _verify_current_only_chain(
+            chain, reference, scope, with_eof=policy == V6_POLICY_SHA256
+        )
+        if policy in {V6_LEGACY_POLICY_SHA256, V6_POLICY_SHA256}
+        else None
+    )
+    eof_times = current_replay if policy == V6_POLICY_SHA256 else None
     if at < packet.completed_at:
         _deny("current_source_validation_precedes_capture")
     blocked = set()
@@ -222,23 +272,24 @@ def _verify(chain, reference, scope, validated_at, policy):
             name in {"instId", "instType", "ccy"} for name, _ in page.request.parameters
         ):
             _deny("current_inventory_filtered_query")
-        pages.append(
-            {
-                "stream": stream,
-                "request_index": request_index,
-                "page_index": page.page_index,
-                "request_query": list(page.request.parameters),
-                "after": page.after,
-                "previous_page_sha256": page.previous_page_sha256,
-                "body_sha256": page.body_sha256,
-                "receipt_sha256": page.receipt_sha256,
-                "request_started_at": page.request_started_at.isoformat(),
-                "headers_received_at": page.headers_received_at.isoformat(),
-                "body_completed_at": page.body_completed_at.isoformat(),
-                "terminal": page.terminal,
-                "row_count": len(page.rows),
-            }
-        )
+        page_record = {
+            "stream": stream,
+            "request_index": request_index,
+            "page_index": page.page_index,
+            "request_query": list(page.request.parameters),
+            "after": page.after,
+            "previous_page_sha256": page.previous_page_sha256,
+            "body_sha256": page.body_sha256,
+            "receipt_sha256": page.receipt_sha256,
+            "request_started_at": page.request_started_at.isoformat(),
+            "headers_received_at": page.headers_received_at.isoformat(),
+            "body_completed_at": page.body_completed_at.isoformat(),
+            "terminal": page.terminal,
+            "row_count": len(page.rows),
+        }
+        if policy == V6_POLICY_SHA256:
+            page_record["body_exhausted_at"] = eof_times[request_index].isoformat()
+        pages.append(page_record)
         for ordinal, row in enumerate(page.rows):
             raw = json.loads(row.canonical_json)
             if stream in INVENTORY_STREAMS and raw.get("instType") != "SWAP":
@@ -273,8 +324,10 @@ def _verify(chain, reference, scope, validated_at, policy):
     finished = max(
         page.body_completed_at for group in grouped.values() for page in group
     )
-    earliest_received = min(
-        page.body_completed_at for group in grouped.values() for page in group
+    earliest_received = (
+        min(eof_times)
+        if policy == V6_POLICY_SHA256
+        else min(page.body_completed_at for group in grouped.values() for page in group)
     )
     if finished - started > timedelta(seconds=120):
         blocked.add("current_response_interval_exceeds_policy")
@@ -345,6 +398,8 @@ def _verify(chain, reference, scope, validated_at, policy):
             "ctcc.current_account_source_observation.v2"
             if policy == POLICY_SHA256
             else "ctcc.current_account_source_observation.v3"
+            if policy == V6_LEGACY_POLICY_SHA256
+            else "ctcc.current_account_source_observation.v4"
         ),
         "policy_sha256": policy,
         "scope_sha256": journal.digest(
@@ -419,8 +474,19 @@ def _verify(chain, reference, scope, validated_at, policy):
         "execution_authority": False,
         "admission": "DENY",
     }
-    if policy == V6_POLICY_SHA256:
+    if policy in {V6_LEGACY_POLICY_SHA256, V6_POLICY_SHA256}:
         value["recorded_current_chain_head_sha256"] = reference.head_sha256
         value["history_join_state"] = "separate_original_history_required"
         value["unverified"].append("separate_history_source_join")
+    if policy == V6_POLICY_SHA256:
+        value["observation_interval"]["earliest_body_exhausted_at"] = (
+            earliest_received.isoformat()
+        )
+        value["observation_interval"]["freshness_basis"] = (
+            "replay_verified_B1_body_complete_EOF"
+        )
+        balance_index = packet.observations.index(balance_page)
+        value["balance"]["measured_stamp"]["body_exhausted_at"] = eof_times[
+            balance_index
+        ].isoformat()
     return CurrentAccountSourceVerification(journal.canonical(value))

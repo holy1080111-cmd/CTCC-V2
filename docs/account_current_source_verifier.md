@@ -46,8 +46,14 @@ Neither condition grants account or execution authority. [OKX account balance
 and risk fields](https://www.okx.com/docs-v5/en/).
 
 The policy fixes a 120-second maximum current-response span and a 30-second
-maximum age of the earliest current body completion at the explicit validation
-cutoff. These are measurement-policy bounds, not exchange-global atomicity.
+maximum age at the explicit validation cutoff. For the active V6 v4 policy,
+the age starts at the earliest original B1 `body_complete` event: the measured
+end of response bytes, replayed against the page and journal. The packet's
+`body_completed_at` is the later response-close upper bound and cannot make
+an old page fresh. V6 v3 receipts retain their original policy hash and
+response-close interpretation for historical replay; they do not acquire v4
+qualification. Missing or inconsistent EOF evidence fails closed. These are
+measurement-policy bounds, not exchange-global atomicity.
 The pure verifier's declared `validated_at` is not a live clock capability. A
 future owned coordinator must obtain its actual current clock and credential
 session again and reject stale replay. No captured update time is altered.

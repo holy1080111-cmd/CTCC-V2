@@ -85,7 +85,10 @@ pinned during permission/owner/identity validation, IO and readback. Windows
 denies replacement while the handle is open; POSIX uses relative no-follow open
 and checks descriptor identity/owner/mode/link count before and after IO. Existing
 files are never overwritten. The tool rejects
-Git/source/workspace paths, evidence directories, queue paths and reparse paths.
+Git/source/workspace paths, evidence and release-archive directories, queue
+paths and reparse paths. A managed checkout's sibling validation workspace is
+excluded when identified; named validation, checkpoint and final-evidence
+directories are excluded even without that workspace marker.
 Only the exact new file's Windows permissions change, never machine policy or
 directory ACLs. Token files must be excluded from every source/archive/evidence
 bundle and build context. In containers, provision the private token read-only

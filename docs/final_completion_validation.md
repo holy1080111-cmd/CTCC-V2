@@ -3817,3 +3817,25 @@ G12 publication or network I/O because registration-region provenance and
 complete account identity are unavailable. No real Demo or Live request or
 order was made by this work. None of R5, R7, Demo, Micro Live, OOS, release or
 final acceptance is promoted by these repairs.
+
+## 2026-10-07 V6 account EOF and Notion private-path corrections
+
+The V6 current-account diagnostic previously measured its 30-second receipt
+age from response close, even though the original B1 journal had already
+recorded when response bytes ended. A delayed close could make the diagnostic
+call an expired page fresh. The active v4 policy now replays each B1
+`body_complete` event, binds its EOF time to the exact page, and measures age
+from the earliest EOF. It preserves the v3 policy bytes and hash for historical
+receipt replay. A synthetic delayed-close boundary case shows v4 becomes
+stale where v3 was still `observed_flat`; both remain `DENY` and grant no
+account or execution authority. Focused account gateway/history tests passed
+11/11 and three adjacent native proof/component cases passed. This is not an
+authenticated account-source or reconciliation acceptance.
+
+The Notion runtime token path check now rejects the managed validation
+workspace and named validation, checkpoint, evidence and release-archive
+directories while preserving external private AppData and POSIX config paths.
+Fifteen focused Windows path tests passed. No token was read or created, no
+Notion write was made, and the reporting worker remains disabled. These
+changes require a new exact-source full CI run after commit; results from an
+earlier source SHA cannot establish their full regression status.

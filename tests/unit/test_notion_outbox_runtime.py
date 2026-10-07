@@ -556,7 +556,18 @@ def test_private_token_save_never_writes_to_replacement_permissive_file(
     assert path.read_bytes() in {b"", other}
 
 
-@pytest.mark.parametrize("kind", ["git", "reports", "artifacts", "backups", "source"])
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "git",
+        "reports",
+        "artifacts",
+        "backups",
+        "validation-results",
+        "evidence",
+        "source",
+    ],
+)
 def test_secret_path_excludes_source_git_and_evidence(tmp_path, kind):
     if kind == "source":
         path = Path.cwd() / "private-token"
@@ -567,6 +578,62 @@ def test_secret_path_excludes_source_git_and_evidence(tmp_path, kind):
         path = tmp_path / kind / "private-token"
     with pytest.raises(binding.NotionBindingError):
         binding.external_secret_path(path)
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "release-archives",
+        "source-archives",
+        "final-evidence",
+        "final-evidence-bundle",
+        "checkpoints",
+    ],
+)
+def test_secret_path_excludes_archives_without_workspace_marker(tmp_path, kind):
+    path = tmp_path / kind / "private.token"
+    with pytest.raises(
+        binding.NotionBindingError, match="notion_secret_inside_evidence"
+    ):
+        binding.external_secret_path(path)
+
+
+def test_secret_path_excludes_sibling_workspace_but_allows_external_private_root(
+    tmp_path, monkeypatch
+):
+    workspace = tmp_path / "workspace"
+    (workspace / "validation-results").mkdir(parents=True)
+    source = (
+        workspace / "canonical-final" / "app" / "trade_evidence" / "notion_binding.py"
+    )
+    monkeypatch.setattr(binding, "__file__", str(source))
+    with pytest.raises(
+        binding.NotionBindingError, match="notion_secret_inside_source_or_workspace"
+    ):
+        binding.external_secret_path(workspace / "validation-results" / "private.token")
+    with pytest.raises(
+        binding.NotionBindingError, match="notion_secret_inside_source_or_workspace"
+    ):
+        binding.external_secret_path(workspace / "other-sibling" / "private.token")
+    outside = tmp_path / "private" / "private.token"
+    assert binding.external_secret_path(outside) == outside
+
+
+@pytest.mark.parametrize(
+    "private_parts",
+    [
+        ("AppData", "Local", "CTCC", "private-notion", "token"),
+        (".config", "ctcc", "private-notion", "token"),
+    ],
+)
+def test_home_checkout_does_not_reject_external_private_root(
+    tmp_path, monkeypatch, private_parts
+):
+    home = tmp_path / "home"
+    source = home / "CTCC-V2" / "app" / "trade_evidence" / "notion_binding.py"
+    monkeypatch.setattr(binding, "__file__", str(source))
+    external = home.joinpath(*private_parts)
+    assert binding.external_secret_path(external) == external
 
 
 @pytest.mark.asyncio
