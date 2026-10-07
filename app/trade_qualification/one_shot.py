@@ -254,6 +254,7 @@ _PREFLIGHT_CODES = frozenset(
         "one_shot_absolute_root_required",
         "one_shot_purpose_invalid",
         "one_shot_runtime_policy_invalid",
+        "one_shot_observed_clock_injected",
         "one_shot_original_input_envelope_invalid",
         "one_shot_intent_or_run_invalid",
         "one_shot_intent_invalid",
@@ -502,6 +503,8 @@ async def publish_capture_recheck(
             or not callable(clock)
         ):
             raise OneShotInputError("one_shot_runtime_policy_invalid")
+        if purpose == "observed" and clock is not actual_utc:
+            raise OneShotInputError("one_shot_observed_clock_injected")
         market, pre, inputs = _original(original_market, run, original_inputs)
         selected = public_capture._policy_copy(market_policy)
         plan = accounts._checked_plan(account_plan, expected_account_plan_sha256)

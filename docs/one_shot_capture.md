@@ -7,6 +7,10 @@
 `PreEvidenceRun`、精確七欄 original inputs，以及固定公開收集政策、Demo
 帳戶 plan／外部 plan pin／明示 credentials。沒有 injected publisher、collector、
 order callback、caller PASS 或舊 `EvidenceGateRun` 參數。
+`purpose="observed"` 只能使用本模組預設的 `actual_utc`；注入 clock 會在
+G12／檔案／網路之前拒絕。`purpose="synthetic_test"` 仍可注入測試時鐘。
+這只移除觀測標籤下的 caller clock 控制，host UTC 並非獨立可信校時證明，
+也不會把結果提升為真實 Demo／Shadow 樣本或執行許可。
 
 ## 實際順序與停止條件
 

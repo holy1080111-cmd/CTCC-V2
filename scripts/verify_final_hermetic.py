@@ -28,7 +28,10 @@ from scripts.verify_linux_shard import POSTGRES_TEST_PATHS, SHARD_COUNT, selecte
 VALIDATION_BUDGET_SECONDS = 165 * 60
 CLEANUP_BUDGET_SECONDS = 5 * 60
 HEARTBEAT_INTERVAL_SECONDS = 60
-POSTGRES_TEST_TIMEOUT_SECONDS = 75 * 60
+# The exact 0b28282 PostgreSQL shard reached 84% before the 75-minute stage
+# deadline killed pytest without a JUnit report. Keep a bounded stage deadline
+# inside the 165-minute validation and 180-minute CI job budgets.
+POSTGRES_TEST_TIMEOUT_SECONDS = 120 * 60
 FULL_TEST_TIMEOUT_SECONDS = 100 * 60
 
 ARCHIVE_REQUIRED_CASES = (
@@ -749,6 +752,7 @@ def main():
                 "-p",
                 "no:cacheprovider",
                 "-ra",
+                "-vv",
                 "--junitxml=/validation-results/postgres-intent.xml",
             ]
             if args.suite == "postgres":

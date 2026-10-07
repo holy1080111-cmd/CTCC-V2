@@ -661,6 +661,33 @@ async def test_invalid_input_rejected_before_any_publication(
 
 
 @pytest.mark.asyncio
+async def test_observed_purpose_rejects_injected_clock_before_g12_or_network(
+    inputs, tmp_path, monkeypatch
+):
+    args = arguments(inputs, tmp_path)
+    args["purpose"] = "observed"
+    calls = []
+
+    def injected_clock():
+        calls.append("clock")
+        return inputs[0].evaluated_at
+
+    def forbidden(*a, **kw):
+        pytest.fail("injected observed clock crossed publication or network")
+
+    args["clock"] = injected_clock
+    monkeypatch.setattr(module, "publish_qualification_evidence", forbidden)
+    monkeypatch.setattr(module.public_capture, "_new_client", forbidden)
+    monkeypatch.setattr(module.private_capture, "_new_client", forbidden)
+    with pytest.raises(
+        module.OneShotInputError, match="^one_shot_observed_clock_injected$"
+    ):
+        await module.publish_capture_recheck(**args)
+    assert calls == []
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("clock_case", ["expired", "reversed", "bad_type"])
 async def test_invalid_clock_never_opens_fresh_clients(
     inputs, tmp_path, monkeypatch, clock_case
