@@ -43,6 +43,7 @@ POSTGRES_INTEGRATION = (
     "test_demo_control_durability_probe.py",
     "test_demo_control_repository.py",
     "test_durable_migration_downgrade.py",
+    "test_gate3_capture_schedule_pin_repository.py",
     "test_history_submission_intent_repository.py",
     "test_ledger_event_observation_repository.py",
     "test_lifecycle_repository.py",
