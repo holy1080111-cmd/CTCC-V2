@@ -15,6 +15,7 @@ MIGRATIONS = {
     "0025": "0025_control_bound_submission_reporting.py",
     "0026": "0026_gate3_capture_schedule_pin.py",
     "0027": "0027_post_submit_closure_guard.py",
+    "0028": "0028_gate3_schedule_publication_ack.py",
 }
 TABLES = {
     # 0023 is constraint/trigger-only and has dedicated upgrade/downgrade

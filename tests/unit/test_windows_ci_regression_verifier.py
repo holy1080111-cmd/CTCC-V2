@@ -142,6 +142,8 @@ def test_junit_rejects_unsafe_or_incomplete_evidence(
 
 
 def test_integration_module_classification_fails_on_new_module(tmp_path: Path):
+    assert "test_gate3_schedule_publication_ack.py" in verifier.POSTGRES_INTEGRATION
+    assert "test_gate3_schedule_publication_ack.py" not in verifier.NO_DB_INTEGRATION
     integration = tmp_path / "tests" / "integration"
     integration.mkdir(parents=True)
     (tmp_path / "tests" / "unit").mkdir()

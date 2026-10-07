@@ -26,9 +26,13 @@ from tests.unit.mie.test_gate3_prospective import valid_prospective_preregistrat
 def valid_schedule(
     *, start: datetime | None = None
 ) -> tuple[Gate3ProspectivePreregistration, ProspectiveCaptureScheduleV1]:
+    now = datetime.now(UTC).replace(microsecond=0)
     if start is None:
-        current = datetime.now(UTC) + timedelta(minutes=10)
+        # Keep a generous future window for slow PostgreSQL CI while the seal
+        # and planned time still precede the actual server observation.
+        current = now + timedelta(minutes=10)
         start = current.replace(second=0, microsecond=0)
+    planned_at = min(start - timedelta(minutes=2), now - timedelta(minutes=2))
     end = start + timedelta(minutes=2)
     coordinates = ProspectiveCoordinatePlanV1(
         holdout_id="okx:synthetic:future:2m",
@@ -39,7 +43,7 @@ def valid_schedule(
         expected_rows=4,
     )
     raw = valid_prospective_preregistration().model_dump(mode="python")
-    raw["created_at"] = start - timedelta(minutes=4)
+    raw["created_at"] = planned_at - timedelta(minutes=2)
     raw["prospective_holdout"].update(
         holdout_id=coordinates.holdout_id,
         source=coordinates.source,
@@ -59,13 +63,19 @@ def valid_schedule(
     schedule = build_capture_schedule(
         seal=seal,
         coordinate_plan=coordinates,
-        planned_at=start - timedelta(minutes=2),
+        planned_at=planned_at,
     )
     return seal, schedule
 
 
 def test_exact_future_grid_and_replay_without_claim_promotion():
     seal, schedule = valid_schedule()
+    assert (
+        seal.created_at
+        < schedule.planned_at
+        <= datetime.now(UTC)
+        < schedule.coordinate_plan.start_at
+    )
     assert tuple((plan.instrument_id, plan.start_ns) for plan in schedule.plans) == (
         ("BTC-USDT-SWAP", schedule.plans[0].start_ns),
         ("ETH-USDT-SWAP", schedule.plans[0].start_ns),

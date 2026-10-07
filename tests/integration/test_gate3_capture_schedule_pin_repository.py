@@ -86,8 +86,6 @@ async def isolated_database():
         async with db_engine.begin() as connection:
             await connection.execute(text(f"GRANT USAGE ON SCHEMA public TO {role}"))
             for function in (
-                "public_receipt_witness_append(jsonb)",
-                "public_receipt_witness_read(text)",
                 "gate3_capture_schedule_append(jsonb)",
                 "gate3_capture_schedule_read(text)",
             ):
@@ -115,6 +113,66 @@ async def isolated_database():
             async with admin.begin() as connection:
                 await connection.execute(text(f"DROP ROLE {role}"))
         await admin.dispose()
+
+
+async def test_schedule_role_has_no_witness_authority(isolated_database):
+    repository, _, role_engine = isolated_database
+    async with role_engine.connect() as connection:
+        privileges = (
+            await connection.execute(
+                text("""
+                    SELECT has_function_privilege(current_user,
+                        'public.gate3_capture_schedule_append(jsonb)'::regprocedure,
+                        'EXECUTE') AS schedule_append,
+                      has_function_privilege(current_user,
+                        'public.gate3_capture_schedule_read(text)'::regprocedure,
+                        'EXECUTE') AS schedule_read,
+                      has_function_privilege(current_user,
+                        'public.public_receipt_witness_append(jsonb)'::regprocedure,
+                        'EXECUTE') AS witness_append,
+                      has_function_privilege(current_user,
+                        'public.public_receipt_witness_read(text)'::regprocedure,
+                        'EXECUTE') AS witness_read
+                """)
+            )
+        ).one()
+    assert privileges.schedule_append and privileges.schedule_read
+    assert not privileges.witness_append and not privileges.witness_read
+    await repository.verify_role()
+
+    for statement in (
+        "SELECT public.public_receipt_witness_append('{}'::jsonb)",
+        "SELECT * FROM public.public_receipt_witness_read('0')",
+    ):
+        with pytest.raises(DBAPIError, match="permission denied"):
+            async with role_engine.begin() as connection:
+                await connection.execute(text(statement))
+
+
+async def test_schedule_role_rejects_witness_or_direct_table_grants(
+    isolated_database,
+):
+    repository, db_engine, role_engine = isolated_database
+    role = role_engine.url.username
+    assert role is not None and re.fullmatch(r"ctcc_g3_[a-f0-9]{18}", role)
+    privileges = (
+        "EXECUTE ON FUNCTION public.public_receipt_witness_append(jsonb)",
+        "EXECUTE ON FUNCTION public.public_receipt_witness_read(text)",
+        "SELECT ON TABLE public.public_receipt_witness_revisions",
+        "SELECT ON TABLE public.gate3_capture_schedule_pins",
+    )
+    for privilege in privileges:
+        async with db_engine.begin() as connection:
+            await connection.execute(text(f"GRANT {privilege} TO {role}"))
+        try:
+            with pytest.raises(
+                Gate3SchedulePinError, match="restricted_schedule_role_required"
+            ):
+                await repository.verify_role()
+        finally:
+            async with db_engine.begin() as connection:
+                await connection.execute(text(f"REVOKE {privilege} FROM {role}"))
+        await repository.verify_role()
 
 
 async def test_isolated_0026_empty_downgrade_and_reupgrade(isolated_database):

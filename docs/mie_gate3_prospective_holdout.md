@@ -159,6 +159,43 @@ database; the supported 0025-to-0026 Alembic upgrade, full fresh migration,
 schema-drift check, Windows/Linux runtime recovery and restricted production
 role remain separate exact-source acceptance work.
 
+### Durable schedule publication acknowledgement
+
+Migration `0028` adds an immutable acknowledgement row and restricted
+security-definer append/read functions. Its separate direct-login role is
+forbidden from writing the `0026` pin table, calling the pin append function,
+inheriting or switching to another role, or creating database objects. The SQL
+insert guard locks and reads the exact schedule/seal/coordinate/window identity
+with `NOWAIT`, then stamps `acknowledged_at` from the PostgreSQL server before
+the first window event. A pin visible to that separate login was committed in
+an earlier transaction. The ACK itself may commit after the window; its server
+observation time is evidence of the **pin's** earlier commit, not the ACK's
+earlier commit. A conflicting lock or missing/uncommitted pin fails closed.
+
+`Gate3CaptureSchedulePublicationAckRepository` replays the original `0026`
+schedule bytes through the canonical pin reader before append and again on
+later ACK readback. Only that combined read establishes that the earlier
+committed row is the exact canonical schedule. Raw SQL can acknowledge a
+hash-valid but noncanonical `0026` pin; the combined read rejects it. The ACK
+role receives only ACK append/read function grants, with no direct pin, ACK, or
+`0024` witness table rights and no witness function grants. An exact committed
+ACK can be replayed on retry even after the window without writing another row.
+Migration `0028` provisions no role or credentials;
+production must independently administer and check both restricted logins and
+the server clock. The readback marks only a server-clock-ordered committed pin
+observation; `trusted_clock_verified` remains false and cannot by itself
+promote Gate 3 evidence.
+
+The `0026` raw append still permits a hash-valid noncanonical payload to take
+the unique seal, holdout, and window keys. That can prevent a later valid pin;
+`0028` does not repair this availability risk or bypass the poisoned key. The
+existing schedule-bound dataset V1 does not consume the ACK and continues to
+record `pre_window_commit_proven=false`. Even a verified ACK has no independent
+custody, first-access, predictive, promotion, or execution claim. The narrow
+PostgreSQL `0028` test exercises `0024`, `0026`, and `0028` DDL in a disposable
+database; a full migration chain, schema drift check, and production role and
+clock acceptance remain separate work.
+
 ### Blind in-window minute acquisition seam
 
 `app.mie.validation.blind_window_capture.bind_blind_window_minute` now binds **one**

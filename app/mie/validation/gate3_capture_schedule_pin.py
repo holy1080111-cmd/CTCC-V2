@@ -14,10 +14,6 @@ from datetime import UTC, datetime
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.database.repositories.public_receipt_witness import (
-    PublicReceiptWitnessRepository,
-    PublicWitnessError,
-)
 from app.mie.validation.prospective import Gate3ProspectivePreregistration
 from app.mie.validation.prospective_capture_schedule import (
     ProspectiveCaptureScheduleV1,
@@ -64,55 +60,86 @@ class Gate3CaptureSchedulePinRepository:
 
     @staticmethod
     async def _role_guard(session: AsyncSession) -> None:
-        try:
-            await PublicReceiptWitnessRepository._role_guard(session)
-            row = (
-                await session.execute(
-                    text("""
-                      SELECT current_user=session_user AS direct_login,
-                        has_table_privilege(current_user,
-                          'public.gate3_capture_schedule_pins','SELECT')
-                          OR has_table_privilege(current_user,
-                            'public.gate3_capture_schedule_pins','INSERT')
-                          OR has_table_privilege(current_user,
-                            'public.gate3_capture_schedule_pins','UPDATE')
-                          OR has_table_privilege(current_user,
-                            'public.gate3_capture_schedule_pins','DELETE')
-                          OR has_table_privilege(current_user,
-                            'public.gate3_capture_schedule_pins','TRUNCATE')
-                          OR has_table_privilege(current_user,
-                            'public.gate3_capture_schedule_pins','REFERENCES')
-                          OR has_table_privilege(current_user,
-                            'public.gate3_capture_schedule_pins','TRIGGER')
-                          OR has_table_privilege(current_user,
-                            'public.gate3_capture_schedule_pins','MAINTAIN')
-                          OR has_any_column_privilege(current_user,
-                            'public.gate3_capture_schedule_pins','SELECT')
-                          OR has_any_column_privilege(current_user,
-                            'public.gate3_capture_schedule_pins','INSERT')
-                          OR has_any_column_privilege(current_user,
-                            'public.gate3_capture_schedule_pins','UPDATE')
-                          OR has_any_column_privilege(current_user,
-                            'public.gate3_capture_schedule_pins','REFERENCES')
-                          AS direct_table_access,
-                        has_function_privilege(current_user,
-                          'public.gate3_capture_schedule_append(jsonb)'::regprocedure,
-                          'EXECUTE') AS can_append,
-                        has_function_privilege(current_user,
-                          'public.gate3_capture_schedule_read(text)'::regprocedure,
-                          'EXECUTE') AS can_read
-                    """)
-                )
-            ).one_or_none()
-            if row is None or not (
-                row.direct_login
-                and not row.direct_table_access
-                and row.can_append
-                and row.can_read
-            ):
-                raise Gate3SchedulePinError("restricted_schedule_role_required")
-        except PublicWitnessError as exc:
-            raise Gate3SchedulePinError("restricted_schedule_role_required") from exc
+        row = (
+            await session.execute(
+                text("""
+                  SELECT session_user=current_user AS direct_login,
+                    r.rolsuper OR r.rolcreatedb OR r.rolcreaterole
+                      OR r.rolreplication OR r.rolbypassrls AS privileged,
+                    EXISTS (
+                      SELECT 1 FROM pg_catalog.pg_class c
+                      WHERE c.oid IN (
+                        'public.gate3_capture_schedule_pins'::pg_catalog.regclass,
+                        'public.public_receipt_witness_revisions'::pg_catalog.regclass)
+                        AND pg_catalog.pg_has_role(current_user,
+                          pg_catalog.pg_get_userbyid(c.relowner),'MEMBER')
+                    ) AS owner_member,
+                    EXISTS (
+                      SELECT 1 FROM pg_catalog.pg_roles inherited
+                      WHERE inherited.oid <> r.oid
+                        AND pg_catalog.pg_has_role(
+                          current_user,inherited.oid,'MEMBER')
+                    ) AS member_of_other_role,
+                    EXISTS (
+                      SELECT 1 FROM pg_catalog.pg_class c
+                      WHERE c.oid IN (
+                        'public.gate3_capture_schedule_pins'::pg_catalog.regclass,
+                        'public.public_receipt_witness_revisions'::pg_catalog.regclass)
+                        AND (pg_catalog.has_table_privilege(current_user,c.oid,'SELECT')
+                          OR pg_catalog.has_table_privilege(current_user,c.oid,'INSERT')
+                          OR pg_catalog.has_table_privilege(current_user,c.oid,'UPDATE')
+                          OR pg_catalog.has_table_privilege(current_user,c.oid,'DELETE')
+                          OR pg_catalog.has_table_privilege(current_user,c.oid,'TRUNCATE')
+                          OR pg_catalog.has_table_privilege(current_user,c.oid,'REFERENCES')
+                          OR pg_catalog.has_table_privilege(current_user,c.oid,'TRIGGER')
+                          OR pg_catalog.has_table_privilege(current_user,c.oid,'MAINTAIN')
+                          OR pg_catalog.has_any_column_privilege(current_user,c.oid,'SELECT')
+                          OR pg_catalog.has_any_column_privilege(current_user,c.oid,'INSERT')
+                          OR pg_catalog.has_any_column_privilege(current_user,c.oid,'UPDATE')
+                          OR pg_catalog.has_any_column_privilege(current_user,c.oid,'REFERENCES'))
+                    ) AS direct_table_access,
+                    EXISTS (
+                      SELECT 1 FROM pg_catalog.pg_proc p
+                      WHERE p.oid IN (
+                        'public.public_receipt_witness_insert_guard()'::pg_catalog.regprocedure,
+                        'public.public_receipt_witness_immutable()'::pg_catalog.regprocedure,
+                        'public.public_receipt_witness_append(jsonb)'::pg_catalog.regprocedure,
+                        'public.public_receipt_witness_read(text)'::pg_catalog.regprocedure,
+                        'public.gate3_capture_schedule_insert_guard()'::pg_catalog.regprocedure,
+                        'public.gate3_capture_schedule_immutable()'::pg_catalog.regprocedure)
+                        AND pg_catalog.has_function_privilege(current_user,p.oid,'EXECUTE')
+                    ) AS forbidden_function_access,
+                    pg_catalog.has_function_privilege(current_user,
+                      'public.gate3_capture_schedule_append(jsonb)'::pg_catalog.regprocedure,
+                      'EXECUTE') AS can_append,
+                    pg_catalog.has_function_privilege(current_user,
+                      'public.gate3_capture_schedule_read(text)'::pg_catalog.regprocedure,
+                      'EXECUTE') AS can_read,
+                    EXISTS (
+                      SELECT 1 FROM pg_catalog.pg_namespace n
+                      WHERE n.nspname !~ '^pg_(temp|toast_temp)_[0-9]+$'
+                        AND pg_catalog.has_schema_privilege(
+                          current_user,n.oid,'CREATE')
+                    ) OR pg_catalog.has_database_privilege(current_user,
+                        pg_catalog.current_database(),
+                        'CREATE') AS can_create
+                  FROM pg_catalog.pg_roles r
+                  WHERE r.rolname=current_user
+                """)
+            )
+        ).one_or_none()
+        if row is None or not (
+            row.direct_login
+            and not row.privileged
+            and not row.owner_member
+            and not row.member_of_other_role
+            and not row.direct_table_access
+            and not row.forbidden_function_access
+            and row.can_append
+            and row.can_read
+            and not row.can_create
+        ):
+            raise Gate3SchedulePinError("restricted_schedule_role_required")
 
     async def verify_role(self) -> None:
         try:
