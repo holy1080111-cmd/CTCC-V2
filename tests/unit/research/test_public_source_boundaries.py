@@ -52,6 +52,11 @@ def test_public_source_has_only_explicit_reviewed_consumers():
             "public_market_receipts",
             "public_receipt_storage",
         ),
+        # The pure schedule join converts pinned nanoseconds to UTC only; it
+        # owns no market I/O or additional public-source capability.
+        APP / "mie" / "validation" / "blind_window_schedule_binding.py": (
+            "public_market_receipts",
+        ),
         # Pure future-window planning reuses the exact V1 minute-plan contract;
         # this consumer owns no market I/O or execution authority.
         APP / "mie" / "validation" / "prospective_capture_schedule.py": (
@@ -86,6 +91,11 @@ def test_public_source_has_only_explicit_reviewed_consumers():
                         assert name in {
                             "app.public_market_source.public_market_capture",
                             "app.public_market_source.public_market_capture.replay_public_capture",
+                        }, name
+                    if path.name == "blind_window_schedule_binding.py":
+                        assert name in {
+                            "app.public_market_source.public_market_receipts",
+                            "app.public_market_source.public_market_receipts.utc_from_ns",
                         }, name
                     assert any(
                         name == f"app.public_market_source.{module}"

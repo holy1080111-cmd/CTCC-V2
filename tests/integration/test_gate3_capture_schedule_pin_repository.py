@@ -25,6 +25,10 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
+from app.mie.validation.blind_window_schedule_binding import (
+    freeze_schedule_bound_blind_window_dataset,
+    verify_schedule_bound_blind_window_dataset,
+)
 from app.mie.validation.gate3_capture_schedule_pin import (
     Gate3CaptureSchedulePinRepository,
     Gate3SchedulePinError,
@@ -36,6 +40,7 @@ from app.mie.validation.prospective_capture_schedule import (
     build_capture_schedule,
 )
 from tests.durable_migration_fixtures import load_migration
+from tests.unit.mie.test_gate3_blind_window_schedule_binding import binding_case
 from tests.unit.mie.test_gate3_capture_schedule import valid_schedule
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
@@ -346,3 +351,34 @@ async def test_raw_function_rejects_forged_window_key_and_coordinate_bytes(
         await raw_append(changed_record)
     accepted = await repository.publish(schedule=schedule, seal=seal)
     assert accepted.window_key == coordinate.window_key()
+
+
+@pytest.fixture
+def future_synthetic_binding(monkeypatch):
+    """Build original-byte synthetic journals before entering the async DB test."""
+    start = (datetime.now(UTC) + timedelta(minutes=10)).replace(second=0, microsecond=0)
+    planned_at = datetime.now(UTC).replace(microsecond=0) - timedelta(minutes=1)
+    return binding_case(monkeypatch, start=start, planned_at=planned_at)
+
+
+async def test_0026_readback_binds_every_synthetic_window_plan(
+    isolated_database, future_synthetic_binding
+):
+    repository, _, _ = isolated_database
+    args, _, schedule, dataset = future_synthetic_binding
+    seal = args["preregistration"]
+    publication = await repository.publish(schedule=schedule, seal=seal)
+    assert publication.recorded_at < schedule.coordinate_plan.start_at
+    assert publication.database_readback_at < schedule.coordinate_plan.start_at
+    args = {**args, "repository": repository}
+    frozen = await freeze_schedule_bound_blind_window_dataset(**args)
+    assert frozen.contract.capture_schedule_sha256 == publication.schedule_sha256
+    assert frozen.contract.schedule_recorded_at == publication.recorded_at
+    assert frozen.contract.pre_window_commit_proven is False
+    assert frozen.contract.matched_plan_count == len(dataset.rows)
+    assert (
+        await verify_schedule_bound_blind_window_dataset(
+            frozen.payload, expected_sha256=frozen.sha256, **args
+        )
+        == frozen.contract
+    )

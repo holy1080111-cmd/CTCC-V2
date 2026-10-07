@@ -26,9 +26,17 @@ from tests.unit.research import public_receipt_fixtures as fixtures
 from tests.unit.research.test_public_journal_contracts import fixture_chain
 
 
-def fixture_inputs(monkeypatch, *, first_plan_created_ns=None):
+def fixture_inputs(
+    monkeypatch,
+    *,
+    first_plan_created_ns=None,
+    last_plan_created_ns=None,
+    plan_created_ns=None,
+    start: datetime | None = None,
+):
     """Four forged owned-labelled minutes in four synthetic rotated journals."""
-    start = datetime(2026, 10, 1, tzinfo=UTC)
+    if start is None:
+        start = datetime(2026, 10, 1, tzinfo=UTC)
     original_plan_for = fixtures.plan_for
     captures = {}
     segments = []
@@ -47,7 +55,13 @@ def fixture_inputs(monkeypatch, *, first_plan_created_ns=None):
                         **old.model_dump(),
                         "instrument_id": f"{instrument}-USDT-SWAP",
                         "created_ns": (
-                            first_plan_created_ns
+                            last_plan_created_ns
+                            if minute_index == 1
+                            and instrument == "ETH"
+                            and last_plan_created_ns is not None
+                            else plan_created_ns
+                            if plan_created_ns is not None
+                            else first_plan_created_ns
                             if minute_index == 0
                             and instrument == "BTC"
                             and first_plan_created_ns is not None

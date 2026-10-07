@@ -122,9 +122,11 @@ caller-supplied `created_ns` is an independent timestamp.
 
 Migration `0026` and `Gate3CaptureSchedulePinRepository` provide a separate,
 append-only PostgreSQL pin for the exact canonical schedule bytes and hash.
-The database writes `recorded_at` using its own `clock_timestamp()` and refuses
-a pin at or after the first window event. A successful `publish` also requires
-its separate-session readback SELECT to return a database
+The insert guard writes `recorded_at` using the database's `clock_timestamp()`
+and rejects an insert whose guard time reaches the first window event. That
+timestamp alone does **not** prove that the transaction committed before the
+event. A successful `publish` also requires a post-commit, separate-session
+readback SELECT to return a database
 `database_readback_at` strictly before that event. If the readback is late,
 the immutable row remains auditable through `read`, but publication success is
 denied. The readback timestamp is evidence of that database observation,
@@ -188,6 +190,26 @@ The record keeps both in-process validation and later durable readback times;
 a future decision-time dataset builder must choose a reviewed conservative
 availability cutoff and must not infer that the receipt was durable earlier.
 
+### Complete-window join to the schedule insert guard
+
+`blind_window_schedule_binding.py` now verifies the complete original-byte
+blind-window dataset against a separately read migration 0026 row. The caller
+supplies the schedule SHA-256 from a retained record outside the dataset and
+journal. For every ordinal, the verifier requires the journal-replayed capture
+plan hash and minute/instrument coordinates to equal the exact plan whose
+database insert guard ran before the first window event. A plan created during the window
+for a later minute cannot satisfy this join, even if its individual
+`created_ns` precedes that minute. The new binding artifact records the
+database's immutable insert-guard `recorded_at` and the dataset/row hashes, and is rebuilt
+from the database and original journal bytes on verification.
+
+A later database readback proves the row eventually committed; it does not
+prove a pre-window commit or a pre-window publication acknowledgement. The
+binding fixes `pre_window_commit_proven=false`. It does not claim that
+the database or journal has independent custody, that source bytes were first
+observable at a historical decision time, or that the declared evaluator read
+was the first read. All eligibility and authority flags remain false.
+
 ### Separate automated acquisition and evaluator read
 
 `app.mie.validation.prospective_access_timeline` records one blind in-window
@@ -204,8 +226,9 @@ declaration was the first human or model read. The evaluator access basis is
 fixed to `caller_declared_unverified`; `first_read_independently_verified`,
 `evaluator_first_read_proven`, `complete_dataset_proven`, and
 `predictive_oos_eligible` are fixed false. The local one-attempt ledger above
-does not independently prove first access. No complete multi-instrument dataset, prospective collector schedule,
-independent checkpoint store, or formal evaluation is connected. The existing
+does not independently prove first access. This one-minute access timeline is
+not connected to the complete-window schedule binding, independent checkpoint
+custody, or a formal evaluation. The existing
 `Gate3ProspectiveHoldoutReceipt` retains its post-window acquisition semantics;
 an in-window minute is not inserted into it or relabelled as post-window
 acquisition. A reviewed future receipt must represent the two access events
