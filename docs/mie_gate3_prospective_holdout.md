@@ -282,6 +282,18 @@ The repaired positive path still needs exact-source PostgreSQL integration
 evidence; it does not establish a trusted clock, custodian independence, real
 holdout capture, or Gate 3 approval.
 
+Migration `0032` addresses a separate claim INSERT trigger failure observed
+as SQLSTATE `42703` in the exact-source PostgreSQL suite. Its legacy-inventory
+table alias `old` collided with the trigger's `OLD` record when evaluating
+`old.classification`. Fresh installs use the corrected `0029` definition;
+already-upgraded databases require `0032` to replace the guard in place.
+The migration keeps the same trigger, function identity and grants, and does
+not rewrite existing claims or historical classifications. Rollback through
+`0032` requires an empty Gate 3 evidence ledger and retains the safe guard
+body. A focused isolated PostgreSQL test must confirm the old failure and the
+repair before this seam can be marked accepted; Gate 3 research approval and
+execution authority remain closed.
+
 ### Blind in-window minute acquisition seam
 
 `app.mie.validation.blind_window_capture.bind_blind_window_minute` now binds **one**

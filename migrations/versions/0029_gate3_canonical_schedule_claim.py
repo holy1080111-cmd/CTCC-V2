@@ -534,11 +534,11 @@ def upgrade():
           OR NEW.window_end IS DISTINCT FROM pinned.window_end
           OR NEW.schedule_recorded_at IS DISTINCT FROM pinned.recorded_at
           OR EXISTS (
-            SELECT 1 FROM public.gate3_capture_schedule_legacy_inventory old
-            WHERE old.classification <> 'noncanonical'
-              AND (old.seal_sha256=NEW.seal_sha256
-                OR old.window_key=NEW.window_key
-                OR old.holdout_id=NEW.holdout_id))
+            SELECT 1 FROM public.gate3_capture_schedule_legacy_inventory legacy_row
+            WHERE legacy_row.classification <> 'noncanonical'
+              AND (legacy_row.seal_sha256=NEW.seal_sha256
+                OR legacy_row.window_key=NEW.window_key
+                OR legacy_row.holdout_id=NEW.holdout_id))
         THEN RAISE EXCEPTION 'gate3_schedule_claim_identity_denied';
         END IF;
         NEW.claimed_at := pg_catalog.clock_timestamp();

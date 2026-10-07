@@ -57,6 +57,21 @@ ARCHIVE_REQUIRED_CASES = (
     ),
 )
 
+GATE3_PREFLIGHT_CASES = (
+    (
+        "tests.integration.test_gate3_canonical_schedule_claim",
+        "test_poisoned_raw_keys_do_not_block_canonical_retry_or_claim_ack",
+    ),
+    (
+        "tests.integration.test_gate3_canonical_schedule_claim",
+        "test_concurrent_canonical_schedules_get_at_most_one_claim",
+    ),
+    (
+        "tests.integration.test_gate3_claim_trigger_alias_repair",
+        "test_0032_repairs_existing_guard_without_qualifying_legacy_evidence[noncanonical]",
+    ),
+)
+
 
 def git_object(kind: str, raw: bytes) -> bytes:
     return hashlib.sha1(f"{kind} {len(raw)}\0".encode() + raw).digest()
@@ -745,6 +760,34 @@ def main():
             raise RuntimeError("migration_reupgrade_identity_changed")
         container("migration-redrift", ["alembic", "check"])
         if args.suite in ("full", "postgres"):
+            # Fail early on the isolated 0029 claim boundary before the long
+            # PostgreSQL suite. Suppress raw DB tracebacks in this diagnostic
+            # stage; the test exposes only allowlisted PostgreSQL metadata.
+            container(
+                "gate3-postgres-preflight",
+                [
+                    "python",
+                    "-m",
+                    "scripts.hermetic_pytest",
+                    "-p",
+                    "no:cacheprovider",
+                    "--tb=no",
+                    "--show-capture=no",
+                    "-o",
+                    "junit_logging=no",
+                    "--junitxml=/validation-results/gate3-postgres-preflight.xml",
+                    *(
+                        f"{module.replace('.', '/')}.py::{case}"
+                        for module, case in GATE3_PREFLIGHT_CASES
+                    ),
+                ],
+                mounts=test_results_mount,
+                timeout=15 * 60,
+            )
+            identity["gate3_preflight"] = verify_pytest_report(
+                test_results / "gate3-postgres-preflight.xml",
+                required_cases=GATE3_PREFLIGHT_CASES,
+            )
             postgres_command = [
                 "python",
                 "-m",

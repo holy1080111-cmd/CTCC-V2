@@ -12,6 +12,7 @@ import json
 import os
 import re
 from datetime import timedelta
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -68,13 +69,98 @@ async def raw_pin(connection, record) -> None:
     )
 
 
+def safe_schedule_db_diagnostic(error: DBAPIError) -> str:
+    """Return bounded PostgreSQL metadata, never SQL, parameters or error text."""
+    sqlstate = constraint = failure_code = function = line = column = "unknown"
+    source = error.orig
+    seen: set[int] = set()
+    for _ in range(4):
+        if source is None or id(source) in seen:
+            break
+        seen.add(id(source))
+        candidate_state = getattr(source, "sqlstate", None)
+        if isinstance(candidate_state, str) and re.fullmatch(
+            r"[0-9A-Z]{5}", candidate_state
+        ):
+            sqlstate = candidate_state
+        diagnostic = getattr(source, "diag", None)
+        candidate_constraint = getattr(diagnostic, "constraint_name", None)
+        if isinstance(candidate_constraint, str) and re.fullmatch(
+            r"[a-z][a-z0-9_]{0,127}", candidate_constraint
+        ):
+            constraint = candidate_constraint
+        candidate_column = getattr(diagnostic, "column_name", None) or getattr(
+            source, "column_name", None
+        )
+        if isinstance(candidate_column, str) and re.fullmatch(
+            r"[a-z][a-z0-9_]{0,127}", candidate_column
+        ):
+            column = candidate_column
+        for candidate_message in (
+            getattr(diagnostic, "message_primary", None),
+            getattr(source, "message", None),
+        ):
+            if not isinstance(candidate_message, str):
+                continue
+            if re.fullmatch(r"gate3_[a-z0-9_]+", candidate_message):
+                failure_code = candidate_message
+            if sqlstate == "42703":
+                for pattern in (
+                    r'column "(?P<column>[a-z][a-z0-9_]{0,127})" does not exist',
+                    r"column [a-z][a-z0-9_]{0,127}\.(?P<column>[a-z][a-z0-9_]{0,127}) does not exist",
+                    r'record "[a-z][a-z0-9_]{0,127}" has no field "(?P<column>[a-z][a-z0-9_]{0,127})"',
+                ):
+                    match = re.fullmatch(pattern, candidate_message)
+                    if match:
+                        column = match.group("column")
+                        break
+        for candidate_context in (
+            getattr(diagnostic, "context", None),
+            getattr(source, "context", None),
+        ):
+            if not isinstance(candidate_context, str):
+                continue
+            matches = re.findall(
+                r"PL/pgSQL function (?:public\.)?(gate3_[a-z0-9_]{1,127})"
+                r"\([^()\r\n]{0,120}\) line ([1-9][0-9]{0,4}) at ",
+                candidate_context,
+            )
+            if matches:
+                function, line = matches[0]
+        source = getattr(source, "__cause__", None)
+    return (
+        f"sqlstate={sqlstate} constraint={constraint} code={failure_code} "
+        f"function={function} line={line} column={column}"
+    )
+
+
+async def test_safe_schedule_db_diagnostic_never_echoes_context_or_parameters():
+    private_context = "synthetic-private-sql-and-parameters"
+    original = SimpleNamespace(
+        sqlstate="42703",
+        message='column "recorded_at" does not exist',
+        context=(
+            f'SQL statement "{private_context}"\n'
+            "PL/pgSQL function public.gate3_schedule_pin_claim_after_insert() "
+            "line 78 at SQL statement"
+        ),
+        __cause__=None,
+    )
+    diagnostic = safe_schedule_db_diagnostic(SimpleNamespace(orig=original))
+    assert diagnostic == (
+        "sqlstate=42703 constraint=unknown code=unknown "
+        "function=gate3_schedule_pin_claim_after_insert line=78 column=recorded_at"
+    )
+    assert private_context not in diagnostic
+
+
 async def publish_or_diagnose(pin_repo, schedule, seal):
     """Expose only a synthetic, disposable DB failure code in CI diagnostics.
 
     Production deliberately redacts the SQL error. If that boundary rejects an
     otherwise expected test publication, repeat the same synthetic append in
-    a new transaction and report only SQLSTATE, constraint, or a fixed Gate 3
-    code. Never include the exception text, parameters, or connection URL.
+    a new transaction and report only allowlisted PostgreSQL metadata. Never
+    include the exception text, parameters, or connection URL.
     """
     try:
         return await pin_repo.publish(schedule=schedule, seal=seal)
@@ -91,34 +177,8 @@ async def publish_or_diagnose(pin_repo, schedule, seal):
                 {"record": json.dumps(pin_record(seal, schedule))},
             )
     except DBAPIError as error:
-        sqlstate = "unknown"
-        constraint = "unknown"
-        failure_code = "unknown"
-        for source in (error.orig, getattr(error.orig, "__cause__", None)):
-            if source is None:
-                continue
-            candidate_state = getattr(source, "sqlstate", None)
-            if isinstance(candidate_state, str) and re.fullmatch(
-                r"[0-9A-Z]{5}", candidate_state
-            ):
-                sqlstate = candidate_state
-            diagnostic = getattr(source, "diag", None)
-            candidate_constraint = getattr(diagnostic, "constraint_name", None)
-            if isinstance(candidate_constraint, str) and re.fullmatch(
-                r"[a-z][a-z0-9_]{0,127}", candidate_constraint
-            ):
-                constraint = candidate_constraint
-            for candidate_code in (
-                getattr(diagnostic, "message_primary", None),
-                getattr(source, "message", None),
-            ):
-                if isinstance(candidate_code, str) and re.fullmatch(
-                    r"gate3_[a-z0-9_]+", candidate_code
-                ):
-                    failure_code = candidate_code
         pytest.fail(
-            "synthetic_schedule_publish_rejected "
-            f"sqlstate={sqlstate} constraint={constraint} code={failure_code}",
+            f"synthetic_schedule_publish_rejected {safe_schedule_db_diagnostic(error)}",
             pytrace=False,
         )
     except Exception:  # noqa: BLE001 - Keep diagnostic details redacted.
@@ -292,6 +352,11 @@ async def isolated_claim_database(request):
             ack_repo,
             legacy_pin_engine,
             legacy_ack_engine,
+        )
+    except DBAPIError as error:
+        pytest.fail(
+            f"synthetic_schedule_fixture_rejected {safe_schedule_db_diagnostic(error)}",
+            pytrace=False,
         )
     finally:
         for engine in reversed(role_engines):
