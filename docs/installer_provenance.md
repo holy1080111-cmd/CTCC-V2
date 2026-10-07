@@ -86,3 +86,16 @@ default deployment guard. PSScriptAnalyzer is unavailable on this machine.
 No install, reinstall, upgrade, rollback or canonical qualification integration
 was executed. These remain `NOT_ACCEPTED`; the reviewed package is retained as
 repair evidence and cannot be treated as a V2 deployment path.
+
+## 2026-10-08 Windows dry-run timeout diagnosis
+
+The earlier exact-source GitHub Windows run at `d5e71c4` timed out in the first
+PowerShell 5.1 verifier subprocess after 30 seconds. Its log did not record a
+verifier stage, so it does not establish whether startup, file checks, parser,
+or module discovery stalled. A later four verifier cases passed quickly. The
+verifier now offers optional fixed-name `-StageTrace` markers, and the test
+records only the last safe stage if the same 30-second timeout recurs. It does
+not increase the timeout, print package content or paths, weaken identity or
+parser checks, or execute the installer. Local PowerShell 5.1 focused tests
+passed 9/9; the timeout's actual cause remains unproven pending a matching
+exact-source CI run.

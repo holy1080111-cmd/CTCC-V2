@@ -271,6 +271,74 @@ async def original_capture(monkeypatch, at, *, base, filled, case, variant=False
                 ),
                 order_rows[1],
             ]
+        if case in {
+            "TWO_ROUND_TRIPS",
+            "BOUNDARY_TIME_AMBIGUOUS",
+            "OVER_CLOSE_THEN_REOPEN",
+        }:
+            second_enter = (
+                leave
+                if case == "BOUNDARY_TIME_AMBIGUOUS"
+                else base + timedelta(seconds=1100)
+            )
+            second_leave = base + timedelta(seconds=1400)
+            if case == "OVER_CLOSE_THEN_REOPEN":
+                closing["fillSz"] = "5"
+                closing["fillPnl"] = "0.5"
+            second_open = row(
+                "fills_history",
+                "903",
+                ordId="803",
+                tradeId="703",
+                clOrdId="secondOriginalOpen",
+                side="buy",
+                fillSz="2",
+                fillPx="120",
+                fillPnl="0",
+                fee="0.005",
+                fillTime=ms(second_enter),
+                ts=ms(second_enter + timedelta(seconds=1)),
+            )
+            second_close = row(
+                "fills_history",
+                "904",
+                ordId="804",
+                tradeId="704",
+                clOrdId="secondOriginalClose",
+                side="sell",
+                fillSz="2",
+                fillPx="115",
+                fillPnl="-0.1",
+                fee="-0.02",
+                fillTime=ms(second_leave),
+                ts=ms(second_leave + timedelta(seconds=1)),
+            )
+            fills = [second_close, second_open, closing, opening]
+            order_rows = [
+                row(
+                    "orders_history_archive",
+                    "804",
+                    side="sell",
+                    clOrdId="secondOriginalClose",
+                    reduceOnly=True,
+                    cTime=ms(second_leave - timedelta(seconds=1)),
+                    uTime=ms(second_leave),
+                    sz="2",
+                    accFillSz="2",
+                ),
+                row(
+                    "orders_history_archive",
+                    "803",
+                    side="buy",
+                    clOrdId="secondOriginalOpen",
+                    reduceOnly=False,
+                    cTime=ms(second_enter - timedelta(seconds=1)),
+                    uTime=ms(second_enter),
+                    sz="2",
+                    accFillSz="2",
+                ),
+                *order_rows,
+            ]
         pages["fills_recent"] = [fills, []]
         pages["fills_history"] = [fills, []]
         pages["orders_history_archive"] = [order_rows, []] if order_rows else [[]]
@@ -482,6 +550,148 @@ def replay(value):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "case", ("TWO_ROUND_TRIPS", "BOUNDARY_TIME_AMBIGUOUS", "OVER_CLOSE_THEN_REOPEN")
+)
+async def test_same_instrument_lifecycle_partition_from_original_rows(
+    monkeypatch, case
+):
+    value = await fixture(monkeypatch, case)
+    original_sources = tuple(
+        tuple(
+            (item.event.event_json, item.event.raw_body, item.event.packet_payload)
+            for item in chain
+        )
+        for chain, _reference in value[0]
+    )
+    result = history.replay_account_lifecycle_history(value[0], **value[1])
+    data = replay(value)
+    assert (
+        result.receipt_json
+        == history.replay_account_lifecycle_history(value[0], **value[1]).receipt_json
+    )
+    assert data["schema_version"] == "ctcc.account_lifecycle_history_diagnostic.v2"
+    assert data["policy_sha256"] == history.POLICY_SHA256
+    assert history.POLICY_SHA256 != (
+        "9ab3aaca2498a06860803588558014aacc4616f2fb4afc165eafd1589e16b915"
+    )
+    assert history.POLICY_SHA256 != (
+        "03d3d158c066c0459af58ba91ffd49a2baf8edebb1442a65e9c1cf63d4470712"
+    )
+    for old_policy in (
+        "9ab3aaca2498a06860803588558014aacc4616f2fb4afc165eafd1589e16b915",
+        "03d3d158c066c0459af58ba91ffd49a2baf8edebb1442a65e9c1cf63d4470712",
+    ):
+        with pytest.raises(
+            history.AccountLifecycleHistoryError, match="history_policy_mismatch"
+        ):
+            history.replay_account_lifecycle_history(
+                value[0], **value[1], expected_policy_sha256=old_policy
+            )
+    assert original_sources == tuple(
+        tuple(
+            (item.event.event_json, item.event.raw_body, item.event.packet_payload)
+            for item in chain
+        )
+        for chain, _reference in value[0]
+    )
+    outcomes = data["observed_lifecycles"]
+    if case == "TWO_ROUND_TRIPS":
+        assert len(outcomes) == 2
+        assert [part["source_observed_closed_gross"] for part in outcomes] == [
+            {"numerator": "2", "denominator": "5"},
+            {"numerator": "-1", "denominator": "10"},
+        ]
+        assert [
+            part["source_observed_signed_fill_fee_subtotal"] for part in outcomes
+        ] == [
+            {"numerator": "-1", "denominator": "50"},
+            {"numerator": "-3", "denominator": "200"},
+        ]
+        assert [
+            part["source_observed_fill_plus_fee_subtotal"] for part in outcomes
+        ] == [
+            {"numerator": "19", "denominator": "50"},
+            {"numerator": "-23", "denominator": "200"},
+        ]
+        assert len({part["lifecycle_source_sha256"] for part in outcomes}) == 2
+        assert all(len(part["original_source_rows"]) == 2 for part in outcomes)
+        assert outcomes[1]["source_observed_starting_inventory"]["meaning"] == (
+            "retrospectively_observed_prior_zeroing_fill_not_point_in_time_seed"
+        )
+        assert (
+            outcomes[1]["source_observed_starting_inventory"]["locators"]
+            == (outcomes[0]["original_source_rows"][0]["locators"])
+        )
+        for part in outcomes:
+            for source_row in part["original_source_rows"]:
+                assert source_row["source_observed_signed_fee"] is not None
+                assert {locator["stream"] for locator in source_row["locators"]} == {
+                    "fills_recent",
+                    "fills_history",
+                }
+                assert all(
+                    locator["page_receipt_sha256"] and locator["raw_sha256"]
+                    for locator in source_row["locators"]
+                )
+            original_index_rows = json.loads(
+                observed.replay_observation_index(
+                    value[0], scope=SCOPE, window=value[1]["window"]
+                ).receipt_json
+            )["source_index"]
+            selected = {
+                item["identity_sha256"] for item in part["original_source_rows"]
+            }
+            assert [
+                item["identity_sha256"] for item in part["original_source_rows"]
+            ] == [
+                item["identity_sha256"]
+                for item in original_index_rows
+                if item["family"] == "fills" and item["identity_sha256"] in selected
+            ]
+    else:
+        assert len(outcomes) == 1
+        assert outcomes[0]["source_observed_closed_gross"] is None
+        assert outcomes[0]["source_observed_zeroing_fill_at"] is None
+        assert outcomes[0]["source_observed_signed_fill_fee_subtotal"] is None
+        assert outcomes[0]["source_observed_fill_plus_fee_subtotal"] is None
+        assert all(
+            source_row["source_observed_signed_fee"] is not None
+            for source_row in outcomes[0]["original_source_rows"]
+        )
+        assert len(outcomes[0]["original_source_rows"]) == 4
+        assert (
+            "history_equal_time_inventory_ambiguous"
+            if case == "BOUNDARY_TIME_AMBIGUOUS"
+            else "exit_exceeds_known_inventory"
+        ) in outcomes[0]["reasons"]
+    assert all(part["net_pnl"] is part["funding_amount"] is None for part in outcomes)
+    assert all(part["positive_net_reset_proven"] is False for part in outcomes)
+
+
+@pytest.mark.asyncio
+async def test_retrospective_zeroing_fill_cannot_be_point_in_time_start(monkeypatch):
+    value = await fixture(monkeypatch, "TWO_ROUND_TRIPS")
+    data = replay(value)
+    first, second = data["observed_lifecycles"]
+    witness = second["source_observed_starting_inventory"]
+    assert first["source_observed_zeroing_fill_at"] == witness["zeroing_fill_at"]
+    assert datetime.fromisoformat(witness["observed_at"]) > datetime.fromisoformat(
+        witness["next_entry_fill_at"]
+    )
+    assert witness["point_in_time_available_before_next_entry"] is False
+    assert (
+        "history_prior_zeroing_witness_unavailable_before_next_entry"
+        in second["reasons"]
+    )
+    assert second["source_observed_closed_gross"] is not None
+    assert second["net_pnl"] is second["funding_amount"] is None
+    assert second["positive_net_reset_proven"] is False
+    assert data["snapshot"] is data["owner"] is None
+    assert data["admission"] == "DENY" and not data["execution_authority"]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("case", CASES)
 async def test_preregistered_original_source_projection(monkeypatch, case):
     baseline = await fixture(monkeypatch)
@@ -532,12 +742,35 @@ async def test_preregistered_original_source_projection(monkeypatch, case):
             "numerator": "-1",
             "denominator": "5",
         }
+        assert outcome["source_observed_signed_fill_fee_subtotal"] == {
+            "numerator": "-3",
+            "denominator": "5",
+        }
+        assert outcome["source_observed_fill_plus_fee_subtotal"] == {
+            "numerator": "-1",
+            "denominator": "5",
+        }
     elif case == "A06":
         assert data["observed_fill_cashflow_total"] == {
             "numerator": "2",
             "denominator": "5",
         }
         assert data["bills"][0]["kind"] == "reconciled_fee_pnl_mirror_not_summed"
+        assert outcome["source_observed_signed_fill_fee_subtotal"] == {
+            "numerator": "0",
+            "denominator": "1",
+        }
+        assert outcome["source_observed_fill_plus_fee_subtotal"] == {
+            "numerator": "2",
+            "denominator": "5",
+        }
+        assert {
+            item["source_observed_signed_fee"]["numerator"]
+            for item in outcome["original_source_rows"]
+        } == {
+            "-1",
+            "1",
+        }
     elif case in {"A07", "A09", "A10", "A11"}:
         assert data["bills"][0]["effective_accrual_at"] is None
         assert data["bills"][0]["kind"] == "funding_unknown"

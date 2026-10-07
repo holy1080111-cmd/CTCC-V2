@@ -43,6 +43,14 @@ def measured_public_minutes(
         or plan.canonical_sha256() != expected_plan_sha256
     ):
         raise PublicReceiptError("capture_pin_mismatch")
+    # A later rejected revision is still evidence that the first observation
+    # is disputed. Selecting its earlier accepted capture must not launder the
+    # conflicting minute into a current source-bound replay.
+    conflicted_identities = {
+        identity for _, _, _, entry in entries for identity in entry["source_conflicts"]
+    }
+    if any(locator["identity"] in conflicted_identities for locator in receipt.rows):
+        raise PublicReceiptError("source_revision_conflict")
     minutes = []
     for locator in receipt.rows:
         _, entry_index, original_locator = first_rows[locator["identity"]]

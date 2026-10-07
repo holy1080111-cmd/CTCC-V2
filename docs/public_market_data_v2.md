@@ -87,6 +87,21 @@ funding pair bytes/hash; G1 policy and reference identities; and rebuilt source
 bytes/hash when the evaluated checks reach them. Passing records require complete
 recomputed policy, reference and source pins.
 
+For historical unrouted packets, the transport field retains the original V2
+quote transport hash and the G1 result bytes remain unchanged. Reviewed regional
+Demo packets carry the route-specific V3 quote transport hash in their raw quote,
+public packet and policy. G1 now copies that hash only after complete packet
+replay and checks all three locations against the reviewed route. The result
+validator accepts only the historical hash or the fixed global, US/AU and EEA
+reviewed route hashes. Verification against a packet from another route fails
+the exact result replay even if both route hashes are individually reviewed.
+The diagnostic keeps its `ctcc.data_qualification.v2` schema because its field
+shape and G1 arithmetic are unchanged. Historical unrouted result bytes are
+unchanged. Earlier routed results carrying the legacy transport hash remain
+parseable records, but exact verification against their routed packet rejects
+them as replay mismatches. Route selection and matching hashes do not
+authenticate an account, prove native capture or grant execution authority.
+
 evaluation_sha256 and verify_public_market_data_v2 share an exact record
 preflight. It rejects foreign model types, hidden top-level or nested fields,
 non-exact flags, foreign policy serializers and oversized character or UTF8 byte

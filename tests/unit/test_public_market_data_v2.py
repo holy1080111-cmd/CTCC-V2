@@ -15,11 +15,12 @@ import pytest
 from pydantic import BaseModel, ValidationError, model_serializer
 
 from app.public_market_source.public_market_receipts import canonical, decode, sha
-from app.trade_qualification import data
+from app.trade_qualification import data, demo_public_origin
 from app.trade_qualification import data_v2 as module
 from app.trade_qualification import public_market_collector as legacy
 from app.trade_qualification import public_market_collector_v2 as public
 from app.trade_qualification import qualification_runtime as initial
+from app.trade_qualification import quote_collector_v2 as quotes_v2
 from app.trade_qualification.executable_quote_v2 import POLICY_SHA256
 from app.trade_qualification.quote_collector_v2 import TRANSPORT_POLICY_SHA256
 from tests.unit.qualification_prefix_fixtures import DATA_POLICY
@@ -29,6 +30,7 @@ from tests.unit.research.test_owned_public_runtime_v2 import (
 from tests.unit.research.test_owned_public_runtime_v2 import (
     empty_registries,
     policy,
+    routed_packet_parts,
     setup,
 )
 from tests.unit.research.test_owned_public_runtime_v2 import (
@@ -114,6 +116,53 @@ def test_full_owner_raw_profile_and_upcoming_funding_pair_recompute_g1(
         passing.model_dump_json()
     )
     assert restored.evaluation_sha256 == passing.evaluation_sha256
+
+
+@pytest.mark.parametrize("region", ["global", "us_au", "eea"])
+def test_routed_g1_pins_replayed_quote_transport_without_authority(captured, region):
+    packet, _ = public._build(**routed_packet_parts(captured, region))
+    now = captured[0].context.evaluated_at
+    result = evaluate(packet, now)
+    document = decode(packet.packet_json, public.MAX_PACKET_BYTES)
+    route = demo_public_origin.reviewed_demo_public_route(region)
+    transport_pin = quotes_v2._transport_policy_sha256(route)
+    assert result.passed
+    assert result.schema_version == "ctcc.data_qualification.v2"
+    assert result.quote_transport_policy_sha256 == transport_pin
+    assert document["quote"]["transport_policy_sha256"] == transport_pin
+    assert document["quote_transport_policy_sha256"] == transport_pin
+    assert transport_pin != TRANSPORT_POLICY_SHA256
+    assert verify(result, packet, now) == result
+    assert result.admission == "DENY"
+    assert result.source_authenticity_verified is False
+    assert result.execution_authority is False
+
+
+def test_routed_g1_rejects_cross_route_result_and_unreviewed_pin(captured):
+    now = captured[0].context.evaluated_at
+    global_packet, _ = public._build(**routed_packet_parts(captured, "global"))
+    us_packet, _ = public._build(**routed_packet_parts(captured, "us_au"))
+    global_result = evaluate(global_packet, now)
+    us_result = evaluate(us_packet, now)
+    assert global_result.quote_transport_policy_sha256 != (
+        us_result.quote_transport_policy_sha256
+    )
+    with pytest.raises(ValueError, match="data_v2_replay_mismatch"):
+        verify(global_result, us_packet, now)
+    changed = json.loads(global_result.model_dump_json())
+    changed["quote_transport_policy_sha256"] = us_result.quote_transport_policy_sha256
+    forged = module.DataQualificationResultV2.model_validate_json(json.dumps(changed))
+    with pytest.raises(ValueError, match="data_v2_replay_mismatch"):
+        verify(forged, global_packet, now)
+    changed["quote_transport_policy_sha256"] = TRANSPORT_POLICY_SHA256
+    old_misbound = module.DataQualificationResultV2.model_validate_json(
+        json.dumps(changed)
+    )
+    with pytest.raises(ValueError, match="data_v2_replay_mismatch"):
+        verify(old_misbound, global_packet, now)
+    changed["quote_transport_policy_sha256"] = "0" * 64
+    with pytest.raises(ValidationError, match="data_v2_identity_or_profile_mismatch"):
+        module.DataQualificationResultV2.model_validate_json(json.dumps(changed))
 
 
 def test_later_context_mutation_cannot_replace_raw_snapshot(captured, passing):

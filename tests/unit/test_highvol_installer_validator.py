@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -46,28 +47,41 @@ def validate(tmp_path, identity, *, expected_identity_sha256=None):
     identity_sha256 = (
         expected_identity_sha256 or hashlib.sha256(identity.read_bytes()).hexdigest()
     )
-    return subprocess.run(
-        [
-            POWERSHELL,
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "RemoteSigned",
-            "-File",
-            str(VERIFIER),
-            "-PackageRoot",
-            str(tmp_path),
-            "-IdentityPath",
-            str(identity),
-            "-ExpectedIdentitySha256",
-            identity_sha256,
-            "-DryRun",
-        ],
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
-    )
+    command = [
+        POWERSHELL,
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "RemoteSigned",
+        "-File",
+        str(VERIFIER),
+        "-PackageRoot",
+        str(tmp_path),
+        "-IdentityPath",
+        str(identity),
+        "-ExpectedIdentitySha256",
+        identity_sha256,
+        "-DryRun",
+        "-StageTrace",
+    ]
+    try:
+        return subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        # TimeoutExpired.stderr may be bytes even with text=True. Report only
+        # fixed stage names; never copy source, paths, or PowerShell output.
+        stderr = exc.stderr or b""
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode("utf-8", errors="replace")
+        stages = re.findall(r"INSTALLER_VERIFY_STAGE:([a-z_]+)", stderr)
+        raise AssertionError(
+            f"INSTALLER_VERIFIER_TIMEOUT:last_stage={stages[-1] if stages else 'startup'}"
+        ) from exc
 
 
 def test_native_parse_and_repeated_dry_run_do_not_execute_installer(tmp_path):
@@ -76,6 +90,20 @@ def test_native_parse_and_repeated_dry_run_do_not_execute_installer(tmp_path):
     assert all(item.returncode == 0 for item in results), results[0].stderr
     records = [json.loads(item.stdout) for item in results]
     assert records[0] == records[1]
+    expected_stages = [
+        "start",
+        "identity_hash",
+        "source_hashes",
+        "parser",
+        "analyzer_discovery_start",
+        "analyzer_discovery_end",
+        "complete",
+    ]
+    for item in results:
+        assert (
+            re.findall(r"INSTALLER_VERIFY_STAGE:([a-z_]+)", item.stderr)
+            == expected_stages
+        )
     assert records[0]["external_calls"] == 0
     assert records[0]["deployment_performed"] is False
     assert records[0]["canonical_qualification_integration"] == "NOT_ACCEPTED"

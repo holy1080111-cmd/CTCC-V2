@@ -134,17 +134,17 @@ async def preflight_owned_publish_and_recheck_v5(
     account_session,
     session_factory,
 ) -> OwnedOriginalCandidateBoundaryV5:
-    """Acquire V4 in this task, then explicitly stop before G12.
+    """Keep V4's raw sources local to this task, then stop before G12.
 
     No caller run, candidate, old receipt, G12 result, account packet, clock or
-    continuation callback enters this boundary. V4's diagnostic cannot restore
-    its consumed native raw leases. The missing engine inputs must be acquired
-    and checked inside a future owner before G12 can be invoked.
+    continuation callback enters this boundary. The private V5 path replays the
+    exact consumed packet bytes and precursor before returning V4's hash-only
+    diagnostic. Other source-owned engine inputs remain unavailable.
     """
     task = asyncio.current_task()
     if task is None or task.cancelling():
         raise asyncio.CancelledError
-    result = await original.capture_owned_original_precursor_v4(
+    result = await original._capture_owned_original_precursor_for_boundary_v5(
         public_root,
         account_root,
         instrument_id=instrument_id,

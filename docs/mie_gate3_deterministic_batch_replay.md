@@ -21,6 +21,11 @@ acquisition. Every plan and output therefore remains `computational`,
 `predictive_oos_eligible=false`, `execution_authority=false`, and
 `runtime_consumers=0`. Archive retrieval times remain unchanged. A historical
 feature cutoff before those retrievals fails through the existing replay gate.
+When a controlled public journal later records a conflicting revision for any
+selected minute, the measured-minute adapter rejects even the earlier accepted
+capture. The journal retains both observations for investigation; choosing the
+old capture hash cannot erase the known contradiction. This is conservative
+current-source admission, not independent proof of point-in-time custody.
 
 `replay_aggregated_features_at` rebuilds aggregates from the original bound minute
 records and independently retained hashes before invoking the existing MIE

@@ -64,11 +64,23 @@ It is a mechanism check, not a real Demo candidate or acceptance sample.
 `preflight_owned_publish_and_recheck_v5` is the owned entry shape for a future
 R7 coordinator. It accepts roots, reviewed instrument/strategy/policy and an
 unused controlled account session. It has no `run`, candidate, old V4 receipt,
-`passed`, barrier, clock or callback argument. It invokes V4 inside the same
-task; once the V4 capture attempt begins, that session is consumed. An early
-V4 input validation error can return before capture starts and leave the
-session unused. It does **not** use the returned V4 receipt as a
-raw-source lease or invoke G12. Its canonical receipt is always `DENY` with
+`passed`, barrier, clock or callback argument. It enters the same native V4
+acquisition core through a private V5 path in the current task; once capture
+begins, that session is consumed. An early input validation error can return
+before capture starts and leave the session unused. The public V2/V3/V4 entry
+points and diagnostic bytes remain unchanged.
+
+The private V5 path holds the exact consumed public packet bytes, the frozen
+account packet bytes and the derived precursor only inside that invocation.
+Before returning, it replays both packet byte sequences against their original
+hashes and plan, then independently replays the precursor with the original
+creation time, policy and service deadline. A final native clock sample must
+remain before both source expiries. Changed bytes, pins, plan, precursor,
+foreign-task or reused leases, and expiry fail closed with no precursor hash.
+No raw packet, precursor, callback or reusable capability leaves the function;
+only the existing hash-only V4 diagnostic reaches V5's bounded receipt builder.
+This continuity check does not invoke G2–G11 or G12. Its canonical receipt is
+always `DENY` with
 `candidate_created=false`, `g1_g11_complete=false` and `g12_published=false`.
 It distinguishes an unavailable V4 precursor, an inspected precursor with no
 intent, and an inspected intent still lacking source-derived G1–G11 inputs.
@@ -77,19 +89,21 @@ The V5 receipt constructor checks shape, phase consistency and fixed denial
 flags only. Anyone can construct a syntactically valid receipt and its SHA256;
 neither proves a native capture happened. Treat the V4/V5 receipts as untrusted
 diagnostics, **not** source authentication, qualification or acceptance
-evidence. Only a future private same-task source capability and independently
-replayed complete gate chain could cross the owned candidate boundary.
+evidence. Only a future private same-task evaluation of the complete gate
+chain from the retained raw inputs could cross the owned candidate boundary.
 
-This stop is deliberate. V4 only returns hashes and a source-derived precursor
-intent. The native public/account raw packet leases and precursor object are
-discarded before the V4 call returns. Its V6 account receipt explicitly lacks
+This stop is deliberate. The public V4 method still returns only hashes and
+discards its native public/account packets and precursor before it returns. A
+saved V4 receipt cannot recreate native ownership or qualify an intent for G12.
+The private V5 path now has a frame in which a future version can evaluate the
+full gates from those exact bytes, but its V6 account receipt explicitly lacks
 complete portfolio history, local exposure/revision and authenticated risk
 inputs. The precursor has no selected SL/TP, position size or complete G2–G11
-run. A saved V4 receipt, even when it records an inspected intent, cannot
-recreate native ownership or qualify that intent for G12. A later implementation
-must keep the native packet and precursor in one private invocation, build and
-independently replay every source-derived G1–G11 input including complete
-account/risk/protection, then publish new G12 for that exact candidate. It must
-continue to fail closed while Demo public-origin authentication is unresolved.
+run. The native V2 public quote and G1 result also need a versioned bridge into
+the existing G1–G11 engine, whose current contract accepts the older quote and
+G1 result types. A later implementation must independently replay every
+source-derived gate, including complete account/risk/protection and event-ledger
+inputs, before it may publish new G12 for the exact candidate. It must continue
+to fail closed while Demo public-origin authentication is unresolved.
 The inspected-intent branch in unit tests uses a synthetic V4 diagnostic solely
 to verify that this boundary still stops before G12; it is not Demo evidence.

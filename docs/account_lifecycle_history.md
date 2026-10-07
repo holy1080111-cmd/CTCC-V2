@@ -1,5 +1,10 @@
 # B6-A original account history diagnostics
 
+The lifecycle projection now uses `ctcc.account_lifecycle_history_diagnostic.v2`
+and a new policy hash. Previously saved v1 receipts and pins remain v1 evidence;
+the v2 replay rejects a v1 policy pin. B1/B2/B3 source and index contracts are
+unchanged.
+
 This slice produces an immutable, deterministic **DENY diagnostic** from the
 original bounded B1 ingestion journal and DB0021 observation export. It does not
 produce a PortfolioRiskSnapshot, register an account revision, grant a native
@@ -66,16 +71,34 @@ arithmetic. Only the old `forensics._inventory` definition delegates to it; all
 other original file bytes and AST remain unchanged. Original fill order,
 precision, state list/tuple shapes and fixed arithmetic error codes are retained.
 The history diagnostic orders only a derived view by genuine fill time; original
-pages remain unchanged. Equal-time inventory ambiguity, an unknown entry,
-over-close, direction conflict or reopen denies lifecycle reconstruction.
+pages and per-row locator order remain unchanged. When every fill role and time is
+mapped, it partitions one instrument/position-side's fills at each exact return
+to flat. Each run is reduced independently with the existing FIFO arithmetic,
+and the next run names the preceding zeroing fill and its original locators as
+its bounded starting witness. The witness carries the original fill's first
+observation time and the next entry's actual fill time. When the source was
+first observed at or after that entry, it is explicitly labeled retrospective
+and unavailable as a point-in-time starting witness; its historical structural
+gross calculation does not become a risk seed. A later entry does not repair
+an over-close.
+Equal-time ambiguity, missing roles, conflicting source identities and an
+unverified preceding close prevent a later apparent run from gaining a verified
+close.
 
 The producer labels a source-observed zeroing fill only when mapped inventory
 reaches zero and the calculated supported gross reconciles to original fill PnL.
+V2 retains each original fill's signed fee or rebate and verified raw locators,
+and reports an exact signed fee subtotal and fill-plus-fee subtotal for each
+structurally closed run. Matching type-2 account bills remain mirrors and are not
+added a second time. These are observed fill components, not complete net PnL:
+funding attribution, later corrections, the complete account outcome sequence
+and a valid seed remain unknown. A conflicting or foreign fee cannot become a
+settlement-currency fee subtotal. An ambiguous, open, or over-closed group
+retains each original fill's raw signed fee but exposes no run-level subtotal.
 It never substitutes order creation, bill generation or observation time for
 that fill. It does not create a candidate/report/submission ID to turn an
 untracked exchange trade into a tracked CTCC trade. Full account-wide completed
-outcome order and multiple same-instrument lifecycle segmentation remain future
-work; a reopen currently denies rather than guesses a new lifecycle.
+outcome order remains future work.
 
 ## Required unknowns
 
@@ -126,7 +149,8 @@ baseline through the original collector and verifies its gross/subtotal. Inputs
 are declared before acquisition; captured original bytes are never amended.
 Negative ingress tests assert fixed causes rather than a generic exception.
 The below cases describe implemented mechanics and the remaining original
-requirement separately. Their runtime status is **NOT RUN by the source author**.
+requirement separately. Focused local execution does not establish native
+account acceptance or replace final revision validation.
 
 | Scenario | Implemented original-source mechanic | Full requirement still absent |
 | --- | --- | --- |
@@ -147,7 +171,7 @@ requirement separately. Their runtime status is **NOT RUN by the source author**
 | A15 | Caller genesis override rejected | Genuine genesis witness **UNFULFILLED** |
 | A16 | Missing opening causes over-close denial | Source-proven pre-window inventory |
 | A17 | Equal-time mixed roles remain ambiguous | Source-proven event ordering |
-| A18 | Over-close does not produce a structural close | Complete supported lifecycle segmentation |
+| A18 | Over-close does not produce a structural close | Source-proven inventory before the excess exit |
 | A19 | Overlapping BTC/ETH source structures; no strategy-local or account-wide seed | Complete account-wide net outcome order |
 | A20 | Foreign fee currency/unclassified account movement blocks totals | Complete supported product/movement coverage |
 | A21 | Repeated identical source row deduplicates; changed original response keeps conflicting variants | Reconciliation/finality |
@@ -155,13 +179,21 @@ requirement separately. Their runtime status is **NOT RUN by the source author**
 | A23 | Current tail beyond original mature cutoff remains unknown | Current UTC/7d financial completeness |
 | A24 | Same original pins reproduce bytes; separate exact-ingress countercases deny | Native authenticity/owner/current full risk |
 
+Four additional focused cases cover two separate structurally reconciled
+flat-to-flat runs in one instrument, retrospective first observation of the
+preceding close after the next entry, an equal-time close/reopen boundary,
+and an over-close followed by an apparent reopen. They assert the v2 policy
+boundary, exact source locator order, signed fees and rebates, withheld
+invalid-run subtotals, deterministic bytes and unchanged DENY fields.
+
 The suite also preregisters 12 exact-ingress countercases: boolean sequence,
 missing prefix, changed head/source pin, foreign source/index class, altered
 original receipt row time, boolean membership/witness index, caller funding DTO,
 completeness and streak overrides. A pure arithmetic case verifies a valid
-baseline before rejecting foreign scalar/time types. The static planned inventory
-is 24 + 12 + 1 = 37 pytest nodes; collection/execution belongs to root and must
-be recorded against the exact frozen source, not inferred as passing.
+baseline before rejecting foreign scalar/time types. The original planned
+inventory was 24 + 12 + 1 = 37 pytest nodes; v2 adds four lifecycle cases.
+Final execution must be recorded against the exact frozen source, not inferred
+as passing.
 
 The old whole-byte compatibility corpus has 16 positive and six exact old error
 cases, captured by root before this adapter change. Root must capture the new

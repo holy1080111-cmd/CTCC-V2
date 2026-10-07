@@ -543,6 +543,58 @@ def _account_receipt(raw, *, plan_pin, public_completed_at, final_at):
     return reference, observed
 
 
+def _replay_owned_original_raw_continuity(
+    public_packet,
+    account_packet,
+    original_precursor,
+    *,
+    public_pin,
+    account_pin,
+    plan_pin,
+    precursor_inputs,
+):
+    """Replay both consumed packets while they remain local to the V5 owner.
+
+    This is a source-continuity check, not a source or qualification issuer. It
+    returns no packet, intent, receipt, lease or reusable capability.
+    """
+    if (
+        type(public_packet) is not public_v2.CollectedPublicMarketV2
+        or type(account_packet) is not capture.DemoAccountPacket
+        or type(original_precursor) is not precursor.OriginalCandidatePrecursorV2
+        or type(public_packet.packet_json) is not bytes
+    ):
+        raise OriginalSourceCoordinatorError("original_raw_continuity_invalid")
+    public_raw = public_packet.packet_json
+    account_raw = capture.freeze_demo_account_packet(
+        account_packet, expected_plan_sha256=plan_pin
+    )
+    if account_raw.sha256 != account_pin:
+        raise OriginalSourceCoordinatorError("original_raw_continuity_mismatch")
+    replayed_public = public_v2.replay_collected_public_market_v2(
+        public_raw, expected_sha256=public_pin
+    )
+    replayed_account = capture.verify_demo_account_packet(
+        account_raw.payload,
+        expected_sha256=account_pin,
+        expected_plan_sha256=plan_pin,
+    )
+    if (
+        replayed_public.packet_json != public_raw
+        or replayed_account != account_packet
+        or replayed_account.plan_sha256 != plan_pin
+    ):
+        raise OriginalSourceCoordinatorError("original_raw_continuity_mismatch")
+    replayed_precursor = precursor.verify_original_candidate_precursor_v2(
+        original_precursor, replayed_public, replayed_account, **precursor_inputs
+    )
+    if (
+        replayed_precursor.receipt_json != original_precursor.receipt_json
+        or replayed_precursor.intent != original_precursor.intent
+    ):
+        raise OriginalSourceCoordinatorError("original_raw_continuity_mismatch")
+
+
 async def capture_owned_original_sources_v2(
     public_root,
     account_root,
@@ -626,6 +678,36 @@ async def capture_owned_original_precursor_v4(
     )
 
 
+async def _capture_owned_original_precursor_for_boundary_v5(
+    public_root,
+    account_root,
+    *,
+    instrument_id,
+    strategy,
+    market_policy,
+    account_session,
+    session_factory,
+) -> InitialOwnedPrecursorDiagnosticV4:
+    """Keep both raw packets and the precursor in one fixed private invocation.
+
+    The raw values are replayed before this call returns and never leave its
+    stack. Only the existing hash-only V4 diagnostic crosses to the V5 boundary.
+    """
+    if type(strategy) is not str or strategy not in precursor.STRATEGY_CATALOG:
+        raise OriginalSourceCoordinatorError("original_precursor_strategy_invalid")
+    return await _capture_owned_original_sources(
+        public_root,
+        account_root,
+        instrument_id=instrument_id,
+        market_policy=market_policy,
+        account_session=account_session,
+        session_factory=session_factory,
+        inspect_g1=True,
+        strategy=strategy,
+        retain_raw_for_boundary=True,
+    )
+
+
 async def _capture_owned_original_sources(
     public_root,
     account_root,
@@ -636,9 +718,13 @@ async def _capture_owned_original_sources(
     session_factory,
     inspect_g1,
     strategy,
+    retain_raw_for_boundary=False,
 ):
     if (
         type(inspect_g1) is not bool
+        or type(retain_raw_for_boundary) is not bool
+        or retain_raw_for_boundary
+        and strategy is None
         or strategy is not None
         and (
             not inspect_g1
@@ -912,13 +998,32 @@ async def _capture_owned_original_sources(
                 or precursor_doc["execution_authority"] is not False
             ):
                 raise OriginalSourceCoordinatorError("original_precursor_scope_changed")
+            finished = completed_stamp
+            if retain_raw_for_boundary:
+                # Keep exact native packet bytes and the verified precursor in
+                # this frame. Never return a raw packet or a transferable lease.
+                _replay_owned_original_raw_continuity(
+                    packet,
+                    owned.packet,
+                    replayed,
+                    public_pin=public_pin,
+                    account_pin=account_packet_pin,
+                    plan_pin=plan_pin,
+                    precursor_inputs=inputs,
+                )
+                continuity_stamp = native_stamp()
+                validate_stamps((completed_stamp, continuity_stamp))
+                if utc_from_ns(continuity_stamp["utc_ns"]) >= min(
+                    expires, owned.expires_at
+                ):
+                    raise OriginalSourceCoordinatorError("original_precursor_expired")
+                finished = continuity_stamp
             precursor_pin = replayed.receipt_sha256
             precursor_action = precursor_doc["action"]
             precursor_code = precursor_doc["code"]
             if replayed.intent is not None:
                 precursor_intent_pin = sha(canonical(precursor_doc["intent"]))
                 precursor_intent_derived = True
-            finished = completed_stamp
             code = "original_precursor_inspected"
             return result()
         code = (

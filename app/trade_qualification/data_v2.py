@@ -14,6 +14,7 @@ from pydantic import Field, StringConstraints, field_validator, model_validator
 
 from app.domain.source_primitives import canonical, decode, sha
 from app.trade_qualification import data
+from app.trade_qualification import demo_public_origin as demo_origin
 from app.trade_qualification import public_market_collector_v2 as public
 from app.trade_qualification import quote_collector_v2 as quotes
 from app.trade_qualification.event_models import Digest
@@ -25,6 +26,18 @@ from app.trade_qualification.models import (
     QualificationModel,
     ReportId,
     Text,
+)
+
+_REVIEWED_QUOTE_TRANSPORT_PINS = frozenset(
+    {
+        quotes.TRANSPORT_POLICY_SHA256,
+        *(
+            quotes._transport_policy_sha256(
+                demo_origin.reviewed_demo_public_route(region)
+            )
+            for region in ("global", "us_au", "eea")
+        ),
+    }
 )
 
 
@@ -83,7 +96,7 @@ class DataQualificationResultV2(QualificationModel):
             self.gate.gate != QualificationGate.DATA
             or self.gate.report_id != self.report_id
             or self.quote_profile_sha256 != POLICY_SHA256
-            or self.quote_transport_policy_sha256 != quotes.TRANSPORT_POLICY_SHA256
+            or self.quote_transport_policy_sha256 not in _REVIEWED_QUOTE_TRANSPORT_PINS
         ):
             raise ValueError("data_v2_identity_or_profile_mismatch")
         for raw, pin, maximum in (
@@ -246,6 +259,19 @@ def evaluate_public_market_data_v2(
     # The bridge already replayed all component bytes, transport bounds and
     # schedule. These bindings retain the inseparable fundingTime/rate pair.
     document = decode(packet.packet_json, public.MAX_PACKET_BYTES)
+    route = (
+        demo_origin.reviewed_demo_public_route(document["registration_region"])
+        if "registration_region" in document
+        else None
+    )
+    quote_transport_pin = quotes._transport_policy_sha256(route)
+    if (
+        quote_transport_pin not in _REVIEWED_QUOTE_TRANSPORT_PINS
+        or document["quote_transport_policy_sha256"] != quote_transport_pin
+        or document["policy"]["quote_transport_policy_sha256"] != quote_transport_pin
+        or document["quote"]["transport_policy_sha256"] != quote_transport_pin
+    ):
+        raise ValueError("data_v2_quote_transport_route_mismatch")
     quote = context.quote
     pair_raw = canonical(
         {
@@ -278,7 +304,7 @@ def evaluate_public_market_data_v2(
             public_bundle_sha256=context.packet_sha256,
             quote_bundle_sha256=document["quote_sha256"],
             quote_profile_sha256=POLICY_SHA256,
-            quote_transport_policy_sha256=quotes.TRANSPORT_POLICY_SHA256,
+            quote_transport_policy_sha256=quote_transport_pin,
             quote_inspection_json=context.quote_inspection_json.decode(),
             quote_inspection_sha256=sha(context.quote_inspection_json),
             funding_pair_json=pair_raw.decode(),

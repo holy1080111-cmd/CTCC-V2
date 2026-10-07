@@ -3891,14 +3891,14 @@ sampled source semantics are verified; no tolerance has been silently added.
 The materializer, account runtime and trade-forensics focused suites passed
 398 cases on Windows with synthetic source data.
 
-An owned-original V5 preflight invokes the native V4 precursor in the same
+An owned-original V5 preflight invokes the native precursor core in the same
 task, checks its account-plan binding and records why the source-derived
 G1--G11 inputs are still unavailable. It has no caller-supplied run, old
 receipt, `passed` flag, G12 barrier or continuation callback; every result is
 `DENY`, with G12, risk reservation, execution and order flags false. Its hash
 receipt is a public shape diagnostic and can be constructed by a caller; it is
-not source-authentication, qualification or acceptance evidence. The native
-one-use raw packets are discarded by V4, and the V6 account source still lacks
+not source-authentication, qualification or acceptance evidence. Public V4
+discards its native one-use raw packets, and the V6 account source still lacks
 complete risk/protection authority. Fourteen focused synthetic V5 cases passed.
 
 A read-only submit-route audit found the concrete Demo private REST transport
@@ -3914,3 +3914,47 @@ acceptance or proof that every eventual submit route is fully integrated.
 These changes and audit do not establish full Windows, Linux, PostgreSQL,
 Docker, source-authentic Demo, Gate 3/OOS, Micro Live, or release acceptance.
 The exact-source full regression must be repeated after this patch is committed.
+
+## 2026-10-08 bounded raw continuity, lifecycle partition and Windows timeout trace
+
+The private V5 precursor path now replays its exact consumed public and account
+packet bytes and the original precursor within the same invocation before it
+returns a hash-only diagnostic. A final native clock observation is recorded
+after that replay. The public V2/V3/V4 entry points remain unchanged. V5 still
+returns only `DENY`: it has no source-derived G2--G11 run, G12 publication,
+complete account risk, reservation, intent or order authority. Focused synthetic
+continuity tests passed; none is a real Demo acceptance sample.
+
+The original-account lifecycle diagnostic is versioned to v2. It partitions
+fully mapped same-instrument fills at verified flat returns, keeps original
+fill locators, and reports signed fill-fee and fill-plus-fee components per
+bounded run. Conflicting identities, equal-time ordering and over-closes still
+deny a verified close. Funding accrual, final net outcome, rolling loss seed,
+account snapshot and source authenticity remain unknown. These components are
+not a PortfolioRiskSnapshot or permission to trade.
+When the preceding close was first observed after the next entry fill, its
+starting witness is explicitly retrospective and unavailable for point-in-time
+risk. Such a run may retain its source-derived historical gross diagnostic, but
+it cannot produce a loss seed or current owner.
+
+The measured-public Gate 3 adapter now rejects an earlier accepted capture if
+the controlled journal later records a conflicting revision of any selected
+minute. Both source observations remain available for investigation. This
+prevents an old capture selector from laundering a known conflict; independent
+custody, trusted time and prospective unseen rows remain absent, so Gate 3 is
+still failed.
+
+The G1 V2 diagnostic now binds its quoted transport-policy hash to the actual
+reviewed region in the fully replayed public packet. Historical unrouted bytes
+are unchanged. Old routed diagnostics that carried the legacy generic hash stay
+parseable but fail exact replay against the routed packet, as do cross-region
+substitutions. Focused synthetic G1 and routed-public tests passed 62 and 6
+cases respectively; route matching does not authenticate the Demo account or
+grant execution authority.
+
+The HighVol installer verifier has optional fixed-name stage markers for its
+Windows dry run. Its 30-second timeout and identity/parser checks are unchanged;
+the test records only the last safe stage if the timeout repeats. The earlier
+CI timeout has no recorded phase, so its root cause remains unproven. Local
+PowerShell 5.1 tests passed 9/9 with no installer or exchange execution. The
+current changed worktree still needs an exact-source full CI run after commit.

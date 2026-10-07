@@ -4,12 +4,19 @@ param(
     [Parameter(Mandatory = $true)][string]$IdentityPath,
     [ValidatePattern('^[0-9a-fA-F]{64}$')][string]$ExpectedIdentitySha256 =
         '34ef5b12fa3855977d784d31803e0e1c7cb871959609f68a29cca2efcbffd722',
-    [switch]$DryRun
+    [switch]$DryRun,
+    [switch]$StageTrace
 )
 
 # This verifier never invokes the installer, Docker, a controller, or an exchange.
 # Package acceptance is separate from canonical qualification/deployment acceptance.
 $ErrorActionPreference = 'Stop'
+function Write-VerifyStage([string]$Stage) {
+    if ($StageTrace) {
+        [Console]::Error.WriteLine(('INSTALLER_VERIFY_STAGE:{0}' -f $Stage))
+    }
+}
+Write-VerifyStage 'start'
 function Get-SourceSha256([byte[]]$Bytes) {
     $hasher = [Security.Cryptography.SHA256]::Create()
     try {
@@ -47,6 +54,7 @@ $identitySha256 = Get-SourceSha256 $identityBytes
 if ($identitySha256 -cne $ExpectedIdentitySha256.ToLowerInvariant()) {
     throw 'INSTALLER_IDENTITY_MISMATCH'
 }
+Write-VerifyStage 'identity_hash'
 $identity = Convert-StrictUtf8 $identityBytes 'IDENTITY' | ConvertFrom-Json
 if ($identity.schema -cne 'ctcc_offline_installer_identity_v1') {
     throw 'INSTALLER_IDENTITY_SCHEMA_INVALID'
@@ -86,6 +94,7 @@ foreach ($entry in $identity.files) {
 if ($seen.Count -ne $required.Count) {
     throw 'INSTALLER_IDENTITY_FILE_SET_INCOMPLETE'
 }
+Write-VerifyStage 'source_hashes'
 $parseTokens = $null
 $parseErrors = $null
 [System.Management.Automation.Language.Parser]::ParseInput(
@@ -98,7 +107,10 @@ if ($parseErrors.Count -gt 0) {
     })
     throw ('INSTALLER_PARSER_REJECTED:{0}' -f ($locations -join ','))
 }
+Write-VerifyStage 'parser'
+Write-VerifyStage 'analyzer_discovery_start'
 $analyzerAvailable = [bool](Get-Module -ListAvailable -Name PSScriptAnalyzer)
+Write-VerifyStage 'analyzer_discovery_end'
 [ordered]@{
     schema = 'ctcc_offline_installer_verification_v1'
     source_identity = 'PASS'
@@ -111,3 +123,4 @@ $analyzerAvailable = [bool](Get-Module -ListAvailable -Name PSScriptAnalyzer)
     deployment_performed = $false
     canonical_qualification_integration = 'NOT_ACCEPTED'
 } | ConvertTo-Json -Compress
+Write-VerifyStage 'complete'

@@ -24,11 +24,15 @@ from app.trade_qualification.reservations import LedgerScope, checked_bootstrap
 
 POLICY_BYTES = journal.canonical(
     {
-        "version": "ctcc.account_lifecycle_history_diagnostic.v1",
+        "version": "ctcc.account_lifecycle_history_diagnostic.v2",
         "index_policy_sha256": observed.POLICY_SHA256,
         "index_prefix": "original_sequence_one_through_pinned_head_bounded_or_deny",
         "financial_time": "actual_fillTime_signed_fillPnl_and_fee_once",
         "inventory": "original_forensics_exact_FIFO_supported_linear_USDT_net_mode",
+        "lifecycle_partition": "distinct_structurally_reconciled_flat_to_flat_runs_per_instrument_side",
+        "fill_fees": "signed_original_fee_per_fill_and_per_run_without_bill_double_count",
+        "fee_run_subtotal": "only_structurally_closed_reconciled_run",
+        "prior_zeroing_witness": "label_observation_availability_before_next_entry_no_point_in_time_seed",
         "flat_anchor": "original_observed_empty_inventory_before_first_fill",
         "orders": "exact_original_row_role_join_not_order_retention_completeness",
         "funding": "unknown_no_original_settled_event_ingress",
@@ -515,94 +519,207 @@ def _lifecycle(rows, packets, sources, scope, blockers):
             at = _utc(datetime.fromisoformat(member["fill_at"]))
             actual.append(
                 (
-                    role,
-                    raw.get("side"),
-                    _number(raw.get("fillSz"), positive=True),
-                    _number(raw.get("fillPx"), positive=True),
-                    at,
+                    (
+                        role,
+                        raw.get("side"),
+                        _number(raw.get("fillSz"), positive=True),
+                        _number(raw.get("fillPx"), positive=True),
+                        at,
+                    ),
+                    member,
                 )
             )
-        actual.sort(key=lambda fill: fill[4])  # Derived view; original pages unchanged.
-        if any(a[4] == b[4] for a, b in pairwise(actual)):
+        actual.sort(key=lambda item: item[0][4])  # Original locator order is unchanged.
+        if any(a[0][4] == b[0][4] for a, b in pairwise(actual)):
             reasons.add("history_equal_time_inventory_ambiguous")
-        earlier = [a for a in anchors if actual and a["observed_at"] < actual[0][4]]
+        earlier = [a for a in anchors if actual and a["observed_at"] < actual[0][0][4]]
         if not earlier:
             reasons.add("history_starting_flat_anchor_missing")
         if len(actual) != len(members):
             reasons.add("history_fill_inventory_unmapped")
-        values = None
+        if len({m["identity_sha256"] for m in members}) != len(members):
+            reasons.add("history_conflicting_fill_identity")
+        # Only a fully mapped, strictly ordered group may be partitioned. An
+        # over-close poisons the remaining inventory rather than allowing a
+        # later entry to manufacture a new flat start.
+        segments = []
         if not reasons:
-            direction = (
-                "long"
-                if (actual[0][0] == "entry") == (actual[0][1] == "buy")
-                else "short"
-            )
-            try:
-                values = reduce_inventory(
-                    direction=direction,
-                    unit=unit,
-                    fills=tuple(actual),
-                    funding_times=(),
-                )
-            except InventoryMathError as exc:
-                reasons.add(exc.args[0])
-        closed_at = None
-        gross = None
-        if values is not None:
-            entries, exits, _, _, calculated, _ = values
-            if entries > 0 and entries == exits:
-                exchange_gross = sum(
-                    (_number(m["raw"].get("fillPnl")) for m in members), Fraction(0)
-                )
-                if calculated == exchange_gross:
-                    closed_at, gross = actual[-1][4].isoformat(), _fraction(calculated)
-                else:
-                    reasons.add("history_closed_gross_reconciliation_mismatch")
+            open_run, balance = [], Fraction(0)
+            for item in actual:
+                fill = item[0]
+                open_run.append(item)
+                balance += fill[2] if fill[0] == "entry" else -fill[2]
+                if balance < 0:
+                    segments = []
+                    break
+                if balance == 0:
+                    segments.append(open_run)
+                    open_run = []
             else:
-                reasons.add("history_inventory_remains_open")
-        results.append(
-            {
-                "lifecycle_source_sha256": journal.digest(
-                    journal.canonical(
-                        [
-                            scope.environment,
-                            scope.account_id,
-                            key,
-                            [m["identity_sha256"] for m in members],
-                        ]
-                    )
-                ),
-                "instrument_id": name,
-                "position_side": pos_side,
-                "source_observed_zeroing_fill_at": closed_at,
-                "source_observed_closed_gross": gross,
-                "source_observed_starting_inventory": {
-                    **earlier[-1],
-                    "observed_at": earlier[-1]["observed_at"].isoformat(),
-                    "meaning": "bounded_observed_flat_not_exchange_atomic_or_account_genesis",
-                }
-                if earlier
-                else None,
-                "original_source_rows": [
+                if open_run:
+                    segments.append(open_run)
+        if not segments:
+            segments = [actual]
+        previous_close = None
+        for segment_number, segment in enumerate(segments, 1):
+            selected_ids = {id(member) for _, member in segment}
+            selected = (
+                [member for member in members if id(member) in selected_ids]
+                if len(actual) == len(members)
+                else members
+            )
+            segment_reasons = set(reasons)
+            availability_reasons = set()
+            if segment_number > 1 and previous_close is None:
+                segment_reasons.add("history_prior_zeroing_unverified")
+            if segment_number == 1:
+                starting = (
                     {
-                        "identity_sha256": m["identity_sha256"],
-                        "row_sha256": m["row_sha256"],
-                        "locators": m["locators"],
+                        **earlier[-1],
+                        "observed_at": earlier[-1]["observed_at"].isoformat(),
+                        "meaning": "bounded_observed_flat_not_exchange_atomic_or_account_genesis",
                     }
-                    for m in members
-                ],
-                "net_pnl": None,
-                "funding_amount": None,
-                "positive_net_reset_proven": False,
-                "reasons": sorted(
-                    reasons
-                    | {
-                        "funding_accrual_provenance_missing",
-                        "future_late_arrival_finality_unproven",
+                    if earlier
+                    else None
+                )
+            else:
+                starting = None
+                if previous_close is not None:
+                    next_entry_at = segment[0][0][4]
+                    observed_at = _utc(
+                        datetime.fromisoformat(previous_close["observed_at"])
+                    )
+                    available_before_entry = observed_at < next_entry_at
+                    starting = {
+                        **previous_close,
+                        "next_entry_fill_at": next_entry_at.isoformat(),
+                        "point_in_time_available_before_next_entry": available_before_entry,
+                        "meaning": (
+                            "prior_source_observed_zeroing_fill_not_exchange_atomic_or_account_genesis"
+                            if available_before_entry
+                            else "retrospectively_observed_prior_zeroing_fill_not_point_in_time_seed"
+                        ),
                     }
-                ),
-            }
-        )
+                    if not available_before_entry:
+                        availability_reasons.add(
+                            "history_prior_zeroing_witness_unavailable_before_next_entry"
+                        )
+            per_fill = []
+            fees = []
+            unique_source = len({m["identity_sha256"] for m in selected}) == len(
+                selected
+            )
+            for member in selected:
+                raw = member["raw"]
+                fee = (
+                    _number(raw.get("fee"))
+                    if raw.get("feeCcy") == scope.settlement_currency
+                    else None
+                )
+                if fee is None:
+                    segment_reasons.add("history_fill_fee_or_currency_unknown")
+                else:
+                    fees.append(fee)
+                per_fill.append(
+                    {
+                        "identity_sha256": member["identity_sha256"],
+                        "row_sha256": member["row_sha256"],
+                        "locators": member["locators"],
+                        "source_observed_signed_fee": _fraction(fee)
+                        if fee is not None
+                        else None,
+                    }
+                )
+            if not unique_source:
+                segment_reasons.add("history_conflicting_fill_identity")
+            fee_subtotal = (
+                sum(fees, Fraction(0))
+                if unique_source and len(fees) == len(selected)
+                else None
+            )
+            values = None
+            if not segment_reasons and segment:
+                direction = (
+                    "long"
+                    if (segment[0][0][0] == "entry") == (segment[0][0][1] == "buy")
+                    else "short"
+                )
+                try:
+                    values = reduce_inventory(
+                        direction=direction,
+                        unit=unit,
+                        fills=tuple(fill for fill, _ in segment),
+                        funding_times=(),
+                    )
+                except InventoryMathError as exc:
+                    segment_reasons.add(exc.args[0])
+            closed_at = gross = fill_cashflow = None
+            if values is not None:
+                entries, exits, _, _, calculated, _ = values
+                if entries > 0 and entries == exits:
+                    exchange_gross = sum(
+                        (_number(m["raw"].get("fillPnl")) for m in selected),
+                        Fraction(0),
+                    )
+                    if calculated == exchange_gross:
+                        closed_at = segment[-1][0][4].isoformat()
+                        gross = _fraction(calculated)
+                        if fee_subtotal is not None:
+                            fill_cashflow = _fraction(calculated + fee_subtotal)
+                    else:
+                        segment_reasons.add(
+                            "history_closed_gross_reconciliation_mismatch"
+                        )
+                else:
+                    segment_reasons.add("history_inventory_remains_open")
+            results.append(
+                {
+                    "lifecycle_source_sha256": journal.digest(
+                        journal.canonical(
+                            [
+                                scope.environment,
+                                scope.account_id,
+                                key,
+                                segment_number,
+                                per_fill,
+                            ]
+                        )
+                    ),
+                    "instrument_id": name,
+                    "position_side": pos_side,
+                    "source_observed_zeroing_fill_at": closed_at,
+                    "source_observed_closed_gross": gross,
+                    "source_observed_signed_fill_fee_subtotal": _fraction(fee_subtotal)
+                    if closed_at is not None and fee_subtotal is not None
+                    else None,
+                    "source_observed_fill_plus_fee_subtotal": fill_cashflow,
+                    "source_observed_starting_inventory": starting,
+                    "original_source_rows": per_fill,
+                    "net_pnl": None,
+                    "funding_amount": None,
+                    "positive_net_reset_proven": False,
+                    "reasons": sorted(
+                        segment_reasons
+                        | availability_reasons
+                        | {
+                            "funding_accrual_provenance_missing",
+                            "future_late_arrival_finality_unproven",
+                        }
+                    ),
+                }
+            )
+            previous_close = (
+                {
+                    "observed_at": segment[-1][1]["first_observed_at"],
+                    "zeroing_fill_at": closed_at,
+                    "identity_sha256": segment[-1][1]["identity_sha256"],
+                    "row_sha256": segment[-1][1]["row_sha256"],
+                    "locators": segment[-1][1]["locators"],
+                    "meaning": "prior_source_observed_zeroing_fill_not_exchange_atomic_or_account_genesis",
+                }
+                if closed_at is not None
+                else None
+            )
     return results
 
 
@@ -688,7 +805,7 @@ def replay_account_lifecycle_history(
                 }
             )
         output = {
-            "schema_version": "ctcc.account_lifecycle_history_diagnostic.v1",
+            "schema_version": "ctcc.account_lifecycle_history_diagnostic.v2",
             "policy_sha256": POLICY_SHA256,
             "source_set_sha256": source_pin,
             "index_head_sha256": expected_index_head_sha256,

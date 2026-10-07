@@ -241,6 +241,13 @@ def test_pure_publisher_keeps_conflicting_source_observation_and_rejects_adapter
             expected_plan_sha256=changed.receipt.plan_sha256,
         )
     with pytest.raises(PublicReceiptError, match="source_revision_conflict"):
+        measured_public_minutes(
+            journal=journal,
+            capture_id=owned.receipt.capture_id,
+            expected_receipt_sha256=owned.receipt.canonical_sha256(),
+            expected_plan_sha256=owned.receipt.plan_sha256,
+        )
+    with pytest.raises(PublicReceiptError, match="source_revision_conflict"):
         journal._publish_owned(changed)
     assert journal.checkpoint.sequence == 2
 

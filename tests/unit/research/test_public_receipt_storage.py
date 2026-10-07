@@ -203,6 +203,8 @@ def test_source_revision_conflict_preserves_old_record_and_denies(
     assert len(journal.read_all()[0]) == 2
     with pytest.raises(PublicReceiptError, match="source_revision_conflict"):
         minutes(journal, storage_fixture_capture(packet, files).receipt)
+    with pytest.raises(PublicReceiptError, match="source_revision_conflict"):
+        minutes(journal, first.receipt)
 
 
 def test_240_measured_minutes_aggregate_deterministically_with_delayed_availability(

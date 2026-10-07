@@ -116,7 +116,9 @@ async def test_even_inspected_precursor_stops_at_missing_g1_g11_without_g12(
         calls.append(1)
         return inspected
 
-    monkeypatch.setattr(original, "capture_owned_original_precursor_v4", native_v4)
+    monkeypatch.setattr(
+        original, "_capture_owned_original_precursor_for_boundary_v5", native_v4
+    )
     monkeypatch.setattr(
         public_runtime, "publish_qualification_evidence_liquidity_v2", _forbidden
     )
@@ -149,7 +151,9 @@ async def test_inspected_precursor_without_intent_has_distinct_denial(
         controlled._used = True
         return _inspected_precursor_receipt(controlled._pin, with_intent=False)
 
-    monkeypatch.setattr(original, "capture_owned_original_precursor_v4", native_v4)
+    monkeypatch.setattr(
+        original, "_capture_owned_original_precursor_for_boundary_v5", native_v4
+    )
     monkeypatch.setattr(
         public_runtime, "publish_qualification_evidence_liquidity_v2", _forbidden
     )
@@ -179,7 +183,9 @@ async def test_unconsumed_v4_result_cannot_cross_owned_boundary(tmp_path, monkey
     async def borrowed_v4(*_args, **_kwargs):
         return _inspected_precursor_receipt(controlled._pin)
 
-    monkeypatch.setattr(original, "capture_owned_original_precursor_v4", borrowed_v4)
+    monkeypatch.setattr(
+        original, "_capture_owned_original_precursor_for_boundary_v5", borrowed_v4
+    )
     with pytest.raises(
         boundary.OwnedOriginalCandidateBoundaryError,
         match="owned_original_session_mismatch",
@@ -206,7 +212,9 @@ async def test_foreign_plan_v4_result_cannot_cross_owned_boundary(
         controlled._used = True
         return _inspected_precursor_receipt("a" * 64)
 
-    monkeypatch.setattr(original, "capture_owned_original_precursor_v4", foreign_v4)
+    monkeypatch.setattr(
+        original, "_capture_owned_original_precursor_for_boundary_v5", foreign_v4
+    )
     with pytest.raises(
         boundary.OwnedOriginalCandidateBoundaryError,
         match="owned_original_session_mismatch",
