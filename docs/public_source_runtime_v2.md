@@ -250,3 +250,21 @@ proof, real Demo V2 capture or trading authority was produced; source
 authenticity and R5 trusted Demo-source acceptance remain **DENY**. Exact-source
 Windows, PostgreSQL and Docker CI must run again after these changes are
 committed.
+
+## 2026-10-07 post-G12 public integrity join
+
+`post_g12_public_join_v1.py` adds an offline diagnostic for a sealed V2
+`post_publication` journal. It replays the whole plan, event chain and raw packet,
+then checks the externally pinned plan/summary/packet hashes, G12 candidate,
+event, policy, evidence, report and barrier lineage. It requires a routed Demo
+packet with the same account-plan hash. At the stated observation time it
+recomputes the V2 market and WebSocket-reference projections from raw packet
+bytes and requires exact canonical matches with the supplied documents.
+
+The receipt stores the V2 quote packet hash, but does not convert it into the
+legacy `CollectedQuote` required by the existing V3 reservation replay. It is
+always `DENY` with source authenticity, execution recheck, account completeness,
+reservation and order authority false. A self-consistent historical journal and
+caller-supplied hashes cannot establish a native same-task source handoff, and
+the current Demo-region registration proof still blocks new native V2 I/O.
+The join does not enter the reservation or submit path.
