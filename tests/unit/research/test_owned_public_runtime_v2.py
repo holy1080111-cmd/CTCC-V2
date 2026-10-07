@@ -14,6 +14,13 @@ from app.trade_qualification import (
     account_native_runtime,
     data_v2,
     demo_public_origin,
+    demo_public_origin_policy_v2,
+)
+from app.trade_qualification import (
+    candle_collector as candles,
+)
+from app.trade_qualification import (
+    market_aux_collector as aux,
 )
 from app.trade_qualification import post_g12_public_runtime as coordinator
 from app.trade_qualification import public_market_collector as legacy
@@ -21,6 +28,9 @@ from app.trade_qualification import public_market_collector_v2 as public
 from app.trade_qualification import public_source_runtime as runtime
 from app.trade_qualification import qualification_runtime as initial
 from app.trade_qualification import quote_collector_v2 as quotes
+from app.trade_qualification import (
+    ws_collector as ws,
+)
 from app.trade_qualification.engine import evaluate_pre_evidence
 from app.trade_qualification.market_bridge_v2 import public_market_context_v2
 from tests.unit.research.test_owned_public_runtime_p1 import (
@@ -180,8 +190,62 @@ async def test_direct_v2_collector_refuses_unbound_origin_before_clock_or_io(
     assert "public_v2_attempted" not in state
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize("region", ["global", "us_au", "eea"])
-@pytest.mark.parametrize("entry", ["client", "request", "ws"])
+@pytest.mark.parametrize("entry", ["quote", "full_public"])
+async def test_forged_regional_plan_cannot_reach_direct_v2_collectors(
+    monkeypatch, region, entry
+):
+    route = demo_public_origin.reviewed_demo_public_route(region)
+    selected = policy()
+    plan = {
+        "environment": "demo",
+        "registration_region": region,
+        "registration_region_authenticated": False,
+        "account_plan_sha256": "a" * 64,
+        "demo_public_origin_policy_sha256": sha(
+            demo_public_origin_policy_v2.freeze_demo_public_origin_policy_v2(region)
+        ),
+        "rest_origin": route.rest_origin,
+        "ws_origin": route.ws_origin,
+        "policy_sha256": public._policy_digest(selected, route),
+        "report_id": "synthetic-direct-route",
+        "instrument_id": "BTC-USDT-SWAP",
+        "stage": "initial_public",
+        **public._plan_pins(route),
+    }
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("forged_region_reached_clock_journal_or_io")
+
+    state = {
+        "policy": selected,
+        "plan": plan,
+        "report_id": plan["report_id"],
+        "instrument_id": plan["instrument_id"],
+        "publication_completed_at": None,
+        "clock": forbidden,
+    }
+    monkeypatch.setattr(runtime, "_state", lambda *_args, **_kwargs: state)
+    monkeypatch.setattr(runtime, "_new_owned_client", forbidden)
+    monkeypatch.setattr(runtime, "_runtime_attempt", forbidden)
+    monkeypatch.setattr(runtime, "_ws_options", forbidden)
+    with pytest.raises(
+        runtime.PublicSourceRuntimeError,
+        match="trusted_demo_public_origin_profile_unavailable",
+    ):
+        if entry == "quote":
+            await quotes._collect_owned_quote_v2(object())
+        else:
+            await public._collect_owned_public_market_v2(object())
+    assert "quote_v2_attempted" not in state
+    assert "public_v2_attempted" not in state
+
+
+@pytest.mark.parametrize("region", ["global", "us_au", "eea"])
+@pytest.mark.parametrize(
+    "entry", ["client", "request", "ws", "owned_route", "ws_endpoint"]
+)
 @pytest.mark.parametrize(
     "schema_version",
     ["ctcc.public.initial_runtime_plan.v2", "ctcc.public.runtime_plan.v2"],
@@ -215,6 +279,8 @@ def test_v2_demo_transport_rechecks_origin_before_native_io(
         "client": lambda: runtime._new_owned_client(object(), "quote"),
         "request": lambda: runtime._request_scope(object(), object(), object(), None),
         "ws": lambda: runtime._ws_options(object(), None),
+        "owned_route": lambda: runtime._owned_public_route(object()),
+        "ws_endpoint": lambda: runtime._owned_ws_endpoint(object()),
     }[entry]
     with pytest.raises(
         runtime.PublicSourceRuntimeError,
@@ -350,6 +416,173 @@ def test_historical_v2_replay_remains_deny(captured):
     assert result.context.admission == "DENY"
     assert result.context.original_source_verified is False
     assert result.context.execution_authority is False
+
+
+def routed_packet_parts(captured, region):
+    old = decode(captured[0].packet.packet_json, public.MAX_PACKET_BYTES)
+    selected, _, provenance, original_candles, original_aux, original_ws = (
+        public._parts(captured[0].packet)[1]
+    )
+    route = demo_public_origin.reviewed_demo_public_route(region)
+    observations = tuple(
+        item.model_copy(update={"origin": route.rest_origin}) for item in provenance
+    )
+    old_quote = old["quote"]
+    quote = quotes.build_diagnostic_quote_packet_v2(
+        report_id=old["report_id"],
+        instrument_id=old["instrument_id"],
+        environment="demo",
+        observations=observations,
+        capture_started_at=public._time(old_quote["capture_started_at"]),
+        capture_completed_at=public._time(old_quote["capture_completed_at"]),
+        barrier_completed_at=None,
+        route=route,
+    )
+    frames = []
+    for original_frame in original_candles.frames:
+        pages = tuple(
+            page.model_copy(update={"origin": route.rest_origin})
+            for page in original_frame.pages
+        )
+        frame = original_frame.model_copy(update={"pages": pages})
+        frames.append(
+            frame.model_copy(
+                update={"frame_sha256": candles._hash(frame, omit="frame_sha256")}
+            )
+        )
+    candle_packet = original_candles.model_copy(update={"frames": tuple(frames)})
+    candle_packet = candle_packet.model_copy(
+        update={"bundle_sha256": candles._hash(candle_packet, omit="bundle_sha256")}
+    )
+    aux_provenance = tuple(
+        item.model_copy(update={"origin": route.rest_origin})
+        for item in original_aux.provenance
+    )
+    market_aux = original_aux.model_copy(
+        update={
+            "provenance": aux_provenance,
+            "bundle_sha256": aux._bundle_sha(
+                original_aux.report_id,
+                original_aux.instrument_id,
+                original_aux.book,
+                original_aux.open_interest,
+                aux_provenance,
+                original_aux.policy,
+                original_aux.barrier_completed_at,
+                original_aux.completed_at,
+            ),
+        }
+    )
+    reference = original_ws.model_copy(update={"endpoint": route.ws_origin})
+    reference = reference.model_copy(
+        update={
+            "bundle_sha256": ws._digest(
+                {
+                    name: getattr(reference, name)
+                    for name in type(reference).model_fields
+                    if name != "bundle_sha256"
+                }
+            )
+        }
+    )
+    scope = {key: old[key] for key in public._SCOPE_KEYS}
+    scope.update(
+        registration_region=region,
+        registration_region_authenticated=False,
+        account_plan_sha256="a" * 64,
+        demo_public_origin_policy_sha256=sha(
+            demo_public_origin_policy_v2.freeze_demo_public_origin_policy_v2(region)
+        ),
+        rest_origin=route.rest_origin,
+        ws_origin=route.ws_origin,
+    )
+    return {
+        "scope": scope,
+        "policy": selected,
+        "quote": quote,
+        "candle_packet": candle_packet,
+        "market_aux": market_aux,
+        "reference": reference,
+        "started": public._time(old["started_at"]),
+        "completed": public._time(old["completed_at"]),
+    }
+
+
+@pytest.mark.parametrize("region", ["global", "us_au", "eea"])
+def test_routed_public_packet_replays_with_exact_route_and_no_authority(
+    captured, region
+):
+    packet, _ = public._build(**routed_packet_parts(captured, region))
+    replayed = public.replay_collected_public_market_v2(
+        packet.packet_json, expected_sha256=packet.bundle_sha256
+    )
+    document = decode(replayed.packet_json, public.MAX_PACKET_BYTES)
+    route = demo_public_origin.reviewed_demo_public_route(region)
+    assert replayed.packet_json == packet.packet_json
+    assert document["policy"]["schema_version"] == public.ROUTED_POLICY_VERSION
+    assert document["rest_origin"] == route.rest_origin
+    assert document["ws_origin"] == route.ws_origin
+    assert document["registration_region_authenticated"] is False
+    assert replayed.admission == "DENY" and replayed.execution_authority is False
+
+
+@pytest.mark.parametrize("part", ["candles", "market_aux", "ws"])
+def test_routed_public_packet_rejects_cross_region_component(captured, part):
+    parts = routed_packet_parts(captured, "global")
+    other = demo_public_origin.reviewed_demo_public_route("us_au")
+    if part == "candles":
+        old = parts["candle_packet"]
+        frame = old.frames[0]
+        pages = (
+            frame.pages[0].model_copy(update={"origin": other.rest_origin}),
+            *frame.pages[1:],
+        )
+        frame = frame.model_copy(update={"pages": pages})
+        frame = frame.model_copy(
+            update={"frame_sha256": candles._hash(frame, omit="frame_sha256")}
+        )
+        changed = old.model_copy(update={"frames": (frame, *old.frames[1:])})
+        parts["candle_packet"] = changed.model_copy(
+            update={"bundle_sha256": candles._hash(changed, omit="bundle_sha256")}
+        )
+    elif part == "market_aux":
+        old = parts["market_aux"]
+        observations = (
+            old.provenance[0].model_copy(update={"origin": other.rest_origin}),
+            *old.provenance[1:],
+        )
+        parts["market_aux"] = old.model_copy(
+            update={
+                "provenance": observations,
+                "bundle_sha256": aux._bundle_sha(
+                    old.report_id,
+                    old.instrument_id,
+                    old.book,
+                    old.open_interest,
+                    observations,
+                    old.policy,
+                    old.barrier_completed_at,
+                    old.completed_at,
+                ),
+            }
+        )
+    else:
+        old = parts["reference"].model_copy(update={"endpoint": other.ws_origin})
+        parts["reference"] = old.model_copy(
+            update={
+                "bundle_sha256": ws._digest(
+                    {
+                        name: getattr(old, name)
+                        for name in type(old).model_fields
+                        if name != "bundle_sha256"
+                    }
+                )
+            }
+        )
+    with pytest.raises(
+        public.PublicMarketV2Error, match="public_v2_component_route_mismatch"
+    ):
+        public._build(**parts)
 
 
 def test_v2_does_not_enter_old_packet_validator(captured):

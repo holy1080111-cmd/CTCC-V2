@@ -15,7 +15,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ctcc-v2-ci-${{ github.ref }}
+  group: ctcc-v2-ci-${{ github.ref }}-${{ github.sha }}
   cancel-in-progress: true
 
 jobs:

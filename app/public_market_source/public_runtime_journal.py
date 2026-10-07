@@ -8,6 +8,7 @@ import re
 from contextlib import contextmanager
 from datetime import datetime
 from threading import Lock
+from urllib.parse import urlsplit
 from weakref import WeakKeyDictionary
 
 from app.public_market_source.public_market_receipts import (
@@ -528,6 +529,13 @@ def _validate_v2_plan(plan):
         "quote_transport_policy_sha256",
         "stage",
     }
+    route_fields = {
+        "registration_region",
+        "registration_region_authenticated",
+        "account_plan_sha256",
+        "demo_public_origin_policy_sha256",
+    }
+    routed = bool(route_fields & plan.keys())
     if (
         not required.issubset(plan)
         or plan["stage"] != ("initial_public" if initial else "post_publication")
@@ -539,9 +547,48 @@ def _validate_v2_plan(plan):
         )
     ):
         raise PublicReceiptError("runtime_v2_plan_invalid")
+    if routed:
+        from app.trade_qualification import demo_public_origin as demo_origin
+        from app.trade_qualification import demo_public_origin_policy_v2 as demo_policy
+        from app.trade_qualification import quote_collector_v2 as quote_v2
+
+        try:
+            route = demo_origin.reviewed_demo_public_route(plan["registration_region"])
+            if (
+                not route_fields.issubset(plan)
+                or plan["registration_region_authenticated"] is not False
+                or plan["rest_origin"] != route.rest_origin
+                or plan["ws_origin"] != route.ws_origin
+                or any(
+                    type(plan[name]) is not str
+                    or re.fullmatch("[0-9a-f]{64}", plan[name]) is None
+                    for name in (
+                        "account_plan_sha256",
+                        "demo_public_origin_policy_sha256",
+                    )
+                )
+                or plan["demo_public_origin_policy_sha256"]
+                != sha(
+                    demo_policy.freeze_demo_public_origin_policy_v2(
+                        route.registration_region
+                    )
+                )
+                or plan["quote_transport_policy_sha256"]
+                != quote_v2._transport_policy_sha256(route)
+            ):
+                raise ValueError
+        except (KeyError, ValueError):
+            raise PublicReceiptError("runtime_v2_route_plan_invalid") from None
     # Reuse exact existing identity/chronology validation without changing those
     # schemas or converting any source, publication receipt or capability.
-    base = {key: value for key, value in plan.items() if key not in required}
+    base = {
+        key: value for key, value in plan.items() if key not in required | route_fields
+    }
+    if routed:
+        # V1's frozen identity/chronology contract is reused solely for its
+        # non-route fields; the complete V2 Demo route was checked above.
+        base["rest_origin"] = "https://www.okx.com"
+        base["ws_origin"] = "wss://ws.okx.com:443/ws/v5/public"
     if initial:
         base.update(
             schema_version="ctcc.public.initial_runtime_plan.v1", stage="initial_public"
@@ -595,6 +642,21 @@ def _tls(value, hostname):
     return True
 
 
+def _routed_request_headers(plan, role):
+    """Public-only header receipt expected from one reviewed Demo route."""
+    from app.trade_qualification import demo_public_origin as demo_origin
+
+    route = demo_origin.reviewed_demo_public_route(plan["registration_region"])
+    if plan["rest_origin"] != route.rest_origin:
+        raise PublicReceiptError("runtime_demo_request_headers_invalid")
+    headers = demo_origin.demo_public_headers(route, role)
+    headers["Host"] = route.rest_hostname
+    return [
+        [name.lower(), value]
+        for name, value in sorted(headers.items(), key=lambda pair: pair[0].lower())
+    ]
+
+
 def _replay_semantics(plan, summary, events, payloads):
     """Audit integrity only; a forged/replayed document never issues a carrier."""
     requests, websocket, observations = {}, {}, []
@@ -632,9 +694,27 @@ def _replay_semantics(plan, summary, events, payloads):
             if kind == "clock_after":
                 after_seen = True
         elif kind == "request":
+            routed = (
+                plan["schema_version"]
+                in {
+                    "ctcc.public.initial_runtime_plan.v2",
+                    "ctcc.public.runtime_plan.v2",
+                }
+                and "registration_region" in plan
+            )
+            expected_keys = {
+                "id",
+                "role",
+                "method",
+                "origin",
+                "endpoint",
+                "query",
+                "started",
+            }
+            if routed:
+                expected_keys.add("request_headers")
             if (
-                set(meta)
-                != {"id", "role", "method", "origin", "endpoint", "query", "started"}
+                set(meta) != expected_keys
                 or type(meta["id"]) is not int
                 or meta["id"] != len(requests)
                 or len(requests) >= 64
@@ -669,6 +749,10 @@ def _replay_semantics(plan, summary, events, payloads):
                 or raw is not None
             ):
                 raise PublicReceiptError("runtime_request_invalid")
+            if routed and meta["request_headers"] != _routed_request_headers(
+                plan, meta["role"]
+            ):
+                raise PublicReceiptError("runtime_demo_request_headers_invalid")
             stamp = meta["started"]
             requests[meta["id"]] = {
                 "request": meta,
@@ -705,7 +789,7 @@ def _replay_semantics(plan, summary, events, payloads):
                     or type(meta["truncated"]) is not bool
                 ):
                     raise PublicReceiptError("runtime_headers_invalid")
-                verified = _tls(meta["tls"], "www.okx.com")
+                verified = _tls(meta["tls"], urlsplit(plan["rest_origin"]).hostname)
                 headers = meta["safe_headers"]
                 if (
                     type(headers) is not list
@@ -840,7 +924,7 @@ def _replay_semantics(plan, summary, events, payloads):
             elif kind == "ws_connected":
                 if (
                     set(meta) != {"connected", "tls"}
-                    or not _tls(meta["tls"], "ws.okx.com")
+                    or not _tls(meta["tls"], urlsplit(plan["ws_origin"]).hostname)
                     or raw is not None
                 ):
                     raise PublicReceiptError("runtime_ws_tls_invalid")
@@ -961,6 +1045,18 @@ def _packet_join(plan, packet, requests, websocket):
         != plan["quote_collector_schema"]
     ):
         raise PublicReceiptError("runtime_v2_packet_plan_mismatch")
+    if "registration_region" in plan and any(
+        packet.get(name) != plan[name]
+        for name in (
+            "registration_region",
+            "registration_region_authenticated",
+            "account_plan_sha256",
+            "demo_public_origin_policy_sha256",
+            "rest_origin",
+            "ws_origin",
+        )
+    ):
+        raise PublicReceiptError("runtime_v2_route_packet_mismatch")
     if (
         packet.get("report_id") != plan["report_id"]
         or packet.get("instrument_id") != plan["instrument_id"]

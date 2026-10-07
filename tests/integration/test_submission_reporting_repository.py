@@ -56,6 +56,14 @@ def other(fixture):
     )
 
 
+@pytest.fixture
+def range_chain(monkeypatch):
+    # The fixture constructor uses asyncio.run, so resolve it before the test loop.
+    return range_v5_ledger_fixture(
+        "long", monkeypatch, account_id=f"123456789{uuid4().int % 10**12:012d}"
+    )
+
+
 async def setup(database, fixture, *, status="acknowledged", pre_reserve_request=None):
     ledger, clock = await fixtures.initialize(database, fixture)
     hold = await ledger.reserve(fixture.request)
@@ -114,13 +122,11 @@ async def setup(database, fixture, *, status="acknowledged", pre_reserve_request
 
 @pytest.mark.parametrize("version", ("v2", "v3"))
 async def test_range_v5_submission_lineage_admits_v2_and_denies_unbound_v3(
-    database, monkeypatch, version
+    database, range_chain, version
 ):
     # Synthetic source and response only. An unbound V3 request cannot borrow
     # the control-bound reporter merely because its inner intent is V2-shaped.
-    fixture, binding, _ = range_v5_ledger_fixture(
-        "long", monkeypatch, account_id=f"123456789{uuid4().int % 10**12:012d}"
-    )
+    fixture, binding, _ = range_chain
     if version == "v2":
         v3 = fixture.request
         replay = reservations.ReservationReplayBindingV2(
@@ -246,11 +252,9 @@ async def test_range_v5_submission_lineage_admits_v2_and_denies_unbound_v3(
 
 
 async def test_control_bound_v3_observation_replays_both_intents_and_past_control(
-    database, monkeypatch, tmp_path
+    database, range_chain, tmp_path
 ):
-    fixture, _binding, _ = range_v5_ledger_fixture(
-        "long", monkeypatch, account_id=f"123456789{uuid4().int % 10**12:012d}"
-    )
+    fixture, _binding, _ = range_chain
     setup = await control_fixtures.setup(database, fixture)
     hold = await setup.reserve()
     outer = await setup.consume()

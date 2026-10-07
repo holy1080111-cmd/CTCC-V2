@@ -39,6 +39,7 @@ from pydantic import (
 
 from app.domain.market import Candle
 from app.market.quality.candles import BAR_SECONDS
+from app.trade_qualification import demo_public_origin as demo_origin
 from app.trade_qualification.event_models import Digest
 from app.trade_qualification.models import Price, QualificationModel, ReportId
 from app.trade_qualification.quote_collector import (
@@ -250,7 +251,12 @@ class _NoAuthority(QualificationModel):
 
 class CandlePage(_NoAuthority):
     method: Literal["GET"] = "GET"
-    origin: Literal["https://www.okx.com"] = "https://www.okx.com"
+    origin: Literal[
+        "https://www.okx.com",
+        "https://openapi.okx.com",
+        "https://us.okx.com",
+        "https://eea.okx.com",
+    ] = "https://www.okx.com"
     endpoint: Literal["/api/v5/market/candles"] = "/api/v5/market/candles"
     instrument_id: Instrument
     timeframe: Timeframe
@@ -624,22 +630,41 @@ async def _fetch(
     _source=None,
 ):
     _isolated_client(client, require_empty_cookies=False)
+    if _source is None:
+        route = None
+    else:
+        from app.trade_qualification.public_source_runtime import _owned_public_route
+
+        route = _owned_public_route(_source)
     started = _utc(clock())
     if previous is not None and started < previous:
         raise CandleCollectionError("batch_clock_reversed")
     if barrier is not None and started <= barrier:
         raise CandleCollectionError("publication_barrier_not_crossed")
     parameters = _parameters(instrument, timeframe, limit, after)
-    request = httpx.Request(
-        "GET",
-        BASE_URL + ENDPOINT,
-        params=parameters,
-        headers={
-            "Accept": "application/json",
-            "Accept-Encoding": "identity",
-            "User-Agent": "CTCC-source-candles/1",
-        },
-        extensions={"timeout": httpx.Timeout(policy.request_timeout_seconds).as_dict()},
+    request = (
+        httpx.Request(
+            "GET",
+            BASE_URL + ENDPOINT,
+            params=parameters,
+            headers={
+                "Accept": "application/json",
+                "Accept-Encoding": "identity",
+                "User-Agent": "CTCC-source-candles/1",
+            },
+            extensions={
+                "timeout": httpx.Timeout(policy.request_timeout_seconds).as_dict()
+            },
+        )
+        if route is None
+        else demo_origin.build_demo_public_request(
+            route,
+            "candles",
+            ENDPOINT,
+            dict(parameters),
+            instrument_id=instrument,
+            timeout_seconds=policy.request_timeout_seconds,
+        )
     )
     if _source is None:
         async with asyncio.timeout(policy.request_timeout_seconds):
@@ -705,6 +730,7 @@ async def _fetch(
         body = bytearray(raw)
     rows, canonical = _parse(bytes(body))
     return CandlePage(
+        origin=BASE_URL if route is None else route.rest_origin,
         instrument_id=instrument,
         timeframe=timeframe,
         page_index=index,

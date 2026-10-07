@@ -36,6 +36,7 @@ from pydantic import (
 )
 
 from app.domain.market import OrderBook, OrderBookLevel
+from app.trade_qualification import demo_public_origin as demo_origin
 from app.trade_qualification.event_models import Digest
 from app.trade_qualification.models import Price, QualificationModel, ReportId
 from app.trade_qualification.quote_collector import (
@@ -153,7 +154,12 @@ class CapturedOpenInterest(QualificationModel):
 class AuxEndpointObservation(QualificationModel):
     role: Literal["books", "open_interest"]
     method: Literal["GET"] = "GET"
-    origin: Literal["https://www.okx.com"] = "https://www.okx.com"
+    origin: Literal[
+        "https://www.okx.com",
+        "https://openapi.okx.com",
+        "https://us.okx.com",
+        "https://eea.okx.com",
+    ] = "https://www.okx.com"
     endpoint: Literal["/api/v5/market/books", "/api/v5/public/open-interest"]
     parameters: tuple[
         tuple[
@@ -479,22 +485,41 @@ async def _collect_one(
     client, clock, role, path, instrument, policy, barrier, previous, _source=None
 ):
     _isolated_client(client, require_empty_cookies=False)
+    if _source is None:
+        route = None
+    else:
+        from app.trade_qualification.public_source_runtime import _owned_public_route
+
+        route = _owned_public_route(_source)
     started = _utc(clock())
     if previous is not None and started < previous:
         raise MarketAuxCollectionError("batch_clock_reversed")
     if barrier is not None and started <= barrier:
         raise MarketAuxCollectionError("publication_barrier_not_crossed")
     params = _parameters(role, instrument)
-    request = httpx.Request(
-        "GET",
-        BASE_URL + path,
-        params=params,
-        headers={
-            "Accept": "application/json",
-            "Accept-Encoding": "identity",
-            "User-Agent": "CTCC-source-market-aux/1",
-        },
-        extensions={"timeout": httpx.Timeout(policy.request_timeout_seconds).as_dict()},
+    request = (
+        httpx.Request(
+            "GET",
+            BASE_URL + path,
+            params=params,
+            headers={
+                "Accept": "application/json",
+                "Accept-Encoding": "identity",
+                "User-Agent": "CTCC-source-market-aux/1",
+            },
+            extensions={
+                "timeout": httpx.Timeout(policy.request_timeout_seconds).as_dict()
+            },
+        )
+        if route is None
+        else demo_origin.build_demo_public_request(
+            route,
+            "market_aux",
+            path,
+            dict(params),
+            instrument_id=instrument,
+            timeout_seconds=policy.request_timeout_seconds,
+        )
     )
     if _source is None:
         async with asyncio.timeout(policy.request_timeout_seconds):
@@ -562,6 +587,7 @@ async def _collect_one(
     row = _row(payload, role, instrument)
     observation = AuxEndpointObservation(
         role=role,
+        origin=BASE_URL if route is None else route.rest_origin,
         endpoint=path,
         parameters=params,
         instrument_id=instrument,

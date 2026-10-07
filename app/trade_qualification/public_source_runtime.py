@@ -41,6 +41,7 @@ from app.public_market_source.public_runtime_journal import (
 )
 from app.trade_qualification import candle_collector as candles
 from app.trade_qualification import demo_public_origin as demo_origin
+from app.trade_qualification import demo_public_origin_policy_v2 as demo_policy_v2
 from app.trade_qualification import market_aux_collector as aux
 from app.trade_qualification import public_market_collector as public
 from app.trade_qualification import public_market_collector_v2 as public_v2
@@ -60,10 +61,10 @@ class PublicSourceRuntimeError(ValueError):
 def _require_trusted_v2_demo_origin_profile(plan):
     """Refuse new Demo capture until an account-bound origin can be enforced.
 
-    The v2 issuers currently label a Production WS socket as Demo. They also
-    have no trusted account-region pin or simulated-trading REST header. A
-    caller-supplied region/profile cannot repair that missing provenance.
-    Historical v2 journals remain replayable as DENY diagnostics.
+    A reviewed route and a same-session declaration are policy pins, not
+    authenticated registration-region evidence. The dormant V2 transport
+    builders are route-bound, but caller-supplied pins cannot authenticate an
+    account. Historical V2 journals replay as DENY.
     """
     if type(plan) is not dict:
         raise PublicSourceRuntimeError("trusted_demo_public_origin_profile_unavailable")
@@ -80,26 +81,98 @@ def _require_trusted_v2_demo_origin_profile(plan):
         or plan.get("ws_origin") != route.ws_origin
     ):
         raise PublicSourceRuntimeError("demo_public_origin_mismatch")
-    # A reviewed route is only policy. No issuer currently binds it to an
-    # authenticated Demo account/credential session and a native v2 invocation.
+    if "account_plan_sha256" in plan or "demo_public_origin_policy_sha256" in plan:
+        account_pin = plan.get("account_plan_sha256")
+        policy_pin = plan.get("demo_public_origin_policy_sha256")
+        if (
+            type(account_pin) is not str
+            or len(account_pin) != 64
+            or any(char not in "0123456789abcdef" for char in account_pin)
+            or type(policy_pin) is not str
+            or policy_pin
+            != sha(
+                demo_policy_v2.freeze_demo_public_origin_policy_v2(
+                    route.registration_region
+                )
+            )
+            or plan.get("registration_region_authenticated") is not False
+        ):
+            raise PublicSourceRuntimeError(
+                "trusted_demo_public_origin_profile_unavailable"
+            )
+    # The declaration pins a route to this invocation, but does not authenticate
+    # the account's registration region. Native IO remains unreachable.
     raise PublicSourceRuntimeError("trusted_demo_public_origin_profile_unavailable")
+
+
+def _planned_public_route(plan):
+    """Read exact reviewed route policy; never authenticate its account claim."""
+    if (
+        type(plan) is not dict
+        or plan.get("schema_version")
+        not in {"ctcc.public.runtime_plan.v2", "ctcc.public.initial_runtime_plan.v2"}
+        or "registration_region" not in plan
+    ):
+        return None
+    try:
+        route = demo_origin.reviewed_demo_public_route(plan["registration_region"])
+    except demo_origin.DemoPublicOriginError:
+        raise PublicSourceRuntimeError("demo_public_origin_mismatch") from None
+    if (
+        plan.get("environment") != "demo"
+        or plan.get("rest_origin") != route.rest_origin
+        or plan.get("ws_origin") != route.ws_origin
+    ):
+        raise PublicSourceRuntimeError("demo_public_origin_mismatch")
+    return route
+
+
+def _owned_public_route(source):
+    """Resolve a collector route only after the unchanged native IO fence."""
+    state = _state(source)
+    _fence_v2_demo_transport(state)
+    return _planned_public_route(state["plan"])
+
+
+def _owned_ws_endpoint(source):
+    route = _owned_public_route(source)
+    return (
+        ws.PUBLIC_WS_URL
+        if route is None
+        else demo_origin.build_demo_public_ws_endpoint(route)
+    )
 
 
 def _fence_v2_demo_transport(state):
     """Recheck the still-denied V2 origin before any native public transport.
 
-    The V1 replay transport below is pinned to Production public endpoints.
-    A future V2 issuer must replace those transports and establish an owned
-    account-region proof before removing this denial. Checking at each I/O
-    entry also prevents an accidentally skipped capture-level check from
-    sending a Demo-labelled request to the Production public service.
+    V1 remains pinned to Production. The dormant V2 builders can construct only
+    the reviewed route, but no account registration-region proof exists yet.
+    Checking every IO entry prevents a skipped capture-level check from
+    sending a Demo-labelled request to any public service.
     """
     plan = state.get("plan")
-    if type(plan) is dict and plan.get("schema_version") in {
-        "ctcc.public.runtime_plan.v2",
-        "ctcc.public.initial_runtime_plan.v2",
-    }:
-        _require_trusted_v2_demo_origin_profile(plan)
+    if type(plan) is dict:
+        if plan.get("schema_version") in {
+            "ctcc.public.runtime_plan.v2",
+            "ctcc.public.initial_runtime_plan.v2",
+        } or any(
+            key in plan
+            for key in (
+                "registration_region",
+                "account_plan_sha256",
+                "demo_public_origin_policy_sha256",
+            )
+        ):
+            _require_trusted_v2_demo_origin_profile(plan)
+        if plan.get("schema_version") in {
+            "ctcc.public.runtime_plan.v1",
+            "ctcc.public.initial_runtime_plan.v1",
+        } and (
+            plan.get("rest_origin") != quotes.BASE_URL
+            or plan.get("ws_origin") not in {ws.PUBLIC_WS_URL, ws.LEGACY_PUBLIC_WS_URL}
+        ):
+            raise PublicSourceRuntimeError("public_legacy_origin_mismatch")
 
 
 class _Source:
@@ -263,7 +336,9 @@ def _http_tls(source, client, response):
     stream = response.extensions.get("network_stream")
     if stream is None:
         raise PublicSourceRuntimeError("public_tls_binding_missing")
-    return _tls_proof(stream.get_extra_info("ssl_object"), context, "www.okx.com")
+    route = _planned_public_route(_state(source)["plan"])
+    hostname = "www.okx.com" if route is None else route.rest_hostname
+    return _tls_proof(stream.get_extra_info("ssl_object"), context, hostname)
 
 
 def _event(source, kind, metadata, raw=None):
@@ -289,15 +364,23 @@ def _request_scope(source, client, request, started):
     state = _state(source)
     _fence_v2_demo_transport(state)
     role, _ = _verified_client(source, client)
+    route = _planned_public_route(state["plan"])
     if (
         type(request) is not httpx.Request
         or request.method != "GET"
         or request.url.scheme != "https"
-        or request.url.host != "www.okx.com"
+        or request.url.host != ("www.okx.com" if route is None else route.rest_hostname)
         or request.url.port not in (None, 443)
         or request.content
     ):
         raise PublicSourceRuntimeError("public_request_scope_invalid")
+    if route is not None:
+        try:
+            demo_origin.validate_demo_public_request(
+                route, role, request, expected_instrument_id=state["instrument_id"]
+            )
+        except demo_origin.DemoPublicOriginError:
+            raise PublicSourceRuntimeError("public_request_scope_invalid") from None
     allowed_paths = {
         "quote": {p for _, p in quotes.ENDPOINTS},
         "candles": {candles.ENDPOINT},
@@ -339,7 +422,7 @@ def _request_scope(source, client, request, started):
             expected["after"] = query["after"]
     if query != expected:
         raise PublicSourceRuntimeError("public_request_query_invalid")
-    if (
+    if route is None and (
         set(request.headers) - {"host", "accept", "accept-encoding", "user-agent"}
         or request.headers.get("accept-encoding") != "identity"
     ):
@@ -348,25 +431,31 @@ def _request_scope(source, client, request, started):
     if index >= 64:
         raise PublicSourceRuntimeError("public_request_limit")
     state["request_count"] += 1
-    _event(
-        source,
-        "request",
-        {
-            "id": index,
-            "role": role,
-            "method": "GET",
-            "origin": quotes.BASE_URL,
-            "endpoint": request.url.path,
-            "query": pairs,
-            "started": state["last"],
-        },
-    )
+    metadata = {
+        "id": index,
+        "role": role,
+        "method": "GET",
+        "origin": quotes.BASE_URL if route is None else route.rest_origin,
+        "endpoint": request.url.path,
+        "query": pairs,
+        "started": state["last"],
+    }
+    if route is not None:
+        # These are fixed public headers only; no credential or cookie can enter
+        # the journal because the exact Demo request was checked above.
+        metadata["request_headers"] = tuple(
+            sorted((name.lower(), value) for name, value in request.headers.items())
+        )
+    _event(source, "request", metadata)
     return index
 
 
 async def _fetch_http(source, client, request, started, policy):
     """Retain actual bytes before parser rejection, without changing old DTOs."""
     index = _request_scope(source, client, request, started)
+    state = _state(source)
+    route = _planned_public_route(state["plan"])
+    role = state["clients"][client][0]
     body, response, cancelled = bytearray(), None, False
     rejection = None
     try:
@@ -392,7 +481,7 @@ async def _fetch_http(source, client, request, started, policy):
             except (ValueError, OSError, AttributeError):
                 proof = {
                     "classification": "unverified",
-                    "hostname": "www.okx.com",
+                    "hostname": "www.okx.com" if route is None else route.rest_hostname,
                     "version": None,
                     "peer_sha256": None,
                 }
@@ -425,6 +514,17 @@ async def _fetch_http(source, client, request, started, policy):
                 or len(dict(headers)) != len(headers)
             ):
                 rejection = rejection or "public_response_rejected"
+            if route is not None:
+                try:
+                    demo_origin.validate_demo_public_response(
+                        route,
+                        role,
+                        request,
+                        response,
+                        expected_instrument_id=state["instrument_id"],
+                    )
+                except demo_origin.DemoPublicOriginError:
+                    rejection = rejection or "public_response_rejected"
             if (
                 response.headers.get("content-type", "")
                 .split(";", 1)[0]
@@ -521,13 +621,17 @@ async def _fetch_http(source, client, request, started, policy):
 def _ws_options(source, started):
     state = _state(source)
     _fence_v2_demo_transport(state)
+    route = _planned_public_route(state["plan"])
+    endpoint = (
+        ws.PUBLIC_WS_URL
+        if route is None
+        else demo_origin.build_demo_public_ws_endpoint(route)
+    )
     if state["ws_claimed"] or started != utc_from_ns(state["last"]["utc_ns"]):
         raise PublicSourceRuntimeError("public_socket_already_claimed")
     state["ws_claimed"] = True
     state["ws_context"] = ssl.create_default_context()
-    _event(
-        source, "ws_connect", {"endpoint": ws.PUBLIC_WS_URL, "started": state["last"]}
-    )
+    _event(source, "ws_connect", {"endpoint": endpoint, "started": state["last"]})
     return {"ssl": state["ws_context"]}
 
 
@@ -538,9 +642,9 @@ def _ws_connected(source, socket):
     context = state["ws_context"]
     if context.verify_mode != ssl.CERT_REQUIRED or context.check_hostname is not True:
         raise PublicSourceRuntimeError("verified_public_tls_required")
-    proof = _tls_proof(
-        socket.transport.get_extra_info("ssl_object"), context, "ws.okx.com"
-    )
+    route = _planned_public_route(state["plan"])
+    hostname = "ws.okx.com" if route is None else route.ws_hostname
+    proof = _tls_proof(socket.transport.get_extra_info("ssl_object"), context, hostname)
     state["socket"] = socket
     _event(source, "ws_connected", {"connected": state["last"], "tls": proof})
 
@@ -743,8 +847,13 @@ async def _capture_owned(scope, policy, root, *, stage, _version=1):
     selected = (
         public_v2._policy_copy(policy) if _version == 2 else public._policy_copy(policy)
     )
+    route = (
+        demo_origin.reviewed_demo_public_route(claim["plan"]["registration_region"])
+        if _version == 2 and "registration_region" in claim["plan"]
+        else None
+    )
     policy_digest = (
-        public_v2._policy_digest(selected)
+        public_v2._policy_digest(selected, route)
         if _version == 2
         else public._digest(selected)
     )
@@ -759,7 +868,9 @@ async def _capture_owned(scope, policy, root, *, stage, _version=1):
     }
     if _version == 2 and (
         plan.get("stage") != stage
-        or any(plan.get(key) != value for key, value in public_v2._plan_pins().items())
+        or any(
+            plan.get(key) != value for key, value in public_v2._plan_pins(route).items()
+        )
     ):
         raise PublicSourceRuntimeError("public_v2_owned_plan_required")
     if _version == 2:
@@ -979,6 +1090,11 @@ def _replay_captured_packet_v2(plan_raw, plan, summary, packet_raw):
         if plan["stage"] == "initial_public"
         else plan["barrier"]
     )
+    route = (
+        demo_origin.reviewed_demo_public_route(plan["registration_region"])
+        if "registration_region" in plan
+        else None
+    )
     if (
         summary["plan_sha256"] != sha(plan_raw)
         or any(
@@ -990,7 +1106,7 @@ def _replay_captured_packet_v2(plan_raw, plan, summary, packet_raw):
                 "stage",
                 "environment",
                 "policy_sha256",
-                *public_v2._plan_pins(),
+                *public_v2._plan_pins(route),
             )
         )
         or not _packet_stage_matches(plan, document["barrier_completed_at"], exact=True)
@@ -999,6 +1115,18 @@ def _replay_captured_packet_v2(plan_raw, plan, summary, packet_raw):
         >= public_v2._time(plan["expires_at"])
     ):
         raise PublicSourceRuntimeError("public_v2_capture_readback_mismatch")
+    if "registration_region" in plan and any(
+        document.get(name) != plan[name]
+        for name in (
+            "registration_region",
+            "registration_region_authenticated",
+            "account_plan_sha256",
+            "demo_public_origin_policy_sha256",
+            "rest_origin",
+            "ws_origin",
+        )
+    ):
+        raise PublicSourceRuntimeError("public_v2_route_readback_mismatch")
     return packet
 
 

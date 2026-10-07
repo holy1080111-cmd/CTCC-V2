@@ -11,6 +11,8 @@ MIGRATIONS = {
     "0021": "0021_account_observation_index.py",
     "0022": "0022_account_bill_archive_claim.py",
     "0023": "0023_qualification_uid_event.py",
+    "0024": "0024_public_receipt_witness.py",
+    "0025": "0025_control_bound_submission_reporting.py",
 }
 TABLES = {
     # 0023 is constraint/trigger-only and has dedicated upgrade/downgrade

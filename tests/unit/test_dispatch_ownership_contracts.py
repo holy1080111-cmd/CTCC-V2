@@ -540,7 +540,11 @@ def test_cross_uid_and_live_scopes_denied(monkeypatch, example):
 
 @pytest.mark.parametrize(
     "bad_clock",
-    (datetime.now(UTC).replace(tzinfo=None), datetime.now(UTC).isoformat(), None),
+    (
+        datetime(2026, 10, 7, 8, 20, 31, tzinfo=UTC).replace(tzinfo=None),
+        "2026-10-07T08:20:31+00:00",
+        None,
+    ),
 )
 def test_invalid_clock_denies_and_revokes(monkeypatch, example, bad_clock):
     fixture, _ = example

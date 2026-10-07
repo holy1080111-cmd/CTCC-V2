@@ -13,6 +13,8 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
+from app.trade_qualification import demo_public_origin as demo_origin
+from app.trade_qualification import demo_public_origin_policy_v2 as demo_policy
 from app.trade_qualification import quote_collector as wire
 from app.trade_qualification.executable_quote_v2 import (
     POLICY_SHA256,
@@ -52,6 +54,24 @@ TRANSPORT_POLICY_BYTES = _canonical(
     }
 )
 TRANSPORT_POLICY_SHA256 = wire._sha(TRANSPORT_POLICY_BYTES)
+
+
+def _transport_policy_sha256(route=None):
+    """Retain the historical hash; route-bound Demo captures use V3 identity."""
+    if route is None:
+        return TRANSPORT_POLICY_SHA256
+    demo_origin._checked_route(route)
+    document = json.loads(TRANSPORT_POLICY_BYTES)
+    document.update(
+        version="ctcc.raw_quote_transport.v3",
+        origin=route.rest_origin,
+        registration_region=route.registration_region,
+        request_headers=demo_origin.demo_public_headers(route, "quote"),
+        demo_public_origin_policy_sha256=wire._sha(
+            demo_policy.freeze_demo_public_origin_policy_v2(route.registration_region)
+        ),
+    )
+    return wire._sha(_canonical(document))
 
 
 class QuoteCollectionV2Error(ValueError):
@@ -146,6 +166,7 @@ def build_diagnostic_quote_packet_v2(
     capture_started_at,
     capture_completed_at,
     barrier_completed_at,
+    route=None,
 ) -> CollectedQuoteV2:
     """Replay raw observation bytes; caller input cannot establish ownership."""
     try:
@@ -157,6 +178,7 @@ def build_diagnostic_quote_packet_v2(
             capture_started_at,
             capture_completed_at,
             barrier_completed_at,
+            route,
         )
     except QuoteCollectionV2Error:
         raise
@@ -164,8 +186,26 @@ def build_diagnostic_quote_packet_v2(
         raise QuoteCollectionV2Error("quote_v2_raw_replay_failed") from None
 
 
-def _build(report, instrument, environment, observations, started, completed, barrier):
+def _build(
+    report,
+    instrument,
+    environment,
+    observations,
+    started,
+    completed,
+    barrier,
+    route=None,
+):
     checked = _checked_observations(observations)
+    if route is None:
+        if any(item.origin != wire.BASE_URL for item in checked):
+            _deny("quote_v2_origin_mismatch")
+    else:
+        demo_origin._checked_route(route)
+        if environment != "demo" or any(
+            item.origin != route.rest_origin for item in checked
+        ):
+            _deny("quote_v2_origin_mismatch")
     started, completed = map(wire._utc, (started, completed))
     barrier = None if barrier is None else wire._utc(barrier)
     if (
@@ -239,7 +279,7 @@ def _build(report, instrument, environment, observations, started, completed, ba
         "instrument_id": instrument,
         "environment": environment,
         "quote_profile_sha256": POLICY_SHA256,
-        "transport_policy_sha256": TRANSPORT_POLICY_SHA256,
+        "transport_policy_sha256": _transport_policy_sha256(route),
         "capture_started_at": started.isoformat(),
         "capture_completed_at": completed.isoformat(),
         "barrier_completed_at": None if barrier is None else barrier.isoformat(),
@@ -253,6 +293,17 @@ def _build(report, instrument, environment, observations, started, completed, ba
         "execution_authority": False,
         "admission": "DENY",
     }
+    if route is not None:
+        packet.update(
+            registration_region=route.registration_region,
+            registration_region_authenticated=False,
+            rest_origin=route.rest_origin,
+            demo_public_origin_policy_sha256=wire._sha(
+                demo_policy.freeze_demo_public_origin_policy_v2(
+                    route.registration_region
+                )
+            ),
+        )
     encoded = _canonical(packet)
     if len(encoded) > MAX_PACKET_BYTES:
         _deny("quote_v2_packet_size_limit")
@@ -297,6 +348,11 @@ def replay_quote_packet_v2(raw, *, expected_sha256) -> CollectedQuoteV2:
             wire.EndpointObservation.model_validate_json(_canonical(item), strict=True)
             for item in value["provenance"]
         )
+        route = (
+            demo_origin.reviewed_demo_public_route(value["registration_region"])
+            if "registration_region" in value
+            else None
+        )
 
         def instant(name):
             text = value[name]
@@ -314,6 +370,7 @@ def replay_quote_packet_v2(raw, *, expected_sha256) -> CollectedQuoteV2:
             None
             if value["barrier_completed_at"] is None
             else instant("barrier_completed_at"),
+            route,
         )
         if replay.packet_json != raw:
             _deny("quote_v2_packet_replay_mismatch")
@@ -338,19 +395,29 @@ async def _collect_owned_quote_v2(source) -> CollectedQuoteV2:
 
     state = runtime._state(source)
     plan = state["plan"]
+    if type(plan) is dict and plan.get("environment") == "demo":
+        # Direct internal calls cannot bypass the public owner into a clock or
+        # three REST requests with a caller-declared registration region.
+        runtime._require_trusted_v2_demo_origin_profile(plan)
+    route = (
+        demo_origin.reviewed_demo_public_route(plan["registration_region"])
+        if type(plan) is dict and "registration_region" in plan
+        else None
+    )
     if type(plan) is not dict or any(
         plan.get(key) != expected
         for key, expected in (
             ("quote_collector_schema", SCHEMA_VERSION),
             ("quote_profile_sha256", POLICY_SHA256),
-            ("quote_transport_policy_sha256", TRANSPORT_POLICY_SHA256),
+            ("quote_transport_policy_sha256", _transport_policy_sha256(route)),
         )
     ):
         _deny("quote_v2_owned_profile_required")
     if (
         type(plan.get("environment")) is not str
         or plan["environment"] not in ("analysis_only", "demo")
-        or plan.get("rest_origin") != wire.BASE_URL
+        or plan.get("rest_origin")
+        != (wire.BASE_URL if route is None else route.rest_origin)
         or plan.get("report_id") != state["report_id"]
         or plan.get("instrument_id") != state["instrument_id"]
         or plan.get("stage") not in ("initial_public", "post_publication")
@@ -406,6 +473,7 @@ async def _collect_owned_quote_v2(source) -> CollectedQuoteV2:
             capture_started_at=started,
             capture_completed_at=completed,
             barrier_completed_at=state["publication_completed_at"],
+            route=route,
         )
         for item in observations:
             expected = (

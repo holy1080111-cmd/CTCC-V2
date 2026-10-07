@@ -41,6 +41,7 @@ from pydantic import (
     model_validator,
 )
 
+from app.trade_qualification import demo_public_origin as demo_origin
 from app.trade_qualification.event_models import Digest
 from app.trade_qualification.location import ExecutableQuote
 from app.trade_qualification.models import QualificationModel, ReportId, require_aware
@@ -83,7 +84,12 @@ class QuoteCollectionPolicy(QualificationModel):
 class EndpointObservation(QualificationModel):
     role: Literal["ticker", "mark", "funding"]
     method: Literal["GET"] = "GET"
-    origin: Literal["https://www.okx.com"] = "https://www.okx.com"
+    origin: Literal[
+        "https://www.okx.com",
+        "https://openapi.okx.com",
+        "https://us.okx.com",
+        "https://eea.okx.com",
+    ] = "https://www.okx.com"
     parameters: tuple[
         tuple[
             Annotated[str, Field(max_length=64)], Annotated[str, Field(max_length=64)]
@@ -191,6 +197,10 @@ class CollectedQuote(QualificationModel):
             raise ValueError("component_order_mismatch")
         previous = None
         for item in self.provenance:
+            # V2 route-aware packets replay these observations separately. A
+            # legacy quote must retain its original Production origin pin.
+            if item.origin != BASE_URL:
+                raise ValueError("legacy_quote_origin_mismatch")
             if item.instrument_id != self.quote.instrument_id:
                 raise ValueError("component_identity_mismatch")
             if previous is not None and item.request_started_at < previous:
@@ -584,6 +594,12 @@ async def _collect_one(
     client, clock, role, path, instrument, policy, barrier, previous, _source=None
 ):
     _public_client(client, require_empty_cookies=False)
+    if _source is None:
+        route = None
+    else:
+        from app.trade_qualification.public_source_runtime import _owned_public_route
+
+        route = _owned_public_route(_source)
     started = _utc(clock())
     if previous is not None and started < previous:
         raise QuoteCollectionError("batch_clock_reversed")
@@ -592,16 +608,29 @@ async def _collect_one(
     params = {"instId": instrument}
     if role == "mark":
         params["instType"] = "SWAP"
-    request = httpx.Request(
-        "GET",
-        BASE_URL + path,
-        params=params,
-        headers={
-            "Accept": "application/json",
-            "Accept-Encoding": "identity",
-            "User-Agent": "CTCC-source-quote/1",
-        },
-        extensions={"timeout": httpx.Timeout(policy.request_timeout_seconds).as_dict()},
+    request = (
+        httpx.Request(
+            "GET",
+            BASE_URL + path,
+            params=params,
+            headers={
+                "Accept": "application/json",
+                "Accept-Encoding": "identity",
+                "User-Agent": "CTCC-source-quote/1",
+            },
+            extensions={
+                "timeout": httpx.Timeout(policy.request_timeout_seconds).as_dict()
+            },
+        )
+        if route is None
+        else demo_origin.build_demo_public_request(
+            route,
+            "quote",
+            path,
+            params,
+            instrument_id=instrument,
+            timeout_seconds=policy.request_timeout_seconds,
+        )
     )
     if _source is None:
         async with asyncio.timeout(policy.request_timeout_seconds):
@@ -672,6 +701,7 @@ async def _collect_one(
     _values(role, row)
     return EndpointObservation(
         role=role,
+        origin=BASE_URL if route is None else route.rest_origin,
         endpoint=path,
         parameters=tuple(sorted(params.items())),
         instrument_id=instrument,

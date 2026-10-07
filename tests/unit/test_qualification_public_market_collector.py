@@ -252,6 +252,113 @@ def test_wire_tamper_and_top_hash_tamper_rejected(packet):
         module.validate_collected_public_market(resign(packet, candles=changed))
 
 
+def test_rehashed_regional_quote_cannot_enter_legacy_validation(packet):
+    old = packet.quote
+    observations = (
+        old.provenance[0].model_copy(update={"origin": "https://openapi.okx.com"}),
+        *old.provenance[1:],
+    )
+    changed = old.model_copy(
+        update={
+            "provenance": observations,
+            "bundle_sha256": module.quotes._bundle_sha(
+                old.quote,
+                observations,
+                old.policy,
+                old.barrier_completed_at,
+                old.completed_at,
+            ),
+        }
+    )
+    with pytest.raises(module.quotes.QuoteCollectionError):
+        module.quotes.validate_collected_quote(changed)
+    with pytest.raises(ERROR):
+        module.validate_collected_public_market(resign(packet, quote=changed))
+
+
+@pytest.mark.parametrize("part", ["candles", "market_aux", "ws"])
+def test_rehashed_regional_component_cannot_enter_legacy_public_packet(packet, part):
+    if part == "candles":
+        old = packet.candles
+        frame = old.frames[0]
+        pages = (
+            frame.pages[0].model_copy(update={"origin": "https://us.okx.com"}),
+            *frame.pages[1:],
+        )
+        changed_frame = frame.model_copy(update={"pages": pages})
+        changed_frame = changed_frame.model_copy(
+            update={
+                "frame_sha256": module.candles._hash(changed_frame, omit="frame_sha256")
+            }
+        )
+        changed = old.model_copy(update={"frames": (changed_frame, *old.frames[1:])})
+        changed = changed.model_copy(
+            update={
+                "bundle_sha256": module.candles._hash(changed, omit="bundle_sha256")
+            }
+        )
+        assert module.candles.validate_collected_candles(changed) == changed
+    elif part == "market_aux":
+        old = packet.market_aux
+        observations = (
+            old.provenance[0].model_copy(update={"origin": "https://eea.okx.com"}),
+            *old.provenance[1:],
+        )
+        changed = old.model_copy(
+            update={
+                "provenance": observations,
+                "bundle_sha256": module.aux._bundle_sha(
+                    old.report_id,
+                    old.instrument_id,
+                    old.book,
+                    old.open_interest,
+                    observations,
+                    old.policy,
+                    old.barrier_completed_at,
+                    old.completed_at,
+                ),
+            }
+        )
+        assert module.aux.validate_collected_market_aux(changed) == changed
+    else:
+        old = packet.ws
+        changed = old.model_copy(
+            update={"endpoint": "wss://wsuspap.okx.com:443/ws/v5/public"}
+        )
+        changed = changed.model_copy(
+            update={
+                "bundle_sha256": module.ws._digest(
+                    {
+                        name: getattr(changed, name)
+                        for name in type(changed).model_fields
+                        if name != "bundle_sha256"
+                    }
+                )
+            }
+        )
+        assert module.ws.validate_collected_ws_reference(changed) == changed
+    with pytest.raises(ERROR):
+        module.validate_collected_public_market(resign(packet, **{part: changed}))
+
+
+def test_historical_production_ws_8443_remains_replayable(packet):
+    old = packet.ws
+    changed = old.model_copy(update={"endpoint": module.ws.LEGACY_PUBLIC_WS_URL})
+    changed = changed.model_copy(
+        update={
+            "bundle_sha256": module.ws._digest(
+                {
+                    name: getattr(changed, name)
+                    for name in type(changed).model_fields
+                    if name != "bundle_sha256"
+                }
+            )
+        }
+    )
+    replayed = module.validate_collected_public_market(resign(packet, ws=changed))
+    assert replayed.ws.endpoint == module.ws.LEGACY_PUBLIC_WS_URL
+
+
 @pytest.mark.parametrize("flag", module._FLAGS)
 @pytest.mark.parametrize("value", [True, 0, 1, "false"])
 def test_authority_cannot_be_requested(packet, flag, value):

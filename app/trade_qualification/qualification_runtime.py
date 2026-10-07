@@ -23,7 +23,10 @@ from app.domain.source_primitives import (
     validate_stamps,
 )
 from app.exchange.okx.symbols import REVIEWED_DEMO_INSTRUMENT_IDS
+from app.trade_qualification import demo_public_origin as demo_origin
+from app.trade_qualification import demo_public_origin_preflight as origin_preflight
 from app.trade_qualification import public_market_collector_v2 as public_v2
+from app.trade_qualification import public_source_runtime as source_runtime
 from app.trade_qualification.market_bridge import public_market_snapshot
 from app.trade_qualification.market_bridge_v2 import public_market_context_v2
 from app.trade_qualification.public_market_collector import _digest, _policy_copy
@@ -217,7 +220,7 @@ class InitialPublicDiagnosticV2:
 
 
 async def _capture_initial_lineage_v2(
-    public_root, *, instrument_id, market_policy, invocation
+    public_root, *, instrument_id, market_policy, invocation, demo_session=None
 ):
     """Private actual acquisition for this task; no persisted packet input.
 
@@ -237,6 +240,26 @@ async def _capture_initial_lineage_v2(
     task = asyncio.current_task()
     if task is None or task.cancelling():
         raise asyncio.CancelledError
+    declared_route = (
+        origin_preflight._declared_demo_public_plan(demo_session)
+        if demo_session is not None
+        else {}
+    )
+    route = (
+        demo_origin.reviewed_demo_public_route(declared_route["registration_region"])
+        if declared_route
+        else None
+    )
+    # A session plan currently declares a region but cannot authenticate where
+    # the account was registered. Keep the issuer's pre-clock hard denial.
+    source_runtime._require_trusted_v2_demo_origin_profile(
+        {
+            "environment": "demo",
+            "rest_origin": "https://www.okx.com",
+            "ws_origin": "wss://ws.okx.com:443/ws/v5/public",
+            **declared_route,
+        }
+    )
     invocation_id = uuid.uuid4().hex
     report = "initial-" + invocation_id
     started = native_stamp()
@@ -260,8 +283,9 @@ async def _capture_initial_lineage_v2(
             "expires_at": expires.isoformat(),
             "rest_origin": "https://www.okx.com",
             "ws_origin": "wss://ws.okx.com:443/ws/v5/public",
-            "policy_sha256": public_v2._policy_digest(selected),
-            **public_v2._plan_pins(),
+            **declared_route,
+            "policy_sha256": public_v2._policy_digest(selected, route),
+            **public_v2._plan_pins(route),
         },
         "report_id": report,
         "instrument_id": instrument_id,
@@ -277,7 +301,7 @@ async def _capture_initial_lineage_v2(
 
 
 async def capture_initial_public_market_v2(
-    public_root, *, instrument_id, market_policy
+    public_root, *, instrument_id, market_policy, demo_session=None
 ):
     """Real native public-only capture; returned copies are never permissions."""
     invocation = object()
@@ -288,6 +312,7 @@ async def capture_initial_public_market_v2(
             instrument_id=instrument_id,
             market_policy=market_policy,
             invocation=invocation,
+            demo_session=demo_session,
         )
         packet, journal, observed = _consume_initial_public_capture_v2(
             carrier, invocation

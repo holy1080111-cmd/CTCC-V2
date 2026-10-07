@@ -510,6 +510,18 @@ class CollectedPublicMarket(QualificationModel):
         candles.validate_collected_candles(self.candles)
         aux.validate_collected_market_aux(self.market_aux)
         ws.validate_collected_ws_reference(self.ws)
+        # Shared wire DTOs also represent region-pinned V2 diagnostics. The
+        # legacy aggregate has no route policy, so keep its original origin.
+        if (
+            any(
+                page.origin != candles.BASE_URL
+                for frame in self.candles.frames
+                for page in frame.pages
+            )
+            or any(item.origin != aux.BASE_URL for item in self.market_aux.provenance)
+            or self.ws.endpoint not in (ws.PUBLIC_WS_URL, ws.LEGACY_PUBLIC_WS_URL)
+        ):
+            raise ValueError("legacy_public_origin_mismatch")
         if self.started_at > self.completed_at:
             raise ValueError("public_batch_clock_reversed")
         if self.completed_at - self.started_at > timedelta(

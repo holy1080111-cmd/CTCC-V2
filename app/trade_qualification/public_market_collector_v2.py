@@ -14,6 +14,8 @@ from datetime import datetime, timedelta
 from app.domain.source_primitives import canonical, decode, sha
 from app.exchange.okx.symbols import REVIEWED_DEMO_INSTRUMENT_IDS
 from app.trade_qualification import candle_collector as candles
+from app.trade_qualification import demo_public_origin as demo_origin
+from app.trade_qualification import demo_public_origin_policy_v2 as demo_policy
 from app.trade_qualification import market_aux_collector as aux
 from app.trade_qualification import public_market_collector as legacy
 from app.trade_qualification import quote_collector as wire
@@ -29,6 +31,7 @@ from app.trade_qualification.funding_observation_v2 import parse_funding_observa
 
 SCHEMA_VERSION = "ctcc.collected_public_market.v2"
 POLICY_VERSION = "ctcc.public_market_collection_policy.v2"
+ROUTED_POLICY_VERSION = "ctcc.public_market_collection_policy.v3"
 MAX_PACKET_BYTES = 16 * 1024 * 1024
 _POLICY_PARTS = (
     ("candles", candles.CandleCollectionPolicy),
@@ -102,21 +105,21 @@ def _policy_copy(value):
     return PublicMarketCollectionPolicyV2(**copied)
 
 
-def _plan_pins():
+def _plan_pins(route=None):
     return {
         "public_packet_schema": SCHEMA_VERSION,
         "quote_collector_schema": quotes.SCHEMA_VERSION,
         "quote_profile_sha256": quotes.POLICY_SHA256,
-        "quote_transport_policy_sha256": quotes.TRANSPORT_POLICY_SHA256,
+        "quote_transport_policy_sha256": quotes._transport_policy_sha256(route),
     }
 
 
-def _policy_document(value):
+def _policy_document(value, route=None):
     selected = _policy_copy(value)
-    return {
-        "schema_version": POLICY_VERSION,
+    document = {
+        "schema_version": POLICY_VERSION if route is None else ROUTED_POLICY_VERSION,
         "schedule": "candles_then_parallel_quote_aux_ws",
-        **_plan_pins(),
+        **_plan_pins(route),
         **{
             name: getattr(selected, name).model_dump(mode="json", round_trip=True)
             for name, _ in _POLICY_PARTS
@@ -124,15 +127,34 @@ def _policy_document(value):
         "total_timeout_seconds": selected.total_timeout_seconds,
         "client_close_timeout_seconds": selected.client_close_timeout_seconds,
     }
+    if route is not None:
+        demo_origin._checked_route(route)
+        document.update(
+            registration_region=route.registration_region,
+            registration_region_authenticated=False,
+            rest_origin=route.rest_origin,
+            ws_origin=route.ws_origin,
+            demo_public_origin_policy_sha256=sha(
+                demo_policy.freeze_demo_public_origin_policy_v2(
+                    route.registration_region
+                )
+            ),
+        )
+    return document
 
 
-def _policy_digest(value):
-    return sha(canonical(_policy_document(value)))
+def _policy_digest(value, route=None):
+    return sha(canonical(_policy_document(value, route)))
 
 
 def _policy_from_document(value):
     if type(value) is not dict:
         _deny("public_v2_policy_document_invalid")
+    route = (
+        demo_origin.reviewed_demo_public_route(value["registration_region"])
+        if "registration_region" in value
+        else None
+    )
     selected = PublicMarketCollectionPolicyV2(
         **{
             name: cls.model_validate_json(canonical(value[name]), strict=True)
@@ -141,9 +163,9 @@ def _policy_from_document(value):
         total_timeout_seconds=value["total_timeout_seconds"],
         client_close_timeout_seconds=value["client_close_timeout_seconds"],
     )
-    if canonical(_policy_document(selected)) != canonical(value):
+    if canonical(_policy_document(selected, route)) != canonical(value):
         _deny("public_v2_policy_document_changed")
-    return _policy_copy(selected)
+    return _policy_copy(selected), route
 
 
 def _quote_parts(packet):
@@ -212,19 +234,57 @@ def _time(value):
     return wire._utc(datetime.fromisoformat(value))
 
 
-def _build(
-    *, scope, policy, quote, candle_packet, market_aux, reference, started, completed
-):
-    selected = _policy_copy(policy)
-    if type(scope) is not dict or set(scope) != {
+_SCOPE_KEYS = frozenset(
+    {
         "invocation_id",
         "stage",
         "environment",
         "report_id",
         "instrument_id",
         "barrier_completed_at",
-    }:
+    }
+)
+_ROUTE_SCOPE_KEYS = frozenset(
+    {
+        "registration_region",
+        "registration_region_authenticated",
+        "account_plan_sha256",
+        "demo_public_origin_policy_sha256",
+        "rest_origin",
+        "ws_origin",
+    }
+)
+
+
+def _scope_route(scope):
+    if type(scope) is not dict or set(scope) not in (
+        _SCOPE_KEYS,
+        _SCOPE_KEYS | _ROUTE_SCOPE_KEYS,
+    ):
         _deny("public_v2_scope_invalid")
+    if set(scope) == _SCOPE_KEYS:
+        return None
+    route = demo_origin.reviewed_demo_public_route(scope["registration_region"])
+    if (
+        scope["registration_region_authenticated"] is not False
+        or type(scope["account_plan_sha256"]) is not str
+        or re.fullmatch("[a-f0-9]{64}", scope["account_plan_sha256"]) is None
+        or scope["rest_origin"] != route.rest_origin
+        or scope["ws_origin"] != route.ws_origin
+        or scope["demo_public_origin_policy_sha256"]
+        != sha(
+            demo_policy.freeze_demo_public_origin_policy_v2(route.registration_region)
+        )
+    ):
+        _deny("public_v2_route_scope_invalid")
+    return route
+
+
+def _build(
+    *, scope, policy, quote, candle_packet, market_aux, reference, started, completed
+):
+    selected = _policy_copy(policy)
+    route = _scope_route(scope)
     canonical(scope)  # reject opaque/subclass values before comparisons
     if (
         type(scope["invocation_id"]) is not str
@@ -256,6 +316,34 @@ def _build(
     market_aux = aux.validate_collected_market_aux(market_aux)
     reference = ws.validate_collected_ws_reference(reference)
     document, current_quote, quote_observations = _quote_parts(quote)
+    rest_origin = wire.BASE_URL if route is None else route.rest_origin
+    ws_origins = (
+        {ws.PUBLIC_WS_URL, ws.LEGACY_PUBLIC_WS_URL}
+        if route is None
+        else {route.ws_origin}
+    )
+    if (
+        any(item.origin != rest_origin for item in quote_observations)
+        or any(
+            page.origin != rest_origin
+            for frame in candle_packet.frames
+            for page in frame.pages
+        )
+        or any(item.origin != rest_origin for item in market_aux.provenance)
+        or reference.endpoint not in ws_origins
+        or document["transport_policy_sha256"] != quotes._transport_policy_sha256(route)
+    ):
+        _deny("public_v2_component_route_mismatch")
+    if route is not None and any(
+        document.get(name) != scope[name]
+        for name in (
+            "registration_region",
+            "registration_region_authenticated",
+            "rest_origin",
+            "demo_public_origin_policy_sha256",
+        )
+    ):
+        _deny("public_v2_quote_route_mismatch")
     if (
         document["report_id"] != scope["report_id"]
         or document["instrument_id"] != scope["instrument_id"]
@@ -302,9 +390,9 @@ def _build(
     value = {
         "schema_version": SCHEMA_VERSION,
         **scope,
-        **_plan_pins(),
-        "policy": _policy_document(selected),
-        "policy_sha256": _policy_digest(selected),
+        **_plan_pins(route),
+        "policy": _policy_document(selected, route),
+        "policy_sha256": _policy_digest(selected, route),
         "started_at": start.isoformat(),
         "completed_at": finish.isoformat(),
         "quote": document,
@@ -332,19 +420,11 @@ def _build(
 
 def _replay(raw):
     value = decode(raw, MAX_PACKET_BYTES)
+    selected, route = _policy_from_document(value["policy"])
+    scope_keys = _SCOPE_KEYS | (_ROUTE_SCOPE_KEYS if route is not None else frozenset())
     packet, parts = _build(
-        scope={
-            key: value[key]
-            for key in (
-                "invocation_id",
-                "stage",
-                "environment",
-                "report_id",
-                "instrument_id",
-                "barrier_completed_at",
-            )
-        },
-        policy=_policy_from_document(value["policy"]),
+        scope={key: value[key] for key in scope_keys},
+        policy=selected,
         quote=quotes.CollectedQuoteV2(quotes._canonical(value["quote"])),
         candle_packet=candles.CollectedCandles.model_validate_json(
             canonical(value["candles"]), strict=True
@@ -404,17 +484,24 @@ async def _collect_owned_public_market_v2(source):
     state = runtime._state(source)
     selected = _policy_copy(state["policy"])
     plan = state["plan"]
+    if type(plan) is dict and plan.get("environment") == "demo":
+        # Even a malformed caller-built V2 route cannot reach a clock or IO.
+        runtime._require_trusted_v2_demo_origin_profile(plan)
+    route = (
+        demo_origin.reviewed_demo_public_route(plan["registration_region"])
+        if type(plan) is dict and "registration_region" in plan
+        else None
+    )
     if (
         type(plan) is not dict
-        or any(plan.get(key) != value for key, value in _plan_pins().items())
-        or plan.get("policy_sha256") != _policy_digest(selected)
+        or any(plan.get(key) != value for key, value in _plan_pins(route).items())
+        or plan.get("policy_sha256") != _policy_digest(selected, route)
     ):
         _deny("public_v2_owned_plan_required")
     # The collector is also an internal entry point. A future caller must not
     # bypass the runtime's capture-level origin check and leave a V2 Demo
     # journal after sampling a clock or opening a transport. Reviewed route
     # strings alone are still no account-region or credential-session proof.
-    runtime._require_trusted_v2_demo_origin_profile(plan)
     if "public_v2_attempted" in state:
         _deny("public_v2_invocation_already_used")
     state["public_v2_attempted"] = True
@@ -483,6 +570,11 @@ async def _collect_owned_public_market_v2(source):
             "barrier_completed_at": None
             if state["publication_completed_at"] is None
             else state["publication_completed_at"].isoformat(),
+            **(
+                {name: plan[name] for name in _ROUTE_SCOPE_KEYS}
+                if route is not None
+                else {}
+            ),
         },
         policy=selected,
         quote=outcomes["quote"],

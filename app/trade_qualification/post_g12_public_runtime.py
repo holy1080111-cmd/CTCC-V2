@@ -29,7 +29,13 @@ from app.trade_evidence.gates import (
     publish_qualification_evidence_liquidity_v2,
 )
 from app.trade_qualification import current_conditions_v2 as current_v2
-from app.trade_qualification import current_economics_v2, data_v2, original_event_v2
+from app.trade_qualification import (
+    current_economics_v2,
+    data_v2,
+    original_event_v2,
+)
+from app.trade_qualification import demo_public_origin as demo_origin
+from app.trade_qualification import demo_public_origin_preflight as origin_preflight
 from app.trade_qualification import public_market_collector_v2 as public_v2
 from app.trade_qualification import public_source_runtime as source_runtime
 from app.trade_qualification.data import WSReferenceObservation
@@ -425,7 +431,9 @@ async def capture_native_original_for_g12_v2(
         )
 
 
-def _publish_lineage_v2(evidence_root, market, *, pre, inputs, selected, invocation):
+def _publish_lineage_v2(
+    evidence_root, market, *, pre, inputs, selected, invocation, demo_session=None
+):
     """Actual fixed publisher/issuer for a same-task candidate coordinator.
 
     This helper accepts no saved receipt, barrier or source capability. Its
@@ -438,14 +446,25 @@ def _publish_lineage_v2(evidence_root, market, *, pre, inputs, selected, invocat
     task = asyncio.current_task()
     if task is None or task.cancelling():
         raise asyncio.CancelledError
-    # The current V2 issuer has no account-bound registration-region proof and
-    # still carries Production public origins. Reject before clock sampling or
-    # immutable G12 publication, not only at the later collector boundary.
+    declared_route = (
+        origin_preflight._declared_demo_public_plan(demo_session)
+        if demo_session is not None
+        else {}
+    )
+    route = (
+        demo_origin.reviewed_demo_public_route(declared_route["registration_region"])
+        if declared_route
+        else None
+    )
+    # The route-bound builders still lack authenticated registration-region
+    # proof. Reject before clock sampling or immutable G12 publication, not
+    # only at the collector boundary.
     source_runtime._require_trusted_v2_demo_origin_profile(
         {
             "environment": "demo",
             "rest_origin": _V2_DEMO_REST_ORIGIN,
             "ws_origin": _V2_DEMO_WS_ORIGIN,
+            **declared_route,
         }
     )
     last = None
@@ -493,8 +512,9 @@ def _publish_lineage_v2(evidence_root, market, *, pre, inputs, selected, invocat
         "expires_at": origin.deadline.isoformat(),
         "rest_origin": _V2_DEMO_REST_ORIGIN,
         "ws_origin": _V2_DEMO_WS_ORIGIN,
-        "policy_sha256": public_v2._policy_digest(selected),
-        **public_v2._plan_pins(),
+        **declared_route,
+        "policy_sha256": public_v2._policy_digest(selected, route),
+        **public_v2._plan_pins(route),
     }
     _PUBLICATIONS[publication] = {
         "invocation": invocation,
@@ -513,7 +533,14 @@ def _publish_lineage_v2(evidence_root, market, *, pre, inputs, selected, invocat
 
 
 async def publish_capture_public_v2(
-    evidence_root, public_root, original_market, *, run, original_inputs, market_policy
+    evidence_root,
+    public_root,
+    original_market,
+    *,
+    run,
+    original_inputs,
+    market_policy,
+    demo_session=None,
 ):
     """Actual new G12, native v2 public acquisition and raw current G1.
 
@@ -564,6 +591,7 @@ async def publish_capture_public_v2(
             inputs=inputs,
             selected=selected,
             invocation=invocation,
+            demo_session=demo_session,
         )
         if publication is None:
             return PublicCaptureDiagnosticV2(

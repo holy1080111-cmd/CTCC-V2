@@ -132,6 +132,65 @@ def demo_public_headers(route: ReviewedDemoPublicRoute, role: str) -> dict[str, 
     }
 
 
+def build_demo_public_request(
+    route: ReviewedDemoPublicRoute,
+    role: str,
+    endpoint: str,
+    parameters: dict[str, str],
+    *,
+    instrument_id: str,
+    timeout_seconds: int,
+) -> httpx.Request:
+    """Build a policy-exact Demo GET; this grants no permission to send it."""
+    _checked_route(route)
+    if (
+        type(role) is not str
+        or role not in _PATHS
+        or type(endpoint) is not str
+        or endpoint not in _PATHS[role]
+        or type(parameters) is not dict
+        or any(
+            type(key) is not str or type(value) is not str
+            for key, value in parameters.items()
+        )
+        or type(timeout_seconds) is not int
+        or not 1 <= timeout_seconds <= 5
+    ):
+        raise DemoPublicOriginError("demo_public_request_invalid")
+    request = httpx.Request(
+        "GET",
+        route.rest_origin + endpoint,
+        params=parameters,
+        headers=demo_public_headers(route, role),
+        extensions={"timeout": httpx.Timeout(timeout_seconds).as_dict()},
+    )
+    validate_demo_public_request(
+        route, role, request, expected_instrument_id=instrument_id
+    )
+    return request
+
+
+def validate_demo_public_response(
+    route: ReviewedDemoPublicRoute,
+    role: str,
+    request: httpx.Request,
+    response: httpx.Response,
+    *,
+    expected_instrument_id: str,
+) -> None:
+    """Check the returned origin and redirect chain without trusting its body."""
+    validate_demo_public_request(
+        route, role, request, expected_instrument_id=expected_instrument_id
+    )
+    if (
+        type(response) is not httpx.Response
+        or response.status_code != 200
+        or response.url != request.url
+        or response.history
+    ):
+        raise DemoPublicOriginError("demo_public_response_invalid")
+
+
 def validate_demo_public_request(
     route: ReviewedDemoPublicRoute,
     role: str,
@@ -220,3 +279,11 @@ def validate_demo_public_ws(
         or tls_hostname != route.ws_hostname
     ):
         raise DemoPublicOriginError("demo_public_ws_origin_mismatch")
+
+
+def build_demo_public_ws_endpoint(route: ReviewedDemoPublicRoute) -> str:
+    """Return the exact reviewed 443 Demo socket; no connection is opened."""
+    _checked_route(route)
+    endpoint = route.ws_origin
+    validate_demo_public_ws(route, endpoint, route.ws_hostname)
+    return endpoint

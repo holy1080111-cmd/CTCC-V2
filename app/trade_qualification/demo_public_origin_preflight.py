@@ -9,12 +9,14 @@ from __future__ import annotations
 
 import asyncio
 import os
+from hashlib import sha256
 from threading import get_ident
 from weakref import WeakKeyDictionary
 
 from app.trade_qualification import account_capture as capture
 from app.trade_qualification import account_collector as collector
 from app.trade_qualification import demo_public_origin as origin
+from app.trade_qualification import demo_public_origin_policy_v2 as policy_v2
 from app.trade_qualification.account_runtime import ControlledDemoAccountSession
 
 _ISSUER = object()
@@ -113,3 +115,20 @@ def _consume_controlled_demo_route(prepared, session):
     if route != state["route"] or pin != state["pin"]:
         raise DemoPublicOriginPreflightError("controlled_demo_route_changed")
     return route, pin
+
+
+def _declared_demo_public_plan(session):
+    """Freeze a same-task route declaration, never an authenticated IO permit."""
+    prepared = _prepare_controlled_demo_route(session)
+    route, account_plan_sha256 = _consume_controlled_demo_route(prepared, session)
+    raw_policy = policy_v2.freeze_demo_public_origin_policy_v2(
+        route.registration_region
+    )
+    return {
+        "registration_region": route.registration_region,
+        "registration_region_authenticated": False,
+        "account_plan_sha256": account_plan_sha256,
+        "demo_public_origin_policy_sha256": sha256(raw_policy).hexdigest(),
+        "rest_origin": route.rest_origin,
+        "ws_origin": route.ws_origin,
+    }

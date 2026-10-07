@@ -3781,3 +3781,39 @@ anchor or flat account cannot be relabelled as this proof. The result retains
 focused synthetic tests passed. It is not a complete account page-chain,
 PortfolioRiskSnapshot, authenticated Demo reconciliation or trading acceptance.
 Both slices still require fresh exact-source full regression after commit.
+
+## 2026-10-07 source-bound CI failure triage and pending repairs
+
+The exact `605cead5aa7189220ee993780494062ab9162888` CI run
+[37599834588](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/37599834588)
+completed all eight isolated Linux shards successfully. Its PostgreSQL component
+ran 224 selected cases: 218 passed and six failed before the intended database
+assertions. Three calls built synchronous synthetic sources containing
+`asyncio.run()` from inside asynchronous tests; three migration tests looked up
+the existing `0025` script in a test-only map that stopped at `0023`. The
+migration upgrade, downgrade, re-upgrade, identity and drift stages themselves
+reported exit zero. The required Docker union failed after the PostgreSQL
+component failure; this is not a Docker-hermetic PASS. Separately, two shard
+collection lists at this same SHA differ in two test IDs because a parametrized
+invalid-clock test used `datetime.now()` at import time. The strict union gate
+correctly rejects that drift. The Windows component was still running when
+these findings were recorded.
+
+Working-tree repairs move the four affected synthetic fixture constructors into
+synchronous pytest fixtures, register actual `0024`/`0025` migration files in
+the test loader, and replace the collection-time clock samples with fixed
+invalid values. All 77 changed integration cases and 104 dispatch-owner cases
+collected; six targeted invalid-clock cases, Ruff and format checks passed.
+The database tests and full collection union have **not** passed for these
+working-tree changes. The next exact-source CI run must establish that result.
+The working-tree CI concurrency rule is scoped by both branch and source SHA so
+a later exact-source run need not cancel the still-running prior Windows
+diagnostic; this does not weaken any test or required status.
+
+The same uncommitted source also carries the versioned Demo public regional
+route/packet/transport wiring described in `docs/public_source_runtime_v2.md`.
+Its focused synthetic tests passed, but the issuer remains `DENY` before clock,
+G12 publication or network I/O because registration-region provenance and
+complete account identity are unavailable. No real Demo or Live request or
+order was made by this work. None of R5, R7, Demo, Micro Live, OOS, release or
+final acceptance is promoted by these repairs.

@@ -151,6 +151,9 @@ class CollectedWSReference(QualificationModel):
     endpoint: Literal[
         "wss://ws.okx.com:443/ws/v5/public",
         "wss://ws.okx.com:8443/ws/v5/public",
+        "wss://wspap.okx.com:443/ws/v5/public",
+        "wss://wsuspap.okx.com:443/ws/v5/public",
+        "wss://wseeapap.okx.com:443/ws/v5/public",
     ] = PUBLIC_WS_URL
     policy: WSCollectionPolicy
     barrier_completed_at: datetime | None
@@ -371,9 +374,11 @@ async def collect_ws_reference(
         if not callable(clock):
             raise WSCollectionError("ws_clock_invalid")
         barrier = None if barrier_completed_at is None else _utc(barrier_completed_at)
+        endpoint = PUBLIC_WS_URL
         if _source is not None:
             from app.trade_qualification.public_source_runtime import (
                 _check_inputs,
+                _owned_ws_endpoint,
                 _receive_ws,
                 _ws_connected,
                 _ws_options,
@@ -387,6 +392,7 @@ async def collect_ws_reference(
                 instrument_id=instrument_id,
                 barrier_completed_at=barrier,
             )
+            endpoint = _owned_ws_endpoint(_source)
         started = _utc(clock())
         if barrier is not None and started <= barrier:
             raise WSCollectionError("ws_publication_barrier_not_crossed")
@@ -395,7 +401,7 @@ async def collect_ws_reference(
         native_options = {} if _source is None else _ws_options(_source, started)
         async with asyncio.timeout(checked.batch_timeout_seconds):
             socket = await _NoRedirectConnect(
-                PUBLIC_WS_URL,
+                endpoint,
                 proxy=None,
                 compression=None,
                 additional_headers=None,
@@ -465,7 +471,7 @@ async def collect_ws_reference(
         values = {
             "report_id": report,
             "instrument_id": instrument_id,
-            "endpoint": PUBLIC_WS_URL,
+            "endpoint": endpoint,
             "policy": checked,
             "barrier_completed_at": barrier,
             "connection_started_at": started,

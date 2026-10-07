@@ -170,17 +170,23 @@ async def test_control_bound_reporting_function_downgrade_reupgrade_when_empty(
     assert await shape(engine) == current
 
 
+@pytest.fixture
+def v2_reporting_fixture():
+    # ledger_fixture uses asyncio.run, so construct it before the async test.
+    return ledger_fixture(
+        account_id=f"456789{uuid4().int % 10**14:014d}",
+        report_id="synthetic-migration-v2-" + uuid4().hex,
+    )
+
+
 @pytest.mark.parametrize("revision", ("0024",))
 async def test_control_bound_reporting_downgrade_preserves_existing_v2_outcome(
-    sandbox, revision
+    sandbox, revision, v2_reporting_fixture
 ):
     engine, _ = sandbox
     async with engine.begin() as connection:
         await connection.run_sync(migrate, "0025", "upgrade")
-    fixture = ledger_fixture(
-        account_id=f"456789{uuid4().int % 10**14:014d}",
-        report_id="synthetic-migration-v2-" + uuid4().hex,
-    )
+    fixture = v2_reporting_fixture
     _ledger, reporter, _clock, hold, args = await report_fixtures.setup(
         sandbox, fixture
     )
@@ -210,16 +216,22 @@ async def test_control_bound_reporting_downgrade_preserves_existing_v2_outcome(
     )
 
 
+@pytest.fixture
+def control_bound_range_fixture(monkeypatch):
+    # Build the synthetic source before the async test enters its event loop.
+    return range_v5_ledger_fixture(
+        "long", monkeypatch, account_id=f"456789{uuid4().int % 10**14:014d}"
+    )[0]
+
+
 @pytest.mark.parametrize("revision", ("0024",))
 async def test_control_bound_reporting_downgrade_rejects_retained_v3_outcome(
-    sandbox, revision, monkeypatch
+    sandbox, revision, control_bound_range_fixture
 ):
     engine, _ = sandbox
     async with engine.begin() as connection:
         await connection.run_sync(migrate, "0025", "upgrade")
-    fixture, _binding, _ = range_v5_ledger_fixture(
-        "long", monkeypatch, account_id=f"456789{uuid4().int % 10**14:014d}"
-    )
+    fixture = control_bound_range_fixture
     setup = await control_fixtures.setup(sandbox, fixture)
     hold = await setup.reserve()
     outer = await setup.consume()

@@ -211,9 +211,34 @@ the US/AU and EEA Demo domains.
 
 `demo_public_origin.py` now pins the reviewed global, US/AU and EEA Demo REST,
 WebSocket and TLS hosts and requires `x-simulated-trading: 1` on public REST
-requests. It is a transport policy only. No verified account-registration
-region or credential-session issuer feeds the native V2 collector, and that
-collector has not been fully wired to these routes. Therefore every new native
-V2 Demo capture remains `DENY` before I/O, even if a caller supplies an
-apparently correct region or route object. Focused policy and pre-I/O denial
-tests passed; R5 trusted Demo-source acceptance remains open.
+requests. At this October 6 checkpoint it was a transport policy only: no
+verified account-registration region or credential-session issuer fed the native
+V2 collector, and the collector was not yet wired to these routes. Every new
+native V2 Demo capture remained `DENY` before I/O.
+
+## 2026-10-07 regional route wiring, still denied
+
+The controlled Demo account session can now make a one-use, same-task route
+declaration before either V2 issuer samples a clock or publishes G12. The
+declaration pins its account plan hash, reviewed registration-region route and
+frozen policy hash; `registration_region_authenticated` remains false. A signed
+request on a regional private origin does not independently prove the account's
+registration site. Both issuers and the native collector retain the hard
+pre-clock/pre-I/O refusal until that proof is obtained and reviewed.
+
+The dormant V2 route-specific packet policy has a new version and hash. It
+binds every quote, candle and auxiliary REST observation and the WS endpoint to
+one regional Demo route, and replays those fields and exact request headers
+through the journal. Pure builders construct only the reviewed HTTPS GETs with
+`x-simulated-trading: 1` and the reviewed 443 Demo socket. Runtime request,
+redirect, TLS hostname and replay checks use that route behind the unchanged
+refusal. Legacy Production packets retain their previous bytes and hash; legacy
+quote and aggregate public validators explicitly reject regional provenance,
+while historical Production `:8443` WS receipts remain replayable as diagnostics.
+
+Synthetic region, cross-region, forged direct-call, header, proxy, redirect,
+TLS and historical replay tests passed locally. No authenticated registration
+proof, real Demo V2 capture or trading authority was produced; source
+authenticity and R5 trusted Demo-source acceptance remain **DENY**. Exact-source
+Windows, PostgreSQL and Docker CI must run again after these changes are
+committed.

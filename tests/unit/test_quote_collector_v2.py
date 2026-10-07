@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 import httpx
 import pytest
 
+from app.trade_qualification import demo_public_origin as demo_origin
 from app.trade_qualification import public_source_runtime as runtime
 from app.trade_qualification import quote_collector as wire
 from app.trade_qualification import quote_collector_v2 as module
@@ -114,6 +115,37 @@ def test_raw_observations_rebuild_quote_with_unchanged_funding_time_and_no_autho
     assert data["admission"] == "DENY"
     assert result.execution_authority is False
     assert result.source_authenticity_verified is False
+
+
+@pytest.mark.parametrize("region", ["global", "us_au", "eea"])
+def test_reviewed_demo_route_quote_packet_replays_exact_origin_and_policy(region):
+    route = demo_origin.reviewed_demo_public_route(region)
+    source = tuple(
+        item.model_copy(update={"origin": route.rest_origin}) for item in observations()
+    )
+    result = packet(source, route=route)
+    replay = module.replay_quote_packet_v2(
+        result.packet_json, expected_sha256=result.bundle_sha256
+    )
+    document = json.loads(replay.packet_json)
+    assert document["registration_region"] == region
+    assert document["rest_origin"] == route.rest_origin
+    assert document["registration_region_authenticated"] is False
+    assert document["transport_policy_sha256"] == module._transport_policy_sha256(route)
+    assert all(item["origin"] == route.rest_origin for item in document["provenance"])
+    assert result.admission == "DENY" and result.execution_authority is False
+    crossed = (source[0].model_copy(update={"origin": wire.BASE_URL}), *source[1:])
+    with pytest.raises(module.QuoteCollectionV2Error, match="origin_mismatch"):
+        packet(crossed, route=route)
+    for mutation in (
+        {"rest_origin": wire.BASE_URL},
+        {"registration_region_authenticated": True},
+        {"transport_policy_sha256": "0" * 64},
+    ):
+        changed = {**document, **mutation}
+        raw = module._canonical(changed)
+        with pytest.raises(module.QuoteCollectionV2Error):
+            module.replay_quote_packet_v2(raw, expected_sha256=wire._sha(raw))
 
 
 def test_packet_retains_whole_response_larger_than_individual_response_field_limit():
