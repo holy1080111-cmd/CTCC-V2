@@ -822,7 +822,12 @@ async def _capture_initial_current(
         session_factory, clock=owned_clock
     )
     selected = capture._checked_plan(session._plan, session._pin)
-    proof_schema, proof_policy_sha256 = proof.contract_for_plan(selected)
+    if _exposure_sink is None:
+        proof_schema, proof_policy_sha256 = proof.contract_for_plan(selected)
+    else:
+        if type(_exposure_sink) is not list or _exposure_sink:
+            raise proof.NativeAccountProofError("native_account_exposure_sink_invalid")
+        proof_schema, proof_policy_sha256 = proof.contract_for_exposed_v6_plan(selected)
     scope = LedgerScope(
         account_id=selected.expected_uid,
         settlement_currency=selected.settlement_currency,
@@ -910,14 +915,11 @@ async def _capture_initial_current(
             raise proof.NativeAccountProofError(
                 "native_account_original_source_readback_changed"
             )
+        exposure_observation = None
         if _exposure_sink is not None:
-            # The separate read-only route must never reach the flat-only
-            # companion seal, boundary, origin lease or packet lease. Its
-            # original source is reread under the same exact-UID DB lock.
-            if type(_exposure_sink) is not list or _exposure_sink:
-                raise proof.NativeAccountProofError(
-                    "native_account_exposure_sink_invalid"
-                )
+            # The exposed route must use its separate diagnostic proof. Its
+            # original source is reread under the exact-UID DB lock before
+            # sealing, without entering the flat-only v3 carrier path.
             await _recheck_original_db_chain(
                 journal_repository,
                 scope,
@@ -926,16 +928,12 @@ async def _capture_initial_current(
                 packet,
                 proof_schema=proof_schema,
             )
-            observed_exposure = exposed.observe_recorded_native_v6_exposure(
+            exposure_observation = exposed.observe_recorded_native_v6_exposure(
                 chain=chain,
                 reference=reference,
                 packet=packet,
                 scope=scope,
                 validated_at=utc_from_ns(native._sample(stage)["utc_ns"]),
-            )
-            _exposure_sink.append(observed_exposure)
-            raise proof.NativeAccountProofError(
-                "native_account_current_sources_incomplete_or_exposed"
             )
         readback = native._sample(stage)
         persisted = native._sample(stage)
@@ -999,6 +997,72 @@ async def _capture_initial_current(
         or replay.packet != packet
     ):
         raise proof.NativeAccountProofError("native_account_source_expired")
+    if _exposure_sink is not None:
+        if (
+            proof_schema != proof.EXPOSED_V4_SCHEMA
+            or type(exposure_observation) is not exposed.NativeExposedAccountObservation
+        ):
+            raise proof.NativeAccountProofError("native_account_exposure_proof_invalid")
+        recorded = json.loads(exposure_observation.receipt_json)
+        current_replay = json.loads(replay.current_source_receipt_json)
+        if (
+            recorded.get("schema_version") != "ctcc.native_demo_exposed_observation.v1"
+            or recorded.get("source_reference")
+            != observed.reference_document(reference)
+            or current_replay.get("source_reference")
+            != observed.reference_document(reference)
+            or recorded.get("current_inventory_row_counts")
+            != current_replay.get("inventory_row_counts")
+            or recorded.get("admission") != "DENY"
+            or recorded.get("snapshot") is not None
+            or recorded.get("execution_authority") is not False
+        ):
+            raise proof.NativeAccountProofError("native_account_exposure_proof_invalid")
+        diagnostic = exposed.NativeExposedAccountObservation(
+            canonical(
+                {
+                    "schema_version": "ctcc.native_demo_exposed_observation.v2",
+                    "policy_sha256": exposed.V2_POLICY_SHA256,
+                    "account_scope_sha256": recorded["account_scope_sha256"],
+                    "source_reference": recorded["source_reference"],
+                    "recorded_exposure_receipt_sha256": exposure_observation.receipt_sha256,
+                    "native_proof_sha256": sha(raw),
+                    "native_readback_sha256": readback_pin,
+                    "current_source_receipt_sha256": sha(
+                        replay.current_source_receipt_json
+                    ),
+                    "observed_at": utc_from_ns(issue["utc_ns"]).isoformat(),
+                    "expires_at": expires.isoformat(),
+                    "current_inventory_row_counts": recorded[
+                        "current_inventory_row_counts"
+                    ],
+                    "current_pages": recorded["current_pages"],
+                    "current_rows": recorded["current_rows"],
+                    "blocking_reasons": sorted(
+                        (
+                            set(recorded["blocking_reasons"])
+                            | set(current_replay["blocking_reasons"])
+                        )
+                        - {"native_clock_companion_proof_missing"}
+                    ),
+                    "current_exposure_rows_observed": True,
+                    "native_companion_proof_verified": True,
+                    "source_authenticity_verified": False,
+                    "history_complete": None,
+                    "local_exposure_complete": None,
+                    "active_protection_complete": None,
+                    "account_atomic_revision_verified": False,
+                    "snapshot": None,
+                    "account_complete": False,
+                    "flat_start_permission": False,
+                    "execution_authority": False,
+                    "admission": "DENY",
+                }
+            )
+        )
+        _secret_checked(diagnostic.receipt_json, owner.tokens)
+        _exposure_sink.append(diagnostic)
+        return diagnostic
     receipt = canonical(
         {
             "schema_version": (
@@ -1207,11 +1271,10 @@ async def capture_initial_native_account(session, *, session_factory, proof_root
 async def capture_native_exposed_account_observation(
     session, *, session_factory, proof_root
 ) -> exposed.NativeExposedAccountObservation:
-    """One-use owned V6 read of exposure rows; no flat or trading authority.
+    """One-use V6 exposure diagnostic with separate native proof; no authority.
 
-    The original raw/page chain remains in the account journal. The separate
-    native companion proof is intentionally not sealed for an exposed account;
-    history, local liabilities and exchange protection remain unknown.
+    The original raw/page chain remains in the account journal. Even after
+    proof readback, history, local liabilities and protection remain unknown.
     """
     if (
         type(session) is not ControlledDemoAccountSession
@@ -1243,13 +1306,19 @@ async def capture_native_exposed_account_observation(
             ) as stage,
         ):
             try:
-                await _capture_initial_current(
+                result = await _capture_initial_current(
                     stage,
                     session,
                     session_factory,
                     proof_root,
                     _exposure_sink=observations,
                 )
+                if type(
+                    result
+                ) is exposed.NativeExposedAccountObservation and observations == [
+                    result
+                ]:
+                    return result
             except proof.NativeAccountProofError as exc:
                 if (
                     str(exc) == "native_account_current_sources_incomplete_or_exposed"

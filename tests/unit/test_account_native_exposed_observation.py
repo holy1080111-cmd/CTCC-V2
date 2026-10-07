@@ -1,28 +1,147 @@
 """Synthetic recorded-chain replay exercises the exposed V6 DENY path."""
 
 import json
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 
-from app.domain.source_primitives import canonical
+from app.domain.source_primitives import canonical, sha
 from app.trade_qualification import account_capture as capture
 from app.trade_qualification import account_native_exposed_observation as exposed
 from app.trade_qualification import account_native_proof as proof
+from app.trade_qualification import account_native_proof_storage as storage
 from app.trade_qualification import account_native_runtime as runtime
 from app.trade_qualification.account_runtime import ControlledDemoAccountSession
+from tests.unit.research.test_public_journal_contracts import MemoryDirectory
 from tests.unit.test_account_native_proof import companion_fixture, replay
 from tests.unit.test_qualification_account_collector import credentials
 
 
 async def recorded_exposure(monkeypatch):
     raw, files, chain, scope, _samples = await companion_fixture(
-        monkeypatch, source_case="exposed", current_only=True
+        monkeypatch, source_case="fresh_exposed", current_only=True
     )
     reference, packet, _records, _joins = proof._source(
         chain, scope, proof_schema=proof.V3_SCHEMA
     )
     return raw, files, chain, scope, reference, packet
+
+
+def exposed_v4_raw(raw):
+    value = json.loads(raw)
+    value["schema_version"] = proof.EXPOSED_V4_SCHEMA
+    value["policy_sha256"] = proof.EXPOSED_V4_POLICY_SHA256
+    return canonical(value)
+
+
+@pytest.mark.asyncio
+async def test_exposed_v4_native_proof_keeps_v3_flat_contract_and_no_authority(
+    monkeypatch,
+):
+    raw, files, chain, scope, reference, packet = await recorded_exposure(monkeypatch)
+    with pytest.raises(
+        proof.NativeAccountProofError,
+        match="native_account_current_sources_incomplete_or_exposed",
+    ):
+        replay(raw, files, chain, scope)
+    v4 = exposed_v4_raw(raw)
+    verified = replay(v4, files, chain, scope)
+    current = json.loads(verified.current_source_receipt_json)
+    assert verified.packet == packet
+    assert current["source_reference"]["packet_sha256"] == reference.packet_sha256
+    assert current["observed_flat"] is False
+    assert (
+        "current_exposure_requires_protection_and_local_join"
+        in current["blocking_reasons"]
+    )
+    assert current["blocking_reasons"] == [
+        "current_exposure_requires_protection_and_local_join"
+    ]
+    assert current["inventory_row_counts"]["positions"] == 1
+    assert not verified.account_complete and not verified.execution_authority
+    assert json.loads(v4)["admission"] == "DENY"
+    assert not runtime._CAPTURES and not runtime._RAW_PACKET_LEASES
+
+    flat_raw, flat_files, flat_chain, flat_scope, _ = await companion_fixture(
+        monkeypatch, source_case="fresh_flat", current_only=True
+    )
+    with pytest.raises(
+        proof.NativeAccountProofError, match="native_account_exposure_source_missing"
+    ):
+        replay(exposed_v4_raw(flat_raw), flat_files, flat_chain, flat_scope)
+    assert replay(flat_raw, flat_files, flat_chain, flat_scope).packet is not None
+
+    old_raw, old_files, old_chain, old_scope, _ = await companion_fixture(
+        monkeypatch, source_case="exposed", current_only=True
+    )
+    with pytest.raises(
+        proof.NativeAccountProofError, match="native_account_exposure_source_missing"
+    ):
+        replay(exposed_v4_raw(old_raw), old_files, old_chain, old_scope)
+
+
+@pytest.mark.asyncio
+async def test_exposed_v4_companion_readback_and_mutations_fail_closed(monkeypatch):
+    raw, files, chain, scope, _reference, _packet = await recorded_exposure(monkeypatch)
+    v4 = exposed_v4_raw(raw)
+    replay(v4, files, chain, scope)
+    changed = json.loads(v4)
+    changed["policy_sha256"] = proof.V3_POLICY_SHA256
+    with pytest.raises(proof.NativeAccountProofError):
+        replay(canonical(changed), files, chain, scope)
+    changed = json.loads(v4)
+    delta = (
+        changed["monotonic_deadline_ns"]
+        - changed["proof_persist_start"]["monotonic_ns"]
+    )
+    changed["proof_persist_start"]["monotonic_ns"] += delta
+    changed["proof_persist_start"]["utc_ns"] += delta
+    with pytest.raises(
+        proof.NativeAccountProofError, match="native_account_original_expiry_invalid"
+    ):
+        replay(canonical(changed), files, chain, scope)
+    with pytest.raises(proof.NativeAccountProofError):
+        replay(v4, files, chain[:-1], scope)
+
+    directory = MemoryDirectory(dict(files))
+    # Storage's measured stamp is supplied by the existing synthetic source
+    # fixture only. No real account or native acceptance occurs here.
+    monkeypatch.setattr(storage, "native_stamp", proof.native.clock.native_stamp)
+    monkeypatch.setattr(storage, "_root_identity", lambda _root: (11, 22))
+
+    @contextmanager
+    def roots(_root):
+        yield directory
+
+    monkeypatch.setattr(storage, "_root_context", roots)
+    pin = storage._seal_companion(directory, v4, chain=chain, scope=scope)
+    assert (
+        json.loads(directory.content["readback.json"])["schema_version"]
+        == storage.EXPOSED_V4_READBACK_SCHEMA
+    )
+    verified, readback_raw = storage.read_native_account_companion(
+        Path.cwd(),
+        chain=chain,
+        scope=scope,
+        expected_proof_sha256=sha(v4),
+        expected_readback_sha256=pin,
+    )
+    assert readback_raw == directory.content["readback.json"]
+    assert verified.proof_sha256 == sha(v4)
+    changed_receipt = json.loads(readback_raw)
+    changed_receipt["schema_version"] = storage.V3_READBACK_SCHEMA
+    directory.content["readback.json"] = canonical(changed_receipt)
+    with pytest.raises(proof.NativeAccountProofError):
+        storage.read_native_account_companion(
+            Path.cwd(),
+            chain=chain,
+            scope=scope,
+            expected_proof_sha256=sha(v4),
+            expected_readback_sha256=sha(directory.content["readback.json"]),
+        )
+    assert directory.content["proof.json"] == v4
+    assert not runtime._CAPTURES and not runtime._RAW_PACKET_LEASES
 
 
 @pytest.mark.asyncio

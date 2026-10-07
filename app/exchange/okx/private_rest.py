@@ -17,6 +17,7 @@ from app.config.settings import Settings, get_settings
 from app.exchange.okx.errors import OkxPrivateApiError
 from app.okx_live.execution_authority import enforce_live_final_dispatch
 from app.trade_qualification.execution_authority import (
+    enforce_demo_final_dispatch,
     enforce_demo_submission_boundary,
     enforce_live_submission_boundary,
 )
@@ -530,6 +531,9 @@ class OkxDemoPrivateRestClient(_OkxPrivateRestClientBase):
 
     def _before_send(self, *, method: str, path: str) -> None:
         enforce_demo_submission_boundary(method, path)
+
+    def _final_dispatch_check(self, *, method: str, path: str) -> None:
+        enforce_demo_final_dispatch(method, path)
 
     def _credentials(self) -> tuple[str, str, str]:
         if not self.settings.okx_demo_credentials_configured:

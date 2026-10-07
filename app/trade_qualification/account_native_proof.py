@@ -29,6 +29,7 @@ from app.trade_qualification.reservations import LedgerScope, checked_bootstrap
 
 SCHEMA = "ctcc.demo_account_native_clock_proof.v2"
 V3_SCHEMA = "ctcc.demo_account_native_clock_proof.v3"
+EXPOSED_V4_SCHEMA = "ctcc.demo_account_exposed_native_clock_proof.v4"
 MAX_PROOF = 2 * 1024 * 1024
 FILES = (
     "host-before.json",
@@ -88,6 +89,24 @@ V3_POLICY_BYTES = canonical(
     }
 )
 V3_POLICY_SHA256 = sha(V3_POLICY_BYTES)
+EXPOSED_V4_POLICY_BYTES = canonical(
+    {
+        "schema_version": "ctcc.demo_account_exposed_native_clock_policy.v4",
+        "prior_flat_policy_sha256": V3_POLICY_SHA256,
+        "stage": "initial_account_only",
+        "current_capture_plan": "ctcc.demo_current_account_plan.v6",
+        "account_current_policy_sha256": current.V6_POLICY_SHA256,
+        "required_current_inventory": "one_or_more_exact_replayed_exposure_rows",
+        "native_clock_and_original_page_chain": "same_strict_v3_phase_and_readback_contract",
+        "current_source_blockers": "exactly_exposure_join_required",
+        "flat_start_permission": False,
+        "source_authenticity_verified": False,
+        "historical_hwm_clock_verified": False,
+        "account_complete": False,
+        "execution_authority": False,
+    }
+)
+EXPOSED_V4_POLICY_SHA256 = sha(EXPOSED_V4_POLICY_BYTES)
 
 
 def contract_for_plan(plan):
@@ -97,6 +116,13 @@ def contract_for_plan(plan):
     if type(plan) is capture.CurrentDemoAccountCapturePlanV6:
         return V3_SCHEMA, V3_POLICY_SHA256
     raise NativeAccountProofError("native_account_source_scope_unsupported")
+
+
+def contract_for_exposed_v6_plan(plan):
+    """Separate no-authority proof; never changes the flat v3 contract."""
+    if type(plan) is capture.CurrentDemoAccountCapturePlanV6:
+        return EXPOSED_V4_SCHEMA, EXPOSED_V4_POLICY_SHA256
+    raise NativeAccountProofError("native_account_exposure_scope_unsupported")
 
 
 class NativeAccountProofError(ValueError):
@@ -185,7 +211,7 @@ def _source(chain, scope, *, proof_schema=SCHEMA):
     if proof_schema == SCHEMA:
         history.verify_history_query_chain(chain, **observed._pins(reference, scope))
         expected_plan = capture.AllProductDemoAccountCapturePlan
-    elif proof_schema == V3_SCHEMA:
+    elif proof_schema in {V3_SCHEMA, EXPOSED_V4_SCHEMA}:
         current.verify_current_account_sources(
             chain,
             reference=reference,
@@ -508,9 +534,13 @@ def _replay(raw, files, chain, scope, expected):
             "execution_authority",
             "admission",
         }
-        or value["schema_version"] not in {SCHEMA, V3_SCHEMA}
+        or value["schema_version"] not in {SCHEMA, V3_SCHEMA, EXPOSED_V4_SCHEMA}
         or value["policy_sha256"]
-        != (POLICY_SHA256 if value["schema_version"] == SCHEMA else V3_POLICY_SHA256)
+        != {
+            SCHEMA: POLICY_SHA256,
+            V3_SCHEMA: V3_POLICY_SHA256,
+            EXPOSED_V4_SCHEMA: EXPOSED_V4_POLICY_SHA256,
+        }[value["schema_version"]]
     ):
         raise NativeAccountProofError("native_account_proof_contract_invalid")
     if (
@@ -704,7 +734,19 @@ def _replay(raw, files, chain, scope, expected):
         ),
     )
     current_data = decode(verified.receipt_json)
-    if current_data["blocking_reasons"] or current_data["observed_flat"] is not True:
+    if proof_schema == EXPOSED_V4_SCHEMA:
+        counts = current_data["inventory_row_counts"]
+        if (
+            type(counts) is not dict
+            or set(counts) != set(current.INVENTORY_STREAMS)
+            or any(type(count) is not int or count < 0 for count in counts.values())
+            or not any(counts.values())
+            or current_data["observed_flat"] is not False
+            or current_data["blocking_reasons"]
+            != ["current_exposure_requires_protection_and_local_join"]
+        ):
+            raise NativeAccountProofError("native_account_exposure_source_missing")
+    elif current_data["blocking_reasons"] or current_data["observed_flat"] is not True:
         raise NativeAccountProofError(
             "native_account_current_sources_incomplete_or_exposed"
         )

@@ -225,10 +225,13 @@ async def test_pending_algo_cursor_limit_without_empty_terminal_fails_closed() -
 
 
 @pytest.mark.asyncio
-async def test_write_item_error_is_raised() -> None:
+async def test_denied_demo_maintenance_never_reads_exchange_item_error() -> None:
     settings = demo_settings()
+    calls = 0
 
     def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
         return httpx.Response(
             200,
             json={
@@ -246,12 +249,13 @@ async def test_write_item_error_is_raised() -> None:
             await OkxDemoPrivateRestClient(client, settings=settings).cancel_order(
                 {"instId": "BTC-USDT-SWAP", "ordId": "synthetic"}
             )
-    assert exc_info.value.code == "51000"
+    assert exc_info.value.code == "demo_maintenance_authority_unavailable"
+    assert calls == 0
     assert "demo-secret" not in str(exc_info.value)
 
 
 @pytest.mark.asyncio
-async def test_write_transport_failure_is_not_retried() -> None:
+async def test_denied_demo_maintenance_has_no_transport_attempt() -> None:
     settings = demo_settings(okx_demo_read_max_retries=5)
     calls = 0
 
@@ -268,8 +272,8 @@ async def test_write_transport_failure_is_not_retried() -> None:
             await OkxDemoPrivateRestClient(client, settings=settings).cancel_order(
                 {"instId": "BTC-USDT-SWAP", "ordId": "synthetic"}
             )
-    assert calls == 1
-    assert exc_info.value.code == "transport_error"
+    assert calls == 0
+    assert exc_info.value.code == "demo_maintenance_authority_unavailable"
 
 
 @pytest.mark.asyncio

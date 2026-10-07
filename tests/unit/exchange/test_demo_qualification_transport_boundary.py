@@ -5,14 +5,22 @@ from decimal import Decimal
 import httpx
 import pytest
 
-from app.domain.okx_demo import OkxDemoLeverageRequest
+from app.domain.okx_demo import (
+    OkxDemoCancelRequest,
+    OkxDemoCloseRequest,
+    OkxDemoLeverageRequest,
+)
 from app.exchange.okx.errors import OkxPrivateApiError
-from app.exchange.okx.private_rest import OkxDemoPrivateRestClient
+from app.exchange.okx.private_rest import (
+    OkxDemoPrivateRestClient,
+    _OkxPrivateRestClientBase,
+)
 from app.okx_demo.service import OkxDemoService
 from tests.unit.exchange.test_private_rest import demo_settings
 from tests.unit.test_okx_demo_service import FakePrivate, FakePublic, request, settings
 
 DENIED = "demo_qualification_authority_unavailable"
+MAINTENANCE_DENIED = "demo_maintenance_authority_unavailable"
 
 
 @pytest.mark.asyncio
@@ -149,7 +157,7 @@ async def test_manual_and_automation_service_entry_reaches_common_denial(
         "cancel_all_after",
     ),
 )
-async def test_existing_maintenance_transport_remains_single_attempt_and_simulated(
+async def test_direct_demo_maintenance_methods_have_zero_http_without_permit(
     operation,
 ):
     requests = []
@@ -168,14 +176,93 @@ async def test_existing_maintenance_transport_remains_single_attempt_and_simulat
             if operation == "cancel_all_after"
             else {"instId": "BTC-USDT-SWAP"}
         )
-        result = await getattr(client, operation)(payload)
-    assert result == [{"sCode": "0"}]
-    assert len(requests) == 1
-    assert requests[0].method == "POST"
+        with pytest.raises(OkxPrivateApiError) as caught:
+            await getattr(client, operation)(payload)
+    assert caught.value.code == MAINTENANCE_DENIED
+    assert requests == []
 
 
 @pytest.mark.asyncio
-async def test_demo_caa_positive_timeout_remains_available_with_order_writes_off():
+@pytest.mark.parametrize(
+    ("path", "payload"),
+    (
+        ("/api/v5/trade/cancel-order", {"instId": "BTC-USDT-SWAP"}),
+        ("/api/v5/trade/close-position", {"instId": "BTC-USDT-SWAP"}),
+        ("/api/v5/trade/cancel-all-after", {"timeOut": "30"}),
+    ),
+)
+async def test_demo_maintenance_direct_base_request_has_zero_http(path, payload):
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        pytest.fail("unqualified Demo maintenance reached private HTTP")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = OkxDemoPrivateRestClient(http, settings=demo_settings())
+        with pytest.raises(OkxPrivateApiError) as caught:
+            await _OkxPrivateRestClientBase._request(
+                client, "POST", path, body=payload, write=False
+            )
+    assert caught.value.code == MAINTENANCE_DENIED
+    assert requests == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ("cancel_order", "close_position"))
+async def test_demo_maintenance_service_has_zero_http_without_permit(operation):
+    requests = []
+
+    def handler(value):
+        requests.append(value)
+        pytest.fail("unqualified Demo maintenance reached private HTTP")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        config = settings()
+        transport = OkxDemoPrivateRestClient(http, settings=config)
+
+        class Private(FakePrivate):
+            async def cancel_order(self, payload):
+                return await transport.cancel_order(payload)
+
+            async def close_position(self, payload):
+                return await transport.close_position(payload)
+
+        private = Private(
+            positions=[
+                {
+                    "instId": "BTC-USDT-SWAP",
+                    "posSide": "net",
+                    "pos": "0.1",
+                    "availPos": "0.1",
+                    "avgPx": "100000",
+                    "markPx": "100000",
+                    "upl": "0",
+                    "lever": "3",
+                    "mgnMode": "cross",
+                }
+            ]
+        )
+        service = OkxDemoService(private, FakePublic(), None, settings=config)
+        maintenance_request = (
+            OkxDemoCancelRequest(
+                instrument_id="BTC-USDT-SWAP",
+                order_id="synthetic",
+                confirmation="OKX_DEMO_ONLY",
+            )
+            if operation == "cancel_order"
+            else OkxDemoCloseRequest(
+                instrument_id="BTC-USDT-SWAP", confirmation="OKX_DEMO_ONLY"
+            )
+        )
+        with pytest.raises(OkxPrivateApiError) as caught:
+            await getattr(service, operation)(maintenance_request)
+    assert caught.value.code == MAINTENANCE_DENIED
+    assert requests == []
+
+
+@pytest.mark.asyncio
+async def test_demo_caa_remains_denied_with_order_writes_off():
     requests = []
 
     def handler(request):
@@ -188,9 +275,10 @@ async def test_demo_caa_positive_timeout_remains_available_with_order_writes_off
         client = OkxDemoPrivateRestClient(
             http, settings=demo_settings(okx_demo_allow_order_writes=False)
         )
-        await client.cancel_all_after({"timeOut": "30", "tag": "CTCCV11"})
-    assert len(requests) == 1
-    assert requests[0].content == b'{"timeOut":"30","tag":"CTCCV11"}'
+        with pytest.raises(OkxPrivateApiError) as caught:
+            await client.cancel_all_after({"timeOut": "30", "tag": "CTCCV11"})
+    assert caught.value.code == MAINTENANCE_DENIED
+    assert requests == []
 
 
 @pytest.mark.asyncio
@@ -227,7 +315,7 @@ async def test_demo_caa_invalid_or_query_overridden_body_has_zero_http(payload, 
 
 
 @pytest.mark.asyncio
-async def test_demo_caa_checks_serialized_body_after_mutable_payload_changes(
+async def test_demo_caa_stays_denied_after_mutable_payload_changes(
     monkeypatch,
 ):
     requests = []
@@ -249,10 +337,11 @@ async def test_demo_caa_checks_serialized_body_after_mutable_payload_changes(
             return result
 
         monkeypatch.setattr(client, "_headers", mutate_after_serialization)
-        await client.cancel_all_after(payload)
+        with pytest.raises(OkxPrivateApiError) as caught:
+            await client.cancel_all_after(payload)
     assert payload == {"timeOut": "0"}
-    assert len(requests) == 1
-    assert requests[0].content == b'{"timeOut":"30"}'
+    assert caught.value.code == MAINTENANCE_DENIED
+    assert requests == []
 
 
 @pytest.mark.asyncio
@@ -291,7 +380,9 @@ async def test_manual_demo_leverage_cannot_write_before_qualified_flat_authority
 @pytest.mark.asyncio
 @pytest.mark.parametrize("write", (False, True))
 @pytest.mark.parametrize("malformed_response", (False, True))
-async def test_maintenance_cannot_gain_retries_via_read_flag(write, malformed_response):
+async def test_maintenance_cannot_gain_dispatch_via_read_flag(
+    write, malformed_response
+):
     requests = []
 
     def handler(value):
@@ -310,7 +401,5 @@ async def test_maintenance_cannot_gain_retries_via_read_flag(write, malformed_re
             await client._request(
                 "POST", "/api/v5/trade/close-position", body={}, write=write
             )
-        assert caught.value.code == (
-            "ambiguous_response" if malformed_response else "transport_error"
-        )
-    assert len(requests) == 1
+        assert caught.value.code == MAINTENANCE_DENIED
+    assert requests == []

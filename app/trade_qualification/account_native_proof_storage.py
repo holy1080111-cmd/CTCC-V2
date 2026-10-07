@@ -26,6 +26,7 @@ from app.trade_qualification import account_native_proof as proof
 
 READBACK_SCHEMA = "ctcc.demo_account_native_clock_readback.v2"
 V3_READBACK_SCHEMA = "ctcc.demo_account_native_clock_readback.v3"
+EXPOSED_V4_READBACK_SCHEMA = "ctcc.demo_account_exposed_native_clock_readback.v4"
 MAX_PART = 512 * 1024
 
 
@@ -37,6 +38,8 @@ def _readback_schema(document):
         return READBACK_SCHEMA
     if schema == proof.V3_SCHEMA:
         return V3_READBACK_SCHEMA
+    if schema == proof.EXPOSED_V4_SCHEMA:
+        return EXPOSED_V4_READBACK_SCHEMA
     raise proof.NativeAccountProofError("native_account_proof_contract_invalid")
 
 

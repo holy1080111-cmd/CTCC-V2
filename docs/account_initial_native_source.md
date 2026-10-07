@@ -100,6 +100,20 @@ relabelled as v2, and neither version grants `account_complete`, a component
 owner or execution authority. The history query and measured historical HWM
 must be proved and joined separately before any full portfolio snapshot.
 
+Nonempty V6 inventory uses a **separate** diagnostic proof contract,
+`ctcc.demo_account_exposed_native_clock_proof.v4`, with its own policy digest
+and `ctcc.demo_account_exposed_native_clock_readback.v4`. It applies the same
+original raw/page/phase/host/OKX-time and no-clobber readback checks, but
+requires at least one replayed current exposure row and no current-source
+blocker other than the explicitly unresolved protection/local join. It never
+relaxes the V3 flat-only replay. The resulting
+`ctcc.native_demo_exposed_observation.v2`
+retains row/page hashes and counts, both proof/readback hashes, and explicit
+unknown history, local liabilities, protection and exchange revision. It has
+no owner, packet lease, flat-start permission, portfolio snapshot or execution
+authority. The original V1 recorded-only diagnostic remains unchanged.
+Synthetic replay and storage tests do not establish genuine account acceptance.
+
 Replay rejects foreign mapping, scope and chain objects before touching their
 callbacks. Every original `JournalReadback` is revalidated before any later
 packet payload is read. Source joins and phase metadata require the exact JSON

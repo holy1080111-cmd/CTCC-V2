@@ -36,6 +36,20 @@ POLICY_BYTES = canonical(
     }
 )
 POLICY_SHA256 = sha(POLICY_BYTES)
+V2_POLICY_BYTES = canonical(
+    {
+        "version": "ctcc.native_demo_exposed_observation.v2",
+        "recorded_observation_policy_sha256": POLICY_SHA256,
+        "native_companion_policy_sha256": proof.EXPOSED_V4_POLICY_SHA256,
+        "native_companion_readback": "separate_no_clobber_original_root_readback",
+        "source_authenticity_verified": False,
+        "history_protection_and_local_join": "unknown",
+        "account_complete": False,
+        "flat_start_permission": False,
+        "execution_authority": False,
+    }
+)
+V2_POLICY_SHA256 = sha(V2_POLICY_BYTES)
 
 _UNKNOWN = (
     "native_clock_companion_proof_missing",

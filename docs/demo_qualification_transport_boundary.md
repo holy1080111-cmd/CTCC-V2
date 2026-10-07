@@ -15,12 +15,17 @@ are denied too. `write=False`, `passed=True`, historical G12 receipts, journaled
 intents and caller-supplied reduction flags cannot enable entry. There is no
 configuration bypass or permit constructor.
 
-Account/order/protection reads and the existing cancel-order, close-position,
-cancel-all-after, leverage-setting and nonexecuting order-precheck transports
-remain available through their existing service safety gates. Existing exchange
-protection is not cancelled or altered by this change. All non-GET requests are
-single-attempt, even if a direct caller supplies `write=False`. An ambiguous
-maintenance reply cannot be automatically retried.
+Account/order/protection GET reads remain available. Demo cancel-order,
+close-position and Cancel All After pass the entry classifier only to reach a
+separate final-dispatch denial, `demo_maintenance_authority_unavailable`, after
+signing and immediately before HTTP. Direct transport and service calls cannot
+send these maintenance writes until a non-caller-forgeable, account-scoped,
+one-use permit is implemented and checked there. Set-leverage and order
+precheck remain denied as entry-related writes. This containment does not
+cancel or alter existing exchange protection; any existing Demo exposure needs
+operator handling outside this disabled transport until reviewed maintenance
+authority exists. All non-GET requests are configured as single-attempt, even
+when a direct caller supplies `write=False`.
 
 The boundary does not enable or validate Live execution. Existing synthetic
 service tests that inject a fake private client exercise their stated local

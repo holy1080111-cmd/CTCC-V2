@@ -4,8 +4,9 @@ G12 receipts, recorded rechecks, and DB0017 durable intent records are evidence,
 not permission to dispatch an order. There is deliberately no permit issuer,
 configuration bypass, payload flag, or historical-receipt admission here.
 
-Live cancel, close and Cancel All After also require separate final-dispatch
-authority. Their legacy service safety gates alone cannot authorize a POST.
+Demo and Live cancel, close and Cancel All After also require separate
+final-dispatch authority. Their legacy service safety gates alone cannot
+authorize a POST.
 Order precheck belongs to order submission and remains denied without authority.
 Set-leverage remains denied while the trusted flat-account authority is absent:
 legacy execution can reach it before the later order-create denial. These
@@ -24,12 +25,12 @@ _MAINTENANCE_POST_PATHS = frozenset(
 
 
 def enforce_demo_submission_boundary(method: str, path: str) -> None:
-    """Called before signing and again immediately before transport dispatch.
+    """Reject entry before signing and again immediately before dispatch.
 
     All order, batch-order, algo-entry, amend, and unclassified non-GET paths are
     denied. A caller's `write=False`, `passed=True`, or `reduceOnly=True` cannot
-    substitute for qualified authority. Reduction uses the existing close-position
-    operation; active protection readback and order cancellation remain available.
+    substitute for qualified authority. Maintenance has its own final-dispatch
+    denial while trusted account-scoped one-use authority is absent.
     """
     if type(method) is str and type(path) is str:
         if method.upper() == "GET":
@@ -40,6 +41,20 @@ def enforce_demo_submission_boundary(method: str, path: str) -> None:
         "Demo entry requires trusted qualification runtime authority, which is unavailable",
         code="demo_qualification_authority_unavailable",
     )
+
+
+def enforce_demo_final_dispatch(method: str, path: str) -> None:
+    """Reject Demo maintenance after signing and immediately before HTTP IO.
+
+    There is no permit issuer or caller-supplied override. Repeating the entry
+    boundary here also keeps direct base-class requests fail closed.
+    """
+    enforce_demo_submission_boundary(method, path)
+    if method.upper() == "POST" and path in _MAINTENANCE_POST_PATHS:
+        raise OkxPrivateApiError(
+            "Demo maintenance requires trusted one-use account authority",
+            code="demo_maintenance_authority_unavailable",
+        )
 
 
 def enforce_live_submission_boundary(method: str, path: str) -> None:

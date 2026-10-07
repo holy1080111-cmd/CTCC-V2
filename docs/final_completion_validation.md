@@ -3760,3 +3760,24 @@ heavier V3 fixture, PostgreSQL migration cases and broader regression were
 stopped or deferred because of the host's thermal instability; they remain
 `NOT_PASSED` until exact-source remote CI completes. Demo, R7, reservation,
 Live, OOS and release gates are unchanged at `DENY`/`FAIL_CLOSED`.
+
+## 2026-10-07 subsequent Demo containment and exposed-account proof
+
+An account-modifying Demo maintenance call (cancel order, close position, or
+Cancel All After) could previously reach private HTTP through a direct client
+call without the service's account checks. A new final-dispatch guard now
+rejects all three just before HTTP while no trusted one-use maintenance permit
+exists. Direct, base-class and service-path MockTransport tests record zero
+requests; 355 focused cases passed. Existing Demo account exposure must be
+handled by an operator outside this disabled transport until reviewed
+maintenance authority exists. No exchange request was made by these tests.
+
+The V6 exposed-account diagnostic now uses a separate V4 native proof and
+independent no-clobber readback. It requires nonempty, exactly replayed current
+inventory and the sole exposure/protection-join blocker; a stale publication
+anchor or flat account cannot be relabelled as this proof. The result retains
+`source_authenticity_verified=false`, `snapshot=null`, `account_complete=false`,
+`flat_start_permission=false`, `execution_authority=false` and `DENY`. Nine
+focused synthetic tests passed. It is not a complete account page-chain,
+PortfolioRiskSnapshot, authenticated Demo reconciliation or trading acceptance.
+Both slices still require fresh exact-source full regression after commit.

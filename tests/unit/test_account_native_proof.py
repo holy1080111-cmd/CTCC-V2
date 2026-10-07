@@ -140,10 +140,10 @@ def synthetic_tls_chain(chain):
 
 def declared_native_source(case="fresh_flat", *, current_only=False):
     """New synthetic raw scenarios, fixed before any capture or phase stamp."""
-    if case not in {"fresh_flat", "old_anchor_flat", "exposed"}:
+    if case not in {"fresh_flat", "old_anchor_flat", "exposed", "fresh_exposed"}:
         raise ValueError("unsupported_synthetic_native_source")
-    pages = source_pages() if case == "exposed" else flat_pages()
-    if case == "fresh_flat":
+    pages = source_pages() if case in {"exposed", "fresh_exposed"} else flat_pages()
+    if case in {"fresh_flat", "fresh_exposed"}:
         # Original stage's first synthetic sample is NOW+1ms. This is a new
         # declared raw scenario; it never edits an existing source or receipt.
         pages["account_position_risk"] = [
