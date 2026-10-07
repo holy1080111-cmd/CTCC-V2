@@ -1026,6 +1026,8 @@ def history_source(
     entry_fee="-0.01",
     exit_fee="-0.01",
     exit_quantity="1",
+    exit_price="120",
+    exit_pnl="0.2",
     wrong_fee_side=None,
     recent_only=False,
     overlap=False,
@@ -1053,9 +1055,9 @@ def history_source(
             ordId="802",
             tradeId="702",
             side="sell",
-            fillPx="120",
+            fillPx=exit_price,
             fillSz=exit_quantity,
-            fillPnl="0.2",
+            fillPnl=exit_pnl,
             fee=exit_fee,
             feeCcy="BTC" if wrong_fee_side == "exit" else "USDT",
             fillTime=ms(EXIT_FILL_AT),
@@ -1115,6 +1117,25 @@ def test_nonempty_fills_derive_net_outcome_at_actual_exit_fill_time():
     assert result.snapshot is None
     assert "history_ingestion_watermark_unverified" in result.incomplete_reasons
     assert result.account_complete is False
+
+
+@pytest.mark.parametrize(
+    ("source_change", "expected"),
+    [
+        ({"exit_pnl": "0.19"}, "closed_outcome_gross_reconciliation_mismatch"),
+        ({"exit_price": ""}, "closed_outcome_mapping_incomplete"),
+    ],
+)
+def test_closed_outcome_requires_source_price_and_independent_gross_reconciliation(
+    source_change, expected
+):
+    result = materialize(
+        source=history_source(**source_change), supplied=nonempty_history_inputs()
+    )
+    assert result.loss_history == ()
+    assert result.snapshot is None
+    assert expected in result.incomplete_reasons
+    assert result.account_complete is False and result.execution_authority is False
 
 
 @pytest.mark.parametrize("recent_only,overlap", [(True, False), (False, True)])

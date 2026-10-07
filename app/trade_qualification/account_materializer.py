@@ -20,6 +20,7 @@ from typing import Annotated, Literal
 
 from pydantic import ConfigDict, Field, field_validator
 
+from app.trade_evidence.inventory_math import InventoryMathError, reduce_inventory
 from app.trade_qualification import account_capture as capture
 from app.trade_qualification import account_consistency, reservations
 from app.trade_qualification.models import Price, QualificationModel
@@ -1124,12 +1125,14 @@ def _history(inputs, records, specs, packet, gaps):
         direction = "long" if selected[0].get("side") == "buy" else "short"
         opening_side = "buy" if direction == "long" else "sell"
         spec = specs.get(name)
-        inventory, net = Fraction(0), Fraction(0)
+        inventory, gross, net = Fraction(0), Fraction(0), Fraction(0)
+        priced_fills = []
         invalid = spec is None
         previous_time = None
         for row in selected:
             time = _time(row["fillTime"])
             quantity = _fraction(row.get("fillSz"), positive=True)
+            price = _fraction(row.get("fillPx"), positive=True)
             pnl = _fraction(row.get("fillPnl"))
             fee = _fraction(row.get("fee"))
             is_open = row.get("side") == opening_side
@@ -1141,6 +1144,7 @@ def _history(inputs, records, specs, packet, gaps):
                 or previous_time is not None
                 and time <= previous_time
                 or quantity is None
+                or price is None
                 or pnl is None
                 or fee is None
                 or is_open
@@ -1153,8 +1157,26 @@ def _history(inputs, records, specs, packet, gaps):
                 invalid = True
                 break
             net += pnl + fee
+            gross += pnl
+            priced_fills.append(
+                ("entry" if is_open else "exit", row["side"], quantity, price, time)
+            )
             previous_time = time
         closed_at = _time(selected[-1]["fillTime"])
+        if not invalid and inventory == 0:
+            try:
+                independently_realized = reduce_inventory(
+                    direction=direction,
+                    unit=Fraction(spec.contract_value),
+                    fills=tuple(priced_fills),
+                    funding_times=(),
+                )[4]
+            except InventoryMathError:
+                invalid = True
+            else:
+                if gross != independently_realized:
+                    gaps.add("closed_outcome_gross_reconciliation_mismatch")
+                    invalid = True
         if group.funding_bill_ids:
             # A bill is evidence of a cash movement, not the accrual interval or
             # its attribution to this holding. Preserve every raw bill receipt,

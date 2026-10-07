@@ -3877,3 +3877,40 @@ all three results. Its previously required status could turn green while the
 separate Windows job failed. This source correction has a focused workflow
 invariant test, but it still needs matching exact-commit CI. No result from
 the preceding `f1e6519` run transfers to this changed tree.
+
+## 2026-10-08 closed-outcome arithmetic and owned-original stop
+
+The account materializer now requires a positive raw fill price for every
+mapped fill and independently recomputes the closed linear-SWAP gross PnL from
+the ordered fill prices, sizes and instrument contract value. A missing price
+or disagreement with the exchange `fillPnl` total leaves the outcome and
+PortfolioRiskSnapshot unavailable. This is a fail-closed arithmetic cross-check,
+not independent exchange authenticity or a complete realized-forensics claim.
+Exact equality may reject a legitimate rounded exchange value until real
+sampled source semantics are verified; no tolerance has been silently added.
+The materializer, account runtime and trade-forensics focused suites passed
+398 cases on Windows with synthetic source data.
+
+An owned-original V5 preflight invokes the native V4 precursor in the same
+task, checks its account-plan binding and records why the source-derived
+G1--G11 inputs are still unavailable. It has no caller-supplied run, old
+receipt, `passed` flag, G12 barrier or continuation callback; every result is
+`DENY`, with G12, risk reservation, execution and order flags false. Its hash
+receipt is a public shape diagnostic and can be constructed by a caller; it is
+not source-authentication, qualification or acceptance evidence. The native
+one-use raw packets are discarded by V4, and the V6 account source still lacks
+complete risk/protection authority. Fourteen focused synthetic V5 cases passed.
+
+A read-only submit-route audit found the concrete Demo private REST transport
+still hard-denies order, order-precheck and set-leverage POSTs before signing
+and immediately before HTTP, including manual, automation and direct base
+transport paths. The account collector issues literal GET requests only.
+Fifty-six route/transport and 21 score/leverage/margin synthetic tests passed
+with no exchange IO. The manual service itself omits structural sizing and
+must gain the same qualified authority before any future transport permit is
+issued. This current hard denial is safe containment, not Demo execution
+acceptance or proof that every eventual submit route is fully integrated.
+
+These changes and audit do not establish full Windows, Linux, PostgreSQL,
+Docker, source-authentic Demo, Gate 3/OOS, Micro Live, or release acceptance.
+The exact-source full regression must be repeated after this patch is committed.
