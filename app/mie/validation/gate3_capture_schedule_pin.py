@@ -59,7 +59,20 @@ class Gate3CaptureSchedulePinRepository:
         return result
 
     @staticmethod
-    async def _role_guard(session: AsyncSession) -> None:
+    async def _claim_boundary_available(session: AsyncSession) -> bool:
+        # A failed catalog query is never treated as absence. The historical
+        # branch exists only for databases that have not reached 0029 yet.
+        return bool(
+            await session.scalar(
+                text(
+                    "SELECT pg_catalog.to_regclass("
+                    "'public.gate3_capture_schedule_key_claims') IS NOT NULL"
+                )
+            )
+        )
+
+    @staticmethod
+    async def _legacy_role_guard(session: AsyncSession) -> None:
         row = (
             await session.execute(
                 text("""
@@ -85,18 +98,10 @@ class Gate3CaptureSchedulePinRepository:
                       WHERE c.oid IN (
                         'public.gate3_capture_schedule_pins'::pg_catalog.regclass,
                         'public.public_receipt_witness_revisions'::pg_catalog.regclass)
-                        AND (pg_catalog.has_table_privilege(current_user,c.oid,'SELECT')
-                          OR pg_catalog.has_table_privilege(current_user,c.oid,'INSERT')
-                          OR pg_catalog.has_table_privilege(current_user,c.oid,'UPDATE')
-                          OR pg_catalog.has_table_privilege(current_user,c.oid,'DELETE')
-                          OR pg_catalog.has_table_privilege(current_user,c.oid,'TRUNCATE')
-                          OR pg_catalog.has_table_privilege(current_user,c.oid,'REFERENCES')
-                          OR pg_catalog.has_table_privilege(current_user,c.oid,'TRIGGER')
-                          OR pg_catalog.has_table_privilege(current_user,c.oid,'MAINTAIN')
-                          OR pg_catalog.has_any_column_privilege(current_user,c.oid,'SELECT')
-                          OR pg_catalog.has_any_column_privilege(current_user,c.oid,'INSERT')
-                          OR pg_catalog.has_any_column_privilege(current_user,c.oid,'UPDATE')
-                          OR pg_catalog.has_any_column_privilege(current_user,c.oid,'REFERENCES'))
+                        AND (pg_catalog.has_table_privilege(current_user,c.oid,
+                          'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN')
+                          OR pg_catalog.has_any_column_privilege(current_user,c.oid,
+                            'SELECT,INSERT,UPDATE,REFERENCES'))
                     ) AS direct_table_access,
                     EXISTS (
                       SELECT 1 FROM pg_catalog.pg_proc p
@@ -118,6 +123,110 @@ class Gate3CaptureSchedulePinRepository:
                     EXISTS (
                       SELECT 1 FROM pg_catalog.pg_namespace n
                       WHERE n.nspname !~ '^pg_(temp|toast_temp)_[0-9]+$'
+                        AND pg_catalog.has_schema_privilege(current_user,n.oid,'CREATE')
+                    ) OR pg_catalog.has_database_privilege(current_user,
+                      pg_catalog.current_database(),'CREATE') AS can_create
+                  FROM pg_catalog.pg_roles r WHERE r.rolname=current_user
+                """)
+            )
+        ).one_or_none()
+        if row is None or not (
+            row.direct_login
+            and not row.privileged
+            and not row.owner_member
+            and not row.member_of_other_role
+            and not row.direct_table_access
+            and not row.forbidden_function_access
+            and row.can_append
+            and row.can_read
+            and not row.can_create
+        ):
+            raise Gate3SchedulePinError("restricted_schedule_role_required")
+
+    @staticmethod
+    async def _role_guard(session: AsyncSession) -> None:
+        if not await Gate3CaptureSchedulePinRepository._claim_boundary_available(
+            session
+        ):
+            await Gate3CaptureSchedulePinRepository._legacy_role_guard(session)
+            return
+        row = (
+            await session.execute(
+                text("""
+                  SELECT session_user=current_user AS direct_login,
+                    r.rolsuper OR r.rolcreatedb OR r.rolcreaterole
+                      OR r.rolreplication OR r.rolbypassrls AS privileged,
+                    EXISTS (
+                      SELECT 1 FROM pg_catalog.pg_class c
+                      WHERE c.oid IN (
+                        'public.gate3_capture_schedule_pins'::pg_catalog.regclass,
+                        'public.gate3_capture_schedule_key_claims'::pg_catalog.regclass,
+                        'public.gate3_capture_schedule_claim_acks'::pg_catalog.regclass,
+                        'public.gate3_capture_schedule_legacy_inventory'::pg_catalog.regclass,
+                        'public.gate3_capture_schedule_publication_acks'::pg_catalog.regclass,
+                        'public.public_receipt_witness_revisions'::pg_catalog.regclass)
+                        AND pg_catalog.pg_has_role(current_user,
+                          pg_catalog.pg_get_userbyid(c.relowner),'MEMBER')
+                    ) AS owner_member,
+                    EXISTS (
+                      SELECT 1 FROM pg_catalog.pg_roles inherited
+                      WHERE inherited.oid <> r.oid
+                        AND pg_catalog.pg_has_role(
+                          current_user,inherited.oid,'MEMBER')
+                    ) AS member_of_other_role,
+                    EXISTS (
+                      SELECT 1 FROM pg_catalog.pg_class c
+                      WHERE c.oid IN (
+                        'public.gate3_capture_schedule_pins'::pg_catalog.regclass,
+                        'public.gate3_capture_schedule_key_claims'::pg_catalog.regclass,
+                        'public.gate3_capture_schedule_claim_acks'::pg_catalog.regclass,
+                        'public.gate3_capture_schedule_legacy_inventory'::pg_catalog.regclass,
+                        'public.gate3_capture_schedule_publication_acks'::pg_catalog.regclass,
+                        'public.public_receipt_witness_revisions'::pg_catalog.regclass)
+                        AND (pg_catalog.has_table_privilege(current_user,c.oid,'SELECT')
+                          OR pg_catalog.has_table_privilege(current_user,c.oid,'INSERT')
+                          OR pg_catalog.has_table_privilege(current_user,c.oid,'UPDATE')
+                          OR pg_catalog.has_table_privilege(current_user,c.oid,'DELETE')
+                          OR pg_catalog.has_table_privilege(current_user,c.oid,'TRUNCATE')
+                          OR pg_catalog.has_table_privilege(current_user,c.oid,'REFERENCES')
+                          OR pg_catalog.has_table_privilege(current_user,c.oid,'TRIGGER')
+                          OR pg_catalog.has_table_privilege(current_user,c.oid,'MAINTAIN')
+                          OR pg_catalog.has_any_column_privilege(current_user,c.oid,'SELECT')
+                          OR pg_catalog.has_any_column_privilege(current_user,c.oid,'INSERT')
+                          OR pg_catalog.has_any_column_privilege(current_user,c.oid,'UPDATE')
+                          OR pg_catalog.has_any_column_privilege(current_user,c.oid,'REFERENCES'))
+                    ) AS direct_table_access,
+                    EXISTS (
+                      SELECT 1 FROM pg_catalog.pg_proc p
+                      WHERE p.oid IN (
+                        'public.public_receipt_witness_insert_guard()'::pg_catalog.regprocedure,
+                        'public.public_receipt_witness_immutable()'::pg_catalog.regprocedure,
+                        'public.public_receipt_witness_append(jsonb)'::pg_catalog.regprocedure,
+                        'public.public_receipt_witness_read(text)'::pg_catalog.regprocedure,
+                        'public.gate3_capture_schedule_insert_guard()'::pg_catalog.regprocedure,
+                        'public.gate3_capture_schedule_immutable()'::pg_catalog.regprocedure,
+                        'public.gate3_capture_schedule_ack_append(text,text,text,text,text)'::pg_catalog.regprocedure,
+                        'public.gate3_capture_schedule_ack_read(text)'::pg_catalog.regprocedure,
+                        'public.gate3_capture_schedule_append(jsonb)'::pg_catalog.regprocedure,
+                        'public.gate3_capture_schedule_claim_ack_append(text,text,text,text,text)'::pg_catalog.regprocedure,
+                        'public.gate3_capture_schedule_claim_ack_read(text)'::pg_catalog.regprocedure,
+                        'public.gate3_schedule_claim_insert_guard()'::pg_catalog.regprocedure,
+                        'public.gate3_schedule_claim_immutable()'::pg_catalog.regprocedure,
+                        'public.gate3_schedule_legacy_inventory_immutable()'::pg_catalog.regprocedure,
+                        'public.gate3_schedule_pin_claim_after_insert()'::pg_catalog.regprocedure,
+                        'public.gate3_schedule_claim_ack_insert_guard()'::pg_catalog.regprocedure,
+                        'public.gate3_schedule_claim_ack_immutable()'::pg_catalog.regprocedure)
+                        AND pg_catalog.has_function_privilege(current_user,p.oid,'EXECUTE')
+                    ) AS forbidden_function_access,
+                    pg_catalog.has_function_privilege(current_user,
+                      'public.gate3_capture_schedule_claim_append(jsonb)'::pg_catalog.regprocedure,
+                      'EXECUTE') AS can_append,
+                    pg_catalog.has_function_privilege(current_user,
+                      'public.gate3_capture_schedule_claim_read(text)'::pg_catalog.regprocedure,
+                      'EXECUTE') AS can_claim_read,
+                    EXISTS (
+                      SELECT 1 FROM pg_catalog.pg_namespace n
+                      WHERE n.nspname !~ '^pg_(temp|toast_temp)_[0-9]+$'
                         AND pg_catalog.has_schema_privilege(
                           current_user,n.oid,'CREATE')
                     ) OR pg_catalog.has_database_privilege(current_user,
@@ -136,7 +245,7 @@ class Gate3CaptureSchedulePinRepository:
             and not row.direct_table_access
             and not row.forbidden_function_access
             and row.can_append
-            and row.can_read
+            and row.can_claim_read
             and not row.can_create
         ):
             raise Gate3SchedulePinError("restricted_schedule_role_required")
@@ -163,14 +272,20 @@ class Gate3CaptureSchedulePinRepository:
             raise Gate3SchedulePinError("schedule_pin_invalid")
         try:
             async with self.session_factory() as session:
+                claimed = await self._claim_boundary_available(session)
                 await self._role_guard(session)
                 rows = tuple(
                     (
                         await session.execute(
                             text(
                                 "SELECT pinned.*, pg_catalog.clock_timestamp() "
-                                "AS database_readback_at FROM "
-                                "public.gate3_capture_schedule_read(:sha) AS pinned"
+                                "AS database_readback_at FROM public."
+                                + (
+                                    "gate3_capture_schedule_claim_read(:sha)"
+                                    if claimed
+                                    else "gate3_capture_schedule_read(:sha)"
+                                )
+                                + " AS pinned"
                             ),
                             {"sha": expected_schedule_sha256},
                         )
@@ -258,11 +373,17 @@ class Gate3CaptureSchedulePinRepository:
         inserted = False
         try:
             async with self.session_factory() as session, session.begin():
+                claimed = await self._claim_boundary_available(session)
                 await self._role_guard(session)
                 await session.execute(
                     text(
-                        "SELECT public.gate3_capture_schedule_append("
-                        "CAST(:record AS jsonb))"
+                        "SELECT public."
+                        + (
+                            "gate3_capture_schedule_claim_append("
+                            if claimed
+                            else "gate3_capture_schedule_append("
+                        )
+                        + "CAST(:record AS jsonb))"
                     ),
                     {
                         "record": json.dumps(

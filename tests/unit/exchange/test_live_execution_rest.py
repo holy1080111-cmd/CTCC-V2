@@ -24,6 +24,8 @@ def execution_settings(**updates) -> Settings:
         "okx_live_api_key": "live-key",
         "okx_live_api_secret": "live-secret",
         "okx_live_api_passphrase": "live-passphrase",
+        "okx_live_expected_uid": "synthetic-live-uid",
+        "okx_live_expected_main_uid": "synthetic-live-main-uid",
         "api_token": "x" * 40,
         "web_concurrency": 1,
         "okx_live_read_max_retries": 5,

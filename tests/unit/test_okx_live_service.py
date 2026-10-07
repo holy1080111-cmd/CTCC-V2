@@ -33,6 +33,8 @@ from app.okx_live.service import OkxLiveService
 
 D = Decimal
 NOW = datetime(2026, 8, 9, 12, 0, tzinfo=UTC)
+EXPECTED_UID = "synthetic-live-uid"
+EXPECTED_MAIN_UID = "synthetic-live-main-uid"
 
 
 def live_settings(**updates) -> Settings:
@@ -45,6 +47,8 @@ def live_settings(**updates) -> Settings:
         "okx_live_api_key": "live-key",
         "okx_live_api_secret": "live-secret",
         "okx_live_api_passphrase": "live-passphrase",
+        "okx_live_expected_uid": EXPECTED_UID,
+        "okx_live_expected_main_uid": EXPECTED_MAIN_UID,
         "api_token": "x" * 40,
         "web_concurrency": 1,
         "okx_live_order_detail_poll_attempts": 1,
@@ -82,12 +86,17 @@ class FakeReadClient:
         self.order_rows: list[dict[str, object]] = []
         self.permissions = "read_only,trade"
         self.ip = "203.0.113.8"
+        self.uid = EXPECTED_UID
+        self.main_uid = EXPECTED_MAIN_UID
+        self.config_rows_override: list[dict[str, str]] | None = None
 
     async def account_config(self):
+        if self.config_rows_override is not None:
+            return self.config_rows_override
         return [
             {
-                "uid": "live-user",
-                "mainUid": "live-main",
+                "uid": self.uid,
+                "mainUid": self.main_uid,
                 "acctLv": "2",
                 "posMode": "net_mode",
                 "perm": self.permissions,
@@ -644,10 +653,192 @@ async def test_reconcile_persists_atomic_snapshot_and_public_summaries_hide_iden
     balance = service.balance_summary(snapshot.balance)
 
     assert snapshot.persisted is True
+    assert snapshot.account_config.uid == EXPECTED_UID
+    assert snapshot.account_config.main_uid == EXPECTED_MAIN_UID
     assert account.position_mode == "net_mode"
-    assert "live-user" not in account.model_dump_json()
-    assert "live-main" not in account.model_dump_json()
+    assert EXPECTED_UID not in account.model_dump_json()
+    assert EXPECTED_MAIN_UID not in account.model_dump_json()
     assert balance.total_equity == D("10000")
+
+
+@pytest.mark.parametrize("field", ["uid", "main_uid"])
+@pytest.mark.asyncio
+async def test_wrong_first_live_identity_cannot_pin_mirror_or_arm(field: str) -> None:
+    service, read, execution, _, _ = service_fixture()
+    setattr(read, field, "wrong-synthetic-live-id")
+    mirror = service.mirror_repository
+
+    with pytest.raises(OkxLiveSafetyError, match="okx_live_account_identity_mismatch"):
+        await service.reconcile()
+
+    assert mirror.snapshots == []
+    assert service.arm_status().armed is False
+    assert service.arm_status().emergency_stop is True
+    with pytest.raises(OkxLiveSafetyError, match="okx_live_account_identity_mismatch"):
+        await service.arm(
+            OkxLiveArmRequest(duration_seconds=60, confirmation=LIVE_ARM_PHRASE)
+        )
+    assert mirror.snapshots == []
+    assert execution.calls == []
+
+
+@pytest.mark.parametrize("row_count", [0, 2])
+@pytest.mark.asyncio
+async def test_live_account_config_cardinality_cannot_seed_identity(
+    row_count: int,
+) -> None:
+    service, read, execution, _, _ = service_fixture()
+    valid = (await read.account_config())[0]
+    read.config_rows_override = [valid] * row_count
+
+    with pytest.raises(
+        OkxLiveSafetyError, match="okx_live_account_config_cardinality_invalid"
+    ):
+        await service.reconcile()
+
+    assert service.mirror_repository.snapshots == []
+    assert service.arm_status().armed is False
+    assert service.arm_status().emergency_stop is True
+    assert service.mirror_repository.safety_latch_code == "okx_live_reconcile_failed"
+    assert execution.calls == []
+
+
+@pytest.mark.asyncio
+async def test_read_only_live_identity_mismatch_cannot_seed_first_pin() -> None:
+    service, read, execution, _, _ = service_fixture()
+    service.settings = live_settings(
+        live_trading=False,
+        okx_live_allow_order_writes=False,
+    )
+    read.main_uid = "wrong-synthetic-live-id"
+
+    with pytest.raises(OkxLiveSafetyError, match="okx_live_account_identity_mismatch"):
+        await service.reconcile()
+
+    assert service.mirror_repository.snapshots == []
+    assert execution.calls == []
+
+
+@pytest.mark.asyncio
+async def test_live_identity_change_after_arm_blocks_order_before_execution() -> None:
+    service, read, execution, intents, _ = service_fixture()
+    await service.arm(
+        OkxLiveArmRequest(duration_seconds=60, confirmation=LIVE_ARM_PHRASE)
+    )
+    mirror = service.mirror_repository
+    prior_snapshots = len(mirror.snapshots)
+    read.uid = "wrong-synthetic-live-id"
+
+    with pytest.raises(OkxLiveSafetyError, match="okx_live_account_identity_mismatch"):
+        await service.place_order(live_order())
+
+    assert len(mirror.snapshots) == prior_snapshots
+    assert service.arm_status().armed is False
+    assert execution.calls == []
+    assert intents.rows == {}
+
+
+@pytest.mark.asyncio
+async def test_direct_account_config_mismatch_disarms_and_revokes_read_ready() -> None:
+    service, read, execution, _, _ = service_fixture()
+    await service.arm(
+        OkxLiveArmRequest(duration_seconds=60, confirmation=LIVE_ARM_PHRASE)
+    )
+    read.main_uid = "wrong-synthetic-live-id"
+
+    with pytest.raises(OkxLiveSafetyError, match="okx_live_account_identity_mismatch"):
+        await service.account_config()
+
+    status = await service.status()
+    assert status.read_ready is False
+    assert status.arm.armed is False
+    assert status.arm.emergency_stop is True
+    assert service.mirror_repository.safety_latch_code == (
+        "okx_live_account_identity_mismatch"
+    )
+    assert execution.calls == []
+    restarted = OkxLiveService(
+        read,
+        FakePublicClient(),
+        service.mirror_repository,
+        settings=live_settings(),
+        clock=MutableClock(),
+        sleeper=no_sleep,
+    )
+    restarted_status = await restarted.status()
+    assert restarted_status.arm.armed is False
+    assert restarted_status.arm.emergency_stop is True
+    assert restarted_status.arm.safety_latch_code == (
+        "okx_live_account_identity_mismatch"
+    )
+
+
+@pytest.mark.parametrize("row_count", [0, 2])
+@pytest.mark.asyncio
+async def test_direct_account_config_cardinality_persists_stop(
+    row_count: int,
+) -> None:
+    service, read, execution, _, _ = service_fixture()
+    await service.arm(
+        OkxLiveArmRequest(duration_seconds=60, confirmation=LIVE_ARM_PHRASE)
+    )
+    valid = (await read.account_config())[0]
+    read.config_rows_override = [valid] * row_count
+
+    with pytest.raises(
+        OkxLiveSafetyError, match="okx_live_account_config_cardinality_invalid"
+    ):
+        await service.account_config()
+
+    assert service.arm_status().armed is False
+    assert service.mirror_repository.safety_latch_code == (
+        "okx_live_account_config_cardinality_invalid"
+    )
+    assert execution.calls == []
+
+
+@pytest.mark.parametrize(
+    ("permissions", "code"),
+    [
+        ("", "okx_live_read_permission_missing"),
+        ("read_only,trade,withdraw", "okx_live_withdraw_permission_forbidden"),
+        ("read_only,trade,synthetic_unknown", "okx_live_unknown_api_permission"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_direct_account_config_capability_change_persists_stop(
+    permissions: str, code: str
+) -> None:
+    service, read, execution, _, _ = service_fixture()
+    await service.arm(
+        OkxLiveArmRequest(duration_seconds=60, confirmation=LIVE_ARM_PHRASE)
+    )
+    read.permissions = permissions
+
+    with pytest.raises(OkxLiveSafetyError, match=code):
+        await service.account_config()
+
+    assert service.arm_status().armed is False
+    assert service.mirror_repository.safety_latch_code == code
+    assert execution.calls == []
+
+
+@pytest.mark.asyncio
+async def test_direct_malformed_account_config_persists_stop() -> None:
+    service, read, execution, _, _ = service_fixture()
+    await service.arm(
+        OkxLiveArmRequest(duration_seconds=60, confirmation=LIVE_ARM_PHRASE)
+    )
+    read.config_rows_override = [{"uid": EXPECTED_UID}]
+
+    with pytest.raises(OkxLiveSafetyError, match="okx_live_account_config_invalid"):
+        await service.account_config()
+
+    assert service.arm_status().armed is False
+    assert service.mirror_repository.safety_latch_code == (
+        "okx_live_account_config_invalid"
+    )
+    assert execution.calls == []
 
 
 @pytest.mark.asyncio

@@ -196,6 +196,35 @@ PostgreSQL `0028` test exercises `0024`, `0026`, and `0028` DDL in a disposable
 database; a full migration chain, schema drift check, and production role and
 clock acceptance remain separate work.
 
+### Canonical schedule key claim boundary
+
+Migration `0029` retains every `0026` pin and `0028` acknowledgement as raw,
+immutable history. It inventories legacy keys before changing the uniqueness
+boundary: canonical and uncertain legacy rows keep their seal, window and
+holdout keys reserved; only a byte-proven noncanonical V1 row releases those
+keys for a fresh canonical schedule. New pins use a separate append function
+and must acquire an immutable canonical key claim in the same database
+transaction. The old append function remains present for historical grants but
+rejects new calls. An insert trigger checks the original login, including a
+call already in progress during migration, so a login with the old grant cannot
+mint a claim. The old `0028` acknowledgement reader returns no eligible rows;
+new acknowledgement records bind to the claimed pin and require a separate
+restricted login.
+
+Production must provision fresh direct-login grants for the `0029` claim
+append/read and claim acknowledgement append/read functions. The two logins
+must have no shared role, owner, table, witness, or old append privileges.
+Migration grants no role automatically and refuses downgrade while any raw pin,
+old acknowledgement, claim, new acknowledgement, or legacy inventory remains.
+The new claim checks canonical bytes and the earlier server clock order, but
+PostgreSQL still has no independent committed preregistration seal ledger.
+A fabricated yet canonical seal hash can reserve a window; the Python
+seal/dataset join rejects it later, but availability can still be denied.
+The `0029` PostgreSQL test and full migration/schema-drift acceptance must run
+on the exact committed source before this boundary can be accepted. None of
+these records establishes a trusted clock, independent custody, first
+evaluator read, predictive Gate 3 result, or trading authority.
+
 ### Blind in-window minute acquisition seam
 
 `app.mie.validation.blind_window_capture.bind_blind_window_minute` now binds **one**
@@ -246,6 +275,33 @@ binding fixes `pre_window_commit_proven=false`. It does not claim that
 the database or journal has independent custody, that source bytes were first
 observable at a historical decision time, or that the declared evaluator read
 was the first read. All eligibility and authority flags remain false.
+
+### Complete-window join to committed-pin visibility ACK
+
+`blind_window_schedule_ack_binding.py` adds a separate versioned V2 artifact.
+It reads an **existing** migration `0028` ACK through the restricted ACK
+repository; freeze and verification never create an ACK. It also reruns the V1
+join, which replays every original journal byte, checks complete sealed-minute
+coverage, and matches each source-derived capture-plan hash and coordinate to
+the exact `0026` schedule plan. The V2 join requires the ACK's schedule, seal,
+coordinate, holdout, window, and immutable insert-guard time to agree with that
+replayed source. Both the pin and ACK are read back again during artifact
+verification. The frozen bytes include the stable server observation time,
+not the later database readback time.
+
+This establishes only that the canonical schedule pin was already committed
+and visible to a separate restricted login **before the window according to
+the PostgreSQL server clock**. The ACK row itself may have committed after the
+window; a later ACK readback is valid evidence of its earlier server
+observation. `server_clock_ordered_committed_pin_observation=true` is therefore
+conditional on the restricted-role and database-clock assumptions.
+`trusted_clock_verified`, `independently_protected`,
+`evaluator_first_read_proven`, predictive and promotion eligibility, and
+execution authority remain fixed false. The focused V2 tests use synthetic
+source bytes and a synthetic ACK readback. They do not establish a real
+prospective capture, independent custody, trusted UTC, or a predictive Gate 3
+PASS. A database-backed V2 join and production clock/role verification remain
+separate acceptance work.
 
 ### Separate automated acquisition and evaluator read
 

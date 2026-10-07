@@ -1,4 +1,4 @@
-"""Replayable observation that a canonical schedule pin was committed early.
+"""Replayable observation that a claimed canonical pin was committed early.
 
 The database acknowledgement role cannot append a 0026 pin. Its server time
 therefore follows the separate pin transaction's commit. Both reads replay the
@@ -63,7 +63,7 @@ class Gate3CaptureSchedulePublicationAckRepository:
         self.pin_repository = pin_repository
 
     @staticmethod
-    async def _role_guard(session: AsyncSession) -> None:
+    async def _legacy_role_guard(session: AsyncSession) -> None:
         row = (
             await session.execute(
                 text("""
@@ -77,21 +77,16 @@ class Gate3CaptureSchedulePublicationAckRepository:
                     EXISTS (
                       SELECT 1 FROM pg_catalog.pg_roles other_role
                       WHERE other_role.oid <> r.oid
-                        AND pg_catalog.pg_has_role(
-                          current_user,other_role.oid,'MEMBER')
+                        AND pg_catalog.pg_has_role(current_user,other_role.oid,'MEMBER')
                     ) AS member_of_other_role,
-                    pg_catalog.has_table_privilege(current_user,p.oid,
-                      'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN')
-                      OR pg_catalog.has_any_column_privilege(current_user,p.oid,
-                        'SELECT,INSERT,UPDATE,REFERENCES')
-                      OR pg_catalog.has_table_privilege(current_user,a.oid,
-                        'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN')
-                      OR pg_catalog.has_any_column_privilege(current_user,a.oid,
-                        'SELECT,INSERT,UPDATE,REFERENCES')
-                      OR pg_catalog.has_table_privilege(current_user,w.oid,
-                        'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN')
-                      OR pg_catalog.has_any_column_privilege(current_user,w.oid,
-                        'SELECT,INSERT,UPDATE,REFERENCES') AS direct_table_access,
+                    EXISTS (
+                      SELECT 1 FROM pg_catalog.pg_class target
+                      WHERE target.oid IN (p.oid,a.oid,w.oid)
+                        AND (pg_catalog.has_table_privilege(current_user,target.oid,
+                          'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN')
+                          OR pg_catalog.has_any_column_privilege(current_user,target.oid,
+                            'SELECT,INSERT,UPDATE,REFERENCES'))
+                    ) AS direct_table_access,
                     pg_catalog.has_function_privilege(current_user,
                       'public.gate3_capture_schedule_ack_append(text,text,text,text,text)'::pg_catalog.regprocedure,
                       'EXECUTE') AS can_append,
@@ -110,11 +105,9 @@ class Gate3CaptureSchedulePublicationAckRepository:
                     EXISTS (
                       SELECT 1 FROM pg_catalog.pg_namespace n
                       WHERE n.nspname !~ '^pg_(temp|toast_temp)_[0-9]+$'
-                        AND pg_catalog.has_schema_privilege(
-                          current_user,n.oid,'CREATE')
+                        AND pg_catalog.has_schema_privilege(current_user,n.oid,'CREATE')
                     ) OR pg_catalog.has_database_privilege(current_user,
-                        pg_catalog.current_database(),
-                        'CREATE') AS can_create
+                        pg_catalog.current_database(),'CREATE') AS can_create
                   FROM pg_catalog.pg_roles r, pg_catalog.pg_class p,
                        pg_catalog.pg_class a, pg_catalog.pg_class w
                   WHERE r.rolname=current_user
@@ -133,6 +126,110 @@ class Gate3CaptureSchedulePublicationAckRepository:
             and row.can_append
             and row.can_read
             and not row.can_pin_append
+            and not row.can_witness
+            and not row.can_create
+        ):
+            raise Gate3SchedulePublicationAckError(
+                "restricted_schedule_ack_role_required"
+            )
+
+    @staticmethod
+    async def _role_guard(session: AsyncSession) -> None:
+        if not await Gate3CaptureSchedulePinRepository._claim_boundary_available(
+            session
+        ):
+            await Gate3CaptureSchedulePublicationAckRepository._legacy_role_guard(
+                session
+            )
+            return
+        row = (
+            await session.execute(
+                text("""
+                  SELECT session_user=current_user AS direct_login,
+                    r.rolsuper OR r.rolcreatedb OR r.rolcreaterole
+                      OR r.rolreplication OR r.rolbypassrls AS privileged,
+                    EXISTS (
+                      SELECT 1 FROM pg_catalog.pg_class owned
+                      WHERE owned.oid IN (p.oid,a.oid,c.oid,i.oid,old_a.oid,w.oid)
+                        AND pg_catalog.pg_has_role(current_user,
+                          pg_catalog.pg_get_userbyid(owned.relowner),'MEMBER')
+                    ) AS owner_member,
+                    EXISTS (
+                      SELECT 1 FROM pg_catalog.pg_roles other_role
+                      WHERE other_role.oid <> r.oid
+                        AND pg_catalog.pg_has_role(
+                          current_user,other_role.oid,'MEMBER')
+                    ) AS member_of_other_role,
+                    EXISTS (
+                      SELECT 1 FROM pg_catalog.pg_class target
+                      WHERE target.oid IN (p.oid,a.oid,c.oid,i.oid,old_a.oid,w.oid)
+                        AND (pg_catalog.has_table_privilege(current_user,target.oid,
+                          'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN')
+                          OR pg_catalog.has_any_column_privilege(current_user,target.oid,
+                            'SELECT,INSERT,UPDATE,REFERENCES'))
+                    ) AS direct_table_access,
+                    pg_catalog.has_function_privilege(current_user,
+                      'public.gate3_capture_schedule_claim_ack_append(text,text,text,text,text)'::pg_catalog.regprocedure,
+                      'EXECUTE') AS can_append,
+                    pg_catalog.has_function_privilege(current_user,
+                      'public.gate3_capture_schedule_claim_ack_read(text)'::pg_catalog.regprocedure,
+                      'EXECUTE') AS can_read,
+                    pg_catalog.has_function_privilege(current_user,
+                      'public.gate3_capture_schedule_ack_append(text,text,text,text,text)'::pg_catalog.regprocedure,
+                      'EXECUTE')
+                      OR pg_catalog.has_function_privilege(current_user,
+                        'public.gate3_capture_schedule_ack_read(text)'::pg_catalog.regprocedure,
+                        'EXECUTE') AS can_legacy_ack,
+                    pg_catalog.has_function_privilege(current_user,
+                      'public.gate3_capture_schedule_append(jsonb)'::pg_catalog.regprocedure,
+                      'EXECUTE')
+                      OR pg_catalog.has_function_privilege(current_user,
+                        'public.gate3_capture_schedule_claim_append(jsonb)'::pg_catalog.regprocedure,
+                        'EXECUTE')
+                      OR pg_catalog.has_function_privilege(current_user,
+                        'public.gate3_capture_schedule_read(text)'::pg_catalog.regprocedure,
+                        'EXECUTE')
+                      OR pg_catalog.has_function_privilege(current_user,
+                        'public.gate3_capture_schedule_claim_read(text)'::pg_catalog.regprocedure,
+                        'EXECUTE') AS can_pin_access,
+                    pg_catalog.has_function_privilege(current_user,
+                      'public.public_receipt_witness_append(jsonb)'::pg_catalog.regprocedure,
+                      'EXECUTE')
+                      OR pg_catalog.has_function_privilege(current_user,
+                        'public.public_receipt_witness_read(text)'::pg_catalog.regprocedure,
+                        'EXECUTE') AS can_witness,
+                    EXISTS (
+                      SELECT 1 FROM pg_catalog.pg_namespace n
+                      WHERE n.nspname !~ '^pg_(temp|toast_temp)_[0-9]+$'
+                        AND pg_catalog.has_schema_privilege(
+                          current_user,n.oid,'CREATE')
+                    ) OR pg_catalog.has_database_privilege(current_user,
+                        pg_catalog.current_database(),
+                        'CREATE') AS can_create
+                  FROM pg_catalog.pg_roles r, pg_catalog.pg_class p,
+                       pg_catalog.pg_class a, pg_catalog.pg_class c,
+                       pg_catalog.pg_class i,
+                       pg_catalog.pg_class old_a, pg_catalog.pg_class w
+                  WHERE r.rolname=current_user
+                    AND p.oid='public.gate3_capture_schedule_pins'::pg_catalog.regclass
+                    AND a.oid='public.gate3_capture_schedule_claim_acks'::pg_catalog.regclass
+                    AND c.oid='public.gate3_capture_schedule_key_claims'::pg_catalog.regclass
+                    AND i.oid='public.gate3_capture_schedule_legacy_inventory'::pg_catalog.regclass
+                    AND old_a.oid='public.gate3_capture_schedule_publication_acks'::pg_catalog.regclass
+                    AND w.oid='public.public_receipt_witness_revisions'::pg_catalog.regclass
+                """)
+            )
+        ).one_or_none()
+        if row is None or not (
+            row.direct_login
+            and not row.privileged
+            and not row.owner_member
+            and not row.member_of_other_role
+            and not row.direct_table_access
+            and row.can_append
+            and row.can_read
+            and not row.can_legacy_ack
+            and not row.can_pin_access
             and not row.can_witness
             and not row.can_create
         ):
@@ -164,7 +261,7 @@ class Gate3CaptureSchedulePublicationAckRepository:
         ):
             raise Gate3SchedulePublicationAckError("schedule_ack_input_invalid")
         try:
-            # The 0026 reader rejects noncanonical but hash-valid raw pins.
+            # The claimed reader exposes only a 0029 canonical key owner.
             pin = await self.pin_repository.read(
                 expected_schedule_sha256=expected_schedule_sha256, seal=seal
             )
@@ -174,14 +271,24 @@ class Gate3CaptureSchedulePublicationAckRepository:
             ) from None
         try:
             async with self.session_factory() as session:
+                claimed = (
+                    await Gate3CaptureSchedulePinRepository._claim_boundary_available(
+                        session
+                    )
+                )
                 await self._role_guard(session)
                 rows = tuple(
                     (
                         await session.execute(
                             text(
                                 "SELECT ack.*, pg_catalog.clock_timestamp() "
-                                "AS database_readback_at FROM "
-                                "public.gate3_capture_schedule_ack_read(:sha) AS ack"
+                                "AS database_readback_at FROM public."
+                                + (
+                                    "gate3_capture_schedule_claim_ack_read(:sha)"
+                                    if claimed
+                                    else "gate3_capture_schedule_ack_read(:sha)"
+                                )
+                                + " AS ack"
                             ),
                             {"sha": expected_schedule_sha256},
                         )
@@ -192,11 +299,14 @@ class Gate3CaptureSchedulePublicationAckRepository:
                     "schedule_ack_missing_or_duplicate"
                 )
             row = rows[0]
-            for value in (
+            times = (
                 row.schedule_recorded_at,
                 row.acknowledged_at,
                 row.database_readback_at,
-            ):
+            )
+            if claimed:
+                times += (row.claim_recorded_at,)
+            for value in times:
                 if value.tzinfo is None or value.utcoffset() is None:
                     raise Gate3SchedulePublicationAckError("schedule_ack_time_invalid")
             schedule_recorded_at = row.schedule_recorded_at.astimezone(UTC)
@@ -212,6 +322,12 @@ class Gate3CaptureSchedulePublicationAckRepository:
                 or row.window_start != coordinate.start_at
                 or row.window_end != coordinate.end_at
                 or schedule_recorded_at != pin.recorded_at
+                or (
+                    claimed
+                    and not schedule_recorded_at
+                    <= row.claim_recorded_at.astimezone(UTC)
+                    <= acknowledged_at
+                )
                 or not pin.recorded_at <= acknowledged_at < coordinate.start_at
                 or database_readback_at < acknowledged_at
             ):
@@ -268,13 +384,23 @@ class Gate3CaptureSchedulePublicationAckRepository:
         inserted = False
         try:
             async with self.session_factory() as session, session.begin():
+                claimed = (
+                    await Gate3CaptureSchedulePinRepository._claim_boundary_available(
+                        session
+                    )
+                )
                 await self._role_guard(session)
                 await session.execute(
-                    text("""
-                      SELECT public.gate3_capture_schedule_ack_append(
-                        :schedule_sha,:seal_sha,:coordinate_sha,
-                        :window_key,:holdout_id)
-                    """),
+                    text(
+                        "SELECT public."
+                        + (
+                            "gate3_capture_schedule_claim_ack_append"
+                            if claimed
+                            else "gate3_capture_schedule_ack_append"
+                        )
+                        + "(:schedule_sha,:seal_sha,:coordinate_sha,"
+                        ":window_key,:holdout_id)"
+                    ),
                     {
                         "schedule_sha": pin.schedule_sha256,
                         "seal_sha": pin.seal_sha256,

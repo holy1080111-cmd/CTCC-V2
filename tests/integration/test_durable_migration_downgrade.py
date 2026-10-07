@@ -58,6 +58,18 @@ database = ledger_fixtures.database
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
 
+def assert_event_state_preserved(before, after):
+    """A second DB read has fresh receipt times but must retain ledger state."""
+    assert after.scope == before.scope
+    assert after.original_event_key == before.original_event_key
+    assert after.account_revision == before.account_revision
+    assert after.ledger_revision == before.ledger_revision
+    assert after.matched == before.matched
+    assert after.request_started_at <= after.observed_at <= after.received_at
+    assert after.monotonic_started_ns <= after.monotonic_received_ns
+    assert after.monotonic_started_ns >= before.monotonic_started_ns
+
+
 def migrate(connection, revision, direction):
     module = load_migration(revision)
     module.op = Operations(MigrationContext.configure(connection))
@@ -318,9 +330,9 @@ async def test_post_submit_closure_guard_upgrade_refuses_legacy_terminal(
         async with engine.begin() as connection:
             await migrate_public_qualified_guard_in_sandbox(connection, "upgrade")
     assert await shape(engine) == legacy_shape
-    assert (
-        await repo.read_event_observation(hold.scope, hold.original_event_key)
-    ) == legacy
+    assert_event_state_preserved(
+        legacy, await repo.read_event_observation(hold.scope, hold.original_event_key)
+    )
     async with sessions() as session:
         transitions = (
             await session.scalars(
@@ -361,9 +373,10 @@ async def test_post_submit_closure_guard_upgrade_refuses_reserved_only_terminal(
         async with engine.begin() as connection:
             await migrate_public_qualified_guard_in_sandbox(connection, "upgrade")
     assert await shape(engine) == before
-    assert (
-        await repo.read_event_observation(hold.scope, hold.original_event_key)
-    ) == observation
+    assert_event_state_preserved(
+        observation,
+        await repo.read_event_observation(hold.scope, hold.original_event_key),
+    )
 
 
 @pytest.mark.parametrize("revision", ("0017",))
@@ -425,9 +438,9 @@ async def test_post_submit_closure_guard_upgrade_refuses_incomplete_legacy_journ
         async with engine.begin() as connection:
             await migrate_public_qualified_guard_in_sandbox(connection, "upgrade")
     assert await shape(engine) == before
-    assert (
-        await repo.read_event_observation(hold.scope, hold.original_event_key)
-    ) == terminal
+    assert_event_state_preserved(
+        terminal, await repo.read_event_observation(hold.scope, hold.original_event_key)
+    )
 
 
 @pytest.fixture

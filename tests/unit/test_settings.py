@@ -22,6 +22,8 @@ def test_safe_defaults(monkeypatch) -> None:
         "OKX_LIVE_API_KEY",
         "OKX_LIVE_API_SECRET",
         "OKX_LIVE_API_PASSPHRASE",
+        "OKX_LIVE_EXPECTED_UID",
+        "OKX_LIVE_EXPECTED_MAIN_UID",
         "OKX_LIVE_ENABLED",
         "OKX_LIVE_ALLOW_ORDER_WRITES",
         "OKX_LIVE_ALLOWED_SYMBOLS",
@@ -120,6 +122,8 @@ def test_safe_defaults(monkeypatch) -> None:
     assert settings.okx_live_credentials_configured is False
     assert settings.okx_live_enabled is False
     assert settings.okx_live_allow_order_writes is False
+    assert settings.okx_live_expected_uid.get_secret_value() == ""
+    assert settings.okx_live_expected_main_uid.get_secret_value() == ""
     assert settings.okx_live_auto_execution is False
     assert settings.okx_live_max_submissions_per_arm == 1
     assert settings.okx_live_require_protection is True
@@ -419,6 +423,8 @@ def test_public_example_api_token_is_never_accepted_for_live_writes() -> None:
             okx_live_api_key="key",
             okx_live_api_secret="secret",
             okx_live_api_passphrase="pass",
+            okx_live_expected_uid="synthetic-live-uid",
+            okx_live_expected_main_uid="synthetic-live-main-uid",
             api_token="replace_with_at_least_32_random_characters",
         )
 
@@ -670,6 +676,8 @@ def _live_write_settings(**updates) -> Settings:
         "okx_live_api_key": "live-key",
         "okx_live_api_secret": "live-secret",
         "okx_live_api_passphrase": "live-passphrase",
+        "okx_live_expected_uid": "synthetic-live-uid",
+        "okx_live_expected_main_uid": "synthetic-live-main-uid",
         "api_token": "x" * 40,
         "web_concurrency": 1,
     }
@@ -685,10 +693,62 @@ def test_live_read_mode_can_be_enabled_without_write_authority() -> None:
         okx_live_api_key="live-key",
         okx_live_api_secret="live-secret",
         okx_live_api_passphrase="live-passphrase",
+        okx_live_expected_uid="synthetic-live-uid",
+        okx_live_expected_main_uid="synthetic-live-main-uid",
     )
 
     assert settings.live_trading is False
     assert settings.okx_live_allow_order_writes is False
+
+
+@pytest.mark.parametrize(
+    "missing_field",
+    ["okx_live_expected_uid", "okx_live_expected_main_uid"],
+)
+def test_live_read_mode_requires_operator_owned_expected_identity(
+    missing_field: str,
+) -> None:
+    values = {
+        "trading_mode": "live",
+        "okx_live_enabled": True,
+        "okx_live_api_key": "live-key",
+        "okx_live_api_secret": "live-secret",
+        "okx_live_api_passphrase": "live-passphrase",
+        "okx_live_expected_uid": "synthetic-live-uid",
+        "okx_live_expected_main_uid": "synthetic-live-main-uid",
+        missing_field: "",
+    }
+    with pytest.raises(ValidationError, match="requires OKX_LIVE_EXPECTED_UID"):
+        Settings(_env_file=None, **values)
+
+
+@pytest.mark.parametrize(
+    "missing_field",
+    ["okx_live_expected_uid", "okx_live_expected_main_uid"],
+)
+def test_live_write_mode_requires_operator_owned_expected_identity(
+    missing_field: str,
+) -> None:
+    with pytest.raises(ValidationError, match="requires OKX_LIVE_EXPECTED_UID"):
+        _live_write_settings(**{missing_field: ""})
+
+
+def test_live_expected_identity_is_masked_in_settings_output() -> None:
+    settings = _live_write_settings()
+    for value in (
+        settings.okx_live_expected_uid.get_secret_value(),
+        settings.okx_live_expected_main_uid.get_secret_value(),
+    ):
+        assert value not in repr(settings)
+        assert value not in settings.model_dump_json()
+
+
+def test_live_expected_identity_validation_error_does_not_expose_uid() -> None:
+    expected_uid = "synthetic-live-uid"
+    with pytest.raises(ValidationError) as error:
+        _live_write_settings(okx_live_expected_uid=f" {expected_uid}")
+
+    assert expected_uid not in str(error.value)
 
 
 def test_live_write_configuration_requires_every_explicit_gate() -> None:

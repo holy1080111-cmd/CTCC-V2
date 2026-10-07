@@ -201,10 +201,27 @@ class OkxLiveService:
     async def account_config(self) -> OkxLiveAccountConfig:
         self._ensure_read_ready()
         rows = await self.read_client.account_config()
-        if not rows:
-            raise OkxLiveUnavailableError("okx_live_account_config_empty")
-        config = parse_live_account_config(rows[0])
-        self._validate_read_capability(config)
+        if type(rows) is not list or len(rows) != 1:
+            self._last_capability = None
+            await self._engage_persistent_emergency_stop(
+                "okx_live_account_config_cardinality_invalid"
+            )
+            raise OkxLiveSafetyError("okx_live_account_config_cardinality_invalid")
+        try:
+            config = parse_live_account_config(rows[0])
+        except (ValueError, TypeError, AttributeError):
+            self._last_capability = None
+            await self._engage_persistent_emergency_stop(
+                "okx_live_account_config_invalid"
+            )
+            raise OkxLiveSafetyError("okx_live_account_config_invalid") from None
+        try:
+            self._validate_expected_account_identity(config)
+            self._validate_read_capability(config)
+        except OkxLiveSafetyError as exc:
+            self._last_capability = None
+            await self._engage_persistent_emergency_stop(str(exc))
+            raise
         self._last_capability = config.capability
         self._record_success()
         return config
@@ -1258,11 +1275,24 @@ class OkxLiveService:
             raise OkxLiveSafetyError("okx_live_withdraw_permission_forbidden")
 
     def _validate_write_capability(self, config: OkxLiveAccountConfig) -> None:
+        self._validate_expected_account_identity(config)
         self._validate_read_capability(config)
         if not config.capability.trade_permission:
             raise OkxLiveSafetyError("okx_live_trade_permission_missing")
         if not config.uid or not config.main_uid:
             raise OkxLiveSafetyError("okx_live_account_identity_incomplete")
+
+    def _validate_expected_account_identity(self, config: OkxLiveAccountConfig) -> None:
+        expected_uid = self.settings.okx_live_expected_uid.get_secret_value()
+        expected_main_uid = self.settings.okx_live_expected_main_uid.get_secret_value()
+        if not expected_uid or not expected_main_uid:
+            self._last_capability = None
+            self._engage_emergency_stop("okx_live_expected_account_identity_missing")
+            raise OkxLiveSafetyError("okx_live_expected_account_identity_missing")
+        if config.uid != expected_uid or config.main_uid != expected_main_uid:
+            self._last_capability = None
+            self._engage_emergency_stop("okx_live_account_identity_mismatch")
+            raise OkxLiveSafetyError("okx_live_account_identity_mismatch")
 
     def _ensure_symbol(self, instrument_id: str) -> None:
         if instrument_id not in self.settings.okx_live_allowed_symbol_list:

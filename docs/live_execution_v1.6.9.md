@@ -77,6 +77,21 @@ tables by hand.
 
 After the offline gate passes, enable Live authenticated reads only:
 
+Before setting `OKX_LIVE_ENABLED=true`, obtain the intended account's exact
+`uid` and `mainUid` from OKX's [account configuration response](https://www.okx.com/docs-v5/en/#trading-account-rest-api-get-account-configuration)
+through a trusted operator workflow. Put both in the local `.env` as
+`OKX_LIVE_EXPECTED_UID` and `OKX_LIVE_EXPECTED_MAIN_UID`. These values are
+required even for read-only Live activation, so the first reconciliation cannot
+establish a database fingerprint pin from the wrong account. A mismatch blocks
+reconciliation and Arm before any exchange write; the existing database pin
+provides a second check on later reconciliations. Keep these IDs private and do
+not put them in source control, logs, or screenshots. The configuration response
+must contain exactly one account row; an empty or multiple-row response latches
+the durable emergency stop instead of selecting an arbitrary account. A
+malformed row, identity mismatch, or changed Read/IP/Withdraw capability also
+latches it on direct account-configuration reads, so an already armed process
+cannot keep its Arm after a failed read or regain it through a restart.
+
 ```env
 APP_VERSION=1.6.9
 ENVIRONMENT=production
@@ -85,6 +100,7 @@ TRADING_MODE=live
 AUTO_TRADE=false
 LIVE_TRADING=false
 OKX_LIVE_ENABLED=true
+# OKX_LIVE_EXPECTED_UID and OKX_LIVE_EXPECTED_MAIN_UID are set privately in .env.
 OKX_LIVE_ALLOW_ORDER_WRITES=false
 OKX_LIVE_AUTO_EXECUTION=false
 PAPER_AUTO_EXECUTION=false

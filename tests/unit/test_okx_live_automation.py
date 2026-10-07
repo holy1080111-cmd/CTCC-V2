@@ -35,6 +35,8 @@ def settings() -> Settings:
         okx_live_api_key="key",
         okx_live_api_secret="secret",
         okx_live_api_passphrase="passphrase",
+        okx_live_expected_uid="synthetic-live-uid",
+        okx_live_expected_main_uid="synthetic-live-main-uid",
         api_token="x" * 40,
         web_concurrency=1,
         okx_ws_enabled=True,

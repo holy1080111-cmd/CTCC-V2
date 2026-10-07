@@ -224,6 +224,46 @@ async def test_v6_rejects_wrong_policy_scope_or_missing_terminal(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "policy",
+    [current.V6_LEGACY_POLICY_SHA256, current.V6_POLICY_SHA256],
+)
+async def test_v6_rejects_journal_scope_that_disagrees_with_packet_plan(
+    monkeypatch, policy
+):
+    chain, _ = await recorded_current(monkeypatch)
+    changed = []
+    previous = None
+    for item in chain:
+        event = journal.checked_event(item.event)
+        event["previous_sha256"] = previous
+        if event["kind"] == "capture_start":
+            event["data"]["account_id"] = "999"
+        raw = journal.canonical(event)
+        changed_event = journal._JournalEvent(
+            journal._ISSUER, raw, item.event.raw_body, item.event.packet_payload
+        )
+        changed.append(
+            journal.JournalReadback(
+                changed_event, item.db_recorded_at, item.readback_at
+            )
+        )
+        previous = journal.digest(raw)
+    changed = tuple(changed)
+    with pytest.raises(
+        current.CurrentAccountSourceError,
+        match="current_source_capture_binding_mismatch",
+    ):
+        current.verify_current_account_sources(
+            changed,
+            reference=observed.source_reference(changed),
+            scope=type(SCOPE)(account_id="999", settlement_currency="USDT"),
+            validated_at=NOW + timedelta(seconds=2),
+            expected_policy_sha256=policy,
+        )
+
+
+@pytest.mark.asyncio
 async def test_join_rejects_history_as_current_and_stale_tail_stays_blocked(
     monkeypatch,
 ):

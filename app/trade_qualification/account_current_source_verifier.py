@@ -158,7 +158,10 @@ def _verify_current_only_chain(chain, reference, scope, *, with_eof=False):
         _deny("current_source_capture_plan_version_required")
     initial = records[0]["data"]
     if (
-        records[0]["kind"] != "capture_start"
+        packet.plan.environment != scope.environment
+        or packet.plan.expected_uid != scope.account_id
+        or packet.plan.settlement_currency != scope.settlement_currency
+        or records[0]["kind"] != "capture_start"
         or initial.get("environment") != scope.environment
         or initial.get("account_id") != scope.account_id
         or initial.get("settlement_currency") != scope.settlement_currency

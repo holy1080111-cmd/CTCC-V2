@@ -148,6 +148,8 @@ class Settings(BaseSettings):
     okx_live_api_key: SecretStr = SecretStr("")
     okx_live_api_secret: SecretStr = SecretStr("")
     okx_live_api_passphrase: SecretStr = SecretStr("")
+    okx_live_expected_uid: SecretStr = SecretStr("")
+    okx_live_expected_main_uid: SecretStr = SecretStr("")
     okx_live_timeout_seconds: float = Field(default=10, gt=1, le=60)
     okx_live_read_max_retries: int = Field(default=2, ge=0, le=5)
     okx_live_allowed_symbols: str = _LIVE_BOUNDARY_SYMBOLS_CSV
@@ -548,6 +550,18 @@ class Settings(BaseSettings):
             )
         if live_parsed.hostname not in {"openapi.okx.com", "eea.okx.com"}:
             raise ValueError("OKX_LIVE_REST_BASE_URL must use an approved OKX API host")
+
+        expected_uid = self.okx_live_expected_uid.get_secret_value()
+        expected_main_uid = self.okx_live_expected_main_uid.get_secret_value()
+        if any(value != value.strip() for value in (expected_uid, expected_main_uid)):
+            raise ValueError(
+                "OKX Live expected account IDs cannot contain surrounding whitespace"
+            )
+        if self.okx_live_enabled and (not expected_uid or not expected_main_uid):
+            raise ValueError(
+                "OKX_LIVE_ENABLED=true requires OKX_LIVE_EXPECTED_UID "
+                "and OKX_LIVE_EXPECTED_MAIN_UID"
+            )
 
         if self.trading_mode == "live":
             if not self.okx_live_enabled:

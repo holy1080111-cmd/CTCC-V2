@@ -54,6 +54,10 @@ an old page fresh. V6 v3 receipts retain their original policy hash and
 response-close interpretation for historical replay; they do not acquire v4
 qualification. Missing or inconsistent EOF evidence fails closed. These are
 measurement-policy bounds, not exchange-global atomicity.
+Both V6 replay policies also require the packet plan's Demo environment, UID
+and settlement currency to equal the requested ledger scope. Matching only the
+rechained journal start fields cannot transfer one account's empty-inventory
+observation to another account. This check grants no source authenticity.
 The pure verifier's declared `validated_at` is not a live clock capability. A
 future owned coordinator must obtain its actual current clock and credential
 session again and reject stale replay. No captured update time is altered.

@@ -16,6 +16,11 @@ from app.database.models.demo_automation import (
     DemoAutomationState,
 )
 from app.database.models.demo_control import DemoAccountControl, DemoControlJournal
+from app.database.models.gate3_capture_schedule_claim import (
+    Gate3CaptureScheduleClaimAck,
+    Gate3CaptureScheduleKeyClaim,
+    Gate3CaptureScheduleLegacyInventory,
+)
 from app.database.models.gate3_capture_schedule_pin import Gate3CaptureSchedulePin
 from app.database.models.gate3_capture_schedule_publication_ack import (
     Gate3CaptureSchedulePublicationAck,
@@ -103,6 +108,9 @@ __all__ = [
     "DemoSoakSession",
     "DemoStrategyControl",
     "Fill",
+    "Gate3CaptureScheduleClaimAck",
+    "Gate3CaptureScheduleKeyClaim",
+    "Gate3CaptureScheduleLegacyInventory",
     "Gate3CaptureSchedulePin",
     "Gate3CaptureSchedulePublicationAck",
     "MarketSnapshot",

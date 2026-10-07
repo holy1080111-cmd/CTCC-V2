@@ -31,10 +31,10 @@ class Gate3CaptureSchedulePin(Base):
     )
 
     schedule_sha256: Mapped[str] = mapped_column(String(64), primary_key=True)
-    seal_sha256: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    seal_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     coordinate_plan_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
-    window_key: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
-    holdout_id: Mapped[str] = mapped_column(String(160), nullable=False, unique=True)
+    window_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    holdout_id: Mapped[str] = mapped_column(String(160), nullable=False)
     window_start: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
