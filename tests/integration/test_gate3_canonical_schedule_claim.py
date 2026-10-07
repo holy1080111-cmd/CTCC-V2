@@ -358,13 +358,19 @@ async def test_poisoned_raw_keys_do_not_block_canonical_retry_or_claim_ack(
             await connection.execute(
                 text("""
                   SELECT public.gate3_schedule_canonical_jsonb(
-                           CAST(:schedule AS jsonb)) = :schedule AS schedule,
+                           CAST(:schedule_payload AS jsonb)) =
+                           CAST(:schedule_text AS text)
+                           AS schedule,
                          public.gate3_schedule_canonical_jsonb(
-                           CAST(:coordinate AS jsonb)) = :coordinate AS coordinate
+                           CAST(:coordinate_payload AS jsonb)) =
+                           CAST(:coordinate_text AS text)
+                           AS coordinate
                 """),
                 {
-                    "schedule": schedule.canonical_json(),
-                    "coordinate": schedule.coordinate_plan.canonical_json(),
+                    "schedule_payload": schedule.canonical_json(),
+                    "schedule_text": schedule.canonical_json(),
+                    "coordinate_payload": schedule.coordinate_plan.canonical_json(),
+                    "coordinate_text": schedule.coordinate_plan.canonical_json(),
                 },
             )
         ).one()

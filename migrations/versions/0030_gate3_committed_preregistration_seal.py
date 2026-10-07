@@ -98,13 +98,15 @@ def upgrade():
         IF kind = 'number' THEN
           RETURN p::text ~ '^-?(0|[1-9][0-9]*)$';
         ELSIF kind = 'object' THEN
-          FOR member IN SELECT value FROM pg_catalog.jsonb_each(p) LOOP
+          FOR member IN SELECT item.value
+            FROM pg_catalog.jsonb_each(p) AS item(key,value) LOOP
             IF NOT public.gate3_prereg_integer_numbers(member.value)
             THEN RETURN false; END IF;
           END LOOP;
           RETURN true;
         ELSIF kind = 'array' THEN
-          FOR member IN SELECT value FROM pg_catalog.jsonb_array_elements(p)
+          FOR member IN SELECT item.value
+            FROM pg_catalog.jsonb_array_elements(p) AS item(value)
           LOOP
             IF NOT public.gate3_prereg_integer_numbers(member.value)
             THEN RETURN false; END IF;

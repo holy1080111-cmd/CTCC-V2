@@ -2,25 +2,52 @@
 param(
     [Parameter(Mandatory = $true)][string]$PackageRoot,
     [Parameter(Mandatory = $true)][string]$IdentityPath,
+    [ValidatePattern('^[0-9a-fA-F]{64}$')][string]$ExpectedIdentitySha256 =
+        '34ef5b12fa3855977d784d31803e0e1c7cb871959609f68a29cca2efcbffd722',
     [switch]$DryRun
 )
 
 # This verifier never invokes the installer, Docker, a controller, or an exchange.
 # Package acceptance is separate from canonical qualification/deployment acceptance.
 $ErrorActionPreference = 'Stop'
-function Get-SourceSha256([string]$LiteralPath) {
-    $stream = [IO.File]::OpenRead($LiteralPath)
+function Get-SourceSha256([byte[]]$Bytes) {
     $hasher = [Security.Cryptography.SHA256]::Create()
     try {
-        return [BitConverter]::ToString($hasher.ComputeHash($stream)).Replace('-', '').ToLowerInvariant()
+        return [BitConverter]::ToString($hasher.ComputeHash($Bytes)).Replace('-', '').ToLowerInvariant()
     } finally {
         $hasher.Dispose()
-        $stream.Dispose()
+    }
+}
+function Convert-StrictUtf8([byte[]]$Bytes, [string]$Kind) {
+    $offset = 0
+    if ($Bytes.Length -ge 3 -and $Bytes[0] -eq 0xEF -and $Bytes[1] -eq 0xBB -and $Bytes[2] -eq 0xBF) {
+        $offset = 3
+    }
+    try {
+        return [Text.UTF8Encoding]::new($false, $true).GetString($Bytes, $offset, $Bytes.Length - $offset)
+    } catch {
+        throw ('INSTALLER_{0}_UTF8_INVALID' -f $Kind)
     }
 }
 $root = (Resolve-Path -LiteralPath $PackageRoot).Path
 $identityFile = (Resolve-Path -LiteralPath $IdentityPath).Path
-$identity = Get-Content -LiteralPath $identityFile -Raw | ConvertFrom-Json
+if (((Get-Item -LiteralPath $root -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw 'INSTALLER_PACKAGE_ROOT_REPARSE_POINT'
+}
+$identityParent = Split-Path -Path $identityFile -Parent
+if (((Get-Item -LiteralPath $identityParent -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw 'INSTALLER_IDENTITY_PARENT_REPARSE_POINT'
+}
+$identityItem = Get-Item -LiteralPath $identityFile -Force
+if (($identityItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw 'INSTALLER_IDENTITY_REPARSE_POINT'
+}
+$identityBytes = [IO.File]::ReadAllBytes($identityFile)
+$identitySha256 = Get-SourceSha256 $identityBytes
+if ($identitySha256 -cne $ExpectedIdentitySha256.ToLowerInvariant()) {
+    throw 'INSTALLER_IDENTITY_MISMATCH'
+}
+$identity = Convert-StrictUtf8 $identityBytes 'IDENTITY' | ConvertFrom-Json
 if ($identity.schema -cne 'ctcc_offline_installer_identity_v1') {
     throw 'INSTALLER_IDENTITY_SCHEMA_INVALID'
 }
@@ -30,6 +57,7 @@ $required = @(
     'test_installer_restart_disarm.py', 'update_manifest.py'
 )
 $seen = @{}
+$scriptText = $null
 foreach ($entry in $identity.files) {
     $name = [string]$entry.path
     if ($required -cnotcontains $name -or $seen.ContainsKey($name)) {
@@ -47,18 +75,21 @@ foreach ($entry in $identity.files) {
     if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
         throw ('INSTALLER_SOURCE_REPARSE_POINT:{0}' -f $name)
     }
-    if ((Get-SourceSha256 $path) -cne $entry.sha256) {
+    $sourceBytes = [IO.File]::ReadAllBytes($path)
+    if ((Get-SourceSha256 $sourceBytes) -cne $entry.sha256) {
         throw ('INSTALLER_SOURCE_IDENTITY_MISMATCH:{0}' -f $name)
+    }
+    if ($name -ceq 'Install-CTCC-HighVol-Momentum-V2.ps1') {
+        $scriptText = Convert-StrictUtf8 $sourceBytes 'SCRIPT'
     }
 }
 if ($seen.Count -ne $required.Count) {
     throw 'INSTALLER_IDENTITY_FILE_SET_INCOMPLETE'
 }
-$scriptPath = Join-Path $root 'Install-CTCC-HighVol-Momentum-V2.ps1'
 $parseTokens = $null
 $parseErrors = $null
-[System.Management.Automation.Language.Parser]::ParseFile(
-    $scriptPath, [ref]$parseTokens, [ref]$parseErrors
+[System.Management.Automation.Language.Parser]::ParseInput(
+    $scriptText, [ref]$parseTokens, [ref]$parseErrors
 ) | Out-Null
 if ($parseErrors.Count -gt 0) {
     # Error IDs and locations are sufficient; source text could contain secrets.
@@ -72,7 +103,7 @@ $analyzerAvailable = [bool](Get-Module -ListAvailable -Name PSScriptAnalyzer)
     schema = 'ctcc_offline_installer_verification_v1'
     source_identity = 'PASS'
     powershell_parser = 'PASS'
-    identity_sha256 = Get-SourceSha256 $identityFile
+    identity_sha256 = $identitySha256
     verified_files = $seen.Count
     dry_run = [bool]$DryRun
     script_analyzer_available = $analyzerAvailable

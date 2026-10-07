@@ -42,7 +42,10 @@ def package(tmp_path, *, malformed=False):
     return identity, marker
 
 
-def validate(tmp_path, identity):
+def validate(tmp_path, identity, *, expected_identity_sha256=None):
+    identity_sha256 = (
+        expected_identity_sha256 or hashlib.sha256(identity.read_bytes()).hexdigest()
+    )
     return subprocess.run(
         [
             POWERSHELL,
@@ -56,6 +59,8 @@ def validate(tmp_path, identity):
             str(tmp_path),
             "-IdentityPath",
             str(identity),
+            "-ExpectedIdentitySha256",
+            identity_sha256,
             "-DryRun",
         ],
         capture_output=True,
@@ -91,6 +96,53 @@ def test_changed_source_bytes_reject_before_execution(tmp_path):
     result = validate(tmp_path, identity)
     assert result.returncode != 0
     assert "INSTALLER_SOURCE_IDENTITY_MISMATCH" in result.stderr
+    assert not marker.exists()
+
+
+def test_rewritten_identity_rejects_before_execution(tmp_path):
+    identity, marker = package(tmp_path)
+    trusted_sha256 = hashlib.sha256(identity.read_bytes()).hexdigest()
+    value = json.loads(identity.read_text())
+    value["files"][0]["sha256"] = "0" * 64
+    identity.write_text(json.dumps(value), encoding="utf-8")
+    result = validate(tmp_path, identity, expected_identity_sha256=trusted_sha256)
+    assert result.returncode != 0
+    assert "INSTALLER_IDENTITY_MISMATCH" in result.stderr
+    assert not marker.exists()
+
+
+def test_invalid_utf8_identity_rejects_before_execution(tmp_path):
+    identity, marker = package(tmp_path)
+    identity.write_bytes(identity.read_bytes() + b"\xff")
+    result = validate(tmp_path, identity)
+    assert result.returncode != 0
+    assert "INSTALLER_IDENTITY_UTF8_INVALID" in result.stderr
+    assert not marker.exists()
+
+
+def test_invalid_utf8_installer_rejects_before_execution(tmp_path):
+    identity, marker = package(tmp_path)
+    installer = tmp_path / NAMES[0]
+    installer.write_bytes(installer.read_bytes() + b"\xff")
+    value = json.loads(identity.read_text())
+    value["files"][0]["sha256"] = hashlib.sha256(installer.read_bytes()).hexdigest()
+    identity.write_text(json.dumps(value), encoding="utf-8")
+    result = validate(tmp_path, identity)
+    assert result.returncode != 0
+    assert "INSTALLER_SCRIPT_UTF8_INVALID" in result.stderr
+    assert not marker.exists()
+
+
+def test_utf8_bom_identity_and_installer_parse_from_pinned_bytes(tmp_path):
+    identity, marker = package(tmp_path)
+    installer = tmp_path / NAMES[0]
+    installer.write_bytes(b"\xef\xbb\xbf" + installer.read_bytes())
+    value = json.loads(identity.read_text())
+    value["files"][0]["sha256"] = hashlib.sha256(installer.read_bytes()).hexdigest()
+    identity.write_bytes(b"\xef\xbb\xbf" + json.dumps(value).encode())
+    result = validate(tmp_path, identity)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["powershell_parser"] == "PASS"
     assert not marker.exists()
 
 

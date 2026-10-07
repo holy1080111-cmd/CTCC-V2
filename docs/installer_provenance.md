@@ -11,6 +11,18 @@ the same read-only verification. It does not install, recreate, restore, Arm, or
 submit. Repeated success proves verification idempotence, not install/reinstall or
 rollback acceptance.
 
+The verifier pins the reviewed package identity file to SHA256
+`34ef5b12fa3855977d784d31803e0e1c7cb871959609f68a29cca2efcbffd722`
+before it reads the manifest. A replacement manifest with self-consistent file
+hashes is therefore rejected by default; an explicitly supplied alternate
+`-ExpectedIdentitySha256` is a separate, caller-owned trust decision and is used
+only by the negative fixture tests. The package remains blocked from deployment.
+The identity JSON and installer PowerShell are each hashed and parsed from the
+same captured byte array with strict UTF-8 decoding. A source path changing
+between a hash read and a parser read cannot produce a false parser result.
+The verifier also rejects reparse-point package roots, identity parents, identity
+files, and package member files.
+
 The legacy installer cannot presently be an accepted canonical deployment route:
 it targets an older image and automatically restores the Demo Arm/scheduler on
 success and rollback. Its strategy/protection changes require integration with the

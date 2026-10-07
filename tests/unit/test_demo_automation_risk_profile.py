@@ -188,6 +188,53 @@ def test_auxiliary_bonus_never_changes_demo_risk_score() -> None:
     assert blocker is None
 
 
+@pytest.mark.parametrize("risk_score", [0, 75, 97])
+def test_preexisting_downward_risk_score_is_never_reopened_by_math(
+    risk_score: int,
+) -> None:
+    candidate = _mathematical_candidate("confirmed", "high").model_copy(
+        update={"score": 99, "risk_score": risk_score}
+    )
+
+    adjusted, blocker = derivative_adjusted_score(candidate, adaptive_settings())
+
+    assert adjusted == risk_score
+    assert blocker is None
+
+
+def test_preexisting_zero_risk_score_survives_legacy_derivative_path() -> None:
+    candidate = _candidate("confirmed", "0.9").model_copy(
+        update={"score": 99, "risk_score": 0}
+    )
+
+    adjusted, blocker = derivative_adjusted_score(candidate, adaptive_settings())
+
+    assert adjusted == 0
+    assert blocker is None
+
+
+def test_absent_risk_score_may_use_raw_score_before_downward_math_cap() -> None:
+    candidate = _mathematical_candidate("confirmed", "high").model_copy(
+        update={"score": 99, "risk_score": None}
+    )
+
+    adjusted, blocker = derivative_adjusted_score(candidate, adaptive_settings())
+
+    assert adjusted == 99
+    assert blocker is None
+
+
+def test_preexisting_risk_score_cannot_raise_raw_strategy_score() -> None:
+    candidate = _mathematical_candidate("confirmed", "high").model_copy(
+        update={"score": 82, "risk_score": 99}
+    )
+
+    adjusted, blocker = derivative_adjusted_score(candidate, adaptive_settings())
+
+    assert adjusted == 82
+    assert blocker is None
+
+
 @pytest.mark.parametrize(
     ("status", "expected_blocker"),
     [

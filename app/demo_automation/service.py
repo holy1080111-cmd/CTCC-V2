@@ -843,6 +843,34 @@ class SafeDemoAutomation:
                 ),
                 None,
             )
+        if effective_score < self.settings.strategy_min_score:
+            return (
+                self._candidate_result(
+                    strategy.symbol,
+                    instrument_id,
+                    candidate,
+                    outcome="blocked",
+                    reference_price=candidate.entry,
+                    detail="effective_score_below_strategy_minimum",
+                ),
+                None,
+            )
+        if (
+            candidate.expires_at.tzinfo is None
+            or candidate.expires_at.utcoffset() is None
+            or datetime.now(UTC) >= candidate.expires_at
+        ):
+            return (
+                self._candidate_result(
+                    strategy.symbol,
+                    instrument_id,
+                    candidate,
+                    outcome="blocked",
+                    reference_price=candidate.entry,
+                    detail="candidate_expired_before_execution",
+                ),
+                None,
+            )
         try:
             reference_price, realtime_error = await self._reference_price(
                 instrument_id, candidate, require_realtime=execute
@@ -1089,6 +1117,7 @@ class SafeDemoAutomation:
             )
             open_risk_pct, open_margin_pct = self._portfolio_usage(portfolio)
             enforce_margin_guard = self.settings.okx_demo_score_risk_enabled
+            risk_guard_limit = D(str(self.settings.okx_demo_portfolio_max_risk_pct))
             margin_guard_limit = D(str(self.settings.okx_demo_portfolio_max_margin_pct))
             if self.settings.okx_demo_score_risk_enabled:
                 remaining_margin_amount = balance_equity * D(
@@ -1644,15 +1673,25 @@ class SafeDemoAutomation:
             def before_submit() -> None:
                 nonlocal order_submission_attempted
                 self._ensure_execute_ready()
+                if (
+                    sizing_candidate.expires_at.tzinfo is None
+                    or sizing_candidate.expires_at.utcoffset() is None
+                    or datetime.now(UTC) >= sizing_candidate.expires_at
+                ):
+                    raise DemoAutomationSafetyError("candidate_expired_before_submit")
+                current_margin_portfolio: list[DemoAutomationActiveTrade] | None = None
                 if enforce_margin_guard:
                     try:
-                        current = self._margin_portfolio(margin_guard_portfolio)
+                        current_margin_portfolio = self._margin_portfolio(
+                            margin_guard_portfolio
+                        )
                     except DemoAutomationSafetyError as error:
                         self._engage_emergency(str(error))
                         raise
                     if (
                         estimated_margin > margin_guard_available
-                        or self._portfolio_margin_amount(current) + estimated_margin
+                        or self._portfolio_margin_amount(current_margin_portfolio)
+                        + estimated_margin
                         > margin_guard_equity
                         * min(
                             margin_guard_limit,
@@ -1664,6 +1703,83 @@ class SafeDemoAutomation:
                         )
                         raise DemoAutomationSafetyError(
                             "portfolio_margin_limit_changed_before_submit"
+                        )
+                if sizing_candidate.protection_model == "structure":
+                    # The candidate and order geometry stay fixed. Re-evaluate
+                    # only current policy and risk caps after the last await.
+                    if (
+                        not self.settings.okx_demo_structural_dynamic_leverage_enabled
+                        or not self.settings.okx_demo_score_risk_enabled
+                        or not self.settings.okx_demo_capital_bucket_enabled
+                        or margin_mode != "isolated"
+                        or current_margin_portfolio is None
+                        or position_margin_cap_usdt is None
+                    ):
+                        raise DemoAutomationSafetyError(
+                            "structural_leverage_policy_changed_before_submit"
+                        )
+                    current_score, score_blocker = mathematical_adjusted_score(
+                        sizing_candidate, self.settings
+                    )
+                    if (
+                        score_blocker is not None
+                        or current_score < self.settings.strategy_min_score
+                        or current_score != sizing_candidate.risk_score
+                        or structural_cost_rate(self.settings)
+                        != sizing_candidate.estimated_round_trip_cost_pct
+                        or sizing_candidate.net_risk_reward is None
+                        or sizing_candidate.net_risk_reward
+                        < D(str(self.settings.okx_demo_structural_min_net_risk_reward))
+                    ):
+                        raise DemoAutomationSafetyError(
+                            "structural_leverage_policy_changed_before_submit"
+                        )
+                    current_tier, current_risk_ceiling, _, _ = self._risk_profile(
+                        current_score
+                    )
+                    if current_tier is None:
+                        raise DemoAutomationSafetyError(
+                            "structural_leverage_policy_changed_before_submit"
+                        )
+                    current_margin_cap = min(
+                        position_margin_cap_usdt,
+                        D(str(self.settings.okx_demo_position_margin_bucket_usdt)),
+                        margin_guard_available,
+                    )
+                    if current_margin_cap <= 0:
+                        raise DemoAutomationSafetyError(
+                            "structural_leverage_policy_changed_before_submit"
+                        )
+                    current_selection = select_structural_leverage(
+                        sizing_candidate,
+                        current_tier.model_copy(
+                            update={
+                                "risk_pct": min(
+                                    D(str(current_tier.risk_pct)), requested_risk_pct
+                                )
+                            }
+                        ),
+                        self.settings,
+                        account_equity=margin_guard_equity,
+                        position_margin_cap=current_margin_cap,
+                    )
+                    current_open_risk_pct, _ = self._portfolio_usage(
+                        current_margin_portfolio
+                    )
+                    if (
+                        leverage > current_selection.selected_leverage
+                        or leverage > current_selection.leverage_cap
+                        or leverage > self.settings.okx_demo_max_leverage
+                        or estimated_margin > current_margin_cap
+                        or estimated_stop_loss_pct > current_risk_ceiling
+                        or current_open_risk_pct + estimated_stop_loss_pct
+                        > min(
+                            risk_guard_limit,
+                            D(str(self.settings.okx_demo_portfolio_max_risk_pct)),
+                        )
+                    ):
+                        raise DemoAutomationSafetyError(
+                            "structural_leverage_policy_changed_before_submit"
                         )
                 order_submission_attempted = True
 

@@ -2531,6 +2531,194 @@ async def test_structural_dynamic_demo_uses_isolated_20x_only_after_all_gates() 
 
 
 @pytest.mark.asyncio
+async def test_structural_demo_does_not_reopen_zero_downward_risk_score() -> None:
+    demo = FakeDemo()
+    service = adaptive_service(
+        demo,
+        {"BTC-USDT-SWAP": 99},
+        candidates={
+            "BTC-USDT-SWAP": structural_demo_candidate().model_copy(
+                update={"risk_score": 0}
+            )
+        },
+        **structural_dynamic_updates(),
+    )
+    await service.recover()
+    await service.arm()
+
+    run = await service.run_once(execute=True)
+
+    assert run.results[0].outcome == "blocked"
+    assert run.results[0].effective_score == 0
+    assert run.results[0].detail == "effective_score_below_strategy_minimum"
+    assert demo.leverage_calls == []
+    assert demo.place_calls == []
+
+
+@pytest.mark.asyncio
+async def test_structural_demo_preexisting_score_97_caps_submit_to_10x() -> None:
+    demo = FakeDemo()
+    service = adaptive_service(
+        demo,
+        {"BTC-USDT-SWAP": 99},
+        candidates={
+            "BTC-USDT-SWAP": structural_demo_candidate().model_copy(
+                update={"risk_score": 97}
+            )
+        },
+        **structural_dynamic_updates(),
+    )
+    await service.recover()
+    await service.arm()
+
+    run = await service.run_once(execute=True)
+
+    result = run.results[0]
+    assert result.outcome == "submitted"
+    assert result.effective_score == 97
+    assert result.leverage_cap == result.selected_leverage == 10
+    assert len(demo.leverage_calls) == len(demo.place_calls) == 1
+    assert demo.leverage_calls[0].leverage == 10
+    assert demo.place_calls[0].margin_mode == "isolated"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("confirmation", ["derivative", "mathematical"])
+async def test_structural_demo_unaligned_confirmation_never_submits_at_20x(
+    confirmation: str,
+) -> None:
+    candidate = structural_demo_candidate()
+    if confirmation == "derivative":
+        derivative = candidate.derivative_confirmation
+        assert derivative is not None
+        candidate = candidate.model_copy(
+            update={
+                "derivative_confirmation": derivative.model_copy(
+                    update={"alignment_score": Decimal("-0.8")}
+                )
+            }
+        )
+    else:
+        math = candidate.mathematical_confirmation
+        assert math is not None
+        candidate = candidate.model_copy(
+            update={
+                "mathematical_confirmation": math.model_copy(
+                    update={"directional_support": Decimal("-0.8")}
+                )
+            }
+        )
+    demo = FakeDemo()
+    service = adaptive_service(
+        demo,
+        {"BTC-USDT-SWAP": 99},
+        candidates={"BTC-USDT-SWAP": candidate},
+        **structural_dynamic_updates(),
+    )
+    await service.recover()
+    await service.arm()
+
+    run = await service.run_once(execute=True)
+
+    result = run.results[0]
+    assert result.outcome == "submitted"
+    assert result.leverage_cap == result.selected_leverage == 10
+    assert len(demo.leverage_calls) == len(demo.place_calls) == 1
+    assert demo.leverage_calls[0].leverage == 10
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("late_change", ["tier_cap", "quality", "cost"])
+async def test_structural_policy_tightening_after_last_await_vetoes_order(
+    late_change: str,
+) -> None:
+    class ChangedBeforePost(FakeDemo):
+        async def place_order(self, request, *, before_submit=None):
+            if late_change == "tier_cap":
+                service.settings.okx_demo_structural_extreme_leverage_cap = 10
+            elif late_change == "quality":
+                service.settings.okx_demo_structural_20x_min_reliability = Decimal(
+                    "0.95"
+                )
+            else:
+                service.settings.okx_demo_structural_funding_buffer_bps = Decimal(3)
+            return await super().place_order(request, before_submit=before_submit)
+
+    demo = ChangedBeforePost()
+    service = adaptive_service(
+        demo,
+        {"BTC-USDT-SWAP": 99},
+        candidates={"BTC-USDT-SWAP": structural_demo_candidate()},
+        **structural_dynamic_updates(),
+    )
+    await service.recover()
+    await service.arm()
+
+    run = await service.run_once(execute=True)
+
+    assert len(demo.leverage_calls) == 1
+    assert demo.place_calls == []
+    assert run.results[0].order_submission_attempted is False
+    assert "structural_leverage_policy_changed_before_submit" in run.results[0].detail
+
+
+@pytest.mark.asyncio
+async def test_candidate_expiring_during_final_await_cannot_submit() -> None:
+    expiry = datetime.now(UTC) + timedelta(milliseconds=100)
+
+    class DelayedBeforePost(FakeDemo):
+        async def place_order(self, request, *, before_submit=None):
+            remaining = (expiry - datetime.now(UTC)).total_seconds()
+            await asyncio.sleep(max(0, remaining) + 0.01)
+            return await super().place_order(request, before_submit=before_submit)
+
+    demo = DelayedBeforePost()
+    service = adaptive_service(
+        demo,
+        {"BTC-USDT-SWAP": 99},
+        candidates={
+            "BTC-USDT-SWAP": structural_demo_candidate().model_copy(
+                update={"expires_at": expiry}
+            )
+        },
+        **structural_dynamic_updates(),
+    )
+    await service.recover()
+    await service.arm()
+
+    run = await service.run_once(execute=True)
+
+    assert len(demo.leverage_calls) == 1
+    assert demo.place_calls == []
+    assert run.results[0].order_submission_attempted is False
+    assert "candidate_expired_before_submit" in run.results[0].detail
+
+
+@pytest.mark.asyncio
+async def test_already_expired_structural_candidate_cannot_change_leverage() -> None:
+    demo = FakeDemo()
+    service = adaptive_service(
+        demo,
+        {"BTC-USDT-SWAP": 99},
+        candidates={
+            "BTC-USDT-SWAP": structural_demo_candidate().model_copy(
+                update={"expires_at": datetime.now(UTC) - timedelta(seconds=1)}
+            )
+        },
+        **structural_dynamic_updates(),
+    )
+    await service.recover()
+    await service.arm()
+
+    run = await service.run_once(execute=True)
+
+    assert run.results[0].outcome == "blocked"
+    assert run.results[0].detail == "candidate_expired_before_execution"
+    assert demo.leverage_calls == []
+    assert demo.place_calls == []
+
+
+@pytest.mark.asyncio
 async def test_structural_dynamic_demo_fails_closed_without_structure() -> None:
     demo = FakeDemo()
     service = adaptive_service(

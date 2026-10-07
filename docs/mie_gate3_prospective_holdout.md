@@ -266,6 +266,22 @@ execution authority. PostgreSQL behavior, concurrency, full-chain migration
 and schema drift must pass on the exact final source before this engineering
 seam is accepted.
 
+Migration `0031` repairs the PostgreSQL JSON validator on databases that
+already applied `0029`/`0030`: the original schedule validator's local `value`
+variable collided with an unqualified JSON column and rejected valid
+canonical schedules. It replaces the validator function in a transaction with
+writer locks and also qualifies the preregistration integer validator. Fresh
+installs receive the corrected definitions in `0029`/`0030`; installed
+databases need the forward `0031` migration because editing an applied
+migration does not rerun it. Existing raw rows and immutable legacy inventory
+stay unchanged. In particular, an old `unknown` classification remains
+reserved and never becomes a retroactive claim. Downgrading `0031` requires
+an empty Gate 3 evidence ledger; it keeps the repaired function definitions
+until the earlier migrations remove them. Any retained row blocks rollback.
+The repaired positive path still needs exact-source PostgreSQL integration
+evidence; it does not establish a trusted clock, custodian independence, real
+holdout capture, or Gate 3 approval.
+
 ### Blind in-window minute acquisition seam
 
 `app.mie.validation.blind_window_capture.bind_blind_window_minute` now binds **one**

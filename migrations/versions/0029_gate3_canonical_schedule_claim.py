@@ -335,14 +335,16 @@ def upgrade():
     op.execute("""
       CREATE FUNCTION public.gate3_schedule_all_ascii(p jsonb)
       RETURNS boolean AS $$
-      DECLARE kind text; member record; value text;
+      DECLARE kind text; member record; ascii_value text;
       BEGIN
         kind := pg_catalog.jsonb_typeof(p);
         IF kind = 'string' THEN
-          value := p #>> '{}';
-          RETURN pg_catalog.octet_length(value) = pg_catalog.length(value);
+          ascii_value := p #>> '{}';
+          RETURN pg_catalog.octet_length(ascii_value) =
+            pg_catalog.length(ascii_value);
         ELSIF kind = 'object' THEN
-          FOR member IN SELECT key,value FROM pg_catalog.jsonb_each(p) LOOP
+          FOR member IN SELECT item.key,item.value
+            FROM pg_catalog.jsonb_each(p) AS item(key,value) LOOP
             IF pg_catalog.octet_length(member.key) <>
                  pg_catalog.length(member.key)
               OR NOT public.gate3_schedule_all_ascii(member.value)
@@ -351,7 +353,8 @@ def upgrade():
           END LOOP;
           RETURN true;
         ELSIF kind = 'array' THEN
-          FOR member IN SELECT value FROM pg_catalog.jsonb_array_elements(p)
+          FOR member IN SELECT item.value
+            FROM pg_catalog.jsonb_array_elements(p) AS item(value)
           LOOP
             IF NOT public.gate3_schedule_all_ascii(member.value) THEN
               RETURN false;

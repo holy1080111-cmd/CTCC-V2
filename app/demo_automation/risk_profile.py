@@ -11,6 +11,16 @@ DERIVATIVE_MEDIUM_CONFIDENCE = Decimal("0.35")
 DERIVATIVE_HIGH_CONFIDENCE = Decimal("0.65")
 
 
+def _downward_only_score(candidate: TradeCandidate) -> int:
+    # A prior qualification may already have lowered the risk score. Further
+    # mathematical/derivative evaluation cannot replace it with the raw score.
+    return (
+        candidate.score
+        if candidate.risk_score is None
+        else min(candidate.score, candidate.risk_score)
+    )
+
+
 def configured_score_risk_tiers(settings: Settings) -> list[DemoAutomationRiskTier]:
     minimum = settings.strategy_min_score
     medium = settings.okx_demo_score_medium_min
@@ -100,7 +110,7 @@ def _legacy_derivative_adjusted_score(
 ) -> tuple[int, str | None]:
     """Return a score that calculus evidence may only cap, never increase."""
 
-    raw_score = candidate.score
+    raw_score = _downward_only_score(candidate)
     if not settings.okx_demo_score_risk_enabled:
         return raw_score, None
 
@@ -130,7 +140,7 @@ def mathematical_adjusted_score(
 ) -> tuple[int, str | None]:
     """Map the shared mathematical grade to Demo tiers monotonically."""
 
-    raw_score = candidate.score
+    raw_score = _downward_only_score(candidate)
     if not settings.okx_demo_score_risk_enabled:
         return raw_score, None
 

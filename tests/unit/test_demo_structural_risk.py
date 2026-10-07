@@ -192,6 +192,52 @@ def test_20x_is_capped_to_10x_when_mathematics_is_not_high_grade() -> None:
     assert "mathematical_grade_below_20x_threshold" in selection.cap_reasons
 
 
+@pytest.mark.parametrize(
+    ("confirmation", "reason"),
+    [
+        ("derivative", "derivative_direction_not_aligned_for_20x"),
+        ("mathematical", "mathematical_direction_not_aligned_for_20x"),
+    ],
+)
+def test_20x_requires_confirmations_aligned_to_trade_direction(
+    confirmation: str, reason: str
+) -> None:
+    settings = structural_settings()
+    candidate = finalized_candidate()
+    if confirmation == "derivative":
+        derivative = candidate.derivative_confirmation
+        assert derivative is not None
+        candidate = candidate.model_copy(
+            update={
+                "derivative_confirmation": derivative.model_copy(
+                    update={"alignment_score": D("-0.8")}
+                )
+            }
+        )
+    else:
+        math = candidate.mathematical_confirmation
+        assert math is not None
+        candidate = candidate.model_copy(
+            update={
+                "mathematical_confirmation": math.model_copy(
+                    update={"directional_support": D("-0.8")}
+                )
+            }
+        )
+
+    selection = select_structural_leverage(
+        candidate,
+        score_risk_tier(99, settings),
+        settings,
+        account_equity=D("150"),
+        position_margin_cap=D("12.5"),
+    )
+
+    assert selection.twenty_x_eligible is False
+    assert selection.leverage_cap == selection.selected_leverage == 10
+    assert reason in selection.cap_reasons
+
+
 @pytest.mark.parametrize("risk_score", [0, 1, 75, 97])
 def test_downward_risk_score_never_falls_back_to_raw_99(risk_score) -> None:
     settings = structural_settings()

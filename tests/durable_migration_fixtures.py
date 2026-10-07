@@ -18,6 +18,7 @@ MIGRATIONS = {
     "0028": "0028_gate3_schedule_publication_ack.py",
     "0029": "0029_gate3_canonical_schedule_claim.py",
     "0030": "0030_gate3_committed_preregistration_seal.py",
+    "0031": "0031_gate3_canonical_sql_repair.py",
 }
 TABLES = {
     # 0023 is constraint/trigger-only and has dedicated upgrade/downgrade

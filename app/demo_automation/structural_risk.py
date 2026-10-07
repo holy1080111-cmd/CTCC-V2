@@ -115,6 +115,8 @@ def _twenty_x_reasons(candidate: TradeCandidate, settings: Settings) -> list[str
             reasons.append("mathematical_reliability_below_20x_threshold")
         if math.instability > settings.okx_demo_structural_20x_max_instability:
             reasons.append("mathematical_instability_above_20x_threshold")
+        if math.directional_support <= 0:
+            reasons.append("mathematical_direction_not_aligned_for_20x")
     derivative = candidate.derivative_confirmation
     if (
         derivative is None
@@ -122,6 +124,8 @@ def _twenty_x_reasons(candidate: TradeCandidate, settings: Settings) -> list[str
         or derivative.confidence < settings.okx_demo_structural_20x_min_confidence
     ):
         reasons.append("derivative_confirmation_below_20x_threshold")
+    elif derivative.alignment_score <= 0:
+        reasons.append("derivative_direction_not_aligned_for_20x")
     if candidate.protection_model != "structure":
         reasons.append("structural_protection_required_for_20x")
     if candidate.net_risk_reward is None or candidate.net_risk_reward < D(

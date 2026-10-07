@@ -30,6 +30,7 @@ from app.trade_qualification import account_native_runtime as account_native
 from app.trade_qualification import data_v2
 from app.trade_qualification import demo_public_origin_preflight as origin_preflight
 from app.trade_qualification import native_original_g1_policy_v1 as native_g1
+from app.trade_qualification import original_candidate_precursor_v2 as precursor
 from app.trade_qualification import public_market_collector_v2 as public_v2
 from app.trade_qualification import qualification_runtime as initial
 from app.trade_qualification.account_observation_index import (
@@ -329,6 +330,107 @@ class InitialOwnedSourcesDiagnosticV3:
         return False
 
 
+_V4_PRECURSOR_FIELDS = frozenset(
+    {
+        "precursor_policy_sha256",
+        "precursor_receipt_sha256",
+        "precursor_intent_sha256",
+        "precursor_action",
+        "precursor_code",
+        "precursor_intent_derived",
+    }
+)
+_V4_CODES = frozenset(
+    {
+        "original_source_public_unavailable",
+        "original_source_account_unavailable",
+        "original_g1_unavailable",
+        "original_g1_rejected",
+        "original_raw_account_unavailable",
+        "original_precursor_unavailable",
+        "original_precursor_inspected",
+    }
+)
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class InitialOwnedPrecursorDiagnosticV4:
+    """One-task original arithmetic readback; never a candidate or permit."""
+
+    receipt_json: bytes
+
+    def __post_init__(self):
+        try:
+            raw = decode(self.receipt_json, _MAX_RECEIPT_BYTES)
+            if (
+                type(raw) is not dict
+                or set(raw) != _RECEIPT_FIELDS | _V3_G1_FIELDS | _V4_PRECURSOR_FIELDS
+                or canonical(raw) != self.receipt_json
+                or raw["schema_version"]
+                != "ctcc.original_owned_precursor_diagnostic.v4"
+                or raw["code"] not in _V4_CODES
+                or raw["precursor_policy_sha256"] != precursor.POLICY_SHA256
+                or type(raw["precursor_intent_derived"]) is not bool
+            ):
+                raise ValueError
+            base = {name: raw[name] for name in _RECEIPT_FIELDS | _V3_G1_FIELDS}
+            base["schema_version"] = "ctcc.original_owned_sources_diagnostic.v3"
+            if raw["code"] in {
+                "original_raw_account_unavailable",
+                "original_precursor_unavailable",
+                "original_precursor_inspected",
+            }:
+                base["code"] = "original_sources_g1_observed_candidate_required"
+            InitialOwnedSourcesDiagnosticV3(canonical(base))
+            if raw["code"] == "original_precursor_inspected":
+                _digest(raw["precursor_receipt_sha256"])
+                if (
+                    type(raw["precursor_action"]) is not str
+                    or raw["precursor_action"] not in {"WAIT", "CANCEL", "NO_TRADE"}
+                    or type(raw["precursor_code"]) is not str
+                    or not 1 <= len(raw["precursor_code"]) <= 96
+                    or any(
+                        char
+                        not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"
+                        for char in raw["precursor_code"]
+                    )
+                    or raw["precursor_intent_derived"]
+                    != (raw["precursor_intent_sha256"] is not None)
+                ):
+                    raise ValueError
+                if raw["precursor_intent_sha256"] is not None:
+                    _digest(raw["precursor_intent_sha256"])
+            elif (
+                any(
+                    raw[name] is not None
+                    for name in (
+                        "precursor_receipt_sha256",
+                        "precursor_intent_sha256",
+                        "precursor_action",
+                        "precursor_code",
+                    )
+                )
+                or raw["precursor_intent_derived"]
+            ):
+                raise ValueError
+        except Exception:  # noqa: BLE001 -- fixed diagnostic rejection only
+            raise OriginalSourceCoordinatorError(
+                "original_source_precursor_receipt_invalid"
+            ) from None
+
+    @property
+    def receipt_sha256(self) -> str:
+        return sha(self.receipt_json)
+
+    @property
+    def admission(self) -> Literal["DENY"]:
+        return "DENY"
+
+    @property
+    def execution_authority(self) -> Literal[False]:
+        return False
+
+
 def _digest(value):
     if (
         type(value) is not str
@@ -464,6 +566,7 @@ async def capture_owned_original_sources_v2(
         account_session=account_session,
         session_factory=session_factory,
         inspect_g1=False,
+        strategy=None,
     )
 
 
@@ -489,6 +592,37 @@ async def capture_owned_original_sources_v3(
         account_session=account_session,
         session_factory=session_factory,
         inspect_g1=True,
+        strategy=None,
+    )
+
+
+async def capture_owned_original_precursor_v4(
+    public_root,
+    account_root,
+    *,
+    instrument_id,
+    strategy,
+    market_policy,
+    account_session,
+    session_factory,
+) -> InitialOwnedPrecursorDiagnosticV4:
+    """Inspect one source-derived original precursor without granting authority.
+
+    The only candidate operand supplied by the caller is a fixed strategy
+    selector. Both raw packets must come from one-use native leases in this
+    invocation; a caller packet, receipt, gate, event or bracket cannot enter.
+    """
+    if type(strategy) is not str or strategy not in precursor.STRATEGY_CATALOG:
+        raise OriginalSourceCoordinatorError("original_precursor_strategy_invalid")
+    return await _capture_owned_original_sources(
+        public_root,
+        account_root,
+        instrument_id=instrument_id,
+        market_policy=market_policy,
+        account_session=account_session,
+        session_factory=session_factory,
+        inspect_g1=True,
+        strategy=strategy,
     )
 
 
@@ -501,8 +635,17 @@ async def _capture_owned_original_sources(
     account_session,
     session_factory,
     inspect_g1,
+    strategy,
 ):
-    if type(inspect_g1) is not bool:
+    if (
+        type(inspect_g1) is not bool
+        or strategy is not None
+        and (
+            not inspect_g1
+            or type(strategy) is not str
+            or strategy not in precursor.STRATEGY_CATALOG
+        )
+    ):
         raise OriginalSourceCoordinatorError("original_g1_mode_invalid")
     _roots(public_root, account_root)
     if (
@@ -555,11 +698,15 @@ async def _capture_owned_original_sources(
     started = public_observed = finished = None
     g1_source_pin = g1_result_pin = g1_result_code = g1_evaluated_at = None
     g1_evaluated = g1_passed = False
+    precursor_pin = precursor_intent_pin = precursor_action = precursor_code = None
+    precursor_intent_derived = False
 
     def result():
         fields = {
             "schema_version": (
-                "ctcc.original_owned_sources_diagnostic.v3"
+                "ctcc.original_owned_precursor_diagnostic.v4"
+                if strategy is not None
+                else "ctcc.original_owned_sources_diagnostic.v3"
                 if inspect_g1
                 else "ctcc.original_owned_sources_diagnostic.v2"
             ),
@@ -596,9 +743,20 @@ async def _capture_owned_original_sources(
                 g1_evaluated=g1_evaluated,
                 g1_passed=g1_passed,
             )
+        if strategy is not None:
+            fields.update(
+                precursor_policy_sha256=precursor.POLICY_SHA256,
+                precursor_receipt_sha256=precursor_pin,
+                precursor_intent_sha256=precursor_intent_pin,
+                precursor_action=precursor_action,
+                precursor_code=precursor_code,
+                precursor_intent_derived=precursor_intent_derived,
+            )
         receipt = canonical(fields)
         return (
-            InitialOwnedSourcesDiagnosticV3(receipt)
+            InitialOwnedPrecursorDiagnosticV4(receipt)
+            if strategy is not None
+            else InitialOwnedSourcesDiagnosticV3(receipt)
             if inspect_g1
             else InitialOwnedSourcesDiagnosticV2(receipt)
         )
@@ -680,7 +838,7 @@ async def _capture_owned_original_sources(
         final_at = utc_from_ns(finished["utc_ns"])
         if final_at >= expires:
             raise OriginalSourceCoordinatorError("original_public_expired")
-        reference, _ = _account_receipt(
+        reference, account_observed = _account_receipt(
             account.receipt_json,
             plan_pin=plan_pin,
             public_completed_at=at,
@@ -688,6 +846,81 @@ async def _capture_owned_original_sources(
         )
         account_pin = account.receipt_sha256
         account_packet_pin = reference.packet_sha256
+        if strategy is not None:
+            code = "original_raw_account_unavailable"
+            owned = account_native._consume_native_demo_raw_packet(
+                account, account_session
+            )
+            account_doc = decode(account.receipt_json, _MAX_ACCOUNT_RECEIPT_BYTES)
+            if (
+                type(owned) is not account_native._ObservedNativeDemoAccountRawPacket
+                or owned.receipt_sha256 != account_pin
+                or owned.reference != reference
+                or owned.proof_sha256 != account_doc["proof_sha256"]
+                or owned.readback_sha256 != account_doc["proof_readback_sha256"]
+                or owned.observed_at != account_observed
+                or not at <= owned.packet.completed_at <= owned.observed_at
+                or owned.packet.plan != plan
+                or owned.packet.plan_sha256 != plan_pin
+                or owned.expires_at <= final_at
+            ):
+                raise OriginalSourceCoordinatorError("original_raw_account_mismatch")
+            created_stamp = native_stamp()
+            validate_stamps((finished, created_stamp))
+            finished = created_stamp
+            created_at = utc_from_ns(created_stamp["utc_ns"])
+            if created_at >= min(expires, owned.expires_at):
+                raise OriginalSourceCoordinatorError("original_precursor_expired")
+            code = "original_precursor_unavailable"
+            inputs = {
+                "strategy": strategy,
+                "expected_public_bundle_sha256": public_pin,
+                "expected_account_plan_sha256": plan_pin,
+                "expected_account_packet_sha256": account_packet_pin,
+                "data_policy": g1_policy,
+                "expected_data_policy_sha256": native_g1.DATA_POLICY_SHA256,
+                "created_at": created_at,
+                "service_deadline": min(expires, owned.expires_at),
+            }
+            derived = precursor.derive_original_candidate_precursor_v2(
+                packet, owned.packet, **inputs
+            )
+            replayed = precursor.verify_original_candidate_precursor_v2(
+                derived, packet, owned.packet, **inputs
+            )
+            if derived.receipt_json != replayed.receipt_json:
+                raise OriginalSourceCoordinatorError(
+                    "original_precursor_replay_changed"
+                )
+            completed_stamp = native_stamp()
+            validate_stamps((created_stamp, completed_stamp))
+            completed_at = utc_from_ns(completed_stamp["utc_ns"])
+            if completed_at >= min(expires, owned.expires_at):
+                raise OriginalSourceCoordinatorError("original_precursor_expired")
+            precursor_doc = decode(replayed.receipt_json, precursor._MAX_RECEIPT)
+            if (
+                precursor_doc["public_bundle_sha256"] != public_pin
+                or precursor_doc["account_plan_sha256"] != plan_pin
+                or precursor_doc["account_packet_sha256"] != account_packet_pin
+                or precursor_doc["report_id"] != report
+                or precursor_doc["instrument_id"] != instrument_id
+                or precursor_doc["strategy"] != strategy
+                or precursor_doc["data_policy_sha256"] != native_g1.DATA_POLICY_SHA256
+                or precursor_doc["g1"]["policy_sha256"] != native_g1.DATA_POLICY_SHA256
+                or precursor_doc["g1"]["passed"] is not True
+                or precursor_doc["admission"] != "DENY"
+                or precursor_doc["execution_authority"] is not False
+            ):
+                raise OriginalSourceCoordinatorError("original_precursor_scope_changed")
+            precursor_pin = replayed.receipt_sha256
+            precursor_action = precursor_doc["action"]
+            precursor_code = precursor_doc["code"]
+            if replayed.intent is not None:
+                precursor_intent_pin = sha(canonical(precursor_doc["intent"]))
+                precursor_intent_derived = True
+            finished = completed_stamp
+            code = "original_precursor_inspected"
+            return result()
         code = (
             "original_sources_g1_observed_candidate_required"
             if inspect_g1
