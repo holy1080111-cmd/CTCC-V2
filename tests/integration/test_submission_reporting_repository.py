@@ -29,7 +29,8 @@ from app.trade_evidence.submission_reporting import (
 from app.trade_qualification import reservations
 from tests.integration import test_qualification_ledger_repository as fixtures
 from tests.unit.qualification_execution_binding_fixtures import execution_binding
-from tests.unit.qualification_ledger_fixtures import ledger_fixture
+from tests.unit.qualification_ledger_fixtures import LedgerFixture, ledger_fixture
+from tests.unit.qualification_range_v5_fixtures import range_v5_ledger_fixture
 
 database = fixtures.database
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
@@ -108,6 +109,140 @@ async def setup(database, fixture, *, status="acknowledged", pre_reserve_request
         "outbox_policy": outbox.OutboxPolicy(),
     }
     return ledger, repository, clock, hold, args
+
+
+@pytest.mark.parametrize("version", ("v2", "v3"))
+async def test_range_v5_submission_lineage_admits_v2_and_denies_unbound_v3(
+    database, monkeypatch, version
+):
+    # Synthetic source and response only. The DB transition, independent
+    # readback and outbox spool exercise the historical V2 path. V3 is
+    # explicitly denied until its outer control-bound journal is supported.
+    fixture, binding, _ = range_v5_ledger_fixture(
+        "long", monkeypatch, account_id=f"123456789{uuid4().int % 10**12:012d}"
+    )
+    if version == "v2":
+        v3 = fixture.request
+        replay = reservations.ReservationReplayBindingV2(
+            contract_version="ctcc-reservation-replay-v2",
+            **{
+                name: getattr(v3.replay_binding, name)
+                for name in reservations.ReservationReplayBindingV2.model_fields
+                if name not in reservations.LedgerModel.model_fields
+                and name != "contract_version"
+            },
+        )
+        request = reservations.ReservationRequestV2(
+            **{
+                name: getattr(v3, name)
+                for name in reservations.ReservationRequest.model_fields
+                if name not in reservations.LedgerModel.model_fields
+            },
+            contract_version="ctcc-reservation-request-v2",
+            replay_binding=replay,
+        )
+        fixture = LedgerFixture(request, fixture.claims, fixture.source)
+
+    persisted_request = reservations.canonical(fixture.request)
+    assert reservations.decode_reservation_request(persisted_request) == fixture.request
+    forged = json.loads(persisted_request)
+    forged["source_authenticity_verified"] = True
+    with pytest.raises(
+        reservations.QualificationLedgerError, match="invalid_ledger_json"
+    ):
+        reservations.decode_reservation_request(
+            json.dumps(forged, sort_keys=True, separators=(",", ":"))
+        )
+
+    ledger, clock = await fixtures.initialize(database, fixture)
+    hold = await ledger.reserve(fixture.request)
+    intent = await ledger.consume_with_submission_intent(
+        hold.scope,
+        hold.original_event_key,
+        expected_revision=2,
+        execution_binding=binding,
+    )
+    intent_body = json.loads(intent.canonical_json)
+    assert intent_body["version"] == "ctcc-demo-submit-intent-v2"
+    clock.value += timedelta(milliseconds=1)
+    response = {
+        "code": "0",
+        "data": [
+            {
+                "sCode": "0",
+                "ordId": "99887766",
+                "clOrdId": intent_body["client_order_id"],
+            }
+        ],
+    }
+    capture = CapturedSubmission(
+        exchange_request_sha256=intent_body["exchange_request_sha256"],
+        request_started_at=fixture.now,
+        headers_received_at=fixture.now,
+        body_completed_at=clock.value,
+        completed_at=clock.value,
+        http_status=200,
+        raw_body=json.dumps(response).encode(),
+        transport_complete=True,
+    )
+    reporter = SubmissionReportingRepository(database[1], clock=clock)
+    args = {
+        "expected_revision": 3,
+        "intent_sha256": intent.sha256,
+        "capture": capture,
+        "queue_namespace": QUEUE,
+        "outbox_policy": outbox.OutboxPolicy(),
+    }
+    if version == "v3":
+        with pytest.raises(
+            SubmissionReportingError,
+            match="submission_control_bound_lineage_unsupported",
+        ):
+            await reporter.record_observation(
+                hold.scope, hold.original_event_key, **args
+            )
+        state = await ledger.read_scope(hold.scope)
+        assert state.ledger_revision == 3 and state.active[0].state == "consumed"
+        async with database[1]() as session:
+            assert (
+                await session.scalar(
+                    select(func.count())
+                    .select_from(QualificationSubmissionOutcome)
+                    .where(
+                        QualificationSubmissionOutcome.reservation_id
+                        == hold.reservation_id
+                    )
+                )
+                == 0
+            )
+        return
+    with pytest.raises(SubmissionReportingError, match="lineage_or_capture_invalid"):
+        await reporter.record_observation(
+            hold.scope,
+            hold.original_event_key,
+            **{
+                **args,
+                "capture": capture.model_copy(
+                    update={"exchange_request_sha256": "f" * 64}
+                ),
+            },
+        )
+    state = await ledger.read_scope(hold.scope)
+    assert state.ledger_revision == 3 and state.active[0].state == "consumed"
+
+    observed = await reporter.record_observation(
+        hold.scope, hold.original_event_key, **args
+    )
+    assert observed.status == "acknowledged"
+    assert not observed.execution_authority and not observed.order_retry_authority
+    restarted = SubmissionReportingRepository(database[1], clock=clock)
+    assert (
+        await restarted.read_observation(
+            hold.scope, hold.original_event_key, expected_outcome_id=observed.outcome_id
+        )
+        == observed
+    )
+    assert observed.spool_id in await restarted.pending_ids(QUEUE)
 
 
 async def test_atomic_ack_restart_projection_and_idempotent_readback(

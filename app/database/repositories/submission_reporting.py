@@ -114,9 +114,16 @@ class SubmissionReportingRepository(QualificationLedgerRepository):
             or entry.evidence_json is None
         ):
             raise SubmissionReportingError("submission_intent_transition_invalid")
-        request = reservations.decode(
-            record.request_json, reservations.ReservationRequest
-        )
+        # DB0017 stores the exact request contract. The legacy model rejects
+        # V2's replay documents, so decode its persisted version exactly.
+        # V3 belongs to the control-bound outer intent journal, which this
+        # DB0018 projection cannot replay yet. Never reinterpret it as an
+        # unbound submission or accept its inner v2 intent alone.
+        request = reservations.decode_reservation_request(record.request_json)
+        if type(request) is reservations.ReservationRequestV3:
+            raise SubmissionReportingError(
+                "submission_control_bound_lineage_unsupported"
+            )
         if reservations.digest(request) != record.request_sha256:
             raise SubmissionReportingError("submission_reservation_digest_mismatch")
         prepared = prepare_submission(

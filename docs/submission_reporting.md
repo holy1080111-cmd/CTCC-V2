@@ -119,3 +119,17 @@ unknown/rejected retention, immutable rows, missing/NULL v2 version rejection,
 cross-settlement account locks, new-entry inhibition, actual child-process crashes,
 late filesystem failures and token-free worker lifecycle. These engineering tests
 are not authenticated exchange, Demo, Live, realized-forensics or Notion acceptance.
+
+## Versioned reservation lineage limit
+
+The DB0018 reporter decodes the persisted reservation request by its exact
+canonical contract. This permits the legacy unbound V2 request to be replayed
+without misreading its extra replay documents as a V1 request. A V3
+control-bound request is explicitly rejected with
+`submission_control_bound_lineage_unsupported`. Its distinct consumed
+transition reason and outer control-bound intent must be replayed together
+with the inner V2 intent before an outcome or outbox spool can be accepted;
+replaying only the inner intent would lose the account-control binding.
+The current change does not implement that V3 projection or authorize an
+exchange POST. New synthetic V2/V3 integration cases require an isolated
+PostgreSQL run before they count as validation.
