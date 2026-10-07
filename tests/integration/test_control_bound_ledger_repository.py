@@ -13,7 +13,10 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import select
 
-from app.database.models.qualification_ledger import QualificationReservationTransition
+from app.database.models.qualification_ledger import (
+    QualificationReservation,
+    QualificationReservationTransition,
+)
 from app.database.repositories.demo_control import DemoControlRepository
 from app.database.repositories.qualification_ledger import QualificationLedgerRepository
 from app.trade_qualification import control_bound_ledger as bound
@@ -21,6 +24,8 @@ from app.trade_qualification import demo_control as control
 from app.trade_qualification.reservations import (
     QualificationLedgerError,
     ReservationReceipt,
+    checked_reservation_request,
+    reservation_id,
 )
 from app.trade_qualification.submission_intent import build_submission_intent
 from tests.integration import test_qualification_ledger_repository as fixtures
@@ -469,3 +474,50 @@ async def test_range_v5_packet_session_is_also_verified_before_reserve(
         await s.reserve()
     state = await s.ledger.read_scope(fixture.request.scope)
     assert not state.active and state.ledger_revision == 1
+
+
+@pytest.mark.parametrize("change", ("old_barrier", "future_completion"))
+async def test_range_v5_stale_account_packet_cannot_create_event_hold(
+    database, range_chain, change
+):
+    fixture, _ = range_chain
+    s = await setup(database, fixture)
+    altered = execution_binding(
+        fixture,
+        **(
+            {
+                "account_barrier": fixture.request.origin.publication_completed_at
+                - timedelta(seconds=1)
+            }
+            if change == "old_barrier"
+            else {"account_start_delay": timedelta(seconds=2)}
+        ),
+    )
+    changed_binding = fixture.request.replay_binding.model_copy(
+        update={
+            name: getattr(altered, name)
+            for name in (
+                "account_packet_json",
+                "account_packet_sha256",
+                "account_plan_sha256",
+            )
+        }
+    )
+    request = checked_reservation_request(
+        fixture.request.model_copy(update={"replay_binding": changed_binding})
+    )
+    with pytest.raises(
+        QualificationLedgerError, match="bound_control_account_packet_causality_invalid"
+    ):
+        await s.ledger.reserve_control_bound(request, control_expectation=s.expected)
+    state = await s.ledger.read_scope(request.scope)
+    assert not state.active and state.ledger_revision == 1
+    rid = reservation_id(request.scope, request.origin.original_event_key)
+    async with database[1]() as session:
+        assert await session.get(QualificationReservation, rid) is None
+        assert (
+            await session.scalar(
+                select(QualificationReservationTransition).filter_by(reservation_id=rid)
+            )
+            is None
+        )

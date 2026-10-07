@@ -23,7 +23,10 @@ from app.trade_qualification.range_policy import (
 from app.trade_qualification.recheck import (
     RecordedRecheckAssessment,
 )
-from tests.unit.qualification_execution_binding_fixtures import consumed_receipt
+from tests.unit.qualification_execution_binding_fixtures import (
+    consumed_receipt,
+    execution_binding,
+)
 from tests.unit.qualification_range_fixtures import range_source, v4_inputs
 from tests.unit.qualification_range_v5_fixtures import (
     range_v5_ledger_fixture,
@@ -210,7 +213,50 @@ def test_legacy_v2_request_remains_readable_but_control_bound_reserve_denies(cha
         r.QualificationLedgerError,
         match="bound_control_account_session_binding_missing",
     ):
-        bound._guard_request_session(old_request, SimpleNamespace())
+        bound._guard_request_session(old_request, SimpleNamespace(), now=fixture.now)
+
+
+@pytest.mark.parametrize("change", ("old_barrier", "future_completion"))
+def test_v3_account_packet_causality_is_checked_before_reservation(chain, change):
+    fixture, binding, _ = chain
+    request = fixture.request
+    state = SimpleNamespace(
+        pins=SimpleNamespace(
+            credential_session_sha256=bound.control.digest(
+                json.loads(binding.account_packet_json)["plan"]["session_binding_id"]
+            )
+        )
+    )
+    bound._guard_request_session(request, state, now=fixture.now)
+    altered = execution_binding(
+        fixture,
+        **(
+            {
+                "account_barrier": request.origin.publication_completed_at
+                - timedelta(seconds=1)
+            }
+            if change == "old_barrier"
+            else {"account_start_delay": timedelta(seconds=2)}
+        ),
+    )
+    changed_binding = request.replay_binding.model_copy(
+        update={
+            name: getattr(altered, name)
+            for name in (
+                "account_packet_json",
+                "account_packet_sha256",
+                "account_plan_sha256",
+            )
+        }
+    )
+    changed = r.checked_reservation_request(
+        request.model_copy(update={"replay_binding": changed_binding})
+    )
+    with pytest.raises(
+        r.QualificationLedgerError,
+        match="bound_control_account_packet_causality_invalid",
+    ):
+        bound._guard_request_session(changed, state, now=fixture.now)
 
 
 @pytest.mark.parametrize(

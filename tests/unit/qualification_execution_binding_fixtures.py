@@ -49,9 +49,20 @@ def consumed_receipt(fixture):
     )
 
 
-def execution_binding(fixture, *, position_mode="net_mode", raw_changes=None):
+def execution_binding(
+    fixture,
+    *,
+    position_mode="net_mode",
+    raw_changes=None,
+    account_barrier=None,
+    account_start_delay=timedelta(),
+):
     source, request = fixture.source, fixture.request
-    at = request.origin.publication_completed_at
+    at = (
+        request.origin.publication_completed_at
+        if account_barrier is None
+        else account_barrier
+    )
     selected = plan(
         created_at=at.replace(microsecond=0),
         expected_uid=request.scope.account_id,
@@ -94,7 +105,7 @@ def execution_binding(fixture, *, position_mode="net_mode", raw_changes=None):
     identity = None
     pin = accounts.plan_sha256(selected)
     for index, stream in enumerate(accounts.STREAMS):
-        start = at + timedelta(milliseconds=1 + index * 3)
+        start = at + account_start_delay + timedelta(milliseconds=1 + index * 3)
         observed = accounts.parse_demo_account_observation(
             wire(rows.get(stream, [])),
             plan=selected,

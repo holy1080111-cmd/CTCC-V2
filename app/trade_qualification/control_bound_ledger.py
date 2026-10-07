@@ -86,7 +86,7 @@ def _packet_session_sha256(packet_json, packet_sha256, plan_sha256):
     return control.digest(packet.plan.session_binding_id)
 
 
-def _guard_request_session(request, state):
+def _guard_request_session(request, state, *, now):
     if type(request) is ledger.ReservationRequestV2:
         _deny("bound_control_account_session_binding_missing")
     if type(request) is ledger.ReservationRequestV3:
@@ -106,6 +106,14 @@ def _guard_request_session(request, state):
             != control.digest(packet.plan.session_binding_id)
         ):
             _deny("bound_control_account_session_conflict")
+        # The packet's own page-chain replay proves each request starts after
+        # its barrier. Bind that barrier to THIS G12 before a durable event hold
+        # is written; intent-time checking alone would leave a stale hold.
+        if (
+            packet.barrier_completed_at != request.origin.publication_completed_at
+            or packet.completed_at > now
+        ):
+            _deny("bound_control_account_packet_causality_invalid")
 
 
 def guard_current_control(
@@ -138,7 +146,7 @@ def guard_current_control(
             _deny("bound_control_policy_conflict")
         if not request.origin.publication_completed_at < now < request.origin.deadline:
             _deny("bound_control_candidate_expired")
-        _guard_request_session(request, state)
+        _guard_request_session(request, state, now=now)
     return state
 
 
@@ -185,7 +193,7 @@ def _state_for_request(raw, event_sha256, request, at):
         or not request.origin.publication_completed_at < at < request.origin.deadline
     ):
         _deny("bound_control_evidence_scope_or_time_invalid")
-    _guard_request_session(request, state)
+    _guard_request_session(request, state, now=at)
     return state
 
 
