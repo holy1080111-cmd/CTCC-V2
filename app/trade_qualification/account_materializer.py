@@ -752,17 +752,30 @@ def _positions_and_orders(
             else None
         )
         if row.get("reduceOnly") is True:
-            reducing_reasons = (
-                ()
-                if row.get("instType") == "SWAP"
-                else ("reducing_order_scope_unsupported",)
-            )
+            reducing_reasons = set()
+            if (
+                row.get("instType") != "SWAP"
+                or row.get("tdMode") not in {"cross", "isolated"}
+                or mode == "net_mode"
+                and row.get("posSide") != "net"
+                or mode == "long_short_mode"
+                and (
+                    row.get("posSide") not in {"long", "short"}
+                    or row.get("side")
+                    != ("sell" if row.get("posSide") == "long" else "buy")
+                )
+            ):
+                reducing_reasons.add("reducing_order_scope_unsupported")
+            if remaining is None or remaining <= 0:
+                reducing_reasons.add("reducing_remaining_quantity_invalid")
+            if _time(row.get("uTime")) is None:
+                reducing_reasons.add("reducing_source_time_missing")
             gaps.update(reducing_reasons)
             projections.append(
                 ExposureProjection(
                     **(fields | {"kind": "reducing_order"}),
                     contracts=_amount(remaining),
-                    reasons=reducing_reasons,
+                    reasons=tuple(sorted(reducing_reasons)),
                 )
             )
             continue

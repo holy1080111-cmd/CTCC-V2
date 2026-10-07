@@ -154,6 +154,24 @@ async def test_foreign_task_and_changed_receipt_burn_the_origin_lease(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_same_credential_object_mutation_burns_origin_lease(monkeypatch):
+    session, packet, reference, joins, arguments = await prepared(monkeypatch)
+    lease = mint(session, packet, reference, joins, arguments)
+    diagnostic = runtime.InitialNativeAccountDiagnostic(
+        arguments["receipt_json"], lease
+    )
+    original = session._credentials.passphrase
+    object.__setattr__(
+        session._credentials, "passphrase", "synthetic-only-altered-passphrase"
+    )
+    with pytest.raises(runtime.NativeAccountOriginError, match="origin_unavailable"):
+        runtime._consume_demo_account_origin(diagnostic, session)
+    object.__setattr__(session._credentials, "passphrase", original)
+    with pytest.raises(runtime.NativeAccountOriginError, match="origin_unavailable"):
+        runtime._consume_demo_account_origin(diagnostic, session)
+
+
+@pytest.mark.asyncio
 async def test_unread_or_conflicting_source_cannot_mint(monkeypatch):
     session, packet, reference, joins, arguments = await prepared(monkeypatch)
     with pytest.raises(runtime.NativeAccountOriginError):

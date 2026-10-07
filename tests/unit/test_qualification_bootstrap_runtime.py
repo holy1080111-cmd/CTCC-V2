@@ -89,6 +89,25 @@ async def test_cold_start_retains_unknown_without_fake_empty_claims(monkeypatch,
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("forge_local_pin", [False, True])
+async def test_in_place_credential_change_denies_bootstrap_before_io(
+    monkeypatch, forge_local_pin
+):
+    session, harness, seen, args = setup(monkeypatch)
+    object.__setattr__(
+        session._credentials, "passphrase", "synthetic-only-altered-passphrase"
+    )
+    if forge_local_pin:
+        session._credential_pin = runtime.collector._credential_content_pin(
+            session._credentials
+        )
+    with pytest.raises(runtime.AccountRuntimeError, match="account_runtime_invalid"):
+        await session.collect_bootstrap(**args)
+    assert session._used is True
+    assert harness.requests == [] and seen == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("hold", ["reserved", "consumed", "uncertain"])
 async def test_existing_holds_remain_observable_and_never_resolved(monkeypatch, hold):
     state = ledger_evidence(active=(expired_hold(state=hold),)).state

@@ -20,6 +20,7 @@ from app.trade_qualification.account_capture_journal import _OwnedAccountJournal
 _ISSUER = object()
 _STAGES = WeakKeyDictionary()
 _OBSERVERS = WeakKeyDictionary()
+_SESSION_CREDENTIAL_PINS = WeakKeyDictionary()
 _SESSION_CLAIMS = {}
 _B1_FINALIZER_CODES = {
     "source": _OwnedAccountJournal.close_acquisition.__code__,
@@ -56,6 +57,30 @@ class _InitialAccountStage:
 
 class _PhaseObserver(_InitialAccountStage):
     __slots__ = ()
+
+
+def _register_credential_pin(session, pin):
+    """Keep the constructor's pin outside caller-mutable session slots."""
+    if session in _SESSION_CREDENTIAL_PINS or type(pin) is not str or len(pin) != 64:
+        raise NativeAccountClockError("native_account_session_claim_invalid")
+    _SESSION_CREDENTIAL_PINS[session] = pin
+
+
+def _checked_credential_pin(session):
+    """Compare against the independently held construction pin; export no bytes."""
+    from app.trade_qualification import account_collector as collector
+
+    try:
+        pinned = _SESSION_CREDENTIAL_PINS.get(session)
+        local = object.__getattribute__(session, "_credential_pin")
+        current = collector._credential_content_pin(
+            object.__getattribute__(session, "_credentials")
+        )
+        if type(pinned) is not str or local != pinned or current != pinned:
+            raise ValueError
+        return current
+    except Exception:  # noqa: BLE001 -- no credential values in rejection
+        raise NativeAccountClockError("native_account_session_claim_invalid") from None
 
 
 def _state(stage, *, _clock_dependency=False, _durable_cleanup=False):
@@ -107,6 +132,7 @@ def _session_claim(session):
         or type(session._pin) is not str
         or session._pin != value["plan_sha256"]
         or session._credentials is not value["credentials"]
+        or _checked_credential_pin(session) != value.get("credential_pin")
     ):
         raise NativeAccountClockError("native_account_session_claim_invalid")
     return value
@@ -126,6 +152,10 @@ def _claim_initial_session(session):
         or task.cancelling()
     ):
         raise NativeAccountClockError("native_account_session_claim_invalid")
+    # This invocation consumes the session even if its private copied values
+    # were altered after construction; a repair requires a new session.
+    session._used = True
+    credential_pin = _checked_credential_pin(session)
     value = {
         "parent": task,
         "loop": asyncio.get_running_loop(),
@@ -134,9 +164,9 @@ def _claim_initial_session(session):
         "plan": session._plan,
         "plan_sha256": session._pin,
         "credentials": session._credentials,
+        "credential_pin": credential_pin,
         "bootstrap_used": False,
     }
-    session._used = True
     _SESSION_CLAIMS[session] = value
     try:
         yield

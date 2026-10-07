@@ -145,3 +145,17 @@ async def test_real_claimed_stage_raw_packet_is_one_use_and_never_authoritative(
             )
         with pytest.raises(runtime.NativeAccountRawPacketError):
             runtime._consume_native_demo_raw_packet(unchanged, session)
+
+        changed_lease = runtime._mint_native_demo_raw_packet(
+            stage, session, packet, reference, **arguments
+        )
+        changed = runtime.InitialNativeAccountDiagnostic(receipt, None, changed_lease)
+        original = session._credentials.api_secret
+        object.__setattr__(
+            session._credentials, "api_secret", "synthetic-only-altered-account-secret"
+        )
+        with pytest.raises(runtime.NativeAccountRawPacketError):
+            runtime._consume_native_demo_raw_packet(changed, session)
+        object.__setattr__(session._credentials, "api_secret", original)
+        with pytest.raises(runtime.NativeAccountRawPacketError):
+            runtime._consume_native_demo_raw_packet(changed, session)

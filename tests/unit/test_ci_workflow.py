@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import yaml
+
 WORKFLOW = (
     Path(__file__).resolve().parents[2] / ".github" / "workflows" / "ctcc-v2-ci.yml"
 )
@@ -32,6 +34,21 @@ def test_hermetic_ci_covers_main_and_all_development_branches() -> None:
         "pull_request": ("main", "develop/**"),
     }
     assert "develop/v1.6.8" not in workflow
+
+
+def test_required_aggregate_rejects_failed_windows_regression() -> None:
+    jobs = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]
+    aggregate = jobs["regression"]
+
+    assert set(aggregate["needs"]) == {
+        "linux-postgres",
+        "linux-shard",
+        "windows-regression",
+    }
+    assert aggregate["if"] == "always()"
+    guard = aggregate["steps"][0]["run"]
+    for job in aggregate["needs"]:
+        assert f"test '${{{{ needs.{job}.result }}}}' = success" in guard
 
 
 def test_image_includes_core_blueprint_acceptance_inputs_explicitly() -> None:

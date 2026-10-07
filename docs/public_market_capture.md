@@ -123,6 +123,19 @@ bundle SHA256 `9f9acd4be0bbd1af40ad4cae59ca03bf3900f789c14e6745d6ea80d90f1f758a`
 仍為 Stopped／Manual；尚未證實偏差來自本機或遠端，不改時間、補 tolerance、
 重寫 source ts 或將拒絕冒作完整公開封包成功。
 
+2026-10-07 17:03–17:04 UTC 的新診斷顯示 Windows W32Time 為 Running／Automatic，
+來源為 `time.windows.com`；一次不使用環境代理或憑證的 OKX 公開時間 GET，
+原始 body SHA256 為 `372892969be2baf68c122f0e614a6cd8a04137a6ebb7c765decee6b7467fcb0e`，
+其 exchange `ts` 位於本機 request start 與 body completion 之間。隨後一次
+BTC-USDT-SWAP 的 V1 完整公開封包收集回傳
+`initial_public_captured_metadata_account_required`，journal SHA256 為
+`3aa66ea97e09c79208f5660afc89948a4a284da28b2f9b2d6fe7f812fff49a28`。
+194 個原始／稽核檔總計 633,110 bytes，獨立檔案雜湊清單 SHA256 為
+`bcf5414c1b69b2cacc37ce1aca54781acef467b5449a0b3b7f76d9f93a502cd6`，
+保存在 `../../validation-results/ctcc-public-clock-probe-20261008/`。這是新的單次
+V1 公開來源診斷；不會追溯改寫九月失敗，也不證明每個元件的獨立可信時鐘、
+V2 Demo 區域來源、完整帳戶、G12、候選資格或交易權限。
+
 ## 仍未完成
 
 新受控公開 minute acquisition journal 使用版本化 attempt v2，在 HTTP 前後透過

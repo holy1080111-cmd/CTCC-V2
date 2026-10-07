@@ -1,0 +1,344 @@
+"""Caller-origin G12 and both native source readbacks stay non-authorizing."""
+
+import asyncio
+from dataclasses import replace
+from datetime import timedelta
+
+import pytest
+
+from app.domain.source_primitives import canonical, decode, sha, utc_from_ns
+from app.trade_qualification import account_capture as capture
+from app.trade_qualification import account_native_runtime as account_native
+from app.trade_qualification import demo_public_origin, public_source_runtime
+from app.trade_qualification import post_g12_account_join_v2 as joined
+from app.trade_qualification import post_g12_public_runtime as public_runtime
+from app.trade_qualification.account_observation_index import CaptureReference
+from app.trade_qualification.account_runtime import ControlledDemoAccountSession
+from app.trade_qualification.engine import evaluate_pre_evidence
+from tests.unit import qualification_prefix_fixtures as prefix
+from tests.unit import test_original_candidate_policy as original_fixture
+from tests.unit import test_qualification_account_runtime as account_runtime_fixture
+from tests.unit.qualification_engine_fixtures import engine_inputs
+from tests.unit.research.test_owned_original_g1_diagnostic_v3 import (
+    _native_account_receipt,
+)
+from tests.unit.research.test_owned_original_source_coordinator_v2 import session
+from tests.unit.research.test_owned_public_runtime_v2 import (
+    empty_registries,
+    policy,
+    setup,
+)
+from tests.unit.test_account_current_history_join import current_plan, recorded_current
+from tests.unit.test_account_current_source_verifier import flat_pages
+from tests.unit.test_qualification_account_capture import row
+from tests.unit.test_qualification_account_collector import credentials
+from tests.unit.test_qualification_market_bridge import v2_engine_source
+from tests.unit.test_qualification_one_shot import UID
+
+
+@pytest.fixture(scope="module")
+def shifted_inputs():
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(prefix, "CAPTURED_AT", original_fixture.NOW)
+        source = replace(
+            v2_engine_source("long"),
+            evaluated_at=original_fixture.NOW + timedelta(milliseconds=10),
+        )
+    values = engine_inputs(source)
+    risk = values["risk_inputs"]
+    account = risk.account.model_copy(
+        update={
+            "account_id": UID,
+            **{
+                name: getattr(risk.account, name).model_copy(update={"account_id": UID})
+                for name in (
+                    "balance_stamp",
+                    "positions_stamp",
+                    "history_stamp",
+                    "reservations_stamp",
+                )
+            },
+        }
+    )
+    authority = risk.authority.model_copy(
+        update={"stamp": risk.authority.stamp.model_copy(update={"account_id": UID})}
+    )
+    values["risk_inputs"] = risk.model_copy(
+        update={"account": account, "authority": authority}
+    )
+    run = evaluate_pre_evidence(source.market, **values)
+    assert run.pre_evidence_complete
+    return source, values, run
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "fault,expected_code",
+    [
+        (None, "joined_unqualified"),
+        ("early_account_page", "account_unavailable"),
+        ("missing_account_lease", "account_unavailable"),
+        ("stale_public_at_join", "account_unavailable"),
+        ("expired_account_lease", "account_unavailable"),
+    ],
+)
+async def test_new_g12_then_fresh_public_and_account_raw_page_starts(
+    shifted_inputs, tmp_path, monkeypatch, fault, expected_code
+):
+    source, values, run = shifted_inputs
+    pages = flat_pages()
+    pages["account_instruments"] = [[row("account_instruments", tickSz="0.01")]]
+    monkeypatch.setattr(
+        account_runtime_fixture,
+        "BARRIER",
+        original_fixture.NOW + timedelta(milliseconds=100),
+    )
+    chain, account_harness = await recorded_current(
+        monkeypatch, offset_seconds=601, pages=pages
+    )
+    payload = next(
+        item.event.packet_payload for item in chain if item.event.packet_payload
+    )
+    account_packet = capture.verify_demo_account_packet(
+        payload,
+        expected_sha256=sha(payload),
+        expected_plan_sha256=capture.plan_sha256(current_plan()),
+    )
+    account_harness.assert_closed()
+    clock, directory, harness, publications = setup(monkeypatch, source)
+    monkeypatch.setattr(joined, "native_stamp", clock.stamp)
+    monkeypatch.setattr(account_native, "_configured_factory", lambda _: True)
+    route = demo_public_origin.reviewed_demo_public_route("global")
+    proof = {
+        "classification": "owned_native_tls",
+        "hostname": route.rest_hostname,
+        "version": "TLSv1.3",
+        "peer_sha256": "1" * 64,
+    }
+    monkeypatch.setattr(public_source_runtime, "_http_tls", lambda *_: dict(proof))
+
+    def connected(owner, socket):
+        state = public_source_runtime._state(owner)
+        assert socket is harness.socket and state["socket"] is None
+        state["socket"] = socket
+        public_source_runtime._event(
+            owner,
+            "ws_connected",
+            {
+                "connected": state["last"],
+                "tls": {**proof, "hostname": route.ws_hostname},
+            },
+        )
+
+    monkeypatch.setattr(public_source_runtime, "_ws_connected", connected)
+    controlled = session()
+    frozen = capture.freeze_demo_account_packet(
+        account_packet, expected_plan_sha256=controlled._pin
+    )
+    reference = CaptureReference(
+        capture_id="b" * 32,
+        head_sha256="c" * 64,
+        plan_sha256=controlled._pin,
+        packet_sha256=frozen.sha256,
+        session_binding_sha256="e" * 64,
+    )
+    parent = asyncio.current_task()
+    state = {"account": None, "consumed": False}
+
+    async def account_source(received, *, session_factory, proof_root):
+        assert asyncio.current_task() is parent
+        assert received is controlled and proof_root == tmp_path / "account"
+        proof_root.mkdir()
+        (proof_root / "synthetic-account-proof").write_bytes(b"synthetic-only-proof")
+        received._used = True
+        while clock.last <= account_packet.completed_at:
+            clock.stamp()
+        observed = utc_from_ns(clock.stamp()["utc_ns"])
+        diagnostic = _native_account_receipt(received, observed)
+        document = decode(diagnostic.receipt_json)
+        document["source_reference"]["packet_sha256"] = frozen.sha256
+        diagnostic = account_native.InitialNativeAccountDiagnostic(canonical(document))
+        state["account"] = diagnostic
+        return diagnostic
+
+    def consume(diagnostic, received):
+        assert asyncio.current_task() is parent
+        assert diagnostic is state["account"] and received is controlled
+        assert state["consumed"] is False
+        state["consumed"] = True
+        if fault == "missing_account_lease":
+            raise account_native.NativeAccountRawPacketError(
+                "native_account_raw_packet_unavailable"
+            )
+        record = decode(diagnostic.receipt_json)
+        packet = account_packet
+        if fault == "early_account_page":
+            first = packet.observations[0].model_copy(
+                update={"request_started_at": original_fixture.NOW}
+            )
+            packet = packet.model_copy(
+                update={"observations": (first, *packet.observations[1:])}
+            )
+        if fault == "stale_public_at_join":
+            for _ in range(6000):
+                clock.stamp()
+        if fault == "expired_account_lease":
+            for _ in range(11000):
+                clock.stamp()
+        return account_native._ObservedNativeDemoAccountRawPacket(
+            packet=packet,
+            reference=reference,
+            receipt_sha256=diagnostic.receipt_sha256,
+            proof_sha256=record["proof_sha256"],
+            readback_sha256=record["proof_readback_sha256"],
+            observed_at=joined._utc_text(record["observed_at"]),
+            expires_at=joined._utc_text(record["expires_at"]),
+        )
+
+    monkeypatch.setattr(
+        account_native, "capture_initial_native_account", account_source
+    )
+    monkeypatch.setattr(account_native, "_consume_native_demo_raw_packet", consume)
+    result = await joined.publish_capture_public_account_v2(
+        tmp_path / "g12",
+        tmp_path / "public",
+        tmp_path / "account",
+        source.market,
+        run=run,
+        original_inputs=values,
+        market_policy=policy(),
+        account_session=controlled,
+        session_factory=object(),
+    )
+    receipt = decode(result.receipt_json)
+    assert receipt["code"] == expected_code
+    assert receipt["public_request_count"] > 0
+    assert receipt["account_page_count"] == (
+        len(account_packet.observations) if fault is None else 0
+    )
+    assert joined._utc_text(receipt["publication_completed_at"]) < joined._utc_text(
+        receipt["public_first_request_started_at"]
+    )
+    if fault is None:
+        assert joined._utc_text(receipt["publication_completed_at"]) < joined._utc_text(
+            receipt["account_first_request_started_at"]
+        )
+    else:
+        assert receipt["account_first_request_started_at"] is None
+    assert receipt["public_packet_sha256"] is not None
+    assert receipt["account_packet_sha256"] == (
+        frozen.sha256 if fault is None else None
+    )
+    assert receipt["original_entry"] == str(run.result.candidate_entry)
+    assert receipt["original_stop_loss"] == str(run.result.stop_loss)
+    assert receipt["original_take_profit"] == str(run.result.take_profit)
+    assert all(receipt[name] is False for name in joined._FALSE_FIELDS)
+    assert result.execution_authority is False and controlled._used
+    assert state["consumed"] and len(publications) == 1
+    assert all(request.method == "GET" for request in harness.requests)
+    assert directory.content["summary.json"]
+    assert (tmp_path / "account" / "synthetic-account-proof").read_bytes() == (
+        b"synthetic-only-proof"
+    )
+    harness.assert_closed()
+    empty_registries()
+
+
+@pytest.mark.asyncio
+async def test_unverified_demo_origin_stops_before_g12_public_and_account_io(
+    shifted_inputs, tmp_path, monkeypatch
+):
+    source, values, run = shifted_inputs
+    controlled = session()
+    monkeypatch.setattr(account_native, "_configured_factory", lambda _: True)
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("unverified Demo origin must stop before G12 or account IO")
+
+    monkeypatch.setattr(
+        public_runtime, "publish_qualification_evidence_liquidity_v2", forbidden
+    )
+    monkeypatch.setattr(account_native, "capture_initial_native_account", forbidden)
+    result = await joined.publish_capture_public_account_v2(
+        tmp_path / "g12",
+        tmp_path / "public",
+        tmp_path / "account",
+        source.market,
+        run=run,
+        original_inputs=values,
+        market_policy=policy(),
+        account_session=controlled,
+        session_factory=object(),
+    )
+    receipt = decode(result.receipt_json)
+    assert receipt["code"] == "denied"
+    assert receipt["g12_evidence_sha256"] is None
+    assert receipt["public_packet_sha256"] is None
+    assert receipt["account_packet_sha256"] is None
+    assert receipt["admission"] == "DENY"
+    assert receipt["execution_authority"] is False
+    assert controlled._used
+    assert not (tmp_path / "g12").exists()
+    forged = dict(receipt, execution_authority=True)
+    with pytest.raises(
+        joined.PostG12AccountJoinError, match="post_g12_account_receipt_invalid"
+    ):
+        joined.PostG12OwnedPublicAccountDiagnosticV2(canonical(forged))
+
+
+@pytest.mark.asyncio
+async def test_original_risk_account_must_match_controlled_exact_uid_before_g12(
+    shifted_inputs, tmp_path, monkeypatch
+):
+    source, values, run = shifted_inputs
+    selected = current_plan(expected_uid="700009")
+    controlled = ControlledDemoAccountSession(
+        credentials=credentials(session_binding_id=selected.session_binding_id),
+        plan=selected,
+        expected_plan_sha256=capture.plan_sha256(selected),
+    )
+    monkeypatch.setattr(account_native, "_configured_factory", lambda _: True)
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("account identity mismatch must stop before G12 and source IO")
+
+    monkeypatch.setattr(public_runtime, "_publish_lineage_v2", forbidden)
+    monkeypatch.setattr(account_native, "capture_initial_native_account", forbidden)
+    with pytest.raises(
+        joined.PostG12AccountJoinError, match="post_g12_original_geometry_invalid"
+    ):
+        await joined.publish_capture_public_account_v2(
+            tmp_path / "g12",
+            tmp_path / "public",
+            tmp_path / "account",
+            source.market,
+            run=run,
+            original_inputs=values,
+            market_policy=policy(),
+            account_session=controlled,
+            session_factory=object(),
+        )
+    assert not (tmp_path / "g12").exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "extra", ["passed", "candidate", "receipt", "barrier", "quote", "market_packet"]
+)
+async def test_caller_cannot_supply_gate_or_stale_source(
+    shifted_inputs, tmp_path, extra
+):
+    source, values, run = shifted_inputs
+    with pytest.raises(TypeError):
+        await joined.publish_capture_public_account_v2(
+            tmp_path / "g12",
+            tmp_path / "public",
+            tmp_path / "account",
+            source.market,
+            run=run,
+            original_inputs=values,
+            market_policy=policy(),
+            account_session=session(),
+            session_factory=object(),
+            **{extra: object()},
+        )

@@ -216,6 +216,49 @@ async def test_mutated_credentials_cannot_adopt_already_burned_session(monkeypat
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("forge_local_pin", [False, True])
+async def test_same_credential_object_changed_before_claim_burns_without_io(
+    monkeypatch, forge_local_pin
+):
+    session = _session()
+    calls = _no_io(monkeypatch, session)
+    object.__setattr__(
+        session._credentials, "api_secret", "synthetic-only-altered-account-secret"
+    )
+    if forge_local_pin:
+        session._credential_pin = runtime.collector._credential_content_pin(
+            session._credentials
+        )
+    _denied(await _entry("initial", session))
+    assert session._used is True
+    assert calls == []
+    assert not native._SESSION_CLAIMS and not native._STAGES
+
+
+@pytest.mark.asyncio
+async def test_same_credential_object_changed_after_claim_cannot_adopt(monkeypatch):
+    session = _session()
+    _no_io(monkeypatch, session)
+    with (
+        native._claim_initial_session(session),
+        native._initial_stage(
+            plan_sha256=session._pin,
+            scope_sha256="b" * 64,
+            _claimed_session=session,
+        ) as stage,
+    ):
+        object.__setattr__(
+            session._credentials, "api_key", "synthetic-only-altered-account-key"
+        )
+        with pytest.raises(native.NativeAccountClockError, match="claim_invalid"):
+            native._session_claim(session)
+        with pytest.raises(native.NativeAccountClockError, match="claim_invalid"):
+            native._claim_collector_session(native._state(stage)["observer"], session)
+    assert session._used is True
+    assert not native._SESSION_CLAIMS and not native._STAGES
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("observer", [None, {}, object()])
 async def test_used_boolean_or_caller_observer_cannot_replace_private_claim(
     monkeypatch, observer

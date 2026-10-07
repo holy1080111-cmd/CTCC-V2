@@ -37,7 +37,7 @@ balance 只從唯一匹配的 `details.ccy` 讀取 `eq`／`availEq`；頂層 `to
 
 只有唯一 instrument／posSide／反向 side／margin mode／完整 quantity 可匹配，且 `reduceOnly=true`、live conditional／OCO、明確 mark-trigger market SL 的 algo 才標為 protection。多個可匹配 algo 不任選一個。OCO 另外檢查 TP 方向與型態。無法支持的 algo 保留 `unsupported_algo`，**不一律當成開倉掛單，也不默默消失**。這只證明 recorded geometry，不保證實際成交價格。[官方 algo list](https://app.okx.com/docs-v5/en/#order-book-trading-algo-trading-get-algo-order-list)
 
-普通 opening pending 初版僅支援明確 limit、`reduceOnly=false`、有效 leverage 及單一 attached SL。數量是 `sz - accFillSz`，不再把已成交部分全算為 pending。`reduceOnly=true` 普通單只列 reducing order，不能替代持倉保護。market／動態或其他不支援旗標不猜價格或止損。
+普通 opening pending 初版僅支援明確 limit、`reduceOnly=false`、有效 leverage 及單一 attached SL。數量是 `sz - accFillSz`，不再把已成交部分全算為 pending。`reduceOnly=true` 普通單只列 reducing order，不能替代持倉保護；其來源若沒有有效正數剩餘量、可辨識的結算／持倉模式或更新時間，會保留具體缺口，不把 `None`／零剩餘量當成正常的空掛單。market／動態或其他不支援旗標不猜價格或止損。
 
 ## Ledger／history／peak 的有界計算
 

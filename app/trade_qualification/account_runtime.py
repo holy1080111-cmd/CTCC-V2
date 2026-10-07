@@ -262,7 +262,14 @@ class ControlledDemoAccountSession:
     accepted. The repository remains the existing DB0017 journal.
     """
 
-    __slots__ = ("__weakref__", "_credentials", "_pin", "_plan", "_used")
+    __slots__ = (
+        "__weakref__",
+        "_credential_pin",
+        "_credentials",
+        "_pin",
+        "_plan",
+        "_used",
+    )
 
     def __init__(self, *, credentials, plan, expected_plan_sha256):
         try:
@@ -279,9 +286,17 @@ class ControlledDemoAccountSession:
             if owned.session_binding_id != selected.session_binding_id:
                 raise AccountRuntimeError("credential_session_mismatch")
             self._credentials = owned
+            # Only in memory. A frozen dataclass can still be changed via
+            # object.__setattr__; native handoffs recheck this original value.
+            self._credential_pin = collector._credential_content_pin(owned)
             self._plan = selected
             self._pin = expected_plan_sha256
             self._used = False
+            from app.trade_qualification.account_native_clock import (
+                _register_credential_pin,
+            )
+
+            _register_credential_pin(self, self._credential_pin)
         except AccountRuntimeError:
             raise
         except Exception:  # noqa: BLE001 -- credentials/validation must stay private
@@ -356,6 +371,14 @@ class ControlledDemoAccountSession:
         if self._used:
             raise AccountRuntimeError("account_session_already_used")
         self._used = True
+        try:
+            from app.trade_qualification.account_native_clock import (
+                _checked_credential_pin,
+            )
+
+            _checked_credential_pin(self)
+        except Exception:  # noqa: BLE001 -- no credential material escapes
+            raise AccountRuntimeError("account_runtime_invalid") from None
         if type(repository) is not QualificationLedgerRepository:
             raise AccountRuntimeError("owned_qualification_repository_required")
         selected = capture._checked_plan(self._plan, self._pin)

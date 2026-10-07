@@ -261,6 +261,25 @@ async def test_early_denial_before_any_account_request(monkeypatch, problem):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("forge_local_pin", [False, True])
+async def test_in_place_credential_change_denies_before_account_or_db_io(
+    monkeypatch, forge_local_pin
+):
+    session, harness, observed, arguments = setup(monkeypatch)
+    object.__setattr__(
+        session._credentials, "api_key", "synthetic-only-altered-account-key"
+    )
+    if forge_local_pin:
+        session._credential_pin = collector._credential_content_pin(
+            session._credentials
+        )
+    with pytest.raises(module.AccountRuntimeError, match="account_runtime_invalid"):
+        await session.collect_and_materialize(**arguments)
+    assert session._used is True
+    assert harness.requests == [] and observed == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("stream", ["config_before", "config_after"])
 async def test_wrong_exact_uid_never_returns_partial_runtime_receipt(
     monkeypatch, stream

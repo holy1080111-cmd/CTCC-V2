@@ -134,7 +134,7 @@ jobs:
     name: Docker hermetic regression
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    needs: [linux-postgres, linux-shard]
+    needs: [linux-postgres, linux-shard, windows-regression]
     if: always()
     steps:
       - name: Require every isolated component to pass
@@ -142,6 +142,7 @@ jobs:
         run: |
           test '${{ needs.linux-postgres.result }}' = success
           test '${{ needs.linux-shard.result }}' = success
+          test '${{ needs.windows-regression.result }}' = success
 
       - name: Checkout exact aggregation source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

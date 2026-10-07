@@ -3851,3 +3851,29 @@ private root. Eighteen targeted Windows cases passed, including the previously
 failing private-file and archive-path selections and two new root/CWD cases;
 Ruff and diff checks passed. The `018c6d6` CI failure remains a real failed
 result, and this follow-up requires a new exact-source full CI run.
+
+## 2026-10-08 account integrity, diagnostic R7 join and CI gate
+
+The current working source binds a Demo account session's credential content
+to an independently held in-memory construction pin. Mutating both the copied
+credential object and its session-local pin no longer changes the original
+claim. Malformed `reduceOnly` pending orders retain their projection but make
+the account materialization incomplete when remainder, scope or source time is
+invalid. Neither change authenticates an OKX account or grants trading
+authority.
+
+A new same-invocation diagnostic joins the newly published and read-back G12
+receipt to post-barrier native public capture and a one-use native account raw
+packet. It pins the original event, entry, stop and target and rejects stale
+data or invalid chronology. Its only admission is `DENY`; current Demo public
+origin remains blocked before G12 and network I/O until registration-region
+provenance and complete account evidence exist. A combined 241 focused Windows
+tests passed locally; full Windows, PostgreSQL and Linux results for this
+working tree remain unverified.
+
+The required `Docker hermetic regression` GitHub aggregate now depends on the
+Windows regression job as well as PostgreSQL and all Linux shards, and checks
+all three results. Its previously required status could turn green while the
+separate Windows job failed. This source correction has a focused workflow
+invariant test, but it still needs matching exact-commit CI. No result from
+the preceding `f1e6519` run transfers to this changed tree.

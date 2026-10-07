@@ -460,6 +460,7 @@ def _mint_demo_account_origin(
             "origin": origin,
             "session": ref(session),
             "credential_id": id(session._credentials),
+            "credential_pin": native._checked_credential_pin(session),
             "task": ref(state["parent"]),
             "loop": state["loop"],
             "pid": state["pid"],
@@ -494,6 +495,7 @@ def _consume_demo_account_origin(diagnostic, session):
             or session is not state["session"]()
             or session._used is not True
             or id(session._credentials) != state["credential_id"]
+            or native._checked_credential_pin(session) != state["credential_pin"]
             or capture._checked_plan(session._plan, session._pin) != session._plan
             or session._pin != state["origin"].account_plan_sha256
             or sha(diagnostic.receipt_json) != state["receipt_sha256"]
@@ -584,6 +586,7 @@ def _mint_native_demo_raw_packet(
             "receipt_sha256": sha(receipt_json),
             "session": ref(session),
             "credential_id": id(session._credentials),
+            "credential_pin": native._checked_credential_pin(session),
             "task": ref(state["parent"]),
             "loop": state["loop"],
             "pid": state["pid"],
@@ -622,6 +625,7 @@ def _consume_native_demo_raw_packet(diagnostic, session):
             or session is not state["session"]()
             or session._used is not True
             or id(session._credentials) != state["credential_id"]
+            or native._checked_credential_pin(session) != state["credential_pin"]
             or capture._checked_plan(session._plan, session._pin) != session._plan
             or session._pin != state["reference"].plan_sha256
             or sha(diagnostic.receipt_json) != state["receipt_sha256"]

@@ -276,6 +276,42 @@ def test_empty_pending_does_not_turn_protective_algo_into_opening_exposure():
     assert result.snapshot is None
 
 
+def test_valid_reducing_pending_remains_visible_without_opening_risk():
+    def alter(pages):
+        pages["orders_pending"][0][0].update(reduceOnly=True, side="sell")
+
+    result = materialize(source=packet(changes=alter))
+    recorded = projection(result, "orders_pending")
+    assert recorded.kind == "reducing_order"
+    assert recorded.contracts == D("1")
+    assert recorded.reasons == ()
+    assert result.pending_reservations == ()
+    assert result.snapshot is None
+
+
+@pytest.mark.parametrize(
+    ("change", "expected"),
+    [
+        ({"sz": "1", "accFillSz": "1"}, "reducing_remaining_quantity_invalid"),
+        ({"sz": ""}, "reducing_remaining_quantity_invalid"),
+        ({"tdMode": "unknown"}, "reducing_order_scope_unsupported"),
+        ({"posSide": "long"}, "reducing_order_scope_unsupported"),
+    ],
+)
+def test_malformed_reducing_pending_is_not_silently_treated_as_empty(change, expected):
+    def alter(pages):
+        pages["orders_pending"][0][0].update(reduceOnly=True, side="sell", **change)
+
+    result = materialize(source=packet(changes=alter))
+    recorded = projection(result, "orders_pending")
+    assert recorded.kind == "reducing_order"
+    assert expected in recorded.reasons
+    assert expected in result.incomplete_reasons
+    assert result.pending_reservations == ()
+    assert result.snapshot is None
+    assert result.account_complete is False and result.execution_authority is False
+
+
 @pytest.mark.parametrize(
     "stream", ["algo_iceberg", "algo_twap", "algo_chase", "algo_smart_iceberg"]
 )

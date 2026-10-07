@@ -310,6 +310,14 @@ def _credential_values(value):
     return parts
 
 
+def _credential_content_pin(value):
+    """In-memory session integrity pin; never persist or log credential material."""
+    parts = _credential_values(value)
+    return hashlib.sha256(
+        json.dumps(parts, ensure_ascii=True, separators=(",", ":")).encode("ascii")
+    ).hexdigest()
+
+
 def _new_client():
     """Private test seam; external/shared clients or transports are not API inputs."""
     return httpx.AsyncClient(

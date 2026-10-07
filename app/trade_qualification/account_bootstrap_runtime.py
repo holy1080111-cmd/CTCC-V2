@@ -82,6 +82,14 @@ async def _collect(
         if session._used:
             raise runtime.AccountRuntimeError("account_session_already_used")
         session._used = True
+        try:
+            from app.trade_qualification.account_native_clock import (
+                _checked_credential_pin,
+            )
+
+            _checked_credential_pin(session)
+        except Exception:  # noqa: BLE001 -- no credential material escapes
+            raise runtime.AccountRuntimeError("account_runtime_invalid") from None
     else:
         from app.trade_qualification.account_native_clock import (
             NativeAccountClockError,

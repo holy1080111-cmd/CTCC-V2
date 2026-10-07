@@ -25,6 +25,16 @@ keep credentials or a completed task alive. Older journals without a recorded
 TLS hostname still replay under their existing contract but cannot mint this
 new observation.
 
+The controlled session registers an in-memory digest of its copied credential
+fields in a private weak-key registry outside its mutable slots. Native claim,
+collector adoption, origin issuance and one-use origin/raw-packet consumption
+compare both the current fields and the session-local digest to that original
+construction-time pin. This detects an in-place change to a frozen credential
+object even if a caller also rewrites the session-local digest. A failed claim
+burns the session; a failed consumption burns the lease. The digest is not written to
+the journal, proof, report or log, and this local integrity check does not
+verify provider permission, IP binding or account registration.
+
 The signed request builder check proves which header the controlled client
 constructed, not that the exchange separately acknowledged that header. A
 successful authenticated read on a pinned host is not an independent statement
