@@ -70,6 +70,10 @@ GATE3_PREFLIGHT_CASES = (
         "tests.integration.test_gate3_claim_trigger_alias_repair",
         "test_0032_repairs_existing_guard_without_qualifying_legacy_evidence[noncanonical]",
     ),
+    (
+        "tests.integration.test_gate3_claim_trigger_alias_repair",
+        "test_0032_repaired_guard_accepts_fresh_prereg_acknowledged_claim",
+    ),
 )
 
 

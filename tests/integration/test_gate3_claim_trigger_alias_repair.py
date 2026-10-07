@@ -12,14 +12,21 @@ import json
 import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from app.mie.validation.gate3_preregistration_seal_observer import (
+    Gate3PreregistrationSealObserver,
+)
+from app.mie.validation.prospective_capture_schedule import build_capture_schedule
 from tests.integration.test_gate3_canonical_schedule_claim import (
     isolated_claim_database,  # noqa: F401 - pytest discovers imported fixture
     migrate,
     pin_record,
 )
 from tests.integration.test_gate3_committed_preregistration_seal import (
+    append_seal,
     isolated_prereg_database,  # noqa: F401 - pytest discovers imported fixture
+    seal_record,
 )
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
@@ -50,8 +57,6 @@ async def test_0032_repairs_existing_guard_without_qualifying_legacy_evidence(
     seal, schedule, poison, db_engine, pin_repo, _, _, _ = isolated_claim_database
     record = json.dumps(pin_record(seal, schedule), separators=(",", ":"))
     async with db_engine.begin() as connection:
-        await connection.run_sync(migrate, "0030", "upgrade")
-        await connection.run_sync(migrate, "0031", "upgrade")
         # Emulate the installed 0029 trigger body before its source correction.
         installed = await connection.scalar(
             text("""
@@ -103,6 +108,8 @@ async def test_0032_repairs_existing_guard_without_qualifying_legacy_evidence(
         )
 
     async with db_engine.begin() as connection:
+        await connection.run_sync(migrate, "0030", "upgrade")
+        await connection.run_sync(migrate, "0031", "upgrade")
         await connection.run_sync(migrate, "0032", "upgrade")
         assert await _guard_identity(connection) == before_identity
         assert (
@@ -123,28 +130,21 @@ async def test_0032_repairs_existing_guard_without_qualifying_legacy_evidence(
         assert "legacy_row.classification" in repaired
         assert "old.classification" not in repaired
 
-    async with pin_repo.session_factory() as session, session.begin():
-        await session.execute(
-            text(
-                "SELECT public.gate3_capture_schedule_claim_append("
-                "CAST(:record AS jsonb))"
-            ),
-            {"record": record},
-        )
+    # 0030's independent preregistration proof remains mandatory. This old
+    # pre-ACK schedule cannot gain a claim merely because 0032 repaired SQL.
+    with pytest.raises(DBAPIError, match="gate3_prereg_claim_seal_missing"):
+        async with pin_repo.session_factory() as session, session.begin():
+            await session.execute(
+                text(
+                    "SELECT public.gate3_capture_schedule_claim_append("
+                    "CAST(:record AS jsonb))"
+                ),
+                {"record": record},
+            )
     async with db_engine.connect() as connection:
         assert (
             await connection.scalar(
                 text("SELECT count(*) FROM public.gate3_capture_schedule_key_claims")
-            )
-            == 1
-        )
-        # 0030 still hides unsealed evidence, even after the SQL repair.
-        assert (
-            await connection.scalar(
-                text("""
-              SELECT count(*) FROM public.gate3_capture_schedule_claim_read(:sha)
-            """),
-                {"sha": schedule.canonical_sha256()},
             )
             == 0
         )
@@ -161,6 +161,67 @@ async def test_0032_repairs_existing_guard_without_qualifying_legacy_evidence(
     ):
         async with db_engine.begin() as connection:
             await connection.run_sync(migrate, "0032", "downgrade")
+
+
+async def test_0032_repaired_guard_accepts_fresh_prereg_acknowledged_claim(
+    isolated_prereg_database,  # noqa: F811 - fixture injected by pytest
+):
+    (
+        seal,
+        old_schedule,
+        legacy_sha,
+        db_engine,
+        seal_engine,
+        observer_engine,
+        _,
+        pin_repo,
+        _,
+    ) = isolated_prereg_database
+    assert legacy_sha is None
+    async with db_engine.begin() as connection:
+        await connection.run_sync(migrate, "0031", "upgrade")
+        await connection.run_sync(migrate, "0032", "upgrade")
+
+    await append_seal(seal_engine, seal_record(seal, old_schedule))
+    observer = Gate3PreregistrationSealObserver(
+        async_sessionmaker(observer_engine, expire_on_commit=False)
+    )
+    witnessed = await observer.read_seal(
+        expected_seal_sha256=seal.canonical_sha256(),
+        expected_coordinate_plan_sha256=old_schedule.coordinate_plan.canonical_sha256(),
+        coordinate_plan=old_schedule.coordinate_plan,
+    )
+    accepted = await observer.acknowledge(
+        expected_seal_sha256=seal.canonical_sha256(),
+        expected_coordinate_plan_sha256=old_schedule.coordinate_plan.canonical_sha256(),
+        coordinate_plan=old_schedule.coordinate_plan,
+    )
+    assert accepted.acknowledged_at >= witnessed.seal_recorded_at
+    schedule = build_capture_schedule(
+        seal=seal,
+        coordinate_plan=old_schedule.coordinate_plan,
+        planned_at=accepted.database_readback_at,
+    )
+    pinned = await pin_repo.publish(schedule=schedule, seal=seal)
+    assert pinned.schedule_sha256 == schedule.canonical_sha256()
+    assert pinned.execution_authority is False
+    async with db_engine.connect() as connection:
+        assert (
+            await connection.scalar(
+                text("SELECT count(*) FROM public.gate3_capture_schedule_key_claims")
+            )
+            == 1
+        )
+        # A claim without the later publication ACK remains unreadable.
+        assert (
+            await connection.scalar(
+                text(
+                    "SELECT count(*) FROM public.gate3_capture_schedule_claim_read(:sha)"
+                ),
+                {"sha": schedule.canonical_sha256()},
+            )
+            == 0
+        )
 
 
 async def test_0032_empty_downgrade_and_reupgrade_keep_repaired_body(

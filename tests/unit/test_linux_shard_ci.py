@@ -40,6 +40,10 @@ def test_gate3_ack_in_postgres_suite_only():
             "tests/integration/test_gate3_committed_preregistration_seal.py",
             "test_seal_ack_must_commit_before_capture_claim",
         ),
+        (
+            "tests/integration/test_gate3_claim_trigger_alias_repair.py",
+            "test_0032_repaired_guard_accepts_fresh_prereg_acknowledged_claim",
+        ),
     ):
         nodeid = path + "::" + case
         assert path in POSTGRES_TEST_PATHS
