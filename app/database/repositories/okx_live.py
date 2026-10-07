@@ -86,6 +86,14 @@ class OkxLiveRepository:
         orders: list[OkxLiveOrderView],
         algo_orders: list[OkxLiveAlgoOrderView],
     ) -> OkxLiveMirrorStatus:
+        # A conflicting source page must not become a clean local mirror by
+        # silently retaining the last row with a repeated exchange identity.
+        if (
+            len({item.order_id for item in orders}) != len(orders)
+            or len({item.position_id for item in positions}) != len(positions)
+            or len({item.algo_order_id for item in algo_orders}) != len(algo_orders)
+        ):
+            raise OkxLiveRepositoryError("okx_live_snapshot_duplicate_identity")
         now = datetime.now(UTC)
         account_values = self._account_values(account_config, now)
         deduped_orders = {item.order_id: item for item in orders}
@@ -208,6 +216,7 @@ class OkxLiveRepository:
                     set_={
                         "status": "error",
                         "last_error": safe_code,
+                        "reconciled_at": None,
                         "updated_at": now,
                     },
                 )
@@ -335,7 +344,9 @@ class OkxLiveRepository:
             return OkxLiveMirrorStatus(available=False)
 
         available = (
-            checkpoint.reconciled_at is not None
+            checkpoint.status == "reconciled"
+            and not checkpoint.safety_latched
+            and checkpoint.reconciled_at is not None
             and account_state is not None
             and balance_state is not None
         )

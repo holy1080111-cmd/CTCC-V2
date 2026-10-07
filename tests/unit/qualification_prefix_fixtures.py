@@ -32,7 +32,10 @@ from app.trade_qualification.location import (
     evaluate_location,
 )
 from app.trade_qualification.models import EntryZone
-from app.trade_qualification.quote_collector import CollectedQuote
+from app.trade_qualification.quote_collector import (
+    CollectedQuote,
+    QuoteCollectionPolicy,
+)
 from app.trade_qualification.timing import (
     TIMING_POLICIES,
     TimingResult,
@@ -50,6 +53,11 @@ TICK_SIZE = D("0.01")
 MAX_ALLOWED_DRIFT_BPS = D(30)
 MINIMUM_SCORE = 85
 MINIMUM_RISK_REWARD = D(2)
+# Only these in-memory MockTransport fixtures get the bounded maximum wall-clock
+# budget. Production quote freshness and transport timeouts are unchanged.
+SYNTHETIC_MOCK_TRANSPORT_POLICY = QuoteCollectionPolicy(
+    max_age_seconds=10, request_timeout_seconds=5, batch_timeout_seconds=15
+)
 DATA_POLICY = DataQualificationPolicy(
     policy_id="synthetic-prefix-g1-policy",
     analysis_version="synthetic-prefix-source-v1",
@@ -239,6 +247,7 @@ async def capture_prefix_source(direction="long", *, report_id=None):
         change=change,
         report=report_id,
         clock=Clock(tuple(CAPTURED_AT + timedelta(milliseconds=i) for i in range(10))),
+        policy=SYNTHETIC_MOCK_TRANSPORT_POLICY,
     )
     return SyntheticPrefixSource(
         report_id=report_id,

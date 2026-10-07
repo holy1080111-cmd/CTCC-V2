@@ -40,6 +40,7 @@ from app.trade_qualification.reservations import LedgerScope
 
 _CAPTURES = WeakKeyDictionary()
 _ORIGIN_LEASES = WeakKeyDictionary()
+_RAW_PACKET_LEASES = WeakKeyDictionary()
 
 
 class NativeAccountOriginError(ValueError):
@@ -48,6 +49,31 @@ class NativeAccountOriginError(ValueError):
 
 class _OriginLease:
     __slots__ = ("__weakref__",)
+
+
+class NativeAccountRawPacketError(ValueError):
+    """A native raw account packet cannot grant account or order authority."""
+
+
+class _RawPacketLease:
+    __slots__ = ("__weakref__",)
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class _ObservedNativeDemoAccountRawPacket:
+    """One native packet readback, not a complete portfolio or admission."""
+
+    packet: capture.DemoAccountPacket
+    reference: observed.CaptureReference
+    receipt_sha256: str
+    proof_sha256: str
+    readback_sha256: str
+    observed_at: datetime
+    expires_at: datetime
+    account_complete: bool = False
+    source_authenticity_verified: bool = False
+    execution_authority: bool = False
+    admission: str = "DENY"
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -285,12 +311,14 @@ class _CurrentNativeHandoff:
     boundary: object
     invocation: object
     origin_lease: object | None = None
+    raw_packet_lease: object | None = None
 
 
 @dataclass(frozen=True, slots=True, repr=False)
 class InitialNativeAccountDiagnostic:
     receipt_json: bytes
     _origin_lease: object | None = field(default=None, repr=False, compare=False)
+    _raw_packet_lease: object | None = field(default=None, repr=False, compare=False)
 
     @property
     def receipt_sha256(self):
@@ -338,7 +366,8 @@ def _mint_demo_account_origin(
         plan = capture._checked_plan(session._plan, session._pin)
         if (
             type(session) is not ControlledDemoAccountSession
-            or session._used is not False
+            or state.get("session_claim") is not native._session_claim(session)
+            or state["session_claim"].get("bootstrap_used") is not True
             or type(packet) is not capture.DemoAccountPacket
             or type(plan) is not capture.CurrentDemoAccountCapturePlanV6
             or packet.plan != plan
@@ -479,6 +508,157 @@ def _consume_demo_account_origin(diagnostic, session):
         return state["origin"]
     except Exception:  # noqa: BLE001 -- no private plan or credential errors escape
         raise NativeAccountOriginError("native_account_origin_unavailable") from None
+
+
+def _mint_native_demo_raw_packet(
+    stage, session, packet, reference, *, receipt_json, issued, expires, deadline
+):
+    """Mint only after source, companion proof and original DB readback succeed."""
+    try:
+        state = native._state(stage)
+        plan = capture._checked_plan(session._plan, session._pin)
+        if (
+            type(session) is not ControlledDemoAccountSession
+            or state.get("session_claim") is not native._session_claim(session)
+            or state["session_claim"].get("bootstrap_used") is not True
+            or type(plan) is not capture.CurrentDemoAccountCapturePlanV6
+            or type(packet) is not capture.DemoAccountPacket
+            or packet.schema_version != "ctcc.demo_current_account_capture.v6"
+            or packet.plan != plan
+            or packet.plan_sha256 != session._pin
+            or type(reference) is not observed.CaptureReference
+            or reference.plan_sha256 != session._pin
+            or state.get("session") is not session
+            or state.get("parent") is not asyncio.current_task()
+            or state.get("closed") is not True
+            or type(receipt_json) is not bytes
+            or type(issued) is not dict
+            or type(deadline) is not int
+            or utc_from_ns(issued["utc_ns"]) >= expires
+            or issued["monotonic_ns"] >= deadline
+        ):
+            raise ValueError
+        frozen = capture.freeze_demo_account_packet(
+            packet, expected_plan_sha256=session._pin
+        )
+        if frozen.sha256 != reference.packet_sha256:
+            raise ValueError
+        receipt = json.loads(receipt_json)
+        proof_pin = receipt.get("proof_sha256")
+        readback_pin = receipt.get("proof_readback_sha256")
+        if (
+            type(receipt) is not dict
+            or canonical(receipt) != receipt_json
+            or receipt.get("schema_version")
+            != "ctcc.initial_native_account_diagnostic.v2"
+            or receipt.get("source_reference") != observed.reference_document(reference)
+            or receipt.get("observed_at") != utc_from_ns(issued["utc_ns"]).isoformat()
+            or receipt.get("expires_at") != expires.isoformat()
+            or receipt.get("current_native_source_observed") is not True
+            or receipt.get("native_sampled_hwm_verified") is not False
+            or receipt.get("snapshot") is not None
+            or receipt.get("account_complete") is not False
+            or receipt.get("account_revision_published") is not False
+            or receipt.get("flat_start_permission") is not False
+            or receipt.get("execution_authority") is not False
+            or receipt.get("admission") != "DENY"
+            or type(proof_pin) is not str
+            or type(readback_pin) is not str
+            or any(
+                re.fullmatch(r"[a-f0-9]{64}", value) is None
+                for value in (proof_pin, readback_pin)
+            )
+        ):
+            raise ValueError
+        _secret_checked(
+            frozen.payload, collector._credential_values(session._credentials)[:3]
+        )
+        lease = _RawPacketLease()
+        _RAW_PACKET_LEASES[lease] = {
+            "packet_payload": frozen.payload,
+            "packet_sha256": frozen.sha256,
+            "reference": reference,
+            "proof_sha256": proof_pin,
+            "readback_sha256": readback_pin,
+            "receipt_sha256": sha(receipt_json),
+            "session": ref(session),
+            "credential_id": id(session._credentials),
+            "task": ref(state["parent"]),
+            "loop": state["loop"],
+            "pid": state["pid"],
+            "thread": state["thread"],
+            "issued": issued,
+            "deadline": deadline,
+            "expires": expires,
+        }
+        return lease
+    except Exception:  # noqa: BLE001 -- no account body or credential detail escapes
+        raise NativeAccountRawPacketError(
+            "native_account_raw_packet_unavailable"
+        ) from None
+
+
+def _consume_native_demo_raw_packet(diagnostic, session):
+    """Burn one same-task native packet lease and replay its exact raw bytes."""
+    lease = (
+        diagnostic._raw_packet_lease
+        if type(diagnostic) is InitialNativeAccountDiagnostic
+        else None
+    )
+    state = (
+        _RAW_PACKET_LEASES.pop(lease, None) if type(lease) is _RawPacketLease else None
+    )
+    try:
+        task = asyncio.current_task()
+        if (
+            state is None
+            or task is None
+            or task.cancelling()
+            or task is not state["task"]()
+            or asyncio.get_running_loop() is not state["loop"]
+            or os.getpid() != state["pid"]
+            or get_ident() != state["thread"]
+            or session is not state["session"]()
+            or session._used is not True
+            or id(session._credentials) != state["credential_id"]
+            or capture._checked_plan(session._plan, session._pin) != session._plan
+            or session._pin != state["reference"].plan_sha256
+            or sha(diagnostic.receipt_json) != state["receipt_sha256"]
+        ):
+            raise ValueError
+        checked_at = native.clock.native_stamp()
+        validate_stamps((state["issued"], checked_at))
+        if (
+            checked_at["monotonic_ns"] >= state["deadline"]
+            or utc_from_ns(checked_at["utc_ns"]) >= state["expires"]
+        ):
+            raise ValueError
+        packet = capture.verify_demo_account_packet(
+            state["packet_payload"],
+            expected_sha256=state["packet_sha256"],
+            expected_plan_sha256=session._pin,
+        )
+        reference = state["reference"]
+        observed.reference_document(reference)
+        if (
+            type(packet.plan) is not capture.CurrentDemoAccountCapturePlanV6
+            or packet.plan != session._plan
+            or reference.packet_sha256 != state["packet_sha256"]
+        ):
+            raise ValueError
+        return _ObservedNativeDemoAccountRawPacket(
+            packet=packet,
+            reference=reference,
+            receipt_sha256=state["receipt_sha256"],
+            proof_sha256=state["proof_sha256"],
+            readback_sha256=state["readback_sha256"],
+            observed_at=utc_from_ns(state["issued"]["utc_ns"]),
+            expires_at=state["expires"],
+        )
+    except Exception:  # noqa: BLE001 -- fail closed without private source detail
+        raise NativeAccountRawPacketError(
+            "native_account_raw_packet_unavailable"
+        ) from None
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -831,6 +1011,20 @@ async def _capture_initial_current(stage, session, session_factory, root):
         if type(selected) is capture.CurrentDemoAccountCapturePlanV6
         else None
     )
+    raw_packet_lease = (
+        _mint_native_demo_raw_packet(
+            stage,
+            session,
+            replay.packet,
+            reference,
+            receipt_json=receipt,
+            issued=issue,
+            expires=expires,
+            deadline=deadline,
+        )
+        if type(selected) is capture.CurrentDemoAccountCapturePlanV6
+        else None
+    )
     # This is the sole minting path, reachable only after actual private source,
     # original phase completeness, current admission and durable separate reads.
     fence = object.__new__(boundary._AccountClockBoundary)
@@ -850,7 +1044,13 @@ async def _capture_initial_current(stage, session, session_factory, root):
     )
     carrier = object.__new__(_CapturedCurrentNativeAccount)
     _CAPTURES[carrier] = _CurrentNativeHandoff(
-        packet, reference, receipt, fence, state["invocation"], origin_lease
+        packet,
+        reference,
+        receipt,
+        fence,
+        state["invocation"],
+        origin_lease,
+        raw_packet_lease,
     )
     return carrier
 
@@ -933,7 +1133,9 @@ async def capture_initial_native_account(session, *, session_factory, proof_root
                 carrier, invocation=state["invocation"], expected_receipt_sha256=pin
             )
             return InitialNativeAccountDiagnostic(
-                handoff.receipt_json, handoff.origin_lease
+                handoff.receipt_json,
+                handoff.origin_lease,
+                handoff.raw_packet_lease,
             )
     except asyncio.CancelledError:
         raise

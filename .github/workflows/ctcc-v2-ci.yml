@@ -19,8 +19,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  regression:
-    name: Docker hermetic regression
+  linux-postgres:
+    name: Docker PostgreSQL and restart acceptance
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -44,6 +44,7 @@ jobs:
           python3 scripts/verify_final_hermetic.py \
             --archive "$archive" --archive-sha256 "$digest" \
             --commit "$commit" --tree "$tree" \
+            --suite postgres \
             --output "$RUNNER_TEMP/ctcc-validation"
 
       - name: Show validation identity
@@ -61,14 +62,120 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: ctcc-validation-${{ github.sha }}
+          name: ctcc-linux-postgres-${{ github.sha }}
           path: |
             ${{ runner.temp }}/ctcc-source.tar
             ${{ runner.temp }}/ctcc-validation/*.json
             ${{ runner.temp }}/ctcc-validation/*.log
             ${{ runner.temp }}/ctcc-validation/crash-probe/*.json
             ${{ runner.temp }}/ctcc-validation/test-results/*.xml
+            ${{ runner.temp }}/ctcc-validation/test-results/*.json
           if-no-files-found: error
+          retention-days: 30
+
+  linux-shard:
+    name: Docker Linux full suite shard ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - name: Checkout reviewed source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Export exact source and run isolated shard
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker version
+          python3 --version
+          commit=$(git rev-parse HEAD)
+          tree=$(git rev-parse 'HEAD^{tree}')
+          archive="$RUNNER_TEMP/ctcc-source.tar"
+          git -c core.autocrlf=false -c core.eol=lf archive --format=tar --output="$archive" "$commit"
+          digest=$(sha256sum "$archive" | cut -d ' ' -f 1)
+          python3 scripts/verify_final_hermetic.py \
+            --archive "$archive" --archive-sha256 "$digest" \
+            --commit "$commit" --tree "$tree" \
+            --suite shard --shard-index "${{ matrix.shard }}" \
+            --output "$RUNNER_TEMP/ctcc-validation"
+
+      - name: Show validation identity
+        if: always()
+        shell: bash
+        run: |
+          if test -f "$RUNNER_TEMP/ctcc-validation/identity.json"; then
+            cat "$RUNNER_TEMP/ctcc-validation/identity.json"
+          fi
+          if test -f "$RUNNER_TEMP/ctcc-validation/steps.json"; then
+            cat "$RUNNER_TEMP/ctcc-validation/steps.json"
+          fi
+
+      - name: Preserve exact-source shard evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ctcc-linux-shard-${{ matrix.shard }}-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/ctcc-source.tar
+            ${{ runner.temp }}/ctcc-validation/*.json
+            ${{ runner.temp }}/ctcc-validation/*.log
+            ${{ runner.temp }}/ctcc-validation/test-results/*.xml
+            ${{ runner.temp }}/ctcc-validation/test-results/*.json
+          if-no-files-found: error
+          retention-days: 30
+
+  regression:
+    name: Docker hermetic regression
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    needs: [linux-postgres, linux-shard]
+    if: always()
+    steps:
+      - name: Require every isolated component to pass
+        shell: bash
+        run: |
+          test '${{ needs.linux-postgres.result }}' = success
+          test '${{ needs.linux-shard.result }}' = success
+
+      - name: Checkout exact aggregation source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download all isolated evidence
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          pattern: ctcc-linux-*-${{ github.sha }}
+          path: ${{ runner.temp }}/ctcc-components
+
+      - name: Verify exact full-suite union and source identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/manifest.py --check
+          commit=$(git rev-parse HEAD)
+          test "$commit" = "$GITHUB_SHA"
+          tree=$(git rev-parse 'HEAD^{tree}')
+          python3 -m scripts.verify_linux_shard_union \
+            --artifacts "$RUNNER_TEMP/ctcc-components" \
+            --commit "$commit" --tree "$tree" \
+            --manifest MANIFEST.sha256 \
+            --output "$RUNNER_TEMP/ctcc-linux-union.json"
+
+      - name: Preserve union receipt
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ctcc-linux-union-${{ github.sha }}
+          path: ${{ runner.temp }}/ctcc-linux-union.json
+          if-no-files-found: ignore
           retention-days: 30
 
   windows-regression:

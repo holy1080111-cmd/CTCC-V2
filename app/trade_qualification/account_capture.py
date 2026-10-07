@@ -1030,10 +1030,14 @@ def _row_record(row, stream, plan, received):
                 identities.add(identity)
                 if name == "posData":
                     _required_text(item, "instId")
-        # Top-level balance availEq and risk-anchor adjEq are inapplicable to
-        # Futures mode. Their mode-specific requirements are checked after
-        # config_before is pinned; never substitute totalEq for either value.
-        required_numbers = {"totalEq"} if stream == "balance" else set()
+        # Preserve v2/v3 row bytes; newer all-product plans apply account-mode
+        # requirements after config_before has been pinned.
+        if is_all_product_plan(plan):
+            required_numbers = {"totalEq"} if stream == "balance" else set()
+        else:
+            required_numbers = (
+                {"totalEq", "availEq"} if stream == "balance" else {"adjEq"}
+            )
         required_clocks = {"uTime"} if stream == "balance" else {"ts"}
     elif stream == "account_instruments":
         instrument = _required_text(row, "instId")

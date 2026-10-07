@@ -3518,3 +3518,117 @@ local account selection was interrupted because this host has a history of
 thermal shutdown; its partial output is not a regression pass. Exact-source
 Windows/Linux, PostgreSQL and Docker validation, authenticated Demo reads,
 true Gate 3/OOS, Live readiness and release acceptance remain open.
+
+## 2026-10-06 source checkpoint and synchronized public-clock diagnostic
+
+Commit `4672a7a09cf27d723db8850905ab3d46c7719f70` has tree
+`58ee537f0f31cdaf104a85eff4e41da067110fda` and is retained under
+`../validation-results/ctcc-source-4672a7a-20261006/`. Its exact source TAR
+SHA256 is `2f2a69cf1c1ade9420ccb1ab3227171abdbdce66ab1df9a376bbeaaf69756200`;
+the complete-history bundle SHA256 is
+`a6798bc1ddf8464937ec662dc0da3253ca90a1de5a81183f3d538d762c06442d`.
+Readback matched all 900 Git blobs, executable bits and 899 manifest entries.
+The manifest SHA256 is
+`a7f8db7c2eadf2040685391300bc2c3c21aa6dd79fd11214afc74652c4457bad`.
+The scoped high-confidence token-prefix scan found zero matches, but does
+not certify every log, report, ZIP or remote-only object. The source was pushed
+without force to `develop/v2-final-completion-ci-4672a7a`; matching
+[run 37401190910](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/37401190910)
+was still running when checked. No full-regression PASS is inferred.
+
+At 2026-10-06 09:53 Asia/Taipei, W32Time was Running/Automatic and reported
+a fresh synchronization from `time.windows.com`. One later unauthenticated
+production-public quote diagnostic for `BTC-USDT-SWAP` used a declared
+60-second component age policy and accepted three raw-backed REST leaves:
+ticker, mark and funding. The returned object explicitly had
+`execution_authority=False` and `source_authenticity_verified=False`; the
+observation was not archived as a trusted complete-market packet. The ticker
+generation time preceded the HTTP request, as a market-event timestamp can;
+request/receipt/body-completion times remained ordered. This is a clock and
+collector diagnostic only, not Demo source or R5 acceptance. The prior failed
+five-second-age attempt remains a failure; no timestamp was rewritten and no
+future-timestamp tolerance was widened.
+
+## 2026-10-07 exact-source remote CI result and retained failure evidence
+
+The matching `4672a7a` [run 37401190910](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/37401190910)
+finished **failed**. The downloaded Linux and Windows artifacts are retained
+under `../validation-results/remote-4672-ci-20261007/`; they identify that
+exact source and tree. In isolated Linux PostgreSQL, the selected 213 intent
+tests passed without failures or skips, and migrations reached head `0024`.
+That selection alone consumed about 54 minutes. The Linux full suite then
+timed out at its 6,000-second stage limit around 24% of collection, so there
+is no Linux full regression, Docker hermetic or restart acceptance for this
+commit. The Windows JUnit collected 13,394 cases and recorded 63 setup errors,
+3 failures and 29 skips. Most errors trace to one synthetic quote-capture
+fixture timing out under runner load; two failures are legacy account-packet
+byte-hash drift, and one direct recheck test also failed on quote capture.
+These failures remain acceptance blockers until corrected and rerun on a new
+exact source. No CI green status, main merge or release is inferred from the
+passing PostgreSQL selection.
+
+## 2026-10-07 OKX account-pagination documentation audit
+
+The current [OKX API reference](https://www.okx.com/docs-v5/en/) and
+[pagination guide](https://www.okx.com/docs-v5/trick_en/) confirm the cursor
+fields used by `account_capture.py`: recent and historical private fills use
+`billId` (not `tradeId`); account bills use `billId`; ordinary pending and
+historical orders use `ordId`; pending algo orders use `algoId`. `after` asks
+for older records and excludes the cursor. A short nonempty page is not a
+terminal proof. The captured page chain requires an explicit empty terminal
+page, strictly advancing source IDs, the previous last-row cursor and the
+previous receipt hash; duplicate/conflicting rows fail closed. A focused
+pagination/history selection passed 145 synthetic cases. These checks do not
+establish authenticated account completeness, exchange retention or a
+trusted portfolio snapshot. Order-history time filters refer to order
+creation, fill history has separate `fillTime` and bill-generation `ts`, and
+bills have their own `ts`; these times are not interchangeable for realized
+outcomes.
+
+The [EEA API reference](https://my.okx.com/docs-v5/en/) currently lists four
+additional pending algo types (iceberg, TWAP, chase and smart iceberg) beyond
+the four in the global reference. The v5/v6 current capture plan requests
+only the global four. The native V6 entry rejects non-global registration,
+and independent registration-region evidence is still absent; EEA account
+completeness therefore remains **unverified**. Historical v4 packet bytes
+were not changed to mask this regional scope difference.
+
+## 2026-10-07 fail-closed source hardening and CI partition work
+
+The current working tree rejects selected required Demo and Live account,
+position and order numeric, identity and attachment fields when they are
+absent or nonfinite, instead of converting them to zero, false or an empty
+attachment list. This does not prove complete endpoint coverage. Demo service
+reads no longer discard rows
+with missing order IDs or mark malformed private rows as a successful recent
+exchange read. Live balance parsing requires an explicit, unique USDT detail;
+Live mirror persistence rejects duplicate exchange order, position and algo
+identities before opening a database transaction. The Live reconciliation
+failure path disarms and attempts a durable safety latch. An original native
+V6 account capture can now hand off its exact raw packet under the actual
+claimed credential session, once in the same task, after the existing proof
+and readback; this handoff still carries `DENY` and no execution authority.
+Targeted parser, service, repository, native handoff, route and CI-partition
+tests passed locally. PostgreSQL integration for these new changes has not
+yet run against a configured local database.
+
+The next exact-source CI design runs the reviewed PostgreSQL selection and
+eight disjoint Linux full-suite shards in separate isolated Docker jobs. A
+required `Docker hermetic regression` aggregation job verifies identical
+source/manifest identity, each component's test report and readback hash,
+and a one-to-one union of the full collected suite. Four synthetic union-gate
+tests passed. The Windows synthetic quote fixture has a bounded larger
+MockTransport timeout; production quote freshness and transport policy are
+unchanged. A full CI result for this working tree is still pending. The
+current Live mirror still lacks authenticated complete page chains, a trusted
+account revision and protection readback before its legacy `reconciled`
+checkpoint; therefore Live readiness and all-submit-route acceptance remain
+**failed**, regardless of these narrower fixes.
+
+A bounded pattern scan of the working source, reachable Git history, the
+`4672a7a` source archive and downloaded CI evidence found no confirmed real
+credential; matches were synthetic test fixtures. It skipped 28 binary files
+and cannot detect unknown secret formats, so this is not final secret-audit
+acceptance. The old exact-source checkpoint and all failure artifacts remain
+retained. The local host's previous thermal shutdowns rule out treating an
+interrupted broad Windows test selection as evidence of a pass.

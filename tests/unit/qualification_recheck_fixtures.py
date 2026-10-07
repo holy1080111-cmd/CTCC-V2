@@ -21,7 +21,10 @@ from app.market.quality.candles import BAR_SECONDS, candle_closed_at
 from app.trade_qualification.data import WSReferenceObservation
 from app.trade_qualification.engine import PortfolioInputs, evaluate_pre_evidence
 from tests.unit.qualification_engine_fixtures import engine_inputs, engine_source
-from tests.unit.qualification_prefix_fixtures import SyntheticPrefixSource
+from tests.unit.qualification_prefix_fixtures import (
+    SYNTHETIC_MOCK_TRANSPORT_POLICY,
+    SyntheticPrefixSource,
+)
 from tests.unit.test_qualification_portfolio import STAMP_FIELDS
 from tests.unit.test_qualification_quote_collector import Clock, _ms, capture
 
@@ -298,6 +301,7 @@ async def capture_recheck_source(
         instrument=market.instrument_id,
         clock=Clock(tuple(quote_start + timedelta(milliseconds=i) for i in range(10))),
         barrier=barrier,
+        policy=SYNTHETIC_MOCK_TRANSPORT_POLICY,
     )
     frame = _canonical(
         {

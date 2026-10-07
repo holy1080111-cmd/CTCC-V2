@@ -118,18 +118,28 @@ class OkxDemoService:
         rows = await self.private_client.account_config()
         if not rows:
             raise OkxDemoUnavailableError("okx_demo_account_config_empty")
+        try:
+            parsed = parse_account_config(rows[0])
+        except Exception:
+            self._last_error = "okx_demo_source_parse_invalid"
+            raise
         self._last_exchange_ok_at = datetime.now(UTC)
         self._last_error = None
-        return parse_account_config(rows[0])
+        return parsed
 
     async def balance(self) -> OkxDemoBalanceSnapshot:
         self._ensure_read_ready()
         rows = await self.private_client.balance()
         if not rows:
             raise OkxDemoUnavailableError("okx_demo_balance_empty")
+        try:
+            parsed = parse_balance(rows[0])
+        except Exception:
+            self._last_error = "okx_demo_source_parse_invalid"
+            raise
         self._last_exchange_ok_at = datetime.now(UTC)
         self._last_error = None
-        return parse_balance(rows[0])
+        return parsed
 
     async def positions(
         self, instrument_id: str | None = None
@@ -138,11 +148,16 @@ class OkxDemoService:
         if instrument_id is not None:
             self._ensure_symbol(instrument_id)
         rows = await self.private_client.positions(instrument_id)
+        try:
+            parsed = [
+                item for item in (parse_position(row) for row in rows) if item.size != 0
+            ]
+        except Exception:
+            self._last_error = "okx_demo_source_parse_invalid"
+            raise
         self._last_exchange_ok_at = datetime.now(UTC)
         self._last_error = None
-        return [
-            item for item in (parse_position(row) for row in rows) if item.size != 0
-        ]
+        return parsed
 
     async def pending_orders(
         self, instrument_id: str | None = None
@@ -151,9 +166,14 @@ class OkxDemoService:
         if instrument_id is not None:
             self._ensure_symbol(instrument_id)
         rows = await self.private_client.pending_orders(instrument_id)
+        try:
+            parsed = [parse_order(row) for row in rows]
+        except Exception:
+            self._last_error = "okx_demo_source_parse_invalid"
+            raise
         self._last_exchange_ok_at = datetime.now(UTC)
         self._last_error = None
-        return [parse_order(row) for row in rows if row.get("ordId")]
+        return parsed
 
     async def pending_algo_orders(
         self, instrument_id: str | None = None
@@ -162,9 +182,14 @@ class OkxDemoService:
         if instrument_id is not None:
             self._ensure_symbol(instrument_id)
         rows = await self.private_client.pending_algo_orders(instrument_id)
+        try:
+            parsed = [parse_algo_order(row) for row in rows]
+        except Exception:
+            self._last_error = "okx_demo_source_parse_invalid"
+            raise
         self._last_exchange_ok_at = datetime.now(UTC)
         self._last_error = None
-        return [parse_algo_order(row) for row in rows if row.get("algoId")]
+        return parsed
 
     async def order_detail(
         self,
@@ -220,15 +245,9 @@ class OkxDemoService:
                     for item in (parse_position(row) for row in position_rows)
                     if item.size != 0
                 ]
-                pending_orders = [
-                    parse_order(row) for row in pending_rows if row.get("ordId")
-                ]
-                recent_orders = [
-                    parse_order(row) for row in history_rows if row.get("ordId")
-                ]
-                algo_orders = [
-                    parse_algo_order(row) for row in algo_rows if row.get("algoId")
-                ]
+                pending_orders = [parse_order(row) for row in pending_rows]
+                recent_orders = [parse_order(row) for row in history_rows]
+                algo_orders = [parse_algo_order(row) for row in algo_rows]
                 persisted = False
                 if self.repository is not None:
                     await self.repository.sync_snapshot(
@@ -275,7 +294,12 @@ class OkxDemoService:
             # revoked while another write was in progress.
             self._ensure_write_ready()
             self._ensure_symbol(request.instrument_id)
-            account_config = await self.account_config()
+            try:
+                account_config = await self.account_config()
+            except ValueError as exc:
+                if str(exc) == "okx_account_position_mode_invalid":
+                    raise OkxDemoSafetyError("unsupported_okx_position_mode") from exc
+                raise
             if (
                 account_config.raw.get("posMode") not in {"net_mode", "long_short_mode"}
                 or account_config.raw.get("posMode") != account_config.position_mode

@@ -40,8 +40,14 @@ async def prepared(monkeypatch):
         plan=plan,
         expected_plan_sha256=capture.plan_sha256(plan),
     )
+    # Model the state after the native issuer has burned the session and its
+    # collector has adopted the exact one-time claim. The independent test
+    # below exercises the real claim and stage context managers.
+    claim = {"bootstrap_used": True}
+    session._used = True
     state = {
         "session": session,
+        "session_claim": claim,
         "parent": asyncio.current_task(),
         "loop": asyncio.get_running_loop(),
         "pid": os.getpid(),
@@ -49,6 +55,15 @@ async def prepared(monkeypatch):
         "closed": True,
     }
     monkeypatch.setattr(runtime.native, "_state", lambda _stage: state)
+    real_claim = runtime.native._session_claim
+    session_weak = ref(session)
+    monkeypatch.setattr(
+        runtime.native,
+        "_session_claim",
+        lambda candidate: (
+            claim if candidate is session_weak() else real_claim(candidate)
+        ),
+    )
     monkeypatch.setattr(runtime.native.clock, "native_stamp", samples)
     issued = samples()
     receipt = canonical({"proof_sha256": sha(raw), "admission": "DENY"})
@@ -205,6 +220,7 @@ async def test_old_chain_replays_but_cannot_mint_without_tls_host(monkeypatch):
     )
     state = {
         "session": session,
+        "session_claim": {"bootstrap_used": True},
         "parent": asyncio.current_task(),
         "loop": asyncio.get_running_loop(),
         "pid": os.getpid(),
@@ -212,6 +228,16 @@ async def test_old_chain_replays_but_cannot_mint_without_tls_host(monkeypatch):
         "closed": True,
     }
     monkeypatch.setattr(runtime.native, "_state", lambda _stage: state)
+    session._used = True
+    monkeypatch.setattr(
+        runtime.native,
+        "_session_claim",
+        lambda candidate: (
+            state["session_claim"]
+            if candidate is session
+            else pytest.fail("unrelated session claim")
+        ),
+    )
     issued = {
         "utc_ns": int(original.expires_at.timestamp() * 1_000_000_000) - 2_000_000_000,
         "monotonic_ns": original.monotonic_deadline_ns - 2_000_000_000,

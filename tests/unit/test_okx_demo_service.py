@@ -867,13 +867,61 @@ async def test_place_rejects_existing_pending_order_for_same_instrument() -> Non
                 "px": "90000",
                 "avgPx": "",
                 "reduceOnly": "false",
+                "attachAlgoOrds": [],
             }
         ]
     )
     service = OkxDemoService(private, FakePublic(), None, settings=settings())
     with pytest.raises(OkxDemoSafetyError, match="pending_order_already_exists"):
         await service.place_order(request())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["ordinary", "algo"])
+async def test_place_never_drops_pending_row_with_missing_exchange_id(
+    kind: str,
+) -> None:
+    pending = {
+        "instId": "BTC-USDT-SWAP",
+        "side": "buy",
+        "posSide": "net",
+        "ordType": "limit",
+        "state": "live",
+        "sz": "0.1",
+        "accFillSz": "0",
+        "reduceOnly": "false",
+        "attachAlgoOrds": [],
+    }
+    private = FakePrivate(
+        pending_orders=[pending] if kind == "ordinary" else None,
+        pending_algos=[pending] if kind == "algo" else None,
+    )
+    service = OkxDemoService(private, FakePublic(), None, settings=settings())
+
+    with pytest.raises(ValueError):
+        await service.place_order(request())
     assert private.placed_payload is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "method",
+    ["account_config", "balance", "positions", "pending_orders", "pending_algo_orders"],
+)
+async def test_malformed_private_row_cannot_advance_success_status(method: str) -> None:
+    private = FakePrivate()
+
+    async def malformed(*_args, **_kwargs):
+        return [{}]
+
+    setattr(private, method, malformed)
+    service = OkxDemoService(private, FakePublic(), None, settings=settings())
+    prior_success = datetime(2026, 1, 1, tzinfo=UTC)
+    service._last_exchange_ok_at = prior_success
+    with pytest.raises(ValueError):
+        await getattr(service, method)()
+    assert service._last_exchange_ok_at == prior_success
+    assert service._last_error == "okx_demo_source_parse_invalid"
 
 
 @pytest.mark.asyncio

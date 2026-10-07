@@ -25,6 +25,7 @@ from app.database.models.okx_live import (
 from app.database.repositories.okx_live import (
     OkxLiveAccountIdentityError,
     OkxLiveRepository,
+    OkxLiveRepositoryError,
     OkxLiveSafetyLatchConflict,
     fingerprint_account_identifier,
 )
@@ -188,6 +189,27 @@ async def test_live_repository_is_atomic_account_pinned_and_rollback_isolated() 
                 assert first_status.algo_order_count == 1
                 assert first_status.last_error is None
 
+                for duplicate_field in ("positions", "orders", "algo_orders"):
+                    duplicate = {
+                        "positions": [position()],
+                        "orders": [order("integration-order-1")],
+                        "algo_orders": [algo_order()],
+                    }
+                    duplicate[duplicate_field] *= 2
+                    with pytest.raises(
+                        OkxLiveRepositoryError,
+                        match="okx_live_snapshot_duplicate_identity",
+                    ):
+                        await repository.sync_snapshot(
+                            account_config=account_config(),
+                            balance=balance("999"),
+                            **duplicate,
+                        )
+                unchanged = await repository.mirror_status()
+                assert unchanged.order_count == 1
+                assert unchanged.position_count == 1
+                assert unchanged.algo_order_count == 1
+
                 latched = await repository.engage_safety_latch(
                     "integration_safety_event"
                 )
@@ -221,6 +243,7 @@ async def test_live_repository_is_atomic_account_pinned_and_rollback_isolated() 
                 assert second_status.safety_latched is True
                 assert second_status.safety_latch_code == ("integration_safety_event")
                 assert second_status.safety_latch_version == 1
+                assert second_status.available is False
 
                 async with Session() as session:
                     stored_orders = list(
@@ -280,18 +303,32 @@ async def test_live_repository_is_atomic_account_pinned_and_rollback_isolated() 
                 )
                 failed_status = await repository.mirror_status()
 
-                assert failed_status.available is True
+                assert failed_status.available is False
                 assert failed_status.order_count == 2
                 assert failed_status.position_count == 0
                 assert failed_status.algo_order_count == 0
                 assert failed_status.last_error == "okx_live_reconcile_failed"
-                assert (
-                    failed_status.last_reconciled_at == second_status.last_reconciled_at
-                )
+                assert failed_status.last_reconciled_at is None
                 assert failed_status.details["status"] == "error"
                 assert failed_status.safety_latched is True
                 assert failed_status.safety_latch_version == 1
                 assert "must-never-be-persisted" not in repr(failed_status)
+                restarted_repository = OkxLiveRepository(Session)
+                after_restart = await restarted_repository.mirror_status()
+                assert after_restart.available is False
+                assert after_restart.last_reconciled_at is None
+                assert after_restart.safety_latched is True
+                assert after_restart.safety_latch_code == "integration_safety_event"
+                assert after_restart.details["status"] == "error"
+                assert (
+                    await restarted_repository.safety_latch_status()
+                ).latched is True
+                async with Session() as session:
+                    stored_balance = await session.get(OkxLiveBalanceState, 1)
+                    assert stored_balance is not None
+                    assert stored_balance.total_equity == Decimal(101)
+                    assert await session.get(OkxLiveOrderState, "integration-order-1")
+                    assert await session.get(OkxLiveOrderState, "integration-order-2")
                 relatched = await repository.engage_safety_latch(
                     "newer_integration_safety_event"
                 )
@@ -302,6 +339,21 @@ async def test_live_repository_is_atomic_account_pinned_and_rollback_isolated() 
                 assert cleared.latched is False
                 assert cleared.code is None
                 assert cleared.version == 3
+                after_clear = await restarted_repository.mirror_status()
+                assert after_clear.available is False
+                assert after_clear.details["status"] == "error"
+                assert after_clear.last_reconciled_at is None
+
+                recovered = await restarted_repository.sync_snapshot(
+                    account_config=account_config(),
+                    balance=balance("101"),
+                    positions=[],
+                    orders=[order("integration-order-2")],
+                    algo_orders=[],
+                )
+                assert recovered.available is True
+                assert recovered.last_reconciled_at is not None
+                assert recovered.safety_latched is False
                 assert outer_transaction.is_active
             finally:
                 if outer_transaction.is_active:

@@ -9,12 +9,14 @@ import pytest
 from app.database.repositories.okx_live import (
     OkxLiveAccountIdentityError,
     OkxLiveRepository,
+    OkxLiveRepositoryError,
     fingerprint_account_identifier,
 )
 from app.domain.okx_live import (
     OkxLiveAccountConfig,
     OkxLiveAlgoOrderView,
     OkxLiveApiKeyCapability,
+    OkxLiveBalanceSnapshot,
     OkxLiveOrderView,
     OkxLivePositionView,
 )
@@ -180,3 +182,53 @@ def test_repository_public_api_has_no_exchange_write_operations() -> None:
         "safety_latch_status",
         "sync_snapshot",
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("duplicate_field", ["positions", "orders", "algo_orders"])
+async def test_duplicate_exchange_identity_is_rejected_before_database_write(
+    duplicate_field: str,
+) -> None:
+    def no_database_session():
+        pytest.fail("duplicate source must be rejected before database access")
+
+    position = OkxLivePositionView(
+        position_id="same-position",
+        instrument_id="BTC-USDT-SWAP",
+        position_side="net",
+        size=Decimal(1),
+        available_size=Decimal(1),
+        unrealized_pnl=Decimal(0),
+    )
+    order = OkxLiveOrderView(
+        order_id="same-order",
+        instrument_id="BTC-USDT-SWAP",
+        side="buy",
+        order_type="limit",
+        state="live",
+        size=Decimal(1),
+        accumulated_fill_size=Decimal(0),
+    )
+    algo = OkxLiveAlgoOrderView(
+        algo_order_id="same-algo",
+        instrument_id="BTC-USDT-SWAP",
+        order_type="conditional",
+        state="live",
+        size=Decimal(1),
+    )
+    rows = {"positions": [position], "orders": [order], "algo_orders": [algo]}
+    rows[duplicate_field] *= 2
+    repository = OkxLiveRepository(no_database_session)
+    with pytest.raises(
+        OkxLiveRepositoryError, match="okx_live_snapshot_duplicate_identity"
+    ):
+        await repository.sync_snapshot(
+            account_config=account_config(),
+            balance=OkxLiveBalanceSnapshot(
+                total_equity=Decimal(1),
+                isolated_equity=Decimal(0),
+                adjusted_equity=Decimal(1),
+                available_equity=Decimal(1),
+            ),
+            **rows,
+        )

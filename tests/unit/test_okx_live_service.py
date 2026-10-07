@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -102,7 +103,16 @@ class FakeReadClient:
                 "adjEq": "10000",
                 "availEq": "9900",
                 "uTime": "1786276800000",
-                "details": [],
+                "details": [
+                    {
+                        "ccy": "USDT",
+                        "eq": "10000",
+                        "cashBal": "10000",
+                        "availBal": "9900",
+                        "frozenBal": "100",
+                        "upl": "0",
+                    }
+                ],
             }
         ]
 
@@ -843,6 +853,7 @@ async def test_reconcile_engages_stop_for_untrusted_unprotected_position() -> No
             "ordType": "oco",
             "state": "live",
             "sz": "0.1",
+            "actualSz": "0",
             "tpTriggerPx": "102000",
             "tpTriggerPxType": "mark",
             "slTriggerPx": "99000",
@@ -854,6 +865,146 @@ async def test_reconcile_engages_stop_for_untrusted_unprotected_position() -> No
 
     assert service.arm_status().emergency_stop is True
     assert service.arm_status().last_error == ("live_position_protection_not_confirmed")
+
+
+@pytest.mark.asyncio
+async def test_reconcile_invalid_exposure_source_disarms_and_persists_latch() -> None:
+    service, read, execution, intents, clock = service_fixture()
+    await service.arm(
+        OkxLiveArmRequest(duration_seconds=60, confirmation=LIVE_ARM_PHRASE)
+    )
+    mirror = service.mirror_repository
+    assert mirror is not None
+    prior_snapshots = len(mirror.snapshots)
+    read.position_rows = [
+        {
+            "posId": "possibly-exposed-position",
+            "instId": "BTC-USDT-SWAP",
+            "posSide": "net",
+            "pos": "1",
+            "availPos": "1",
+            "upl": "0",
+            "mgnMode": "cross",
+        }
+    ]
+    read.algo_rows = [
+        {
+            "algoId": "possibly-protective-algo",
+            "instId": "BTC-USDT-SWAP",
+            "ordType": "oco",
+            "state": "live",
+            "sz": "1",
+            # Missing actualSz must never become a confirmed zero-sized fill.
+        }
+    ]
+
+    with pytest.raises(ValueError, match="missing_or_invalid:actualSz"):
+        await service.reconcile()
+
+    assert service.arm_status().armed is False
+    assert service.arm_status().emergency_stop is True
+    assert mirror.safety_latched is True
+    assert mirror.safety_latch_code == "okx_live_reconcile_failed"
+    assert len(mirror.snapshots) == prior_snapshots
+    assert execution.calls == []
+
+    restarted = OkxLiveService(
+        read,
+        FakePublicClient(),
+        mirror,
+        execution_client=execution,
+        execution_repository=intents,
+        settings=live_settings(),
+        clock=clock,
+        sleeper=no_sleep,
+    )
+    await restarted.startup()
+    assert restarted.arm_status().armed is False
+    assert restarted.arm_status().emergency_stop is True
+    assert restarted.arm_status().safety_latch_code == "okx_live_reconcile_failed"
+
+
+@pytest.mark.asyncio
+async def test_reconcile_latch_write_failure_keeps_original_parse_error_and_local_stop() -> (
+    None
+):
+    service, read, execution, _, _ = service_fixture()
+    await service.arm(
+        OkxLiveArmRequest(duration_seconds=60, confirmation=LIVE_ARM_PHRASE)
+    )
+    mirror = service.mirror_repository
+    assert mirror is not None
+    mirror.fail_latch_write = True
+    read.pending_rows = [
+        {
+            "ordId": "possibly-live-order",
+            "instId": "BTC-USDT-SWAP",
+            "side": "buy",
+            "ordType": "limit",
+            "state": "live",
+            "sz": "1",
+            # Missing accFillSz is an unknown fill, not a zero fill.
+            "reduceOnly": "false",
+            "attachAlgoOrds": [],
+        }
+    ]
+
+    with pytest.raises(ValueError, match="missing_or_invalid:accFillSz"):
+        await service.reconcile()
+
+    assert service.arm_status().armed is False
+    assert service.arm_status().emergency_stop is True
+    assert service.arm_status().last_error == "okx_live_reconcile_failed"
+    assert execution.calls == []
+
+
+@pytest.mark.asyncio
+async def test_reconcile_unavailable_private_source_persists_stop() -> None:
+    service, read, execution, _, _ = service_fixture()
+
+    async def unavailable_balance(currency=None):
+        raise OkxPrivateApiError("network", code="transport_error")
+
+    read.balance = unavailable_balance
+    with pytest.raises(OkxPrivateApiError):
+        await service.reconcile()
+
+    mirror = service.mirror_repository
+    assert mirror is not None
+    assert mirror.safety_latched is True
+    assert mirror.safety_latch_code == "okx_live_reconcile_failed"
+    assert service.arm_status().emergency_stop is True
+    assert service.arm_status().last_error == "okx_live_private_api_unavailable"
+    assert execution.calls == []
+
+
+@pytest.mark.asyncio
+async def test_reconcile_cancellation_disarms_and_propagates() -> None:
+    service, read, execution, _, _ = service_fixture()
+    await service.arm(
+        OkxLiveArmRequest(duration_seconds=60, confirmation=LIVE_ARM_PHRASE)
+    )
+    entered = asyncio.Event()
+    blocked = asyncio.Event()
+
+    async def stalled_balance(currency=None):
+        entered.set()
+        await blocked.wait()
+
+    read.balance = stalled_balance
+    task = asyncio.create_task(service.reconcile())
+    await asyncio.wait_for(entered.wait(), timeout=1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    mirror = service.mirror_repository
+    assert mirror is not None
+    assert service.arm_status().armed is False
+    assert service.arm_status().emergency_stop is True
+    assert mirror.safety_latched is True
+    assert mirror.safety_latch_code == "okx_live_reconcile_cancelled"
+    assert execution.calls == []
 
 
 @pytest.mark.asyncio
@@ -1049,6 +1200,8 @@ async def test_clear_stop_never_resolves_intents_until_exchange_is_flat() -> Non
             "state": "live",
             "sz": "0.1",
             "accFillSz": "0",
+            "reduceOnly": "false",
+            "attachAlgoOrds": [],
         }
     ]
     await service.startup()

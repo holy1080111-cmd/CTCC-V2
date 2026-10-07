@@ -20,6 +20,8 @@ import time
 from pathlib import Path, PurePosixPath
 from uuid import uuid4
 
+from scripts.verify_linux_shard import POSTGRES_TEST_PATHS, SHARD_COUNT, selected_for
+
 # The two full PostgreSQL-bearing test runs can exceed 90 minutes together.
 # Leave time for bounded cleanup and `if: always()` evidence upload before the
 # 180-minute GitHub job cutoff; a budget failure is never a validation pass.
@@ -223,6 +225,42 @@ def verify_pytest_report(
             for (module, name), count in sorted(case_counts.items())
         },
         "sha256": hashlib.sha256(raw).hexdigest(),
+    }
+
+
+def verify_linux_collection(path: Path, *, mode: str, index: int | None, report: dict):
+    """Read back an executed shard against its complete collected test list."""
+    if path.is_symlink() or not 0 < path.stat().st_size <= 16 * 1024 * 1024:
+        raise ValueError("linux_collection_missing_or_unsafe")
+    raw = path.read_bytes()
+    record = json.loads(raw)
+    full = record.get("full_nodeids")
+    selected = record.get("selected_nodeids")
+    observed = record.get("observed_nodeids")
+    if (
+        record.get("schema") != "ctcc.linux_full_collection_shard.v1"
+        or record.get("mode") != mode
+        or record.get("shard_index") != index
+        or record.get("shard_count") != SHARD_COUNT
+        or record.get("pytest_exitstatus") != 0
+        or not isinstance(full, list)
+        or not full
+        or any(type(node) is not str for node in full)
+        or len(full) != len(set(full))
+        or not isinstance(selected, list)
+        or not selected
+        or selected != [node for node in full if selected_for(mode, index, node)]
+        or observed != selected
+        or report["tests"] != len(selected)
+    ):
+        raise ValueError("linux_collection_execution_incomplete")
+    return {
+        "full_count": len(full),
+        "selected_count": len(selected),
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "full_sha256": hashlib.sha256(
+            json.dumps(full, separators=(",", ":")).encode()
+        ).hexdigest(),
     }
 
 
@@ -471,7 +509,15 @@ def main():
     parser.add_argument("--commit", required=True)
     parser.add_argument("--tree", required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--suite", choices=("full", "postgres", "shard"), default="full"
+    )
+    parser.add_argument("--shard-index", type=int)
     args = parser.parse_args()
+    if (args.suite == "shard") != (args.shard_index is not None) or (
+        args.shard_index is not None and not 0 <= args.shard_index < SHARD_COUNT
+    ):
+        raise ValueError("linux_suite_selection_invalid")
     for identity in (args.commit, args.tree):
         if not re.fullmatch("[a-f0-9]{40}", identity):
             raise ValueError("exact_git_identity_required")
@@ -502,6 +548,14 @@ def main():
         "build_context": "admitted_archive_bytes_v1",
         "runner_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         "source_files_sha256": file_map_sha256,
+        "manifest_sha256": (
+            hashlib.sha256((source / "MANIFEST.sha256").read_bytes()).hexdigest()
+            if (source / "MANIFEST.sha256").is_file()
+            else None
+        ),
+        "suite": args.suite,
+        "shard_index": args.shard_index,
+        "shard_count": SHARD_COUNT,
         "host_credentials": False,
         "host_env": False,
         "external_order_writes": 0,
@@ -687,9 +741,8 @@ def main():
         ):
             raise RuntimeError("migration_reupgrade_identity_changed")
         container("migration-redrift", ["alembic", "check"])
-        container(
-            "postgres-intent",
-            [
+        if args.suite in ("full", "postgres"):
+            postgres_command = [
                 "python",
                 "-m",
                 "scripts.hermetic_pytest",
@@ -697,73 +750,99 @@ def main():
                 "no:cacheprovider",
                 "-ra",
                 "--junitxml=/validation-results/postgres-intent.xml",
-                "tests/integration/test_qualification_ledger_repository.py",
-                "tests/integration/test_qualification_submission_intent_repository.py",
-                "tests/integration/test_history_submission_intent_repository.py",
-                "tests/integration/test_submission_reporting_repository.py",
-                "tests/integration/test_qualification_bootstrap_repository.py",
-                "tests/integration/test_demo_control_repository.py",
-                "tests/integration/test_demo_control_durability_probe.py",
-                "tests/integration/test_durable_migration_downgrade.py",
-                "tests/integration/test_account_ingestion_journal_repository.py",
-                "tests/integration/test_account_capture_crash_probe_repository.py",
-                "tests/integration/test_account_history_query_verifier_repository.py",
-                "tests/integration/test_range_v5_reservation_repository.py",
-                "tests/integration/test_account_observation_index_repository.py",
-                "tests/integration/test_account_bill_archive_claim_repository.py",
-                "tests/integration/test_control_bound_ledger_repository.py",
-                "tests/integration/test_ledger_event_observation_repository.py",
-                "tests/integration/test_public_receipt_witness_repository.py",
-            ],
-            mounts=test_results_mount,
-            timeout=POSTGRES_TEST_TIMEOUT_SECONDS,
-        )
-        identity["postgres_tests"] = verify_pytest_report(
-            test_results / "postgres-intent.xml",
-            required_cases=ARCHIVE_REQUIRED_CASES,
-            required_modules=(
-                "tests.integration.test_qualification_ledger_repository",
-                "tests.integration.test_qualification_submission_intent_repository",
-                "tests.integration.test_history_submission_intent_repository",
-                "tests.integration.test_submission_reporting_repository",
-                "tests.integration.test_qualification_bootstrap_repository",
-                "tests.integration.test_demo_control_repository",
-                "tests.integration.test_demo_control_durability_probe",
-                "tests.integration.test_durable_migration_downgrade",
-                "tests.integration.test_account_ingestion_journal_repository",
-                "tests.integration.test_account_capture_crash_probe_repository",
-                "tests.integration.test_account_history_query_verifier_repository",
-                "tests.integration.test_range_v5_reservation_repository",
-                "tests.integration.test_account_observation_index_repository",
-                "tests.integration.test_account_bill_archive_claim_repository",
-                "tests.integration.test_control_bound_ledger_repository",
-                "tests.integration.test_ledger_event_observation_repository",
-                "tests.integration.test_public_receipt_witness_repository",
-            ),
-        )
-        container(
-            "linux-full",
-            [
-                "python",
-                "-m",
-                "scripts.hermetic_pytest",
-                "-p",
-                "no:cacheprovider",
-                "-ra",
-                "--junitxml=/validation-results/linux-full.xml",
-                "tests",
-            ],
-            mounts=test_results_mount,
-            timeout=FULL_TEST_TIMEOUT_SECONDS,
-        )
-        identity["linux_tests"] = verify_pytest_report(
-            test_results / "linux-full.xml",
-            required_cases=ARCHIVE_REQUIRED_CASES,
-            required_modules=tuple(
-                identity["postgres_tests"]["required_module_passed"]
-            ),
-            allow_unrelated_skips=True,
-        )
+            ]
+            if args.suite == "postgres":
+                postgres_command += [
+                    "-p",
+                    "scripts.verify_linux_shard",
+                    "--ctcc-linux-suite=postgres",
+                    "--ctcc-linux-collection-json=/validation-results/postgres-collection.json",
+                    "tests",
+                ]
+            else:
+                postgres_command += sorted(POSTGRES_TEST_PATHS)
+            container(
+                "postgres-intent",
+                postgres_command,
+                mounts=test_results_mount,
+                timeout=POSTGRES_TEST_TIMEOUT_SECONDS,
+            )
+            identity["postgres_tests"] = verify_pytest_report(
+                test_results / "postgres-intent.xml",
+                required_cases=ARCHIVE_REQUIRED_CASES,
+                required_modules=tuple(
+                    sorted(
+                        path.removesuffix(".py").replace("/", ".")
+                        for path in POSTGRES_TEST_PATHS
+                    )
+                ),
+            )
+            if args.suite == "postgres":
+                identity["collection"] = verify_linux_collection(
+                    test_results / "postgres-collection.json",
+                    mode="postgres",
+                    index=None,
+                    report=identity["postgres_tests"],
+                )
+        if args.suite == "full":
+            container(
+                "linux-full",
+                [
+                    "python",
+                    "-m",
+                    "scripts.hermetic_pytest",
+                    "-p",
+                    "no:cacheprovider",
+                    "-ra",
+                    "--junitxml=/validation-results/linux-full.xml",
+                    "tests",
+                ],
+                mounts=test_results_mount,
+                timeout=FULL_TEST_TIMEOUT_SECONDS,
+            )
+            identity["linux_tests"] = verify_pytest_report(
+                test_results / "linux-full.xml",
+                required_cases=ARCHIVE_REQUIRED_CASES,
+                required_modules=tuple(
+                    identity["postgres_tests"]["required_module_passed"]
+                ),
+                allow_unrelated_skips=True,
+            )
+        if args.suite == "shard":
+            stage = f"linux-shard-{args.shard_index}"
+            container(
+                stage,
+                [
+                    "python",
+                    "-m",
+                    "scripts.hermetic_pytest",
+                    "-p",
+                    "no:cacheprovider",
+                    "-p",
+                    "scripts.verify_linux_shard",
+                    "-ra",
+                    f"--junitxml=/validation-results/{stage}.xml",
+                    "--ctcc-linux-suite=shard",
+                    f"--ctcc-linux-shard-index={args.shard_index}",
+                    f"--ctcc-linux-collection-json=/validation-results/{stage}-collection.json",
+                    "tests",
+                ],
+                mounts=test_results_mount,
+                timeout=FULL_TEST_TIMEOUT_SECONDS,
+            )
+            identity["linux_tests"] = verify_pytest_report(
+                test_results / f"{stage}.xml",
+                allow_unrelated_skips=True,
+            )
+            identity["collection"] = verify_linux_collection(
+                test_results / f"{stage}-collection.json",
+                mode="shard",
+                index=args.shard_index,
+                report=identity["linux_tests"],
+            )
+            identity["component_validation"] = "PASS"
+            identity["hermetic_regression"] = "PENDING_UNION"
+            return
         # Actual process death and server restarts, using explicitly synthetic
         # claims. This does not establish source, Demo or Live acceptance.
         probe_dir = args.output / "crash-probe"
@@ -868,8 +947,12 @@ def main():
         run.command("api-logs", ["docker", "logs", api], timeout=30)
         identity["api_service_restart"] = "PASS"
         identity["live_restart_acceptance"] = False
-        identity["hermetic_regression"] = "PASS"
+        identity["component_validation"] = "PASS"
+        identity["hermetic_regression"] = (
+            "PASS" if args.suite == "full" else "PENDING_UNION"
+        )
     except Exception as error:
+        identity["component_validation"] = "FAIL"
         identity["hermetic_regression"] = "FAIL"
         identity["failure_type"] = type(error).__name__
         raise
@@ -879,11 +962,13 @@ def main():
         cleanup_failed = any(item["status"] == "FAIL" for item in cleanup)
         identity["cleanup"] = "FAIL" if cleanup_failed else "PASS"
         if cleanup_failed:
+            identity["component_validation"] = "FAIL"
             identity["hermetic_regression"] = "FAIL"
         (args.output / "identity.json").write_text(json.dumps(identity, indent=2))
         evidence_files = (
             *args.output.iterdir(),
             *test_results.glob("*.xml"),
+            *test_results.glob("*-collection.json"),
             *(args.output / "crash-probe").glob("*.json"),
         )
         hashes = {

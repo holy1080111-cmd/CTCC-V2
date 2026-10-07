@@ -273,8 +273,8 @@ class OkxLiveService:
     async def reconcile(
         self, *, enforce_protection: bool = True
     ) -> OkxLiveReconcileResult:
-        self._ensure_read_ready()
         try:
+            self._ensure_read_ready()
             config = await self.account_config()
             (
                 balance_rows,
@@ -328,7 +328,40 @@ class OkxLiveService:
                     "live_position_protection_not_confirmed"
                 )
             return result
+        except asyncio.CancelledError:
+            self._engage_emergency_stop("okx_live_reconcile_cancelled")
+            if self.mirror_repository is not None:
+                try:
+                    await self._engage_persistent_emergency_stop(
+                        "okx_live_reconcile_cancelled"
+                    )
+                except BaseException as observation_error:  # noqa: BLE001 - Cancellation must propagate; a second cancellation or failed IO cannot mask it.
+                    logger.warning(
+                        "auxiliary_io_failed kind=%s",
+                        type(observation_error).__name__,
+                    )
+                try:
+                    await self.mirror_repository.mark_failure(
+                        "okx_live_reconcile_failed"
+                    )
+                except BaseException as observation_error:  # noqa: BLE001 - Best-effort failure marker under cancellation; local stop remains engaged.
+                    logger.warning(
+                        "auxiliary_io_failed kind=%s",
+                        type(observation_error).__name__,
+                    )
+            raise
         except Exception as exc:
+            self._engage_emergency_stop("okx_live_reconcile_failed")
+            if self.mirror_repository is not None:
+                try:
+                    await self._engage_persistent_emergency_stop(
+                        "okx_live_reconcile_failed"
+                    )
+                except Exception as observation_error:  # noqa: BLE001 - A failed latch write must not mask the original reconciliation failure; local stop remains engaged.
+                    logger.warning(
+                        "auxiliary_io_failed kind=%s",
+                        type(observation_error).__name__,
+                    )
             self._record_error(exc)
             if self.mirror_repository is not None:
                 try:
