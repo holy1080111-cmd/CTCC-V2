@@ -25,6 +25,10 @@ from app.database.models.gate3_capture_schedule_pin import Gate3CaptureScheduleP
 from app.database.models.gate3_capture_schedule_publication_ack import (
     Gate3CaptureSchedulePublicationAck,
 )
+from app.database.models.gate3_preregistration_seal import (
+    Gate3PreregistrationSeal,
+    Gate3PreregistrationSealAck,
+)
 from app.database.models.observability import DemoObservabilityEvent, DemoSoakSession
 from app.database.models.okx_demo import (
     OkxDemoAlgoOrderState,
@@ -113,6 +117,8 @@ __all__ = [
     "Gate3CaptureScheduleLegacyInventory",
     "Gate3CaptureSchedulePin",
     "Gate3CaptureSchedulePublicationAck",
+    "Gate3PreregistrationSeal",
+    "Gate3PreregistrationSealAck",
     "MarketSnapshot",
     "OkxDemoAlgoOrderState",
     "OkxDemoBalanceState",

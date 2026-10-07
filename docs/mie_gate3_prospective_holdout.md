@@ -225,6 +225,47 @@ on the exact committed source before this boundary can be accepted. None of
 these records establishes a trusted clock, independent custody, first
 evaluator read, predictive Gate 3 result, or trading authority.
 
+### Committed preregistration seal boundary (DB0030 engineering seam)
+
+Migration `0030` adds an immutable PostgreSQL copy of exact prospective seal
+bytes and SHA-256. It admits only a byte-provable canonical ASCII/integer JSON
+subset with the expected V1 outer shape and exact bounded OKX minute-window
+coordinates. A separately credentialed observer can read the committed seal,
+validate its bytes, and append an immutable server-clock ACK. An unacknowledged
+seal proposal does not reserve a preregistration ID, window, or holdout; those
+unique identities are owned only by the independent ACK. A capture publisher
+cannot append a new `0029` key claim unless the matching seal and ACK are
+already committed, locked, and observed before the schedule's original
+`planned_at`. The old `0029` pin, claim, and ACK rows remain unchanged, but the
+new readers do not grant them seal-qualified status retroactively.
+
+Seal publisher, seal observer, capture publisher, and capture ACK require four
+different direct logins. The migration creates no roles or credentials and
+grants no new function authority. SQL guards reject direct table privileges,
+owner/role membership, schema creation and overlapping function grants. A
+restricted observer needs explicit EXECUTE grants on
+`gate3_prereg_direct_role_allowed(text)`, `gate3_prereg_seal_read(text)`,
+`gate3_prereg_seal_ack_append(text)`, and
+`gate3_prereg_seal_ack_read(text)`; the migration grants none of these. The
+observer repository replays the original bytes through the full Python V1
+schema before ACK and can read a valid pre-window ACK again after the window
+begins. Only new ACK publication requires its fresh readback before the window.
+The ACK login must remain under independent service/operator custody: direct
+SQL use of `gate3_prereg_seal_ack_append` can bypass the Python replay because
+the database validates only the narrower canonical subset. A raw SQL ACK is
+therefore not accepted as full Gate 3 qualification; production grants and
+operating controls need separate verification. Both new
+tables are append-only. Downgrade is refused while either new table or a `0029`
+key claim/claim ACK contains a row, so older readers cannot reacquire authority
+for historical claims.
+
+This closes the single capture-publisher fabricated-seal key-claim path. It
+does not establish an independently trusted database clock, protected custody,
+first evaluator access, real future capture, predictive Gate 3 acceptance, or
+execution authority. PostgreSQL behavior, concurrency, full-chain migration
+and schema drift must pass on the exact final source before this engineering
+seam is accepted.
+
 ### Blind in-window minute acquisition seam
 
 `app.mie.validation.blind_window_capture.bind_blind_window_minute` now binds **one**

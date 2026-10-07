@@ -87,6 +87,12 @@ from app.mie.validation.costs import (
     ReturnPathMetrics,
     evaluate_costed_return_path,
 )
+from app.mie.validation.gate3_preregistration_seal_observer import (
+    Gate3CommittedSealAckReadback,
+    Gate3CommittedSealError,
+    Gate3CommittedSealReadback,
+    Gate3PreregistrationSealObserver,
+)
 from app.mie.validation.metrics import (
     AdjustedPValue,
     BootstrapInterval,
@@ -149,10 +155,12 @@ from app.mie.validation.seal_ledger import (
 from app.mie.validation.splits import (
     GroupedPurgedWalkForwardFold,
     PurgedWalkForwardFold,
+    ReplayPlanBoundFoldSet,
     assert_no_grouped_temporal_leakage,
     assert_no_temporal_leakage,
     grouped_purged_walk_forward_folds,
     purged_walk_forward_folds,
+    replay_plan_bound_walk_forward_folds,
 )
 
 __all__ = [
@@ -191,11 +199,15 @@ __all__ = [
     "FrozenParameter",
     "FrozenTrial",
     "Gate3Claim",
+    "Gate3CommittedSealAckReadback",
+    "Gate3CommittedSealError",
+    "Gate3CommittedSealReadback",
     "Gate3Contract",
     "Gate3DatasetQualification",
     "Gate3EvidenceArtifact",
     "Gate3Metric",
     "Gate3Preregistration",
+    "Gate3PreregistrationSealObserver",
     "Gate3ProspectiveEvidenceArtifact",
     "Gate3ProspectiveHoldoutReceipt",
     "Gate3ProspectivePreregistration",
@@ -224,6 +236,7 @@ __all__ = [
     "PurgedWalkForwardFold",
     "PurgedWalkForwardSplit",
     "ReliabilityBin",
+    "ReplayPlanBoundFoldSet",
     "ReplayProvenance",
     "ReplayValidationError",
     "ReturnPathMetrics",
@@ -271,6 +284,7 @@ __all__ = [
     "replay_aggregated_features_at",
     "replay_features_at",
     "replay_features_walk_forward",
+    "replay_plan_bound_walk_forward_folds",
     "verify_archive_batch_manifest",
     "verify_archive_batch_plan",
     "verify_archive_observation_receipt",

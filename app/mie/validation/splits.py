@@ -6,10 +6,16 @@ It does not load data, fit a model, or interact with any runtime/execution path.
 
 from __future__ import annotations
 
+import hashlib
+import json
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from itertools import pairwise
+from typing import Literal
+
+from app.mie.validation.replay import FrozenFeatureReplayPlanV2
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,6 +46,28 @@ class GroupedPurgedWalkForwardFold:
     embargoed_indices: tuple[int, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class ReplayPlanBoundFoldSet:
+    """Offline folds bound to one frozen feature/label plan and source timeline.
+
+    This is computational evidence only. Neither the hash nor this result
+    authenticates an independently retained plan or grants predictive authority.
+    """
+
+    feature_plan_sha256: str
+    source_timestamps_sha256: str
+    required_feature_dependency_seconds: int
+    required_label_dependency_seconds: int
+    declared_feature_dependency_seconds: int
+    declared_label_dependency_seconds: int
+    purge_seconds: int
+    embargo_seconds: int
+    folds: tuple[PurgedWalkForwardFold, ...]
+    predictive_oos_eligible: Literal[False] = False
+    runtime_consumers: Literal[0] = 0
+    execution_authority: Literal[False] = False
+
+
 def _validated_timestamps(
     timestamps: Sequence[datetime],
 ) -> tuple[datetime, ...]:
@@ -61,6 +89,88 @@ def _validated_timestamps(
 def _validate_positive(name: str, value: int) -> None:
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise ValueError(f"{name} must be a positive integer")
+
+
+def replay_plan_bound_walk_forward_folds(
+    timestamps: Sequence[datetime],
+    *,
+    feature_plan: FrozenFeatureReplayPlanV2,
+    expected_feature_plan_sha256: str,
+    minimum_training_observations: int,
+    validation_observations: int,
+    feature_dependency_seconds: int,
+    label_dependency_seconds: int,
+    purge_seconds: int,
+    embargo_seconds: int,
+    step_observations: int | None = None,
+    maximum_folds: int | None = None,
+) -> ReplayPlanBoundFoldSet:
+    """Reject underdeclared replay/label dependencies before creating folds.
+
+    The plain splitter remains useful for computational experiments, but its
+    caller-declared dependency values alone do not prove a real replay plan is
+    safe for candidate selection. This adapter binds the exact V2 replay plan.
+    """
+
+    if type(feature_plan) is not FrozenFeatureReplayPlanV2:
+        raise ValueError("split requires the exact frozen feature replay plan")
+    plan = FrozenFeatureReplayPlanV2.model_validate(
+        feature_plan.model_dump(mode="python")
+    )
+    if (
+        type(expected_feature_plan_sha256) is not str
+        or re.fullmatch(r"[0-9a-f]{64}", expected_feature_plan_sha256) is None
+        or plan.canonical_sha256 != expected_feature_plan_sha256
+    ):
+        raise ValueError("frozen feature replay plan SHA256 mismatch")
+
+    for name, value in (
+        ("feature_dependency_seconds", feature_dependency_seconds),
+        ("label_dependency_seconds", label_dependency_seconds),
+        ("purge_seconds", purge_seconds),
+        ("embargo_seconds", embargo_seconds),
+    ):
+        _validate_positive(name, value)
+    required_feature = plan.history_bars * plan.bar_horizon.seconds
+    required_label = plan.outcome_horizon_seconds
+    if feature_dependency_seconds < required_feature:
+        raise ValueError(
+            "declared feature dependency understates frozen replay history"
+        )
+    if label_dependency_seconds < required_label:
+        raise ValueError("declared label dependency understates frozen outcome horizon")
+    required = max(required_feature, required_label)
+    if purge_seconds < required or embargo_seconds < required:
+        raise ValueError("purge and embargo must cover frozen replay dependencies")
+
+    values = _validated_timestamps(timestamps)
+    folds = purged_walk_forward_folds(
+        values,
+        minimum_training_observations=minimum_training_observations,
+        validation_observations=validation_observations,
+        feature_dependency_seconds=feature_dependency_seconds,
+        label_dependency_seconds=label_dependency_seconds,
+        purge_seconds=purge_seconds,
+        embargo_seconds=embargo_seconds,
+        step_observations=step_observations,
+        maximum_folds=maximum_folds,
+    )
+    canonical_times = json.dumps(
+        [value.astimezone(UTC).isoformat().replace("+00:00", "Z") for value in values],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return ReplayPlanBoundFoldSet(
+        feature_plan_sha256=expected_feature_plan_sha256,
+        source_timestamps_sha256=hashlib.sha256(canonical_times).hexdigest(),
+        required_feature_dependency_seconds=required_feature,
+        required_label_dependency_seconds=required_label,
+        declared_feature_dependency_seconds=feature_dependency_seconds,
+        declared_label_dependency_seconds=label_dependency_seconds,
+        purge_seconds=purge_seconds,
+        embargo_seconds=embargo_seconds,
+        folds=folds,
+    )
 
 
 def _validated_symbol_events(

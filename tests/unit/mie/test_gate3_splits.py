@@ -2,14 +2,18 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta, timezone
+from decimal import Decimal
 
 import pytest
 
+from app.mie.contracts import ForecastHorizon
+from app.mie.validation.replay import FrozenFeatureReplayPlanV2
 from app.mie.validation.splits import (
     assert_no_grouped_temporal_leakage,
     assert_no_temporal_leakage,
     grouped_purged_walk_forward_folds,
     purged_walk_forward_folds,
+    replay_plan_bound_walk_forward_folds,
 )
 
 START = datetime(2026, 1, 1, tzinfo=UTC)
@@ -245,3 +249,93 @@ def test_grouped_split_rejects_wrong_symbol_plan_or_tampered_fold() -> None:
             step_events=3,
             maximum_folds=1,
         )
+
+
+def _frozen_15m_four_hour_plan() -> FrozenFeatureReplayPlanV2:
+    return FrozenFeatureReplayPlanV2(
+        bar_horizon=ForecastHorizon(label="15m", seconds=900),
+        outcome_horizon_seconds=14_400,
+        positive_threshold=Decimal(0),
+        history_bars=24,
+        signal_alpha=Decimal("0.25"),
+        dynamics_window=21,
+        momentum_fast_bars=5,
+        momentum_slow_bars=20,
+        pivot_left_bars=2,
+        pivot_right_bars=2,
+    )
+
+
+def _bound_split(timestamps, plan, **overrides):
+    parameters = {
+        "feature_plan": plan,
+        "expected_feature_plan_sha256": plan.canonical_sha256,
+        "minimum_training_observations": 21,
+        "validation_observations": 5,
+        "feature_dependency_seconds": 21_600,
+        "label_dependency_seconds": 14_400,
+        "purge_seconds": 21_600,
+        "embargo_seconds": 21_600,
+    }
+    parameters.update(overrides)
+    return replay_plan_bound_walk_forward_folds(timestamps, **parameters)
+
+
+def test_frozen_replay_split_rejects_label_that_matures_inside_validation(
+    monkeypatch,
+) -> None:
+    times = tuple(START + timedelta(minutes=15 * index) for index in range(80))
+    plan = _frozen_15m_four_hour_plan()
+    unsafe = purged_walk_forward_folds(
+        times,
+        minimum_training_observations=21,
+        validation_observations=5,
+        feature_dependency_seconds=900,
+        label_dependency_seconds=900,
+        purge_seconds=900,
+        embargo_seconds=900,
+    )[0]
+    assert unsafe.training_end_at + timedelta(hours=4) >= unsafe.validation_start_at
+
+    with monkeypatch.context() as guard:
+        guard.setattr(
+            "app.mie.validation.splits.purged_walk_forward_folds",
+            lambda *args, **kwargs: pytest.fail("folds created before plan validation"),
+        )
+        with pytest.raises(ValueError, match="label dependency understates"):
+            _bound_split(times, plan, label_dependency_seconds=900)
+        with pytest.raises(ValueError, match="feature dependency understates"):
+            _bound_split(times, plan, feature_dependency_seconds=900)
+
+    safe = _bound_split(times, plan)
+    assert safe.feature_plan_sha256 == plan.canonical_sha256
+    assert safe.required_feature_dependency_seconds == 21_600
+    assert safe.required_label_dependency_seconds == 14_400
+    assert safe.folds
+    assert all(
+        fold.training_end_at + timedelta(hours=4) < fold.validation_start_at
+        for fold in safe.folds
+    )
+    assert safe.predictive_oos_eligible is False
+    assert safe.execution_authority is False
+
+
+def test_frozen_replay_split_rejects_changed_plan_hash_and_short_gaps() -> None:
+    times = tuple(START + timedelta(minutes=15 * index) for index in range(80))
+    plan = _frozen_15m_four_hour_plan()
+    with pytest.raises(ValueError, match="SHA256 mismatch"):
+        _bound_split(times, plan, expected_feature_plan_sha256="0" * 64)
+    changed = plan.model_copy(update={"outcome_horizon_seconds": 18_000})
+    with pytest.raises(ValueError, match="SHA256 mismatch"):
+        _bound_split(
+            times,
+            changed,
+            expected_feature_plan_sha256=plan.canonical_sha256,
+        )
+    for field in ("purge_seconds", "embargo_seconds"):
+        with pytest.raises(ValueError, match="cover frozen replay dependencies"):
+            _bound_split(times, plan, **{field: 14_400})
+
+    first = _bound_split(times, plan)
+    shifted = _bound_split(tuple(item + timedelta(minutes=15) for item in times), plan)
+    assert first.source_timestamps_sha256 != shifted.source_timestamps_sha256

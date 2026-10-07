@@ -74,6 +74,21 @@ rows fail. The verifier recomputes exact row membership from the frozen plan,
 including cross-symbol purge and embargo. This is an offline primitive only; the
 current rehearsal has not fitted a candidate or evaluated a sealed holdout.
 
+The standalone walk-forward splitter accepts caller-declared dependency lengths;
+it remains computational-only and cannot authorize a predictive claim. A caller
+could otherwise declare a 15-minute label dependency while using a frozen
+four-hour outcome: the last training label would mature inside validation.
+`replay_plan_bound_walk_forward_folds` requires the exact
+`FrozenFeatureReplayPlanV2` and an independently retained canonical plan SHA256.
+Before creating folds it requires the declared feature dependency to cover
+`history_bars * bar_horizon.seconds`, the label dependency to cover the frozen
+outcome horizon, and both purge and embargo to cover the larger requirement.
+The immutable result binds the plan SHA256 and canonical source-timestamp SHA256
+to the fold membership, while retaining `predictive_oos_eligible=false`, zero
+runtime consumers and no execution authority. No candidate-selection or Gate 3
+promotion caller currently consumes this result; a future promotion path must
+enforce this binding and independently verify plan custody and source provenance.
+
 ## Actual public archive rehearsal
 
 The script below verifies the previously frozen public preparation identities,
