@@ -212,11 +212,21 @@ async def test_0032_repaired_guard_accepts_fresh_prereg_acknowledged_claim(
             )
             == 1
         )
-        # A claim without the later publication ACK remains unreadable.
+        # The prior seal ACK makes the claim readable. The separate capture
+        # publication ACK has not been written and stays absent.
         assert (
             await connection.scalar(
                 text(
                     "SELECT count(*) FROM public.gate3_capture_schedule_claim_read(:sha)"
+                ),
+                {"sha": schedule.canonical_sha256()},
+            )
+            == 1
+        )
+        assert (
+            await connection.scalar(
+                text(
+                    "SELECT count(*) FROM public.gate3_capture_schedule_claim_ack_read(:sha)"
                 ),
                 {"sha": schedule.canonical_sha256()},
             )
