@@ -22,6 +22,9 @@ from app.database.repositories.account_bill_archive_claim import (
     AccountBillArchiveClaimRepository,
 )
 from app.database.repositories.demo_control import DemoControlRepository
+from app.database.repositories.submission_reporting import SubmissionReportingRepository
+from app.trade_evidence import outbox
+from app.trade_evidence.submission_reporting import CapturedSubmission
 from app.trade_qualification.account_bill_archive_acquisition import (
     DiagnosticArchivePlan,
 )
@@ -36,10 +39,12 @@ from tests.durable_migration_fixtures import (
 from tests.integration import (
     test_account_ingestion_journal_repository as capture_fixtures,
 )
+from tests.integration import test_control_bound_ledger_repository as control_fixtures
 from tests.integration import test_qualification_ledger_repository as ledger_fixtures
 from tests.integration import test_submission_reporting_repository as report_fixtures
 from tests.unit.qualification_execution_binding_fixtures import execution_binding
 from tests.unit.qualification_ledger_fixtures import ledger_fixture
+from tests.unit.qualification_range_v5_fixtures import range_v5_ledger_fixture
 from tests.unit.test_demo_control import Clock
 
 database = ledger_fixtures.database
@@ -145,6 +150,128 @@ async def test_empty_actual_migration_downgrade_and_reupgrade_preserve_shape(
     async with engine.begin() as connection:
         await connection.run_sync(migrate, revision, "upgrade")
     assert await shape(engine) == before
+
+
+@pytest.mark.parametrize("revision", ("0024",))
+async def test_control_bound_reporting_function_downgrade_reupgrade_when_empty(
+    sandbox, revision
+):
+    engine, _ = sandbox
+    prior = await shape(engine)
+    async with engine.begin() as connection:
+        await connection.run_sync(migrate, "0025", "upgrade")
+    current = await shape(engine)
+    assert current != prior
+    async with engine.begin() as connection:
+        await connection.run_sync(migrate, "0025", "downgrade")
+    assert await shape(engine) == prior
+    async with engine.begin() as connection:
+        await connection.run_sync(migrate, "0025", "upgrade")
+    assert await shape(engine) == current
+
+
+@pytest.mark.parametrize("revision", ("0024",))
+async def test_control_bound_reporting_downgrade_preserves_existing_v2_outcome(
+    sandbox, revision
+):
+    engine, _ = sandbox
+    async with engine.begin() as connection:
+        await connection.run_sync(migrate, "0025", "upgrade")
+    fixture = ledger_fixture(
+        account_id=f"456789{uuid4().int % 10**14:014d}",
+        report_id="synthetic-migration-v2-" + uuid4().hex,
+    )
+    _ledger, reporter, _clock, hold, args = await report_fixtures.setup(
+        sandbox, fixture
+    )
+    observed = await reporter.record_observation(
+        hold.scope, hold.original_event_key, **args
+    )
+    assert observed.status == "acknowledged"
+    async with engine.begin() as connection:
+        await connection.run_sync(migrate, "0025", "downgrade")
+    assert (
+        await reporter.read_observation(
+            hold.scope,
+            hold.original_event_key,
+            expected_outcome_id=observed.outcome_id,
+        )
+        == observed
+    )
+    async with engine.begin() as connection:
+        await connection.run_sync(migrate, "0025", "upgrade")
+    assert (
+        await reporter.read_observation(
+            hold.scope,
+            hold.original_event_key,
+            expected_outcome_id=observed.outcome_id,
+        )
+        == observed
+    )
+
+
+@pytest.mark.parametrize("revision", ("0024",))
+async def test_control_bound_reporting_downgrade_rejects_retained_v3_outcome(
+    sandbox, revision, monkeypatch
+):
+    engine, _ = sandbox
+    async with engine.begin() as connection:
+        await connection.run_sync(migrate, "0025", "upgrade")
+    fixture, _binding, _ = range_v5_ledger_fixture(
+        "long", monkeypatch, account_id=f"456789{uuid4().int % 10**14:014d}"
+    )
+    setup = await control_fixtures.setup(sandbox, fixture)
+    hold = await setup.reserve()
+    outer = await setup.consume()
+    body = json.loads(json.loads(outer.canonical_json)["intent_json"])
+    setup.clock.value += timedelta(milliseconds=1)
+    capture = CapturedSubmission(
+        exchange_request_sha256=body["exchange_request_sha256"],
+        request_started_at=fixture.now,
+        headers_received_at=fixture.now,
+        body_completed_at=setup.clock.value,
+        completed_at=setup.clock.value,
+        http_status=200,
+        raw_body=json.dumps(
+            {
+                "code": "0",
+                "data": [
+                    {
+                        "sCode": "0",
+                        "ordId": "99887766",
+                        "clOrdId": body["client_order_id"],
+                    }
+                ],
+            }
+        ).encode(),
+        transport_complete=True,
+    )
+    reporter = SubmissionReportingRepository(sandbox[1], clock=setup.clock)
+    observed = await reporter.record_observation(
+        hold.scope,
+        hold.original_event_key,
+        expected_revision=3,
+        intent_sha256=outer.sha256,
+        capture=capture,
+        queue_namespace="ctcc-migration-v3-" + uuid4().hex[:16],
+        outbox_policy=outbox.OutboxPolicy(),
+    )
+    assert observed.intent_sha256 == outer.sha256
+    before = await shape(engine)
+    with pytest.raises(
+        DBAPIError, match="control_bound_reporting_downgrade_requires_no_outcomes"
+    ):
+        async with engine.begin() as connection:
+            await connection.run_sync(migrate, "0025", "downgrade")
+    assert await shape(engine) == before
+    assert (
+        await reporter.read_observation(
+            hold.scope,
+            hold.original_event_key,
+            expected_outcome_id=observed.outcome_id,
+        )
+        == observed
+    )
 
 
 LOCK_CASES = [

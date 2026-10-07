@@ -13,6 +13,7 @@ from app.database.models.submission_reporting import (
     QualificationReportSpool,
     QualificationSubmissionOutcome,
 )
+from app.database.repositories.demo_control import DemoControlRepository
 from app.database.repositories.qualification_ledger import QualificationLedgerRepository
 from app.trade_evidence import outbox, post_submit
 from app.trade_evidence.submission_reporting import (
@@ -27,6 +28,7 @@ from app.trade_evidence.submission_reporting import (
     sha,
     wire,
 )
+from app.trade_qualification import control_bound_ledger as bound
 from app.trade_qualification import reservations
 from app.trade_qualification.models import require_aware
 
@@ -108,24 +110,51 @@ class SubmissionReportingRepository(QualificationLedgerRepository):
             raise SubmissionReportingError("submission_intent_transition_missing")
         entry = entries[0]
         if (
-            entry.reason_code != "consumed_with_submit_intent"
-            or entry.from_state != "reserved"
+            entry.from_state != "reserved"
             or entry.state_revision != 2
             or entry.evidence_json is None
         ):
             raise SubmissionReportingError("submission_intent_transition_invalid")
-        # DB0017 stores the exact request contract. The legacy model rejects
-        # V2's replay documents, so decode its persisted version exactly.
-        # V3 belongs to the control-bound outer intent journal, which this
-        # DB0018 projection cannot replay yet. Never reinterpret it as an
-        # unbound submission or accept its inner v2 intent alone.
         request = reservations.decode_reservation_request(record.request_json)
-        if type(request) is reservations.ReservationRequestV3:
-            raise SubmissionReportingError(
-                "submission_control_bound_lineage_unsupported"
-            )
         if reservations.digest(request) != record.request_sha256:
             raise SubmissionReportingError("submission_reservation_digest_mismatch")
+        if type(request) is reservations.ReservationRequestV3:
+            if entry.reason_code != bound.CONSUMED_REASON:
+                raise SubmissionReportingError(
+                    "submission_control_bound_intent_required"
+                )
+            # A V3 report must join the persisted reserved transition, the
+            # exact outer intent's embedded binding, and the immutable DB0019
+            # control event. The pure adapter then replays the inner request.
+            try:
+                reserved_entry = await session.scalar(
+                    select(QualificationReservationTransition).filter_by(
+                        reservation_id=rid, state_revision=1
+                    )
+                )
+                envelope = bound._document(entry.evidence_json)
+                if (
+                    reserved_entry is None
+                    or reserved_entry.from_state is not None
+                    or reserved_entry.to_state != "reserved"
+                    or reserved_entry.reason_code != bound.RESERVED_REASON
+                    or reserved_entry.evidence_json
+                    != envelope["reservation_binding_json"]
+                    or reserved_entry.occurred_at != record.created_at
+                ):
+                    raise ValueError("reserved_control_binding")
+                _, state, event_sha256 = bound.replay_reserved_evidence(
+                    reserved_entry.evidence_json, request
+                )
+                await DemoControlRepository.verify_historical_binding(
+                    session, state, event_sha256
+                )
+            except (ValueError, TypeError, KeyError, RecursionError, OverflowError):
+                raise SubmissionReportingError(
+                    "submission_control_binding_invalid"
+                ) from None
+        elif entry.reason_code != "consumed_with_submit_intent":
+            raise SubmissionReportingError("submission_intent_transition_invalid")
         prepared = prepare_submission(
             request, entry.evidence_json, intent_sha256=intent_sha256, capture=capture
         )

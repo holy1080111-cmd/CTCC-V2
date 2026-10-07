@@ -98,7 +98,11 @@ Legacy consume APIs reject a control-bound reservation. The new consume API
 rejects an unbound legacy reservation; it does not upgrade old evidence after the
 fact. Old intent readers cannot interpret the new envelope as old authority.
 Existing DB0017 transition text fields and DB0019 rows/journals store the new
-binding; DB0018/0020 behavior is unchanged and no DDL is required.
+binding. Additive migration 0025 permits the exact control-bound V3 transition
+pair in DB0018's immutable reporting journal, while preserving the old V2
+predicate. Its reporter verifies the outer and inner intent digests, exact
+reserved evidence and historical DB0019 control event before recording a
+post-submit observation. This remains reporting, never a submission permit.
 
 An uncertain commit/readback does not cause a second consume or order retry.
 Committed intent and reserved risk remain durable, can be marked uncertain using

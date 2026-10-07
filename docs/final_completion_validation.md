@@ -3714,3 +3714,49 @@ The reviewed package targets older source hashes and safely stops before
 Docker/service calls when run as an installer. It has not been integrated into
 the canonical safety and qualification path; install, reinstall, upgrade and
 rollback acceptance remain unexecuted.
+
+## 2026-10-07 retained exact-source and measured-availability receipts
+
+The immutable `46b3eee` checkpoint under
+`../validation-results/ctcc-source-46b3eee-20261007/` contains a source
+archive independently read back against all 914 manifest entries, a verified
+complete Git bundle and a checkpoint receipt. Its commit is
+`46b3eeec8a21a8ebb02bdd9d5a2d76a381c6665d`, tree is
+`ac3bcd96299aeac84c056a35ae13f9ca1f931557`, and manifest SHA-256 is
+`7c5b88a4bf4f1a176048fe3046286907c3a0b6dd50863e2735c0a41a0bd5a1c0`.
+The checkpoint explicitly records full regression as `NOT_PASSED`, Demo and
+Live as `DENY`, and no accepted final Docker image digest. Older checkpoints
+remain necessary to reconstruct source changes and failure evidence.
+
+The separate `mie-availability-audit.json` in that checkpoint was rehashed
+and read back at SHA-256
+`6e0158a4a786bb65c06ea637cbe32845aaf998607c6d3e93146da871795ea51f`.
+It verifies three native public capture receipts and seven linked artifacts:
+251 captured minute rows include ten identical overlaps, leaving 241 distinct
+BTC-USDT-SWAP minutes in two discontinuous windows. The 2024/2025 archive was
+acquired after its decision-time cutoffs, and the retrospective holdout was
+already exposed before candidate seal. Consequently the receipt marks MIE
+Gate 3, sealed OOS, Gate 4 shadow promotion and economic OOS `FAIL_CLOSED`;
+no candidate was fitted or exchange write attempted by this audit.
+
+The exact-source [CI run 37595853584](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/37595853584)
+for `46b3eee` has a source-bound Linux shard-0 result of 1,409 passed, one
+approved skip and zero failures. The other shards, Windows, PostgreSQL and
+the required Docker union were still pending when this receipt was added.
+That single shard and its image ID are diagnostic evidence, not full-suite,
+Docker-hermetic, migration-head, trading or release acceptance. Any later
+commit requires its own complete exact-source validation.
+
+## 2026-10-07 pending control-bound reporting and pre-publication fence
+
+The next working tree adds migration 0025 for exact V3 outer/inner submission
+reporting with historical control-journal readback. It also refuses an unbound
+Demo V2 issuer before the clock and G12 publication. The former records a
+synthetic post-submit observation only; the latter prevents a new unusable G12
+receipt when its post-publication source cannot be trusted. Neither change
+issues an exchange POST or a qualification permit. Eight quick issuer tests,
+the migration identity unit module and static checks passed locally. The
+heavier V3 fixture, PostgreSQL migration cases and broader regression were
+stopped or deferred because of the host's thermal instability; they remain
+`NOT_PASSED` until exact-source remote CI completes. Demo, R7, reservation,
+Live, OOS and release gates are unchanged at `DENY`/`FAIL_CLOSED`.

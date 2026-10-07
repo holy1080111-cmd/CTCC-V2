@@ -31,6 +31,7 @@ from app.trade_evidence.gates import (
 from app.trade_qualification import current_conditions_v2 as current_v2
 from app.trade_qualification import current_economics_v2, data_v2, original_event_v2
 from app.trade_qualification import public_market_collector_v2 as public_v2
+from app.trade_qualification import public_source_runtime as source_runtime
 from app.trade_qualification.data import WSReferenceObservation
 from app.trade_qualification.data_v2 import DataQualificationResultV2
 from app.trade_qualification.engine import PortfolioInputs, PreEvidenceRun
@@ -49,6 +50,8 @@ from app.trade_qualification.recheck_models import freeze_recheck_origin
 _ISSUER = object()
 _PUBLICATIONS = WeakKeyDictionary()
 _NATIVE_G1_RECEIPT_MAX_BYTES = 2048
+_V2_DEMO_REST_ORIGIN = "https://www.okx.com"
+_V2_DEMO_WS_ORIGIN = "wss://ws.okx.com:443/ws/v5/public"
 
 
 class _Publication:
@@ -435,6 +438,16 @@ def _publish_lineage_v2(evidence_root, market, *, pre, inputs, selected, invocat
     task = asyncio.current_task()
     if task is None or task.cancelling():
         raise asyncio.CancelledError
+    # The current V2 issuer has no account-bound registration-region proof and
+    # still carries Production public origins. Reject before clock sampling or
+    # immutable G12 publication, not only at the later collector boundary.
+    source_runtime._require_trusted_v2_demo_origin_profile(
+        {
+            "environment": "demo",
+            "rest_origin": _V2_DEMO_REST_ORIGIN,
+            "ws_origin": _V2_DEMO_WS_ORIGIN,
+        }
+    )
     last = None
 
     def clock():
@@ -478,8 +491,8 @@ def _publish_lineage_v2(evidence_root, market, *, pre, inputs, selected, invocat
         "publication_completed_at": origin.publication_completed_at.isoformat(),
         "barrier": last,
         "expires_at": origin.deadline.isoformat(),
-        "rest_origin": "https://www.okx.com",
-        "ws_origin": "wss://ws.okx.com:443/ws/v5/public",
+        "rest_origin": _V2_DEMO_REST_ORIGIN,
+        "ws_origin": _V2_DEMO_WS_ORIGIN,
         "policy_sha256": public_v2._policy_digest(selected),
         **public_v2._plan_pins(),
     }

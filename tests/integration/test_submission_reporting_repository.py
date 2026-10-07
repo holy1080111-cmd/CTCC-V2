@@ -27,6 +27,7 @@ from app.trade_evidence.submission_reporting import (
     SubmissionReportingError,
 )
 from app.trade_qualification import reservations
+from tests.integration import test_control_bound_ledger_repository as control_fixtures
 from tests.integration import test_qualification_ledger_repository as fixtures
 from tests.unit.qualification_execution_binding_fixtures import execution_binding
 from tests.unit.qualification_ledger_fixtures import LedgerFixture, ledger_fixture
@@ -115,9 +116,8 @@ async def setup(database, fixture, *, status="acknowledged", pre_reserve_request
 async def test_range_v5_submission_lineage_admits_v2_and_denies_unbound_v3(
     database, monkeypatch, version
 ):
-    # Synthetic source and response only. The DB transition, independent
-    # readback and outbox spool exercise the historical V2 path. V3 is
-    # explicitly denied until its outer control-bound journal is supported.
+    # Synthetic source and response only. An unbound V3 request cannot borrow
+    # the control-bound reporter merely because its inner intent is V2-shaped.
     fixture, binding, _ = range_v5_ledger_fixture(
         "long", monkeypatch, account_id=f"123456789{uuid4().int % 10**12:012d}"
     )
@@ -196,7 +196,7 @@ async def test_range_v5_submission_lineage_admits_v2_and_denies_unbound_v3(
     if version == "v3":
         with pytest.raises(
             SubmissionReportingError,
-            match="submission_control_bound_lineage_unsupported",
+            match="submission_control_bound_intent_required",
         ):
             await reporter.record_observation(
                 hold.scope, hold.original_event_key, **args
@@ -243,6 +243,99 @@ async def test_range_v5_submission_lineage_admits_v2_and_denies_unbound_v3(
         == observed
     )
     assert observed.spool_id in await restarted.pending_ids(QUEUE)
+
+
+async def test_control_bound_v3_observation_replays_both_intents_and_past_control(
+    database, monkeypatch, tmp_path
+):
+    fixture, _binding, _ = range_v5_ledger_fixture(
+        "long", monkeypatch, account_id=f"123456789{uuid4().int % 10**12:012d}"
+    )
+    setup = await control_fixtures.setup(database, fixture)
+    hold = await setup.reserve()
+    outer = await setup.consume()
+    outer_body = json.loads(outer.canonical_json)
+    inner_body = json.loads(outer_body["intent_json"])
+    assert outer_body["intent_sha256"] != outer.sha256
+    setup.clock.value += timedelta(milliseconds=1)
+    capture = CapturedSubmission(
+        exchange_request_sha256=inner_body["exchange_request_sha256"],
+        request_started_at=fixture.now,
+        headers_received_at=fixture.now,
+        body_completed_at=setup.clock.value,
+        completed_at=setup.clock.value,
+        http_status=200,
+        raw_body=json.dumps(
+            {
+                "code": "0",
+                "data": [
+                    {
+                        "sCode": "0",
+                        "ordId": "99887766",
+                        "clOrdId": inner_body["client_order_id"],
+                    }
+                ],
+            }
+        ).encode(),
+        transport_complete=True,
+    )
+    repository = SubmissionReportingRepository(database[1], clock=setup.clock)
+    namespace = "ctcc-control-v3-" + uuid4().hex[:16]
+    args = {
+        "expected_revision": 3,
+        "intent_sha256": outer.sha256,
+        "capture": capture,
+        "queue_namespace": namespace,
+        "outbox_policy": outbox.OutboxPolicy(),
+    }
+    with pytest.raises(SubmissionReportingError, match="lineage_or_capture_invalid"):
+        await repository.record_observation(
+            hold.scope,
+            hold.original_event_key,
+            **{**args, "intent_sha256": outer_body["intent_sha256"]},
+        )
+    assert (await setup.ledger.read_scope(hold.scope)).ledger_revision == 3
+    observed = await repository.record_observation(
+        hold.scope, hold.original_event_key, **args
+    )
+    assert observed.status == "acknowledged"
+    assert observed.intent_sha256 == outer.sha256
+    assert not observed.execution_authority and not observed.order_retry_authority
+    async with database[1]() as session:
+        saved = await session.get(QualificationSubmissionOutcome, observed.outcome_id)
+        document = json.loads(saved.outcome_json)
+        assert saved.intent_sha256 == outer.sha256
+        assert document["binding"]["control_bound_intent_sha256"] == outer.sha256
+        assert document["binding"]["inner_intent_sha256"] == outer_body["intent_sha256"]
+        assert (
+            document["binding"]["reservation_binding_sha256"]
+            == outer_body["reservation_binding_sha256"]
+        )
+        assert document["binding"]["exchange_request_sha256"] == (
+            capture.exchange_request_sha256
+        )
+    await setup.control.latch_stop(
+        setup.observed.state.scope, command_id=control_fixtures.command()
+    )
+    restarted = SubmissionReportingRepository(database[1], clock=setup.clock)
+    assert (
+        await restarted.read_observation(
+            hold.scope,
+            hold.original_event_key,
+            expected_outcome_id=observed.outcome_id,
+        )
+        == observed
+    )
+    assert (
+        await restarted.record_observation(hold.scope, hold.original_event_key, **args)
+        == observed
+    )
+    assert observed.spool_id in await restarted.pending_ids(namespace)
+    projected = await restarted.project_one(
+        observed.spool_id, root=tmp_path, queue_namespace=namespace
+    )
+    assert projected is not None and projected.report_sha256 == observed.report_sha256
+    assert observed.spool_id not in await restarted.pending_ids(namespace)
 
 
 async def test_atomic_ack_restart_projection_and_idempotent_readback(
@@ -848,3 +941,107 @@ async def test_db_trigger_rejects_missing_or_null_v2_intent_version(database, ev
                 )
             )
             await session.flush()
+
+
+@pytest.mark.parametrize(
+    "request_version,reason,evidence",
+    (
+        (
+            "ctcc-reservation-request-v3",
+            "consumed_with_submit_intent",
+            '{"version":"ctcc-demo-submit-intent-v2"}',
+        ),
+        (
+            "ctcc-reservation-request-v2",
+            "consumed_with_control_bound_intent_v1",
+            '{"version":"ctcc-control-bound-submit-intent-v1"}',
+        ),
+        (
+            "ctcc-reservation-request-v3",
+            "consumed_with_control_bound_intent_v1",
+            '{"version":"ctcc-control-bound-submit-intent-v1"}',
+        ),
+        ("ctcc-reservation-request-v3", "consumed_with_control_bound_intent_v1", None),
+        ("ctcc-reservation-request-v3", "consumed_with_control_bound_intent_v1", "{"),
+    ),
+)
+async def test_db_trigger_rejects_cross_version_or_missing_reserved_control(
+    database, request_version, reason, evidence
+):
+    import hashlib
+    from datetime import UTC, datetime
+    from decimal import Decimal
+
+    now = datetime.now(UTC)
+    rid = hashlib.sha256(uuid4().bytes).hexdigest()
+    uid = f"123456789{uuid4().int % 10**12:012d}"
+    with pytest.raises(DBAPIError) as denied:
+        async with database[1]() as session, session.begin():
+            session.add(
+                QualificationAccountScope(
+                    environment="demo",
+                    account_id=uid,
+                    settlement_currency="USDT",
+                    account_revision=0,
+                    ledger_revision=1,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            await session.flush()
+            session.add(
+                QualificationReservation(
+                    reservation_id=rid,
+                    environment="demo",
+                    account_id=uid,
+                    settlement_currency="USDT",
+                    original_event_key="a" * 64,
+                    report_id="synthetic-cross-version",
+                    instrument_id="BTC-USDT-SWAP",
+                    direction="long",
+                    correlation_group="synthetic",
+                    request_json=json.dumps({"contract_version": request_version}),
+                    request_sha256="b" * 64,
+                    coverage_json="{}",
+                    risk_amount=Decimal(1),
+                    margin_amount=Decimal(1),
+                    notional_amount=Decimal(1),
+                    state="consumed",
+                    state_revision=2,
+                    deadline=now + timedelta(seconds=1),
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            await session.flush()
+            transition = QualificationReservationTransition(
+                reservation_id=rid,
+                state_revision=2,
+                from_state="reserved",
+                to_state="consumed",
+                reason_code=reason,
+                evidence_json=evidence,
+                occurred_at=now,
+            )
+            session.add(transition)
+            await session.flush()
+            session.add(
+                QualificationSubmissionOutcome(
+                    outcome_id=rid,
+                    reservation_id=rid,
+                    intent_transition_id=transition.id,
+                    sequence=1,
+                    observation_kind="initial",
+                    status="acknowledged",
+                    intent_sha256="c" * 64,
+                    exchange_request_sha256="d" * 64,
+                    capture_json="{}",
+                    capture_sha256="e" * 64,
+                    outcome_json="{}",
+                    ledger_revision=1,
+                    observed_at=now,
+                    recorded_at=now,
+                )
+            )
+            await session.flush()
+    assert denied.value.orig.sqlstate in {"P0001", "22P02"}

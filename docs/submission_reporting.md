@@ -120,16 +120,31 @@ cross-settlement account locks, new-entry inhibition, actual child-process crash
 late filesystem failures and token-free worker lifecycle. These engineering tests
 are not authenticated exchange, Demo, Live, realized-forensics or Notion acceptance.
 
-## Versioned reservation lineage limit
+## Versioned control-bound lineage
 
-The DB0018 reporter decodes the persisted reservation request by its exact
-canonical contract. This permits the legacy unbound V2 request to be replayed
-without misreading its extra replay documents as a V1 request. A V3
-control-bound request is explicitly rejected with
-`submission_control_bound_lineage_unsupported`. Its distinct consumed
-transition reason and outer control-bound intent must be replayed together
-with the inner V2 intent before an outcome or outbox spool can be accepted;
-replaying only the inner intent would lose the account-control binding.
-The current change does not implement that V3 projection or authorize an
-exchange POST. New synthetic V2/V3 integration cases require an isolated
-PostgreSQL run before they count as validation.
+Migration 0025 changes the DB0018 INSERT trigger only for the exact V3 pair:
+the persisted request must declare `ctcc-reservation-request-v3`, the consumed
+transition must carry `consumed_with_control_bound_intent_v1` and the matching
+outer `ctcc-control-bound-submit-intent-v1`, and its referenced reserved
+transition must carry the exact control-bound reservation evidence. The old
+unbound V2 intent pair remains accepted only for non-V3 requests. All existing
+ledger-revision, timestamp, sequence, uncertainty and spool checks remain.
+Empty downgrade restores the former trigger; a committed control-bound outcome
+prevents downgrade, preserving its interpretation and retained evidence.
+
+The reporter decodes the persisted request by its exact canonical contract.
+For V3 it replays the **outer** digest and inner V2 intent, checks their consumed
+receipt and fixed exchange request against the capture, joins the exact reserved
+DB0017 journal, and verifies the referenced immutable DB0019 control event.
+Its private outcome stores the outer digest in `intent_sha256` and separately
+pins the inner digest, both control-state/event digests and reservation-binding
+digest. Independent post-commit readback repeats this replay before returning
+the persistence receipt. A legacy unbound V3 intent or an inner-only hash is
+rejected; old V2 outcome bytes are not reinterpreted as V3.
+
+This is historical reporting after a hypothetical single submit. It does not
+authenticate an account packet, exchange transport or response, establish a
+fill/protection, grant retry or POST authority, or connect a runtime submission
+producer. PostgreSQL migration, trigger, report, restart and downgrade cases
+must pass against an isolated exact-source database before this path can count
+as validated acceptance.

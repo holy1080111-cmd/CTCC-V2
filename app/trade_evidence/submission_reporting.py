@@ -16,7 +16,11 @@ from zoneinfo import ZoneInfo
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.trade_evidence import forensics, outbox, post_submit, storage
-from app.trade_qualification import reservations, submission_intent
+from app.trade_qualification import (
+    control_bound_ledger,
+    reservations,
+    submission_intent,
+)
 
 
 class SubmissionReportingError(ValueError):
@@ -239,18 +243,62 @@ class PreparedSubmission:
     status: str
     reason: str
     consumed: reservations.ReservationReceipt
-    intent: submission_intent.SubmissionIntentRecord
+    intent: (
+        submission_intent.SubmissionIntentRecord
+        | control_bound_ledger.ControlBoundSubmissionIntentRecord
+    )
     binding: dict
 
 
-def prepare_submission(request, intent_raw, *, intent_sha256, capture):
-    """Reconstruct report only from independently replayed immutable v2 lineage."""
-    try:
-        capture = checked_capture(capture)
+def _replay_reporting_intent(request, intent_raw, intent_sha256):
+    """Keep a V3 outer journal as the reported intent, never its inner V2 alone."""
+    if type(request) is not reservations.ReservationRequestV3:
         intent, consumed = submission_intent.replay_submission_intent(
             intent_raw, request, expected_sha256=pin(intent_sha256)
         )
-        body = json.loads(intent.canonical_json)
+        return intent, intent, consumed, {}
+
+    outer, consumed = control_bound_ledger.replay_control_bound_intent(
+        intent_raw, request, expected_sha256=pin(intent_sha256)
+    )
+    document = control_bound_ledger._document(outer.canonical_json)
+    inner, inner_consumed = submission_intent.replay_submission_intent(
+        document["intent_json"],
+        request,
+        expected_sha256=document["intent_sha256"],
+    )
+    if inner_consumed != consumed:
+        raise ValueError("control_bound_inner_receipt_conflict")
+    reserved = control_bound_ledger._document(
+        document["reservation_binding_json"],
+        maximum=control_bound_ledger.MAX_RESERVED_BYTES,
+    )
+    state = control_bound_ledger.control.decode(document["consume_control_state_json"])
+    binding = {
+        "control_bound_intent_sha256": outer.sha256,
+        "inner_intent_sha256": inner.sha256,
+        "reservation_binding_sha256": document["reservation_binding_sha256"],
+        "reserved_control_event_sha256": reserved["control_event_sha256"],
+        "consume_control_event_sha256": document["consume_control_event_sha256"],
+        "reserved_control_state_sha256": control_bound_ledger.control.digest(
+            reserved["control_state_json"]
+        ),
+        "consume_control_state_sha256": control_bound_ledger.control.digest(
+            document["consume_control_state_json"]
+        ),
+        "control_revision": state.revision,
+    }
+    return outer, inner, consumed, binding
+
+
+def prepare_submission(request, intent_raw, *, intent_sha256, capture):
+    """Reconstruct a report from the exact immutable V2 or control-bound V3."""
+    try:
+        capture = checked_capture(capture)
+        intent, inner, consumed, control_binding = _replay_reporting_intent(
+            request, intent_raw, intent_sha256
+        )
+        body = json.loads(inner.canonical_json)
         if (
             body["version"] != "ctcc-demo-submit-intent-v2"
             or capture.exchange_request_sha256 != body["exchange_request_sha256"]
@@ -329,6 +377,7 @@ def prepare_submission(request, intent_raw, *, intent_sha256, capture):
             consumed_receipt_sha256=reservations.digest(consumed),
             reservation_request_sha256=consumed.request_sha256,
         )
+        binding.update(control_binding)
         return PreparedSubmission(
             captured,
             sha(captured.encode()),

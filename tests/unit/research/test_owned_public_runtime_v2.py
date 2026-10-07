@@ -9,7 +9,12 @@ from decimal import Decimal
 import pytest
 
 from app.public_market_source.public_market_receipts import canonical, decode, sha
-from app.trade_qualification import data_v2, demo_public_origin
+from app.trade_qualification import (
+    account_collector,
+    account_native_runtime,
+    data_v2,
+    demo_public_origin,
+)
 from app.trade_qualification import post_g12_public_runtime as coordinator
 from app.trade_qualification import public_market_collector as legacy
 from app.trade_qualification import public_market_collector_v2 as public
@@ -220,18 +225,30 @@ def test_v2_demo_transport_rechecks_origin_before_native_io(
 
 
 @pytest.mark.asyncio
-async def test_post_g12_v2_demo_capture_refuses_before_new_public_io(
+async def test_unbound_post_g12_v2_issuer_refuses_before_publication_clock_or_io(
     inputs, tmp_path, monkeypatch
 ):
     source, values, run = inputs
     _, directory, harness, publications = synthetic_runtime(monkeypatch, inputs)
+    forbidden_calls = []
 
     def unexpected_io(*_args, **_kwargs):
-        raise AssertionError("post_g12_v2_capture_entered_io")
+        forbidden_calls.append(True)
+        raise AssertionError("unbound_post_g12_v2_entered_publication_clock_or_io")
 
+    monkeypatch.setattr(coordinator, "native_stamp", unexpected_io)
+    monkeypatch.setattr(
+        coordinator, "publish_qualification_evidence_liquidity_v2", unexpected_io
+    )
     monkeypatch.setattr(runtime, "_runtime_attempt", unexpected_io)
     monkeypatch.setattr(runtime, "_new_owned_client", unexpected_io)
     monkeypatch.setattr(runtime, "_ws_options", unexpected_io)
+    monkeypatch.setattr(
+        account_collector, "collect_demo_account_records", unexpected_io
+    )
+    monkeypatch.setattr(
+        account_native_runtime, "capture_initial_native_account", unexpected_io
+    )
     result = await coordinator.publish_capture_public_v2(
         tmp_path / "g12",
         tmp_path / "fresh",
@@ -241,10 +258,11 @@ async def test_post_g12_v2_demo_capture_refuses_before_new_public_io(
         market_policy=policy(),
     )
     assert result.code == "public_v2_denied"
-    assert result.evidence is not None and result.evidence.result.evidence_complete
-    assert len(publications) == 1
+    assert result.evidence is None and not publications
     assert result.admission == "DENY" and result.execution_authority is False
     assert result.packet is None and result.journal_sha256 is None
+    assert not forbidden_calls
+    assert not (tmp_path / "g12").exists()
     assert not harness.requests and not directory.content
     empty_registries()
 

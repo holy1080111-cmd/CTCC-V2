@@ -1,7 +1,15 @@
 # Post-G12 current G1–G4 v2 diagnostic boundary
 
-`publish_capture_public_v2` publishes and reads back a new G12 report before it
-issues the one-use post-publication public-source capability. After the native
+The V2 Demo issuer currently has no account-bound registration-region proof and
+still carries Production public origins. It checks the trusted Demo-origin fence
+before sampling the clock or publishing G12. New direct V2 invocations therefore
+return `DENY` without creating G12 files or public/account requests. Previously
+published evidence remains available for historical diagnostic replay, without
+regaining eligibility.
+
+Once a private account-bound Demo route issuer exists, `publish_capture_public_v2`
+must publish and read back a new G12 report before it issues the one-use
+post-publication public-source capability. After the native
 collector returns, the coordinator checks that the raw v2 packet names the same
 report and instrument, declares `post_publication`, and carries the exact G12
 completion barrier. It then recomputes current G1 from that entire raw packet
