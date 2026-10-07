@@ -13,10 +13,9 @@ from datetime import datetime
 from typing import Literal
 
 from app.domain.source_primitives import canonical, decode, sha
-from app.public_market_source.public_runtime_journal import MAX_RAW
 from app.trade_qualification import public_market_collector_v2 as public_v2
 from app.trade_qualification.market_bridge_v2 import public_market_context_v2
-from app.trade_qualification.public_source_runtime import replay_public_runtime
+from app.trade_qualification.public_source_runtime import MAX_RAW, replay_public_runtime
 from app.trade_qualification.recheck_models import RecheckOrigin, copy_recheck_origin
 
 _HEX64 = re.compile(r"[a-f0-9]{64}\Z")

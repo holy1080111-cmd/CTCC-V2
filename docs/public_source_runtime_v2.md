@@ -268,3 +268,17 @@ reservation and order authority false. A self-consistent historical journal and
 caller-supplied hashes cannot establish a native same-task source handoff, and
 the current Demo-region registration proof still blocks new native V2 I/O.
 The join does not enter the reservation or submit path.
+
+`post_g12_recheck_v2.py` adds a separate versioned public-only recheck receipt
+over that join. It replays current G1 and base-strategy G2–G4, checks the
+original event and entry zone against fresh closed bars, and recomputes both
+the original entry and the current executable bid/ask reference under the
+unchanged entry, stop, target and cost policy. The receipt records exact
+candidate and executable-reference projected economics, then verifies by
+recomputing from the same raw journal and comparing every receipt byte.
+No V2 quote is coerced into the legacy V3 reservation quote. The receipt always
+remains `DENY`, including when projected mathematics passes: intrabar event
+survival, actual account fees and funding, current portfolio risk, protection,
+reservation and submission still lack verified inputs. The native V2 Demo
+transport refusal also remains in force. Synthetic long/short replay tests
+exercise this diagnostic without creating real Demo or Live evidence.

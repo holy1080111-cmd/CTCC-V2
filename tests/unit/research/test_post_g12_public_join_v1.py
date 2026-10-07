@@ -16,6 +16,12 @@ from app.trade_qualification.post_g12_public_join_v1 import (
     PostG12PublicJoinReceiptV1,
     replay_post_g12_public_join_v1,
 )
+from app.trade_qualification.post_g12_recheck_v2 import (
+    PostG12PublicRecheckReceiptV2,
+    PostG12RecheckV2Error,
+    evaluate_post_g12_public_recheck_v2,
+    verify_post_g12_public_recheck_v2,
+)
 from app.trade_qualification.recheck_models import freeze_recheck_origin
 from tests.unit.research.test_demo_public_origin_preflight import session
 from tests.unit.research.test_owned_public_runtime_v2 import (
@@ -113,6 +119,59 @@ async def test_routed_post_g12_public_join_is_integrity_only_and_denies_changes(
         )
     )
     assert PostG12PublicJoinReceiptV1(receipt.receipt_json) == receipt
+
+    recheck = evaluate_post_g12_public_recheck_v2(
+        MemoryDirectory(directory.content), **payload
+    )
+    replayed = verify_post_g12_public_recheck_v2(
+        recheck, MemoryDirectory(directory.content), **payload
+    )
+    rechecked = decode(replayed.receipt_json)
+    assert replayed == recheck and recheck.admission == "DENY"
+    assert not recheck.execution_authority
+    assert rechecked["code"] == "projected_math_consistent_account_path_required"
+    assert rechecked["g1"]["passed"] is True
+    assert rechecked["current_g2_g4"]["passed"] is True
+    assert rechecked["original_event_zone"]["zone_code"] == "passed"
+    assert rechecked["original_entry"] == str(values["intent"].candidate_entry)
+    assert rechecked["original_stop_loss"] == str(run.result.stop_loss)
+    assert rechecked["original_take_profit"] == str(run.result.take_profit)
+    assert rechecked["executable_reference"] == str(
+        result.context.quote.ticker.ask
+        if source.direction == "long"
+        else result.context.quote.ticker.bid
+    )
+    assert rechecked["projected_economics"]["candidate"]["code"] == "passed"
+    assert rechecked["projected_economics"]["execution"]["code"] == "passed"
+    assert rechecked["projected_economics"]["comparison"]
+    assert not any(
+        rechecked[name]
+        for name in (
+            "complete_path_verified",
+            "original_event_survival_verified",
+            "actual_account_costs_verified",
+            "account_complete",
+            "execution_recheck_performed",
+            "atomic_risk_reserved",
+            "execution_authority",
+            "order_submitted",
+        )
+    )
+    forged_recheck = canonical({**rechecked, "code": "current_g1_rejected"})
+    with pytest.raises(PostG12RecheckV2Error, match="receipt_changed"):
+        verify_post_g12_public_recheck_v2(
+            PostG12PublicRecheckReceiptV2(forged_recheck),
+            MemoryDirectory(directory.content),
+            **payload,
+        )
+    with pytest.raises(PostG12RecheckV2Error, match="receipt_invalid"):
+        PostG12PublicRecheckReceiptV2(
+            canonical({**rechecked, "atomic_risk_reserved": True})
+        )
+    with pytest.raises(TypeError):
+        evaluate_post_g12_public_recheck_v2(
+            MemoryDirectory(directory.content), **payload, quote_json="legacy"
+        )
 
     # Every row below is computed from a real full synthetic journal replay, not
     # a mocked packet/result. Its exact-match receipt is still permanently DENY.
