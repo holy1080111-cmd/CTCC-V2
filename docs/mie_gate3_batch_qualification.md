@@ -99,6 +99,12 @@ execution_authority=false
 real_order_tested=false
 ```
 
+The V1 dataset qualification contract always records
+`current_claim=computational`. Its eligibility field can describe whether a
+different, properly sealed historical dataset remains available for a future
+evaluation; it cannot itself assert a predictive result. A predictive OOS claim
+requires the separate evaluated-evidence and independent-review contract.
+
 The 2026-07-23 through 2026-08-21 partition may be used only for a labelled
 pipeline rehearsal whose claim remains `computational`. A later
 `predictive_oos` attempt must freeze its candidate, trials, parameters, costs,

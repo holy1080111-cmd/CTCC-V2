@@ -66,11 +66,30 @@ def test_predictive_eligibility_requires_candidate_design_to_predate_access() ->
         Gate3DatasetQualification.model_validate(payload)
 
 
-def test_claim_cannot_exceed_dataset_eligibility() -> None:
+def test_dataset_qualification_cannot_assert_predictive_claim() -> None:
     payload = _payload()
     payload["current_claim"] = Gate3Claim.PREDICTIVE_OOS
 
-    with pytest.raises(ValidationError, match="exceeds dataset eligibility"):
+    with pytest.raises(ValidationError):
+        Gate3DatasetQualification.model_validate(payload)
+
+
+def test_dataset_qualification_requires_explicit_claim() -> None:
+    payload = _payload()
+    payload.pop("current_claim")
+
+    with pytest.raises(ValidationError):
+        Gate3DatasetQualification.model_validate(payload)
+
+
+def test_unread_eligible_dataset_still_cannot_assert_predictive_claim() -> None:
+    payload = _payload()
+    payload["holdout_access_state"] = HoldoutAccessState.UNREAD
+    payload["candidate_design_predated_holdout_access"] = True
+    payload["predictive_oos_eligible"] = True
+    payload["current_claim"] = Gate3Claim.PREDICTIVE_OOS
+
+    with pytest.raises(ValidationError):
         Gate3DatasetQualification.model_validate(payload)
 
 

@@ -169,6 +169,13 @@ no carrier and retains the already durable source/proof journal.
 
 The result is `ctcc.native_current_history_join_diagnostic.v1`, with both
 receipt hashes, source references and unresolved locked-readback reasons.
+Before accepting the locked readback as a diagnostic observation, the
+same-invocation coordinator checks its exact scope and session binding, the
+equal recorded/DB checkpoint hashes, nonnegative ordered account/ledger
+revisions, local hold count, unresolved history blocker and fixed denial flags.
+A mismatched readback burns the current carrier and returns only a denial.
+The focused replacement-readback tests exercise this validation without
+claiming a genuine PostgreSQL or authenticated account run.
 It always has `owner=None`, `snapshot=None`, `account_complete=false`,
 `account_revision_published=false`, `execution_authority=false` and `DENY`.
 This is not a post-G12 account request: the existing initial stage supplies

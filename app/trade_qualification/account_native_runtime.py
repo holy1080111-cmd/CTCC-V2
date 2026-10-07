@@ -1437,10 +1437,42 @@ async def capture_native_current_history_join(
             locked_value = json.loads(locked.receipt_json)
             native_value = json.loads(pending.receipt_json)
             current_reference = observed.reference_document(pending.reference)
+            history_reference = locked_value.get("history_source_reference")
+            checkpoint_sha256 = locked_value.get("recorded_local_checkpoint_sha256")
+            local_state_sha256 = locked_value.get("db_local_state_sha256")
+            account_revision = locked_value.get("db_account_revision")
+            ledger_revision = locked_value.get("db_ledger_revision")
+            active_hold_count = locked_value.get("db_active_hold_count")
+            blockers = locked_value.get("locked_readback_blocking_reasons")
             if (
                 locked_value.get("schema_version")
                 != "ctcc.demo_account_locked_source_join.v2"
                 or locked_value.get("current_source_reference") != current_reference
+                or locked_value.get("scope_sha256") != proof.scope_sha256(scope)
+                or locked_value.get("session_binding_sha256")
+                != pending.reference.session_binding_sha256
+                or type(history_reference) is not dict
+                or history_reference.get("capture_id") != history_capture_id
+                or history_reference.get("session_binding_sha256")
+                != pending.reference.session_binding_sha256
+                or type(checkpoint_sha256) is not str
+                or re.fullmatch(r"[a-f0-9]{64}", checkpoint_sha256) is None
+                or checkpoint_sha256 != local_state_sha256
+                or type(account_revision) is not int
+                or account_revision < 0
+                or type(ledger_revision) is not int
+                or ledger_revision < account_revision
+                or type(active_hold_count) is not int
+                or active_hold_count < 0
+                or locked_value.get("local_revision_readback_verified") is not True
+                or locked_value.get("exchange_atomic_revision_verified") is not False
+                or locked_value.get("history_tail_closed") is not False
+                or locked_value.get("account_revision_published") is not False
+                or type(blockers) is not list
+                or not blockers
+                or any(type(code) is not str or not code for code in blockers)
+                or len(blockers) != len(set(blockers))
+                or "history_tail_not_atomically_closed" not in blockers
                 or native_value.get("source_reference") != current_reference
                 or native_value.get("schema_version")
                 != "ctcc.initial_native_account_diagnostic.v2"

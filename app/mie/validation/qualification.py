@@ -53,7 +53,9 @@ class Gate3DatasetQualification(Gate3Contract):
     holdout_access_state: HoldoutAccessState
     candidate_design_predated_holdout_access: StrictBool
     predictive_oos_eligible: StrictBool
-    current_claim: Gate3Claim
+    # A dataset receipt can describe eligibility, but only separately reviewed
+    # evaluation evidence may assert a predictive OOS result.
+    current_claim: Literal[Gate3Claim.COMPUTATIONAL]
     strategy_evaluated: Literal[False] = False
     costs_evaluated: Literal[False] = False
     reference_only: Literal[True] = True
@@ -81,9 +83,4 @@ class Gate3DatasetQualification(Gate3Contract):
             raise ValueError(
                 "predictive OOS eligibility requires a pre-existing candidate design"
             )
-        if (
-            self.current_claim == Gate3Claim.PREDICTIVE_OOS
-            and not self.predictive_oos_eligible
-        ):
-            raise ValueError("predictive OOS claim exceeds dataset eligibility")
         return self

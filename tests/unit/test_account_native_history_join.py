@@ -28,7 +28,9 @@ HISTORY_ID = "a" * 32
 CURRENT_ID = "b" * 32
 
 
-async def _synthetic_join(monkeypatch, *, changed_source=False, expired=False):
+async def _synthetic_join(
+    monkeypatch, *, changed_source=False, expired=False, locked_overrides=None
+):
     plan = current_plan()
     session = ControlledDemoAccountSession(
         credentials=credentials(session_binding_id=plan.session_binding_id),
@@ -126,24 +128,30 @@ async def _synthetic_join(monkeypatch, *, changed_source=False, expired=False):
         current = observed.reference_document(reference)
         if changed_source:
             current["packet_sha256"] = "0" * 64
-        return LockedAccountSourceJoinReadback(
-            canonical(
-                {
-                    "schema_version": "ctcc.demo_account_locked_source_join.v2",
-                    "current_source_reference": current,
-                    "history_source_reference": observed.reference_document(
-                        history_reference
-                    ),
-                    "locked_readback_blocking_reasons": [
-                        "history_tail_not_atomically_closed"
-                    ],
-                    "snapshot": None,
-                    "account_complete": False,
-                    "execution_authority": False,
-                    "admission": "DENY",
-                }
-            )
-        )
+        receipt = {
+            "schema_version": "ctcc.demo_account_locked_source_join.v2",
+            "current_source_reference": current,
+            "history_source_reference": observed.reference_document(history_reference),
+            "scope_sha256": proof.scope_sha256(scope),
+            "session_binding_sha256": reference.session_binding_sha256,
+            "recorded_local_checkpoint_sha256": "f" * 64,
+            "db_local_state_sha256": "f" * 64,
+            "db_account_revision": 0,
+            "db_ledger_revision": 0,
+            "db_active_hold_count": 0,
+            "local_revision_readback_verified": True,
+            "exchange_atomic_revision_verified": False,
+            "history_tail_closed": False,
+            "account_revision_published": False,
+            "locked_readback_blocking_reasons": ["history_tail_not_atomically_closed"],
+            "snapshot": None,
+            "account_complete": False,
+            "execution_authority": False,
+            "admission": "DENY",
+        }
+        if locked_overrides is not None:
+            receipt.update(locked_overrides)
+        return LockedAccountSourceJoinReadback(canonical(receipt))
 
     monkeypatch.setattr(runtime, "_capture_initial_current", capture_current)
     monkeypatch.setattr(
@@ -188,6 +196,45 @@ async def test_join_mismatch_or_original_native_lease_expiry_burns_carrier(
 ):
     result, marker = await _synthetic_join(
         monkeypatch, changed_source=changed_source, expired=expired
+    )
+    value = json.loads(result.receipt_json)
+    assert marker["calls"] == ["native_current", "locked_join"]
+    assert value["code"] == "native_account_history_join_denied"
+    assert value["snapshot"] is None and value["admission"] == "DENY"
+    assert result.execution_authority is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "locked_overrides",
+    [
+        {"scope_sha256": "0" * 64},
+        {"session_binding_sha256": "0" * 64},
+        {"recorded_local_checkpoint_sha256": "0" * 64},
+        {"db_local_state_sha256": "0" * 64},
+        {"db_account_revision": -1},
+        {"db_ledger_revision": -1},
+        {"db_ledger_revision": True},
+        {"db_active_hold_count": -1},
+        {"local_revision_readback_verified": False},
+        {"exchange_atomic_revision_verified": True},
+        {"history_tail_closed": True},
+        {"account_revision_published": True},
+        {"locked_readback_blocking_reasons": []},
+        {
+            "locked_readback_blocking_reasons": [
+                "history_tail_not_atomically_closed",
+                "history_tail_not_atomically_closed",
+            ]
+        },
+        {"history_source_reference": {"capture_id": "0" * 32}},
+    ],
+)
+async def test_forged_locked_readback_cannot_claim_native_history_join(
+    monkeypatch, locked_overrides
+):
+    result, marker = await _synthetic_join(
+        monkeypatch, locked_overrides=locked_overrides
     )
     value = json.loads(result.receipt_json)
     assert marker["calls"] == ["native_current", "locked_join"]
