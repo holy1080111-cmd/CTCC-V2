@@ -4,7 +4,8 @@ G12 receipts, recorded rechecks, and DB0017 durable intent records are evidence,
 not permission to dispatch an order. There is deliberately no permit issuer,
 configuration bypass, payload flag, or historical-receipt admission here.
 
-Existing cancel and close operations keep their service safety gates.
+Live cancel, close and Cancel All After also require separate final-dispatch
+authority. Their legacy service safety gates alone cannot authorize a POST.
 Order precheck belongs to order submission and remains denied without authority.
 Set-leverage remains denied while the trusted flat-account authority is absent:
 legacy execution can reach it before the later order-create denial. These
@@ -47,7 +48,8 @@ def enforce_live_submission_boundary(method: str, path: str) -> None:
     A future Live issuer must require the contemporaneous operator confirmation,
     fresh qualified input, durable one-shot intent and final safety guards. Until
     that integration exists, even a direct configured execution client cannot
-    dispatch new exposure. Maintenance retains its existing service safeguards.
+    dispatch new exposure. This classifier does not grant maintenance writes;
+    the Live final-dispatch boundary currently rejects those POST paths too.
     """
     if type(method) is str and type(path) is str:
         if method.upper() == "GET":

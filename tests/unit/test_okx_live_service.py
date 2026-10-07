@@ -1057,7 +1057,9 @@ async def test_unresolved_intent_blocks_new_key_inside_execution_lock() -> None:
 
 
 @pytest.mark.asyncio
-async def test_unresolved_intent_blocks_leverage_but_allows_close() -> None:
+async def test_unresolved_intent_blocks_leverage_but_legacy_close_reconciles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     service, read, execution, intents, _ = service_fixture()
     await service.arm(
         OkxLiveArmRequest(duration_seconds=60, confirmation=LIVE_ARM_PHRASE)
@@ -1088,6 +1090,12 @@ async def test_unresolved_intent_blocks_leverage_but_allows_close() -> None:
             "mgnMode": "cross",
         }
     ]
+    # Exercise the old internal reconciliation branch with a fake execution
+    # adapter. Production still has no Live maintenance permit issuer.
+    monkeypatch.setattr(
+        "app.okx_live.service.require_live_maintenance_service_authority",
+        lambda action: None,
+    )
     result = await service.close_position(
         OkxLiveCloseRequest(
             instrument_id="BTC-USDT-SWAP",
@@ -1095,8 +1103,8 @@ async def test_unresolved_intent_blocks_leverage_but_allows_close() -> None:
             confirmation=LIVE_CLOSE_PHRASE,
         )
     )
-
     assert result.final_state_confirmed is True
+    assert intents.rows["CTCCXclose02"]["status"] == "confirmed"
     assert "close_position" in [name for name, _ in execution.calls]
 
 
@@ -1367,8 +1375,31 @@ async def test_external_exposure_race_is_reconciled_before_actual_order_post() -
 
 
 @pytest.mark.asyncio
-async def test_cancel_is_exposure_reducing_and_requires_durable_key_not_arm() -> None:
+async def test_cancel_without_trusted_maintenance_authority_creates_no_intent() -> None:
     service, _, execution, intents, _ = service_fixture()
+
+    with pytest.raises(OkxLiveSafetyError, match="maintenance_authority_unavailable"):
+        await service.cancel_order(
+            OkxLiveCancelRequest(
+                instrument_id="BTC-USDT-SWAP",
+                order_id="live-order-1",
+                idempotency_key="CTCCXcancel1",
+                confirmation=LIVE_CANCEL_PHRASE,
+            )
+        )
+    assert "CTCCXcancel1" not in intents.rows
+    assert "cancel_order" not in [name for name, _ in execution.calls]
+
+
+@pytest.mark.asyncio
+async def test_legacy_cancel_result_confirms_only_after_exchange_reconcile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _, execution, intents, _ = service_fixture()
+    monkeypatch.setattr(
+        "app.okx_live.service.require_live_maintenance_service_authority",
+        lambda action: None,
+    )
 
     result = await service.cancel_order(
         OkxLiveCancelRequest(
@@ -1378,17 +1409,22 @@ async def test_cancel_is_exposure_reducing_and_requires_durable_key_not_arm() ->
             confirmation=LIVE_CANCEL_PHRASE,
         )
     )
-
     assert result.final_state_confirmed is True
     assert "cancel_order" in [name for name, _ in execution.calls]
     assert intents.rows["CTCCXcancel1"]["status"] == "confirmed"
 
 
 @pytest.mark.asyncio
-async def test_cancel_fill_race_is_not_reported_as_confirmed_cancel() -> None:
+async def test_cancel_fill_race_is_not_reported_as_confirmed_cancel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     service, _, execution, intents, _ = service_fixture()
     execution.cancel_state = "filled"
     execution.cancel_creates_position = True
+    monkeypatch.setattr(
+        "app.okx_live.service.require_live_maintenance_service_authority",
+        lambda action: None,
+    )
 
     result = await service.cancel_order(
         OkxLiveCancelRequest(
@@ -1398,7 +1434,6 @@ async def test_cancel_fill_race_is_not_reported_as_confirmed_cancel() -> None:
             confirmation=LIVE_CANCEL_PHRASE,
         )
     )
-
     assert result.final_state_confirmed is False
     assert "order_partially_filled_before_cancel_confirmation" in result.warnings
     assert "cancel_final_state_not_confirmed" in result.warnings
@@ -1407,10 +1442,16 @@ async def test_cancel_fill_race_is_not_reported_as_confirmed_cancel() -> None:
 
 
 @pytest.mark.asyncio
-async def test_canceled_order_with_nonzero_fill_is_ambiguous() -> None:
+async def test_canceled_order_with_nonzero_fill_is_ambiguous(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     service, _, execution, intents, _ = service_fixture()
     execution.cancel_state = "canceled"
     execution.cancel_fill_size = "0.25"
+    monkeypatch.setattr(
+        "app.okx_live.service.require_live_maintenance_service_authority",
+        lambda action: None,
+    )
 
     result = await service.cancel_order(
         OkxLiveCancelRequest(
@@ -1420,7 +1461,6 @@ async def test_canceled_order_with_nonzero_fill_is_ambiguous() -> None:
             confirmation=LIVE_CANCEL_PHRASE,
         )
     )
-
     assert result.final_state_confirmed is False
     assert "order_partially_filled_before_cancel_confirmation" in result.warnings
     assert intents.rows["CTCCXcancel3"]["status"] == "ambiguous"
@@ -1498,7 +1538,7 @@ async def test_safety_latch_read_failure_blocks_new_exposure() -> None:
 
 
 @pytest.mark.asyncio
-async def test_close_position_reconciles_until_exchange_exposure_is_flat() -> None:
+async def test_close_without_trusted_maintenance_authority_preserves_exposure() -> None:
     service, read, execution, intents, _ = service_fixture()
     read.position_rows = [
         {
@@ -1511,6 +1551,39 @@ async def test_close_position_reconciles_until_exchange_exposure_is_flat() -> No
         }
     ]
 
+    with pytest.raises(OkxLiveSafetyError, match="maintenance_authority_unavailable"):
+        await service.close_position(
+            OkxLiveCloseRequest(
+                instrument_id="BTC-USDT-SWAP",
+                idempotency_key="CTCCXclose01",
+                confirmation=LIVE_CLOSE_PHRASE,
+            )
+        )
+    assert read.position_rows[0]["pos"] == "0.1"
+    assert "close_position" not in [name for name, _ in execution.calls]
+    assert "CTCCXclose01" not in intents.rows
+
+
+@pytest.mark.asyncio
+async def test_legacy_close_reconciles_until_exchange_exposure_is_flat(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, read, execution, intents, _ = service_fixture()
+    read.position_rows = [
+        {
+            "posId": "position-1",
+            "instId": "BTC-USDT-SWAP",
+            "posSide": "net",
+            "pos": "0.1",
+            "availPos": "0.1",
+            "upl": "0",
+        }
+    ]
+    monkeypatch.setattr(
+        "app.okx_live.service.require_live_maintenance_service_authority",
+        lambda action: None,
+    )
+
     result = await service.close_position(
         OkxLiveCloseRequest(
             instrument_id="BTC-USDT-SWAP",
@@ -1518,8 +1591,28 @@ async def test_close_position_reconciles_until_exchange_exposure_is_flat() -> No
             confirmation=LIVE_CLOSE_PHRASE,
         )
     )
-
     assert result.final_state_confirmed is True
     assert read.position_rows == []
     assert "close_position" in [name for name, _ in execution.calls]
     assert intents.rows["CTCCXclose01"]["status"] == "confirmed"
+
+
+@pytest.mark.asyncio
+async def test_maintenance_write_lockdown_preserves_reconcile_disarm_and_estop() -> (
+    None
+):
+    service, _, execution, _, _ = service_fixture()
+    observed = await service.reconcile()
+    assert observed.persisted is True
+    assert execution.calls == []
+
+    await service.arm(
+        OkxLiveArmRequest(duration_seconds=60, confirmation=LIVE_ARM_PHRASE)
+    )
+    disarmed = await service.disarm()
+    assert disarmed.arm.armed is False
+
+    stopped = await service.emergency_stop()
+    assert stopped.arm.emergency_stop is True
+    assert stopped.arm.safety_latch_code == "operator_emergency_stop"
+    assert execution.calls == []

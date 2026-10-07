@@ -59,7 +59,7 @@ async def test_read_only_live_client_blocks_explicit_shared_transport_order_call
 
 
 @pytest.mark.asyncio
-async def test_execution_transport_has_no_demo_header_and_uses_live_endpoints() -> None:
+async def test_live_read_has_no_demo_header_and_maintenance_has_zero_http() -> None:
     seen: list[tuple[str, str]] = []
     fixed = datetime(2026, 8, 9, 12, 0, tzinfo=UTC)
 
@@ -92,14 +92,51 @@ async def test_execution_transport_has_no_demo_header_and_uses_live_endpoints() 
             clock=lambda: fixed,
         )
         await live.max_order_size("BTC-USDT-SWAP", margin_mode="cross")
-        await live.cancel_all_after({"timeOut": "30", "tag": "CTCCV168"})
-        await live.cancel_order({"instId": "BTC-USDT-SWAP", "ordId": "synthetic"})
+        for operation, payload in (
+            ("cancel_all_after", {"timeOut": "30", "tag": "CTCCV168"}),
+            ("cancel_order", {"instId": "BTC-USDT-SWAP", "ordId": "synthetic"}),
+            (
+                "close_position",
+                {"instId": "BTC-USDT-SWAP", "mgnMode": "cross", "posSide": "net"},
+            ),
+        ):
+            with pytest.raises(OkxPrivateApiError) as maintenance_error:
+                await getattr(live, operation)(payload)
+            assert maintenance_error.value.code == (
+                "live_maintenance_authority_unavailable"
+            )
         with pytest.raises(OkxPrivateApiError) as error:
             await live.place_order({"instId": "BTC-USDT-SWAP", "sz": "1"})
         assert error.value.code == "live_qualification_authority_unavailable"
 
+    assert seen == [("GET", "/api/v5/account/max-size")]
+
+
+@pytest.mark.asyncio
+async def test_legacy_live_write_adapter_never_sets_demo_header(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        "app.exchange.okx.private_rest.enforce_live_final_dispatch",
+        lambda method, path: None,
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert "x-simulated-trading" not in request.headers
+        seen.append((request.method, request.url.path))
+        return httpx.Response(
+            200,
+            json={"code": "0", "msg": "", "data": [{"sCode": "0", "sMsg": ""}]},
+        )
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="https://openapi.okx.com"
+    ) as http:
+        live = OkxLiveExecutionRestClient(http, settings=execution_settings())
+        await live.cancel_all_after({"timeOut": "30", "tag": "CTCCV168"})
+        await live.cancel_order({"instId": "BTC-USDT-SWAP", "ordId": "synthetic"})
     assert seen == [
-        ("GET", "/api/v5/account/max-size"),
         ("POST", "/api/v5/trade/cancel-all-after"),
         ("POST", "/api/v5/trade/cancel-order"),
     ]
@@ -120,6 +157,45 @@ async def test_direct_live_order_precheck_has_zero_http_io() -> None:
         with pytest.raises(OkxPrivateApiError) as caught:
             await client.order_precheck({"instId": "BTC-USDT-SWAP", "sz": "1"})
     assert caught.value.code == "live_qualification_authority_unavailable"
+    assert requests == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "path,body",
+    (
+        (
+            "/api/v5/trade/cancel-order",
+            {"instId": "BTC-USDT-SWAP", "ordId": "synthetic", "reduceOnly": True},
+        ),
+        (
+            "/api/v5/trade/close-position",
+            {"instId": "BTC-USDT-SWAP", "mgnMode": "isolated"},
+        ),
+        (
+            "/api/v5/trade/cancel-all-after",
+            {"timeOut": "30", "tag": "CTCCV168"},
+        ),
+    ),
+)
+async def test_live_maintenance_direct_base_call_has_zero_http_without_permit(
+    path: str, body: dict[str, object]
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        pytest.fail("Unqualified Live maintenance reached private HTTP")
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="https://openapi.okx.com"
+    ) as http:
+        client = OkxLiveExecutionRestClient(http, settings=execution_settings())
+        with pytest.raises(OkxPrivateApiError) as caught:
+            await _OkxPrivateRestClientBase._request(
+                client, "POST", path, body=body, write=False
+            )
+    assert caught.value.code == "live_maintenance_authority_unavailable"
     assert requests == []
 
 
@@ -185,8 +261,16 @@ async def test_live_caa_rejects_signed_zero_even_if_caller_mutates_dict_to_posit
 
 
 @pytest.mark.asyncio
-async def test_execution_write_transport_failure_is_never_retried() -> None:
+async def test_legacy_execution_write_transport_failure_is_never_retried(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     calls = 0
+    # Isolated MockTransport regression of the old write-attempt semantics.
+    # Production's final maintenance authority check remains fail-closed.
+    monkeypatch.setattr(
+        "app.exchange.okx.private_rest.enforce_live_final_dispatch",
+        lambda method, path: None,
+    )
 
     def handler(request: httpx.Request) -> httpx.Response:
         nonlocal calls
@@ -237,8 +321,14 @@ async def test_execution_transport_blocks_before_http_when_not_enabled() -> None
 
 
 @pytest.mark.asyncio
-async def test_empty_success_payload_after_write_is_ambiguous_and_not_retried() -> None:
+async def test_legacy_empty_write_ack_is_ambiguous_and_not_retried(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     calls = 0
+    monkeypatch.setattr(
+        "app.exchange.okx.private_rest.enforce_live_final_dispatch",
+        lambda method, path: None,
+    )
 
     def handler(request: httpx.Request) -> httpx.Response:
         nonlocal calls

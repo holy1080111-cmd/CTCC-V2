@@ -83,6 +83,23 @@ def _require_trusted_v2_demo_origin_profile(plan):
     raise PublicSourceRuntimeError("trusted_demo_public_origin_profile_unavailable")
 
 
+def _fence_v2_demo_transport(state):
+    """Recheck the still-denied V2 origin before any native public transport.
+
+    The V1 replay transport below is pinned to Production public endpoints.
+    A future V2 issuer must replace those transports and establish an owned
+    account-region proof before removing this denial. Checking at each I/O
+    entry also prevents an accidentally skipped capture-level check from
+    sending a Demo-labelled request to the Production public service.
+    """
+    plan = state.get("plan")
+    if type(plan) is dict and plan.get("schema_version") in {
+        "ctcc.public.runtime_plan.v2",
+        "ctcc.public.initial_runtime_plan.v2",
+    }:
+        _require_trusted_v2_demo_origin_profile(plan)
+
+
 class _Source:
     __slots__ = ("__weakref__",)
 
@@ -183,6 +200,7 @@ def _check_inputs(source, *, clock, report_id, instrument_id, barrier_completed_
 
 def _new_owned_client(source, role):
     state = _state(source)
+    _fence_v2_demo_transport(state)
     if role not in ("quote", "candles", "market_aux") or role in state["client_roles"]:
         raise PublicSourceRuntimeError("public_source_client_scope_invalid")
     context = ssl.create_default_context()
@@ -267,6 +285,7 @@ def _request_failure_code(error):
 
 def _request_scope(source, client, request, started):
     state = _state(source)
+    _fence_v2_demo_transport(state)
     role, _ = _verified_client(source, client)
     if (
         type(request) is not httpx.Request
@@ -499,6 +518,7 @@ async def _fetch_http(source, client, request, started, policy):
 
 def _ws_options(source, started):
     state = _state(source)
+    _fence_v2_demo_transport(state)
     if state["ws_claimed"] or started != utc_from_ns(state["last"]["utc_ns"]):
         raise PublicSourceRuntimeError("public_socket_already_claimed")
     state["ws_claimed"] = True

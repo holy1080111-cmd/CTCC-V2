@@ -3632,3 +3632,54 @@ and cannot detect unknown secret formats, so this is not final secret-audit
 acceptance. The old exact-source checkpoint and all failure artifacts remain
 retained. The local host's previous thermal shutdowns rule out treating an
 interrupted broad Windows test selection as evidence of a pass.
+
+## 2026-10-07 current CI, source-bound safety slices and evidence limits
+
+The first split-suite exact-source [CI run 37591101243](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/37591101243)
+at `a9a9e1c273514742138e32f766e8990582ff11fd` immediately failed its
+Linux jobs before Docker validation: invoking the verifier as a file made its
+`scripts` package import unavailable. Commit
+`1d5ae8082ee2aa57cc64147c08be3a37ee2235f0` changes both CI invocations
+to `python3 -m scripts.verify_final_hermetic` and updates the manifest. Its
+matching [CI run 37591525888](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/37591525888)
+was still running at this review; two isolated Linux shards had reported
+success, but Windows, PostgreSQL, the other shards and exact-union acceptance
+had not completed. Those older-source results cannot validate the later
+working-tree changes described here.
+
+This review's test-focused source changes add a one-use V6 Demo raw-account
+projection of measured balance and current inventory, explicitly leaving
+history, funding, peak, protection, local reservations and account revision
+unknown. The existing native proof refuses accounts with exposure, so this is
+only a flat-account diagnostic and never publishes a PortfolioRiskSnapshot.
+Demo V2 public capture now repeats its region/session-origin rejection before
+each native HTTP or WebSocket I/O entry. The runtime still lacks a verified
+account-bound Demo region and transport, so trusted Demo R5 is not accepted.
+Live cancel, close and Cancel All After direct POST paths now reject without a
+durable, account-scoped one-use maintenance permit; no such issuer exists.
+Read-only reconciliation, local disarm and Emergency Stop remain available,
+but CTCC Live maintenance writes and Live readiness are not accepted. Focused
+account, public-route and Live transport/service tests passed; legacy
+cancel/fill-race and ambiguous-response tests remain covered with isolated
+fake adapters. A broader combined local selection was interrupted to avoid
+further thermal load and is not a regression pass.
+The registered Demo and Live order-create routes currently deny new-exposure
+POSTs at the private transport, including direct calls and callers setting
+`write=False`; this is a closed system, not the required common qualified
+G12/recheck/reservation/intent permit. The legacy Demo automation tracks
+active trade state in memory and persists after POST, so
+`ALL_SUBMIT_ROUTES_GUARDED` remains failed for production acceptance.
+
+The MIE Gate 3 computational verifier and 429 focused Windows cases passed,
+but all 15,120 historical aggregate bars lack measured availability at their
+2024/2025 decision cutoffs, and the existing holdout was exposed before a
+candidate seal. No formal sealed OOS evaluation, event-time Gate 4 trace,
+economic OOS or stress acceptance exists. These research gates remain failed.
+The original Notion instruction defines four distinct real evidence examples:
+blocked old high-score error, qualified Demo candidate, price change during
+rendering canceled at recheck, and a fully annotated `summary.png`. The
+execution report was corrected to this original wording and read back; it
+still records 0/4. Synthetic fixtures and the legacy automation do not count.
+The connected Notion document tool cannot provide CTCC's runtime REST token
+or the four opaque property IDs required by the independent outbox worker;
+automatic Notion delivery remains unaccepted.

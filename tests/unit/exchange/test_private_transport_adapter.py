@@ -86,7 +86,7 @@ async def test_injected_client_cannot_change_signed_request(kind, unsafe):
 
 
 @pytest.mark.asyncio
-async def test_allowed_maintenance_does_not_follow_external_client_redirect():
+async def test_live_read_does_not_follow_external_client_redirect():
     calls = []
 
     def handler(request):
@@ -97,11 +97,11 @@ async def test_allowed_maintenance_does_not_follow_external_client_redirect():
         transport=httpx.MockTransport(handler), follow_redirects=True
     ) as client:
         with pytest.raises(OkxPrivateApiError) as error:
-            await make_client("execution", client).cancel_order(
-                {"instId": "BTC-USDT-SWAP", "ordId": "synthetic"}
-            )
+            await OkxLiveExecutionRestClient(
+                client, settings=execution_settings(okx_live_read_max_retries=0)
+            ).account_config()
     assert error.value.code == "transport_error"
-    assert calls == [("POST", "/api/v5/trade/cancel-order")]
+    assert calls == [("GET", "/api/v5/account/config")]
 
 
 @pytest.mark.asyncio

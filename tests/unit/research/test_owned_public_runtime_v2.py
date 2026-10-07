@@ -9,7 +9,7 @@ from decimal import Decimal
 import pytest
 
 from app.public_market_source.public_market_receipts import canonical, decode, sha
-from app.trade_qualification import data_v2
+from app.trade_qualification import data_v2, demo_public_origin
 from app.trade_qualification import post_g12_public_runtime as coordinator
 from app.trade_qualification import public_market_collector as legacy
 from app.trade_qualification import public_market_collector_v2 as public
@@ -130,6 +130,50 @@ def test_caller_origin_strings_cannot_create_trusted_demo_profile():
                 "trusted_demo_public_origin_profile": {"caller_supplied": True},
             }
         )
+
+
+@pytest.mark.parametrize("region", ["global", "us_au", "eea"])
+@pytest.mark.parametrize("entry", ["client", "request", "ws"])
+@pytest.mark.parametrize(
+    "schema_version",
+    ["ctcc.public.initial_runtime_plan.v2", "ctcc.public.runtime_plan.v2"],
+)
+def test_v2_demo_transport_rechecks_origin_before_native_io(
+    monkeypatch, region, entry, schema_version
+):
+    route = demo_public_origin.reviewed_demo_public_route(region)
+    plan = {
+        "schema_version": schema_version,
+        "environment": "demo",
+        "registration_region": region,
+        "rest_origin": route.rest_origin,
+        "ws_origin": route.ws_origin,
+        # A caller claim is not an authenticated region/session proof.
+        "trusted_demo_public_origin_profile": {
+            "registration_region_verified": True,
+            "source_authenticity_verified": True,
+        },
+    }
+    state = {"plan": plan}
+    monkeypatch.setattr(runtime, "_state", lambda *_args, **_kwargs: state)
+
+    def no_io(*_args, **_kwargs):
+        pytest.fail("native_transport_entered_before_demo_origin_proof")
+
+    monkeypatch.setattr(runtime.ssl, "create_default_context", no_io)
+    monkeypatch.setattr(runtime, "_verified_client", no_io)
+    monkeypatch.setattr(runtime, "_event", no_io)
+    invoke_entry = {
+        "client": lambda: runtime._new_owned_client(object(), "quote"),
+        "request": lambda: runtime._request_scope(object(), object(), object(), None),
+        "ws": lambda: runtime._ws_options(object(), None),
+    }[entry]
+    with pytest.raises(
+        runtime.PublicSourceRuntimeError,
+        match="trusted_demo_public_origin_profile_unavailable",
+    ):
+        invoke_entry()
+    assert state == {"plan": plan}
 
 
 @pytest.mark.asyncio

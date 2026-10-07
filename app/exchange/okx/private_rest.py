@@ -15,6 +15,7 @@ import httpx
 
 from app.config.settings import Settings, get_settings
 from app.exchange.okx.errors import OkxPrivateApiError
+from app.okx_live.execution_authority import enforce_live_final_dispatch
 from app.trade_qualification.execution_authority import (
     enforce_demo_submission_boundary,
     enforce_live_submission_boundary,
@@ -143,6 +144,9 @@ class _OkxPrivateRestClientBase:
     def _before_send(self, *, method: str, path: str) -> None:
         """Synchronous application check; the HTTP client still has internal awaits."""
 
+    def _final_dispatch_check(self, *, method: str, path: str) -> None:
+        """Environment-specific authority after signing, immediately before HTTP."""
+
     def _validate_external_client(self, client: httpx.AsyncClient) -> None:
         """Injected clients are a bounded, network-free test adapter only.
 
@@ -260,6 +264,7 @@ class _OkxPrivateRestClientBase:
                         request_path=request_path,
                         body_text=body_text,
                     )
+                    self._final_dispatch_check(method=method, path=path)
                     response = await client.request(
                         method.upper(),
                         request_url,
@@ -647,6 +652,10 @@ class OkxLiveExecutionRestClient(_OkxPrivateRestClientBase):
         if method.upper() != "GET":
             self._ensure_write_configuration()
         enforce_live_submission_boundary(method, path)
+
+    def _final_dispatch_check(self, *, method: str, path: str) -> None:
+        self._before_send(method=method, path=path)
+        enforce_live_final_dispatch(method, path)
 
     def _credentials(self) -> tuple[str, str, str]:
         if not self.settings.okx_live_credentials_configured:

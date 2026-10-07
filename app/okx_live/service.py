@@ -61,6 +61,9 @@ from app.exchange.okx.live_private_parsers import (
 from app.exchange.okx.private_api import OkxPrivateApiClient
 from app.exchange.okx.public_rest import OkxPublicRestClient
 from app.okx_live import OkxLiveBusyError, OkxLiveSafetyError, OkxLiveUnavailableError
+from app.okx_live.execution_authority import (
+    require_live_maintenance_service_authority,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -782,6 +785,7 @@ class OkxLiveService:
     async def cancel_order(self, request: OkxLiveCancelRequest) -> OkxLiveWriteResult:
         self._ensure_write_configuration()
         self._ensure_symbol(request.instrument_id)
+        require_live_maintenance_service_authority("cancel_order")
         async with self._execution_guard():
             config = await self.account_config()
             self._validate_write_capability(config)
@@ -866,6 +870,7 @@ class OkxLiveService:
     async def close_position(self, request: OkxLiveCloseRequest) -> OkxLiveWriteResult:
         self._ensure_write_configuration()
         self._ensure_symbol(request.instrument_id)
+        require_live_maintenance_service_authority("close_position")
         async with self._execution_guard():
             snapshot = await self.reconcile()
             self._validate_write_capability(snapshot.account_config)
