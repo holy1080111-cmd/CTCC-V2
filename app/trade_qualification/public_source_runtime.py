@@ -65,6 +65,8 @@ def _require_trusted_v2_demo_origin_profile(plan):
     caller-supplied region/profile cannot repair that missing provenance.
     Historical v2 journals remain replayable as DENY diagnostics.
     """
+    if type(plan) is not dict:
+        raise PublicSourceRuntimeError("trusted_demo_public_origin_profile_unavailable")
     if plan.get("environment") != "demo" or plan.get("ws_origin") == ws.PUBLIC_WS_URL:
         raise PublicSourceRuntimeError("demo_public_origin_mismatch")
     try:

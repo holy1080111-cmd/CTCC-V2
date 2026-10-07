@@ -112,6 +112,11 @@ async def test_unbound_v2_demo_capture_refuses_before_journal_or_network(
 
 def test_caller_origin_strings_cannot_create_trusted_demo_profile():
     with pytest.raises(
+        runtime.PublicSourceRuntimeError,
+        match="trusted_demo_public_origin_profile_unavailable",
+    ):
+        runtime._require_trusted_v2_demo_origin_profile(object())
+    with pytest.raises(
         runtime.PublicSourceRuntimeError, match="demo_public_origin_mismatch"
     ):
         runtime._require_trusted_v2_demo_origin_profile(
@@ -130,6 +135,44 @@ def test_caller_origin_strings_cannot_create_trusted_demo_profile():
                 "trusted_demo_public_origin_profile": {"caller_supplied": True},
             }
         )
+
+
+@pytest.mark.asyncio
+async def test_direct_v2_collector_refuses_unbound_origin_before_clock_or_io(
+    monkeypatch,
+):
+    selected = policy()
+    route = demo_public_origin.reviewed_demo_public_route("global")
+    plan = {
+        "environment": "demo",
+        "registration_region": route.registration_region,
+        "rest_origin": route.rest_origin,
+        "ws_origin": route.ws_origin,
+        "policy_sha256": public._policy_digest(selected),
+        **public._plan_pins(),
+    }
+    state = {"policy": selected, "plan": plan}
+    monkeypatch.setattr(runtime, "_state", lambda *_args, **_kwargs: state)
+
+    def unexpected_clock_or_io(*_args, **_kwargs):
+        pytest.fail("unbound_v2_collector_entered_clock_or_io")
+
+    state["clock"] = unexpected_clock_or_io
+    monkeypatch.setattr(runtime, "_new_owned_client", unexpected_clock_or_io)
+    monkeypatch.setattr(runtime, "_ws_options", unexpected_clock_or_io)
+    with pytest.raises(
+        runtime.PublicSourceRuntimeError,
+        match="trusted_demo_public_origin_profile_unavailable",
+    ):
+        await public._collect_owned_public_market_v2(object())
+    assert "public_v2_attempted" not in state
+
+    state["plan"] = object()
+    with pytest.raises(
+        public.PublicMarketV2Error, match="public_v2_owned_plan_required"
+    ):
+        await public._collect_owned_public_market_v2(object())
+    assert "public_v2_attempted" not in state
 
 
 @pytest.mark.parametrize("region", ["global", "us_au", "eea"])

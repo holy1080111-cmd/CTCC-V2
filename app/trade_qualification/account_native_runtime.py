@@ -31,6 +31,7 @@ from app.trade_qualification import account_clock_boundary as boundary
 from app.trade_qualification import account_collector as collector
 from app.trade_qualification import account_current_source_verifier as current
 from app.trade_qualification import account_native_clock as native
+from app.trade_qualification import account_native_exposed_observation as exposed
 from app.trade_qualification import account_native_proof as proof
 from app.trade_qualification import account_native_proof_storage as storage
 from app.trade_qualification import account_observation_index as observed
@@ -805,7 +806,9 @@ async def _recheck_original_db_chain(
         )
 
 
-async def _capture_initial_current(stage, session, session_factory, root):
+async def _capture_initial_current(
+    stage, session, session_factory, root, *, _exposure_sink=None
+):
     """Only an active exact initial issuer reaches this actual acquisition."""
     state = native._state(stage)
     if (
@@ -906,6 +909,33 @@ async def _capture_initial_current(stage, session, session_factory, root):
         ):
             raise proof.NativeAccountProofError(
                 "native_account_original_source_readback_changed"
+            )
+        if _exposure_sink is not None:
+            # The separate read-only route must never reach the flat-only
+            # companion seal, boundary, origin lease or packet lease. Its
+            # original source is reread under the same exact-UID DB lock.
+            if type(_exposure_sink) is not list or _exposure_sink:
+                raise proof.NativeAccountProofError(
+                    "native_account_exposure_sink_invalid"
+                )
+            await _recheck_original_db_chain(
+                journal_repository,
+                scope,
+                chain,
+                reference,
+                packet,
+                proof_schema=proof_schema,
+            )
+            observed_exposure = exposed.observe_recorded_native_v6_exposure(
+                chain=chain,
+                reference=reference,
+                packet=packet,
+                scope=scope,
+                validated_at=utc_from_ns(native._sample(stage)["utc_ns"]),
+            )
+            _exposure_sink.append(observed_exposure)
+            raise proof.NativeAccountProofError(
+                "native_account_current_sources_incomplete_or_exposed"
             )
         readback = native._sample(stage)
         persisted = native._sample(stage)
@@ -1172,6 +1202,87 @@ async def capture_initial_native_account(session, *, session_factory, proof_root
             stale = _CAPTURES.pop(carrier, None)
             if stale is not None:
                 boundary._discard_boundary(stale.boundary)
+
+
+async def capture_native_exposed_account_observation(
+    session, *, session_factory, proof_root
+) -> exposed.NativeExposedAccountObservation:
+    """One-use owned V6 read of exposure rows; no flat or trading authority.
+
+    The original raw/page chain remains in the account journal. The separate
+    native companion proof is intentionally not sealed for an exposed account;
+    history, local liabilities and exchange protection remain unknown.
+    """
+    if (
+        type(session) is not ControlledDemoAccountSession
+        or session._used
+        or not _configured_factory(session_factory)
+        or type(proof_root) not in (PosixPath, WindowsPath)
+        or not proof_root.is_absolute()
+    ):
+        raise proof.NativeAccountProofError("native_account_exposure_inputs_invalid")
+    selected = capture._checked_plan(session._plan, session._pin)
+    if (
+        type(selected) is not capture.CurrentDemoAccountCapturePlanV6
+        or selected.registration_region != "global"
+        or selected.settlement_currency != "USDT"
+    ):
+        raise proof.NativeAccountProofError("native_account_exposure_scope_unsupported")
+    scope = LedgerScope(
+        account_id=selected.expected_uid,
+        settlement_currency=selected.settlement_currency,
+    )
+    observations = []
+    try:
+        with (
+            native._claim_initial_session(session),
+            native._initial_stage(
+                plan_sha256=session._pin,
+                scope_sha256=proof.scope_sha256(scope),
+                _claimed_session=session,
+            ) as stage,
+        ):
+            try:
+                await _capture_initial_current(
+                    stage,
+                    session,
+                    session_factory,
+                    proof_root,
+                    _exposure_sink=observations,
+                )
+            except proof.NativeAccountProofError as exc:
+                if (
+                    str(exc) == "native_account_current_sources_incomplete_or_exposed"
+                    and len(observations) == 1
+                ):
+                    return observations[0]
+                raise
+            raise proof.NativeAccountProofError("native_account_exposure_not_observed")
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001 -- no original private source details escape
+        task = asyncio.current_task()
+        if task is not None and task.cancelling():
+            raise asyncio.CancelledError from None
+        return exposed.NativeExposedAccountObservation(
+            canonical(
+                {
+                    "schema_version": "ctcc.native_demo_exposed_observation.v1",
+                    "policy_sha256": exposed.POLICY_SHA256,
+                    "code": "native_account_exposure_observation_denied",
+                    "current_exposure_rows_observed": None,
+                    "native_companion_proof_verified": False,
+                    "source_authenticity_verified": False,
+                    "snapshot": None,
+                    "account_complete": False,
+                    "flat_start_permission": False,
+                    "execution_authority": False,
+                    "admission": "DENY",
+                }
+            )
+        )
+    finally:
+        session._used = True
 
 
 async def capture_native_current_history_join(

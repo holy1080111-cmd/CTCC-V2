@@ -3683,3 +3683,34 @@ still records 0/4. Synthetic fixtures and the legacy automation do not count.
 The connected Notion document tool cannot provide CTCC's runtime REST token
 or the four opaque property IDs required by the independent outbox worker;
 automatic Notion delivery remains unaccepted.
+
+## 2026-10-07 bounded V6 exposure and V2 Demo origin diagnostics
+
+The V6 native account runtime now has a separate read-only exposed-account
+observation. It replays the original recorded page chain, rereads that chain
+under the exact-account database lock, and records page/row hashes and observed
+inventory counts. An exposed account still cannot seal the flat-only native
+companion proof, create a PortfolioRiskSnapshot, or receive a Demo execution
+permit. The receipt contains hashed account/session scope rather than raw UID,
+mainUid or session binding; history, local uncertain state, protection coverage,
+and an exchange-wide atomic account revision remain unknown. This path uses
+signed Demo GETs and writes local evidence but performs no exchange order write.
+Three new synthetic tests and eight adjacent selected tests passed; an
+interrupted broader run is not a regression pass.
+
+The V2 public collector repeats the Demo region/session-origin DENY check at
+its own entry before clock sampling, journal creation or network I/O. A
+malformed direct plan now receives a fixed rejection code. Twenty-one focused
+public runtime cases and the direct malformed-plan case passed; the longer
+module run was stopped because of the host's recent thermal shutdowns. The
+available V6 account lease does not prove registration region and the present
+V2 initial/post-G12 public plans still pin Production endpoints. Therefore
+trusted Demo R5 remains **DENY**; no G12→R7→R6 execution eligibility follows.
+
+The reviewed HighVol/Momentum installer package has a clean PowerShell parse,
+including the corrected `${Mode}:` interpolation, and five narrow verifier
+tests passed. Its original parser-failing archive is retained as evidence.
+The reviewed package targets older source hashes and safely stops before
+Docker/service calls when run as an installer. It has not been integrated into
+the canonical safety and qualification path; install, reinstall, upgrade and
+rollback acceptance remain unexecuted.

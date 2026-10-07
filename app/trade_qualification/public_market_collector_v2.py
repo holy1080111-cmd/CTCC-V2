@@ -404,10 +404,17 @@ async def _collect_owned_public_market_v2(source):
     state = runtime._state(source)
     selected = _policy_copy(state["policy"])
     plan = state["plan"]
-    if any(plan.get(key) != value for key, value in _plan_pins().items()) or plan.get(
-        "policy_sha256"
-    ) != _policy_digest(selected):
+    if (
+        type(plan) is not dict
+        or any(plan.get(key) != value for key, value in _plan_pins().items())
+        or plan.get("policy_sha256") != _policy_digest(selected)
+    ):
         _deny("public_v2_owned_plan_required")
+    # The collector is also an internal entry point. A future caller must not
+    # bypass the runtime's capture-level origin check and leave a V2 Demo
+    # journal after sampling a clock or opening a transport. Reviewed route
+    # strings alone are still no account-region or credential-session proof.
+    runtime._require_trusted_v2_demo_origin_profile(plan)
     if "public_v2_attempted" in state:
         _deny("public_v2_invocation_already_used")
     state["public_v2_attempted"] = True
