@@ -16,6 +16,7 @@ from app.database.models.demo_automation import (
     DemoAutomationState,
 )
 from app.database.models.demo_control import DemoAccountControl, DemoControlJournal
+from app.database.models.gate3_capture_schedule_pin import Gate3CaptureSchedulePin
 from app.database.models.observability import DemoObservabilityEvent, DemoSoakSession
 from app.database.models.okx_demo import (
     OkxDemoAlgoOrderState,
@@ -99,6 +100,7 @@ __all__ = [
     "DemoSoakSession",
     "DemoStrategyControl",
     "Fill",
+    "Gate3CaptureSchedulePin",
     "MarketSnapshot",
     "OkxDemoAlgoOrderState",
     "OkxDemoBalanceState",

@@ -13,6 +13,7 @@ MIGRATIONS = {
     "0023": "0023_qualification_uid_event.py",
     "0024": "0024_public_receipt_witness.py",
     "0025": "0025_control_bound_submission_reporting.py",
+    "0026": "0026_gate3_capture_schedule_pin.py",
 }
 TABLES = {
     # 0023 is constraint/trigger-only and has dedicated upgrade/downgrade

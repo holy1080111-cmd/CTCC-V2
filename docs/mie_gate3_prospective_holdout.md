@@ -111,6 +111,52 @@ acquisition receipt never evaluates a strategy or authorizes an order.
 
 ## Remaining evidence work
 
+### Pre-window capture schedule pin (engineering seam)
+
+`prospective_capture_schedule.py` materializes a versioned, complete OKX
+one-minute coordinate plan before the candidate seal. Its hash must equal the
+seal's `coordinate_plan_sha256`. After the seal and before the first minute
+opens, it derives one exact `PublicMinuteCapturePlanV1` per sealed
+minute/instrument coordinate. This ordering avoids pretending that a plan's
+caller-supplied `created_ns` is an independent timestamp.
+
+Migration `0026` and `Gate3CaptureSchedulePinRepository` provide a separate,
+append-only PostgreSQL pin for the exact canonical schedule bytes and hash.
+The database writes `recorded_at` using its own `clock_timestamp()` and refuses
+a pin at or after the first window event. A successful `publish` also requires
+its separate-session readback SELECT to return a database
+`database_readback_at` strictly before that event. If the readback is late,
+the immutable row remains auditable through `read`, but publication success is
+denied. The readback timestamp is evidence of that database observation,
+not independent custody or Gate 3 approval. The insert guard recomputes the
+origin-independent source/instrument/calendar window identity from the schedule
+contents, checks the separately hashed coordinate-plan bytes against the nested
+JSON coordinates, and rejects a caller-supplied alternate key. Canonical
+coordinate-plan bytes and the nested Pydantic contract are checked again on
+independent repository readback; SQL JSON equivalence alone is not a canonical
+byte proof. It checks the bounded complete minute/instrument plan grid before
+inserting a row. A compromised restricted append login may still deny future
+availability; it cannot make a malformed row eligible on repository readback.
+The role may use only restricted
+security-definer append/read functions, and a publication must be read back
+from a new session. A second pin for the same seal, holdout ID, or
+source/instrument/calendar window is rejected. Downgrade refuses nonempty
+evidence. The original V1 public capture plans, receipts, journal and Gate 3
+artifacts are unchanged.
+
+This seam is **not deployed or independently protected yet**. The migration
+grants no capture role. A real deployment needs an independently administered
+PostgreSQL server, a restricted login, a checked server clock, OS-separated
+database files/WAL/backups, and an uninterrupted acquisition owner. The local
+SQLite seal ledger, a colocated test database, and a self-declared
+`created_ns` cannot replace that custody. No future seal, real scheduled
+minute acquisition, complete holdout, or first evaluator access proof is
+created by this change. Its claim remains computational and Gate 3 remains
+blocked. The narrow PostgreSQL test exercises 0024 and 0026 in a disposable
+database; the supported 0025-to-0026 Alembic upgrade, full fresh migration,
+schema-drift check, Windows/Linux runtime recovery and restricted production
+role remain separate exact-source acceptance work.
+
 ### Blind in-window minute acquisition seam
 
 `app.mie.validation.blind_window_capture.bind_blind_window_minute` now binds **one**
