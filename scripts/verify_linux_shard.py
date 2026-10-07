@@ -23,6 +23,7 @@ POSTGRES_TEST_PATHS = frozenset(
         "tests/integration/test_durable_migration_downgrade.py",
         "tests/integration/test_gate3_canonical_schedule_claim.py",
         "tests/integration/test_gate3_capture_schedule_pin_repository.py",
+        "tests/integration/test_gate3_committed_preregistration_seal.py",
         "tests/integration/test_gate3_schedule_publication_ack.py",
         "tests/integration/test_account_ingestion_journal_repository.py",
         "tests/integration/test_account_capture_crash_probe_repository.py",

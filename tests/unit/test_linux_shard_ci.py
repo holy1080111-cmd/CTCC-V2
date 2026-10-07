@@ -31,11 +31,22 @@ SOURCE_FILES = b"{}"
 
 
 def test_gate3_ack_in_postgres_suite_only():
-    path = "tests/integration/test_gate3_schedule_publication_ack.py"
-    nodeid = path + "::test_ack_requires_committed_pin_and_replays_after_restart"
-    assert path in POSTGRES_TEST_PATHS
-    assert selected_for("postgres", None, nodeid)
-    assert all(not selected_for("shard", index, nodeid) for index in range(SHARD_COUNT))
+    for path, case in (
+        (
+            "tests/integration/test_gate3_schedule_publication_ack.py",
+            "test_ack_requires_committed_pin_and_replays_after_restart",
+        ),
+        (
+            "tests/integration/test_gate3_committed_preregistration_seal.py",
+            "test_seal_ack_must_commit_before_capture_claim",
+        ),
+    ):
+        nodeid = path + "::" + case
+        assert path in POSTGRES_TEST_PATHS
+        assert selected_for("postgres", None, nodeid)
+        assert all(
+            not selected_for("shard", index, nodeid) for index in range(SHARD_COUNT)
+        )
 
 
 def _sha(raw: bytes) -> str:
