@@ -3839,3 +3839,15 @@ Fifteen focused Windows path tests passed. No token was read or created, no
 Notion write was made, and the reporting worker remains disabled. These
 changes require a new exact-source full CI run after commit; results from an
 earlier source SHA cannot establish their full regression status.
+
+The first exact-source CI run for `018c6d6` found a hermetic Linux shard-0
+failure in the Notion private-path tests: its `/app` checkout and mounted
+`/validation-results` made filesystem root `/` look like the managed workspace,
+so private test files under `/tmp` were rejected. The follow-up excludes a
+filesystem/volume root from workspace detection while keeping source, named
+evidence/archive and real managed-workspace exclusions. It also removes a
+process-working-directory exclusion that could similarly reject an unrelated
+private root. Eighteen targeted Windows cases passed, including the previously
+failing private-file and archive-path selections and two new root/CWD cases;
+Ruff and diff checks passed. The `018c6d6` CI failure remains a real failed
+result, and this follow-up requires a new exact-source full CI run.

@@ -42,11 +42,11 @@ def external_secret_path(path: Path) -> Path:
     # A managed checkout can be a sibling of validation-results and release
     # archives. A checkout directly in the user's home must not make all of
     # AppData (or a POSIX home) an excluded workspace.
-    managed_workspace = (workspace / "validation-results").is_dir()
-    if (
-        path.is_relative_to(source)
-        or path.is_relative_to(Path.cwd().resolve())
-        or (managed_workspace and path.is_relative_to(workspace))
+    managed_workspace = (
+        workspace != Path(source.anchor) and (workspace / "validation-results").is_dir()
+    )
+    if path.is_relative_to(source) or (
+        managed_workspace and path.is_relative_to(workspace)
     ):
         raise NotionBindingError("notion_secret_inside_source_or_workspace")
     if any(

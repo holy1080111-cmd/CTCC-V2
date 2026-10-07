@@ -636,6 +636,34 @@ def test_home_checkout_does_not_reject_external_private_root(
     assert binding.external_secret_path(external) == external
 
 
+def test_broad_process_working_directory_is_not_a_secret_exclusion(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "source" / "app" / "trade_evidence" / "notion_binding.py"
+    monkeypatch.setattr(binding, "__file__", str(source))
+    monkeypatch.chdir(tmp_path)
+    external = tmp_path / "private" / "private.token"
+    assert binding.external_secret_path(external) == external
+
+
+def test_filesystem_root_is_not_managed_workspace_even_with_validation_mount(
+    tmp_path, monkeypatch
+):
+    root = Path(tmp_path.anchor)
+    source = root / "canonical-final" / "app" / "trade_evidence" / "notion_binding.py"
+    monkeypatch.setattr(binding, "__file__", str(source))
+    original_is_dir = Path.is_dir
+
+    def is_dir(path):
+        if path == root / "validation-results":
+            return True
+        return original_is_dir(path)
+
+    monkeypatch.setattr(Path, "is_dir", is_dir)
+    external = tmp_path / "private" / "private.token"
+    assert binding.external_secret_path(external) == external
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("shutdown_error", [False, True])
 async def test_app_lifecycle_owns_worker_even_when_core_shutdown_raises(
