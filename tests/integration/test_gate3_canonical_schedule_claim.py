@@ -68,6 +68,64 @@ async def raw_pin(connection, record) -> None:
     )
 
 
+async def publish_or_diagnose(pin_repo, schedule, seal):
+    """Expose only a synthetic, disposable DB failure code in CI diagnostics.
+
+    Production deliberately redacts the SQL error. If that boundary rejects an
+    otherwise expected test publication, repeat the same synthetic append in
+    a new transaction and report only SQLSTATE, constraint, or a fixed Gate 3
+    code. Never include the exception text, parameters, or connection URL.
+    """
+    try:
+        return await pin_repo.publish(schedule=schedule, seal=seal)
+    except Gate3SchedulePinError as error:
+        if str(error) != "schedule_publish_rejected":
+            raise
+    try:
+        async with pin_repo.session_factory() as session, session.begin():
+            await session.execute(
+                text(
+                    "SELECT public.gate3_capture_schedule_claim_append("
+                    "CAST(:record AS jsonb))"
+                ),
+                {"record": json.dumps(pin_record(seal, schedule))},
+            )
+    except DBAPIError as error:
+        sqlstate = "unknown"
+        constraint = "unknown"
+        failure_code = "unknown"
+        for source in (error.orig, getattr(error.orig, "__cause__", None)):
+            if source is None:
+                continue
+            candidate_state = getattr(source, "sqlstate", None)
+            if isinstance(candidate_state, str) and re.fullmatch(
+                r"[0-9A-Z]{5}", candidate_state
+            ):
+                sqlstate = candidate_state
+            diagnostic = getattr(source, "diag", None)
+            candidate_constraint = getattr(diagnostic, "constraint_name", None)
+            if isinstance(candidate_constraint, str) and re.fullmatch(
+                r"[a-z][a-z0-9_]{0,127}", candidate_constraint
+            ):
+                constraint = candidate_constraint
+            for candidate_code in (
+                getattr(diagnostic, "message_primary", None),
+                getattr(source, "message", None),
+            ):
+                if isinstance(candidate_code, str) and re.fullmatch(
+                    r"gate3_[a-z0-9_]+", candidate_code
+                ):
+                    failure_code = candidate_code
+        pytest.fail(
+            "synthetic_schedule_publish_rejected "
+            f"sqlstate={sqlstate} constraint={constraint} code={failure_code}",
+            pytrace=False,
+        )
+    except Exception:  # noqa: BLE001 - Keep diagnostic details redacted.
+        pytest.fail("synthetic_schedule_diagnostic_unavailable", pytrace=False)
+    pytest.fail("synthetic_schedule_retry_accepted_after_rejection", pytrace=False)
+
+
 def numeric_holdout_record(seal, schedule) -> dict[str, str]:
     """A byte-canonical JSON record with a non-Pydantic holdout type."""
     record = pin_record(seal, schedule)
@@ -385,7 +443,7 @@ async def test_poisoned_raw_keys_do_not_block_canonical_retry_or_claim_ack(
         )
         assert classification == "noncanonical"
 
-    pin = await pin_repo.publish(schedule=schedule, seal=seal)
+    pin = await publish_or_diagnose(pin_repo, schedule, seal)
     assert pin.schedule_sha256 == schedule.canonical_sha256()
     ack = await ack_repo.acknowledge(
         expected_schedule_sha256=pin.schedule_sha256, seal=seal
@@ -500,6 +558,9 @@ async def test_concurrent_canonical_schedules_get_at_most_one_claim(
         pin_repo.publish(schedule=alternate, seal=seal),
         return_exceptions=True,
     )
+    if all(isinstance(item, Exception) for item in attempts):
+        await publish_or_diagnose(pin_repo, schedule, seal)
+        pytest.fail("synthetic_concurrent_claims_rejected_before_retry", pytrace=False)
     assert sum(not isinstance(item, Exception) for item in attempts) == 1
     assert sum(isinstance(item, Gate3SchedulePinError) for item in attempts) == 1
     async with db_engine.connect() as connection:

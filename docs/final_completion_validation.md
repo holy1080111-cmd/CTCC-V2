@@ -3958,3 +3958,51 @@ the test records only the last safe stage if the timeout repeats. The earlier
 CI timeout has no recorded phase, so its root cause remains unproven. Local
 PowerShell 5.1 tests passed 9/9 with no installer or exchange execution. The
 current changed worktree still needs an exact-source full CI run after commit.
+
+## 2026-10-08 source-bound funding diagnostic and CI failure readback
+
+The exact `4dce86d03f5a4d423f1ceb28ab9ea8cdb7a8e91c` source was
+checkpointed and pushed on the final-completion feature branch. Its source
+archive, complete-history Git bundle, tree, manifest and dependency hashes
+were independently read back. Matching GitHub CI run `37665356569` was still
+running when this section was written; no earlier test result transfers to it.
+
+A bounded, read-only credential scan of that exact archive and reachable Git
+history found no confirmed live secret. The masked receipt is outside the
+source tree at
+`../validation-results/ctcc-source-4dce86d-20261008/redacted-secret-audit.json`
+with SHA256
+`a373fb72a8c4ef3c7e9b6becf9941e24b3408176124dbaf2473ede4cba479b45`.
+It did not cover every old validation artifact, other ZIP, dangling Git object,
+old deployment or actual Notion payload. This is a scoped audit, not the final
+security acceptance.
+
+After the host's thermal restart, W32Time was Running/Automatic and reported
+a fresh `time.windows.com` synchronization. One no-proxy, no-redirect,
+no-retry, unauthenticated OKX `GET /api/v5/public/time` returned HTTP 200 and
+had request, server and receipt times in causal order, with a 49 ms observed
+server-to-body-completion difference. The retained raw response and report are
+under `../validation-results/host-clock-postcrash-20261008/`; report SHA256 is
+`48bd8c123d013abf2c0ebe42309ec7e617842562e65de43bca855366bb1ff38f`.
+This is a one-request clock diagnostic, not continuous R5 source admission.
+
+The new settled-funding-history V1 diagnostic replays supplied original raw
+pages of OKX's public `funding-rate-history` endpoint. It binds one reviewed
+region claim and instrument, exact query/cursor chain, raw bytes and supplied
+UTC/monotonic request times; it rejects missing terminal pages, duplicate or
+conflicting settlement identities, future events and cross-region substitution.
+It never infers an account payment, zero funding, complete history, trusted
+origin or risk authority. Fifteen focused synthetic tests, Ruff check and
+format check passed locally. Native capture, account-held inventory and private
+bill reconciliation remain required before realized funding or a portfolio
+snapshot can be asserted.
+
+The older `f1e6519` exact PostgreSQL CI artifact was read back: migration
+`0031` identity matched, but three Gate 3 claim cases failed and one fixture
+errored with the production-safe `schedule_publish_rejected` code. Current
+`4dce86d` source has no change to that claim path, so its own CI outcome must
+be observed. A test-only diagnostic now replays the synthetic claim in the
+disposable PostgreSQL test database only if the expected publication fails.
+It reports a sanitized SQLSTATE, constraint or fixed Gate 3 code; production
+error masking and rejection remain unchanged. It does not turn the older failed
+run into PASS or repair the still-unidentified database root cause.

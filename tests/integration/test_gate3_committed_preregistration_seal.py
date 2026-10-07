@@ -32,7 +32,11 @@ from app.mie.validation.gate3_preregistration_seal_observer import (
     Gate3PreregistrationSealObserver,
 )
 from app.mie.validation.prospective_capture_schedule import build_capture_schedule
-from tests.integration.test_gate3_canonical_schedule_claim import migrate, pin_record
+from tests.integration.test_gate3_canonical_schedule_claim import (
+    migrate,
+    pin_record,
+    publish_or_diagnose,
+)
 from tests.unit.mie.test_gate3_capture_schedule import valid_schedule
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
@@ -142,7 +146,7 @@ async def isolated_prereg_database(request):
         seal, old_schedule = valid_schedule()
         legacy_sha = None
         if getattr(request, "param", None) == "legacy":
-            await pin_repo.publish(schedule=old_schedule, seal=seal)
+            await publish_or_diagnose(pin_repo, old_schedule, seal)
             await pin_ack_repo.acknowledge(
                 expected_schedule_sha256=old_schedule.canonical_sha256(), seal=seal
             )
@@ -270,7 +274,7 @@ async def test_seal_ack_must_commit_before_capture_claim(isolated_prereg_databas
         coordinate_plan=old_schedule.coordinate_plan,
         planned_at=planned_at,
     )
-    pinned = await pin_repo.publish(schedule=schedule, seal=seal)
+    pinned = await publish_or_diagnose(pin_repo, schedule, seal)
     acknowledged = await pin_ack_repo.acknowledge(
         expected_schedule_sha256=schedule.canonical_sha256(), seal=seal
     )
