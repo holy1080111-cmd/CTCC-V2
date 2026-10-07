@@ -14,7 +14,8 @@ defines account bill `type=8` as funding fee, `subType=173` as expense and
 payment. These definitions apply to `/api/v5/account/bills` and
 `/api/v5/account/bills-archive`; the [Asset bills API](https://www.okx.com/docs-v5/en/#funding-rest-api-asset-bills-details)
 uses different subtype meanings. The audit enforces the account endpoint and
-requires the subtype, settlement currency, SWAP instrument and `pnl` sign to
+requires the subtype, settlement currency, explicit `instType=SWAP`, SWAP
+instrument ID and `pnl` sign to
 agree before labeling a row a **payment candidate**. It retains original
 page/row hashes and locators so the private source can be read back.
 

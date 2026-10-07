@@ -136,6 +136,7 @@ def _classify_account_bill(endpoint, raw, settlement_currency):
     expected_sign = "negative" if subtype == "173" else "positive"
     if (
         raw.get("ccy") != settlement_currency
+        or raw.get("instType") != "SWAP"
         or type(raw.get("instId")) is not str
         or not raw["instId"].endswith(f"-{settlement_currency}-SWAP")
         or sign != expected_sign

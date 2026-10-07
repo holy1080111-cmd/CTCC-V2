@@ -25,6 +25,7 @@ async def test_original_account_bill_payment_candidate_never_becomes_accrual(
         "bills_recent",
         "900",
         instId=INSTRUMENT,
+        instType="SWAP",
         pnl="-0.03",
         balChg="-0.03",
     )
@@ -119,7 +120,9 @@ async def test_funding_type_subtype_or_payment_conflict_stays_unknown(monkeypatc
 
 
 def test_asset_bill_subtype_numbers_cannot_be_reused_for_trading_account():
-    example = row("bills_recent", type="8", subType="173", instId=INSTRUMENT)
+    example = row(
+        "bills_recent", type="8", subType="173", instType="SWAP", instId=INSTRUMENT
+    )
     with pytest.raises(
         funding.FundingBillAuditError,
         match="funding_bill_account_endpoint_required",
@@ -128,6 +131,24 @@ def test_asset_bill_subtype_numbers_cannot_be_reused_for_trading_account():
     assert funding._classify_account_bill(
         "/api/v5/account/bills", {**example, "pnl": "-0.03"}, "USDT"
     ) == ("account_funding_payment_candidate", "negative")
+
+
+def test_conflicting_or_missing_product_is_not_a_funding_payment_candidate():
+    example = row(
+        "bills_recent",
+        type="8",
+        subType="173",
+        instId=INSTRUMENT,
+        pnl="-0.03",
+    )
+    for product in (None, "SPOT", "FUTURES"):
+        raw = dict(example)
+        if product is not None:
+            raw["instType"] = product
+        assert funding._classify_account_bill("/api/v5/account/bills", raw, "USDT") == (
+            "funding_payment_fields_unverified",
+            "negative",
+        )
 
 
 @pytest.mark.asyncio
