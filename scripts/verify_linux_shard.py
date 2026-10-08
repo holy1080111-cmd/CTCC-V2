@@ -14,6 +14,7 @@ from pathlib import Path
 POSTGRES_TEST_PATHS = frozenset(
     {
         "tests/integration/test_qualification_ledger_repository.py",
+        "tests/integration/test_qualification_ledger_restricted_role_repository.py",
         "tests/integration/test_qualification_submission_intent_repository.py",
         "tests/integration/test_history_submission_intent_repository.py",
         "tests/integration/test_submission_reporting_repository.py",

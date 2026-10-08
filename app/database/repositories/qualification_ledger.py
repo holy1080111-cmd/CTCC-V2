@@ -174,6 +174,27 @@ async def _require_event_journal_session(session):
         raise QualificationLedgerError("event_ledger_session_guards_invalid")
 
 
+# SHA256 of the exact PostgreSQL prosrc bytes installed by DB0017 and the
+# DB0027 upgrade. These are reviewed source identities, not values learned
+# from the database being checked. DB0027 replaces only the reservation guard.
+# Function ownership is deployment-specific and must be audited with grants;
+# it cannot be pinned to a portable role name here.
+_EVENT_GUARD_FUNCTIONS = {
+    "qualification_ledger_immutable": (
+        "14fe6a29f274ba10141a2ecdfbc40e4dc6e4014421f338f76a39352670e48649",
+        (),
+    ),
+    "qualification_scope_update": (
+        "5702017eafabb70375bb0495e521d2632e090b739f257a2ae4cbaeb77f55ab6d",
+        (),
+    ),
+    "qualification_reservation_update": (
+        "20a50d222337c9b544bf20f34d31e1b6e8ad9816738a3f1c0eedd9594265d3fc",
+        ("search_path=pg_catalog, pg_temp",),
+    ),
+}
+
+
 def _event_journal_schema_mismatch_detail(trigger_rows, required, unique_rows):
     """Bounded catalog diagnosis using only expected schema identifiers.
 
@@ -312,12 +333,68 @@ async def _require_event_journal_schema(session):
         )
     ).all()
     unique_rows = [tuple(row) for row in unique]
-    if any(
-        guards.get(key) != function for key, function in required.items()
-    ) or unique_rows != [(False, True, "environment,account_id,original_event_key")]:
+    function_rows = (
+        await session.execute(
+            text(
+                "SELECT proc.proname, "
+                "pg_catalog.encode(pg_catalog.sha256("
+                "pg_catalog.convert_to(proc.prosrc,'UTF8')),'hex'), "
+                "lang.lanname, proc.provolatile::text, proc.prosecdef, "
+                "proc.proconfig, proc.prokind::text, "
+                "proc.prorettype=pg_catalog.to_regtype('pg_catalog.trigger'), "
+                "proc.pronargs "
+                "FROM pg_catalog.pg_proc proc "
+                "JOIN pg_catalog.pg_namespace ns ON ns.oid=proc.pronamespace "
+                "JOIN pg_catalog.pg_language lang ON lang.oid=proc.prolang "
+                "WHERE ns.nspname='public' "
+                "AND proc.proname IN ('qualification_ledger_immutable', "
+                "'qualification_scope_update', 'qualification_reservation_update') "
+                "AND proc.pronargs=0"
+            )
+        )
+    ).all()
+    function_status = {}
+    for (
+        name,
+        source_sha256,
+        language,
+        volatility,
+        security_definer,
+        settings,
+        kind,
+        returns_trigger,
+        arity,
+    ) in function_rows:
+        expected = _EVENT_GUARD_FUNCTIONS.get(name)
+        if expected is None:
+            continue
+        config = (
+            tuple(settings)
+            if type(settings) in (list, tuple)
+            else (() if settings is None else None)
+        )
+        function_status.setdefault(name, []).append(
+            source_sha256 == expected[0]
+            and config == expected[1]
+            and language == "plpgsql"
+            and volatility == "v"
+            and security_definer is False
+            and kind == "f"
+            and returns_trigger is True
+            and arity == 0
+        )
+    function_issues = tuple(
+        name for name in _EVENT_GUARD_FUNCTIONS if function_status.get(name) != [True]
+    )
+    if (
+        any(guards.get(key) != function for key, function in required.items())
+        or unique_rows != [(False, True, "environment,account_id,original_event_key")]
+        or function_issues
+    ):
         detail = _event_journal_schema_mismatch_detail(
             trigger_rows, required, unique_rows
         )
+        detail += ";functions=" + (",".join(function_issues) or "valid")
         raise QualificationLedgerError(
             f"event_ledger_schema_retention_invalid:{detail}"
         )
@@ -330,9 +407,12 @@ async def _require_event_journal_write_schema(session):
     between inspection and the reservation/intent commit. ROW EXCLUSIVE locks
     coexist with other ordinary writers, but exclude trigger/constraint DDL.
     Acquire them before the account advisory lock to avoid inverted ordering.
+    READ COMMITTED must be set before the first SQL read so the post-lock
+    catalog check sees DDL committed while the table lock was acquired.
     """
     if session.get_bind().dialect.name != "postgresql":
         raise QualificationLedgerError("event_ledger_postgresql_required")
+    await session.execute(text("SET TRANSACTION ISOLATION LEVEL READ COMMITTED"))
     await session.execute(text("SET LOCAL search_path TO pg_catalog, public, pg_temp"))
     await _require_event_journal_session(session)
     await session.execute(

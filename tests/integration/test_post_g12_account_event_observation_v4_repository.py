@@ -91,6 +91,8 @@ async def test_v4_real_uid_lock_observation_waits_after_fresh_v3_receipt(
     await ledger.initialize_capture_scope(scope)
     join_root = tmp_path / "join"
     join_root.mkdir()
+    event_root = tmp_path / "event"
+    event_root.mkdir()
     published = asyncio.Event()
 
     async def synthetic_v3(*args, **kwargs):
@@ -115,6 +117,7 @@ async def test_v4_real_uid_lock_observation_waits_after_fresh_v3_receipt(
                 tmp_path / "account",
                 tmp_path / "recheck",
                 join_root,
+                event_root,
                 source.market,
                 run=run,
                 original_inputs=values,
@@ -139,3 +142,13 @@ async def test_v4_real_uid_lock_observation_waits_after_fresh_v3_receipt(
     assert result.atomic_risk_reserved is False
     assert result.durable_intent_created is False
     assert result.execution_authority is False
+    assert (
+        bridge.read_post_g12_account_event_observation_v4(
+            event_root,
+            expected_sha256=result.receipt_sha256,
+            expected_root_identity=joined.source_runtime._native_recheck_root_identity(
+                event_root
+            ),
+        )
+        == result
+    )

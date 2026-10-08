@@ -80,6 +80,17 @@ transaction. It does not open a nested session. Reacquiring the same advisory
 lock through the existing ledger helper is reentrant in that transaction.
 Different settlement-currency scopes still share the same UID lock.
 
+Before a reservation or intent transition, the repository sets `READ COMMITTED`
+as its first database statement, verifies the controlled PostgreSQL session,
+takes `NOWAIT ROW EXCLUSIVE` locks on the three qualification tables, and
+checks the original-event unique key, required triggers, and the reviewed
+DB0017/DB0027 trigger-function bodies. The table locks keep conflicting table
+DDL from changing those guards during the transaction. They do not prevent a
+privileged function owner from replacing a trigger function after inspection;
+production deployment must separate the migration owner from the runtime role.
+The runtime role's exact grants and function settings still require isolated
+PostgreSQL acceptance on the final source revision.
+
 Before reserve/consume and again after the final journal flush, current Arm must
 remain requested, EStop must be false, clock ordering and both the owner lease
 and Arm expiry must be valid, and the original candidate must be unexpired.

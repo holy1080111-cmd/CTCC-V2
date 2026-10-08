@@ -134,7 +134,7 @@ class PublicReceiptPostReadRepository:
                             target.oid,
                             'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN')
                           OR pg_catalog.has_any_column_privilege(current_user,
-                            target.oid,'SELECT,INSERT,UPDATE,REFERENCES')))
+                            target.oid,'SELECT,INSERT,UPDATE,REFERENCES'))
                     ) AS direct_table_access,
                     pg_catalog.has_function_privilege(current_user,
                       'public.public_receipt_post_read_append(text,bigint,text,text,text,text,text,text,text)'::pg_catalog.regprocedure,

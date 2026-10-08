@@ -281,6 +281,36 @@ async def test_schema_guard_rejects_disabled_immutable_transition(database):
             await session.rollback()
 
 
+async def test_schema_guard_rejects_replaced_immutable_function_body(database):
+    """A same-OID CREATE OR REPLACE must not preserve a false safety claim."""
+    async with database[1]() as session:
+        try:
+            await session.execute(text("SET LOCAL lock_timeout TO '1000ms'"))
+            await session.execute(
+                text(
+                    "CREATE OR REPLACE FUNCTION public.qualification_ledger_immutable() "
+                    "RETURNS trigger AS $$ BEGIN RETURN NEW; END; $$ LANGUAGE plpgsql"
+                )
+            )
+        except DBAPIError:
+            await session.rollback()
+            pytest.skip("isolated PostgreSQL role cannot replace test function")
+        try:
+            with pytest.raises(
+                QualificationLedgerError,
+                match=r"event_ledger_schema_retention_invalid:.*functions=qualification_ledger_immutable",
+            ):
+                await _require_event_journal_schema(session)
+            with pytest.raises(
+                QualificationLedgerError,
+                match=r"event_ledger_schema_retention_invalid:.*functions=qualification_ledger_immutable",
+            ):
+                await _require_event_journal_write_schema(session)
+        finally:
+            # The replacement is transactional and never leaves this fixture.
+            await session.rollback()
+
+
 async def test_schema_guard_rejects_same_name_wrong_uid_unique_key(database):
     async with database[1]() as session:
         try:

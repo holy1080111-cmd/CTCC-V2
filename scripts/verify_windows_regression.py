@@ -67,6 +67,7 @@ POSTGRES_INTEGRATION = (
     "test_public_receipt_post_read_observation_repository.py",
     "test_qualification_bootstrap_repository.py",
     "test_qualification_ledger_repository.py",
+    "test_qualification_ledger_restricted_role_repository.py",
     "test_qualification_submission_intent_repository.py",
     "test_range_v5_reservation_repository.py",
     "test_submission_reporting_repository.py",

@@ -51,12 +51,13 @@ async def test_write_schema_pins_all_three_tables_before_catalog_read(monkeypatc
     monkeypatch.setattr(ledger, "_require_event_journal_schema", schema_guard)
     await ledger._require_event_journal_write_schema(session)
     assert observed == ["session", "schema"]
-    assert len(session.statements) == 2
+    assert len(session.statements) == 3
+    assert session.statements[0] == "SET TRANSACTION ISOLATION LEVEL READ COMMITTED"
     assert (
-        session.statements[0] == "SET LOCAL search_path TO pg_catalog, public, pg_temp"
+        session.statements[1] == "SET LOCAL search_path TO pg_catalog, public, pg_temp"
     )
     assert all(
-        name in session.statements[1]
+        name in session.statements[2]
         for name in (
             "public.qualification_account_scopes",
             "public.qualification_reservations",
