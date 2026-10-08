@@ -41,6 +41,7 @@ _STATES = frozenset(
         "generating",
         "existing_link_pending",
         "link_observed_unverified",
+        "archive_bytes_unverified",
         "generation_failed",
     }
 )
@@ -362,6 +363,75 @@ class DiagnosticArchiveJournal:
             },
         )
 
+    def record_supplied_download(
+        self,
+        raw_archive: bytes,
+        *,
+        download_href: str,
+        request_started_at: datetime,
+        headers_received_at: datetime,
+        body_completed_at: datetime,
+        response_status: int,
+        redirect_count: int,
+    ) -> DiagnosticArchiveJournal:
+        """Bind supplied ZIP bytes to the observed link without claiming custody.
+
+        No network request is made. The temporary signed URL and CSV rows are
+        never serialized into the journal. A future owned downloader must prove
+        TLS peer, credential isolation, no proxy/redirect, and raw-byte custody.
+        """
+        if self.state != "link_observed_unverified":
+            _fail("archive_download_without_finished_link")
+        start = _utc(request_started_at)
+        headers = _utc(headers_received_at)
+        completed = _utc(body_completed_at)
+        link_observed_at = _read_stamp(self.events[-1]["completed_at"])
+        if (
+            not link_observed_at <= start <= headers <= completed
+            or start > link_observed_at + timedelta(hours=5, minutes=30)
+        ):
+            _fail("archive_download_clock_invalid")
+        if (
+            type(download_href) is not str
+            or len(download_href) > archive.MAX_CONTROL_BYTES
+            or type(response_status) is not int
+            or response_status != 200
+            or type(redirect_count) is not int
+            or redirect_count != 0
+        ):
+            _fail("archive_download_response_invalid")
+        try:
+            href_sha256 = _sha(download_href.encode("utf-8"))
+        except UnicodeError:
+            _fail("archive_download_link_mismatch")
+        if href_sha256 != self.events[-1]["data"]["file_href_sha256"]:
+            _fail("archive_download_link_mismatch")
+        try:
+            receipt = archive.parse_bill_archive_zip(
+                raw_archive, year=self.plan.year, quarter=self.plan.quarter
+            )
+        except archive.BillArchiveError:
+            _fail("archive_download_bytes_rejected")
+        return self._append(
+            "download_supplied",
+            started=start,
+            completed=completed,
+            data={
+                "headers_received_at": _stamp(headers),
+                "response_status": 200,
+                "redirect_count": 0,
+                "download_href_sha256": href_sha256,
+                "archive_sha256": receipt.archive_sha256,
+                "csv_sha256": receipt.csv_sha256,
+                "rowset_sha256": receipt.rowset_sha256,
+                "archive_size_bytes": len(raw_archive),
+                "row_count": receipt.row_count,
+                "first_bill_id_sha256": _sha(receipt.first_bill_id.encode("ascii")),
+                "last_bill_id_sha256": _sha(receipt.last_bill_id.encode("ascii")),
+                "source_classification": "supplied_bytes_unowned",
+            },
+        )
+
 
 def _validate_events(plan: DiagnosticArchivePlan, events: tuple[dict, ...]) -> str:
     if len(events) > MAX_EVENTS:
@@ -496,6 +566,55 @@ def _validate_events(plan: DiagnosticArchivePlan, events: tuple[dict, ...]) -> s
                 ) != end + timedelta(minutes=10):
                     _fail("archive_journal_invalid")
                 state = "generating"
+        elif kind == "download_supplied":
+            if (
+                state != "link_observed_unverified"
+                or set(data)
+                != {
+                    "headers_received_at",
+                    "response_status",
+                    "redirect_count",
+                    "download_href_sha256",
+                    "archive_sha256",
+                    "csv_sha256",
+                    "rowset_sha256",
+                    "archive_size_bytes",
+                    "row_count",
+                    "first_bill_id_sha256",
+                    "last_bill_id_sha256",
+                    "source_classification",
+                }
+                or type(data["response_status"]) is not int
+                or data["response_status"] != 200
+                or type(data["redirect_count"]) is not int
+                or data["redirect_count"] != 0
+                or type(data["archive_size_bytes"]) is not int
+                or not 0 < data["archive_size_bytes"] <= archive.MAX_ARCHIVE_BYTES
+                or type(data["row_count"]) is not int
+                or not 0 < data["row_count"] <= archive.MAX_ROWS
+                or data["source_classification"] != "supplied_bytes_unowned"
+            ):
+                _fail("archive_journal_invalid")
+            headers = _read_stamp(data["headers_received_at"])
+            if not start <= headers <= end or start > prior_completed + timedelta(
+                hours=5, minutes=30
+            ):
+                _fail("archive_download_clock_invalid")
+            for name in (
+                "download_href_sha256",
+                "archive_sha256",
+                "csv_sha256",
+                "rowset_sha256",
+                "first_bill_id_sha256",
+                "last_bill_id_sha256",
+            ):
+                _digest(data[name])
+            if (
+                data["download_href_sha256"]
+                != events[index - 1]["data"]["file_href_sha256"]
+            ):
+                _fail("archive_download_link_mismatch")
+            state = "archive_bytes_unverified"
         else:
             _fail("archive_journal_invalid")
         previous_sha, prior_completed = item["event_sha256"], end

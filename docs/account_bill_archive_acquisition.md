@@ -100,3 +100,16 @@ pin, TLS verification, no redirects or proxy substitution, bounded streaming,
 and must never send OKX auth headers to the signed file host. The temporary
 URL is never serialized by this journal; only its digest is retained. This
 means the journal alone cannot re-download or authenticate source bytes.
+
+An offline `record_supplied_download` transition now binds a caller-supplied ZIP
+to the exact digest of a previously observed `finished` link. It requires an
+ordered request/header/body clock, HTTP 200, zero redirects, and a request no
+later than 5.5 hours after the link observation. The existing bounded ZIP/CSV
+parser then checks the quarter, required columns, numeric balance changes, and
+strictly descending bill IDs. The resulting hash-chained journal records only
+the URL digest, ZIP/CSV/rowset digests, size, count, and hashed endpoint bill IDs;
+it omits the temporary URL and private rows. Replay rejects a mismatched link
+even if the event hash was recomputed. These are **supplied, unowned bytes**:
+the new state is `archive_bytes_unverified`, and account completeness and
+execution authority remain false. No authenticated request, download, source
+custody, quarter coverage, or Demo support is established by this transition.

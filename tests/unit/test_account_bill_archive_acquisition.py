@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
+import zipfile
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -47,6 +49,30 @@ def _status(state, first, href=None):
     if href is not None:
         row["fileHref"] = href
     return _raw({"code": "0", "data": [row], "msg": ""})
+
+
+def _quarter_zip(*, row_time_ms="1782864000000"):
+    csv = (
+        "billId,ccy,type,subType,ts,balChg,source_extra\n"
+        f"9002,USDT,2,1,{row_time_ms},0.01,private-row\n"
+        f"9001,USDT,2,1,{row_time_ms},-0.01,private-row\n"
+    )
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("bills.csv", csv.encode())
+    return output.getvalue()
+
+
+def _finished_link():
+    href = "https://archive.example/private/file.zip?token=private-link-token"
+    journal = acquisition.DiagnosticArchiveJournal(
+        _plan(reviewed_download_hosts=("archive.example",))
+    ).record_status_response(
+        _status("finished", NOW - timedelta(hours=1), href),
+        request_started_at=NOW,
+        body_completed_at=NOW + timedelta(seconds=1),
+    )
+    return journal, href
 
 
 def test_exact_scope_and_current_quarter_are_fail_closed():
@@ -210,4 +236,113 @@ def test_canonical_replay_rejects_tampering_flags_duplicate_keys_and_changed_pin
     ):
         acquisition.replay_journal(
             duplicate, expected_sha256=hashlib.sha256(duplicate).hexdigest()
+        )
+
+
+def test_supplied_zip_is_bound_to_status_link_but_never_grants_account_authority():
+    linked, href = _finished_link()
+    zip_bytes = _quarter_zip()
+    downloaded = linked.record_supplied_download(
+        zip_bytes,
+        download_href=href,
+        request_started_at=NOW + timedelta(seconds=2),
+        headers_received_at=NOW + timedelta(seconds=3),
+        body_completed_at=NOW + timedelta(seconds=4),
+        response_status=200,
+        redirect_count=0,
+    )
+    raw = acquisition.encode_journal(downloaded)
+    assert downloaded.state == "archive_bytes_unverified"
+    assert downloaded.admission == "DENY"
+    assert downloaded.account_complete is False
+    assert downloaded.execution_authority is False
+    assert (
+        downloaded.events[-1]["data"]["archive_sha256"]
+        == hashlib.sha256(zip_bytes).hexdigest()
+    )
+    assert downloaded.events[-1]["data"]["row_count"] == 2
+    assert href.encode() not in raw
+    assert b"private-row" not in raw
+    assert (
+        acquisition.replay_journal(
+            raw, expected_sha256=hashlib.sha256(raw).hexdigest()
+        ).state
+        == "archive_bytes_unverified"
+    )
+
+
+@pytest.mark.parametrize(
+    "changes,reason",
+    [
+        ({"download_href": "https://archive.example/other.zip"}, "link_mismatch"),
+        ({"response_status": 206}, "response_invalid"),
+        ({"redirect_count": 1}, "response_invalid"),
+        ({"headers_received_at": NOW + timedelta(seconds=5)}, "clock_invalid"),
+        ({"request_started_at": NOW + timedelta(hours=6)}, "clock_invalid"),
+    ],
+)
+def test_supplied_download_rejects_mismatched_link_redirect_status_or_clock(
+    changes, reason
+):
+    linked, href = _finished_link()
+    args = {
+        "download_href": href,
+        "request_started_at": NOW + timedelta(seconds=2),
+        "headers_received_at": NOW + timedelta(seconds=3),
+        "body_completed_at": NOW + timedelta(seconds=4),
+        "response_status": 200,
+        "redirect_count": 0,
+    }
+    args.update(changes)
+    with pytest.raises(acquisition.ArchiveAcquisitionError, match=reason):
+        linked.record_supplied_download(_quarter_zip(), **args)
+    assert linked.state == "link_observed_unverified"
+
+
+def test_supplied_download_rejects_malformed_or_wrong_quarter_bytes():
+    linked, href = _finished_link()
+    args = {
+        "download_href": href,
+        "request_started_at": NOW + timedelta(seconds=2),
+        "headers_received_at": NOW + timedelta(seconds=3),
+        "body_completed_at": NOW + timedelta(seconds=4),
+        "response_status": 200,
+        "redirect_count": 0,
+    }
+    with pytest.raises(
+        acquisition.ArchiveAcquisitionError, match="archive_download_bytes_rejected"
+    ):
+        linked.record_supplied_download(b"not-a-zip", **args)
+    prior_quarter_ms = str(int(datetime(2026, 4, 1, tzinfo=UTC).timestamp() * 1000))
+    with pytest.raises(
+        acquisition.ArchiveAcquisitionError, match="archive_download_bytes_rejected"
+    ):
+        linked.record_supplied_download(
+            _quarter_zip(row_time_ms=prior_quarter_ms), **args
+        )
+    assert linked.state == "link_observed_unverified"
+
+
+def test_replay_rejects_forged_download_link_even_when_event_hash_is_recomputed():
+    linked, href = _finished_link()
+    downloaded = linked.record_supplied_download(
+        _quarter_zip(),
+        download_href=href,
+        request_started_at=NOW + timedelta(seconds=2),
+        headers_received_at=NOW + timedelta(seconds=3),
+        body_completed_at=NOW + timedelta(seconds=4),
+        response_status=200,
+        redirect_count=0,
+    )
+    doc = json.loads(acquisition.encode_journal(downloaded))
+    event = doc["events"][-1]
+    event["data"]["download_href_sha256"] = "b" * 64
+    core = {key: value for key, value in event.items() if key != "event_sha256"}
+    event["event_sha256"] = hashlib.sha256(_raw(core)).hexdigest()
+    forged = _raw(doc)
+    with pytest.raises(
+        acquisition.ArchiveAcquisitionError, match="archive_download_link_mismatch"
+    ):
+        acquisition.replay_journal(
+            forged, expected_sha256=hashlib.sha256(forged).hexdigest()
         )
