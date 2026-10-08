@@ -193,3 +193,9 @@ to V7 or accepted as a G6 PASS input. An owned G6 diagnostic would require a
 same-task read after G5, exact UID/source/session binding, independent account
 and legacy/exchange reconciliation, and proof that no event outside this journal
 was consumed. Missing evidence leaves G6 unperformed.
+
+The separate [V8 G5-to-journal observation](owned_original_event_ledger_v8.md)
+now invokes unchanged V7, then reads this controlled journal twice in the same
+task. It can reject a visible duplicate and records an absent event only as a
+limited DB observation. V7 itself remains unwired to the journal, and neither
+V8 nor an empty pair of reads promotes G6 or execution authority.
