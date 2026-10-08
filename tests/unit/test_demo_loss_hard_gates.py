@@ -23,7 +23,11 @@ def configured(demo, *, continuous=True, repository=None):
         okx_demo_capital_bucket_enabled=True,
         okx_demo_trade_cooldown_seconds=0,
     )
-    service.repository = repository
+    # Arm requires an explicit durable-state test double. Preserve a supplied
+    # repository for restart/recovery cases, including its recorded loss state.
+    service.repository = (
+        MemoryAutomationRepository() if repository is None else repository
+    )
     return service
 
 
