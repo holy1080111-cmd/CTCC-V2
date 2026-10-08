@@ -151,6 +151,10 @@ def test_integration_module_classification_fails_on_new_module(tmp_path: Path):
         not in verifier.NO_DB_INTEGRATION
     )
     assert "test_gate3_schedule_publication_ack.py" in verifier.POSTGRES_INTEGRATION
+    assert (
+        "test_public_receipt_publication_ack_repository.py"
+        in verifier.POSTGRES_INTEGRATION
+    )
     assert "test_gate3_schedule_publication_ack.py" not in verifier.NO_DB_INTEGRATION
     assert (
         "test_gate3_committed_preregistration_seal.py" in verifier.POSTGRES_INTEGRATION

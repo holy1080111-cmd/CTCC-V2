@@ -113,6 +113,19 @@ WORM storage and cryptographic nonrepudiation are outside this local mechanism.
 `measured_public_minutes` replays the whole bounded journal, locates exact raw
 rows, rejects revised batches and creates existing `BoundMinute` records. It
 does not assign research partitions, seal candidates or make Gate 3 pass.
+Its v1 `measured_row_receipt` availability is the capture-validation instant,
+which precedes durable publication. The journal entry's
+`payload_readback_complete` also precedes `entry.json` publication, full-chain
+replay and checkpoint advancement. Neither instant proves a historical decision
+could read an anchored row. The in-memory `PublishedMeasuredCapture.completed_ns`
+is not a replayable, independently pinned timestamp, and the current database
+witness does not retain such a timestamp. Do not use v1 availability for a
+predictive or execution cutoff. The blind-window dataset's current
+`durable_journal_readback` label also uses the earlier payload-readback stamp;
+its fixed `predictive_oos_eligible=false` must remain in force. A future version
+must preserve v1 receipt/hash
+semantics and bind a separately retained, post-publication observation before
+Gate 3 may consider decision-time availability.
 Limits are 1,024 captures, 1,024 attempts and 1 GiB across both chains per journal;
 reaching a bound fails closed. Journal rotation requires a separately designed
 checkpoint procedure.

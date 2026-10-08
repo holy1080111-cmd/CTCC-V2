@@ -165,5 +165,5 @@ real blind window or sealed Candidate V1 result. The dataset contract therefore
 fixes `predictive_oos_eligible=false`, `promotion_eligible=false`, and
 `execution_authority=false`; this is a computational integrity step, not Gate 3
 or sealed OOS acceptance. The historical `ALEMBIC_HEAD=0016` above describes
-the 2026-09-02 foundation run; the current source migration head is `0022` and
+the 2026-09-02 foundation run; the current source migration head is `0033` and
 requires its own exact-source PostgreSQL acceptance.

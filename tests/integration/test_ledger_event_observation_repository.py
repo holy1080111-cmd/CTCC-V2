@@ -17,7 +17,6 @@ from app.database.models.qualification_ledger import (
 )
 from app.database.repositories import qualification_ledger as repository_module
 from app.database.repositories.qualification_ledger import QualificationLedgerRepository
-from app.trade_qualification.engine import PortfolioInputs
 from app.trade_qualification.reservations import (
     AccountLedgerClaims,
     LedgerScope,
@@ -27,7 +26,7 @@ from app.trade_qualification.reservations import (
 from app.trade_qualification.service import _plain
 from tests.integration import test_control_bound_ledger_repository as controls
 from tests.integration import test_qualification_ledger_repository as fixtures
-from tests.unit import qualification_ledger_fixtures as source_fixture
+from tests.unit.qualification_ledger_fixtures import ledger_fixture
 
 database = fixtures.database
 fixture = fixtures.fixture
@@ -35,37 +34,21 @@ pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
 
 @pytest.fixture
-def currency_pair(fixture):
-    """Adversarial alternative claims built BEFORE synthetic G1--G12.
+def report_pair(fixture):
+    """Recompute a second eligible report for the same synthetic UID/event.
 
-    No passing result/event is edited. This models untrusted alternative
-    settlement claims for the same event, not real OKX contract metadata.
+    The USDT-only margin bucket denies USDC qualification. Separate tests below
+    exercise cross-currency lookup and the database's all-currency uniqueness.
     """
-    original_inputs = source_fixture.engine_inputs
-
-    def other_currency_inputs(source):
-        args = original_inputs(source)
-        raw = _plain(args["risk_inputs"])
-        raw["account"]["settlement_currency"] = "USDC"
-        raw["instrument"]["settlement_currency"] = "USDC"
-        args["risk_inputs"] = PortfolioInputs.model_validate(raw, strict=True)
-        return args
-
-    def other_scope(**kwargs):
-        return LedgerScope(**{**kwargs, "settlement_currency": "USDC"})
-
-    with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(source_fixture, "engine_inputs", other_currency_inputs)
-        patch.setattr(source_fixture, "LedgerScope", other_scope)
-        other = source_fixture.ledger_fixture(
-            account_id=fixture.request.scope.account_id,
-            report_id="synthetic-other-currency-report",
-        )
+    other = ledger_fixture(
+        account_id=fixture.request.scope.account_id,
+        report_id="synthetic-other-report",
+    )
     assert (
         other.request.origin.original_event_key
         == fixture.request.origin.original_event_key
     )
-    assert other.request.scope.settlement_currency == "USDC"
+    assert other.request.scope == fixture.request.scope
     return fixture, other
 
 
@@ -196,17 +179,20 @@ async def test_invalid_measured_read_interval_is_error_not_absence(
         await repo.read_event_observation(receipt.scope, receipt.original_event_key)
 
 
-async def test_uid_lock_covers_read_and_cross_currency_reservation(
-    database, currency_pair
+async def test_uid_lock_covers_cross_currency_read_and_other_report_reservation(
+    database, report_pair
 ):
-    original, other = currency_pair
+    original, other = report_pair
     s = await controls.setup(database, original)
-    await s.ledger.reconcile_scope(other.claims, expected_revision=0)
+    diagnostic_scope = LedgerScope(
+        account_id=original.request.scope.account_id, settlement_currency="USDC"
+    )
+    await s.ledger.initialize_capture_scope(diagnostic_scope)
     async with database[1]() as session, session.begin():
         await s.ledger._locked(session, original.request.scope)
         lookup = asyncio.create_task(
             s.ledger.read_event_observation(
-                other.request.scope, original.request.origin.original_event_key
+                diagnostic_scope, original.request.origin.original_event_key
             )
         )
         reserving = asyncio.create_task(
@@ -218,20 +204,20 @@ async def test_uid_lock_covers_read_and_cross_currency_reservation(
         assert not lookup.done() and not reserving.done()
     observed, receipt = await asyncio.wait_for(asyncio.gather(lookup, reserving), 30)
     assert receipt.scope == other.request.scope
+    assert observed.scope == diagnostic_scope
     assert (
         observed.matched is None
         or observed.matched.original_event_key == receipt.original_event_key
     )
-    with pytest.raises(QualificationLedgerError, match="uid_event_already_recorded"):
+    with pytest.raises(QualificationLedgerError, match="event_already_recorded"):
         await s.reserve()
 
 
-async def test_new_bound_route_rechecks_terminal_cross_currency_after_earlier_absence(
-    database, currency_pair
+async def test_new_bound_route_rechecks_terminal_other_report_after_earlier_absence(
+    database, report_pair
 ):
-    original, other = currency_pair
+    original, other = report_pair
     s = await controls.setup(database, original)
-    await s.ledger.reconcile_scope(other.claims, expected_revision=0)
     absent = await s.ledger.read_event_observation(
         other.request.scope, original.request.origin.original_event_key
     )
@@ -245,7 +231,7 @@ async def test_new_bound_route_rechecks_terminal_cross_currency_after_earlier_ab
         expected_revision=2,
     )
     assert terminal.state == "reconciled_flat"
-    with pytest.raises(QualificationLedgerError, match="uid_event_already_recorded"):
+    with pytest.raises(QualificationLedgerError, match="event_already_recorded"):
         await s.ledger.reserve_control_bound(
             other.request, control_expectation=s.expected
         )
@@ -258,12 +244,11 @@ async def test_new_bound_route_rechecks_terminal_cross_currency_after_earlier_ab
     )
 
 
-async def test_legacy_reserve_cannot_reuse_terminal_uid_event_in_another_currency(
-    database, currency_pair
+async def test_legacy_reserve_cannot_reuse_terminal_uid_event_with_other_report(
+    database, report_pair
 ):
-    original, other = currency_pair
+    original, other = report_pair
     repo, clock = await fixtures.initialize(database, original)
-    await repo.reconcile_scope(other.claims, expected_revision=0)
     receipt = await repo.reserve(original.request)
     clock.value += timedelta(microseconds=1)
     terminal = await repo.reconcile_reservation(
@@ -283,12 +268,11 @@ async def test_legacy_reserve_cannot_reuse_terminal_uid_event_in_another_currenc
     assert found.matched == terminal
 
 
-async def test_concurrent_bound_same_uid_event_different_report_currency_has_exactly_one_winner(
-    database, currency_pair
+async def test_concurrent_bound_same_uid_event_different_report_has_exactly_one_winner(
+    database, report_pair
 ):
-    original, other = currency_pair
+    original, other = report_pair
     s = await controls.setup(database, original)
-    await s.ledger.reconcile_scope(other.claims, expected_revision=0)
     # Both candidate claims were independently recomputed before attempting the
     # race; the final transaction must repeat event lookup under the same UID.
     results = await asyncio.wait_for(
@@ -304,7 +288,7 @@ async def test_concurrent_bound_same_uid_event_different_report_currency_has_exa
     wins = [r for r in results if not isinstance(r, BaseException)]
     failures = [r for r in results if isinstance(r, QualificationLedgerError)]
     assert len(wins) == len(failures) == 1
-    assert "uid_event_already_recorded" in str(failures[0])
+    assert "event_already_recorded" in str(failures[0])
     assert wins[0].original_event_key == original.request.origin.original_event_key
     async with database[1]() as session:
         rows = (
@@ -322,11 +306,10 @@ async def test_concurrent_bound_same_uid_event_different_report_currency_has_exa
 
 
 async def test_concurrent_legacy_and_bound_reserve_share_uid_event_lock(
-    database, currency_pair
+    database, report_pair
 ):
-    original, other = currency_pair
+    original, other = report_pair
     s = await controls.setup(database, original)
-    await s.ledger.reconcile_scope(other.claims, expected_revision=0)
     async with database[1]() as session, session.begin():
         await s.ledger._locked(session, original.request.scope)
         legacy = asyncio.create_task(s.ledger.reserve(original.request))

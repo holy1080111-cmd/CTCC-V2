@@ -174,6 +174,62 @@ async def _require_event_journal_session(session):
         raise QualificationLedgerError("event_ledger_session_guards_invalid")
 
 
+def _event_journal_schema_mismatch_detail(trigger_rows, required, unique_rows):
+    """Bounded catalog diagnosis using only expected schema identifiers.
+
+    Never include observed function names, columns, rows, or SQL error text in
+    the rejection: a failed retention check is still a hard denial.
+    """
+    issues = []
+    for (table, trigger), (kind, function) in sorted(required.items()):
+        matches = [row for row in trigger_rows if (row[0], row[1]) == (table, trigger)]
+        if not matches:
+            issues.append(f"{table}.{trigger}=missing")
+            continue
+        if any(
+            row[2] == "O"
+            and row[3] == kind
+            and row[4] == function
+            and row[5] == 0
+            and row[6] == "public"
+            and row[7] is True
+            for row in matches
+        ):
+            continue
+        row = matches[0]
+        reasons = []
+        if row[2] != "O":
+            reasons.append("not_origin_enabled")
+        if row[3] != kind:
+            reasons.append("event_type_mismatch")
+        if row[4] != function:
+            reasons.append("function_mismatch")
+        if row[5] != 0:
+            reasons.append("function_arity_mismatch")
+        if row[6] != "public":
+            reasons.append("function_schema_mismatch")
+        if row[7] is not True:
+            reasons.append("function_identity_mismatch")
+        issues.append(f"{table}.{trigger}={'+'.join(reasons) or 'mismatch'}")
+
+    expected_unique = (False, True, "environment,account_id,original_event_key")
+    if not unique_rows:
+        unique_status = "missing"
+    elif len(unique_rows) != 1:
+        unique_status = "row_count_mismatch"
+    else:
+        observed = unique_rows[0]
+        reasons = []
+        if observed[0] is not False:
+            reasons.append("deferrability_mismatch")
+        if observed[1] is not True:
+            reasons.append("validation_mismatch")
+        if observed[2] != expected_unique[2]:
+            reasons.append("columns_mismatch")
+        unique_status = "+".join(reasons) or "valid"
+    return f"triggers={','.join(issues) or 'valid'};uid_unique={unique_status}"
+
+
 async def _require_event_journal_schema(session):
     trigger_rows = (
         await session.execute(
@@ -253,10 +309,16 @@ async def _require_event_journal_schema(session):
             )
         )
     ).all()
-    if any(guards.get(key) != function for key, function in required.items()) or [
-        tuple(row) for row in unique
-    ] != [(False, True, "environment,account_id,original_event_key")]:
-        raise QualificationLedgerError("event_ledger_schema_retention_invalid")
+    unique_rows = [tuple(row) for row in unique]
+    if any(
+        guards.get(key) != function for key, function in required.items()
+    ) or unique_rows != [(False, True, "environment,account_id,original_event_key")]:
+        detail = _event_journal_schema_mismatch_detail(
+            trigger_rows, required, unique_rows
+        )
+        raise QualificationLedgerError(
+            f"event_ledger_schema_retention_invalid:{detail}"
+        )
 
 
 class QualificationLedgerRepository:

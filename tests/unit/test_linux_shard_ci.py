@@ -48,6 +48,10 @@ def test_reviewed_modules_in_postgres_suite_only():
             "tests/integration/test_gate3_claim_trigger_alias_repair.py",
             "test_0032_repaired_guard_accepts_fresh_prereg_acknowledged_claim",
         ),
+        (
+            "tests/integration/test_public_receipt_publication_ack_repository.py",
+            "test_observer_cannot_ack_own_uncommitted_witness_insert",
+        ),
     ):
         nodeid = path + "::" + case
         assert path in POSTGRES_TEST_PATHS

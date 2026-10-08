@@ -68,6 +68,9 @@ from app.database.models.persistence import (
     PaperPositionState,
     RecoveryCheckpoint,
 )
+from app.database.models.public_receipt_publication_ack import (
+    PublicReceiptPublicationAck,
+)
 from app.database.models.public_receipt_witness import PublicReceiptWitnessRevision
 from app.database.models.qualification_ledger import (
     QualificationAccountScope,
@@ -141,6 +144,7 @@ __all__ = [
     "PortfolioSnapshot",
     "Position",
     "ProtectiveOrder",
+    "PublicReceiptPublicationAck",
     "PublicReceiptWitnessRevision",
     "QualificationAccountScope",
     "QualificationReportProjectionReceipt",

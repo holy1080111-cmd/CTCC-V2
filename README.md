@@ -117,10 +117,18 @@ event collisions need forensic resolution, and refuses downgrade while any
 ledger record remains. None of these tables grants source, reservation or order
 authority on its own.
 
+Migrations `0024`–`0032` add public-receipt checkpoint witnesses, Gate 3
+schedule and preregistration records, and further controlled Demo journal and
+claim safeguards. Migration `0033` adds a restricted database observation of
+an already committed public capture witness. Its timestamp precedes the ACK's
+own commit; historical decision-time availability and Gate 3 remain unproven.
+The current source has not passed final PostgreSQL, Docker, Demo or Live
+acceptance.
+
 Migration identities (the stopped local deployment is not silently upgraded):
 
 ```text
-Current final-completion source head: 0023
+Current final-completion source head: 0033
 Last independently restored local deployment: 0017
 ```
 

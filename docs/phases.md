@@ -7,6 +7,11 @@ source regression. Production, predictive OOS, Demo and manually armed Micro
 Live acceptance remain incomplete. Historical phase completions below do not
 transfer to the final source automatically.
 
+Source migration `0033` adds a restricted public-receipt publication ACK as an
+offline Gate 3 prerequisite; its PostgreSQL role tests and decision-time
+availability proof remain pending. It does not advance Gate 3 or trading
+authority.
+
 Latest user-supplied construction track: [entry qualification and evidence](entry_qualification_implementation.md)
 (2026-09-11). Its domain foundation and strategy hard-gate work are local-only;
 regime/timing/location engines, evidence, final recheck, outbox, forensics and

@@ -76,6 +76,13 @@ GATE3_PREFLIGHT_CASES = (
     ),
 )
 
+LEDGER_SCHEMA_PREFLIGHT_CASES = (
+    (
+        "tests.integration.test_complete_consumed_event_ledger_repository",
+        "test_committed_event_journal_schema_retention_guard_accepts_current_head",
+    ),
+)
+
 
 def git_object(kind: str, raw: bytes) -> bytes:
     return hashlib.sha1(f"{kind} {len(raw)}\0".encode() + raw).digest()
@@ -764,6 +771,34 @@ def main():
             raise RuntimeError("migration_reupgrade_identity_changed")
         container("migration-redrift", ["alembic", "check"])
         if args.suite in ("full", "postgres"):
+            # Check the committed journal retention schema before the long
+            # PostgreSQL suite. A failure is a hard denial; its allowlisted
+            # mismatch category is retained in the JUnit artifact.
+            container(
+                "event-journal-schema-preflight",
+                [
+                    "python",
+                    "-m",
+                    "scripts.hermetic_pytest",
+                    "-p",
+                    "no:cacheprovider",
+                    "--tb=no",
+                    "--show-capture=no",
+                    "-o",
+                    "junit_logging=no",
+                    "--junitxml=/validation-results/event-journal-schema-preflight.xml",
+                    *(
+                        f"{module.replace('.', '/')}.py::{case}"
+                        for module, case in LEDGER_SCHEMA_PREFLIGHT_CASES
+                    ),
+                ],
+                mounts=test_results_mount,
+                timeout=5 * 60,
+            )
+            identity["event_journal_schema_preflight"] = verify_pytest_report(
+                test_results / "event-journal-schema-preflight.xml",
+                required_cases=LEDGER_SCHEMA_PREFLIGHT_CASES,
+            )
             # Fail early on the isolated 0029 claim boundary before the long
             # PostgreSQL suite. Suppress raw DB tracebacks in this diagnostic
             # stage; the test exposes only allowlisted PostgreSQL metadata.

@@ -42,6 +42,14 @@ pytest_plugins = ["tests.integration.test_qualification_ledger_repository"]
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
 
+async def test_committed_event_journal_schema_retention_guard_accepts_current_head(
+    database,
+):
+    """Surface a missing retention guard before the long PostgreSQL suite."""
+    async with database[1]() as session:
+        await _require_event_journal_schema(session)
+
+
 @pytest.mark.parametrize(
     "state", ("reserved", "consumed", "uncertain", "reconciled_flat")
 )

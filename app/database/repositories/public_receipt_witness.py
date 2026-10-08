@@ -303,6 +303,39 @@ class PublicReceiptWitnessRepository:
         except Exception:  # noqa: BLE001 - Never leak connection/credential details.
             raise PublicWitnessError("witness_read_unavailable") from None
 
+    async def read_revision(self, journal_key: str, revision: int) -> WitnessRevision:
+        """Verify the complete current chain before selecting an old revision."""
+        if (
+            type(journal_key) is not str
+            or _HEX64.fullmatch(journal_key) is None
+            or type(revision) is not int
+            or not 0 <= revision <= 8192
+        ):
+            raise PublicWitnessError("witness_revision_input_invalid")
+        try:
+            async with self.session_factory() as session:
+                await self._role_guard(session)
+                rows = tuple(
+                    (
+                        await session.execute(
+                            text(
+                                "SELECT * FROM public.public_receipt_witness_read(:key)"
+                            ),
+                            {"key": journal_key},
+                        )
+                    ).all()
+                )
+            if not rows:
+                raise PublicWitnessError("witness_revision_missing")
+            latest = verify_witness_chain(rows)
+            if revision > latest.revision:
+                raise PublicWitnessError("witness_revision_missing")
+            return verify_witness_chain(rows[: revision + 1])
+        except PublicWitnessError:
+            raise
+        except Exception:  # noqa: BLE001 - Never leak connection/credential details.
+            raise PublicWitnessError("witness_read_unavailable") from None
+
     async def append(
         self,
         *,

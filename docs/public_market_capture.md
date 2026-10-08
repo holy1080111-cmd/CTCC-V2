@@ -136,6 +136,17 @@ BTC-USDT-SWAP 的 V1 完整公開封包收集回傳
 V1 公開來源診斷；不會追溯改寫九月失敗，也不證明每個元件的獨立可信時鐘、
 V2 Demo 區域來源、完整帳戶、G12、候選資格或交易權限。
 
+2026-10-08 12:14 UTC 在 `bb68b7d` 精確來源上又執行一次匿名 V1
+`capture_initial_public_market`，維持原訂 quote component 5 秒新鮮度。
+本次整包結果為 `DENY`／`initial_public_denied`，沒有 packet 或下單權限。
+原始 funding `ts` 12:14:13.146 UTC 到回應關閉 12:14:44.649 UTC 至少
+31.503 秒；原始三份 quote 回應離線重建時，5 秒 V1 policy 明確拒絕
+`component_stale`。這次不是 `future_component_timestamp`，也不能把 V2 的
+funding return-age 診斷規則套到 V1 失敗紀錄。89 筆事件鏈與 51 份 raw
+雜湊均讀回核對；142 個保存檔案、分析及 SHA256 清單位於
+`../../validation-results/ctcc-public-initial-bb68-20261008/`。舊紀錄保留原樣，
+不得放寬新鮮度或修改來源時間來追求通過。
+
 ## 仍未完成
 
 新受控公開 minute acquisition journal 使用版本化 attempt v2，在 HTTP 前後透過
