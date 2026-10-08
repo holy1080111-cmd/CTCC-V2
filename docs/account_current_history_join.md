@@ -83,3 +83,20 @@ revision or a complete loss seed. The versioned receipt therefore always has
 `execution_authority=false`; a saved receipt is compared with a fresh replay of
 the original chains before its findings can be used. The tests use synthetic
 B1 chains only.
+
+The separate `verify_followup_current_diagnostic` adds a fourth original v6
+current capture **after** the overlapping history continuation. It replays
+the preceding three chains, independently joins the continued v5 history to
+the fourth v6 current chain, and requires four distinct original capture IDs.
+The joins enforce exact UID, mainUid, session/registration/mode, currency,
+recorded local checkpoint, raw/page-chain proof and chronology. The new
+receipt binds both replay hashes, retains any late/conflicting/missing row
+findings, and marks the bounded follow-up query as observed. It removes only
+the earlier diagnostic's `post_continuation_current_capture_required` blocker
+from its own remaining-blocker list. An expired fourth-capture current-data
+lease is rejected rather than recycled as fresh. It still has no native current
+proof, locked current DB revision, exchange-wide EOF, funding-accrual chronology,
+future-late-arrival finality, complete loss seed or PortfolioRiskSnapshot.
+Therefore `history_tail_closed=false`, `snapshot=None`,
+`account_complete=false`, and `execution_authority=false` remain immutable.
+This is synthetic offline coverage, not authenticated Demo acceptance.

@@ -81,6 +81,7 @@ def shifted_inputs():
         ("stale_public_at_join", "account_unavailable"),
         ("expired_account_lease", "account_unavailable"),
         ("recheck_replay_failed", "account_unavailable"),
+        ("stale_after_persist", "denied"),
     ],
 )
 async def test_new_g12_then_fresh_public_and_account_raw_page_starts(
@@ -97,6 +98,7 @@ async def test_new_g12_then_fresh_public_and_account_raw_page_starts(
     chain, account_harness = await recorded_current(
         monkeypatch, offset_seconds=601, pages=pages
     )
+    (tmp_path / "recheck").mkdir()
     payload = next(
         item.event.packet_payload for item in chain if item.event.packet_payload
     )
@@ -124,6 +126,17 @@ async def test_new_g12_then_fresh_public_and_account_raw_page_starts(
     monkeypatch.setattr(
         joined.public_recheck, "evaluate_post_g12_public_recheck_v2", replay_public
     )
+    real_context = joined.public_market_context_v2
+    context_calls = 0
+
+    def final_context(*args, **kwargs):
+        nonlocal context_calls
+        context_calls += 1
+        if fault == "stale_after_persist" and context_calls == 2:
+            raise ValueError("synthetic stale public source")
+        return real_context(*args, **kwargs)
+
+    monkeypatch.setattr(joined, "public_market_context_v2", final_context)
     route = demo_public_origin.reviewed_demo_public_route("global")
     proof = {
         "classification": "owned_native_tls",
@@ -219,6 +232,7 @@ async def test_new_g12_then_fresh_public_and_account_raw_page_starts(
         tmp_path / "g12",
         tmp_path / "public",
         tmp_path / "account",
+        tmp_path / "recheck",
         source.market,
         run=run,
         original_inputs=values,
@@ -229,23 +243,22 @@ async def test_new_g12_then_fresh_public_and_account_raw_page_starts(
     receipt = decode(result.receipt_json)
     assert receipt["code"] == expected_code
     assert receipt["public_request_count"] > 0
+    persisted = fault is None or fault == "stale_after_persist"
     assert receipt["account_page_count"] == (
-        len(account_packet.observations) if fault is None else 0
+        len(account_packet.observations) if persisted else 0
     )
     assert joined._utc_text(receipt["publication_completed_at"]) < joined._utc_text(
         receipt["public_first_request_started_at"]
     )
-    if fault is None:
+    if persisted:
         assert joined._utc_text(receipt["publication_completed_at"]) < joined._utc_text(
             receipt["account_first_request_started_at"]
         )
     else:
         assert receipt["account_first_request_started_at"] is None
     assert receipt["public_packet_sha256"] is not None
-    assert receipt["account_packet_sha256"] == (
-        frozen.sha256 if fault is None else None
-    )
-    if fault is None:
+    assert receipt["account_packet_sha256"] == (frozen.sha256 if persisted else None)
+    if persisted:
         # The independent verifier recomputes the same receipt from the
         # retained public bytes before the diagnostic pins its digest.
         assert len(rechecks) == 2
@@ -264,11 +277,61 @@ async def test_new_g12_then_fresh_public_and_account_raw_page_starts(
         )
         assert replayed["admission"] == "DENY"
         assert replayed["execution_authority"] is False
+        assert receipt["public_only_recheck_receipt_persisted"] is True
+        assert (
+            joined.read_public_only_recheck_receipt_v2(
+                tmp_path / "recheck",
+                expected_sha256=receipt["public_only_recheck_sha256"],
+            ).receipt_json
+            == rechecks[0].receipt_json
+        )
+        retained = (tmp_path / "recheck" / "receipt.json").read_bytes()
+        with pytest.raises(
+            joined.PostG12AccountJoinError,
+            match="post_g12_public_recheck_publish_failed",
+        ):
+            joined._publish_public_only_recheck_receipt_v2(
+                tmp_path / "recheck", rechecks[0]
+            )
+        assert (tmp_path / "recheck" / "receipt.json").read_bytes() == retained
+        late_root = tmp_path / "late-recheck"
+        late_root.mkdir()
+        original_identity = joined.source_runtime._native_recheck_root_identity
+        identity_calls = 0
+
+        def late_identity(path):
+            nonlocal identity_calls
+            identity_calls += 1
+            if identity_calls == 2:
+                raise OSError("synthetic late readback failure")
+            return original_identity(path)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                joined.source_runtime, "_native_recheck_root_identity", late_identity
+            )
+            with pytest.raises(
+                joined.PostG12AccountJoinError,
+                match="post_g12_public_recheck_publish_failed",
+            ):
+                joined._publish_public_only_recheck_receipt_v2(late_root, rechecks[0])
+        assert (late_root / "receipt.json").read_bytes() == retained
+        (tmp_path / "recheck" / "receipt.json").write_bytes(b"synthetic-corruption")
+        with pytest.raises(
+            joined.PostG12AccountJoinError,
+            match="post_g12_public_recheck_readback_failed",
+        ):
+            joined.read_public_only_recheck_receipt_v2(
+                tmp_path / "recheck",
+                expected_sha256=receipt["public_only_recheck_sha256"],
+            )
     else:
         assert not rechecks
         assert receipt["public_only_recheck_sha256"] is None
         assert receipt["public_only_recheck_code"] is None
         assert receipt["public_only_recheck_observed_at"] is None
+        assert receipt["public_only_recheck_receipt_persisted"] is False
+        assert not list((tmp_path / "recheck").iterdir())
     assert receipt["original_entry"] == str(run.result.candidate_entry)
     assert receipt["original_stop_loss"] == str(run.result.stop_loss)
     assert receipt["original_take_profit"] == str(run.result.take_profit)
@@ -285,11 +348,45 @@ async def test_new_g12_then_fresh_public_and_account_raw_page_starts(
 
 
 @pytest.mark.asyncio
+async def test_preexisting_recheck_receipt_denies_before_new_g12(
+    shifted_inputs, tmp_path, monkeypatch
+):
+    source, values, run = shifted_inputs
+    recheck_root = tmp_path / "recheck"
+    recheck_root.mkdir()
+    (recheck_root / "receipt.json").write_bytes(b"previous-attempt")
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("nonempty recheck root must stop before G12 or source IO")
+
+    monkeypatch.setattr(public_runtime, "_publish_lineage_v2", forbidden)
+    with pytest.raises(
+        joined.PostG12AccountJoinError,
+        match="post_g12_public_recheck_root_unavailable",
+    ):
+        await joined.publish_capture_public_account_v2(
+            tmp_path / "g12",
+            tmp_path / "public",
+            tmp_path / "account",
+            recheck_root,
+            source.market,
+            run=run,
+            original_inputs=values,
+            market_policy=policy(),
+            account_session=session(),
+            session_factory=object(),
+        )
+    assert (recheck_root / "receipt.json").read_bytes() == b"previous-attempt"
+    assert not (tmp_path / "g12").exists()
+
+
+@pytest.mark.asyncio
 async def test_unverified_demo_origin_stops_before_g12_public_and_account_io(
     shifted_inputs, tmp_path, monkeypatch
 ):
     source, values, run = shifted_inputs
     controlled = session()
+    (tmp_path / "recheck").mkdir()
     monkeypatch.setattr(account_native, "_configured_factory", lambda _: True)
 
     def forbidden(*_args, **_kwargs):
@@ -303,6 +400,7 @@ async def test_unverified_demo_origin_stops_before_g12_public_and_account_io(
         tmp_path / "g12",
         tmp_path / "public",
         tmp_path / "account",
+        tmp_path / "recheck",
         source.market,
         run=run,
         original_inputs=values,
@@ -317,10 +415,12 @@ async def test_unverified_demo_origin_stops_before_g12_public_and_account_io(
     assert receipt["account_packet_sha256"] is None
     assert receipt["public_only_recheck_sha256"] is None
     assert receipt["public_only_recheck_code"] is None
+    assert receipt["public_only_recheck_receipt_persisted"] is False
     assert receipt["admission"] == "DENY"
     assert receipt["execution_authority"] is False
     assert controlled._used
     assert not (tmp_path / "g12").exists()
+    assert not list((tmp_path / "recheck").iterdir())
     forged = dict(receipt, execution_authority=True)
     with pytest.raises(
         joined.PostG12AccountJoinError, match="post_g12_account_receipt_invalid"
@@ -339,6 +439,7 @@ async def test_original_risk_account_must_match_controlled_exact_uid_before_g12(
         plan=selected,
         expected_plan_sha256=capture.plan_sha256(selected),
     )
+    (tmp_path / "recheck").mkdir()
     monkeypatch.setattr(account_native, "_configured_factory", lambda _: True)
 
     def forbidden(*_args, **_kwargs):
@@ -353,6 +454,7 @@ async def test_original_risk_account_must_match_controlled_exact_uid_before_g12(
             tmp_path / "g12",
             tmp_path / "public",
             tmp_path / "account",
+            tmp_path / "recheck",
             source.market,
             run=run,
             original_inputs=values,
@@ -371,11 +473,13 @@ async def test_caller_cannot_supply_gate_or_stale_source(
     shifted_inputs, tmp_path, extra
 ):
     source, values, run = shifted_inputs
+    (tmp_path / "recheck").mkdir()
     with pytest.raises(TypeError):
         await joined.publish_capture_public_account_v2(
             tmp_path / "g12",
             tmp_path / "public",
             tmp_path / "account",
+            tmp_path / "recheck",
             source.market,
             run=run,
             original_inputs=values,

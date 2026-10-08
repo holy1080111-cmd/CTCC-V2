@@ -16,6 +16,8 @@ import httpcore
 import httpx
 from websockets.asyncio.client import ClientConnection
 
+import app.public_market_source.public_receipt_storage as _receipt_storage
+import app.public_market_source.public_runtime_journal as _runtime_journal
 from app.domain.native_clock import native_stamp
 from app.domain.source_primitives import (
     PublicReceiptError,
@@ -52,6 +54,20 @@ _ISSUER = object()
 _SOURCES = WeakKeyDictionary()
 _RESULTS = WeakKeyDictionary()
 _INITIAL_RESULTS = WeakKeyDictionary()
+
+
+def _reopen_runtime_journal(root):
+    """Keep native public-journal ownership in this reviewed source facade."""
+    return _runtime_journal._root_context(root)
+
+
+def _native_recheck_root(root):
+    """Use the unpatched native receipt root for a separate bounded artifact."""
+    return _receipt_storage._root_context(root)
+
+
+def _native_recheck_root_identity(root):
+    return _receipt_storage._root_identity(root)
 
 
 class PublicSourceRuntimeError(ValueError):

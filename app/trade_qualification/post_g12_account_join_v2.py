@@ -4,8 +4,8 @@ The original G1--G11 run is independently replayed but still caller-origin.
 Neither that replay nor this source join grants an event/risk reservation or
 permission to submit an order. The native Demo public issuer currently refuses
 capture before G12 until account registration-region provenance is established.
-The public-only recheck digest is of an in-process replay receipt; that full
-receipt is not durably published here and is never a complete R7 claim.
+The public-only replay receipt is published in a separate native no-clobber
+root and reopened for readback. This is never a complete R7 claim.
 """
 
 from __future__ import annotations
@@ -26,13 +26,13 @@ from app.domain.source_primitives import (
     utc_from_ns,
     validate_stamps,
 )
-from app.public_market_source import public_runtime_journal as public_journal
 from app.trade_qualification import account_capture
 from app.trade_qualification import account_native_runtime as account_native
 from app.trade_qualification import original_source_coordinator_v2 as original_source
 from app.trade_qualification import post_g12_public_runtime as public_runtime
 from app.trade_qualification import post_g12_recheck_v2 as public_recheck
 from app.trade_qualification import public_market_collector_v2 as public_v2
+from app.trade_qualification import public_source_runtime as source_runtime
 from app.trade_qualification.account_runtime import ControlledDemoAccountSession
 from app.trade_qualification.market_bridge_v2 import public_market_context_v2
 from app.trade_qualification.one_shot import _original
@@ -66,7 +66,6 @@ _FALSE_FIELDS = (
     "original_source_verified",
     "account_complete",
     "execution_recheck_performed",
-    "public_only_recheck_receipt_persisted",
     "atomic_risk_reserved",
     "execution_authority",
     "order_submitted",
@@ -89,6 +88,7 @@ _FIELDS = frozenset(
         "account_page_count",
         "public_only_recheck_code",
         "public_only_recheck_observed_at",
+        "public_only_recheck_receipt_persisted",
         "admission",
         *_PIN_FIELDS,
         *_FALSE_FIELDS,
@@ -129,6 +129,7 @@ class PostG12OwnedPublicAccountDiagnosticV2:
                 or raw["code"] not in _CODES
                 or raw["admission"] != "DENY"
                 or any(raw[name] is not False for name in _FALSE_FIELDS)
+                or type(raw["public_only_recheck_receipt_persisted"]) is not bool
                 or type(raw["report_id"]) is not str
                 or not 1 <= len(raw["report_id"]) <= 128
                 or type(raw["instrument_id"]) is not str
@@ -186,6 +187,8 @@ class PostG12OwnedPublicAccountDiagnosticV2:
                 or (first_account is None) != (raw["account_page_count"] == 0)
                 or (recheck_at is None) != (raw["public_only_recheck_sha256"] is None)
                 or (recheck_at is None) != (recheck_code is None)
+                or raw["public_only_recheck_receipt_persisted"]
+                != (recheck_at is not None)
                 or recheck_code is not None
                 and recheck_code not in public_recheck._CODES
                 or first_public is not None
@@ -200,6 +203,7 @@ class PostG12OwnedPublicAccountDiagnosticV2:
                 and (first_account is None or recheck_at is None)
                 or raw["code"] != "joined_unqualified"
                 and recheck_at is not None
+                and first_account is None
                 or recheck_at is not None
                 and (
                     barrier is None
@@ -243,10 +247,62 @@ def _public_request_starts(packet, barrier):
     return min(starts), len(starts)
 
 
+def read_public_only_recheck_receipt_v2(root, *, expected_sha256):
+    """Reopen the distinct native root; a read receipt never grants authority."""
+    try:
+        if (
+            type(root) not in (PosixPath, WindowsPath)
+            or not root.is_absolute()
+            or type(expected_sha256) is not str
+            or _HEX.fullmatch(expected_sha256) is None
+        ):
+            raise ValueError
+        with source_runtime._native_recheck_root(root) as directory:
+            if set(directory.names()) != {"receipt.json"}:
+                raise ValueError
+            payload = directory.read("receipt.json", public_recheck._MAX_RECEIPT_BYTES)
+            if sha(payload) != expected_sha256:
+                raise ValueError
+            return public_recheck.PostG12PublicRecheckReceiptV2(payload)
+    except Exception:  # noqa: BLE001 -- do not disclose native paths/source bytes
+        raise PostG12AccountJoinError(
+            "post_g12_public_recheck_readback_failed"
+        ) from None
+
+
+def _publish_public_only_recheck_receipt_v2(root, receipt):
+    if type(receipt) is not public_recheck.PostG12PublicRecheckReceiptV2:
+        raise PostG12AccountJoinError("post_g12_public_recheck_receipt_invalid")
+    try:
+        with source_runtime._native_recheck_root(root) as directory:
+            if directory.names():
+                raise ValueError
+            identity = source_runtime._native_recheck_root_identity(directory.path)
+            directory.publish("receipt.json", receipt.receipt_json)
+            if (
+                directory.read("receipt.json", public_recheck._MAX_RECEIPT_BYTES)
+                != receipt.receipt_json
+            ):
+                raise ValueError
+        reopened = read_public_only_recheck_receipt_v2(
+            root, expected_sha256=receipt.receipt_sha256
+        )
+        if (
+            source_runtime._native_recheck_root_identity(root) != identity
+            or reopened.receipt_json != receipt.receipt_json
+        ):
+            raise ValueError
+    except Exception:  # noqa: BLE001 -- keep any partial native file
+        raise PostG12AccountJoinError(
+            "post_g12_public_recheck_publish_failed"
+        ) from None
+
+
 async def publish_capture_public_account_v2(
     evidence_root,
     public_root,
     account_root,
+    recheck_root,
     original_market,
     *,
     run,
@@ -262,15 +318,27 @@ async def publish_capture_public_account_v2(
     """
     if any(
         type(root) not in (PosixPath, WindowsPath) or not root.is_absolute()
-        for root in (evidence_root, public_root, account_root)
+        for root in (evidence_root, public_root, account_root, recheck_root)
     ):
         raise PostG12AccountJoinError("post_g12_account_roots_invalid")
     for first, second in (
         (evidence_root, public_root),
         (evidence_root, account_root),
         (public_root, account_root),
+        (evidence_root, recheck_root),
+        (public_root, recheck_root),
+        (account_root, recheck_root),
     ):
         original_source._roots(first, second)
+    # The fourth root must be provisioned by the service before any new G12 or IO.
+    try:
+        with source_runtime._native_recheck_root(recheck_root) as directory:
+            if directory.names():
+                raise ValueError
+    except Exception:  # noqa: BLE001 -- never disclose local paths
+        raise PostG12AccountJoinError(
+            "post_g12_public_recheck_root_unavailable"
+        ) from None
     if (
         type(account_session) is not ControlledDemoAccountSession
         or account_session._used
@@ -337,6 +405,7 @@ async def publish_capture_public_account_v2(
     }
     barrier = public_first = account_first = None
     recheck_code = recheck_at = None
+    recheck_persisted = False
     public_count = account_count = 0
 
     def finish():
@@ -364,6 +433,7 @@ async def publish_capture_public_account_v2(
                 "public_only_recheck_observed_at": None
                 if recheck_at is None
                 else recheck_at.isoformat(),
+                "public_only_recheck_receipt_persisted": recheck_persisted,
                 "publication_completed_at": None
                 if barrier is None
                 else barrier.isoformat(),
@@ -500,10 +570,10 @@ async def publish_capture_public_account_v2(
             expected_bundle_sha256=packet.bundle_sha256,
             evaluated_at=completed_at,
         )
-        with public_journal._root_context(public_root) as directory:
+        with source_runtime._reopen_runtime_journal(public_root) as directory:
             replay_inputs = {
                 "expected_plan_sha256": sha(
-                    directory.read("plan.json", public_journal.MAX_RAW)
+                    directory.read("plan.json", source_runtime.MAX_RAW)
                 ),
                 "expected_journal_sha256": journal,
                 "expected_packet_sha256": packet.bundle_sha256,
@@ -523,6 +593,13 @@ async def publish_capture_public_account_v2(
             replay = public_recheck.verify_post_g12_public_recheck_v2(
                 replay, directory, **replay_inputs
             )
+        pins["account_receipt_sha256"] = account.receipt_sha256
+        pins["account_packet_sha256"] = reference.packet_sha256
+        _publish_public_only_recheck_receipt_v2(recheck_root, replay)
+        pins["public_only_recheck_sha256"] = replay.receipt_sha256
+        recheck_code = decode(replay.receipt_json)["code"]
+        recheck_at = completed_at
+        recheck_persisted = True
         final_stamp = native_stamp()
         validate_stamps((last, final_stamp))
         last = final_stamp
@@ -534,11 +611,6 @@ async def publish_capture_public_account_v2(
             expected_bundle_sha256=packet.bundle_sha256,
             evaluated_at=final_at,
         )
-        pins["account_receipt_sha256"] = account.receipt_sha256
-        pins["account_packet_sha256"] = reference.packet_sha256
-        pins["public_only_recheck_sha256"] = replay.receipt_sha256
-        recheck_code = decode(replay.receipt_json)["code"]
-        recheck_at = completed_at
         code = "joined_unqualified"
         return finish()
     except asyncio.CancelledError:
@@ -546,13 +618,16 @@ async def publish_capture_public_account_v2(
     except Exception:  # noqa: BLE001 -- never serialize account/source failures
         if task.cancelling():
             raise asyncio.CancelledError from None
-        if barrier is None:
+        if barrier is None or recheck_persisted:
             code = "denied"
-        # Incomplete private readback cannot be represented as a complete join.
-        account_first = None
-        account_count = 0
-        pins["account_receipt_sha256"] = None
-        pins["account_packet_sha256"] = None
+        # A recheck already published/read back remains pinned even if a later
+        # expiry denies this join. Before that point, partial account state is
+        # never represented as a complete join.
+        if not recheck_persisted:
+            account_first = None
+            account_count = 0
+            pins["account_receipt_sha256"] = None
+            pins["account_packet_sha256"] = None
         return finish()
     finally:
         account_session._used = True

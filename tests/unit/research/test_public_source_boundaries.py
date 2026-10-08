@@ -74,6 +74,7 @@ def test_public_source_has_only_explicit_reviewed_consumers():
         ),
         APP / "trade_qualification" / "public_source_runtime.py": (
             "public_clock",
+            "public_receipt_storage",
             "public_runtime_journal",
         ),
     }

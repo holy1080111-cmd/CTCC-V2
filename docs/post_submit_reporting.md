@@ -1,5 +1,34 @@
 # Post-submit reporting integration
 
+## Current production integration boundary (2026-10-08)
+
+The durable components exist, but the trade-to-outbox path is **not yet
+production-integrated**. `SubmissionReportingRepository.record_observation()`
+commits a submission outcome and immutable report spool in one account-scoped
+database transaction, then verifies them through a separate session. The
+default-off `SubmissionOutboxRuntime` can project an acknowledged spool to the
+local immutable outbox; the separate default-off `NotionOutboxRuntime` can deliver
+only after its destination and private-token binding pass. Rejected or uncertain
+submissions are retained in the database but are not eligible for a confirmed
+Notion delivery job.
+
+No production Demo or Live order caller currently invokes
+`record_submission_observation()` or `record_observation()`. The order service
+returns its result without this durable producer handoff. The repository and
+runtime tests establish component behavior with synthetic captures, not that a
+real order result reaches the outbox. Do not mark OUTBOX, Notion sync, or Demo
+forensics accepted on that basis.
+
+The remaining handoff must start from the same previously committed intent and
+consumed reservation used by the authorized submit. It must save either the exact
+exchange result or an uncertain observation, including timeout/cancellation and
+commit-acknowledgement ambiguity, before treating reporting as resolved. A failed
+reporting commit cannot change a known exchange outcome, release a reservation,
+or authorize another order; the unresolved intent remains a reconciliation hold.
+Local DB-to-file projection and Notion delivery stay independent of the order
+response and may retry only their own idempotent work. Neither worker gets order
+credentials or a submit callback.
+
 `app.trade_evidence.post_submit` connects an explicit completed Demo submission
 result to the existing local Notion outbox and, separately, its existing single-pass
 worker. It does not submit, cancel, close, reconcile, or repeat exchange orders.
