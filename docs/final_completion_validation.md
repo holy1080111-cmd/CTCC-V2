@@ -2066,11 +2066,15 @@ the native PowerShell parser. Its identity SHA256 is
 `6d0a2adfcf69942f737d71dee97a80b9fef6bbeab1d40fa9362836b43bde9fe8`; the
 reviewed installer SHA256 is
 `4398fd48b7ab7f800ba15482d54f9937011ab69e0c2995151014e8b223f5ab7e`. The
-reviewed source uses the safe `${Mode}` interpolation. The preserved 2026-09-15
-installer remains unchanged and has the original `$Mode:` interpolation; the
+reviewed source uses the safe `${Mode}` interpolation. The historical
+`../checkpoint-20260919/installer-original/Install-CTCC-HighVol-Momentum-V2.ps1`
+remains unchanged and has the original `$Mode:` interpolation; the
 native parser reports `InvalidVariableReferenceWithDrive` at line 68 for that
 historical file (SHA256
 `a397bb5345e04e2d32c86e85fc862e776ccadfa6c30bbd36edb7ad9326c34cd9`).
+By contrast, `../validation-results/highvol-installer-original-20261005.zip`
+(SHA256 `5b847fd74310046a5d0c0e13377bc0a03a0f960eb770f0ad837b38314c4761ec`)
+preserves pre-October-5-edit bytes that already use `${Mode}:` and parse cleanly.
 
 The reviewed package's restart/disarm regression passed 6 tests with zero
 failures or errors (0.29 seconds). JUnit
@@ -2663,8 +2667,10 @@ The reviewed HighVol package dry-run passed exact 7-file identity and parser
 checks with zero external calls or deployment. A separate native parser pass
 over 33 repository PowerShell scripts and that reviewed installer found zero
 syntax errors; PSScriptAnalyzer was unavailable. The reviewed installer uses a
-safe `${Mode}` interpolation, while its preserved historical original still
-contains the invalid `$Mode:` at line 68. Target comparison against the current
+safe `${Mode}` interpolation, while the September checkpoint under
+`../checkpoint-20260919/installer-original/` still contains the invalid
+`$Mode:` at line 68. The October 5 pre-edit ZIP already has the safe form.
+Target comparison against the current
 canonical source found three matching pins, three mismatches (`regime.py`,
 `service.py`, `structural_protection.py`) and one absent target
 (`demo_structure_policy.py`). The package declares canonical qualification
@@ -4161,3 +4167,14 @@ still absent. A combined low-load Windows selection collected 84 tests and
 finished with 80 passes and four PostgreSQL-only skips. The new isolated
 database cases await matching CI. None of this establishes Gate 3, OOS,
 Demo execution or Micro Live acceptance.
+
+The subsequent DB0035 working seam persists a later PostgreSQL time sample
+after reading the exact committed public witness. A versioned V3 capture
+retains the unchanged V2 bytes, pins its SHA-256 and source-row hashes, and
+reads the append-only observation back in another session. It still lacks
+trusted clock/custody and first evaluator access, so Gate 3 and predictive OOS
+remain FAIL. The combined local V2/V3 and migration-identity selection finished
+61 passed; four isolated PostgreSQL cases were skipped because no local database
+DSN was available.
+Matching exact-source CI and full schema checks remain required before even
+this narrow DB0035 mechanism may be called validated.

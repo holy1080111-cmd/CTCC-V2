@@ -1,9 +1,14 @@
 # Installer and release dependency provenance
 
-The September 16 HighVol installer was recovered from the local installer cache,
-preserved byte-for-byte with hashes, and its invalid `$Mode:` interpolation was
-corrected to `${Mode}:` in a reviewed copy. The original external package is not
-modified or executed. The reviewed package is a repair artifact, not a release.
+The historical HighVol installer at
+`../checkpoint-20260919/installer-original/Install-CTCC-HighVol-Momentum-V2.ps1`
+(SHA256 `a397bb5345e04e2d32c86e85fc862e776ccadfa6c30bbd36edb7ad9326c34cd9`)
+was preserved byte-for-byte. Its invalid `$Mode:` interpolation was corrected to
+`${Mode}:` in the reviewed copy. The historical file is not modified or executed.
+The reviewed package is a repair artifact, not a release. The later
+`../validation-results/highvol-installer-original-20261005.zip` preserves a
+pre-October-5-edit package that already has `${Mode}:` and parses cleanly;
+it is not the malformed September checkpoint.
 
 `scripts/verify_highvol_installer.ps1` verifies the seven-file identity manifest and
 uses the real PowerShell parser without executing the package. `-DryRun` performs
@@ -79,7 +84,7 @@ trading integration.
 
 ## 2026-10-06 reviewed-package verification
 
-The original preserved script still reproduces the parser error at `$Mode:`;
+The September checkpoint script still reproduces the parser error at `$Mode:`;
 the reviewed script uses `${Mode}:` and parses with zero errors (2,529 tokens).
 All seven package members match their pinned source hashes. Two repeated
 read-only identity/dry-run checks and 11 focused validator/controller tests

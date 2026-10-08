@@ -125,8 +125,9 @@ predictive or execution cutoff. The blind-window dataset's current
 its fixed `predictive_oos_eligible=false` must remain in force. The computational
 V2 below preserves V1 receipt/hash semantics and samples after committed
 publication. A promotion version still needs an independently persisted,
-replayable post-publication observation before Gate 3 may consider decision-time
-availability.
+replayable post-publication observation, trusted clock/custody, and first-access
+proof before Gate 3 may consider decision-time availability. The V3 working
+seam below addresses only the first item.
 Limits are 1,024 captures, 1,024 attempts and 1 GiB across both chains per journal;
 reaching a bound fails closed. Journal rotation requires a separately designed
 checkpoint procedure.
@@ -162,6 +163,41 @@ Synthetic unit tests cover binding, external pins, source duplicates, witness
 state and clock order, authority tampering, and unchanged V1 rows. An isolated
 PostgreSQL test covers the separate-session read-only server-clock query; a
 local skip without PostgreSQL is not acceptance.
+
+### V3 persisted post-read observation (still computational only)
+
+DB0035 adds an append-only observation row for one capture witness revision.
+A PostgreSQL 17 or newer server is required because its restricted-role guard
+checks the `MAINTAIN` table privilege; PostgreSQL 16 is not an accepted DB0035
+target. The repository's pinned deployment image is PostgreSQL 17.
+A separately restricted observer role calls its append function. The database
+trigger reads the exact, already committed `append_capture` witness row,
+compares the witness record/checkpoint/plan hashes, and takes
+`clock_timestamp()` only after that read. The row also pins the capture ID,
+receipt SHA-256, source-row aggregate SHA-256, and the exact V2 capture artifact
+SHA-256. It is unique per journal/revision and capture sequence; mutation and
+truncate are denied, and a populated table cannot be downgraded. Unknown
+commit outcome is not retried.
+
+`post_publication_availability_v3` retains the canonical V2 artifact in its
+versioned payload, uses the later **persisted** database sample as V3
+`available_at`, then reads the DB0035 row in a separate session. Verification
+replays original raw public bytes, the full witness chain, and the exact
+persisted row with all source pins. It does not recalculate or overwrite V1/V2
+timestamps. The observation row's source hashes are assertions until that
+external replay matches them; the database alone cannot authenticate raw
+exchange bytes.
+
+The persisted sample is independently readable, but the database clock is not
+certified, DB and local journal custody are not independently established,
+and first evaluator access is unproven. Historical bars retrieved after the
+cutoff remain late; the exposed holdout remains unusable as sealed OOS. V3
+fixes `trusted_clock_verified`, `independently_protected`,
+`evaluator_first_read_proven`, `predictive_oos_eligible`,
+`promotion_eligible`, and `execution_authority` to false. No Gate 4 or trade
+path consumes V3. Synthetic tests validate binding and denial; isolated
+PostgreSQL migration/immutability/role/readback tests must run against a real
+database for DB0035 acceptance. A local skip is not a pass.
 
 ## Clock platform limitation and remaining acceptance
 
@@ -230,7 +266,11 @@ validation environment. No real public collection was performed in this slice.
 
 Owned public GET acquisition, clock observations and immutable receipt journals
 live in `app.public_market_source`. The passive `app.research` package has no
-runtime consumer and retains its original import boundary. The only application
-consumer of the public source package is the offline MIE measured-minute adapter.
-This separation grants no account, qualification, execution or promotion authority.
+runtime consumer and retains its original import boundary. Reviewed application
+consumers include the offline MIE measured-minute, blind-window and
+post-publication replay modules, the restricted checkpoint witness, and the
+read-only qualification public-source adapter. Their exact imports are checked
+by `test_public_source_boundaries.py`; replay imports grant no new acquisition
+or exchange-write capability. This separation grants no account,
+qualification, execution or promotion authority.
 Existing receipt schemas and canonical bytes are unchanged by the module move.

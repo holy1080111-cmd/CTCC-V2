@@ -71,6 +71,9 @@ from app.database.models.persistence import (
 from app.database.models.public_receipt_publication_ack import (
     PublicReceiptPublicationAck,
 )
+from app.database.models.public_receipt_post_read_observation import (
+    PublicReceiptPostReadObservation,
+)
 from app.database.models.public_receipt_witness import PublicReceiptWitnessRevision
 from app.database.models.qualification_ledger import (
     QualificationAccountScope,

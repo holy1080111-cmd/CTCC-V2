@@ -1,7 +1,10 @@
 """Public ingestion is an explicit read-only source, not a research promotion path."""
 
 import ast
+import sys
 from pathlib import Path
+
+import pytest
 
 APP = Path(__file__).resolve().parents[3] / "app"
 SOURCE = APP / "public_market_source"
@@ -41,6 +44,19 @@ def test_public_source_imports_no_account_settings_strategy_or_execution_layer()
 
 def test_public_source_has_only_explicit_reviewed_consumers():
     consumer = APP / "mie" / "validation" / "measured_public_replay.py"
+    post_publication_consumer = (
+        APP / "mie" / "validation" / "post_publication_availability_v2.py"
+    )
+    post_publication_imports = {
+        "app.public_market_source.public_market_capture",
+        "app.public_market_source.public_market_capture.replay_public_capture",
+        "app.public_market_source.public_market_receipts",
+        "app.public_market_source.public_market_receipts.canonical",
+        "app.public_market_source.public_market_receipts.sha",
+        "app.public_market_source.public_market_receipts.utc_from_ns",
+        "app.public_market_source.public_receipt_storage",
+        "app.public_market_source.public_receipt_storage.ControlledPublicReceiptJournal",
+    }
     allowed = {
         consumer: ("public_market_receipts", "public_receipt_storage"),
         APP / "mie" / "validation" / "blind_window_capture.py": (
@@ -62,6 +78,13 @@ def test_public_source_has_only_explicit_reviewed_consumers():
         APP / "mie" / "validation" / "prospective_capture_schedule.py": (
             "public_market_receipts",
         ),
+        # Post-publication availability replays retained bytes only; it cannot
+        # acquire a fresh public source or gain exchange write authority.
+        post_publication_consumer: (
+            "public_market_capture",
+            "public_market_receipts",
+            "public_receipt_storage",
+        ),
         APP / "mie" / "validation" / "public_checkpoint_service.py": (
             "public_checkpoint_hook",
             "public_market_capture",
@@ -79,6 +102,7 @@ def test_public_source_has_only_explicit_reviewed_consumers():
         ),
     }
     observed = set()
+    observed_post_publication_imports = set()
     for path in APP.rglob("*.py"):
         if path.is_relative_to(SOURCE):
             continue
@@ -86,6 +110,9 @@ def test_public_source_has_only_explicit_reviewed_consumers():
             for name in names(node):
                 if name.startswith("app.public_market_source"):
                     assert path in allowed, (path, name)
+                    if path == post_publication_consumer:
+                        assert name in post_publication_imports, name
+                        observed_post_publication_imports.add(name)
                     if path.name == "blind_window_dataset.py" and name.startswith(
                         "app.public_market_source.public_market_capture"
                     ):
@@ -105,6 +132,27 @@ def test_public_source_has_only_explicit_reviewed_consumers():
                     ), name
                     observed.add(path)
     assert observed == set(allowed)
+    assert observed_post_publication_imports == post_publication_imports
+
+
+def test_post_publication_rejects_unreviewed_public_capture_import(monkeypatch):
+    original_nodes = nodes
+    consumer = APP / "mie" / "validation" / "post_publication_availability_v2.py"
+    unreviewed = ast.parse(
+        "from app.public_market_source.public_market_capture import capture_public_market"
+    ).body[0]
+
+    def with_unreviewed_import(path):
+        yield from original_nodes(path)
+        if path == consumer:
+            yield unreviewed
+
+    monkeypatch.setattr(sys.modules[__name__], "nodes", with_unreviewed_import)
+    with pytest.raises(
+        AssertionError,
+        match="app.public_market_source.public_market_capture.capture_public_market",
+    ):
+        test_public_source_has_only_explicit_reviewed_consumers()
 
 
 def test_runtime_consumers_cannot_access_private_writes_or_execution_authority():

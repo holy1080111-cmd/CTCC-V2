@@ -73,10 +73,16 @@ def _source_for_unique_uid():
     )
 
 
+@pytest.fixture
+def unique_uid_source():
+    # Build the original-byte source before pytest starts the async test loop.
+    return _source_for_unique_uid()
+
+
 async def test_v4_real_uid_lock_observation_waits_after_fresh_v3_receipt(
-    database, tmp_path, monkeypatch
+    database, tmp_path, monkeypatch, unique_uid_source
 ):
-    source, values, run, account_session, scope = _source_for_unique_uid()
+    source, values, run, account_session, scope = unique_uid_source
     expected = bridge._original_binding(
         source.market, run, values, account_session, scope, HISTORY_ID
     )

@@ -168,3 +168,22 @@ quarterly POST/apply, status polling, download transport, durable raw archive
 receipt, or reconciliation into lifecycle history. The endpoint's unified
 account and Demo applicability still require authenticated source evidence;
 the parser does not verify either. No account or order request was sent.
+
+## Funding bill source-field consistency V2
+
+The additive `ctcc.demo_account_funding_bill_consistency.v2` diagnostic replays
+the exact original V5 B1 raw bill pages and the existing V1 funding candidate
+audit. For each source-backed account funding candidate, it records the original
+row and page locators plus whether numeric `pnl` equals the account-level
+`balChg`, and whether `fee` is observed as zero. Malformed or missing values
+remain `null`; a mismatch adds an explicit blocker. It does not alter the
+sealed V1 receipt or silently count overlapping recent/archive rows twice.
+
+Agreement between these fields is only a bounded observation of one bill,
+not proof of funding settlement time, account-wide cashflow completeness, or
+fee attribution. An empty candidate set does not prove zero funding. The V2
+receipt preserves `funding_accrual_at=null`, `net_funding_cashflow=null`,
+`account_complete=false`, and `execution_authority=false`; no credential or
+order route is involved. OKX documents `pnl` as the funding payment field for
+account bill subtype 173/174, `balChg` as account balance change, and `ts` as
+balance update time in its [account bills reference](https://www.okx.com/docs-v5/en/#trading-account-rest-api-get-bills-details-last-3-months).
