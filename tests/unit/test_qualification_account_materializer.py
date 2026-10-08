@@ -928,6 +928,49 @@ def test_incomplete_packet_keeps_diagnostics_without_portfolio_snapshot(source):
     assert "history_ingestion_watermark_unverified" in result.incomplete_reasons
 
 
+def test_local_ledger_without_persisted_account_claims_keeps_hold_but_denies_snapshot(
+    source,
+):
+    receipt = expired_hold()
+    ledger = ledger_evidence(active=(receipt,))
+    state = ledger.state.model_copy(update={"claims_sha256": None})
+    unanchored = ledger.model_copy(
+        update={
+            "state": state,
+            "source": ledger.source.model_copy(
+                update={"source_sha256": reservations.digest(state)}
+            ),
+        }
+    )
+    result = materialize(source=source, supplied=snapshot_inputs(ledger=unanchored))
+    assert "local_ledger_claims_missing" in result.incomplete_reasons
+    assert any(
+        item.reservation_id == "local:" + receipt.reservation_id
+        for item in result.pending_reservations
+    )
+    assert result.snapshot is None
+    assert result.account_complete is False
+    assert result.execution_authority is False
+
+
+def test_local_ledger_revision_behind_account_revision_is_incomplete(source):
+    ledger = ledger_evidence()
+    state = ledger.state.model_copy(update={"ledger_revision": 1})
+    stale = ledger.model_copy(
+        update={
+            "state": state,
+            "source": ledger.source.model_copy(
+                update={"source_sha256": reservations.digest(state)}
+            ),
+        }
+    )
+    result = materialize(source=source, supplied=snapshot_inputs(ledger=stale))
+    assert "local_ledger_revision_missing" in result.incomplete_reasons
+    assert result.snapshot is None
+    assert result.account_complete is False
+    assert result.execution_authority is False
+
+
 @pytest.mark.parametrize("field", ["ledger", "history", "peak"])
 def test_supplemental_evidence_cannot_cross_account_uid(source, field):
     supplied = snapshot_inputs()

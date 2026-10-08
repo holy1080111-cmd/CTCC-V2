@@ -904,9 +904,14 @@ def _local_holds(inputs, specs, records, pending, projections, completed, gaps):
         return None
     if evidence.source.source_sha256 != reservations.digest(state):
         _fail("local_ledger_source_pin_mismatch")
-    if state.account_revision < 1 or state.ledger_revision < 1:
+    if state.account_revision < 1 or state.ledger_revision < state.account_revision:
         gaps.add("local_ledger_revision_missing")
         return None
+    if state.claims_sha256 is None:
+        # A revision number without its persisted account claims is not a
+        # complete local inventory, even when the active-hold tuple is empty.
+        # Still expose known holds in this denied diagnostic result.
+        gaps.add("local_ledger_claims_missing")
     bindings, order_ids = {}, set()
     for item in evidence.order_bindings:
         if item.reservation_id in bindings or item.order_id in order_ids:
