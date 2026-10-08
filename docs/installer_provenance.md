@@ -23,12 +23,17 @@ between a hash read and a parser read cannot produce a false parser result.
 The verifier also rejects reparse-point package roots, identity parents, identity
 files, and package member files.
 
-The legacy installer cannot presently be an accepted canonical deployment route:
-it targets an older image and automatically restores the Demo Arm/scheduler on
-success and rollback. Its strategy/protection changes require integration with the
+The preserved original installer targets an older image and restores the Demo
+Arm/scheduler after a restart. The reviewed copy corrects that behavior by
+remaining disarmed and blocking deployment by default, but still targets the
+older image. Its strategy/protection changes require integration with the
 canonical qualification, post-publication recheck, reservation, and intent chain.
 The accepted final deployment must start disarmed and require fresh reconciliation.
 Until that work passes, install/upgrade/rollback acceptance remains unproven.
+
+The separate, default-off [HighVol failed-G2 diagnostic](high_vol_g2_sidecar.md)
+replays G1 source and an original event/timing pin without changing G2 or granting
+trade authority. It is not an installer deployment route.
 
 The September 15 `DEPENDENCIES_DIFFER_FROM_FULL_VALIDATION` mismatch was caused by
 normal Python stdin discovery including one extra `/app/ctcc_v2.egg-info` project

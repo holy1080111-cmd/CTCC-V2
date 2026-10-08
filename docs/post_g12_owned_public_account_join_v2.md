@@ -3,7 +3,8 @@
 `publish_capture_public_account_v2` 把現有 G12 發佈、原生公開資料收集與
 原生 Demo 帳戶頁鏈收集放在同一個 task、同一次呼叫。呼叫者須預先配置
 與 G12、公開 journal、帳戶 proof 根目錄互不重疊的空 `recheck_root`；
-舊檔或無法開啟的目錄會在 G12 前拒絕。它不接受外部 G12
+另須配置第五個互不重疊的空 `join_root`。舊檔、交疊或無法開啟的
+receipt 目錄會在 G12 前拒絕。它不接受外部 G12
 receipt、`passed=true`、舊公開資料包、舊帳戶資料包、報價或發佈屏障。
 原始 G1–G11 `run` 與輸入會由現有 `_original` 重播，保留原 event、entry、
 SL、TP、report、instrument 及帳戶 UID。原始輸入仍由 caller 提供；這項重播
@@ -39,6 +40,14 @@ join 的帳戶 pin／頁數，不能以部分帳戶讀取宣稱完整；若完�
 晚期期限／freshness 失敗仍保留其帳戶與重查 pin，但判定維持不可用。已持久化的 G12、公有
 journal、帳戶頁鏈／proof 及重查收據留在各自的 no-clobber 根目錄供稽核，不會因此被
 刪除。呼叫後受控帳戶 session 被消耗，不能重用作另一筆嘗試。
+
+聯合診斷 receipt 本身也必須以 no-clobber 發佈到 `join_root/receipt.json`，
+即時核對位元組，再關閉、重新開啟並核對唯一檔名、原始位元組、SHA256、
+收據格式與根目錄身分後才回傳。這使公開 packet、帳戶 packet、G12 與
+公開重查 receipt 的雜湊連接留下可重讀的固定紀錄。任何發佈或晚期讀回
+失敗都拒絕回傳成功診斷；已寫入的位元組保留供稽核，不能用同一目錄重試
+或覆蓋。即使收據完整，這仍是本機同父目錄證據，沒有獨立保管的 checkpoint
+或 Windows 斷電目錄持久性保證，也不提高 `account_complete` 或交易權限。
 
 目前原生 V2 Demo 公開來源的 region 認證仍被硬性拒絕，因此 production
 路徑會在 G12 前拒絕；正向單元測試只用明示 synthetic transport、時鐘與

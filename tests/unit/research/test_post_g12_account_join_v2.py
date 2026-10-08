@@ -99,6 +99,7 @@ async def test_new_g12_then_fresh_public_and_account_raw_page_starts(
         monkeypatch, offset_seconds=601, pages=pages
     )
     (tmp_path / "recheck").mkdir()
+    (tmp_path / "join").mkdir()
     payload = next(
         item.event.packet_payload for item in chain if item.event.packet_payload
     )
@@ -233,6 +234,7 @@ async def test_new_g12_then_fresh_public_and_account_raw_page_starts(
         tmp_path / "public",
         tmp_path / "account",
         tmp_path / "recheck",
+        tmp_path / "join",
         source.market,
         run=run,
         original_inputs=values,
@@ -242,6 +244,13 @@ async def test_new_g12_then_fresh_public_and_account_raw_page_starts(
     )
     receipt = decode(result.receipt_json)
     assert receipt["code"] == expected_code
+    assert (
+        joined.read_post_g12_join_receipt_v2(
+            tmp_path / "join", expected_sha256=result.receipt_sha256
+        ).receipt_json
+        == result.receipt_json
+    )
+    assert (tmp_path / "join" / "receipt.json").read_bytes() == result.receipt_json
     assert receipt["public_request_count"] > 0
     persisted = fault is None or fault == "stale_after_persist"
     assert receipt["account_page_count"] == (
@@ -343,6 +352,41 @@ async def test_new_g12_then_fresh_public_and_account_raw_page_starts(
     assert (tmp_path / "account" / "synthetic-account-proof").read_bytes() == (
         b"synthetic-only-proof"
     )
+    if fault is None:
+        retained = (tmp_path / "join" / "receipt.json").read_bytes()
+        with pytest.raises(
+            joined.PostG12AccountJoinError, match="post_g12_join_publish_failed"
+        ):
+            joined._publish_post_g12_join_receipt_v2(tmp_path / "join", result)
+        assert (tmp_path / "join" / "receipt.json").read_bytes() == retained
+        late_root = tmp_path / "late-join"
+        late_root.mkdir()
+        original_identity = joined.source_runtime._native_recheck_root_identity
+        identity_calls = 0
+
+        def late_identity(path):
+            nonlocal identity_calls
+            identity_calls += 1
+            if identity_calls == 2:
+                raise OSError("synthetic late join readback failure")
+            return original_identity(path)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                joined.source_runtime, "_native_recheck_root_identity", late_identity
+            )
+            with pytest.raises(
+                joined.PostG12AccountJoinError, match="post_g12_join_publish_failed"
+            ):
+                joined._publish_post_g12_join_receipt_v2(late_root, result)
+        assert (late_root / "receipt.json").read_bytes() == retained
+        (tmp_path / "join" / "receipt.json").write_bytes(b"synthetic-corruption")
+        with pytest.raises(
+            joined.PostG12AccountJoinError, match="post_g12_join_readback_failed"
+        ):
+            joined.read_post_g12_join_receipt_v2(
+                tmp_path / "join", expected_sha256=result.receipt_sha256
+            )
     harness.assert_closed()
     empty_registries()
 
@@ -369,6 +413,7 @@ async def test_preexisting_recheck_receipt_denies_before_new_g12(
             tmp_path / "public",
             tmp_path / "account",
             recheck_root,
+            tmp_path / "join",
             source.market,
             run=run,
             original_inputs=values,
@@ -381,12 +426,55 @@ async def test_preexisting_recheck_receipt_denies_before_new_g12(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "join_root_kind,expected_code",
+    [
+        ("occupied", "post_g12_join_root_unavailable"),
+        ("overlap", "original_source_roots_overlap"),
+    ],
+)
+async def test_join_root_must_be_empty_and_distinct_before_new_g12(
+    shifted_inputs, tmp_path, monkeypatch, join_root_kind, expected_code
+):
+    source, values, run = shifted_inputs
+    recheck_root = tmp_path / "recheck"
+    recheck_root.mkdir()
+    join_root = recheck_root if join_root_kind == "overlap" else tmp_path / "join"
+    if join_root_kind == "occupied":
+        join_root.mkdir()
+        (join_root / "receipt.json").write_bytes(b"previous-attempt")
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("unsafe join root must stop before G12 or source IO")
+
+    monkeypatch.setattr(public_runtime, "_publish_lineage_v2", forbidden)
+    with pytest.raises(ValueError, match=expected_code):
+        await joined.publish_capture_public_account_v2(
+            tmp_path / "g12",
+            tmp_path / "public",
+            tmp_path / "account",
+            recheck_root,
+            join_root,
+            source.market,
+            run=run,
+            original_inputs=values,
+            market_policy=policy(),
+            account_session=session(),
+            session_factory=object(),
+        )
+    if join_root_kind == "occupied":
+        assert (join_root / "receipt.json").read_bytes() == b"previous-attempt"
+    assert not (tmp_path / "g12").exists()
+
+
+@pytest.mark.asyncio
 async def test_unverified_demo_origin_stops_before_g12_public_and_account_io(
     shifted_inputs, tmp_path, monkeypatch
 ):
     source, values, run = shifted_inputs
     controlled = session()
     (tmp_path / "recheck").mkdir()
+    (tmp_path / "join").mkdir()
     monkeypatch.setattr(account_native, "_configured_factory", lambda _: True)
 
     def forbidden(*_args, **_kwargs):
@@ -401,6 +489,7 @@ async def test_unverified_demo_origin_stops_before_g12_public_and_account_io(
         tmp_path / "public",
         tmp_path / "account",
         tmp_path / "recheck",
+        tmp_path / "join",
         source.market,
         run=run,
         original_inputs=values,
@@ -429,6 +518,50 @@ async def test_unverified_demo_origin_stops_before_g12_public_and_account_io(
 
 
 @pytest.mark.asyncio
+async def test_late_join_publish_failure_retains_bytes_without_retry(
+    shifted_inputs, tmp_path, monkeypatch
+):
+    source, values, run = shifted_inputs
+    (tmp_path / "recheck").mkdir()
+    (tmp_path / "join").mkdir()
+    monkeypatch.setattr(account_native, "_configured_factory", lambda _: True)
+    original_identity = joined.source_runtime._native_recheck_root_identity
+    calls = 0
+
+    def fail_late(path):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("synthetic late join identity failure")
+        return original_identity(path)
+
+    monkeypatch.setattr(
+        joined.source_runtime, "_native_recheck_root_identity", fail_late
+    )
+    with pytest.raises(
+        joined.PostG12AccountJoinError, match="post_g12_join_publish_failed"
+    ):
+        await joined.publish_capture_public_account_v2(
+            tmp_path / "g12",
+            tmp_path / "public",
+            tmp_path / "account",
+            tmp_path / "recheck",
+            tmp_path / "join",
+            source.market,
+            run=run,
+            original_inputs=values,
+            market_policy=policy(),
+            account_session=session(),
+            session_factory=object(),
+        )
+    assert calls == 2
+    retained = (tmp_path / "join" / "receipt.json").read_bytes()
+    assert decode(retained)["code"] == "denied"
+    assert decode(retained)["admission"] == "DENY"
+    assert not (tmp_path / "g12").exists()
+
+
+@pytest.mark.asyncio
 async def test_original_risk_account_must_match_controlled_exact_uid_before_g12(
     shifted_inputs, tmp_path, monkeypatch
 ):
@@ -440,6 +573,7 @@ async def test_original_risk_account_must_match_controlled_exact_uid_before_g12(
         expected_plan_sha256=capture.plan_sha256(selected),
     )
     (tmp_path / "recheck").mkdir()
+    (tmp_path / "join").mkdir()
     monkeypatch.setattr(account_native, "_configured_factory", lambda _: True)
 
     def forbidden(*_args, **_kwargs):
@@ -455,6 +589,7 @@ async def test_original_risk_account_must_match_controlled_exact_uid_before_g12(
             tmp_path / "public",
             tmp_path / "account",
             tmp_path / "recheck",
+            tmp_path / "join",
             source.market,
             run=run,
             original_inputs=values,
@@ -474,12 +609,14 @@ async def test_caller_cannot_supply_gate_or_stale_source(
 ):
     source, values, run = shifted_inputs
     (tmp_path / "recheck").mkdir()
+    (tmp_path / "join").mkdir()
     with pytest.raises(TypeError):
         await joined.publish_capture_public_account_v2(
             tmp_path / "g12",
             tmp_path / "public",
             tmp_path / "account",
             tmp_path / "recheck",
+            tmp_path / "join",
             source.market,
             run=run,
             original_inputs=values,

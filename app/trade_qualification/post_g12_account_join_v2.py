@@ -4,8 +4,9 @@ The original G1--G11 run is independently replayed but still caller-origin.
 Neither that replay nor this source join grants an event/risk reservation or
 permission to submit an order. The native Demo public issuer currently refuses
 capture before G12 until account registration-region provenance is established.
-The public-only replay receipt is published in a separate native no-clobber
-root and reopened for readback. This is never a complete R7 claim.
+The public-only replay and joined diagnostic receipts are published in separate
+native no-clobber roots and reopened for readback. This is never a complete R7
+claim.
 """
 
 from __future__ import annotations
@@ -298,11 +299,60 @@ def _publish_public_only_recheck_receipt_v2(root, receipt):
         ) from None
 
 
+class _JoinReceiptPublicationError(PostG12AccountJoinError):
+    """A failed append must not be retried by the source-denial handler."""
+
+
+def read_post_g12_join_receipt_v2(root, *, expected_sha256):
+    """Reopen the joined diagnostic; its readback is never an order permit."""
+    try:
+        if (
+            type(root) not in (PosixPath, WindowsPath)
+            or not root.is_absolute()
+            or type(expected_sha256) is not str
+            or _HEX.fullmatch(expected_sha256) is None
+        ):
+            raise ValueError
+        with source_runtime._native_recheck_root(root) as directory:
+            if set(directory.names()) != {"receipt.json"}:
+                raise ValueError
+            payload = directory.read("receipt.json", _MAX_RECEIPT)
+            if sha(payload) != expected_sha256:
+                raise ValueError
+            return PostG12OwnedPublicAccountDiagnosticV2(payload)
+    except Exception:  # noqa: BLE001 -- do not disclose private source or paths
+        raise PostG12AccountJoinError("post_g12_join_readback_failed") from None
+
+
+def _publish_post_g12_join_receipt_v2(root, receipt):
+    if type(receipt) is not PostG12OwnedPublicAccountDiagnosticV2:
+        raise _JoinReceiptPublicationError("post_g12_join_receipt_invalid")
+    try:
+        with source_runtime._native_recheck_root(root) as directory:
+            if directory.names():
+                raise ValueError
+            identity = source_runtime._native_recheck_root_identity(directory.path)
+            directory.publish("receipt.json", receipt.receipt_json)
+            if directory.read("receipt.json", _MAX_RECEIPT) != receipt.receipt_json:
+                raise ValueError
+        reopened = read_post_g12_join_receipt_v2(
+            root, expected_sha256=receipt.receipt_sha256
+        )
+        if (
+            source_runtime._native_recheck_root_identity(root) != identity
+            or reopened.receipt_json != receipt.receipt_json
+        ):
+            raise ValueError
+    except Exception:  # noqa: BLE001 -- retain any partially published receipt
+        raise _JoinReceiptPublicationError("post_g12_join_publish_failed") from None
+
+
 async def publish_capture_public_account_v2(
     evidence_root,
     public_root,
     account_root,
     recheck_root,
+    join_root,
     original_market,
     *,
     run,
@@ -318,7 +368,7 @@ async def publish_capture_public_account_v2(
     """
     if any(
         type(root) not in (PosixPath, WindowsPath) or not root.is_absolute()
-        for root in (evidence_root, public_root, account_root, recheck_root)
+        for root in (evidence_root, public_root, account_root, recheck_root, join_root)
     ):
         raise PostG12AccountJoinError("post_g12_account_roots_invalid")
     for first, second in (
@@ -328,9 +378,13 @@ async def publish_capture_public_account_v2(
         (evidence_root, recheck_root),
         (public_root, recheck_root),
         (account_root, recheck_root),
+        (evidence_root, join_root),
+        (public_root, join_root),
+        (account_root, join_root),
+        (recheck_root, join_root),
     ):
         original_source._roots(first, second)
-    # The fourth root must be provisioned by the service before any new G12 or IO.
+    # Both receipt roots must be provisioned by the service before G12 or IO.
     try:
         with source_runtime._native_recheck_root(recheck_root) as directory:
             if directory.names():
@@ -339,6 +393,12 @@ async def publish_capture_public_account_v2(
         raise PostG12AccountJoinError(
             "post_g12_public_recheck_root_unavailable"
         ) from None
+    try:
+        with source_runtime._native_recheck_root(join_root) as directory:
+            if directory.names():
+                raise ValueError
+    except Exception:  # noqa: BLE001 -- never disclose local paths
+        raise PostG12AccountJoinError("post_g12_join_root_unavailable") from None
     if (
         type(account_session) is not ControlledDemoAccountSession
         or account_session._used
@@ -452,7 +512,9 @@ async def publish_capture_public_account_v2(
                 **{name: False for name in _FALSE_FIELDS},
             }
         )
-        return PostG12OwnedPublicAccountDiagnosticV2(receipt)
+        result = PostG12OwnedPublicAccountDiagnosticV2(receipt)
+        _publish_post_g12_join_receipt_v2(join_root, result)
+        return result
 
     try:
         publication, evidence, origin, last = public_runtime._publish_lineage_v2(
@@ -614,6 +676,8 @@ async def publish_capture_public_account_v2(
         code = "joined_unqualified"
         return finish()
     except asyncio.CancelledError:
+        raise
+    except _JoinReceiptPublicationError:
         raise
     except Exception:  # noqa: BLE001 -- never serialize account/source failures
         if task.cancelling():
