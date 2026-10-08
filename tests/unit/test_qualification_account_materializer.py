@@ -15,6 +15,7 @@ from app.trade_qualification import account_materializer as module
 from app.trade_qualification import reservations
 from app.trade_qualification.portfolio import ObservedSource
 from tests.unit.test_qualification_account_capture import (
+    BARRIER,
     CURSORS,
     INSTRUMENT,
     NOW,
@@ -24,6 +25,10 @@ from tests.unit.test_qualification_account_capture import (
     records,
     row,
     verify,
+)
+from tests.unit.test_qualification_account_capture_v7 import (
+    v7_observations,
+    v7_plan,
 )
 
 D = Decimal
@@ -214,6 +219,44 @@ def projection(result, stream, row_id=None):
     ]
     assert len(matches) == 1
     return matches[0]
+
+
+def test_v7_non_swap_zero_position_is_explicitly_unsupported():
+    selected = v7_plan()
+    pages = {
+        "positions": [
+            [
+                row(
+                    "positions",
+                    instId="BTC-USDT",
+                    instType="MARGIN",
+                    pos="0",
+                )
+            ]
+        ]
+    }
+    current = capture.verify_demo_account_records(
+        v7_observations(selected, pages=pages),
+        plan=selected,
+        expected_plan_sha256=capture.plan_sha256(selected),
+        barrier_completed_at=BARRIER,
+    )
+    frozen = capture.freeze_demo_account_packet(
+        current, expected_plan_sha256=current.plan_sha256
+    )
+    mapped = module.materialize_demo_portfolio_snapshot(
+        current,
+        expected_plan_sha256=current.plan_sha256,
+        expected_packet_sha256=frozen.sha256,
+        inputs=inputs(),
+    )
+    exposed = projection(mapped, "positions")
+    assert exposed.kind == "position"
+    assert exposed.reasons == ("position_instrument_scope_unsupported",)
+    assert "position_instrument_scope_unsupported" in mapped.incomplete_reasons
+    assert mapped.snapshot is None
+    assert mapped.account_complete is False
+    assert mapped.execution_authority is False
 
 
 @pytest.fixture(scope="module")

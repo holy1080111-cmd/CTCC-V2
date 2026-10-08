@@ -33,6 +33,25 @@ before a future window and makes any early, exposed, changed-candidate, hash,
 coordinate, artifact-count, or row-count mismatch ineligible. No real future
 window or candidate has yet been sealed.
 
+The DB0035 post-read observation now makes one public-minute availability
+sample durable and independently readable. Its offline V3 adapter stamps only
+that later persisted time on replay rows. This is a computational timing
+improvement: the database clock and custody and first evaluator access remain
+unproven. It does not repair the 2024/2025 source receipts, which were retrieved
+in 2026, or the previously exposed 2026 retrospective holdout.
+
+The latest known Development/Validation replay attempt retained a 120-archive,
+172,800-row manifest but stopped before aggregation under the laptop thermal
+precaution (`../validation-results/mie-gate3-devval-replay-20261005/STOPPED.json`,
+SHA-256 `e915867728944124d89dadab1075a877ae1a881737b4653dff5ea2f6da38c51a`).
+It recorded `candidate_fitted=false` and opened zero holdout archives. A later
+native public-minute diagnostic captured one row only and recorded
+`pit_acceptance=false` (`../validation-results/prospective-public-1m-diagnostic-20261006/summary.json`,
+SHA-256 `e9a632b46a232498e1e3a6b535864e9c8624c0523782beda53f34de359e01f25`);
+it is not a complete future window. No actual
+Candidate V1, preregistered future window, or sealed OOS evaluation can be
+inferred from either record.
+
 ## Next implementation prerequisites (2026-09-08 review)
 
 The archive batch has event open/close timestamps and artifact-level
@@ -143,7 +162,7 @@ Gate 3 is complete only when all of the following are true:
 - invalid/missing data and non-finite calculations fail closed;
 - an immutable evidence artifact passes schema and hash verification;
 - runtime consumers and execution authority both remain exactly zero;
-- the full hermetic regression, Alembic `0016`, schema drift, and canonical
+- the full hermetic regression, current Alembic head, schema drift, and canonical
   manifest pass from the reviewed tree.
 
 ## Promotion boundary

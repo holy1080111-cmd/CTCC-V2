@@ -199,6 +199,13 @@ path consumes V3. Synthetic tests validate binding and denial; isolated
 PostgreSQL migration/immutability/role/readback tests must run against a real
 database for DB0035 acceptance. A local skip is not a pass.
 
+The offline `computational_point_in_time_rows_v3` adapter only returns replay
+rows after raw-journal, full-witness-chain, and exact DB0035-row verification.
+Every returned row uses the later **persisted V3** observation time, not the
+earlier V2 in-memory sample or its candle close. A replay cutoff between V2
+and V3 observations therefore rejects a due row. This adapter is not a source
+qualification or a runtime consumer and cannot make old archive bars timely.
+
 ## Clock platform limitation and remaining acceptance
 
 The original v1 replay recognizes only English `w32tm /query /status /verbose`

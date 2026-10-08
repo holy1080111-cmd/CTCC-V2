@@ -1338,7 +1338,7 @@ def materialize_demo_portfolio_snapshot(
         packet.completed_at,
         gaps,
         config["posMode"],
-        all_product_scope=type(packet.plan) is capture.AllProductDemoAccountCapturePlan,
+        all_product_scope=capture.is_all_product_plan(packet.plan),
     )
     _, anchor, anchor_receipt = records["account_position_risk"][0]
     anchor_time = _time(anchor.get("ts"))

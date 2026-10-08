@@ -109,3 +109,11 @@ visible to the diagnostic before its first HTTP request. A database insert
 timestamp alone is not a commit timestamp and is not presented as one.
 The diagnostic remains `DENY`: the historical retention tail, portfolio
 components, protection and regional registration proof are still missing.
+
+The offline materializer now applies its all-product boundary to V7 as well
+as V5. A non-SWAP current position is recorded as unsupported even when its
+reported quantity is zero; it cannot appear as a clean `zero_position` merely
+because the older V5-only branch was skipped. A synthetic 17-stream V7 packet
+exercises this case through packet replay and materialization. This correction
+does not create a trusted account revision, complete history, or execution
+permission.

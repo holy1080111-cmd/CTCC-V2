@@ -12,15 +12,18 @@ from app.database.repositories.public_receipt_post_read_observation import (
     PublicReceiptPostReadReadback,
     PublicReceiptPostReadRepository,
 )
+from app.mie.contracts import ForecastHorizon
 from app.mie.validation.artifact import ArtifactVerificationError
 from app.mie.validation.post_publication_availability_v2 import (
     PostPublicationAvailabilityError,
 )
 from app.mie.validation.post_publication_availability_v3 import (
     PostPublicationCaptureV3,
+    computational_point_in_time_rows_v3,
     freeze_post_publication_capture_v3,
     verify_post_publication_capture_v3,
 )
+from app.mie.validation.replay import ReplayValidationError, replay_features_at
 
 pytestmark = pytest.mark.asyncio
 pytest_plugins = ("tests.unit.mie.test_gate3_post_publication_availability_v2",)
@@ -147,4 +150,33 @@ async def test_v3_replays_original_raw_page_before_accepting_db_row(observation_
             expected_sha256=frozen.sha256,
             observation_repository=repository,
             **source_kwargs,
+        )
+
+
+async def test_offline_adapter_uses_later_persisted_time_not_v2_sample(
+    observation_case,
+):
+    source_kwargs, _, repository, _ = observation_case
+    frozen = await freeze_post_publication_capture_v3(
+        observation_repository=repository, **source_kwargs
+    )
+    rows = await computational_point_in_time_rows_v3(
+        frozen.payload,
+        expected_sha256=frozen.sha256,
+        observation_repository=repository,
+        **source_kwargs,
+    )
+    assert len(rows) == len(frozen.contract.v2_capture.rows)
+    assert all(row.available_at == frozen.contract.available_at for row in rows)
+    assert all(
+        row.available_at > frozen.contract.v2_capture.available_at for row in rows
+    )
+    with pytest.raises(
+        ReplayValidationError,
+        match="a due replay bar was not available at the cutoff",
+    ):
+        replay_features_at(
+            rows,
+            as_of=frozen.contract.v2_capture.available_at,
+            bar_horizon=ForecastHorizon(label="1m", seconds=60),
         )

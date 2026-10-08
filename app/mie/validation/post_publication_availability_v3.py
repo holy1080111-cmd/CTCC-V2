@@ -34,6 +34,7 @@ from app.mie.validation.post_publication_availability_v2 import (
     freeze_post_publication_capture_v2,
     verify_post_publication_capture_v2,
 )
+from app.mie.validation.replay import PointInTimeBar
 
 
 class PostReadObservationV3(Gate3Contract):
@@ -208,9 +209,40 @@ async def verify_post_publication_capture_v3(
     return recorded
 
 
+async def computational_point_in_time_rows_v3(
+    payload: bytes,
+    *,
+    expected_sha256: str,
+    observation_repository: PublicReceiptPostReadRepository,
+    **source_kwargs,
+) -> tuple[PointInTimeBar, ...]:
+    """Offline replay rows only after exact V3 source and DB readback.
+
+    The later persisted post-read time applies to every row. These values do
+    not qualify historical availability or grant predictive/execution use.
+    """
+    verified = await verify_post_publication_capture_v3(
+        payload,
+        expected_sha256=expected_sha256,
+        observation_repository=observation_repository,
+        **source_kwargs,
+    )
+    return tuple(
+        PointInTimeBar(
+            source_row_id="okx-public-minute:" + row.source_row_identity,
+            source_row_sha256=row.source_row_sha256,
+            instrument_id=verified.v2_capture.instrument_id,
+            available_at=verified.available_at,
+            bar=row.bar,
+        )
+        for row in verified.v2_capture.rows
+    )
+
+
 __all__ = (
     "PostPublicationCaptureV3",
     "PostReadObservationV3",
+    "computational_point_in_time_rows_v3",
     "freeze_post_publication_capture_v3",
     "verify_post_publication_capture_v3",
 )
