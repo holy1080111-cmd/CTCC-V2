@@ -173,6 +173,19 @@ async def test_restricted_function_only_role_and_monotonic_cas(witness_database)
     )
     assert final.revision == 3 and final.state == "idle"
     assert await repository.read_latest(initial.genesis_sha256) == final
+    observed = await repository.observe_committed_revision(
+        initial.genesis_sha256, final.revision
+    )
+    assert observed.revision == final
+    assert observed.observed_at.tzinfo is not None
+    assert observed.observed_at.utcoffset().total_seconds() == 0
+    assert observed.trusted_clock_verified is False
+    assert observed.predictive_oos_eligible is False
+    assert observed.execution_authority is False
+    with pytest.raises(PublicWitnessError, match="witness_revision_missing"):
+        await repository.observe_committed_revision(
+            initial.genesis_sha256, final.revision + 1
+        )
     with pytest.raises(PublicWitnessError):
         await repository.append(
             journal_id=journal_id,

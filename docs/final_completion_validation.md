@@ -4139,3 +4139,25 @@ calls. The old manual and scheduler services still do not consume a qualified
 G12/recheck/reservation/intent permit. Disabling the deny-all transport would
 therefore expose an unqualified path. `ALL_SUBMIT_ROUTES_GUARDED` remains FAIL
 for production readiness; no Demo or Live order was sent.
+
+## 2026-10-09 post-publication availability and event observation working checks
+
+A versioned V2 minute-availability binder now independently replays the
+original public journal and raw packet, checks exact capture/row/checkpoint
+identity against a restricted PostgreSQL witness, then samples the server
+clock after a fresh committed-chain read. Its `available_at` is no earlier
+than the validation and payload readback times. V1 bytes and semantics are
+unchanged. This sample is not independently persisted or protected, the
+clock and first evaluator access are unproven, and the contract keeps
+`predictive_oos_eligible=false` and `execution_authority=false`.
+
+A separate V4 diagnostic owns a new V3 G12/public/account invocation,
+reopens its receipt, and then reads the original event key through the DB0017
+ledger. It binds the same report, candidate geometry, Demo UID/currency,
+history locator and source hashes. A missing event means only `absent_at_read`;
+the diagnostic does not reserve risk or create an intent. Every code remains
+`DENY` because original G1--G11 and complete account/portfolio authority are
+still absent. A combined low-load Windows selection collected 84 tests and
+finished with 80 passes and four PostgreSQL-only skips. The new isolated
+database cases await matching CI. None of this establishes Gate 3, OOS,
+Demo execution or Micro Live acceptance.

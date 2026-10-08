@@ -122,13 +122,46 @@ is not a replayable, independently pinned timestamp, and the current database
 witness does not retain such a timestamp. Do not use v1 availability for a
 predictive or execution cutoff. The blind-window dataset's current
 `durable_journal_readback` label also uses the earlier payload-readback stamp;
-its fixed `predictive_oos_eligible=false` must remain in force. A future version
-must preserve v1 receipt/hash
-semantics and bind a separately retained, post-publication observation before
-Gate 3 may consider decision-time availability.
+its fixed `predictive_oos_eligible=false` must remain in force. The computational
+V2 below preserves V1 receipt/hash semantics and samples after committed
+publication. A promotion version still needs an independently persisted,
+replayable post-publication observation before Gate 3 may consider decision-time
+availability.
 Limits are 1,024 captures, 1,024 attempts and 1 GiB across both chains per journal;
 reaching a bound fails closed. Journal rotation requires a separately designed
 checkpoint procedure.
+
+### V2 committed-witness observation (computational only)
+
+`app.mie.validation.post_publication_availability_v2` leaves all V1 bytes and
+contracts unchanged. Its separate V2 artifact replays the original public
+journal, selects only the first accepted observation of every row, and joins
+the exact capture plan, receipt, entry, checkpoint and externally retained
+witness revision/hash. The restricted PostgreSQL repository opens a new
+read-only session, verifies the complete committed witness chain, and samples
+`clock_timestamp()` **after** reading the selected committed revision. V2
+`available_at` is that later server-clock sample, never candle close, HTTP
+date, capture validation, payload readback or witness INSERT time. A database
+clock preceding payload readback fails closed.
+
+This closes a computational ordering gap only. The sampled server time is
+frozen into the V2 artifact and needs an independently retained artifact
+SHA-256 for later comparison. The current witness schema does **not** persist
+that sample, so verification can replay all source/witness identities and
+ensure a later server sample follows it, but cannot independently reconstruct
+the original sample. The database clock is not certified UTC, the PostgreSQL
+role/host and checkpoint custody are not proven independently administered in
+production, and evaluator first access is not proven. V2 therefore fixes
+`historical_observation_independently_replayable`, `trusted_clock_verified`,
+`independently_protected`, `evaluator_first_read_proven`,
+`predictive_oos_eligible`, `promotion_eligible` and `execution_authority` to
+false. It does not rehabilitate late historical bars or the exposed holdout.
+No Gate 3 promotion, Gate 4 or order route consumes this artifact.
+
+Synthetic unit tests cover binding, external pins, source duplicates, witness
+state and clock order, authority tampering, and unchanged V1 rows. An isolated
+PostgreSQL test covers the separate-session read-only server-clock query; a
+local skip without PostgreSQL is not acceptance.
 
 ## Clock platform limitation and remaining acceptance
 

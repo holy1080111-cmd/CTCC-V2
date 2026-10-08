@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -54,6 +55,22 @@ class WitnessRevision:
     @property
     def execution_authority(self) -> bool:
         return False
+
+
+@dataclass(frozen=True, slots=True)
+class CommittedWitnessObservation:
+    """Server-clock sample after a separate-session committed chain read.
+
+    The server clock and operator custody are not independently trusted here.
+    A later read cannot reproduce this timestamp without a persisted observation.
+    """
+
+    revision: WitnessRevision
+    observed_at: datetime
+    trusted_clock_verified: bool = False
+    independently_protected: bool = False
+    predictive_oos_eligible: bool = False
+    execution_authority: bool = False
 
 
 def _record_hash(row: WitnessRevision, checkpoint_json: str) -> str:
@@ -335,6 +352,56 @@ class PublicReceiptWitnessRepository:
             raise
         except Exception:  # noqa: BLE001 - Never leak connection/credential details.
             raise PublicWitnessError("witness_read_unavailable") from None
+
+    async def observe_committed_revision(
+        self, journal_key: str, revision: int
+    ) -> CommittedWitnessObservation:
+        """Read a committed revision, then sample the database server clock.
+
+        The caller must invoke this after capture publication. The selected
+        revision is visible through the restricted read function in a fresh
+        session; `clock_timestamp()` is sampled only after the full read and
+        chain replay. A witness INSERT timestamp would not prove commit.
+        """
+        if (
+            type(journal_key) is not str
+            or _HEX64.fullmatch(journal_key) is None
+            or type(revision) is not int
+            or not 0 <= revision <= 8192
+        ):
+            raise PublicWitnessError("witness_revision_input_invalid")
+        try:
+            async with self.session_factory() as session:
+                await session.execute(text("SET TRANSACTION READ ONLY"))
+                await self._role_guard(session)
+                rows = tuple(
+                    (
+                        await session.execute(
+                            text(
+                                "SELECT * FROM public.public_receipt_witness_read(:key)"
+                            ),
+                            {"key": journal_key},
+                        )
+                    ).all()
+                )
+                if not rows:
+                    raise PublicWitnessError("witness_revision_missing")
+                latest = verify_witness_chain(rows)
+                if revision > latest.revision:
+                    raise PublicWitnessError("witness_revision_missing")
+                selected = verify_witness_chain(rows[: revision + 1])
+                observed = (
+                    await session.execute(text("SELECT clock_timestamp()"))
+                ).scalar_one()
+            if type(observed) is not datetime or observed.tzinfo is None:
+                raise PublicWitnessError("witness_server_clock_invalid")
+            return CommittedWitnessObservation(
+                revision=selected, observed_at=observed.astimezone(UTC)
+            )
+        except PublicWitnessError:
+            raise
+        except Exception:  # noqa: BLE001 - Never leak connection/credential details.
+            raise PublicWitnessError("witness_observation_unavailable") from None
 
     async def append(
         self,

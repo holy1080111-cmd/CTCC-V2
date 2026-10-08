@@ -33,3 +33,7 @@ all reservation, intent and order flags remain false. The native Demo public
 origin still lacks authenticated registration-region evidence and refuses
 production capture before G12; positive tests use explicitly synthetic
 transports and source receipts. No Demo or Live order can follow from V3.
+
+The separate [V4 event observation](post_g12_account_event_observation_v4.md)
+reads the exact V3 receipt back and then checks the original event key in
+DB0017. It remains a DENY-only diagnostic and does not reserve risk.

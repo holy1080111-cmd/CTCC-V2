@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
@@ -112,6 +113,53 @@ def test_complete_witness_chain_binds_every_phase():
     assert latest.checkpoint.sequence == 1
     assert latest.checkpoint.attempt_sequence == 1
     assert latest.execution_authority is False
+
+
+def test_committed_observation_samples_clock_after_full_chain_read(monkeypatch):
+    steps = []
+    sample = datetime(2026, 10, 9, tzinfo=UTC)
+
+    class Result:
+        def __init__(self, value):
+            self.value = value
+
+        def all(self):
+            return self.value
+
+        def scalar_one(self):
+            return self.value
+
+    class Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def execute(self, query, _parameters=None):
+            statement = str(query)
+            if statement == "SET TRANSACTION READ ONLY":
+                steps.append("read_only")
+                return Result(None)
+            if "public_receipt_witness_read" in statement:
+                steps.append("read_chain")
+                return Result(chain())
+            if statement == "SELECT clock_timestamp()":
+                steps.append("sample_clock")
+                return Result(sample)
+            raise AssertionError("unexpected SQL")
+
+    async def guard(_session):
+        steps.append("role_guard")
+
+    monkeypatch.setattr(
+        PublicReceiptWitnessRepository, "_role_guard", staticmethod(guard)
+    )
+    repository = PublicReceiptWitnessRepository(lambda: Session())
+    observed = asyncio.run(repository.observe_committed_revision(GENESIS, 3))
+    assert observed.revision == verify_witness_chain(chain())
+    assert observed.observed_at == sample
+    assert steps == ["read_only", "role_guard", "read_chain", "sample_clock"]
 
 
 @pytest.mark.parametrize("missing", (0, 1, 2))
