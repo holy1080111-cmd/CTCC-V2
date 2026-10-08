@@ -9,13 +9,17 @@ diagnostic, but the returned receipt is never a qualification or order permit.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import stat
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal
 from pathlib import PosixPath, WindowsPath
 from typing import Literal
 
+from app.domain.analysis import MultiTimeframeAnalysis
+from app.domain.market import MarketSnapshot
 from app.domain.native_clock import native_stamp
 from app.domain.source_primitives import (
     canonical,
@@ -27,7 +31,7 @@ from app.domain.source_primitives import (
 from app.exchange.okx.symbols import REVIEWED_DEMO_INSTRUMENT_IDS
 from app.trade_qualification import account_capture as capture
 from app.trade_qualification import account_native_runtime as account_native
-from app.trade_qualification import data_v2
+from app.trade_qualification import data, data_v2
 from app.trade_qualification import demo_public_origin_preflight as origin_preflight
 from app.trade_qualification import native_original_g1_policy_v1 as native_g1
 from app.trade_qualification import original_candidate_precursor_v2 as precursor
@@ -38,10 +42,16 @@ from app.trade_qualification.account_observation_index import (
     reference_document,
 )
 from app.trade_qualification.account_runtime import ControlledDemoAccountSession
+from app.trade_qualification.captured_instrument_rules import (
+    derive_captured_instrument_rules,
+)
+from app.trade_qualification.current_conditions import _evaluate_base_g2_g4
 from app.trade_qualification.market_bridge_v2 import public_market_context_v2
+from app.trade_qualification.models import EntryQualificationResult, GateAssessment
 from app.trade_qualification.public_source_runtime import (
     _consume_initial_public_capture_v2,
 )
+from app.trade_qualification.service import QualificationPrefixPolicy
 
 _MAX_RECEIPT_BYTES = 4096
 _MAX_ACCOUNT_RECEIPT_BYTES = 65536
@@ -708,6 +718,196 @@ async def _capture_owned_original_precursor_for_boundary_v5(
     )
 
 
+@dataclass(frozen=True, slots=True, repr=False)
+class _OwnedBasePrefixHandoffV6:
+    original: InitialOwnedPrecursorDiagnosticV4
+    prefix_receipt_json: bytes | None
+
+
+def _evaluate_owned_base_prefix_v6(
+    public_packet,
+    account_packet,
+    derived,
+    *,
+    public_pin,
+    account_pin,
+    plan_pin,
+    data_policy,
+    created_at,
+):
+    """Replay the native base G1--G4 arithmetic, never a qualification run."""
+    if (
+        type(derived) is not precursor.OriginalCandidatePrecursorV2
+        or derived.intent is None
+        or derived.intent.strategy not in precursor._BASE_STRATEGIES
+    ):
+        raise OriginalSourceCoordinatorError("original_base_prefix_intent_required")
+    document = decode(derived.receipt_json, precursor._MAX_RECEIPT)
+    intent = derived.intent
+    if (
+        document["public_bundle_sha256"] != public_pin
+        or document["account_packet_sha256"] != account_pin
+        or document["account_plan_sha256"] != plan_pin
+        or document["created_at"] != created_at.isoformat()
+        or document["intent"] != precursor._intent_tree(intent)
+    ):
+        raise OriginalSourceCoordinatorError("original_base_prefix_lineage_changed")
+    checked, (_, quote, _, _, _, _) = public_v2._parts(public_packet)
+    if checked.bundle_sha256 != public_pin:
+        raise OriginalSourceCoordinatorError("original_base_prefix_public_changed")
+    g1 = data_v2.evaluate_public_market_data_v2(
+        checked,
+        expected_bundle_sha256=public_pin,
+        policy=data_policy,
+        evaluated_at=created_at,
+    )
+    g1 = data_v2.verify_public_market_data_v2(
+        g1,
+        checked,
+        expected_bundle_sha256=public_pin,
+        policy=data_policy,
+        evaluated_at=created_at,
+    )
+    if (
+        not g1.passed
+        or g1.evaluation_sha256 != document["g1"]["evaluation_sha256"]
+        or g1.source_sha256 != document["g1"]["source_sha256"]
+    ):
+        raise OriginalSourceCoordinatorError("original_base_prefix_g1_changed")
+    rules = derive_captured_instrument_rules(
+        account_packet,
+        instrument_id=intent.instrument_id,
+        expected_plan_sha256=plan_pin,
+        expected_packet_sha256=account_pin,
+    )
+    if rules.receipt_sha256 != document["instrument_rules_sha256"]:
+        raise OriginalSourceCoordinatorError("original_base_prefix_rules_changed")
+    source = decode(g1.source_json.encode(), data.MAX_SOURCE_BYTES)
+    market = MarketSnapshot.model_validate_json(
+        json.dumps(source["market"], allow_nan=False), strict=True
+    )
+    analysis = MultiTimeframeAnalysis.model_validate_json(
+        json.dumps(source["analysis"], allow_nan=False), strict=True
+    )
+    policy = QualificationPrefixPolicy(
+        policy_id="ctcc-native-original-base-g1-g4-inspection-v6",
+        data=data_policy,
+        minimum_score=85,
+        tick_size=rules.tick_size,
+        max_allowed_drift_bps=Decimal(30),
+        maximum_strategy_spread_bps=Decimal(3),
+        maximum_adverse_funding_bps=Decimal(5),
+    )
+    gates = [g1.gate]
+    values = {
+        "report_id": intent.report_id,
+        "symbol": market.symbol,
+        "strategy": intent.strategy,
+        "direction": intent.direction,
+        "evaluated_at": created_at,
+        "candidate_entry": intent.candidate_entry,
+        "raw_score": 0,
+        "effective_score": 0,
+    }
+
+    def gate(kind, code, reason, measured):
+        item = GateAssessment(
+            report_id=intent.report_id,
+            gate=kind,
+            passed=code == "passed",
+            code=code,
+            reason=reason,
+            measured_values=measured,
+        )
+        gates.append(item)
+        return item.passed
+
+    _evaluate_base_g2_g4(
+        market,
+        analysis,
+        intent=intent,
+        policy=policy,
+        source_sha256=g1.source_sha256,
+        quote_bundle_sha256=g1.quote_bundle_sha256,
+        bid=quote.ticker.bid,
+        ask=quote.ticker.ask,
+        funding_rate=quote.funding.forecast.rate,
+        values=values,
+        gate=gate,
+    )
+    result = EntryQualificationResult(**values, gates=tuple(gates))
+    if (
+        len(result.gates) != 4
+        or not all(item.passed for item in result.gates)
+        or result.raw_score != document["conditions"]["score"]
+        or result.direction != document["direction"]
+        or result.candidate_entry != intent.candidate_entry
+    ):
+        raise OriginalSourceCoordinatorError("original_base_prefix_precursor_mismatch")
+    return canonical(
+        {
+            "schema_version": "ctcc.owned_original_base_prefix_inspection.v6",
+            "precursor_receipt_sha256": derived.receipt_sha256,
+            "precursor_intent_sha256": sha(canonical(document["intent"])),
+            "public_packet_sha256": public_pin,
+            "account_packet_sha256": account_pin,
+            "instrument_rules_sha256": rules.receipt_sha256,
+            "g1_result_sha256": g1.evaluation_sha256,
+            "g1_source_sha256": g1.source_sha256,
+            "prefix_policy_sha256": sha(
+                canonical(policy.model_dump(mode="json", round_trip=True))
+            ),
+            "result_sha256": sha(
+                canonical(result.model_dump(mode="json", round_trip=True))
+            ),
+            "gates": [
+                {"gate": item.gate.value, "code": item.code, "passed": item.passed}
+                for item in result.gates
+            ],
+            "calibrated_for_trading": False,
+            "original_source_verified": False,
+            "candidate_created": False,
+            "g1_g11_complete": False,
+            "g12_published": False,
+            "account_complete": False,
+            "qualification_performed": False,
+            "execution_recheck_performed": False,
+            "atomic_risk_reserved": False,
+            "execution_authority": False,
+            "order_submitted": False,
+            "admission": "DENY",
+        }
+    )
+
+
+async def _capture_owned_original_base_prefix_for_boundary_v6(
+    public_root,
+    account_root,
+    *,
+    instrument_id,
+    strategy,
+    market_policy,
+    account_session,
+    session_factory,
+) -> _OwnedBasePrefixHandoffV6:
+    if type(strategy) is not str or strategy not in precursor._BASE_STRATEGIES:
+        raise OriginalSourceCoordinatorError(
+            "original_base_prefix_strategy_unsupported"
+        )
+    return await _capture_owned_original_sources(
+        public_root,
+        account_root,
+        instrument_id=instrument_id,
+        market_policy=market_policy,
+        account_session=account_session,
+        session_factory=session_factory,
+        inspect_g1=True,
+        strategy=strategy,
+        retain_raw_for_boundary=True,
+        inspect_base_prefix=True,
+    )
+
+
 async def _capture_owned_original_sources(
     public_root,
     account_root,
@@ -719,10 +919,14 @@ async def _capture_owned_original_sources(
     inspect_g1,
     strategy,
     retain_raw_for_boundary=False,
+    inspect_base_prefix=False,
 ):
     if (
         type(inspect_g1) is not bool
         or type(retain_raw_for_boundary) is not bool
+        or type(inspect_base_prefix) is not bool
+        or inspect_base_prefix
+        and (not retain_raw_for_boundary or strategy not in precursor._BASE_STRATEGIES)
         or retain_raw_for_boundary
         and strategy is None
         or strategy is not None
@@ -786,6 +990,7 @@ async def _capture_owned_original_sources(
     g1_evaluated = g1_passed = False
     precursor_pin = precursor_intent_pin = precursor_action = precursor_code = None
     precursor_intent_derived = False
+    prefix_receipt_json = None
 
     def result():
         fields = {
@@ -839,12 +1044,17 @@ async def _capture_owned_original_sources(
                 precursor_intent_derived=precursor_intent_derived,
             )
         receipt = canonical(fields)
-        return (
+        diagnostic = (
             InitialOwnedPrecursorDiagnosticV4(receipt)
             if strategy is not None
             else InitialOwnedSourcesDiagnosticV3(receipt)
             if inspect_g1
             else InitialOwnedSourcesDiagnosticV2(receipt)
+        )
+        return (
+            _OwnedBasePrefixHandoffV6(diagnostic, prefix_receipt_json)
+            if inspect_base_prefix
+            else diagnostic
         )
 
     try:
@@ -1018,6 +1228,39 @@ async def _capture_owned_original_sources(
                 ):
                     raise OriginalSourceCoordinatorError("original_precursor_expired")
                 finished = continuity_stamp
+            if inspect_base_prefix and replayed.intent is not None:
+                inspected = _evaluate_owned_base_prefix_v6(
+                    packet,
+                    owned.packet,
+                    replayed,
+                    public_pin=public_pin,
+                    account_pin=account_packet_pin,
+                    plan_pin=plan_pin,
+                    data_policy=g1_policy,
+                    created_at=created_at,
+                )
+                checked = _evaluate_owned_base_prefix_v6(
+                    packet,
+                    owned.packet,
+                    replayed,
+                    public_pin=public_pin,
+                    account_pin=account_packet_pin,
+                    plan_pin=plan_pin,
+                    data_policy=g1_policy,
+                    created_at=created_at,
+                )
+                if inspected != checked:
+                    raise OriginalSourceCoordinatorError(
+                        "original_base_prefix_replay_changed"
+                    )
+                prefix_stamp = native_stamp()
+                validate_stamps((finished, prefix_stamp))
+                if utc_from_ns(prefix_stamp["utc_ns"]) >= min(
+                    expires, owned.expires_at
+                ):
+                    raise OriginalSourceCoordinatorError("original_base_prefix_expired")
+                finished = prefix_stamp
+                prefix_receipt_json = checked
             precursor_pin = replayed.receipt_sha256
             precursor_action = precursor_doc["action"]
             precursor_code = precursor_doc["code"]

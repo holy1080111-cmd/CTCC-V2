@@ -107,3 +107,30 @@ inputs, before it may publish new G12 for the exact candidate. It must continue
 to fail closed while Demo public-origin authentication is unresolved.
 The inspected-intent branch in unit tests uses a synthetic V4 diagnostic solely
 to verify that this boundary still stops before G12; it is not Demo evidence.
+
+## V6 same-invocation base G1–G4 inspection
+
+`preflight_owned_base_prefix_v6` accepts the same controlled source inputs as
+V5, limited to `trend_pullback`, `breakout_continuation`, `fvg_return`, and
+`order_block_return`. The caller cannot provide a market/account packet,
+candidate, gate result, PASS flag, old receipt, clock or callback. Inside the
+private V5-style raw-packet frame, the V6 path first replays the exact native
+public and account bytes and the derived precursor. When that precursor has an
+intent, it recomputes raw V2 G1 at the precursor creation time and applies the
+shared base-strategy G2 regime, G3 HTF, and G4 setup arithmetic to the V2
+bid/ask and upcoming funding forecast. The fixed policy uses the inspected
+native G1 bounds, captured instrument tick, score 85, 30 bps zone drift, 3 bps
+strategy spread, and 5 bps adverse funding. Its canonical result is replayed
+twice in the same frame before returning a hash-only receipt. A mismatch,
+changed source pin, failed gate or expiry is denied; no gate is repaired.
+
+This is computational inspection, not a qualified original candidate. The
+native Demo public issuer still refuses unauthenticated region provenance
+before network I/O. The available account packet does not prove complete
+portfolio history, local exposure, current protection or source authenticity.
+The V6 receipt therefore keeps `candidate_created`, `g1_g11_complete`,
+`g12_published`, `account_complete`, `qualification_performed`, reservation,
+execution and order authority false, with `admission=DENY`. Non-base strategies
+are rejected before source I/O. V4/V5 APIs and receipt bytes are unchanged.
+Synthetic tests exercise the same-task arithmetic and denial; they are not
+actual OKX Demo samples or Gate 3 evidence.
