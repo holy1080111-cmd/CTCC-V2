@@ -4,6 +4,8 @@ The original G1--G11 run is independently replayed but still caller-origin.
 Neither that replay nor this source join grants an event/risk reservation or
 permission to submit an order. The native Demo public issuer currently refuses
 capture before G12 until account registration-region provenance is established.
+The public-only recheck digest is of an in-process replay receipt; that full
+receipt is not durably published here and is never a complete R7 claim.
 """
 
 from __future__ import annotations
@@ -24,10 +26,12 @@ from app.domain.source_primitives import (
     utc_from_ns,
     validate_stamps,
 )
+from app.public_market_source import public_runtime_journal as public_journal
 from app.trade_qualification import account_capture
 from app.trade_qualification import account_native_runtime as account_native
 from app.trade_qualification import original_source_coordinator_v2 as original_source
 from app.trade_qualification import post_g12_public_runtime as public_runtime
+from app.trade_qualification import post_g12_recheck_v2 as public_recheck
 from app.trade_qualification import public_market_collector_v2 as public_v2
 from app.trade_qualification.account_runtime import ControlledDemoAccountSession
 from app.trade_qualification.market_bridge_v2 import public_market_context_v2
@@ -56,11 +60,13 @@ _PIN_FIELDS = (
     "account_plan_sha256",
     "account_receipt_sha256",
     "account_packet_sha256",
+    "public_only_recheck_sha256",
 )
 _FALSE_FIELDS = (
     "original_source_verified",
     "account_complete",
     "execution_recheck_performed",
+    "public_only_recheck_receipt_persisted",
     "atomic_risk_reserved",
     "execution_authority",
     "order_submitted",
@@ -81,6 +87,8 @@ _FIELDS = frozenset(
         "observed_at",
         "public_request_count",
         "account_page_count",
+        "public_only_recheck_code",
+        "public_only_recheck_observed_at",
         "admission",
         *_PIN_FIELDS,
         *_FALSE_FIELDS,
@@ -142,6 +150,7 @@ class PostG12OwnedPublicAccountDiagnosticV2:
                 "publication_completed_at",
                 "public_first_request_started_at",
                 "account_first_request_started_at",
+                "public_only_recheck_observed_at",
                 "observed_at",
             ):
                 if raw[name] is not None:
@@ -161,6 +170,8 @@ class PostG12OwnedPublicAccountDiagnosticV2:
             barrier = raw["publication_completed_at"]
             first_public = raw["public_first_request_started_at"]
             first_account = raw["account_first_request_started_at"]
+            recheck_at = raw["public_only_recheck_observed_at"]
+            recheck_code = raw["public_only_recheck_code"]
             if (
                 raw["candidate_sha256"] is None
                 or raw["original_event_key"] is None
@@ -173,6 +184,10 @@ class PostG12OwnedPublicAccountDiagnosticV2:
                 or (first_account is None) != (raw["account_receipt_sha256"] is None)
                 or (first_account is None) != (raw["account_packet_sha256"] is None)
                 or (first_account is None) != (raw["account_page_count"] == 0)
+                or (recheck_at is None) != (raw["public_only_recheck_sha256"] is None)
+                or (recheck_at is None) != (recheck_code is None)
+                or recheck_code is not None
+                and recheck_code not in public_recheck._CODES
                 or first_public is not None
                 and (barrier is None or _utc_text(first_public) <= _utc_text(barrier))
                 or first_account is not None
@@ -182,7 +197,17 @@ class PostG12OwnedPublicAccountDiagnosticV2:
                     or _utc_text(first_account) < _utc_text(first_public)
                 )
                 or raw["code"] == "joined_unqualified"
-                and first_account is None
+                and (first_account is None or recheck_at is None)
+                or raw["code"] != "joined_unqualified"
+                and recheck_at is not None
+                or recheck_at is not None
+                and (
+                    barrier is None
+                    or _utc_text(recheck_at) <= _utc_text(barrier)
+                    or first_account is None
+                    or _utc_text(recheck_at) < _utc_text(first_account)
+                    or _utc_text(recheck_at) > _utc_text(raw["observed_at"])
+                )
             ):
                 raise ValueError
         except Exception:  # noqa: BLE001 -- never echo private source or receipts
@@ -308,8 +333,10 @@ async def publish_capture_public_account_v2(
         "public_journal_sha256": None,
         "account_receipt_sha256": None,
         "account_packet_sha256": None,
+        "public_only_recheck_sha256": None,
     }
     barrier = public_first = account_first = None
+    recheck_code = recheck_at = None
     public_count = account_count = 0
 
     def finish():
@@ -332,6 +359,11 @@ async def publish_capture_public_account_v2(
                 "account_plan_sha256": account_session._pin,
                 "account_receipt_sha256": pins["account_receipt_sha256"],
                 "account_packet_sha256": pins["account_packet_sha256"],
+                "public_only_recheck_sha256": pins["public_only_recheck_sha256"],
+                "public_only_recheck_code": recheck_code,
+                "public_only_recheck_observed_at": None
+                if recheck_at is None
+                else recheck_at.isoformat(),
                 "publication_completed_at": None
                 if barrier is None
                 else barrier.isoformat(),
@@ -463,13 +495,50 @@ async def publish_capture_public_account_v2(
             raise PostG12AccountJoinError("post_g12_join_expired")
         # The public snapshot may age out while private pages are fetched. Replay
         # its live profile at the final join time; no earlier PASS is transferable.
-        public_market_context_v2(
+        context = public_market_context_v2(
             packet,
             expected_bundle_sha256=packet.bundle_sha256,
             evaluated_at=completed_at,
         )
+        with public_journal._root_context(public_root) as directory:
+            replay_inputs = {
+                "expected_plan_sha256": sha(
+                    directory.read("plan.json", public_journal.MAX_RAW)
+                ),
+                "expected_journal_sha256": journal,
+                "expected_packet_sha256": packet.bundle_sha256,
+                "origin": origin,
+                "account_plan_sha256": account_session._pin,
+                "current_market_json": canonical(
+                    context.market.model_dump(mode="json", round_trip=True)
+                ).decode("ascii"),
+                "reference_json": canonical(
+                    context.reference.model_dump(mode="json", round_trip=True)
+                ).decode("ascii"),
+                "observed_at": completed_at,
+            }
+            replay = public_recheck.evaluate_post_g12_public_recheck_v2(
+                directory, **replay_inputs
+            )
+            replay = public_recheck.verify_post_g12_public_recheck_v2(
+                replay, directory, **replay_inputs
+            )
+        final_stamp = native_stamp()
+        validate_stamps((last, final_stamp))
+        last = final_stamp
+        final_at = utc_from_ns(final_stamp["utc_ns"])
+        if final_at >= min(origin.deadline, owned.expires_at):
+            raise PostG12AccountJoinError("post_g12_recheck_expired")
+        public_market_context_v2(
+            packet,
+            expected_bundle_sha256=packet.bundle_sha256,
+            evaluated_at=final_at,
+        )
         pins["account_receipt_sha256"] = account.receipt_sha256
         pins["account_packet_sha256"] = reference.packet_sha256
+        pins["public_only_recheck_sha256"] = replay.receipt_sha256
+        recheck_code = decode(replay.receipt_json)["code"]
+        recheck_at = completed_at
         code = "joined_unqualified"
         return finish()
     except asyncio.CancelledError:

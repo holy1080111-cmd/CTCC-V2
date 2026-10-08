@@ -80,6 +80,7 @@ def shifted_inputs():
         ("missing_account_lease", "account_unavailable"),
         ("stale_public_at_join", "account_unavailable"),
         ("expired_account_lease", "account_unavailable"),
+        ("recheck_replay_failed", "account_unavailable"),
     ],
 )
 async def test_new_g12_then_fresh_public_and_account_raw_page_starts(
@@ -108,6 +109,21 @@ async def test_new_g12_then_fresh_public_and_account_raw_page_starts(
     clock, directory, harness, publications = setup(monkeypatch, source)
     monkeypatch.setattr(joined, "native_stamp", clock.stamp)
     monkeypatch.setattr(account_native, "_configured_factory", lambda _: True)
+    rechecks = []
+    original_recheck = joined.public_recheck.evaluate_post_g12_public_recheck_v2
+
+    def replay_public(*args, **kwargs):
+        if fault == "recheck_replay_failed":
+            raise joined.public_recheck.PostG12RecheckV2Error(
+                "public_recheck_v2_denied"
+            )
+        receipt = original_recheck(*args, **kwargs)
+        rechecks.append(receipt)
+        return receipt
+
+    monkeypatch.setattr(
+        joined.public_recheck, "evaluate_post_g12_public_recheck_v2", replay_public
+    )
     route = demo_public_origin.reviewed_demo_public_route("global")
     proof = {
         "classification": "owned_native_tls",
@@ -229,6 +245,30 @@ async def test_new_g12_then_fresh_public_and_account_raw_page_starts(
     assert receipt["account_packet_sha256"] == (
         frozen.sha256 if fault is None else None
     )
+    if fault is None:
+        # The independent verifier recomputes the same receipt from the
+        # retained public bytes before the diagnostic pins its digest.
+        assert len(rechecks) == 2
+        assert rechecks[0].receipt_json == rechecks[1].receipt_json
+        replayed = decode(rechecks[0].receipt_json)
+        assert receipt["public_only_recheck_sha256"] == rechecks[0].receipt_sha256
+        assert receipt["public_only_recheck_code"] == replayed["code"]
+        assert replayed["original_event_key"] == receipt["original_event_key"]
+        assert replayed["original_entry"] == receipt["original_entry"]
+        assert replayed["original_stop_loss"] == receipt["original_stop_loss"]
+        assert replayed["original_take_profit"] == receipt["original_take_profit"]
+        assert (
+            joined._utc_text(receipt["publication_completed_at"])
+            < joined._utc_text(receipt["public_only_recheck_observed_at"])
+            <= joined._utc_text(receipt["observed_at"])
+        )
+        assert replayed["admission"] == "DENY"
+        assert replayed["execution_authority"] is False
+    else:
+        assert not rechecks
+        assert receipt["public_only_recheck_sha256"] is None
+        assert receipt["public_only_recheck_code"] is None
+        assert receipt["public_only_recheck_observed_at"] is None
     assert receipt["original_entry"] == str(run.result.candidate_entry)
     assert receipt["original_stop_loss"] == str(run.result.stop_loss)
     assert receipt["original_take_profit"] == str(run.result.take_profit)
@@ -275,6 +315,8 @@ async def test_unverified_demo_origin_stops_before_g12_public_and_account_io(
     assert receipt["g12_evidence_sha256"] is None
     assert receipt["public_packet_sha256"] is None
     assert receipt["account_packet_sha256"] is None
+    assert receipt["public_only_recheck_sha256"] is None
+    assert receipt["public_only_recheck_code"] is None
     assert receipt["admission"] == "DENY"
     assert receipt["execution_authority"] is False
     assert controlled._used

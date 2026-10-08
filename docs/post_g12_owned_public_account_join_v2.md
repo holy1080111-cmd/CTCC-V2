@@ -17,6 +17,14 @@ reference、proof、readback、receipt 與 lease expiry 都須一致。完成時
 原生時鐘樣本，確認仍在原候選與 account lease 期限內，並重新檢查公開資料
 在該時刻的完整度與 freshness。
 
+帳戶頁鏈取得後，這個診斷重新開啟本次公開資料 journal，對原始 base
+candidate 重算公開來源 G1、目前 G2–G4、原 event／zone 與固定 Entry／SL／TP
+的預估經濟條件；再用相同原始位元組獨立重播並比對 receipt。最終時鐘樣本
+再次檢查候選期限、帳戶 lease 與公開資料 freshness。上層只記錄這份
+`public_only_recheck` 的雜湊、結果碼與評估時間；完整 recheck receipt 在此
+流程尚未持久發佈，`public_only_recheck_receipt_persisted=false`。因此它只能
+證明同一次程序的公開資料重算診斷，不能稱為完整 R7 或交易授權。
+
 回傳的 canonical receipt 只保留固定原交易幾何、時間、頁數與雜湊，
 `admission=DENY`、`execution_authority=false`。失敗後，上層 receipt 清除未完成
 join 的帳戶 pin／頁數，不能以部分帳戶讀取宣稱完整；已持久化的 G12、公有
@@ -26,6 +34,6 @@ journal 與帳戶頁鏈／proof 留在各自的 no-clobber 根目錄供稽核，
 目前原生 V2 Demo 公開來源的 region 認證仍被硬性拒絕，因此 production
 路徑會在 G12 前拒絕；正向單元測試只用明示 synthetic transport、時鐘與
 帳戶頁鏈驗證接續順序。這不是實際 OKX Demo evidence。此接續也尚未完成
-source-derived Original Candidate、current G1–G4、原事件存活、原 zone、
-固定 SL/TP、雙情境成本、完整 PortfolioRiskSnapshot、原子 reservation、
+source-derived Original Candidate、可供執行的完整 current G1–G4／原事件
+存活／原 zone、帳戶實際成本、完整 PortfolioRiskSnapshot、原子 reservation、
 durable intent 或任一送單路徑的最終 authority。Demo 與 Live 下單持續拒絕。

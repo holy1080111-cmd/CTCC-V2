@@ -68,3 +68,18 @@ native owner. The pure join continues to return `snapshot=None`,
 The v3 native proof establishes only the owned current acquisition. This slice
 does not connect the joined history to a complete PortfolioRiskSnapshot.
 Authentic account acquisition and PostgreSQL acceptance remain unexecuted.
+
+The offline `verify_history_tail_prerequisites` diagnostic now replays three
+distinct original B1 chains in order: a v5 history capture, a v6 current
+capture, and a later overlapping v5 history capture. It binds exact UID,
+mainUid, credential session, registration evidence and origin, account mode,
+currency, local checkpoint, query cursor proof and capture chronology. Late,
+conflicting or missing overlapping rows are preserved as blocker findings.
+Even matching repeated pages only prove the bounded requested generation-time
+window at those observation times. They do not prove exchange-wide EOF,
+funding accrual chronology, future late-arrival finality, an atomic exchange
+revision or a complete loss seed. The versioned receipt therefore always has
+`history_tail_closed=false`, `snapshot=None`, `account_complete=false` and
+`execution_authority=false`; a saved receipt is compared with a fresh replay of
+the original chains before its findings can be used. The tests use synthetic
+B1 chains only.
