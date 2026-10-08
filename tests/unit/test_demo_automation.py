@@ -531,7 +531,7 @@ def make_service(
         public_client=public_client or FakePublic(),
         market_hub=market_hub or FakeHub(),
         market_client=FakeClient(),
-        repository=None,
+        repository=MemoryAutomationRepository(),
     )
 
 
@@ -2144,6 +2144,388 @@ class MemoryAutomationRepository:
         if self.fail_writes:
             raise RuntimeError("synthetic persistence unavailable")
         self.fingerprints[fingerprint] = (expires_at, deepcopy(details))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", (RuntimeError, asyncio.CancelledError))
+async def test_failed_or_cancelled_arm_persistence_never_leaves_local_arm(failure):
+    class RefusingRepository(MemoryAutomationRepository):
+        async def save_state(self, state):
+            if state["armed"]:
+                raise failure("synthetic arm commit unavailable")
+            await super().save_state(state)
+
+    demo = FakeDemo()
+    service = make_service(demo)
+    service.repository = RefusingRepository()
+    await service.recover()
+
+    with pytest.raises(
+        asyncio.CancelledError
+        if failure is asyncio.CancelledError
+        else DemoAutomationSafetyError
+    ):
+        await service.arm()
+
+    assert (await service.status()).armed is False
+    with pytest.raises(DemoAutomationSafetyError, match="demo_automation_not_armed"):
+        await service.run_once(execute=True)
+    assert demo.place_calls == []
+
+
+@pytest.mark.asyncio
+async def test_blocked_arm_save_is_not_visible_to_concurrent_start_or_run():
+    class BlockingRepository(MemoryAutomationRepository):
+        def __init__(self):
+            super().__init__()
+            self.entered = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def save_state(self, state):
+            if state["armed"]:
+                self.entered.set()
+                await self.release.wait()
+            await super().save_state(state)
+
+    demo = FakeDemo()
+    repository = BlockingRepository()
+    service = make_service(demo)
+    service.repository = repository
+    await service.recover()
+
+    arming = asyncio.create_task(service.arm())
+    await asyncio.wait_for(repository.entered.wait(), timeout=1)
+    assert (await service.status()).armed is False
+    with pytest.raises(DemoAutomationSafetyError, match="demo_automation_not_armed"):
+        await service.start()
+    with pytest.raises(DemoAutomationSafetyError, match="demo_automation_not_armed"):
+        await service.run_once(execute=True)
+    assert demo.place_calls == []
+
+    repository.release.set()
+    assert (await arming).armed is True
+    assert repository.state["armed"] is True
+
+
+@pytest.mark.asyncio
+async def test_estop_revokes_blocked_arm_and_is_last_durable_control_write():
+    class BlockingRepository(MemoryAutomationRepository):
+        def __init__(self):
+            super().__init__()
+            self.entered = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def save_state(self, state):
+            if state["armed"] and not state["emergency_stop"]:
+                self.entered.set()
+                await self.release.wait()
+            await super().save_state(state)
+
+    repository = BlockingRepository()
+    service = make_service(FakeDemo())
+    service.repository = repository
+    await service.recover()
+    arming = asyncio.create_task(service.arm())
+    await asyncio.wait_for(repository.entered.wait(), timeout=1)
+
+    stopping = asyncio.create_task(service.emergency_stop())
+    await asyncio.sleep(0)
+    assert (await service.status()).emergency_stop is True
+    assert (await service.status()).armed is False
+    repository.release.set()
+    with pytest.raises(DemoAutomationSafetyError, match="demo_automation_arm_revoked"):
+        await arming
+    stopped = await stopping
+    assert stopped.emergency_stop is True and stopped.armed is False
+    assert repository.state["emergency_stop"] is True
+    assert repository.state["armed"] is False
+
+
+@pytest.mark.asyncio
+async def test_estop_wins_before_queued_arm_candidate_can_write(monkeypatch):
+    class RecordingRepository(MemoryAutomationRepository):
+        def __init__(self):
+            super().__init__()
+            self.writes = []
+
+        async def save_state(self, state):
+            self.writes.append(deepcopy(state))
+            await super().save_state(state)
+
+    repository = RecordingRepository()
+    service = make_service(FakeDemo())
+    service.repository = repository
+    await service.recover()
+    repository.writes.clear()
+    entered = asyncio.Event()
+    original = service._persist_state
+
+    async def observed_persist(**kwargs):
+        if kwargs.get("overrides") == {"armed": True}:
+            entered.set()
+        await original(**kwargs)
+
+    monkeypatch.setattr(service, "_persist_state", observed_persist)
+    await service._state_persist_lock.acquire()
+    arming = asyncio.create_task(service.arm())
+    await asyncio.wait_for(entered.wait(), timeout=1)
+    stopping = asyncio.create_task(service.emergency_stop())
+    await asyncio.sleep(0)
+    assert (await service.status()).emergency_stop is True
+    service._state_persist_lock.release()
+
+    with pytest.raises(
+        DemoAutomationSafetyError, match="demo_automation_control_revoked"
+    ):
+        await arming
+    assert (await stopping).emergency_stop is True
+    assert repository.writes and all(not item["armed"] for item in repository.writes)
+    assert repository.state["emergency_stop"] is True
+
+
+@pytest.mark.asyncio
+async def test_arm_requires_durable_state_repository_even_in_synthetic_mode():
+    demo = FakeDemo()
+    service = make_service(demo)
+    await service.recover()
+    service.repository = None
+
+    with pytest.raises(
+        DemoAutomationSafetyError,
+        match="demo_automation_state_persistence_unavailable",
+    ):
+        await service.arm()
+
+    assert (await service.status()).armed is False
+    assert demo.place_calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", (RuntimeError, asyncio.CancelledError))
+async def test_failed_or_cancelled_estop_persistence_is_not_reported_as_success(
+    failure,
+):
+    class RefusingRepository(MemoryAutomationRepository):
+        refuse_stop = False
+
+        async def save_state(self, state):
+            if self.refuse_stop and state["emergency_stop"]:
+                raise failure("synthetic stop commit unavailable")
+            await super().save_state(state)
+
+    demo = FakeDemo()
+    repository = RefusingRepository()
+    service = make_service(demo)
+    service.repository = repository
+    await service.recover()
+    await service.arm()
+    repository.refuse_stop = True
+
+    with pytest.raises(
+        asyncio.CancelledError
+        if failure is asyncio.CancelledError
+        else DemoAutomationSafetyError
+    ):
+        await service.emergency_stop()
+
+    status = await service.status()
+    assert status.armed is False and status.emergency_stop is True
+    with pytest.raises(DemoAutomationSafetyError, match="demo_automation_not_armed"):
+        await service.run_once(execute=True)
+    assert demo.place_calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel", (False, True))
+async def test_estop_attempts_worker_stop_after_blocked_commit_or_cancellation(cancel):
+    class BlockingStopRepository(MemoryAutomationRepository):
+        def __init__(self):
+            super().__init__()
+            self.entered = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def save_state(self, state):
+            if state["emergency_stop"]:
+                self.entered.set()
+                await self.release.wait()
+            await super().save_state(state)
+
+    repository = BlockingStopRepository()
+    service = make_service(FakeDemo())
+    service.repository = repository
+    await service.recover()
+    await service.arm()
+    worker_started = asyncio.Event()
+    worker_stopped = asyncio.Event()
+
+    async def blocked_worker():
+        worker_started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            worker_stopped.set()
+
+    service._task = asyncio.create_task(blocked_worker())
+    await asyncio.wait_for(worker_started.wait(), timeout=1)
+    stopping = asyncio.create_task(service.emergency_stop())
+    await asyncio.wait_for(repository.entered.wait(), timeout=1)
+    assert (await service.status()).emergency_stop is True
+    assert (await service.status()).armed is False
+    assert worker_stopped.is_set() is False
+    if cancel:
+        stopping.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await stopping
+    else:
+        repository.release.set()
+        assert (await stopping).emergency_stop is True
+        assert repository.state["emergency_stop"] is True
+    await asyncio.wait_for(worker_stopped.wait(), timeout=1)
+    assert service.running is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", (RuntimeError, asyncio.CancelledError))
+async def test_failed_or_cancelled_clear_keeps_local_estop_latched(failure):
+    class RefusingRepository(MemoryAutomationRepository):
+        refuse_clear = False
+
+        async def save_state(self, state):
+            if self.refuse_clear and not state["emergency_stop"]:
+                raise failure("synthetic clear commit unavailable")
+            await super().save_state(state)
+
+    repository = RefusingRepository()
+    service = make_service(FakeDemo())
+    service.repository = repository
+    await service.recover()
+    await service.emergency_stop()
+    assert repository.state["emergency_stop"] is True
+    repository.refuse_clear = True
+
+    with pytest.raises(
+        asyncio.CancelledError
+        if failure is asyncio.CancelledError
+        else DemoAutomationSafetyError
+    ):
+        await service.clear_emergency_stop()
+
+    status = await service.status()
+    assert status.emergency_stop is True and status.armed is False and status.locked
+    assert "emergency_stop_engaged" in status.lock_reasons
+    assert "clear_stop_persistence_uncertain" in status.lock_reasons
+    assert repository.state["emergency_stop"] is True
+
+
+@pytest.mark.asyncio
+async def test_clear_commit_then_error_exposes_restart_latch_ambiguity():
+    class CommitThenRaiseRepository(MemoryAutomationRepository):
+        fail_clear = False
+
+        async def save_state(self, state):
+            await super().save_state(state)
+            if self.fail_clear and not state["emergency_stop"]:
+                raise RuntimeError("synthetic acknowledgement lost after commit")
+
+    repository = CommitThenRaiseRepository()
+    service = make_service(FakeDemo())
+    service.repository = repository
+    await service.recover()
+    await service.emergency_stop()
+    repository.fail_clear = True
+
+    with pytest.raises(DemoAutomationSafetyError, match="state_persistence_failed"):
+        await service.clear_emergency_stop()
+    assert (await service.status()).emergency_stop is True
+    assert repository.state["emergency_stop"] is False
+
+    restarted = make_service(FakeDemo())
+    restarted.repository = repository
+    await restarted.recover()
+    recovered = await restarted.status()
+    assert recovered.armed is False
+    # This is an unresolved durable-protocol gap, not a restart EStop pass.
+    assert recovered.emergency_stop is False
+
+
+@pytest.mark.asyncio
+async def test_estop_wins_before_queued_clear_candidate_can_write(monkeypatch):
+    class RecordingRepository(MemoryAutomationRepository):
+        def __init__(self):
+            super().__init__()
+            self.writes = []
+
+        async def save_state(self, state):
+            self.writes.append(deepcopy(state))
+            await super().save_state(state)
+
+    repository = RecordingRepository()
+    service = make_service(FakeDemo())
+    service.repository = repository
+    await service.recover()
+    await service.emergency_stop()
+    repository.writes.clear()
+    entered = asyncio.Event()
+    original = service._persist_state
+
+    async def observed_persist(**kwargs):
+        if kwargs.get("overrides", {}).get("emergency_stop") is False:
+            entered.set()
+        await original(**kwargs)
+
+    monkeypatch.setattr(service, "_persist_state", observed_persist)
+    await service._state_persist_lock.acquire()
+    clearing = asyncio.create_task(service.clear_emergency_stop())
+    await asyncio.wait_for(entered.wait(), timeout=1)
+    stopping = asyncio.create_task(service.emergency_stop())
+    await asyncio.sleep(0)
+    service._state_persist_lock.release()
+
+    with pytest.raises(
+        DemoAutomationSafetyError, match="demo_automation_control_revoked"
+    ):
+        await clearing
+    assert (await stopping).emergency_stop is True
+    assert repository.writes and all(
+        item["emergency_stop"] for item in repository.writes
+    )
+    assert repository.state["emergency_stop"] is True
+
+
+@pytest.mark.asyncio
+async def test_estop_during_clear_reconcile_cannot_be_cleared_by_stale_request():
+    class BlockingDemo(FakeDemo):
+        def __init__(self):
+            super().__init__()
+            self.block_next = False
+            self.entered = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def reconcile(self):
+            if self.block_next:
+                self.entered.set()
+                await self.release.wait()
+            return await super().reconcile()
+
+    demo = BlockingDemo()
+    repository = MemoryAutomationRepository()
+    service = make_service(demo)
+    service.repository = repository
+    await service.recover()
+    await service.emergency_stop()
+    demo.block_next = True
+
+    clearing = asyncio.create_task(service.clear_emergency_stop())
+    await asyncio.wait_for(demo.entered.wait(), timeout=1)
+    stopped = await service.emergency_stop()
+    assert stopped.emergency_stop is True
+    demo.release.set()
+    with pytest.raises(
+        DemoAutomationSafetyError, match="demo_automation_control_revoked"
+    ):
+        await clearing
+    assert (await service.status()).emergency_stop is True
+    assert repository.state["emergency_stop"] is True
 
 
 @pytest.mark.asyncio

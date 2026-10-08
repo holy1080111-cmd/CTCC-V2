@@ -155,6 +155,8 @@ class SafeDemoAutomation:
         self._task: asyncio.Task[None] | None = None
         self._stop = asyncio.Event()
         self._run_lock = asyncio.Lock()
+        self._state_persist_lock = asyncio.Lock()
+        self._control_generation = 0
         self._next_run_at: datetime | None = None
         self._recovered = False
         self._history: deque[DemoAutomationRunResult] = deque(
@@ -315,6 +317,7 @@ class SafeDemoAutomation:
         return list(self._history)[-max(1, limit) :]
 
     async def arm(self) -> DemoAutomationStatus:
+        generation = self._control_generation
         blockers = self._configuration_blockers()
         if blockers:
             raise DemoAutomationSafetyError(";".join(blockers))
@@ -350,29 +353,45 @@ class SafeDemoAutomation:
             raise DemoAutomationSafetyError(
                 "automation_locked:" + ",".join(self._state["lock_reasons"])
             )
+        if generation != self._control_generation or self._state["emergency_stop"]:
+            raise DemoAutomationSafetyError("demo_automation_arm_revoked")
+        # Persist the candidate first. No other task may observe an armed local
+        # state while this write is blocked, failed or cancelled.
+        await self._persist_state(
+            required=True,
+            overrides={"armed": True},
+            expected_generation=generation,
+            expected_emergency_stop=False,
+        )
+        if generation != self._control_generation or self._state["emergency_stop"]:
+            raise DemoAutomationSafetyError("demo_automation_arm_revoked")
         self._state["armed"] = True
-        await self._persist_state(required=True)
         return await self.status()
 
     async def disarm(self) -> DemoAutomationStatus:
+        self._control_generation += 1
         self._state["armed"] = False
         await self.stop()
         await self._persist_state(required=False)
         return await self.status()
 
     async def emergency_stop(self) -> DemoAutomationStatus:
-        self._state["armed"] = False
-        self._state["emergency_stop"] = True
-        self._state["locked"] = True
-        self._state["lock_reasons"] = sorted(
-            {*self._state["lock_reasons"], "emergency_stop_engaged"}
-        )
-        await self.stop()
-        await self._persist_state(required=False)
+        self._engage_emergency("emergency_stop_engaged")
+        try:
+            # Do not report a durable stop when its persistence failed. The
+            # local latch remains engaged regardless of storage outcome.
+            await self._persist_state(required=True)
+        finally:
+            # A blocked, failed or cancelled DB write must not leave the
+            # existing scheduler running in this process.
+            await self.stop()
         return await self.status()
 
     async def clear_emergency_stop(self) -> DemoAutomationStatus:
+        generation = self._control_generation
         snapshot = await self.demo_service.reconcile()
+        if generation != self._control_generation:
+            raise DemoAutomationSafetyError("demo_automation_control_revoked")
         if (
             snapshot.positions
             or snapshot.pending_orders
@@ -396,9 +415,41 @@ class SafeDemoAutomation:
         )
         if basis_blocker is not None:
             raise DemoAutomationSafetyError(basis_blocker)
+        if generation != self._control_generation:
+            raise DemoAutomationSafetyError("demo_automation_control_revoked")
+        prior_guard = (
+            self._state["emergency_stop"],
+            self._state["locked"],
+            list(self._state["lock_reasons"]),
+        )
         self._state["emergency_stop"] = False
         self._apply_locks(capital.risk_equity)
-        await self._persist_state(required=True)
+        cleared = {
+            "emergency_stop": False,
+            "locked": self._state["locked"],
+            "lock_reasons": list(self._state["lock_reasons"]),
+        }
+        (
+            self._state["emergency_stop"],
+            self._state["locked"],
+            self._state["lock_reasons"],
+        ) = prior_guard
+        try:
+            await self._persist_state(
+                required=True,
+                overrides=cleared,
+                expected_generation=generation,
+                expected_emergency_stop=True,
+            )
+        except BaseException:
+            # A failed or cancelled clear must not unlock this process. Do not
+            # issue a second DB write: the first commit outcome may be unknown.
+            self._engage_emergency("clear_stop_persistence_uncertain")
+            raise
+        if generation != self._control_generation:
+            self._engage_emergency("clear_stop_concurrent_revocation")
+            raise DemoAutomationSafetyError("clear_stop_concurrent_revocation")
+        self._state.update(cleared)
         return await self.status()
 
     async def start(self) -> DemoAutomationStatus:
@@ -3128,6 +3179,7 @@ class SafeDemoAutomation:
         self._state["locked"] = bool(reasons)
 
     def _engage_emergency(self, reason: str) -> None:
+        self._control_generation += 1
         self._state["armed"] = False
         self._state["emergency_stop"] = True
         self._state["locked"] = True
@@ -3364,18 +3416,39 @@ class SafeDemoAutomation:
             except TimeoutError:
                 continue
 
-    async def _persist_state(self, *, required: bool) -> None:
+    async def _persist_state(
+        self,
+        *,
+        required: bool,
+        overrides: dict[str, Any] | None = None,
+        expected_generation: int | None = None,
+        expected_emergency_stop: bool | None = None,
+    ) -> None:
         if self.repository is None:
-            return
-        payload = {key: self._state[key] for key in self._state}
-        try:
-            await self.repository.save_state(payload)
-        except Exception as exc:
-            self._state["last_error"] = "state_persistence_failed:" + self._safe_error(
-                exc
-            )
             if required:
-                raise DemoAutomationSafetyError(self._state["last_error"]) from exc
+                raise DemoAutomationSafetyError(
+                    "demo_automation_state_persistence_unavailable"
+                )
+            return
+        async with self._state_persist_lock:
+            # A revocation can happen while this invocation waits for the
+            # persistence lock. Reject its stale candidate before DB IO.
+            if expected_generation is not None and (
+                expected_generation != self._control_generation
+                or self._state["emergency_stop"] is not expected_emergency_stop
+            ):
+                raise DemoAutomationSafetyError("demo_automation_control_revoked")
+            payload = {key: self._state[key] for key in self._state}
+            if overrides is not None:
+                payload.update(overrides)
+            try:
+                await self.repository.save_state(payload)
+            except Exception as exc:
+                self._state["last_error"] = (
+                    "state_persistence_failed:" + self._safe_error(exc)
+                )
+                if required:
+                    raise DemoAutomationSafetyError(self._state["last_error"]) from exc
 
     async def _fingerprint_exists(self, fingerprint: str, now: datetime) -> bool:
         self._fingerprints = {
