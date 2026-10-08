@@ -88,9 +88,9 @@ switches were disabled, the configured 300 USDT position bucket and 1% open
 stop-risk ceiling passed `Settings` validation. With read retries fixed to zero,
 one owned-client signed `GET /api/v5/account/config` succeeded on the configured
 global Demo origin. The client used the simulated-trading header, disabled
-environment proxies and redirects, and made no order POST. A redacted,
-HMAC-only diagnostic is retained at
-`../validation-results/demo-account-config-readonly-cd0727e-20261008T193049Z.json`
+environment proxies and redirects, and made no order POST. A redacted
+diagnostic with HMAC-only account identifiers is retained at
+`../../validation-results/demo-account-config-readonly-cd0727e-20261008T193049Z.json`
 (SHA256 `b0a36a1821e9d84cf60b7e1f68586adc57b01eaf5235cdc082238e4faccfb320`).
 It records that UID/mainUid and account/position modes were present without
 publishing their raw values. The raw response was intentionally not retained,
