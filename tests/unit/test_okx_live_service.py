@@ -615,6 +615,77 @@ def service_fixture():
     return service, read, execution, intents, clock
 
 
+async def seed_legacy_local_lease_for_downstream_unit_test(
+    service: OkxLiveService,
+) -> None:
+    """Exercise old downstream safety mechanics without calling production Arm.
+
+    This changes only the isolated fake service instance; there is no Live
+    qualification permit issuer or exchange write authority in production.
+    """
+    service._ensure_write_configuration()
+    snapshot = await service.reconcile()
+    service._validate_write_capability(snapshot.account_config)
+    service._ensure_flat(snapshot, action="arm")
+    await service._assert_execution_safe()
+    service._baseline_equity = snapshot.balance.total_equity
+    service._submissions = 0
+    service._armed_until = service._now() + timedelta(seconds=60)
+
+
+@pytest.mark.asyncio
+async def test_live_arm_fails_closed_without_native_qualification_authority() -> None:
+    service, _, execution, intents, _ = service_fixture()
+
+    with pytest.raises(
+        OkxLiveSafetyError, match="okx_live_qualification_authority_unavailable"
+    ):
+        await service.arm(
+            OkxLiveArmRequest(duration_seconds=60, confirmation=LIVE_ARM_PHRASE)
+        )
+
+    status = await service.status()
+    assert status.qualification_authority_available is False
+    assert "okx_live_qualification_authority_unavailable" in status.blockers
+    assert status.arm.armed is False
+    assert status.arm.baseline_equity is None
+    assert service.mirror_repository.snapshots == []
+    assert intents.rows == {}
+    assert execution.calls == []
+
+    disarmed = await service.disarm()
+    assert disarmed.arm.armed is False
+    assert (await service.reconcile()).persisted is True
+    read_status = await service.status()
+    assert read_status.read_ready is True
+    assert read_status.qualification_authority_available is False
+    stopped = await service.emergency_stop()
+    assert stopped.arm.emergency_stop is True
+    assert stopped.arm.safety_latch_code == "operator_emergency_stop"
+
+
+@pytest.mark.asyncio
+async def test_live_arm_revokes_an_existing_legacy_local_lease() -> None:
+    service, _, execution, intents, _ = service_fixture()
+    await seed_legacy_local_lease_for_downstream_unit_test(service)
+    assert service.arm_status().armed is True
+
+    with pytest.raises(
+        OkxLiveSafetyError, match="okx_live_qualification_authority_unavailable"
+    ):
+        await service.arm(
+            OkxLiveArmRequest(duration_seconds=60, confirmation=LIVE_ARM_PHRASE)
+        )
+
+    arm = service.arm_status()
+    assert arm.armed is False
+    assert arm.expires_at is None
+    assert arm.baseline_equity is None
+    assert arm.last_error == "okx_live_qualification_authority_unavailable"
+    assert intents.rows == {}
+    assert execution.calls == []
+
+
 def live_order(**updates) -> OkxLiveOrderRequest:
     values = {
         "instrument_id": "BTC-USDT-SWAP",
@@ -675,9 +746,7 @@ async def test_wrong_first_live_identity_cannot_pin_mirror_or_arm(field: str) ->
     assert service.arm_status().armed is False
     assert service.arm_status().emergency_stop is True
     with pytest.raises(OkxLiveSafetyError, match="okx_live_account_identity_mismatch"):
-        await service.arm(
-            OkxLiveArmRequest(duration_seconds=60, confirmation=LIVE_ARM_PHRASE)
-        )
+        await seed_legacy_local_lease_for_downstream_unit_test(service)
     assert mirror.snapshots == []
     assert execution.calls == []
 
@@ -722,9 +791,7 @@ async def test_read_only_live_identity_mismatch_cannot_seed_first_pin() -> None:
 @pytest.mark.asyncio
 async def test_live_identity_change_after_arm_blocks_order_before_execution() -> None:
     service, read, execution, intents, _ = service_fixture()
-    await service.arm(
-        OkxLiveArmRequest(duration_seconds=60, confirmation=LIVE_ARM_PHRASE)
-    )
+    await seed_legacy_local_lease_for_downstream_unit_test(service)
     mirror = service.mirror_repository
     prior_snapshots = len(mirror.snapshots)
     read.uid = "wrong-synthetic-live-id"
@@ -741,9 +808,7 @@ async def test_live_identity_change_after_arm_blocks_order_before_execution() ->
 @pytest.mark.asyncio
 async def test_direct_account_config_mismatch_disarms_and_revokes_read_ready() -> None:
     service, read, execution, _, _ = service_fixture()
-    await service.arm(
-        OkxLiveArmRequest(duration_seconds=60, confirmation=LIVE_ARM_PHRASE)
-    )
+    await seed_legacy_local_lease_for_downstream_unit_test(service)
     read.main_uid = "wrong-synthetic-live-id"
 
     with pytest.raises(OkxLiveSafetyError, match="okx_live_account_identity_mismatch"):
@@ -779,9 +844,7 @@ async def test_direct_account_config_cardinality_persists_stop(
     row_count: int,
 ) -> None:
     service, read, execution, _, _ = service_fixture()
-    await service.arm(
-        OkxLiveArmRequest(duration_seconds=60, confirmation=LIVE_ARM_PHRASE)
-    )
+    await seed_legacy_local_lease_for_downstream_unit_test(service)
     valid = (await read.account_config())[0]
     read.config_rows_override = [valid] * row_count
 
@@ -810,9 +873,7 @@ async def test_direct_account_config_capability_change_persists_stop(
     permissions: str, code: str
 ) -> None:
     service, read, execution, _, _ = service_fixture()
-    await service.arm(
-        OkxLiveArmRequest(duration_seconds=60, confirmation=LIVE_ARM_PHRASE)
-    )
+    await seed_legacy_local_lease_for_downstream_unit_test(service)
     read.permissions = permissions
 
     with pytest.raises(OkxLiveSafetyError, match=code):
@@ -826,9 +887,7 @@ async def test_direct_account_config_capability_change_persists_stop(
 @pytest.mark.asyncio
 async def test_direct_malformed_account_config_persists_stop() -> None:
     service, read, execution, _, _ = service_fixture()
-    await service.arm(
-        OkxLiveArmRequest(duration_seconds=60, confirmation=LIVE_ARM_PHRASE)
-    )
+    await seed_legacy_local_lease_for_downstream_unit_test(service)
     read.config_rows_override = [{"uid": EXPECTED_UID}]
 
     with pytest.raises(OkxLiveSafetyError, match="okx_live_account_config_invalid"):
@@ -842,7 +901,7 @@ async def test_direct_malformed_account_config_persists_stop() -> None:
 
 
 @pytest.mark.asyncio
-async def test_arm_requires_flat_exchange_and_expires_process_locally() -> None:
+async def test_legacy_flat_guard_and_local_lease_expiry_in_unit_isolation() -> None:
     service, read, _, _, clock = service_fixture()
     read.position_rows = [
         {
@@ -855,16 +914,14 @@ async def test_arm_requires_flat_exchange_and_expires_process_locally() -> None:
         }
     ]
     with pytest.raises(OkxLiveSafetyError, match="positions_block_arm"):
-        await service.arm(
-            OkxLiveArmRequest(duration_seconds=60, confirmation=LIVE_ARM_PHRASE)
-        )
+        await seed_legacy_local_lease_for_downstream_unit_test(service)
 
     read.position_rows = []
     await service.clear_emergency_stop(await clear_stop_request(service))
-    status = await service.arm(
-        OkxLiveArmRequest(duration_seconds=60, confirmation=LIVE_ARM_PHRASE)
-    )
+    await seed_legacy_local_lease_for_downstream_unit_test(service)
+    status = await service.status()
     assert status.arm.armed is True
+    assert status.qualification_authority_available is False
 
     clock.value += timedelta(seconds=61)
     assert service.arm_status().armed is False
@@ -873,9 +930,7 @@ async def test_arm_requires_flat_exchange_and_expires_process_locally() -> None:
 @pytest.mark.asyncio
 async def test_place_order_is_protected_idempotent_one_shot_and_auto_disarms() -> None:
     service, _, execution, intents, _ = service_fixture()
-    await service.arm(
-        OkxLiveArmRequest(duration_seconds=60, confirmation=LIVE_ARM_PHRASE)
-    )
+    await seed_legacy_local_lease_for_downstream_unit_test(service)
 
     result = await service.place_order(live_order())
 
@@ -935,9 +990,7 @@ async def test_live_protection_requires_exact_pending_algo_match(
 ) -> None:
     service, _, execution, intents, _ = service_fixture()
     execution.protection_overrides = override
-    await service.arm(
-        OkxLiveArmRequest(duration_seconds=60, confirmation=LIVE_ARM_PHRASE)
-    )
+    await seed_legacy_local_lease_for_downstream_unit_test(service)
 
     result = await service.place_order(live_order())
 
@@ -952,9 +1005,7 @@ async def test_live_protection_requires_exact_pending_algo_match(
 async def test_live_protection_rejects_duplicate_client_algo_id() -> None:
     service, _, execution, intents, _ = service_fixture()
     execution.duplicate_protection = True
-    await service.arm(
-        OkxLiveArmRequest(duration_seconds=60, confirmation=LIVE_ARM_PHRASE)
-    )
+    await seed_legacy_local_lease_for_downstream_unit_test(service)
 
     result = await service.place_order(live_order())
 
@@ -971,9 +1022,7 @@ async def test_post_order_confirmation_rejects_unrelated_exchange_state(
     service, _, execution, intents, _ = service_fixture()
     execution.unrelated_protection = unexpected_state == "algo"
     execution.unrelated_position = unexpected_state == "position"
-    await service.arm(
-        OkxLiveArmRequest(duration_seconds=60, confirmation=LIVE_ARM_PHRASE)
-    )
+    await seed_legacy_local_lease_for_downstream_unit_test(service)
 
     result = await service.place_order(live_order())
 
@@ -988,9 +1037,7 @@ async def test_live_protection_allows_bounded_exchange_propagation_delay() -> No
     service, _, execution, intents, _ = service_fixture()
     service.settings = live_settings(okx_live_order_detail_poll_attempts=3)
     execution.protection_delay_reads = 2
-    await service.arm(
-        OkxLiveArmRequest(duration_seconds=60, confirmation=LIVE_ARM_PHRASE)
-    )
+    await seed_legacy_local_lease_for_downstream_unit_test(service)
 
     result = await service.place_order(live_order())
 
@@ -1002,9 +1049,7 @@ async def test_live_protection_allows_bounded_exchange_propagation_delay() -> No
 @pytest.mark.asyncio
 async def test_continuous_reconcile_uses_persisted_exact_protection_geometry() -> None:
     service, read, _, _, _ = service_fixture()
-    await service.arm(
-        OkxLiveArmRequest(duration_seconds=60, confirmation=LIVE_ARM_PHRASE)
-    )
+    await seed_legacy_local_lease_for_downstream_unit_test(service)
     await service.place_order(live_order())
 
     await service.reconcile()
@@ -1061,9 +1106,7 @@ async def test_reconcile_engages_stop_for_untrusted_unprotected_position() -> No
 @pytest.mark.asyncio
 async def test_reconcile_invalid_exposure_source_disarms_and_persists_latch() -> None:
     service, read, execution, intents, clock = service_fixture()
-    await service.arm(
-        OkxLiveArmRequest(duration_seconds=60, confirmation=LIVE_ARM_PHRASE)
-    )
+    await seed_legacy_local_lease_for_downstream_unit_test(service)
     mirror = service.mirror_repository
     assert mirror is not None
     prior_snapshots = len(mirror.snapshots)
@@ -1120,9 +1163,7 @@ async def test_reconcile_latch_write_failure_keeps_original_parse_error_and_loca
     None
 ):
     service, read, execution, _, _ = service_fixture()
-    await service.arm(
-        OkxLiveArmRequest(duration_seconds=60, confirmation=LIVE_ARM_PHRASE)
-    )
+    await seed_legacy_local_lease_for_downstream_unit_test(service)
     mirror = service.mirror_repository
     assert mirror is not None
     mirror.fail_latch_write = True
@@ -1172,9 +1213,7 @@ async def test_reconcile_unavailable_private_source_persists_stop() -> None:
 @pytest.mark.asyncio
 async def test_reconcile_cancellation_disarms_and_propagates() -> None:
     service, read, execution, _, _ = service_fixture()
-    await service.arm(
-        OkxLiveArmRequest(duration_seconds=60, confirmation=LIVE_ARM_PHRASE)
-    )
+    await seed_legacy_local_lease_for_downstream_unit_test(service)
     entered = asyncio.Event()
     blocked = asyncio.Event()
 
@@ -1201,9 +1240,7 @@ async def test_reconcile_cancellation_disarms_and_propagates() -> None:
 @pytest.mark.asyncio
 async def test_duplicate_idempotency_key_never_reaches_order_transport() -> None:
     service, read, execution, intents, _ = service_fixture()
-    await service.arm(
-        OkxLiveArmRequest(duration_seconds=60, confirmation=LIVE_ARM_PHRASE)
-    )
+    await seed_legacy_local_lease_for_downstream_unit_test(service)
     intents.rows["CTCCLabcdef"] = {
         "status": "reserved",
         "operator_reconciled_at": NOW,
@@ -1236,9 +1273,7 @@ async def test_startup_restores_stop_for_unresolved_durable_intent(
 @pytest.mark.asyncio
 async def test_unresolved_intent_blocks_new_key_inside_execution_lock() -> None:
     service, _, execution, intents, _ = service_fixture()
-    await service.arm(
-        OkxLiveArmRequest(duration_seconds=60, confirmation=LIVE_ARM_PHRASE)
-    )
+    await seed_legacy_local_lease_for_downstream_unit_test(service)
     intents.rows["CTCCXolder01"] = {"status": "ambiguous"}
 
     with pytest.raises(OkxLiveSafetyError, match="unresolved_execution_intents"):
@@ -1252,9 +1287,7 @@ async def test_unresolved_intent_blocks_leverage_but_legacy_close_reconciles(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service, read, execution, intents, _ = service_fixture()
-    await service.arm(
-        OkxLiveArmRequest(duration_seconds=60, confirmation=LIVE_ARM_PHRASE)
-    )
+    await seed_legacy_local_lease_for_downstream_unit_test(service)
     intents.rows["CTCCXolder02"] = {"status": "acknowledged"}
 
     with pytest.raises(OkxLiveSafetyError, match="unresolved_execution_intents"):
@@ -1441,9 +1474,7 @@ async def test_leverage_response_mismatch_disarms_before_live_order_post() -> No
             "lever": "2",
         }
     ]
-    await service.arm(
-        OkxLiveArmRequest(duration_seconds=60, confirmation=LIVE_ARM_PHRASE)
-    )
+    await seed_legacy_local_lease_for_downstream_unit_test(service)
 
     with pytest.raises(
         OkxLiveSafetyError,
@@ -1460,9 +1491,7 @@ async def test_leverage_response_mismatch_disarms_before_live_order_post() -> No
 @pytest.mark.asyncio
 async def test_database_wide_execution_lock_blocks_a_second_instance() -> None:
     service, _, execution, intents, _ = service_fixture()
-    await service.arm(
-        OkxLiveArmRequest(duration_seconds=60, confirmation=LIVE_ARM_PHRASE)
-    )
+    await seed_legacy_local_lease_for_downstream_unit_test(service)
     intents.busy = True
 
     with pytest.raises(OkxLiveBusyError, match="global_execution_lock_busy"):
@@ -1477,9 +1506,7 @@ async def test_ambiguous_order_transport_engages_stop_without_retry_or_auto_clos
 ):
     service, _, execution, intents, _ = service_fixture()
     execution.fail_place = True
-    await service.arm(
-        OkxLiveArmRequest(duration_seconds=60, confirmation=LIVE_ARM_PHRASE)
-    )
+    await seed_legacy_local_lease_for_downstream_unit_test(service)
 
     with pytest.raises(OkxPrivateApiError, match="network"):
         await service.place_order(live_order())
@@ -1497,9 +1524,7 @@ async def test_missing_protection_for_live_exposure_stops_but_never_silently_clo
 ):
     service, _, execution, intents, _ = service_fixture()
     execution.include_protection = False
-    await service.arm(
-        OkxLiveArmRequest(duration_seconds=60, confirmation=LIVE_ARM_PHRASE)
-    )
+    await seed_legacy_local_lease_for_downstream_unit_test(service)
 
     result = await service.place_order(live_order())
 
@@ -1516,9 +1541,7 @@ async def test_nonfinal_order_with_requested_protection_is_ambiguous_and_stops()
 ):
     service, _, execution, intents, _ = service_fixture()
     execution.order_state = "live"
-    await service.arm(
-        OkxLiveArmRequest(duration_seconds=60, confirmation=LIVE_ARM_PHRASE)
-    )
+    await seed_legacy_local_lease_for_downstream_unit_test(service)
 
     result = await service.place_order(live_order())
 
@@ -1533,9 +1556,7 @@ async def test_nonfinal_order_with_requested_protection_is_ambiguous_and_stops()
 async def test_empty_ack_after_single_live_post_is_persisted_as_ambiguous() -> None:
     service, _, execution, intents, _ = service_fixture()
     execution.empty_place_ack = True
-    await service.arm(
-        OkxLiveArmRequest(duration_seconds=60, confirmation=LIVE_ARM_PHRASE)
-    )
+    await seed_legacy_local_lease_for_downstream_unit_test(service)
 
     with pytest.raises(OkxLiveUnavailableError, match="write_acknowledgement_invalid"):
         await service.place_order(live_order())
@@ -1551,9 +1572,7 @@ async def test_empty_ack_after_single_live_post_is_persisted_as_ambiguous() -> N
 async def test_external_exposure_race_is_reconciled_before_actual_order_post() -> None:
     service, _, execution, intents, _ = service_fixture()
     execution.inject_exposure_after_caa = True
-    await service.arm(
-        OkxLiveArmRequest(duration_seconds=60, confirmation=LIVE_ARM_PHRASE)
-    )
+    await seed_legacy_local_lease_for_downstream_unit_test(service)
 
     with pytest.raises(
         OkxLiveSafetyError, match="positions_block_place_order_final_check"
@@ -1660,9 +1679,7 @@ async def test_canceled_order_with_nonzero_fill_is_ambiguous(
 @pytest.mark.asyncio
 async def test_set_leverage_rechecks_arm_and_flat_state_inside_global_lock() -> None:
     service, read, execution, _, _ = service_fixture()
-    await service.arm(
-        OkxLiveArmRequest(duration_seconds=60, confirmation=LIVE_ARM_PHRASE)
-    )
+    await seed_legacy_local_lease_for_downstream_unit_test(service)
     read.position_rows = [
         {
             "posId": "external-position",
@@ -1708,9 +1725,7 @@ async def test_restart_restores_durable_safety_latch_across_processes() -> None:
     assert restarted.arm_status().emergency_stop is True
     assert restarted.arm_status().safety_latch_code == "operator_emergency_stop"
     with pytest.raises(OkxLiveSafetyError, match="safety_latch_engaged"):
-        await restarted.arm(
-            OkxLiveArmRequest(duration_seconds=60, confirmation=LIVE_ARM_PHRASE)
-        )
+        await restarted._assert_safety_latch_clear()
 
 
 @pytest.mark.asyncio
@@ -1721,9 +1736,7 @@ async def test_safety_latch_read_failure_blocks_new_exposure() -> None:
     mirror.fail_latch_read = True
 
     with pytest.raises(OkxLiveUnavailableError, match="latch_unavailable"):
-        await service.arm(
-            OkxLiveArmRequest(duration_seconds=60, confirmation=LIVE_ARM_PHRASE)
-        )
+        await service._assert_safety_latch_clear()
 
     assert service.arm_status().emergency_stop is True
 
@@ -1797,9 +1810,7 @@ async def test_maintenance_write_lockdown_preserves_reconcile_disarm_and_estop()
     assert observed.persisted is True
     assert execution.calls == []
 
-    await service.arm(
-        OkxLiveArmRequest(duration_seconds=60, confirmation=LIVE_ARM_PHRASE)
-    )
+    await seed_legacy_local_lease_for_downstream_unit_test(service)
     disarmed = await service.disarm()
     assert disarmed.arm.armed is False
 

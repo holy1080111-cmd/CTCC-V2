@@ -19,7 +19,6 @@ from app.domain.demo_automation import EXECUTE_PHRASE
 from app.domain.okx_live import (
     LIVE_ARM_PHRASE,
     LIVE_AUTOMATION_EXECUTE_PHRASE,
-    OkxLiveArmRequest,
 )
 from app.exchange.okx.errors import OkxPrivateApiError
 from app.exchange.okx.private_rest import (
@@ -55,7 +54,38 @@ from tests.unit.test_okx_live_automation import (
 from tests.unit.test_okx_live_automation import (
     FakeStrategy as FakeLiveStrategy,
 )
-from tests.unit.test_okx_live_service import live_order, live_settings, service_fixture
+from tests.unit.test_okx_live_service import (
+    live_order,
+    live_settings,
+    seed_legacy_local_lease_for_downstream_unit_test,
+    service_fixture,
+)
+
+
+@pytest.mark.asyncio
+async def test_registered_live_arm_route_rejects_absent_qualification_authority(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _, execution, intents, _ = service_fixture()
+    route = importlib.import_module("app.api.routers.okx_live")
+    monkeypatch.setattr(route, "okx_live_service", service)
+    app.dependency_overrides[require_ctcc_token] = lambda: None
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+        ) as api_http:
+            response = await api_http.post(
+                "/api/okx-live/arm",
+                json={"duration_seconds": 60, "confirmation": LIVE_ARM_PHRASE},
+            )
+    finally:
+        app.dependency_overrides.pop(require_ctcc_token, None)
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "okx_live_qualification_authority_unavailable"
+    assert service.arm_status().armed is False
+    assert intents.rows == {}
+    assert execution.calls == []
 
 
 @pytest.mark.asyncio
@@ -133,9 +163,7 @@ async def test_registered_live_order_route_cannot_send_after_full_preflight(
         service.execution_client = OkxLiveExecutionRestClient(
             exchange_http, settings=service.settings
         )
-        await service.arm(
-            OkxLiveArmRequest(duration_seconds=60, confirmation=LIVE_ARM_PHRASE)
-        )
+        await seed_legacy_local_lease_for_downstream_unit_test(service)
         route = importlib.import_module("app.api.routers.okx_live")
         monkeypatch.setattr(route, "okx_live_service", service)
         app.dependency_overrides[require_ctcc_token] = lambda: None
@@ -195,9 +223,7 @@ async def test_live_service_rejects_unqualified_precheck_before_caa_or_order():
                 return await transport.place_order(payload)
 
         service.execution_client = ServiceExecution()
-        await service.arm(
-            OkxLiveArmRequest(duration_seconds=60, confirmation=LIVE_ARM_PHRASE)
-        )
+        await seed_legacy_local_lease_for_downstream_unit_test(service)
         with pytest.raises(OkxPrivateApiError) as caught:
             await service.place_order(live_order())
 
@@ -418,9 +444,7 @@ async def test_registered_live_automation_routes_reach_concrete_denial(
         service.execution_client = OkxLiveExecutionRestClient(
             exchange_http, settings=service.settings
         )
-        await service.arm(
-            OkxLiveArmRequest(duration_seconds=60, confirmation=LIVE_ARM_PHRASE)
-        )
+        await seed_legacy_local_lease_for_downstream_unit_test(service)
         worker = ControlledLiveAutomation(
             service,
             settings=service.settings,

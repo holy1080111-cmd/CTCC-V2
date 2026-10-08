@@ -13,13 +13,24 @@ from dataclasses import dataclass
 from typing import Literal
 
 from app.database.repositories.qualification_ledger import QualificationLedgerRepository
-from app.trade_qualification import account_capture, public_market_collector
+from app.trade_qualification import (
+    account_capture,
+    account_materializer,
+    public_market_collector,
+)
+from app.trade_qualification.data import WSReferenceObservation
+from app.trade_qualification.engine import PortfolioInputs
 from app.trade_qualification.event_observation import LedgerEventObservation
+from app.trade_qualification.market_bridge import public_market_snapshot
 from app.trade_qualification.one_shot import (
     OneShotCaptureResult,
+    _original,
     publish_capture_recheck,
 )
-from app.trade_qualification.recheck import copy_recorded_recheck
+from app.trade_qualification.recheck import (
+    copy_recorded_recheck,
+    verify_recorded_recheck,
+)
 from app.trade_qualification.recheck_models import freeze_recheck_origin
 from app.trade_qualification.reservations import (
     LedgerScope,
@@ -81,11 +92,19 @@ class OneShotLedgerBoundaryDiagnostic:
             raise ValueError("one_shot_ledger_cannot_grant_execution")
 
 
-def _fixed_pins(capture: OneShotCaptureResult, scope: LedgerScope, plan_sha256: str):
-    """Validate a diagnostic's fixed original and captured lineage only.
+def _fixed_pins(
+    capture: OneShotCaptureResult,
+    scope: LedgerScope,
+    plan_sha256: str,
+    original_market,
+    original_inputs,
+    materialization_inputs,
+    materialization_pin,
+):
+    """Replay this invocation's R7 record from frozen original/new inputs.
 
-    This is structural replay, not source authentication or a substitute for
-    recorded R7 evaluation from its original/current raw market inputs.
+    This is computational verification, not source authentication or account
+    completeness. It cannot grant an execution permit or write to the ledger.
     """
     if (
         type(capture) is not OneShotCaptureResult
@@ -129,6 +148,56 @@ def _fixed_pins(capture: OneShotCaptureResult, scope: LedgerScope, plan_sha256: 
         or recheck.quote_bundle_sha256 != public.quote.bundle_sha256
     ):
         raise ValueError("one_shot_fixed_lineage_mismatch")
+    if materialization_inputs is None:
+        if capture.account_materialization is not None:
+            raise ValueError("one_shot_mapping_without_inputs")
+        mapped = None
+    else:
+        if capture.account_materialization is None:
+            raise ValueError("one_shot_mapping_missing")
+        mapped = account_materializer.verify_account_materialization(
+            capture.account_materialization,
+            packet=account,
+            expected_plan_sha256=plan_sha256,
+            expected_packet_sha256=capture.account_payload_sha256,
+            inputs=materialization_inputs,
+            expected_inputs_sha256=materialization_pin,
+        )
+    current_market = public_market_snapshot(
+        public, expected_bundle_sha256=public.bundle_sha256
+    )
+    ticker = public.ws.ticker
+    reference = WSReferenceObservation(
+        report_id=public.report_id,
+        instrument_id=public.instrument_id,
+        bid=ticker.bid,
+        ask=ticker.ask,
+        source_time=ticker.source_time,
+        received_at=ticker.received_at,
+    )
+    risk = PortfolioInputs(
+        requested_contracts=original_inputs["risk_inputs"].requested_contracts,
+        requested_leverage=original_inputs["risk_inputs"].requested_leverage,
+        instrument=None
+        if mapped is None
+        else account_materializer.get_materialized_instrument(
+            mapped, original_inputs["intent"].instrument_id
+        ),
+        account=None if mapped is None else mapped.snapshot,
+        authority=None,
+    )
+    verify_recorded_recheck(
+        recheck,
+        original_market,
+        current_market,
+        origin=origin,
+        original_inputs=original_inputs,
+        quote=public.quote,
+        reference=reference,
+        current_risk_inputs=risk,
+        consumed_event_keys=original_inputs["consumed_event_keys"],
+        observed_at=recheck.observed_at,
+    )
     return origin, recheck
 
 
@@ -156,7 +225,29 @@ async def publish_capture_inspect_event_ledger(
         or plan.settlement_currency != scope.settlement_currency
     ):
         raise ValueError("one_shot_ledger_scope_mismatch")
-    capture = await publish_capture_recheck(**capture_kwargs)
+    # Freeze caller-owned original inputs before G12 or any network await. The
+    # ledger replay must use the same candidate/policy/bracket as publication.
+    try:
+        original_market, run, original_inputs = _original(
+            capture_kwargs["original_market"],
+            capture_kwargs["run"],
+            capture_kwargs["original_inputs"],
+        )
+        materialization_inputs = capture_kwargs.get("materialization_inputs")
+        if materialization_inputs is not None:
+            materialization_inputs = account_materializer.copy_materialization_inputs(
+                materialization_inputs
+            )
+        frozen_kwargs = dict(
+            capture_kwargs,
+            original_market=original_market,
+            run=run,
+            original_inputs=original_inputs,
+            materialization_inputs=materialization_inputs,
+        )
+    except Exception:  # noqa: BLE001 -- never expose caller/source values
+        raise ValueError("one_shot_original_input_invalid") from None
+    capture = await publish_capture_recheck(**frozen_kwargs)
     base = {
         "report_id": capture.report_id,
         "scope_sha256": digest(scope),
@@ -170,7 +261,13 @@ async def publish_capture_inspect_event_ledger(
         return OneShotLedgerBoundaryDiagnostic(code="capture_incomplete", **base)
     try:
         origin, recheck = _fixed_pins(
-            capture, scope, capture_kwargs["expected_account_plan_sha256"]
+            capture,
+            scope,
+            capture_kwargs["expected_account_plan_sha256"],
+            original_market,
+            original_inputs,
+            materialization_inputs,
+            capture_kwargs.get("expected_materialization_inputs_sha256"),
         )
         base.update(
             original_event_key=origin.original_event_key,

@@ -1,8 +1,11 @@
 # Live entry transport containment
 
 Live entry dispatch is blocked with `live_qualification_authority_unavailable`
-at the shared production execution transport. Configuration flags, the legacy
-service Arm, caller payloads and replayed journals cannot authorize new exposure.
+at the shared production execution transport. The Live service also rejects
+`/api/okx-live/arm` with `okx_live_qualification_authority_unavailable` and
+reports `qualification_authority_available=false`; it cannot create even a
+local Arm lease. Configuration flags, caller payloads and replayed journals
+cannot authorize new exposure.
 The boundary is checked before signing and immediately before HTTP dispatch;
 write configuration is also checked at both points. There is no enable switch.
 

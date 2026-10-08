@@ -1,15 +1,23 @@
 """Owned synthetic G12/recheck plus a read-only DB0017 event diagnostic."""
 
+from dataclasses import replace
+
 import pytest
 
 from app.database.repositories.qualification_ledger import QualificationLedgerRepository
 from app.trade_qualification import one_shot_ledger_boundary as bridge
+from app.trade_qualification.data import WSReferenceObservation
+from app.trade_qualification.engine import PortfolioInputs
 from app.trade_qualification.event_observation import VERSION, LedgerEventObservation
+from app.trade_qualification.market_bridge import public_market_snapshot
+from app.trade_qualification.recheck import evaluate_recorded_recheck
+from app.trade_qualification.recheck_models import freeze_recheck_origin
 from app.trade_qualification.reservations import LedgerScope, reservation_id
 from tests.unit.test_qualification_account_capture import UID
 from tests.unit.test_qualification_one_shot import (
     CaptureHarness,
     arguments,
+    supplements,
     synthetic_publisher,
 )
 from tests.unit.test_qualification_one_shot import (
@@ -119,3 +127,134 @@ def test_diagnostic_cannot_claim_reservation_or_intent():
             scope_sha256="0" * 64,
             durable_intent_created=True,
         )
+
+
+@pytest.mark.asyncio
+async def test_recheck_with_changed_risk_is_rejected_before_event_read(
+    inputs, tmp_path, monkeypatch
+):
+    args = arguments(inputs, tmp_path)
+    synthetic_publisher(monkeypatch)
+    harness = CaptureHarness(monkeypatch, inputs[0], args["clock"])
+    original_capture = bridge.publish_capture_recheck
+    scope = LedgerScope(account_id=UID, settlement_currency="USDT")
+    ledger = QualificationLedgerRepository(None, clock=args["clock"])
+    reads = []
+
+    async def forged_capture(**kwargs):
+        capture = await original_capture(**kwargs)
+        assert capture.recheck is not None
+        public = capture.market_packet
+        assert public is not None
+        ticker = public.ws.ticker
+        reference = WSReferenceObservation(
+            report_id=public.report_id,
+            instrument_id=public.instrument_id,
+            bid=ticker.bid,
+            ask=ticker.ask,
+            source_time=ticker.source_time,
+            received_at=ticker.received_at,
+        )
+        frozen = kwargs["original_inputs"]
+        original_risk = frozen["risk_inputs"]
+        changed_risk = PortfolioInputs(
+            requested_contracts=original_risk.requested_contracts + 1,
+            requested_leverage=original_risk.requested_leverage,
+            instrument=None,
+            account=None,
+            authority=None,
+        )
+        forged = evaluate_recorded_recheck(
+            kwargs["original_market"],
+            public_market_snapshot(public, expected_bundle_sha256=public.bundle_sha256),
+            origin=freeze_recheck_origin(capture.evidence),
+            original_inputs=frozen,
+            quote=public.quote,
+            reference=reference,
+            current_risk_inputs=changed_risk,
+            consumed_event_keys=frozen["consumed_event_keys"],
+            observed_at=capture.recheck.observed_at,
+        )
+        assert forged != capture.recheck
+        assert forged.origin == capture.recheck.origin
+        assert forged.quote_bundle_sha256 == capture.recheck.quote_bundle_sha256
+        return replace(capture, recheck=forged)
+
+    async def read_event(*_args):
+        reads.append(True)
+        raise AssertionError("mismatched R7 record reached DB read")
+
+    monkeypatch.setattr(bridge, "publish_capture_recheck", forged_capture)
+    monkeypatch.setattr(ledger, "read_event_observation", read_event)
+    result = await bridge.publish_capture_inspect_event_ledger(
+        ledger=ledger, scope=scope, **args
+    )
+    assert result.code == "capture_binding_invalid"
+    assert result.admission == "DENY"
+    assert not reads
+    harness.assert_closed()
+
+
+@pytest.mark.asyncio
+async def test_caller_mutation_after_g12_cannot_change_replayed_original(
+    inputs, tmp_path, monkeypatch
+):
+    args = arguments(inputs, tmp_path)
+    synthetic_publisher(monkeypatch)
+    source_inputs = args["original_inputs"]
+
+    def mutate_caller():
+        source_inputs["intent"] = None
+
+    harness = CaptureHarness(
+        monkeypatch, inputs[0], args["clock"], before_request=mutate_caller
+    )
+    scope = LedgerScope(account_id=UID, settlement_currency="USDT")
+    ledger = QualificationLedgerRepository(None, clock=args["clock"])
+    reads = []
+
+    async def read_event(read_scope, event_key):
+        reads.append((read_scope, event_key))
+        return _observation(scope, event_key, args["clock"])
+
+    monkeypatch.setattr(ledger, "read_event_observation", read_event)
+    result = await bridge.publish_capture_inspect_event_ledger(
+        ledger=ledger, scope=scope, **args
+    )
+    assert source_inputs["intent"] is None
+    assert result.code == "trusted_execution_inputs_missing"
+    assert result.admission == "DENY"
+    assert len(reads) == 1
+    harness.assert_closed()
+
+
+@pytest.mark.asyncio
+async def test_pinned_account_mapping_is_replayed_without_authority(
+    inputs, tmp_path, monkeypatch
+):
+    args = arguments(inputs, tmp_path)
+    supplied = supplements(inputs)
+    args["materialization_inputs"] = supplied
+    args["expected_materialization_inputs_sha256"] = (
+        bridge.account_materializer.materialization_inputs_sha256(supplied)
+    )
+    synthetic_publisher(monkeypatch)
+    harness = CaptureHarness(monkeypatch, inputs[0], args["clock"])
+    scope = LedgerScope(account_id=UID, settlement_currency="USDT")
+    ledger = QualificationLedgerRepository(None, clock=args["clock"])
+    reads = []
+
+    async def read_event(read_scope, event_key):
+        reads.append((read_scope, event_key))
+        return _observation(scope, event_key, args["clock"])
+
+    monkeypatch.setattr(ledger, "read_event_observation", read_event)
+    result = await bridge.publish_capture_inspect_event_ledger(
+        ledger=ledger, scope=scope, **args
+    )
+    assert result.code == "trusted_execution_inputs_missing"
+    assert result.admission == "DENY"
+    assert not result.account_complete
+    assert not result.execution_authority
+    assert len(reads) == 1
+    harness.assert_closed()

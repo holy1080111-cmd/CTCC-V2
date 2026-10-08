@@ -448,3 +448,12 @@ Structural/economics/portfolio checkpoint:
 Full completion requires every source acceptance condition and all four real,
 reproducible evidence examples. Synthetic unit fixtures are not Demo samples,
 TradingView captures, source verification, or a claim of profitability.
+
+The original [Notion construction instruction](https://app.notion.com/p/3d832165a6888173bfb1df896604fc7c)
+requires these exact four examples: a blocked old-style high-score bad signal
+with complete evidence; a Demo candidate that passes the new qualification
+with complete evidence; a candidate canceled by Execution Recheck after price
+moves during evidence generation; and a `summary.png` that visibly shows
+Entry, Timing, SL, TP, liquidity and Gate results. The later PASS/WAIT and
+execution-reconciliation grouping adds validation but does not replace these
+four. Current real-source completion is 0/4.

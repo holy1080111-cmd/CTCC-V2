@@ -137,6 +137,12 @@ position disappears or the bounded confirmation window ends.
 
 ## 5. One-shot automation
 
+Historical v1.6.8 procedure only: the V2 final-completion branch deliberately
+rejects Live Arm before any order path because its native qualification issuer
+is not complete. The commands below are retained to explain the earlier design;
+they are not an executable Micro Live acceptance procedure for the current
+branch.
+
 Only after the manual micro-order gate has been reviewed:
 
 ```env

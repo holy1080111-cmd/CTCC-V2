@@ -359,6 +359,12 @@ POST /api/okx-live/automation/stop
 POST /api/okx-live/automation/run-once
 ```
 
+The current V2 completion branch rejects `POST /api/okx-live/arm` with
+`okx_live_qualification_authority_unavailable`. Status reports
+`qualification_authority_available=false`. The Live qualification issuer,
+complete account source, and operator's final Micro Live approval are still
+required; no Live entry order is eligible.
+
 Account IDs and raw OKX payloads are excluded from API response models. The
 database mirror stores one-way account fingerprints so a changed account cannot
 silently replace the original mirror.

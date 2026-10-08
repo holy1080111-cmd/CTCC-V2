@@ -4,8 +4,12 @@
 post-publication public and Demo account captures, and fixed-candidate recorded
 recheck in one invocation. It then validates the G12/recheck/capture lineage and
 reads the original event key through DB0017's account-scoped, locked
-`read_event_observation`. The diagnostic pins the evidence, recheck and account
-packet hashes, exact DB0017 reservation ID and measured event observation hash.
+`read_event_observation`. Before that read, the bridge freezes the original
+candidate inputs and independently replays the recorded R7 assessment from the
+same original market, newly captured market/quote and verified account
+materialization. A changed risk input or caller mutation after G12 is rejected.
+The diagnostic pins the evidence, recheck and account packet hashes, exact
+DB0017 reservation ID and measured event observation hash.
 An existing reservation, including a terminal tombstone or one stored under
 another settlement currency for the same UID, is reported as already recorded.
 
@@ -30,5 +34,6 @@ satisfied by the diagnostic hash.
 `tests/unit/test_one_shot_ledger_boundary.py` exercises both directions with
 real synthetic G1–G12/recheck evaluators and raw simulated GET/WS capture,
 then a fake read-only event observation. It checks absent, changed and failed
-ledger reads, wrong UID before G12, and immutable denial flags. These are
+ledger reads, wrong UID before G12, forged risk assessment, caller mutation,
+and immutable denial flags. These are
 synthetic tests; they are not a PostgreSQL, Demo or execution acceptance.

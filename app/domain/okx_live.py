@@ -175,6 +175,7 @@ class OkxLiveStatus(BaseModel):
     trading_mode: str
     credentials_configured: bool
     read_ready: bool
+    qualification_authority_available: Literal[False] = False
     live_trading_enabled: bool
     writes_enabled: bool
     automation_enabled: bool

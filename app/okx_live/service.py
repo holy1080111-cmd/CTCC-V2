@@ -6,7 +6,7 @@ import json
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from decimal import Decimal
 
 from app.config.settings import Settings, get_settings
@@ -125,7 +125,12 @@ class OkxLiveService:
             self._engage_emergency_stop(
                 mirror.safety_latch_code or "okx_live_safety_latch_engaged"
             )
-        blockers = self._configuration_blockers(self._last_capability)
+        blockers = sorted(
+            {
+                *self._configuration_blockers(self._last_capability),
+                "okx_live_qualification_authority_unavailable",
+            }
+        )
         if self._unresolved_intent_count:
             blockers = sorted(
                 {
@@ -150,6 +155,7 @@ class OkxLiveService:
                 self._last_capability is not None
                 and not any(item in read_blockers for item in blockers)
             ),
+            qualification_authority_available=False,
             live_trading_enabled=self.settings.live_trading,
             writes_enabled=self.settings.okx_live_allow_order_writes,
             automation_enabled=self.settings.okx_live_auto_execution,
@@ -395,25 +401,13 @@ class OkxLiveService:
             raise
 
     async def arm(self, request: OkxLiveArmRequest) -> OkxLiveStatus:
-        self._ensure_write_configuration()
-        if request.duration_seconds > self.settings.okx_live_arm_ttl_seconds:
-            raise OkxLiveSafetyError("okx_live_arm_duration_exceeds_configured_ttl")
-        if self._write_lock.locked():
-            raise OkxLiveBusyError("okx_live_write_in_progress")
-        async with self._execution_guard():
-            snapshot = await self.reconcile()
-            self._validate_write_capability(snapshot.account_config)
-            self._ensure_flat(snapshot, action="arm")
-            await self._assert_execution_safe()
-            if snapshot.balance.total_equity <= 0:
-                raise OkxLiveSafetyError("okx_live_equity_not_positive")
-            self._baseline_equity = snapshot.balance.total_equity
-            self._submissions = 0
-            self._armed_until = self._now() + timedelta(
-                seconds=request.duration_seconds
-            )
-            self._last_error = None
-        return await self.status()
+        # No account-scoped, one-use Live qualification issuer exists yet.
+        # A flat legacy reconciliation and a confirmation phrase cannot grant
+        # production execution authority. Do not create even a local lease.
+        del request
+        self._disarm_local()
+        self._last_error = "okx_live_qualification_authority_unavailable"
+        raise OkxLiveSafetyError("okx_live_qualification_authority_unavailable")
 
     async def disarm(self) -> OkxLiveStatus:
         self._disarm_local()
