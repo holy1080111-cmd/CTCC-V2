@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import inspect
 
 import httpx
 import pytest
@@ -225,7 +226,9 @@ async def test_registered_demo_automation_run_once_reaches_concrete_denial(
         class AutomationPreflight(FakeDemo):
             async def place_order(self, order, *, before_submit=None):
                 if before_submit is not None:
-                    before_submit()
+                    callback_result = before_submit()
+                    if inspect.isawaitable(callback_result):
+                        await callback_result
                 self.place_calls.append(order)
                 return await transport.place_order(
                     {"instId": order.instrument_id, "ordType": order.order_type}
@@ -336,7 +339,9 @@ async def test_registered_demo_scheduler_reaches_concrete_order_denial(
         class AutomationPreflight(FakeDemo):
             async def place_order(self, order, *, before_submit=None):
                 if before_submit is not None:
-                    before_submit()
+                    callback_result = before_submit()
+                    if inspect.isawaitable(callback_result):
+                        await callback_result
                 self.place_calls.append(order)
                 return await transport.place_order(
                     {"instId": order.instrument_id, "ordType": order.order_type}

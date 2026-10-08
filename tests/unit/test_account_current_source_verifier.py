@@ -75,7 +75,7 @@ def test_policy_v2_pins_current_v5_stream_and_algo_inventory():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("all_product", [False, True])
-async def test_real_empty_pages_have_diagnostic_flat_only_with_exact_scope(
+async def test_empty_legacy_algo_pages_are_revoked_even_with_exact_scope(
     monkeypatch, all_product
 ):
     chain = await recorded(monkeypatch, all_product=all_product)
@@ -89,9 +89,13 @@ async def test_real_empty_pages_have_diagnostic_flat_only_with_exact_scope(
     before = tuple(item.event for item in chain)
     result = verify(chain)
     value = json.loads(result.receipt_json)
-    assert value["schema_version"] == "ctcc.current_account_source_observation.v2"
-    assert value["observed_flat"] is True
-    assert not value["blocking_reasons"]
+    assert value["schema_version"] == "ctcc.current_account_source_observation.v5"
+    assert value["algo_coverage_revocation_sha256"] == (
+        current.ALGO_COVERAGE_REVOCATION_SHA256
+    )
+    assert value["effective_policy_sha256"] != value["policy_sha256"]
+    assert value["observed_flat"] is False
+    assert value["blocking_reasons"] == ["algo_type_coverage_incomplete"]
     assert all(count == 0 for count in value["inventory_row_counts"].values())
     assert value["packet_schema_version"].endswith("v5")
     assert "source_fields_missing" not in value["packet_incomplete_reasons"]
@@ -103,13 +107,41 @@ async def test_real_empty_pages_have_diagnostic_flat_only_with_exact_scope(
 
 
 @pytest.mark.asyncio
-async def test_futures_inapplicable_top_level_available_equity_preserves_flat_diagnostic(
+async def test_sealed_v5_four_empty_algo_queries_cannot_hide_chase_or_twap(
+    monkeypatch,
+):
+    chain = await recorded(monkeypatch)
+    packet_bytes = next(
+        item.event.packet_payload for item in chain if item.event.packet_payload
+    )
+    result = json.loads(verify(chain).receipt_json)
+    assert result["policy_sha256"] == current.POLICY_SHA256
+    assert result["effective_policy_sha256"] == current.journal.digest(
+        current.journal.canonical(
+            [current.POLICY_SHA256, current.ALGO_COVERAGE_REVOCATION_SHA256]
+        )
+    )
+    for unqueried in ("algo_chase", "algo_twap"):
+        with pytest.raises(capture.AccountCaptureError, match="stream_invalid"):
+            capture.account_request(all_product_plan(), unqueried)
+    assert result["observed_flat"] is False
+    assert result["observed_inventory_state"] == "incomplete_or_exposed"
+    assert "algo_type_coverage_incomplete" in result["blocking_reasons"]
+    assert packet_bytes == next(
+        item.event.packet_payload for item in chain if item.event.packet_payload
+    )
+    assert result["account_complete"] is result["execution_authority"] is False
+
+
+@pytest.mark.asyncio
+async def test_futures_inapplicable_top_level_available_equity_preserves_value_but_not_flatness(
     monkeypatch,
 ):
     pages = flat_pages()
     pages["balance"][0][0]["availEq"] = ""
     data = json.loads(verify(await recorded(monkeypatch, pages=pages)).receipt_json)
-    assert data["observed_flat"] is True
+    assert data["observed_flat"] is False
+    assert "algo_type_coverage_incomplete" in data["blocking_reasons"]
     assert "source_fields_missing" not in data["packet_incomplete_reasons"]
     assert data["balance"]["available_equity"] == {
         "numerator": "800",
@@ -119,13 +151,14 @@ async def test_futures_inapplicable_top_level_available_equity_preserves_flat_di
 
 
 @pytest.mark.asyncio
-async def test_futures_inapplicable_risk_adjusted_equity_preserves_flat_diagnostic(
+async def test_futures_inapplicable_risk_adjusted_equity_does_not_restore_flatness(
     monkeypatch,
 ):
     pages = flat_pages()
     pages["account_position_risk"][0][0]["adjEq"] = ""
     data = json.loads(verify(await recorded(monkeypatch, pages=pages)).receipt_json)
-    assert data["observed_flat"] is True
+    assert data["observed_flat"] is False
+    assert "algo_type_coverage_incomplete" in data["blocking_reasons"]
     assert "source_fields_missing" not in data["packet_incomplete_reasons"]
     assert data["account_complete"] is data["execution_authority"] is False
 
@@ -157,7 +190,8 @@ async def test_old_unchanged_u_time_remains_old_while_measured_receipt_is_new(
         data["balance"]["source_update_times"]["account_uTime"]["value"]
         < stamp["request_started_at"]
     )
-    assert data["observed_flat"] is True
+    assert data["observed_flat"] is False
+    assert "algo_type_coverage_incomplete" in data["blocking_reasons"]
 
 
 @pytest.mark.asyncio
@@ -181,7 +215,8 @@ async def test_freshness_is_measured_at_explicit_cutoff_not_rewritten_source_tim
     stale = json.loads(
         verify(chain, validated_at=NOW + timedelta(seconds=31)).receipt_json
     )
-    assert fresh["observed_flat"] is True and stale["observed_flat"] is False
+    assert fresh["observed_flat"] is False and stale["observed_flat"] is False
+    assert "algo_type_coverage_incomplete" in fresh["blocking_reasons"]
     assert "measured_current_receipt_stale" in stale["blocking_reasons"]
     assert (
         fresh["balance"]["source_update_times"]

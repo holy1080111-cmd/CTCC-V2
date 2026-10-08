@@ -33,6 +33,33 @@ INVENTORY_STREAMS = (
     "orders_pending",
     *(stream for stream in CURRENT_STREAMS if stream.startswith("algo_")),
 )
+V7_CURRENT_STREAMS = capture.V7_CURRENT_STREAMS
+V7_INVENTORY_STREAMS = (
+    "positions",
+    "orders_pending",
+    *(stream for stream in V7_CURRENT_STREAMS if stream.startswith("algo_")),
+)
+# The sealed v5/v6 plans queried only four algo ordTypes. The current OKX
+# regional algo-list contract also documents chase, iceberg, twap and
+# smart_iceberg. Preserve those original plan/packet bytes for replay, but
+# never elevate their empty queried subsets to an account-flat observation.
+# Revocation is a separate, versioned interpretation of already sealed
+# policies. Their source plans, packets and original policy hashes never
+# change; new readouts carry this identity and cannot reissue their old flat
+# assertion under an unchanged effective interpretation.
+ALGO_COVERAGE_REVOCATION_BYTES = journal.canonical(
+    {
+        "version": "ctcc.current_algo_coverage_revocation.v1",
+        "affected_capture_contracts": [
+            "ctcc.demo_account_plan.v5",
+            "ctcc.demo_current_account_plan.v6",
+        ],
+        "unqueried_ord_types": ["chase", "iceberg", "twap", "smart_iceberg"],
+        "rule": "four_type_empty_inventory_is_not_account_flat",
+        "authority": False,
+    }
+)
+ALGO_COVERAGE_REVOCATION_SHA256 = journal.digest(ALGO_COVERAGE_REVOCATION_BYTES)
 POLICY_BYTES = journal.canonical(
     {
         "version": "ctcc.current_account_source_policy.v2",
@@ -87,6 +114,26 @@ V6_POLICY_BYTES = journal.canonical(
     }
 )
 V6_POLICY_SHA256 = journal.digest(V6_POLICY_BYTES)
+V7_POLICY_BYTES = journal.canonical(
+    {
+        "version": "ctcc.current_account_source_policy.v5",
+        "prior_current_policy_sha256": V6_POLICY_SHA256,
+        "capture_plan_contract": "ctcc.demo_current_account_plan.v7",
+        "current_streams": list(V7_CURRENT_STREAMS),
+        "inventory_streams": list(V7_INVENTORY_STREAMS),
+        "algo_order_types": list(capture.CURRENT_ALGO_ORDER_TYPES_V7),
+        "query_scope": "eight_exact_unfiltered_algo_ordtypes_with_empty_terminal_pages",
+        "original_journal": "complete_B1_page_chain_and_terminal_replay_required",
+        "freshness_basis": "replay_verified_B1_body_complete_EOF",
+        "maximum_measured_receipt_age_seconds": 30,
+        "exact_identity": "environment_uid_main_uid_session_region_mode_currency",
+        "history": "separate_original_history_required",
+        "flat_start_permission": False,
+        "account_complete": False,
+        "execution_authority": False,
+    }
+)
+V7_POLICY_SHA256 = journal.digest(V7_POLICY_BYTES)
 
 
 class CurrentAccountSourceError(ValueError):
@@ -143,7 +190,7 @@ def verify_current_account_sources(
         raise CurrentAccountSourceError("current_source_verification_invalid") from None
 
 
-def _verify_current_only_chain(chain, reference, scope, *, with_eof=False):
+def _verify_current_only_chain(chain, reference, scope, *, policy, with_eof=False):
     """Replay the complete B1 current-only journal, without inventing history."""
     records = history._chain(chain, reference.head_sha256)
     packets = [item.event.packet_payload for item in chain if item.event.packet_payload]
@@ -154,7 +201,14 @@ def _verify_current_only_chain(chain, reference, scope, *, with_eof=False):
         expected_sha256=reference.packet_sha256,
         expected_plan_sha256=reference.plan_sha256,
     )
-    if type(packet.plan) is not capture.CurrentDemoAccountCapturePlanV6:
+    v7 = policy == V7_POLICY_SHA256
+    expected_plan = (
+        capture.CurrentDemoAccountCapturePlanV7
+        if v7
+        else capture.CurrentDemoAccountCapturePlanV6
+    )
+    requested_streams = V7_CURRENT_STREAMS if v7 else capture.V6_CURRENT_STREAMS
+    if type(packet.plan) is not expected_plan:
         _deny("current_source_capture_plan_version_required")
     initial = records[0]["data"]
     if (
@@ -170,7 +224,7 @@ def _verify_current_only_chain(chain, reference, scope, *, with_eof=False):
         != journal.canonical(capture._json_value(packet.plan))
         or initial.get("session_binding_sha256")
         != journal.digest(packet.plan.session_binding_id.encode("ascii"))
-        or initial.get("requested_streams") != list(capture.V6_CURRENT_STREAMS)
+        or initial.get("requested_streams") != list(requested_streams)
     ):
         _deny("current_source_capture_binding_mismatch")
     journal._sha(initial.get("local_checkpoint_sha256"))
@@ -218,7 +272,13 @@ def _verify(chain, reference, scope, validated_at, policy):
     if (
         type(validated_at) is not datetime
         or type(policy) is not str
-        or policy not in {POLICY_SHA256, V6_LEGACY_POLICY_SHA256, V6_POLICY_SHA256}
+        or policy
+        not in {
+            POLICY_SHA256,
+            V6_LEGACY_POLICY_SHA256,
+            V6_POLICY_SHA256,
+            V7_POLICY_SHA256,
+        }
     ):
         _deny("current_source_policy_or_validation_invalid")
     at = capture._utc(validated_at)
@@ -243,26 +303,43 @@ def _verify(chain, reference, scope, validated_at, policy):
     )
     current_replay = (
         _verify_current_only_chain(
-            chain, reference, scope, with_eof=policy == V6_POLICY_SHA256
+            chain,
+            reference,
+            scope,
+            policy=policy,
+            with_eof=policy in {V6_POLICY_SHA256, V7_POLICY_SHA256},
         )
-        if policy in {V6_LEGACY_POLICY_SHA256, V6_POLICY_SHA256}
+        if policy in {V6_LEGACY_POLICY_SHA256, V6_POLICY_SHA256, V7_POLICY_SHA256}
         else None
     )
-    eof_times = current_replay if policy == V6_POLICY_SHA256 else None
+    eof_times = (
+        current_replay if policy in {V6_POLICY_SHA256, V7_POLICY_SHA256} else None
+    )
     if at < packet.completed_at:
         _deny("current_source_validation_precedes_capture")
-    blocked = set()
-    if type(packet.plan) is not (
+    # Sealed v5/v6 inventories queried only four algo types. The V7 plan has
+    # eight independently replayed query/page chains and a separate policy.
+    blocked = set() if policy == V7_POLICY_SHA256 else {"algo_type_coverage_incomplete"}
+    expected_plan = (
         capture.AllProductDemoAccountCapturePlan
         if policy == POLICY_SHA256
+        else capture.CurrentDemoAccountCapturePlanV7
+        if policy == V7_POLICY_SHA256
         else capture.CurrentDemoAccountCapturePlanV6
-    ):
+    )
+    if type(packet.plan) is not expected_plan:
         _deny("current_source_capture_plan_version_required")
     if packet.plan.registration_region != "global":
         blocked.add("current_source_region_unsupported")
     if scope.settlement_currency != "USDT":
         blocked.add("current_source_settlement_unsupported")
-    grouped = {stream: [] for stream in CURRENT_STREAMS}
+    current_streams = (
+        V7_CURRENT_STREAMS if policy == V7_POLICY_SHA256 else CURRENT_STREAMS
+    )
+    inventory_streams = (
+        V7_INVENTORY_STREAMS if policy == V7_POLICY_SHA256 else INVENTORY_STREAMS
+    )
+    grouped = {stream: [] for stream in current_streams}
     pages, records = [], []
     for request_index, page in enumerate(packet.observations):
         stream = page.request.stream
@@ -271,7 +348,7 @@ def _verify(chain, reference, scope, validated_at, policy):
         grouped[stream].append(page)
         # Query replay already validates the complete page chain and exact
         # requests; explicitly retain its current-inventory request scope.
-        if stream in INVENTORY_STREAMS and any(
+        if stream in inventory_streams and any(
             name in {"instId", "instType", "ccy"} for name, _ in page.request.parameters
         ):
             _deny("current_inventory_filtered_query")
@@ -290,12 +367,12 @@ def _verify(chain, reference, scope, validated_at, policy):
             "terminal": page.terminal,
             "row_count": len(page.rows),
         }
-        if policy == V6_POLICY_SHA256:
+        if policy in {V6_POLICY_SHA256, V7_POLICY_SHA256}:
             page_record["body_exhausted_at"] = eof_times[request_index].isoformat()
         pages.append(page_record)
         for ordinal, row in enumerate(page.rows):
             raw = json.loads(row.canonical_json)
-            if stream in INVENTORY_STREAMS and raw.get("instType") != "SWAP":
+            if stream in inventory_streams and raw.get("instType") != "SWAP":
                 blocked.add("current_exposure_product_unsupported")
             records.append(
                 {
@@ -329,7 +406,7 @@ def _verify(chain, reference, scope, validated_at, policy):
     )
     earliest_received = (
         min(eof_times)
-        if policy == V6_POLICY_SHA256
+        if policy in {V6_POLICY_SHA256, V7_POLICY_SHA256}
         else min(page.body_completed_at for group in grouped.values() for page in group)
     )
     if finished - started > timedelta(seconds=120):
@@ -389,7 +466,7 @@ def _verify(chain, reference, scope, validated_at, policy):
     blocked.update(cross.blocking_reasons)
     counts = {
         stream: sum(len(page.rows) for page in grouped[stream])
-        for stream in INVENTORY_STREAMS
+        for stream in inventory_streams
     }
     exchange_empty = not any(counts.values())
     if exchange_empty and current_field_missing:
@@ -398,13 +475,18 @@ def _verify(chain, reference, scope, validated_at, policy):
         blocked.add("current_exposure_requires_protection_and_local_join")
     value = {
         "schema_version": (
-            "ctcc.current_account_source_observation.v2"
-            if policy == POLICY_SHA256
-            else "ctcc.current_account_source_observation.v3"
-            if policy == V6_LEGACY_POLICY_SHA256
-            else "ctcc.current_account_source_observation.v4"
+            "ctcc.current_account_source_observation.v6"
+            if policy == V7_POLICY_SHA256
+            else "ctcc.current_account_source_observation.v5"
         ),
         "policy_sha256": policy,
+        "effective_policy_sha256": (
+            policy
+            if policy == V7_POLICY_SHA256
+            else journal.digest(
+                journal.canonical([policy, ALGO_COVERAGE_REVOCATION_SHA256])
+            )
+        ),
         "scope_sha256": journal.digest(
             journal.canonical(
                 [scope.environment, scope.account_id, scope.settlement_currency]
@@ -477,11 +559,27 @@ def _verify(chain, reference, scope, validated_at, policy):
         "execution_authority": False,
         "admission": "DENY",
     }
-    if policy in {V6_LEGACY_POLICY_SHA256, V6_POLICY_SHA256}:
+    if policy == V7_POLICY_SHA256:
+        value["algo_type_coverage"] = {
+            "order_types": list(capture.CURRENT_ALGO_ORDER_TYPES_V7),
+            "terminal_receipt_sha256s": {
+                stream: grouped[stream][-1].receipt_sha256
+                for stream in V7_INVENTORY_STREAMS
+                if stream.startswith("algo_")
+            },
+            "all_eight_terminal_chains_replayed": True,
+        }
+    else:
+        value["algo_coverage_revocation_sha256"] = ALGO_COVERAGE_REVOCATION_SHA256
+    if policy in {
+        V6_LEGACY_POLICY_SHA256,
+        V6_POLICY_SHA256,
+        V7_POLICY_SHA256,
+    }:
         value["recorded_current_chain_head_sha256"] = reference.head_sha256
         value["history_join_state"] = "separate_original_history_required"
         value["unverified"].append("separate_history_source_join")
-    if policy == V6_POLICY_SHA256:
+    if policy in {V6_POLICY_SHA256, V7_POLICY_SHA256}:
         value["observation_interval"]["earliest_body_exhausted_at"] = (
             earliest_received.isoformat()
         )

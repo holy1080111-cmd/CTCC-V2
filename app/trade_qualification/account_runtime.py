@@ -277,6 +277,7 @@ class ControlledDemoAccountSession:
                 capture.RegionalDemoAccountCapturePlan,
                 capture.AllProductDemoAccountCapturePlan,
                 capture.CurrentDemoAccountCapturePlanV6,
+                capture.CurrentDemoAccountCapturePlanV7,
             }:
                 raise AccountRuntimeError("explicit_registration_region_required")
             selected = capture._checked_plan(plan, expected_plan_sha256)

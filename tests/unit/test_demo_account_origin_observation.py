@@ -14,7 +14,7 @@ from weakref import ref
 
 import pytest
 
-from app.domain.source_primitives import canonical, sha
+from app.domain.source_primitives import canonical, sha, utc_from_ns
 from app.trade_qualification import account_capture as capture
 from app.trade_qualification import account_capture_journal as journal
 from app.trade_qualification import account_native_proof as proof
@@ -28,11 +28,11 @@ from tests.unit.test_qualification_account_collector import credentials
 
 async def prepared(monkeypatch):
     raw, files, chain, scope, samples = await companion_fixture(
-        monkeypatch, current_only=True
+        monkeypatch, current_v7=True
     )
     verified = replay(raw, files, chain, scope)
     reference, packet, _records, joins = proof._source(
-        chain, scope, proof_schema=proof.V3_SCHEMA
+        chain, scope, proof_schema=proof.V7_FLAT_SCHEMA
     )
     plan = packet.plan
     session = ControlledDemoAccountSession(
@@ -66,7 +66,26 @@ async def prepared(monkeypatch):
     )
     monkeypatch.setattr(runtime.native.clock, "native_stamp", samples)
     issued = samples()
-    receipt = canonical({"proof_sha256": sha(raw), "admission": "DENY"})
+    receipt = canonical(
+        {
+            "schema_version": "ctcc.initial_native_account_diagnostic.v3",
+            "policy_sha256": proof.V7_FLAT_POLICY_SHA256,
+            "source_reference": runtime.observed.reference_document(reference),
+            "proof_sha256": sha(raw),
+            "proof_readback_sha256": "b" * 64,
+            "current_source_receipt_sha256": sha(verified.current_source_receipt_json),
+            "current_native_source_observed": True,
+            "native_sampled_hwm_verified": False,
+            "observed_at": utc_from_ns(issued["utc_ns"]).isoformat(),
+            "expires_at": verified.expires_at.isoformat(),
+            "snapshot": None,
+            "account_complete": False,
+            "account_revision_published": False,
+            "flat_start_permission": False,
+            "execution_authority": False,
+            "admission": "DENY",
+        }
+    )
     arguments = {
         "receipt_json": receipt,
         "proof_sha256": sha(raw),
@@ -222,13 +241,13 @@ def _rechain_tls_host(chain, hostname):
 @pytest.mark.asyncio
 async def test_old_chain_replays_but_cannot_mint_without_tls_host(monkeypatch):
     raw, files, chain, scope, _samples = await companion_fixture(
-        monkeypatch, current_only=True
+        monkeypatch, current_v7=True
     )
     original = replay(raw, files, chain, scope)
     assert original.proof_sha256 == sha(raw)
     legacy_chain = _rechain_tls_host(chain, None)
     reference, packet, records, joins = proof._source(
-        legacy_chain, scope, proof_schema=proof.V3_SCHEMA
+        legacy_chain, scope, proof_schema=proof.V7_FLAT_SCHEMA
     )
     assert len(records) > 0
     assert packet == original.packet
@@ -287,13 +306,13 @@ async def test_old_chain_replays_but_cannot_mint_without_tls_host(monkeypatch):
 @pytest.mark.asyncio
 async def test_recorded_tls_host_conflict_is_rejected_before_observation(monkeypatch):
     _raw, _files, chain, scope, _samples = await companion_fixture(
-        monkeypatch, current_only=True
+        monkeypatch, current_v7=True
     )
     conflicting = _rechain_tls_host(chain, "us.okx.com")
     with pytest.raises(
         proof.NativeAccountProofError, match="original_tls_hostname_invalid"
     ):
-        proof._source(conflicting, scope, proof_schema=proof.V3_SCHEMA)
+        proof._source(conflicting, scope, proof_schema=proof.V7_FLAT_SCHEMA)
 
 
 @pytest.mark.asyncio

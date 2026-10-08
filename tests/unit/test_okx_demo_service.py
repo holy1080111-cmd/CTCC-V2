@@ -1,3 +1,4 @@
+import asyncio
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -381,6 +382,38 @@ async def test_before_submit_callback_runs_once_immediately_before_write() -> No
     assert events == ["before_submit", "write"]
     assert result.acknowledged is True
     assert result.protection_confirmed is True
+
+
+@pytest.mark.asyncio
+async def test_async_before_submit_denial_is_awaited_before_private_write() -> None:
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    private = FakePrivate()
+    service = OkxDemoService(private, FakePublic(), None, settings=settings())
+
+    async def reject_submit() -> None:
+        entered.set()
+        await release.wait()
+        raise OkxDemoSafetyError("shared_control_changed_during_preflight")
+
+    task = asyncio.create_task(
+        service.place_order(request(), before_submit=reject_submit)
+    )
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=2)
+        assert private.placed_payload is None
+        release.set()
+        with pytest.raises(
+            OkxDemoSafetyError, match="shared_control_changed_during_preflight"
+        ):
+            await asyncio.wait_for(task, timeout=2)
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+    assert private.placed_payload is None
 
 
 @pytest.mark.asyncio

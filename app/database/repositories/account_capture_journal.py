@@ -119,7 +119,12 @@ class AccountCaptureJournalRepository:
         return tuple(result)
 
     async def read_locked_current_history_join(
-        self, scope, *, history_capture_id, current_capture_id
+        self,
+        scope,
+        *,
+        history_capture_id,
+        current_capture_id,
+        expected_policy_sha256=source_join.POLICY_SHA256,
     ):
         """Reread both B1 chains and local revision under one fresh UID lock.
 
@@ -135,6 +140,12 @@ class AccountCaptureJournalRepository:
             or history_capture_id == current_capture_id
         ):
             raise AccountJournalError("journal_join_capture_ids_invalid")
+        if type(expected_policy_sha256) is not str or expected_policy_sha256 not in {
+            source_join.POLICY_SHA256,
+            source_join.V7_POLICY_SHA256,
+        }:
+            raise AccountJournalError("journal_join_policy_invalid")
+        v7 = expected_policy_sha256 == source_join.V7_POLICY_SHA256
         async with self.session_factory() as session, session.begin():
             row = await self._lock(session, scope)
             # Read the historical chain first to protect the current chain's
@@ -155,6 +166,7 @@ class AccountCaptureJournalRepository:
                 current_reference=observed.source_reference(current_chain),
                 scope=scope,
                 validated_at=checkpoint.received_at,
+                expected_policy_sha256=expected_policy_sha256,
             )
             value = json.loads(joined.receipt_json)
             if value["recorded_local_checkpoint_sha256"] != checkpoint.state_sha256:
@@ -166,35 +178,48 @@ class AccountCaptureJournalRepository:
             locked_blockers = sorted(
                 set(recorded_blockers) - {"current_local_revision_readback_required"}
             )
-            receipt = canonical(
-                {
-                    "schema_version": "ctcc.demo_account_locked_source_join.v2",
-                    "join_receipt_sha256": joined.receipt_sha256,
-                    "history_source_reference": value["history_source_reference"],
-                    "current_source_reference": value["current_source_reference"],
-                    "scope_sha256": value["scope_sha256"],
-                    "session_binding_sha256": value["session_binding_sha256"],
-                    "recorded_local_checkpoint_sha256": value[
-                        "recorded_local_checkpoint_sha256"
-                    ],
-                    "db_local_state_sha256": checkpoint.state_sha256,
-                    "db_account_revision": checkpoint.state.account_revision,
-                    "db_ledger_revision": checkpoint.state.ledger_revision,
-                    "db_active_hold_count": len(checkpoint.state.active),
-                    "readback_observed_at": checkpoint.observed_at.isoformat(),
-                    "readback_received_at": checkpoint.received_at.isoformat(),
-                    "recorded_pre_lock_blocking_reasons": recorded_blockers,
-                    "locked_readback_blocking_reasons": locked_blockers,
-                    "local_revision_readback_verified": True,
-                    "exchange_atomic_revision_verified": False,
-                    "history_tail_closed": False,
-                    "snapshot": None,
-                    "account_complete": False,
-                    "account_revision_published": False,
-                    "execution_authority": False,
-                    "admission": "DENY",
-                }
-            )
+            document = {
+                "schema_version": (
+                    "ctcc.demo_account_locked_source_join.v3"
+                    if v7
+                    else "ctcc.demo_account_locked_source_join.v2"
+                ),
+                "join_receipt_sha256": joined.receipt_sha256,
+                "history_source_reference": value["history_source_reference"],
+                "current_source_reference": value["current_source_reference"],
+                "scope_sha256": value["scope_sha256"],
+                "session_binding_sha256": value["session_binding_sha256"],
+                "recorded_local_checkpoint_sha256": value[
+                    "recorded_local_checkpoint_sha256"
+                ],
+                "db_local_state_sha256": checkpoint.state_sha256,
+                "db_account_revision": checkpoint.state.account_revision,
+                "db_ledger_revision": checkpoint.state.ledger_revision,
+                "db_active_hold_count": len(checkpoint.state.active),
+                "readback_observed_at": checkpoint.observed_at.isoformat(),
+                "readback_received_at": checkpoint.received_at.isoformat(),
+                "recorded_pre_lock_blocking_reasons": recorded_blockers,
+                "locked_readback_blocking_reasons": locked_blockers,
+                "local_revision_readback_verified": True,
+                "exchange_atomic_revision_verified": False,
+                "history_tail_closed": False,
+                "snapshot": None,
+                "account_complete": False,
+                "account_revision_published": False,
+                "execution_authority": False,
+                "admission": "DENY",
+            }
+            if v7:
+                document.update(
+                    {
+                        "join_policy_sha256": expected_policy_sha256,
+                        "current_source_policy_sha256": value[
+                            "current_source_policy_sha256"
+                        ],
+                        "flat_start_permission": False,
+                    }
+                )
+            receipt = canonical(document)
         return LockedAccountSourceJoinReadback(receipt)
 
     async def _append(self, scope, event):

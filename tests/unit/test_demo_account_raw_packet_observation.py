@@ -17,15 +17,15 @@ from tests.unit.test_qualification_account_collector import credentials
 
 
 @pytest.mark.asyncio
-async def test_real_claimed_stage_raw_packet_is_one_use_and_never_authoritative(
+async def test_claimed_v7_stage_raw_packet_is_one_use_and_never_authoritative(
     monkeypatch,
 ):
     raw, files, chain, scope, samples = await companion_fixture(
-        monkeypatch, current_only=True
+        monkeypatch, current_v7=True
     )
     checked = replay(raw, files, chain, scope)
     reference, packet, _records, joins = proof._source(
-        chain, scope, proof_schema=proof.V3_SCHEMA
+        chain, scope, proof_schema=proof.V7_FLAT_SCHEMA
     )
     session = ControlledDemoAccountSession(
         credentials=credentials(session_binding_id=packet.plan.session_binding_id),
@@ -46,7 +46,8 @@ async def test_real_claimed_stage_raw_packet_is_one_use_and_never_authoritative(
         issued = samples()
         receipt = canonical(
             {
-                "schema_version": "ctcc.initial_native_account_diagnostic.v2",
+                "schema_version": "ctcc.initial_native_account_diagnostic.v3",
+                "policy_sha256": proof.V7_FLAT_POLICY_SHA256,
                 "source_reference": observed.reference_document(reference),
                 "proof_sha256": sha(raw),
                 "proof_readback_sha256": "b" * 64,

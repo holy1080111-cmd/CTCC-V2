@@ -6,7 +6,7 @@ response, so a lengthy historical page chain can consume that lease before
 proof readback. The new `ctcc.demo_current_account_plan.v6` is a separate,
 13-stream current-only capture. It retains the original B1 raw/page-chain
 journal, exact Demo session binding, UID/mainUid, global registration pin,
-unfiltered positions and ordinary pending, four documented algo-pending
+unfiltered positions and ordinary pending, four formerly pinned algo-pending
 queries, balance, position risk, instrument metadata, both leverage modes and
 the final config read. Nonempty paginated responses still require an explicit
 empty terminal page. No v5 packet, receipt, plan hash or policy is relabeled.
@@ -17,9 +17,12 @@ The packet remains incomplete, even when the observed current inventory is
 empty. The v6 recorded current verifier replays the complete original B1
 journal, page bytes, TLS metadata, exact queries, causal timestamps, terminal,
 plan/session/UID binding and local checkpoint hash before deriving a current
-observation. Its `observed_flat` means only that the supported current source
-queries returned empty inventories and passed their consistency checks. It is
-neither flat-start permission nor proof of all products or current DB state.
+observation. The sealed v5/v6 plans omit four additional currently documented
+algo types, so even empty queried subsets now yield
+`algo_type_coverage_incomplete`, `observed_flat=false`, and `DENY`. The original
+packets and policy hashes remain replayable; their earlier flat diagnostic is
+revoked for current use. No v5/v6 result proves flat-start permission, all
+products, or current DB state.
 
 `join_recorded_account_sources` independently replays the old v5 original
 history chain and the new v6 original current chain. It rejects changed exact
@@ -65,9 +68,39 @@ historical native high-water proof, fresh DB revision readback and current
 native owner. The pure join continues to return `snapshot=None`,
 `account_complete=false`,
 `account_revision_published=false`, `execution_authority=false` and `DENY`.
-The v3 native proof establishes only the owned current acquisition. This slice
-does not connect the joined history to a complete PortfolioRiskSnapshot.
-Authentic account acquisition and PostgreSQL acceptance remain unexecuted.
+The separate `ctcc.recorded_account_current_history_join.v2` explicitly pins
+the V7 eight-algo current source policy and plan while retaining the V5
+original history plan. It replays both complete chains, checks exact
+account/session/registration/config, recorded local checkpoint and chronology,
+and emits a distinct policy hash and receipt schema. A V7
+`current_observed_flat=true` remains a bounded source diagnostic; the join
+still retains the unclosed history tail, funding/loss/HWM, current DB readback
+and native owner blockers. It never publishes a snapshot or authority. The V1
+policy hash, receipt bytes and default locked repository path stay unchanged.
+The native V3 flat proof rejects the four-type current packet as incomplete;
+a separate V7 native proof and readback contract can replay the eight-type
+packet. The locked repository requires an explicit
+`expected_policy_sha256=V7_POLICY_SHA256` to read the V5-history and V7-current
+original B1 chains under one PostgreSQL exact-UID lock. It replays the pure
+V2 join, compares both recorded checkpoints with the locked ledger checkpoint,
+and emits `ctcc.demo_account_locked_source_join.v3` with the pure-join and V7
+current-source policy digests. The original blockers remain in
+`recorded_pre_lock_blocking_reasons`; the locked blocker list removes only
+`current_local_revision_readback_required` after the checkpoint hash matches.
+No missing chain or unknown revision becomes zero. The V3 locked receipt still
+sets flat-start permission, account completeness and execution authority to
+false, retains an unclosed history tail, and cannot become a
+PortfolioRiskSnapshot. Synthetic lock tests pass; the separate isolated
+PostgreSQL test is pending an explicit migrated `DATABASE_URL`. The V7 native
+history-join coordinator now selects that locked V3 receipt only for an exact
+V7 native current capture. In the same invocation it checks the V7 native
+diagnostic, current-source and pure-join policy pins, source references,
+session and local checkpoint, the recorded-to-locked blocker transition and
+the original 30-second lease before consuming the one-use carrier. Its own
+versioned V2 receipt remains `DENY`, with no flat-start permission or
+portfolio snapshot. Synthetic coordinator tests exercise this wiring;
+authenticated Demo acquisition and isolated PostgreSQL integration remain
+unexecuted.
 
 The offline `verify_history_tail_prerequisites` diagnostic now replays three
 distinct original B1 chains in order: a v5 history capture, a v6 current

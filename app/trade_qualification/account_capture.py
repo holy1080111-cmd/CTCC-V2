@@ -5,8 +5,9 @@ database or execution imports exist. OKX primary documentation checked 2026-10-0
 https://www.okx.com/docs-v5/en/ and https://www.okx.com/docs-v5/trick_en/#pagination.
 Current v5 exposure queries are unfiltered. Historical v2/v3 packets retain
 their original stream contract; immutable v4 packets retain the eight formerly
-requested algo filters for replay only. Current v5 uses four currently
-documented algo types and six standard-product history chains. Recent fills are
+requested algo filters for replay only. Sealed v5 uses four pinned algo types;
+they no longer establish complete current algo coverage. Its six standard-product
+history chains remain replayable. Recent fills are
 unfiltered. Instrument/leverage metadata remains scoped to SWAP.
 An empty terminal page proves only the supplied query chain,
 not exchange retention, ingestion completeness, atomicity or account-wide risk.
@@ -194,6 +195,28 @@ V6_CURRENT_STREAMS = (
     "positions",
     "orders_pending",
     *(f"algo_{kind}" for kind in ALGO_ORDER_TYPES),
+    "account_instruments",
+    "leverage_cross",
+    "leverage_isolated",
+    "config_after",
+)
+CURRENT_ALGO_ORDER_TYPES_V7 = (
+    "conditional",
+    "oco",
+    "chase",
+    "trigger",
+    "move_order_stop",
+    "iceberg",
+    "twap",
+    "smart_iceberg",
+)
+V7_CURRENT_STREAMS = (
+    "config_before",
+    "account_position_risk",
+    "balance",
+    "positions",
+    "orders_pending",
+    *(f"algo_{kind}" for kind in CURRENT_ALGO_ORDER_TYPES_V7),
     "account_instruments",
     "leverage_cross",
     "leverage_isolated",
@@ -405,6 +428,21 @@ class CurrentDemoAccountCapturePlanV6(RegionalDemoAccountCapturePlan):
         return self
 
 
+class CurrentDemoAccountCapturePlanV7(RegionalDemoAccountCapturePlan):
+    """Eight documented current algo queries; still no account authority."""
+
+    contract_version: Literal["ctcc.demo_current_account_plan.v7"]
+    capture_scope: Literal["all_current_standard_products_v7_eight_algos"] = (
+        "all_current_standard_products_v7_eight_algos"
+    )
+
+    @model_validator(mode="after")
+    def inventory_budget(self):
+        if self.max_total_pages < len(V7_CURRENT_STREAMS):
+            _fail("plan_inventory_budget_invalid")
+        return self
+
+
 class HistoricalAllProductDemoAccountCapturePlanV4(RegionalDemoAccountCapturePlan):
     """Read-only replay identity for immutable v4 packets; collection is disabled."""
 
@@ -421,6 +459,8 @@ class HistoricalAllProductDemoAccountCapturePlanV4(RegionalDemoAccountCapturePla
 
 
 def streams_for_plan(plan):
+    if type(plan) is CurrentDemoAccountCapturePlanV7:
+        return V7_CURRENT_STREAMS
     if type(plan) is CurrentDemoAccountCapturePlanV6:
         return V6_CURRENT_STREAMS
     if type(plan) is AllProductDemoAccountCapturePlan:
@@ -432,6 +472,7 @@ def streams_for_plan(plan):
 
 def is_all_product_plan(plan):
     return type(plan) in {
+        CurrentDemoAccountCapturePlanV7,
         CurrentDemoAccountCapturePlanV6,
         AllProductDemoAccountCapturePlan,
         HistoricalAllProductDemoAccountCapturePlanV4,
@@ -521,9 +562,11 @@ class DemoAccountPacket(_Record):
         "ctcc.demo_account_capture.v4",
         "ctcc.demo_account_capture.v5",
         "ctcc.demo_current_account_capture.v6",
+        "ctcc.demo_current_account_capture.v7",
     ] = "ctcc.demo_account_capture.v2"
     plan: (
-        CurrentDemoAccountCapturePlanV6
+        CurrentDemoAccountCapturePlanV7
+        | CurrentDemoAccountCapturePlanV6
         | AllProductDemoAccountCapturePlan
         | HistoricalAllProductDemoAccountCapturePlanV4
         | RegionalDemoAccountCapturePlan
@@ -570,6 +613,7 @@ _MODELS = {
     DemoAccountCapturePlan,
     RegionalDemoAccountCapturePlan,
     CurrentDemoAccountCapturePlanV6,
+    CurrentDemoAccountCapturePlanV7,
     AllProductDemoAccountCapturePlan,
     HistoricalAllProductDemoAccountCapturePlanV4,
     AccountRequest,
@@ -685,6 +729,8 @@ def plan_sha256(plan: DemoAccountCapturePlan) -> str:
 
 
 def _copy_plan(plan):
+    if type(plan) is CurrentDemoAccountCapturePlanV7:
+        return _copy(plan, CurrentDemoAccountCapturePlanV7)
     if type(plan) is CurrentDemoAccountCapturePlanV6:
         return _copy(plan, CurrentDemoAccountCapturePlanV6)
     if type(plan) is AllProductDemoAccountCapturePlan:
@@ -746,6 +792,7 @@ def account_request(
             plan.origin
             if type(plan)
             in {
+                CurrentDemoAccountCapturePlanV7,
                 CurrentDemoAccountCapturePlanV6,
                 RegionalDemoAccountCapturePlan,
                 AllProductDemoAccountCapturePlan,
@@ -1495,7 +1542,7 @@ def verify_demo_account_records(
     if is_all_product_plan(plan):
         gaps.remove("non_swap_history_not_requested")
         gaps.add("all_product_metadata_coverage_unverified")
-    if type(plan) is CurrentDemoAccountCapturePlanV6:
+    if type(plan) in {CurrentDemoAccountCapturePlanV6, CurrentDemoAccountCapturePlanV7}:
         gaps.add("separate_history_source_join_required")
     account_level = before["acctLv"]
     if any(
@@ -1549,7 +1596,9 @@ def verify_demo_account_records(
         gaps.add("source_clock_coverage_incomplete")
     fields = {
         "schema_version": (
-            "ctcc.demo_current_account_capture.v6"
+            "ctcc.demo_current_account_capture.v7"
+            if type(plan) is CurrentDemoAccountCapturePlanV7
+            else "ctcc.demo_current_account_capture.v6"
             if type(plan) is CurrentDemoAccountCapturePlanV6
             else "ctcc.demo_account_capture.v5"
             if type(plan) is AllProductDemoAccountCapturePlan

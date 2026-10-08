@@ -31,6 +31,39 @@ The boundary does not enable or validate Live execution. Existing synthetic
 service tests that inject a fake private client exercise their stated local
 logic; they cannot prove the real Demo transport can submit an order.
 
+Migration 0034 hardens the legacy `SafeDemoAutomation` control singleton with a
+database revision, an Arm/EStop exclusion constraint and a sticky restart latch.
+Every full-state write uses compare-and-swap. An explicit EStop locks the latest
+row and changes only control fields, followed by a separate-session readback;
+an unconfirmed write is not reported as success. After any prior Arm or EStop,
+restart relatches EStop even if a clear-stop commit lost its acknowledgement.
+The migration also rejects pre-0034 UPDATE writers at the database trigger:
+they cannot advance the required revision. Cancellation after a legacy submit
+now latches local EStop before attempting to retain uncertain exposure. That
+post-submit state journal is not a pre-submit durable intent.
+Cancellation of an Arm state write may arrive after its database commit; the
+current process revokes Arm, latches local EStop and reports recovery
+incomplete until it rereads durable control. A synthetic commit-then-cancel
+regression covers this ambiguous acknowledgement.
+This is defense in depth while the transport above remains closed. A legacy
+automation worker now makes a fresh database read of the exact Arm, EStop,
+lock, restart-latch and control revision after the service's last preflight
+await. A changed row, missing row or failed read revokes its local Arm and
+prevents the submit callback from reaching the private client. That read does
+not mint permission or make the subsequent exchange POST atomic with an EStop;
+the transport remains hard DENY. A future permitted dispatch requires a
+database-backed, one-use final authority check at the transport boundary.
+The singleton CAS also cannot retroactively journal an exchange fill that
+arrives before the legacy worker persists its active-trade state. If another
+process engages EStop during that I/O, the later state write can conflict and
+recovery must treat exchange exposure as uncertain. Every future submit route
+therefore still needs a durable reservation and intent before the POST, plus a
+shared final authority check at dispatch; this legacy path remains hard DENY.
+Downgrading migration 0034 removes the database revision trigger and sticky
+control latch, so it is permitted only by a controlled rollback procedure with
+the transport still hard DENY and no unresolved exchange exposure; an ordinary
+online downgrade must never be treated as a safe trading state.
+
 ## Required integration before any authority can exist
 
 1. `account_collector.py`, `account_capture.py`, `account_consistency.py` and

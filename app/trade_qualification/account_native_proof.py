@@ -30,6 +30,7 @@ from app.trade_qualification.reservations import LedgerScope, checked_bootstrap
 SCHEMA = "ctcc.demo_account_native_clock_proof.v2"
 V3_SCHEMA = "ctcc.demo_account_native_clock_proof.v3"
 EXPOSED_V4_SCHEMA = "ctcc.demo_account_exposed_native_clock_proof.v4"
+V7_FLAT_SCHEMA = "ctcc.demo_account_native_clock_proof.v5"
 MAX_PROOF = 2 * 1024 * 1024
 FILES = (
     "host-before.json",
@@ -107,6 +108,34 @@ EXPOSED_V4_POLICY_BYTES = canonical(
     }
 )
 EXPOSED_V4_POLICY_SHA256 = sha(EXPOSED_V4_POLICY_BYTES)
+V7_FLAT_POLICY_BYTES = canonical(
+    {
+        "schema_version": "ctcc.demo_account_native_clock_policy.v5",
+        "prior_flat_policy_sha256": V3_POLICY_SHA256,
+        "stage": "initial_account_only",
+        "clock_profile": public_clock.PROFILE_ID,
+        "clock_resources": list(public_clock.RESOURCE_IDS),
+        "utc_conversion": "reviewed_integer_ns_round_up_to_microsecond",
+        "maximum_current_age_ns": 30_000_000_000,
+        "source_phases": [*native.PAGE_PHASES, "source_closed"],
+        "exchange_origin": "https://openapi.okx.com",
+        "exchange_endpoint": "/api/v5/public/time",
+        "exchange_plan_schema": "ctcc.demo_account_exchange_time_plan.v1",
+        "exchange_receipt_schema": "ctcc.demo_account_exchange_time_receipt.v1",
+        "exchange_trace_schema": "ctcc.demo_account_exchange_time_trace.v2",
+        "current_capture_plan": "ctcc.demo_current_account_plan.v7",
+        "current_streams": list(capture.V7_CURRENT_STREAMS),
+        "current_algo_types": list(capture.CURRENT_ALGO_ORDER_TYPES_V7),
+        "account_current_policy_sha256": current.V7_POLICY_SHA256,
+        "account_current_receipt_schema": "ctcc.current_account_source_observation.v6",
+        "history_query_policy_sha256": None,
+        "separate_original_history_join_required": True,
+        "historical_hwm_clock_verified": False,
+        "account_complete": False,
+        "execution_authority": False,
+    }
+)
+V7_FLAT_POLICY_SHA256 = sha(V7_FLAT_POLICY_BYTES)
 
 
 def contract_for_plan(plan):
@@ -115,6 +144,8 @@ def contract_for_plan(plan):
         return SCHEMA, POLICY_SHA256
     if type(plan) is capture.CurrentDemoAccountCapturePlanV6:
         return V3_SCHEMA, V3_POLICY_SHA256
+    if type(plan) is capture.CurrentDemoAccountCapturePlanV7:
+        return V7_FLAT_SCHEMA, V7_FLAT_POLICY_SHA256
     raise NativeAccountProofError("native_account_source_scope_unsupported")
 
 
@@ -211,7 +242,8 @@ def _source(chain, scope, *, proof_schema=SCHEMA):
     if proof_schema == SCHEMA:
         history.verify_history_query_chain(chain, **observed._pins(reference, scope))
         expected_plan = capture.AllProductDemoAccountCapturePlan
-    elif proof_schema in {V3_SCHEMA, EXPOSED_V4_SCHEMA}:
+    elif proof_schema in {V3_SCHEMA, EXPOSED_V4_SCHEMA, V7_FLAT_SCHEMA}:
+        v7 = proof_schema == V7_FLAT_SCHEMA
         current.verify_current_account_sources(
             chain,
             reference=reference,
@@ -219,9 +251,15 @@ def _source(chain, scope, *, proof_schema=SCHEMA):
             validated_at=datetime.fromisoformat(
                 journal.checked_event(chain[-1].event)["observed_at"]
             ),
-            expected_policy_sha256=current.V6_POLICY_SHA256,
+            expected_policy_sha256=(
+                current.V7_POLICY_SHA256 if v7 else current.V6_POLICY_SHA256
+            ),
         )
-        expected_plan = capture.CurrentDemoAccountCapturePlanV6
+        expected_plan = (
+            capture.CurrentDemoAccountCapturePlanV7
+            if v7
+            else capture.CurrentDemoAccountCapturePlanV6
+        )
     else:
         raise NativeAccountProofError("native_account_proof_contract_invalid")
     records = tuple(journal.checked_event(point.event) for point in chain)
@@ -534,12 +572,14 @@ def _replay(raw, files, chain, scope, expected):
             "execution_authority",
             "admission",
         }
-        or value["schema_version"] not in {SCHEMA, V3_SCHEMA, EXPOSED_V4_SCHEMA}
+        or value["schema_version"]
+        not in {SCHEMA, V3_SCHEMA, EXPOSED_V4_SCHEMA, V7_FLAT_SCHEMA}
         or value["policy_sha256"]
         != {
             SCHEMA: POLICY_SHA256,
             V3_SCHEMA: V3_POLICY_SHA256,
             EXPOSED_V4_SCHEMA: EXPOSED_V4_POLICY_SHA256,
+            V7_FLAT_SCHEMA: V7_FLAT_POLICY_SHA256,
         }[value["schema_version"]]
     ):
         raise NativeAccountProofError("native_account_proof_contract_invalid")
@@ -710,7 +750,13 @@ def _replay(raw, files, chain, scope, expected):
     first_current = next(
         w["stamp"]
         for w in witnesses
-        if w["phase"] == "response_closed" and w["stream"] in current.CURRENT_STREAMS
+        if w["phase"] == "response_closed"
+        and w["stream"]
+        in (
+            current.V7_CURRENT_STREAMS
+            if proof_schema == V7_FLAT_SCHEMA
+            else current.CURRENT_STREAMS
+        )
     )
     expiry = capture._utc(datetime.fromisoformat(value["expires_at"]))
     deadline = value["monotonic_deadline_ns"]
@@ -730,10 +776,27 @@ def _replay(raw, files, chain, scope, expected):
         **(
             {}
             if proof_schema == SCHEMA
-            else {"expected_policy_sha256": current.V6_POLICY_SHA256}
+            else {
+                "expected_policy_sha256": (
+                    current.V7_POLICY_SHA256
+                    if proof_schema == V7_FLAT_SCHEMA
+                    else current.V6_POLICY_SHA256
+                )
+            }
         ),
     )
     current_data = decode(verified.receipt_json)
+    if proof_schema == V7_FLAT_SCHEMA:
+        counts = current_data["inventory_row_counts"]
+        if (
+            current_data["schema_version"]
+            != "ctcc.current_account_source_observation.v6"
+            or current_data["policy_sha256"] != current.V7_POLICY_SHA256
+            or type(counts) is not dict
+            or set(counts) != set(current.V7_INVENTORY_STREAMS)
+            or any(type(count) is not int or count != 0 for count in counts.values())
+        ):
+            raise NativeAccountProofError("native_account_v7_inventory_incomplete")
     if proof_schema == EXPOSED_V4_SCHEMA:
         counts = current_data["inventory_row_counts"]
         if (

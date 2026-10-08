@@ -508,6 +508,165 @@ def routed_packet_parts(captured, region):
     }
 
 
+def post_publication_packet_parts(captured, barrier):
+    parts = routed_packet_parts(captured, "global")
+    route = demo_public_origin.reviewed_demo_public_route("global")
+    _, quote, observations = public._quote_parts(parts["quote"])
+    parts["quote"] = quotes.build_diagnostic_quote_packet_v2(
+        report_id=quote.report_id,
+        instrument_id=quote.instrument_id,
+        environment=quote.environment,
+        observations=observations,
+        capture_started_at=quote.capture_started_at,
+        capture_completed_at=quote.capture_completed_at,
+        barrier_completed_at=barrier,
+        route=route,
+    )
+    candles_with_barrier = parts["candle_packet"].model_copy(
+        update={"barrier_completed_at": barrier}
+    )
+    parts["candle_packet"] = candles_with_barrier.model_copy(
+        update={
+            "bundle_sha256": candles._hash(candles_with_barrier, omit="bundle_sha256")
+        }
+    )
+    original_aux = parts["market_aux"]
+    parts["market_aux"] = original_aux.model_copy(
+        update={
+            "barrier_completed_at": barrier,
+            "bundle_sha256": aux._bundle_sha(
+                original_aux.report_id,
+                original_aux.instrument_id,
+                original_aux.book,
+                original_aux.open_interest,
+                original_aux.provenance,
+                original_aux.policy,
+                barrier,
+                original_aux.completed_at,
+            ),
+        }
+    )
+    reference = parts["reference"].model_copy(update={"barrier_completed_at": barrier})
+    parts["reference"] = reference.model_copy(
+        update={
+            "bundle_sha256": ws._digest(
+                {
+                    name: getattr(reference, name)
+                    for name in type(reference).model_fields
+                    if name != "bundle_sha256"
+                }
+            )
+        }
+    )
+    parts["scope"].update(
+        stage="post_publication", barrier_completed_at=barrier.isoformat()
+    )
+    return parts
+
+
+def test_post_publication_requires_new_ticker_and_book_generation(captured):
+    initial = routed_packet_parts(captured, "global")
+    _, quote, _ = public._quote_parts(initial["quote"])
+    ticker_generated = quote.ticker.source_generated_at
+    books_generated = initial["market_aux"].provenance[0].source_time
+    ws_generated = initial["reference"].ticker.source_time
+    earliest = min(ticker_generated, books_generated, ws_generated, initial["started"])
+    good = post_publication_packet_parts(captured, earliest - timedelta(milliseconds=1))
+    packet, _ = public._build(**good)
+    assert (
+        public.replay_collected_public_market_v2(
+            packet.packet_json, expected_sha256=packet.bundle_sha256
+        )
+        == packet
+    )
+    assert packet.admission == "DENY" and packet.execution_authority is False
+    assert public._quote_parts(good["quote"])[1].funding.exchange_data_return_at < (
+        earliest - timedelta(milliseconds=1)
+    )
+    # The identical raw observations retain their initial-stage replay identity.
+    assert public._parts(captured[0].packet)[0] == captured[0].packet
+
+
+@pytest.mark.parametrize("role", ["ticker", "books"])
+def test_post_publication_rejects_fresh_but_pre_barrier_content(captured, role):
+    initial = routed_packet_parts(captured, "global")
+    barrier = initial["started"] - timedelta(milliseconds=1)
+    parts = post_publication_packet_parts(captured, barrier)
+    assert public._build(**parts)[0].admission == "DENY"
+    if role == "ticker":
+        _, quote, observations = public._quote_parts(parts["quote"])
+        prior = observations[-1]
+        payload, _ = quotes.wire._parse(prior.response_body)
+        payload["data"][0]["ts"] = ms(barrier)
+        body = canonical(payload)
+        _, canonical_json = quotes.wire._parse(body)
+        changed = prior.model_copy(
+            update={
+                "ts_raw": ms(barrier),
+                "source_time": barrier,
+                "response_body": body,
+                "body_sha256": sha(body),
+                "body_size_bytes": len(body),
+                "canonical_json": canonical_json,
+                "canonical_sha256": sha(canonical_json.encode()),
+            }
+        )
+        parts["quote"] = quotes.build_diagnostic_quote_packet_v2(
+            report_id=quote.report_id,
+            instrument_id=quote.instrument_id,
+            environment=quote.environment,
+            observations=(*observations[:-1], changed),
+            capture_started_at=quote.capture_started_at,
+            capture_completed_at=quote.capture_completed_at,
+            barrier_completed_at=barrier,
+            route=demo_public_origin.reviewed_demo_public_route("global"),
+        )
+    else:
+        previous = parts["market_aux"]
+        prior = previous.provenance[0]
+        payload, _ = aux._parse(prior.response_body)
+        payload["data"][0]["ts"] = ms(barrier)
+        body = canonical(payload)
+        _, canonical_json = aux._parse(body)
+        changed = prior.model_copy(
+            update={
+                "ts_raw": ms(barrier),
+                "source_time": barrier,
+                "response_body": body,
+                "body_sha256": sha(body),
+                "body_size_bytes": len(body),
+                "canonical_json": canonical_json,
+                "canonical_sha256": sha(canonical_json.encode()),
+            }
+        )
+        observations = (changed, *previous.provenance[1:])
+        book = aux._record(
+            "books",
+            aux._row(payload, "books", previous.instrument_id),
+            previous.instrument_id,
+        )
+        parts["market_aux"] = previous.model_copy(
+            update={
+                "book": book,
+                "provenance": observations,
+                "bundle_sha256": aux._bundle_sha(
+                    previous.report_id,
+                    previous.instrument_id,
+                    book,
+                    previous.open_interest,
+                    observations,
+                    previous.policy,
+                    barrier,
+                    previous.completed_at,
+                ),
+            }
+        )
+    with pytest.raises(
+        public.PublicMarketV2Error, match="public_v2_post_barrier_generation_missing"
+    ):
+        public._build(**parts)
+
+
 @pytest.mark.parametrize("region", ["global", "us_au", "eea"])
 def test_routed_public_packet_replays_with_exact_route_and_no_authority(
     captured, region

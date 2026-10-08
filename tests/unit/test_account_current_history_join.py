@@ -120,11 +120,12 @@ async def test_v6_collects_only_complete_current_pages_and_keeps_history_unknown
     assert "separate_history_source_join_required" in packet.incomplete_reasons
     assert packet.account_complete is packet.execution_authority is False
     proof = json.loads(verify_current(chain).receipt_json)
-    assert proof["schema_version"] == "ctcc.current_account_source_observation.v4"
+    assert proof["schema_version"] == "ctcc.current_account_source_observation.v5"
     assert proof["observation_interval"]["freshness_basis"] == (
         "replay_verified_B1_body_complete_EOF"
     )
-    assert proof["observed_flat"] is True
+    assert proof["observed_flat"] is False
+    assert "algo_type_coverage_incomplete" in proof["blocking_reasons"]
     assert proof["history_query_verifier_sha256"] is None
     assert proof["history_join_state"] == "separate_original_history_required"
     assert proof["account_complete"] is proof["execution_authority"] is False
@@ -163,18 +164,19 @@ async def test_v6_freshness_uses_verified_eof_when_first_response_close_is_delay
         datetime.fromisoformat(fresh_contract["current_pages"][0]["body_completed_at"])
     )
     assert eof + timedelta(seconds=30) < cutoff < first_closed + timedelta(seconds=30)
-    assert legacy["schema_version"] == "ctcc.current_account_source_observation.v3"
+    assert legacy["schema_version"] == "ctcc.current_account_source_observation.v5"
     assert current.V6_LEGACY_POLICY_SHA256 == (
         "375b6c7429273718d81edb995e9433669f3fc941cb07f0042cad21fbbfede642"
     )
-    assert legacy["observed_flat"] is True
+    assert legacy["observed_flat"] is False
+    assert "algo_type_coverage_incomplete" in legacy["blocking_reasons"]
     assert "body_exhausted_at" not in legacy["current_pages"][0]
     assert (
         legacy["current_pages"][0]["body_completed_at"]
         == (fresh_contract["current_pages"][0]["body_completed_at"])
     )
     assert (
-        fresh_contract["schema_version"] == "ctcc.current_account_source_observation.v4"
+        fresh_contract["schema_version"] == "ctcc.current_account_source_observation.v5"
     )
     assert fresh_contract["current_pages"][0]["body_exhausted_at"] == eof.isoformat()
     assert fresh_contract["observed_flat"] is False
@@ -194,7 +196,8 @@ async def test_v6_original_current_and_v5_history_join_exact_scope_without_autho
     value = json.loads(result.receipt_json)
     assert value["recorded_local_checkpoint_equal"] is True
     assert value["account_revision_verified"] is False
-    assert value["current_observed_flat"] is True
+    assert value["current_observed_flat"] is False
+    assert "algo_type_coverage_incomplete" in value["blocking_reasons"]
     assert "history_tail_not_atomically_closed" in value["blocking_reasons"]
     assert value["snapshot"] is result.snapshot is None
     assert value["account_complete"] is result.account_complete is False

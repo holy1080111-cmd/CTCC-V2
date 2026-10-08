@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from uuid import uuid4
@@ -285,7 +286,7 @@ class OkxDemoService:
         self,
         request: OkxDemoOrderRequest,
         *,
-        before_submit: Callable[[], None] | None = None,
+        before_submit: Callable[[], Awaitable[None] | None] | None = None,
     ) -> OkxDemoWriteResult:
         self._ensure_write_ready()
         self._ensure_symbol(request.instrument_id)
@@ -424,7 +425,9 @@ class OkxDemoService:
             self._ensure_write_ready()
             self._ensure_symbol(request.instrument_id)
             if before_submit is not None:
-                before_submit()
+                callback_result = before_submit()
+                if inspect.isawaitable(callback_result):
+                    await callback_result
             # Policies may tighten during the final market read or synchronous
             # automation callback. Keep this check immediately before submission.
             self._ensure_write_ready()

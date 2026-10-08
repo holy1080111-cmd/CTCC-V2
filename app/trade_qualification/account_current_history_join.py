@@ -34,6 +34,24 @@ POLICY_BYTES = journal.canonical(
     }
 )
 POLICY_SHA256 = journal.digest(POLICY_BYTES)
+V7_POLICY_BYTES = journal.canonical(
+    {
+        "version": "ctcc.recorded_account_current_history_join.v2",
+        "prior_join_policy_sha256": POLICY_SHA256,
+        "current_policy_sha256": current.V7_POLICY_SHA256,
+        "history_policy_sha256": history.POLICY_SHA256,
+        "history_capture_plan": "ctcc.demo_account_plan.v5",
+        "current_capture_plan": "ctcc.demo_current_account_plan.v7",
+        "scope": "same_exact_environment_uid_main_uid_session_region_mode_currency",
+        "local_revision": "same_recorded_B1_checkpoint_hash_not_DB_current_revision",
+        "maximum_requested_history_tail_gap_seconds": 120,
+        "complete_history_tail": False,
+        "flat_start_permission": False,
+        "account_complete": False,
+        "execution_authority": False,
+    }
+)
+V7_POLICY_SHA256 = journal.digest(V7_POLICY_BYTES)
 
 
 class AccountSourceJoinError(ValueError):
@@ -143,7 +161,7 @@ def _join(
     checked_bootstrap(scope, LedgerScope)
     if (
         type(policy_pin) is not str
-        or policy_pin != POLICY_SHA256
+        or policy_pin not in {POLICY_SHA256, V7_POLICY_SHA256}
         or type(validated_at) is not datetime
         or type(history_chain) is not tuple
         or type(current_chain) is not tuple
@@ -161,6 +179,13 @@ def _join(
         or history_reference.capture_id == current_reference.capture_id
     ):
         _deny("account_join_source_reference_mismatch")
+    v7 = policy_pin == V7_POLICY_SHA256
+    current_policy = current.V7_POLICY_SHA256 if v7 else current.V6_POLICY_SHA256
+    current_plan = (
+        capture.CurrentDemoAccountCapturePlanV7
+        if v7
+        else capture.CurrentDemoAccountCapturePlanV6
+    )
     history_proof = history.verify_history_query_chain(
         history_chain, **observed._pins(history_reference, scope)
     )
@@ -169,13 +194,13 @@ def _join(
         reference=current_reference,
         scope=scope,
         validated_at=validated_at,
-        expected_policy_sha256=current.V6_POLICY_SHA256,
+        expected_policy_sha256=current_policy,
     )
     history_packet = _packet(history_chain, history_reference)
     current_packet = _packet(current_chain, current_reference)
     if (
         type(history_packet.plan) is not capture.AllProductDemoAccountCapturePlan
-        or type(current_packet.plan) is not capture.CurrentDemoAccountCapturePlanV6
+        or type(current_packet.plan) is not current_plan
     ):
         _deny("account_join_plan_version_mismatch")
     old, new = history_packet.plan, current_packet.plan
@@ -242,7 +267,11 @@ def _join(
         }
     )
     output = {
-        "schema_version": "ctcc.recorded_account_current_history_join.v1",
+        "schema_version": (
+            "ctcc.recorded_account_current_history_join.v2"
+            if v7
+            else "ctcc.recorded_account_current_history_join.v1"
+        ),
         "policy_sha256": policy_pin,
         "scope_sha256": journal.digest(
             journal.canonical(
@@ -273,4 +302,7 @@ def _join(
         "execution_authority": False,
         "admission": "DENY",
     }
+    if v7:
+        output["current_source_policy_sha256"] = current_policy
+        output["flat_start_permission"] = False
     return RecordedAccountSourceJoin(journal.canonical(output))

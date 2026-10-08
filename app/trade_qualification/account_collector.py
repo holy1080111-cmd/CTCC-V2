@@ -765,6 +765,7 @@ async def _collect_owned_demo_account_records(
             capture.RegionalDemoAccountCapturePlan,
             capture.AllProductDemoAccountCapturePlan,
             capture.CurrentDemoAccountCapturePlanV6,
+            capture.CurrentDemoAccountCapturePlanV7,
         }:
             raise AccountCollectionError("account_plan_version_retired")
         selected = capture._checked_plan(plan, expected_plan_sha256)
@@ -819,14 +820,14 @@ async def _collect_owned_demo_account_records(
         algo_ids = set()
         try:
             _client_guard(client, first=True)
-            # Legacy plan contracts still support synthetic historical-parser
-            # fixtures, but their request inventory contains undocumented algo
-            # ordTypes. Only v5 may reach the owned HTTPS transport.
+            # Legacy plan contracts remain replayable in synthetic fixtures.
+            # Only the reviewed v5/v6/v7 inventories reach owned HTTPS transport.
             if (
                 type(selected)
                 not in {
                     capture.AllProductDemoAccountCapturePlan,
                     capture.CurrentDemoAccountCapturePlanV6,
+                    capture.CurrentDemoAccountCapturePlanV7,
                 }
                 and type(client._transport) is not httpx.MockTransport
             ):

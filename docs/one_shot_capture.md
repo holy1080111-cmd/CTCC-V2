@@ -47,6 +47,10 @@ authenticity、account completeness、atomic reservation、order submitted 永�
 現有 materializer 的四類 stamps 也保持 incomplete，local authority 明確是 None；
 因此可計算部分 exposure，不會由這個接點進入 reservation／submit。
 
+後續 [R7→DB0017 原事件讀取接點](one_shot_ledger_boundary.md) 在本次 one-shot
+之後只讀取持久 event 帳本，釘住原候選／重查／帳戶包與原事件的關聯；它不建立
+reservation 或 intent，仍固定 `DENY`。
+
 它確實在本次 G12 後啟動新來源，並非接受舊 receipt 的假接線；但不能把本次執行
 或 hash 換成可保存、可重用的 permission token。成功取得資料也不是完整 intrabar
 path／account auth／durable execution intent 的證明。尚缺事項見

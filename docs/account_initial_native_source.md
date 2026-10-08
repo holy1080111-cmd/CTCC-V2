@@ -114,6 +114,37 @@ no owner, packet lease, flat-start permission, portfolio snapshot or execution
 authority. The original V1 recorded-only diagnostic remains unchanged.
 Synthetic replay and storage tests do not establish genuine account acceptance.
 
+Current qualification revokes the old four-algo-type flat interpretation of
+sealed V5/V6 captures. Their source bytes, original proof policy identities and
+historical readback contracts remain intact, but the current-source verifier
+reports `algo_type_coverage_incomplete`. Consequently the V2/V3 flat proof
+cannot produce a positive current replay, and the V4 exposed proof cannot
+claim that exposure is its sole blocker. Old V6-positive fixtures cannot
+exercise native clock and storage success paths; those tests need an original
+eight-type V7 capture and separate V5 proof rather than relabeling an old packet.
+
+The V7 flat pure proof has schema `ctcc.demo_account_native_clock_proof.v5` and
+its own `ctcc.demo_account_native_clock_readback.v5` storage identity. The
+companion is still published without clobbering, reread through a separate
+root handle, bound to exact proof/clock-file hashes and original root identity,
+and denied after either UTC or monotonic expiry. The private clock boundary
+accepts this exact V5 **flat proof schema** only after its existing private
+issuer registration and same-task/context checks; it does not admit V6
+capture schema or the exposed V4 diagnostic proof and has no caller-facing
+registration API. Synthetic storage and boundary tests exercise this version
+mapping and one-use denial, not authenticated account or execution acceptance.
+
+The initial native runtime also selects the V7 proof contract for an exact V7
+plan. A successful original B1 journal and companion readback produces a
+versioned `ctcc.initial_native_account_diagnostic.v3` receipt. Its private
+one-use origin and raw-packet handoffs bind the V7 packet schema, plan,
+source-reference hash, proof/readback hashes, issued time, expiry and policy.
+They can support read-only route and current-component diagnostics, but both
+remain `DENY`: the signed private config request does not establish the
+registration region or authorize public data, a complete account or an order.
+The legacy V6 receipts and proof policy remain distinct and currently fail
+positive flat replay because four algo types cannot establish current coverage.
+
 Replay rejects foreign mapping, scope and chain objects before touching their
 callbacks. Every original `JournalReadback` is revalidated before any later
 packet payload is read. Source joins and phase metadata require the exact JSON
@@ -174,6 +205,16 @@ same-invocation coordinator checks its exact scope and session binding, the
 equal recorded/DB checkpoint hashes, nonnegative ordered account/ledger
 revisions, local hold count, unresolved history blocker and fixed denial flags.
 A mismatched readback burns the current carrier and returns only a denial.
+
+For an exact V7 current plan, the coordinator instead requires the eight-algo
+native proof V5 and diagnostic V3, requests the V5-history/V7-current pure
+join V2 under the same UID lock, and accepts only locked receipt V3 with its
+join/current-source policy pins and recorded-to-locked blocker lineage. It
+still consumes the same-invocation carrier within the original freshness
+lease and returns only `ctcc.native_current_history_join_diagnostic.v2`
+with `DENY`, `flat_start_permission=false` and no snapshot. The V6 path and
+its V1 receipt remain distinct. V7 coverage here is synthetic; a real Demo
+database and account capture have not passed this route.
 The focused replacement-readback tests exercise this validation without
 claiming a genuine PostgreSQL or authenticated account run.
 It always has `owner=None`, `snapshot=None`, `account_complete=false`,

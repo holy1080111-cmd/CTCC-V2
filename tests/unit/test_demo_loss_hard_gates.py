@@ -68,6 +68,12 @@ async def test_loss_cap_survives_restart_and_continuous_mode_toggle(continuous, 
     assert reason in (await restarted.status()).lock_reasons
     assert restarted._state["realized_pnl_events"] == preserved["realized_pnl_events"]
     assert restarted._state["consecutive_losses"] == preserved["consecutive_losses"]
+    assert (await restarted.status()).emergency_stop is True
+    with pytest.raises(
+        DemoAutomationSafetyError, match="emergency_stop_must_be_cleared"
+    ):
+        await restarted.arm()
+    await restarted.clear_emergency_stop()
     with pytest.raises(DemoAutomationSafetyError, match="automation_locked"):
         await restarted.arm()
     assert demo.place_calls == []
@@ -182,7 +188,10 @@ async def test_invalid_recorded_loss_history_is_retained_and_stops_recovery(faul
         raw.append({"missing": "outcome"})
     else:
         raw.append({**raw[0], "net_pnl": "100"})
-    await repository.save_state(service._state)
+    mutated = deepcopy(service._state)
+    mutated["_control_revision"] = service._control_revision + 1
+    mutated["_restart_latch_required"] = service._restart_latch_required
+    await repository.save_state(mutated)
     retained = deepcopy(raw)
     restarted = configured(demo, repository=repository)
     await restarted.recover()

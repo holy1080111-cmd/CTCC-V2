@@ -59,7 +59,16 @@ G12 barrier 後的 dispatch 未嚴格跨過 barrier，均拒絕。Post-G12 若�
 books 或 WS ticker 是 barrier 後**新生成內容**，其生成 `ts` 還須嚴格大於 barrier；
 mark、funding、OI 的 `exchange_data_return` 時間不被改稱生成時間。
 
-舊 v1/v2 封包格式與回放保持原樣。診斷 receipt 有固定版本與 policy hash，始終
+V2 封包組裝與完整重播現在對 `post_publication` 強制執行這項內容生成門檻：
+REST ticker、books 與 WS ticker 的原始生成時間必須嚴格晚於 G12 barrier。
+只在 barrier 後發出請求、卻拿到 barrier 前仍新鮮的快取內容，也會拒絕。
+初始公開資料封包不套用這項 G12 門檻；mark、funding、OI 仍沿用各自的
+`exchange_data_return` 語意與原本 freshness 門檻，不冒稱它們是新生成資料。
+此重播門檻不解除目前 Demo 註冊地來源認證的原生 I/O 拒絕，也不授予交易權限。
+
+既有封包格式與位元組未改；V1 與 V2 初始封包重播維持原語意，歷史 V2
+post-publication 封包若含 barrier 前生成的 ticker／books 內容則會被拒絕。
+診斷 receipt 有固定版本與 policy hash，始終
 `admission=DENY`、`execution_authority=false`；封存 journal 自身無法獨立證明原生
 TLS／時鐘／來源，也沒有每筆線上 parser 驗證的精確 instant。receipt 使用封包
 線上驗證後、封存前的 measured sample 檢查當時來源年齡；後續 journal readback

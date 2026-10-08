@@ -24,6 +24,7 @@ from app.trade_qualification import account_capture_journal as journal
 
 PROOF_SCHEMA = "ctcc.demo_account_native_clock_proof.v2"
 V3_PROOF_SCHEMA = "ctcc.demo_account_native_clock_proof.v3"
+V7_FLAT_PROOF_SCHEMA = "ctcc.demo_account_native_clock_proof.v5"
 MAX_LIFETIME_NS = 30_000_000_000
 _NATIVE_ISSUER = object()
 _BOUNDARIES = WeakKeyDictionary()
@@ -114,7 +115,8 @@ def _consume_boundary(value, *, invocation, receipt_sha256):
         or type(found.receipt_sha256) is not str
         or found.receipt_sha256 != receipt_sha256
         or type(found.proof_schema) is not str
-        or found.proof_schema not in {PROOF_SCHEMA, V3_PROOF_SCHEMA}
+        or found.proof_schema
+        not in {PROOF_SCHEMA, V3_PROOF_SCHEMA, V7_FLAT_PROOF_SCHEMA}
     ):
         raise AccountClockBoundaryError("account_native_clock_proof_binding_invalid")
     try:

@@ -115,8 +115,12 @@ async def test_real_synthetic_source_components_do_not_mint_account_or_native_ow
     assert data["schema_version"] == "ctcc.portfolio_components_diagnostic.v2"
     assert data["policy_sha256"] == runtime.DIAGNOSTIC_POLICY_SHA256
     assert len(checkpoints) == 3 and len(reads) == 2 and len(appended) == 1
-    assert data["completed_components"]["balance_observation_verified"] is True
-    assert data["completed_components"]["exchange_flat_inventory_verified"] is True
+    # The sealed v5 packet only queried four algo ordTypes. Its balance rows
+    # remain recorded, but the incomplete current source cannot verify the
+    # aggregate component or establish an empty exchange inventory.
+    assert data["completed_components"]["balance_observation_verified"] is False
+    assert data["completed_components"]["exchange_flat_inventory_verified"] is False
+    assert "algo_type_coverage_incomplete" in data["blocking_reasons"]
     assert (
         data["completed_components"]["captured_contract_risk_specs_verified"] is False
     )

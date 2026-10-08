@@ -1,4 +1,4 @@
-"""Read-only exchange gateway-time coverage for a pinned V6 Demo account chain.
+"""Read-only exchange gateway-time coverage for pinned V6/V7 Demo chains.
 
 An OKX envelope may omit its microsecond ``inTime``/``outTime`` fields.  The
 original capture preserves that absence, so this diagnostic does not reinterpret
@@ -32,6 +32,22 @@ POLICY_BYTES = canonical(
     }
 )
 POLICY_SHA256 = sha(POLICY_BYTES)
+V7_POLICY_BYTES = canonical(
+    {
+        "version": "ctcc.demo_account_gateway_causality.v2",
+        "source": "externally_pinned_original_v7_B1_journal_and_full_page_replay",
+        "current_source_policy_sha256": current.V7_POLICY_SHA256,
+        "current_streams": list(capture.V7_CURRENT_STREAMS),
+        "algo_order_types": list(capture.CURRENT_ALGO_ORDER_TYPES_V7),
+        "gateway_timestamp_unit": "unix_microseconds",
+        "causal_order": "request_start_le_gateway_in_le_gateway_out_le_headers_receipt",
+        "missing_gateway_time": "incomplete_never_local_time_substitution",
+        "account_complete": False,
+        "source_authenticity_verified": False,
+        "execution_authority": False,
+    }
+)
+V7_POLICY_SHA256 = sha(V7_POLICY_BYTES)
 MAX_RECEIPT_BYTES = 524288
 MAX_PAGES = 256
 _ISSUER = object()
@@ -125,10 +141,16 @@ class AccountGatewayCausalityAudit:
                 _invalid()
             if canonical(value) != raw:
                 _invalid()
+            contract = {
+                ("ctcc.demo_account_gateway_causality_audit.v1", POLICY_SHA256): (
+                    capture.V6_CURRENT_STREAMS
+                ),
+                ("ctcc.demo_account_gateway_causality_audit.v2", V7_POLICY_SHA256): (
+                    capture.V7_CURRENT_STREAMS
+                ),
+            }.get((value["schema_version"], value["policy_sha256"]))
             if (
-                value["schema_version"]
-                != "ctcc.demo_account_gateway_causality_audit.v1"
-                or value["policy_sha256"] != POLICY_SHA256
+                contract is None
                 or not _digest(value["current_source_receipt_sha256"])
                 or value["snapshot"] is not None
                 or value["account_complete"] is not False
@@ -162,12 +184,9 @@ class AccountGatewayCausalityAudit:
                 _invalid()
             validated_at = _time(value["declared_validation_at"])
             pages = value["pages"]
-            if (
-                type(pages) is not list
-                or not len(capture.V6_CURRENT_STREAMS) <= len(pages) <= MAX_PAGES
-            ):
+            if type(pages) is not list or not len(contract) <= len(pages) <= MAX_PAGES:
                 _invalid()
-            counts = {stream: 0 for stream in capture.V6_CURRENT_STREAMS}
+            counts = {stream: 0 for stream in contract}
             missing = []
             last_stream = -1
             previous_headers = None
@@ -177,7 +196,7 @@ class AccountGatewayCausalityAudit:
                 stream = page["stream"]
                 if type(stream) is not str or stream not in counts:
                     _invalid()
-                stream_index = capture.V6_CURRENT_STREAMS.index(stream)
+                stream_index = contract.index(stream)
                 if (
                     type(page["request_index"]) is not int
                     or page["request_index"] != index
@@ -285,19 +304,32 @@ def audit_recorded_demo_account_gateway_causality(
             or type(scope) is not LedgerScope
             or type(validated_at) is not datetime
             or type(expected_policy_sha256) is not str
-            or expected_policy_sha256 != POLICY_SHA256
+            or expected_policy_sha256 not in {POLICY_SHA256, V7_POLICY_SHA256}
         ):
             raise AccountGatewayCausalityError("account_gateway_audit_inputs_invalid")
+        v7 = expected_policy_sha256 == V7_POLICY_SHA256
+        source_policy = current.V7_POLICY_SHA256 if v7 else current.V6_POLICY_SHA256
+        expected_plan = (
+            capture.CurrentDemoAccountCapturePlanV7
+            if v7
+            else capture.CurrentDemoAccountCapturePlanV6
+        )
         source = current.verify_current_account_sources(
             chain,
             reference=reference,
             scope=scope,
             validated_at=validated_at,
-            expected_policy_sha256=current.V6_POLICY_SHA256,
+            expected_policy_sha256=source_policy,
         )
-        packet = current._verify_current_only_chain(chain, reference, scope)
-        if type(packet.plan) is not capture.CurrentDemoAccountCapturePlanV6:
-            raise AccountGatewayCausalityError("account_gateway_v6_source_required")
+        packet = current._verify_current_only_chain(
+            chain, reference, scope, policy=source_policy
+        )
+        if type(packet.plan) is not expected_plan:
+            raise AccountGatewayCausalityError(
+                "account_gateway_v7_source_required"
+                if v7
+                else "account_gateway_v6_source_required"
+            )
         pages = []
         missing = []
         for index, page in enumerate(packet.observations):
@@ -326,8 +358,12 @@ def audit_recorded_demo_account_gateway_causality(
         current_receipt = json.loads(source.receipt_json)
         result = canonical(
             {
-                "schema_version": "ctcc.demo_account_gateway_causality_audit.v1",
-                "policy_sha256": POLICY_SHA256,
+                "schema_version": (
+                    "ctcc.demo_account_gateway_causality_audit.v2"
+                    if v7
+                    else "ctcc.demo_account_gateway_causality_audit.v1"
+                ),
+                "policy_sha256": expected_policy_sha256,
                 "source_reference": observed.reference_document(reference),
                 "current_source_receipt_sha256": source.receipt_sha256,
                 "declared_validation_at": capture._utc(validated_at).isoformat(),

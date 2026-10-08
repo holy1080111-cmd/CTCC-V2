@@ -157,6 +157,8 @@ class SafeDemoAutomation:
         self._run_lock = asyncio.Lock()
         self._state_persist_lock = asyncio.Lock()
         self._control_generation = 0
+        self._control_revision = 0
+        self._restart_latch_required = False
         self._next_run_at: datetime | None = None
         self._recovered = False
         self._history: deque[DemoAutomationRunResult] = deque(
@@ -172,6 +174,20 @@ class SafeDemoAutomation:
         if self.repository is not None:
             stored = await self.repository.load_state()
             if stored:
+                stored = dict(stored)
+                revision = stored.pop("_control_revision", 0)
+                restart_latch_required = stored.pop("_restart_latch_required", False)
+                if (
+                    not isinstance(revision, int)
+                    or isinstance(revision, bool)
+                    or revision < 0
+                    or not isinstance(restart_latch_required, bool)
+                ):
+                    raise DemoAutomationSafetyError(
+                        "demo_automation_control_metadata_invalid"
+                    )
+                self._control_revision = revision
+                self._restart_latch_required = restart_latch_required
                 self._state.update(stored)
             history = await self.repository.load_runs(
                 self.settings.okx_demo_automation_history_limit
@@ -180,12 +196,17 @@ class SafeDemoAutomation:
                 history, maxlen=self.settings.okx_demo_automation_history_limit
             )
         # Deliberately never restore an armed state after process restart.
+        # A sticky mark is written before the first Arm. It survives even a
+        # clear-stop whose DB commit succeeded but acknowledgement was lost.
+        if self._restart_latch_required or self._state["armed"]:
+            self._restart_latch_required = True
+            self._engage_emergency("restart_requires_explicit_clear_stop")
         self._state["armed"] = False
         self._state["last_error"] = None
         self._normalize_portfolio_state()
         self._clear_disabled_continuous_session_locks()
+        await self._persist_state(required=self.repository is not None)
         self._recovered = True
-        await self._persist_state(required=False)
 
     async def status(self) -> DemoAutomationStatus:
         active_trades = self._active_trades()
@@ -317,6 +338,8 @@ class SafeDemoAutomation:
         return list(self._history)[-max(1, limit) :]
 
     async def arm(self) -> DemoAutomationStatus:
+        if not self._recovered:
+            raise DemoAutomationSafetyError("demo_automation_recovery_not_completed")
         generation = self._control_generation
         blockers = self._configuration_blockers()
         if blockers:
@@ -362,6 +385,7 @@ class SafeDemoAutomation:
             overrides={"armed": True},
             expected_generation=generation,
             expected_emergency_stop=False,
+            restart_latch_required=True,
         )
         if generation != self._control_generation or self._state["emergency_stop"]:
             raise DemoAutomationSafetyError("demo_automation_arm_revoked")
@@ -372,15 +396,62 @@ class SafeDemoAutomation:
         self._control_generation += 1
         self._state["armed"] = False
         await self.stop()
-        await self._persist_state(required=False)
+        # Local exposure authority is revoked before I/O. A configured durable
+        # repository must acknowledge the revocation; a CAS conflict or lost
+        # write cannot be reported as a successful durable Disarm.
+        await self._persist_state(required=self.repository is not None)
         return await self.status()
 
     async def emergency_stop(self) -> DemoAutomationStatus:
         self._engage_emergency("emergency_stop_engaged")
+        was_recovered = self._recovered
+        # This also covers cancellation after a DB commit but before readback.
+        # Only a confirmed write from a current copy may restore local recovery.
+        self._recovered = False
         try:
-            # Do not report a durable stop when its persistence failed. The
-            # local latch remains engaged regardless of storage outcome.
-            await self._persist_state(required=True)
+            if self.repository is None:
+                raise DemoAutomationSafetyError(
+                    "demo_automation_state_persistence_unavailable"
+                )
+            # A stale process must still be able to stop the *current* row.
+            # The repository changes only control columns under a DB row lock;
+            # it does not write this process's potentially stale trade state.
+            async with self._state_persist_lock:
+                previous_revision = self._control_revision
+                try:
+                    revision = await self.repository.latch_emergency_stop(
+                        "emergency_stop_engaged"
+                    )
+                    observed = await self.repository.load_state()
+                except Exception as exc:
+                    self._recovered = False
+                    self._state["last_error"] = "emergency_stop_persistence_unconfirmed"
+                    raise DemoAutomationSafetyError(self._state["last_error"]) from exc
+                if (
+                    observed is None
+                    or not isinstance(revision, int)
+                    or isinstance(revision, bool)
+                    or not isinstance(observed.get("_control_revision"), int)
+                    or isinstance(observed["_control_revision"], bool)
+                    or observed["_control_revision"] < revision
+                    or observed.get("armed") is not False
+                    or observed.get("emergency_stop") is not True
+                    or observed.get("locked") is not True
+                    or observed.get("_restart_latch_required") is not True
+                    or not isinstance(observed.get("lock_reasons"), list)
+                    or "emergency_stop_engaged" not in observed["lock_reasons"]
+                ):
+                    self._recovered = False
+                    raise DemoAutomationSafetyError(
+                        "emergency_stop_durable_readback_unconfirmed"
+                    )
+                self._control_revision = observed["_control_revision"]
+                self._restart_latch_required = True
+                # If this process missed another writer's state, the stop won
+                # but a full recovery is needed before a later clear or Arm.
+                self._recovered = (
+                    was_recovered and self._control_revision == previous_revision + 1
+                )
         finally:
             # A blocked, failed or cancelled DB write must not leave the
             # existing scheduler running in this process.
@@ -388,6 +459,8 @@ class SafeDemoAutomation:
         return await self.status()
 
     async def clear_emergency_stop(self) -> DemoAutomationStatus:
+        if not self._recovered:
+            raise DemoAutomationSafetyError("demo_automation_recovery_not_completed")
         generation = self._control_generation
         snapshot = await self.demo_service.reconcile()
         if generation != self._control_generation:
@@ -441,9 +514,25 @@ class SafeDemoAutomation:
                 expected_generation=generation,
                 expected_emergency_stop=True,
             )
+            if self.repository is None:
+                raise DemoAutomationSafetyError(
+                    "demo_automation_state_persistence_unavailable"
+                )
+            observed = await self.repository.load_state()
+            if (
+                observed is None
+                or observed.get("_control_revision") != self._control_revision
+                or observed.get("armed") is not False
+                or observed.get("emergency_stop") is not False
+                or observed.get("_restart_latch_required") is not True
+            ):
+                raise DemoAutomationSafetyError(
+                    "clear_stop_durable_readback_unconfirmed"
+                )
         except BaseException:
             # A failed or cancelled clear must not unlock this process. Do not
             # issue a second DB write: the first commit outcome may be unknown.
+            self._recovered = False
             self._engage_emergency("clear_stop_persistence_uncertain")
             raise
         if generation != self._control_generation:
@@ -1721,8 +1810,42 @@ class SafeDemoAutomation:
                 margin_guard_equity = fresh_capital.risk_equity
                 margin_guard_available = fresh_capital.available_equity
 
-            def before_submit() -> None:
+            async def before_submit() -> None:
                 nonlocal order_submission_attempted
+                self._ensure_execute_ready()
+                expected_generation = self._control_generation
+                expected_revision = self._control_revision
+                try:
+                    if self.repository is None or not self._recovered:
+                        raise DemoAutomationSafetyError(
+                            "demo_automation_shared_control_unavailable"
+                        )
+                    observed_revision = (
+                        await self.repository.assert_current_execution_control(
+                            expected_revision
+                        )
+                    )
+                    if (
+                        type(observed_revision) is not int
+                        or observed_revision != expected_revision
+                        or expected_generation != self._control_generation
+                        or expected_revision != self._control_revision
+                    ):
+                        raise DemoAutomationSafetyError(
+                            "demo_automation_shared_control_changed"
+                        )
+                except asyncio.CancelledError:
+                    self._recovered = False
+                    self._engage_emergency("shared_control_unconfirmed")
+                    raise
+                except Exception as exc:
+                    # The DB read itself may fail or be cancelled after a
+                    # concurrent stop. No confirmed current Arm means no POST.
+                    self._recovered = False
+                    self._engage_emergency("shared_control_unconfirmed")
+                    raise DemoAutomationSafetyError(
+                        "demo_automation_shared_control_unconfirmed"
+                    ) from exc
                 self._ensure_execute_ready()
                 if (
                     sizing_candidate.expires_at.tzinfo is None
@@ -2088,14 +2211,25 @@ class SafeDemoAutomation:
                         "adverse_fill_slippage_bps": str(fill_slippage_bps),
                     },
                 )
-            except Exception:
-                if not self._state["emergency_stop"]:
-                    self._engage_emergency(
-                        "post_submission_fingerprint_persistence_failed"
-                        if state_persisted
-                        else "post_submission_state_persistence_failed"
+            except BaseException as original:
+                # This scope begins after a possible exchange write. In
+                # particular, cancellation during state persistence may mean
+                # the DB commit succeeded or failed. Latch locally before any
+                # further await; this legacy path has no pre-submit durable
+                # intent and cannot infer one from a later state journal.
+                self._engage_emergency(
+                    "post_submission_fingerprint_persistence_failed"
+                    if state_persisted
+                    else "post_submission_state_persistence_unconfirmed"
+                )
+                self._recovered = False
+                try:
+                    await self._persist_state(required=False)
+                except BaseException as persistence_error:
+                    self._state["last_error"] = (
+                        "post_submission_stop_persistence_unconfirmed"
                     )
-                await self._persist_state(required=False)
+                    raise original from persistence_error
                 raise
             return (
                 self._candidate_result(
@@ -3168,6 +3302,7 @@ class SafeDemoAutomation:
                     "post_submission_acknowledgement_invalid",
                     "post_submission_fingerprint_persistence_failed",
                     "post_submission_state_persistence_failed",
+                    "post_submission_state_persistence_unconfirmed",
                     "realized_pnl_history_invalid",
                     "risk_session_clock_reversed",
                     "tracked_position_protection_missing_or_mismatched",
@@ -3423,6 +3558,7 @@ class SafeDemoAutomation:
         overrides: dict[str, Any] | None = None,
         expected_generation: int | None = None,
         expected_emergency_stop: bool | None = None,
+        restart_latch_required: bool | None = None,
     ) -> None:
         if self.repository is None:
             if required:
@@ -3441,14 +3577,45 @@ class SafeDemoAutomation:
             payload = {key: self._state[key] for key in self._state}
             if overrides is not None:
                 payload.update(overrides)
+            next_revision = self._control_revision + 1
+            next_restart_latch = (
+                self._restart_latch_required
+                if restart_latch_required is None
+                else restart_latch_required
+            )
+            # A stop or Arm establishes a permanent boot-time latch. Clear
+            # changes only the current process's authority; an ambiguous
+            # clear acknowledgement can never erase the restart marker.
+            next_restart_latch = bool(
+                next_restart_latch
+                or self._restart_latch_required
+                or payload["emergency_stop"]
+                or payload["armed"]
+            )
+            payload["_control_revision"] = next_revision
+            payload["_restart_latch_required"] = next_restart_latch
             try:
                 await self.repository.save_state(payload)
+            except asyncio.CancelledError:
+                # A cancelled await may arrive after the database committed.
+                # Keep this process stopped until it re-reads durable control.
+                self._recovered = False
+                self._state["last_error"] = "state_persistence_unconfirmed"
+                self._engage_emergency("state_persistence_unconfirmed")
+                raise
             except Exception as exc:
-                self._state["last_error"] = (
-                    "state_persistence_failed:" + self._safe_error(exc)
-                )
+                self._recovered = False
+                self._state["last_error"] = "state_persistence_failed"
+                # A lost state write while armed (including a stale CAS
+                # conflict) removes local authority immediately. A previous
+                # successful Arm left a durable restart latch behind.
+                if self._state["armed"] or payload["armed"]:
+                    self._engage_emergency("state_persistence_unconfirmed")
                 if required:
                     raise DemoAutomationSafetyError(self._state["last_error"]) from exc
+            else:
+                self._control_revision = next_revision
+                self._restart_latch_required = next_restart_latch
 
     async def _fingerprint_exists(self, fingerprint: str, now: datetime) -> bool:
         self._fingerprints = {

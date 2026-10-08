@@ -126,6 +126,8 @@ async def test_legacy_holding_without_start_time_is_preserved_without_invented_t
 async def test_repository_does_not_coerce_json_corruption_before_validation(raw):
     state = configured(FakeDemo())._state
     row = SimpleNamespace(**deepcopy(state))
+    row.control_revision = 1
+    row.restart_latch_required = False
     row.active_trades = deepcopy(raw)
     row.realized_pnl_events = deepcopy(raw)
 

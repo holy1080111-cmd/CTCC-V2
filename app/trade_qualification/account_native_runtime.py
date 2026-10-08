@@ -29,6 +29,7 @@ from app.trade_qualification import account_capture as capture
 from app.trade_qualification import account_capture_journal as journal
 from app.trade_qualification import account_clock_boundary as boundary
 from app.trade_qualification import account_collector as collector
+from app.trade_qualification import account_current_history_join as source_join
 from app.trade_qualification import account_current_source_verifier as current
 from app.trade_qualification import account_native_clock as native
 from app.trade_qualification import account_native_exposed_observation as exposed
@@ -366,12 +367,25 @@ def _mint_demo_account_origin(
     try:
         state = native._state(stage)
         plan = capture._checked_plan(session._plan, session._pin)
+        origin_contract = {
+            capture.CurrentDemoAccountCapturePlanV6: (
+                "ctcc.demo_current_account_capture.v6",
+                "ctcc.initial_native_account_diagnostic.v2",
+                proof.V3_POLICY_SHA256,
+            ),
+            capture.CurrentDemoAccountCapturePlanV7: (
+                "ctcc.demo_current_account_capture.v7",
+                "ctcc.initial_native_account_diagnostic.v3",
+                proof.V7_FLAT_POLICY_SHA256,
+            ),
+        }.get(type(plan))
         if (
             type(session) is not ControlledDemoAccountSession
             or state.get("session_claim") is not native._session_claim(session)
             or state["session_claim"].get("bootstrap_used") is not True
             or type(packet) is not capture.DemoAccountPacket
-            or type(plan) is not capture.CurrentDemoAccountCapturePlanV6
+            or origin_contract is None
+            or packet.schema_version != origin_contract[0]
             or packet.plan != plan
             or packet.plan_sha256 != session._pin
             or reference.plan_sha256 != session._pin
@@ -394,6 +408,27 @@ def _mint_demo_account_origin(
             or type(deadline) is not int
             or utc_from_ns(issued["utc_ns"]) >= expires
             or issued["monotonic_ns"] >= deadline
+        ):
+            raise ValueError
+        receipt = json.loads(receipt_json)
+        if (
+            type(receipt) is not dict
+            or canonical(receipt) != receipt_json
+            or receipt.get("schema_version") != origin_contract[1]
+            or receipt.get("policy_sha256") != origin_contract[2]
+            or receipt.get("source_reference") != observed.reference_document(reference)
+            or receipt.get("proof_sha256") != proof_sha256
+            or receipt.get("proof_readback_sha256") != readback_sha256
+            or receipt.get("observed_at") != utc_from_ns(issued["utc_ns"]).isoformat()
+            or receipt.get("expires_at") != expires.isoformat()
+            or receipt.get("current_native_source_observed") is not True
+            or receipt.get("native_sampled_hwm_verified") is not False
+            or receipt.get("snapshot") is not None
+            or receipt.get("account_complete") is not False
+            or receipt.get("account_revision_published") is not False
+            or receipt.get("flat_start_permission") is not False
+            or receipt.get("execution_authority") is not False
+            or receipt.get("admission") != "DENY"
         ):
             raise ValueError
         configs = {}
@@ -522,13 +557,25 @@ def _mint_native_demo_raw_packet(
     try:
         state = native._state(stage)
         plan = capture._checked_plan(session._plan, session._pin)
+        packet_contract = {
+            capture.CurrentDemoAccountCapturePlanV6: (
+                "ctcc.demo_current_account_capture.v6",
+                "ctcc.initial_native_account_diagnostic.v2",
+                proof.V3_POLICY_SHA256,
+            ),
+            capture.CurrentDemoAccountCapturePlanV7: (
+                "ctcc.demo_current_account_capture.v7",
+                "ctcc.initial_native_account_diagnostic.v3",
+                proof.V7_FLAT_POLICY_SHA256,
+            ),
+        }.get(type(plan))
         if (
             type(session) is not ControlledDemoAccountSession
             or state.get("session_claim") is not native._session_claim(session)
             or state["session_claim"].get("bootstrap_used") is not True
-            or type(plan) is not capture.CurrentDemoAccountCapturePlanV6
+            or packet_contract is None
             or type(packet) is not capture.DemoAccountPacket
-            or packet.schema_version != "ctcc.demo_current_account_capture.v6"
+            or packet.schema_version != packet_contract[0]
             or packet.plan != plan
             or packet.plan_sha256 != session._pin
             or type(reference) is not observed.CaptureReference
@@ -554,8 +601,8 @@ def _mint_native_demo_raw_packet(
         if (
             type(receipt) is not dict
             or canonical(receipt) != receipt_json
-            or receipt.get("schema_version")
-            != "ctcc.initial_native_account_diagnostic.v2"
+            or receipt.get("schema_version") != packet_contract[1]
+            or receipt.get("policy_sha256") != packet_contract[2]
             or receipt.get("source_reference") != observed.reference_document(reference)
             or receipt.get("observed_at") != utc_from_ns(issued["utc_ns"]).isoformat()
             or receipt.get("expires_at") != expires.isoformat()
@@ -582,6 +629,8 @@ def _mint_native_demo_raw_packet(
         _RAW_PACKET_LEASES[lease] = {
             "packet_payload": frozen.payload,
             "packet_sha256": frozen.sha256,
+            "packet_plan_type": type(plan),
+            "packet_schema_version": packet_contract[0],
             "reference": reference,
             "proof_sha256": proof_pin,
             "readback_sha256": readback_pin,
@@ -648,7 +697,8 @@ def _consume_native_demo_raw_packet(diagnostic, session):
         reference = state["reference"]
         observed.reference_document(reference)
         if (
-            type(packet.plan) is not capture.CurrentDemoAccountCapturePlanV6
+            type(packet.plan) is not state["packet_plan_type"]
+            or packet.schema_version != state["packet_schema_version"]
             or packet.plan != session._plan
             or reference.packet_sha256 != state["packet_sha256"]
         ):
@@ -885,11 +935,15 @@ async def _capture_initial_current(
             raise proof.NativeAccountProofError(
                 "native_account_original_source_required"
             )
+        current_streams = (
+            current.V7_CURRENT_STREAMS
+            if type(selected) is capture.CurrentDemoAccountCapturePlanV7
+            else current.CURRENT_STREAMS
+        )
         first_current = next(
             w["stamp"]
             for w in state["witnesses"]
-            if w["phase"] == "response_closed"
-            and w["stream"] in current.CURRENT_STREAMS
+            if w["phase"] == "response_closed" and w["stream"] in current_streams
         )
         deadline = first_current["monotonic_ns"] + boundary.MAX_LIFETIME_NS
         expires = utc_from_ns(first_current["utc_ns"] + boundary.MAX_LIFETIME_NS)
@@ -1074,6 +1128,8 @@ async def _capture_initial_current(
             "schema_version": (
                 "ctcc.initial_native_account_diagnostic.v1"
                 if proof_schema == proof.SCHEMA
+                else "ctcc.initial_native_account_diagnostic.v3"
+                if proof_schema == proof.V7_FLAT_SCHEMA
                 else "ctcc.initial_native_account_diagnostic.v2"
             ),
             "policy_sha256": proof_policy_sha256,
@@ -1094,6 +1150,10 @@ async def _capture_initial_current(
         }
     )
     _secret_checked(receipt, owner.tokens)
+    current_raw_packet_plan = type(selected) in {
+        capture.CurrentDemoAccountCapturePlanV6,
+        capture.CurrentDemoAccountCapturePlanV7,
+    }
     origin_lease = (
         _mint_demo_account_origin(
             stage,
@@ -1108,11 +1168,12 @@ async def _capture_initial_current(
             expires=expires,
             deadline=deadline,
         )
-        if type(selected) is capture.CurrentDemoAccountCapturePlanV6
+        if current_raw_packet_plan
         else None
     )
-    raw_packet_lease = (
-        _mint_native_demo_raw_packet(
+    raw_packet_lease = None
+    if current_raw_packet_plan:
+        raw_packet_lease = _mint_native_demo_raw_packet(
             stage,
             session,
             replay.packet,
@@ -1122,9 +1183,6 @@ async def _capture_initial_current(
             expires=expires,
             deadline=deadline,
         )
-        if type(selected) is capture.CurrentDemoAccountCapturePlanV6
-        else None
-    )
     # This is the sole minting path, reachable only after actual private source,
     # original phase completeness, current admission and durable separate reads.
     fence = object.__new__(boundary._AccountClockBoundary)
@@ -1205,6 +1263,7 @@ async def capture_initial_native_account(session, *, session_factory, proof_root
             capture.RegionalDemoAccountCapturePlan,
             capture.AllProductDemoAccountCapturePlan,
             capture.CurrentDemoAccountCapturePlanV6,
+            capture.CurrentDemoAccountCapturePlanV7,
         }
         or selected.registration_region != "global"
         or selected.settlement_currency != "USDT"
@@ -1243,19 +1302,20 @@ async def capture_initial_native_account(session, *, session_factory, proof_root
         task = asyncio.current_task()
         if task is not None and task.cancelling():
             raise asyncio.CancelledError from None
+        if type(selected) is capture.CurrentDemoAccountCapturePlanV7:
+            failure_schema = "ctcc.initial_native_account_diagnostic.v3"
+            failure_policy = proof.V7_FLAT_POLICY_SHA256
+        elif type(selected) is capture.CurrentDemoAccountCapturePlanV6:
+            failure_schema = "ctcc.initial_native_account_diagnostic.v2"
+            failure_policy = proof.V3_POLICY_SHA256
+        else:
+            failure_schema = "ctcc.initial_native_account_diagnostic.v1"
+            failure_policy = proof.POLICY_SHA256
         return InitialNativeAccountDiagnostic(
             canonical(
                 {
-                    "schema_version": (
-                        "ctcc.initial_native_account_diagnostic.v2"
-                        if type(selected) is capture.CurrentDemoAccountCapturePlanV6
-                        else "ctcc.initial_native_account_diagnostic.v1"
-                    ),
-                    "policy_sha256": (
-                        proof.V3_POLICY_SHA256
-                        if type(selected) is capture.CurrentDemoAccountCapturePlanV6
-                        else proof.POLICY_SHA256
-                    ),
+                    "schema_version": failure_schema,
+                    "policy_sha256": failure_policy,
                     "code": "native_account_initial_denied",
                     "current_native_source_observed": False,
                     "native_sampled_hwm_verified": False,
@@ -1363,7 +1423,7 @@ async def capture_native_exposed_account_observation(
 async def capture_native_current_history_join(
     session, *, session_factory, proof_root, history_capture_id
 ):
-    """Join a native v6 current capture to a recorded v5 history under one call.
+    """Join a native V6/V7 current capture to recorded V5 history under one call.
 
     The history ID is only a locator. The original B1 chains, exact session and
     local checkpoint are reread under the UID lock. The native carrier is burned
@@ -1383,8 +1443,13 @@ async def capture_native_current_history_join(
             "native_account_history_join_inputs_invalid"
         )
     selected = capture._checked_plan(session._plan, session._pin)
+    v7 = type(selected) is capture.CurrentDemoAccountCapturePlanV7
     if (
-        type(selected) is not capture.CurrentDemoAccountCapturePlanV6
+        type(selected)
+        not in {
+            capture.CurrentDemoAccountCapturePlanV6,
+            capture.CurrentDemoAccountCapturePlanV7,
+        }
         or selected.registration_region != "global"
         or selected.settlement_currency != "USDT"
     ):
@@ -1430,11 +1495,15 @@ async def capture_native_current_history_join(
                     "native_account_history_join_lease_expired"
                 )
             remaining = (deadline_ns - before_lock["monotonic_ns"]) / 1_000_000_000
+            join_policy = (
+                {"expected_policy_sha256": source_join.V7_POLICY_SHA256} if v7 else {}
+            )
             async with asyncio.timeout(remaining):
                 locked = await repository.read_locked_current_history_join(
                     scope,
                     history_capture_id=history_capture_id,
                     current_capture_id=pending.reference.capture_id,
+                    **join_policy,
                 )
             if type(locked) is not LockedAccountSourceJoinReadback:
                 raise proof.NativeAccountProofError(
@@ -1452,7 +1521,34 @@ async def capture_native_current_history_join(
             blockers = locked_value.get("locked_readback_blocking_reasons")
             if (
                 locked_value.get("schema_version")
-                != "ctcc.demo_account_locked_source_join.v2"
+                != (
+                    "ctcc.demo_account_locked_source_join.v3"
+                    if v7
+                    else "ctcc.demo_account_locked_source_join.v2"
+                )
+                or (
+                    v7
+                    and (
+                        canonical(locked_value) != locked.receipt_json
+                        or type(locked_value.get("join_receipt_sha256")) is not str
+                        or re.fullmatch(
+                            r"[a-f0-9]{64}", locked_value["join_receipt_sha256"]
+                        )
+                        is None
+                        or locked_value.get("join_policy_sha256")
+                        != source_join.V7_POLICY_SHA256
+                        or locked_value.get("current_source_policy_sha256")
+                        != current.V7_POLICY_SHA256
+                        or locked_value.get("flat_start_permission") is not False
+                        or type(locked_value.get("recorded_pre_lock_blocking_reasons"))
+                        is not list
+                        or "current_local_revision_readback_required"
+                        not in locked_value["recorded_pre_lock_blocking_reasons"]
+                        or set(locked_value["recorded_pre_lock_blocking_reasons"])
+                        - {"current_local_revision_readback_required"}
+                        != set(locked_value.get("locked_readback_blocking_reasons", ()))
+                    )
+                )
                 or locked_value.get("current_source_reference") != current_reference
                 or locked_value.get("scope_sha256") != proof.scope_sha256(scope)
                 or locked_value.get("session_binding_sha256")
@@ -1481,7 +1577,15 @@ async def capture_native_current_history_join(
                 or "history_tail_not_atomically_closed" not in blockers
                 or native_value.get("source_reference") != current_reference
                 or native_value.get("schema_version")
-                != "ctcc.initial_native_account_diagnostic.v2"
+                != (
+                    "ctcc.initial_native_account_diagnostic.v3"
+                    if v7
+                    else "ctcc.initial_native_account_diagnostic.v2"
+                )
+                or (
+                    v7
+                    and native_value.get("policy_sha256") != proof.V7_FLAT_POLICY_SHA256
+                )
                 or locked_value.get("admission") != "DENY"
                 or locked_value.get("snapshot") is not None
                 or locked_value.get("account_complete") is not False
@@ -1505,7 +1609,11 @@ async def capture_native_current_history_join(
                 )
             receipt = canonical(
                 {
-                    "schema_version": "ctcc.native_current_history_join_diagnostic.v1",
+                    "schema_version": (
+                        "ctcc.native_current_history_join_diagnostic.v2"
+                        if v7
+                        else "ctcc.native_current_history_join_diagnostic.v1"
+                    ),
                     "native_current_receipt_sha256": sha(consumed.receipt_json),
                     "locked_history_join_receipt_sha256": locked.receipt_sha256,
                     "history_source_reference": locked_value[
@@ -1523,6 +1631,15 @@ async def capture_native_current_history_join(
                     "account_revision_published": False,
                     "execution_authority": False,
                     "admission": "DENY",
+                    **(
+                        {
+                            "join_policy_sha256": source_join.V7_POLICY_SHA256,
+                            "current_source_policy_sha256": current.V7_POLICY_SHA256,
+                            "flat_start_permission": False,
+                        }
+                        if v7
+                        else {}
+                    ),
                 }
             )
             return NativeCurrentHistoryJoinDiagnostic(receipt)
@@ -1535,7 +1652,11 @@ async def capture_native_current_history_join(
         return NativeCurrentHistoryJoinDiagnostic(
             canonical(
                 {
-                    "schema_version": "ctcc.native_current_history_join_diagnostic.v1",
+                    "schema_version": (
+                        "ctcc.native_current_history_join_diagnostic.v2"
+                        if v7
+                        else "ctcc.native_current_history_join_diagnostic.v1"
+                    ),
                     "code": "native_account_history_join_denied",
                     "native_current_source_observed": False,
                     "historical_native_source_observed": False,
@@ -1544,6 +1665,7 @@ async def capture_native_current_history_join(
                     "account_revision_published": False,
                     "execution_authority": False,
                     "admission": "DENY",
+                    **({"flat_start_permission": False} if v7 else {}),
                 }
             )
         )

@@ -1,4 +1,4 @@
-"""Source-owned V6 current Demo components, without portfolio authority.
+"""Source-owned V6/V7 current Demo components, without portfolio authority.
 
 The one-use native packet carrier is consumed before deriving anything.  This
 receipt records measured current operands and explicit missing dependencies;
@@ -36,6 +36,23 @@ POLICY_BYTES = canonical(
     }
 )
 POLICY_SHA256 = sha(POLICY_BYTES)
+V7_POLICY_BYTES = canonical(
+    {
+        "version": "ctcc.native_demo_current_components.v2",
+        "source": "requires_one_use_native_v7_raw_packet_with_original_proof_readback",
+        "current_capture_contract": "ctcc.demo_current_account_plan.v7",
+        "current_streams": list(capture.V7_CURRENT_STREAMS),
+        "algo_order_types": list(capture.CURRENT_ALGO_ORDER_TYPES_V7),
+        "balance": "settlement_currency_eq_and_availEq_not_total_USD",
+        "current_inventory": "all_exact_unfiltered_terminal_v7_streams",
+        "missing": "null_and_explicit_blocker_never_zero_or_empty",
+        "history_and_local_state": "unknown_until_separately_source_owned",
+        "portfolio_snapshot": False,
+        "account_revision_published": False,
+        "execution_authority": False,
+    }
+)
+V7_POLICY_SHA256 = sha(V7_POLICY_BYTES)
 
 _UNKNOWN = (
     "complete_realized_outcome_window_unknown",
@@ -104,11 +121,29 @@ def _project(source) -> NativeCurrentComponents:
     if type(source) is not native._ObservedNativeDemoAccountRawPacket:
         raise NativeCurrentComponentsError("native_current_components_source_invalid")
     packet, reference = source.packet, source.reference
+    if type(packet) is not capture.DemoAccountPacket:
+        raise NativeCurrentComponentsError("native_current_components_source_invalid")
+    contract = {
+        (
+            capture.CurrentDemoAccountCapturePlanV6,
+            "ctcc.demo_current_account_capture.v6",
+        ): (
+            capture.V6_CURRENT_STREAMS,
+            "ctcc.native_demo_current_components.v1",
+            POLICY_SHA256,
+        ),
+        (
+            capture.CurrentDemoAccountCapturePlanV7,
+            "ctcc.demo_current_account_capture.v7",
+        ): (
+            capture.V7_CURRENT_STREAMS,
+            "ctcc.native_demo_current_components.v2",
+            V7_POLICY_SHA256,
+        ),
+    }.get((type(packet.plan), packet.schema_version))
     if (
-        type(packet) is not capture.DemoAccountPacket
-        or type(packet.plan) is not capture.CurrentDemoAccountCapturePlanV6
+        contract is None
         or type(reference) is not observed.CaptureReference
-        or packet.schema_version != "ctcc.demo_current_account_capture.v6"
         or packet.plan_sha256 != reference.plan_sha256
         or capture.freeze_demo_account_packet(
             packet, expected_plan_sha256=reference.plan_sha256
@@ -123,8 +158,13 @@ def _project(source) -> NativeCurrentComponents:
         or source.source_authenticity_verified is not False
     ):
         raise NativeCurrentComponentsError("native_current_components_source_invalid")
-    groups = {stream: [] for stream in capture.V6_CURRENT_STREAMS}
+    streams, receipt_schema, policy_sha256 = contract
+    groups = {stream: [] for stream in streams}
     for page in packet.observations:
+        if page.request.stream not in groups:
+            raise NativeCurrentComponentsError(
+                "native_current_components_inventory_incomplete"
+            )
         groups[page.request.stream].append(page)
     if any(not pages or pages[-1].terminal is not True for pages in groups.values()):
         raise NativeCurrentComponentsError(
@@ -171,7 +211,7 @@ def _project(source) -> NativeCurrentComponents:
         for stream in (
             "positions",
             "orders_pending",
-            *(name for name in capture.V6_CURRENT_STREAMS if name.startswith("algo_")),
+            *(name for name in streams if name.startswith("algo_")),
         )
     }
     missing_fields = any(
@@ -205,8 +245,8 @@ def _project(source) -> NativeCurrentComponents:
     )
     receipt = canonical(
         {
-            "schema_version": "ctcc.native_demo_current_components.v1",
-            "policy_sha256": POLICY_SHA256,
+            "schema_version": receipt_schema,
+            "policy_sha256": policy_sha256,
             "account_scope_sha256": sha(
                 canonical(
                     [

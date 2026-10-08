@@ -371,6 +371,15 @@ def _build(
             _deny("public_v2_acquisition_schedule_mismatch")
     if current_quote.capture_started_at < candle_packet.completed_at:
         _deny("public_v2_acquisition_schedule_mismatch")
+    if barrier is not None and (
+        current_quote.ticker.source_generated_at <= barrier
+        or market_aux.provenance[0].source_time <= barrier
+        or reference.ticker.source_time <= barrier
+    ):
+        # A new request may still return cached market content. These three
+        # source timestamps describe generation, unlike mark/funding/OI return
+        # stamps. Post-G12 must observe newly generated executable content.
+        _deny("public_v2_post_barrier_generation_missing")
     inspection = inspect_executable_quote_v2(current_quote, current_time=finish)
     receipt = decode(inspection.receipt_json, quotes.MAX_PACKET_BYTES)
     if receipt["profile_satisfied"] is not True:

@@ -2,7 +2,19 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import Boolean, Date, DateTime, Integer, Numeric, String, func
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    CheckConstraint,
+    Date,
+    DateTime,
+    Integer,
+    Numeric,
+    String,
+    false,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -11,10 +23,33 @@ from app.database.base import Base, UUIDPrimaryKeyMixin
 
 class DemoAutomationState(Base):
     __tablename__ = "demo_automation_state"
+    __table_args__ = (
+        CheckConstraint(
+            "control_revision >= 0",
+            name="control_revision_nonnegative",
+        ),
+        CheckConstraint(
+            "NOT (armed AND emergency_stop)",
+            name="arm_stop_exclusive",
+        ),
+        CheckConstraint(
+            "NOT armed OR restart_latch_required",
+            name="armed_requires_restart_latch",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
     armed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     emergency_stop: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    control_revision: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default=text("0")
+    )
+    # Once this process has ever been armed, a new process must relatch its
+    # emergency stop. This remains true after a successful clear, so an
+    # acknowledged or ambiguous clear cannot unlock a restarted process.
+    restart_latch_required: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
     locked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     lock_reasons: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
     session_date: Mapped[date] = mapped_column(Date, nullable=False)

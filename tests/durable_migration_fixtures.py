@@ -21,6 +21,7 @@ MIGRATIONS = {
     "0031": "0031_gate3_canonical_sql_repair.py",
     "0032": "0032_gate3_claim_trigger_alias_repair.py",
     "0033": "0033_public_receipt_publication_ack.py",
+    "0034": "0034_demo_automation_control_cas.py",
 }
 TABLES = {
     # 0023 is constraint/trigger-only and has dedicated upgrade/downgrade
@@ -76,3 +77,9 @@ class RecordedDowngrade:
 
     def drop_table(self, table):
         self.commands.append(("drop", table))
+
+    def drop_constraint(self, constraint, table, *, type_):
+        self.commands.append(("drop_constraint", constraint, table, type_))
+
+    def drop_column(self, table, column):
+        self.commands.append(("drop_column", table, column))

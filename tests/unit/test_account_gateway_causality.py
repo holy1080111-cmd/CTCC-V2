@@ -99,6 +99,7 @@ async def test_measured_gateway_window_covers_every_original_page(monkeypatch):
     )
     assert receipt["blocking_reasons"] == [
         "account_revision_unverified",
+        "algo_type_coverage_incomplete",
         "source_authenticity_unverified",
     ]
     assert receipt["snapshot"] is None

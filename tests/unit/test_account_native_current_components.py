@@ -18,11 +18,11 @@ from tests.unit.test_qualification_account_collector import credentials
 
 async def owned_components(monkeypatch, *, source_case="fresh_flat"):
     raw, files, chain, scope, samples = await companion_fixture(
-        monkeypatch, source_case=source_case, current_only=True
+        monkeypatch, source_case=source_case, current_v7=True
     )
     checked = replay(raw, files, chain, scope)
     reference, packet, _records, _joins = proof._source(
-        chain, scope, proof_schema=proof.V3_SCHEMA
+        chain, scope, proof_schema=proof.V7_FLAT_SCHEMA
     )
     session = ControlledDemoAccountSession(
         credentials=credentials(session_binding_id=packet.plan.session_binding_id),
@@ -43,7 +43,8 @@ async def owned_components(monkeypatch, *, source_case="fresh_flat"):
         issued = samples()
         receipt = canonical(
             {
-                "schema_version": "ctcc.initial_native_account_diagnostic.v2",
+                "schema_version": "ctcc.initial_native_account_diagnostic.v3",
+                "policy_sha256": proof.V7_FLAT_POLICY_SHA256,
                 "source_reference": observed.reference_document(reference),
                 "proof_sha256": sha(raw),
                 "proof_readback_sha256": "b" * 64,
@@ -84,6 +85,8 @@ async def test_native_flat_observation_retains_unknown_risk_components(monkeypat
     result = await owned_components(monkeypatch)
     value = json.loads(result.receipt_json)
     assert value["current_inventory_observed_empty"] is True
+    assert value["schema_version"] == "ctcc.native_demo_current_components.v2"
+    assert len(value["current_inventory_row_counts"]) == 10
     assert all(count == 0 for count in value["current_inventory_row_counts"].values())
     assert value["current_balance"]["equity"] == {
         "numerator": "1000",
@@ -112,18 +115,30 @@ async def test_native_exposure_stays_outside_current_proof_and_components(monkey
     # current inventory. Existing exposure needs a separate read-only proof.
     with pytest.raises(
         proof.NativeAccountProofError,
-        match="native_account_current_sources_incomplete_or_exposed",
+        match="native_account_v7_inventory_incomplete",
     ):
         await owned_components(monkeypatch, source_case="exposed")
 
 
 @pytest.mark.asyncio
+async def test_revoked_four_algo_source_cannot_mint_native_components(monkeypatch):
+    raw, files, chain, scope, _samples = await companion_fixture(
+        monkeypatch, current_only=True, current_v7=False, verify_baseline=False
+    )
+    with pytest.raises(
+        proof.NativeAccountProofError,
+        match="native_account_current_sources_incomplete_or_exposed",
+    ):
+        replay(raw, files, chain, scope)
+
+
+@pytest.mark.asyncio
 async def test_caller_cannot_supply_fake_current_components(monkeypatch):
     raw, files, chain, scope, _samples = await companion_fixture(
-        monkeypatch, current_only=True
+        monkeypatch, current_v7=True
     )
     replay(raw, files, chain, scope)
-    packet = proof._source(chain, scope, proof_schema=proof.V3_SCHEMA)[1]
+    packet = proof._source(chain, scope, proof_schema=proof.V7_FLAT_SCHEMA)[1]
     session = ControlledDemoAccountSession(
         credentials=credentials(session_binding_id=packet.plan.session_binding_id),
         plan=packet.plan,

@@ -39,6 +39,7 @@ from tests.unit.research.test_public_clock_v2 import resign
 from tests.unit.research.test_public_journal_contracts import MemoryDirectory
 from tests.unit.test_account_clock_boundary import private_context_fixture
 from tests.unit.test_account_current_history_join import current_plan
+from tests.unit.test_account_current_source_v7 import current_plan_v7
 from tests.unit.test_account_current_source_verifier import flat_pages
 from tests.unit.test_account_ingestion_journal_contracts import setup
 from tests.unit.test_account_native_clock import Samples
@@ -138,11 +139,14 @@ def synthetic_tls_chain(chain):
     return tuple(result)
 
 
-def declared_native_source(case="fresh_flat", *, current_only=False):
+def declared_native_source(case="fresh_flat", *, current_only=False, current_v7=False):
     """New synthetic raw scenarios, fixed before any capture or phase stamp."""
     if case not in {"fresh_flat", "old_anchor_flat", "exposed", "fresh_exposed"}:
         raise ValueError("unsupported_synthetic_native_source")
     pages = source_pages() if case in {"exposed", "fresh_exposed"} else flat_pages()
+    if current_v7:
+        for kind in capture.CURRENT_ALGO_ORDER_TYPES_V7:
+            pages.setdefault(f"algo_{kind}", [[]])
     if case in {"fresh_flat", "fresh_exposed"}:
         # Original stage's first synthetic sample is NOW+1ms. This is a new
         # declared raw scenario; it never edits an existing source or receipt.
@@ -156,7 +160,13 @@ def declared_native_source(case="fresh_flat", *, current_only=False):
         ]
     declared = v5_script(
         pages=pages,
-        streams=capture.V6_CURRENT_STREAMS if current_only else None,
+        streams=(
+            capture.V7_CURRENT_STREAMS
+            if current_v7
+            else capture.V6_CURRENT_STREAMS
+            if current_only
+            else None
+        ),
     )
     bodies = tuple(wire(data) for _, data in declared)
     identity = canonical(
@@ -173,11 +183,16 @@ def declared_native_source(case="fresh_flat", *, current_only=False):
 
 
 async def companion_fixture(
-    monkeypatch, *, source_case="fresh_flat", current_only=False
+    monkeypatch,
+    *,
+    source_case="fresh_flat",
+    current_only=False,
+    current_v7=True,
+    verify_baseline=True,
 ):
     session, harness, _, args, events = setup(monkeypatch, v4=True)
-    if current_only:
-        selected = current_plan()
+    if current_only or current_v7:
+        selected = current_plan_v7() if current_v7 else current_plan()
         session = ControlledDemoAccountSession(
             credentials=credentials(session_binding_id=selected.session_binding_id),
             plan=selected,
@@ -185,7 +200,7 @@ async def companion_fixture(
         )
     proof_schema, proof_policy_sha256 = proof.contract_for_plan(session._plan)
     declared, expected_bodies, _ = declared_native_source(
-        source_case, current_only=current_only
+        source_case, current_only=current_only, current_v7=current_v7
     )
     harness.script = declared
     samples = Samples()
@@ -272,7 +287,7 @@ async def companion_fixture(
             "admission": "DENY",
         }
         raw = canonical(value)
-        if source_case == "fresh_flat":
+        if source_case == "fresh_flat" and verify_baseline:
             # Every mutation/storage case first proves the unchanged full
             # baseline. A generic later rejection cannot hide a bad fixture.
             baseline = replay(raw, files, chain, scope)
@@ -304,7 +319,9 @@ async def test_post_companion_recheck_requires_fresh_exact_original_db_chain(
     # repository read_chain opens a new transaction and exact-UID account lock.
     raw, files, chain, scope, _ = await companion_fixture(monkeypatch)
     replay(raw, files, chain, scope)
-    reference, packet, _, _ = proof._source(chain, scope)
+    reference, packet, _, _ = proof._source(
+        chain, scope, proof_schema=proof.V7_FLAT_SCHEMA
+    )
     confirmed = tuple(
         replace(point, readback_at=point.readback_at + timedelta(milliseconds=1))
         for point in chain
@@ -338,7 +355,7 @@ async def test_post_companion_recheck_requires_fresh_exact_original_db_chain(
 
     repository.read_chain = read_chain
     call = runtime._recheck_original_db_chain(
-        repository, scope, chain, reference, packet, proof_schema=proof.SCHEMA
+        repository, scope, chain, reference, packet, proof_schema=proof.V7_FLAT_SCHEMA
     )
     if mutation is None:
         await call
@@ -350,24 +367,27 @@ async def test_post_companion_recheck_requires_fresh_exact_original_db_chain(
 
 
 @pytest.mark.asyncio
-async def test_v6_native_current_proof_has_independent_contract_and_no_authority(
+async def test_v7_native_current_proof_has_independent_contract_and_no_authority(
     monkeypatch,
 ):
     raw, files, chain, scope, samples = await companion_fixture(
-        monkeypatch, current_only=True
+        monkeypatch, current_v7=True
     )
     document = json.loads(raw)
     result = replay(raw, files, chain, scope)
     current_receipt = json.loads(result.current_source_receipt_json)
-    assert document["schema_version"] == proof.V3_SCHEMA
-    assert document["policy_sha256"] == proof.V3_POLICY_SHA256
-    assert current_receipt["policy_sha256"] == current.V6_POLICY_SHA256
+    assert document["schema_version"] == proof.V7_FLAT_SCHEMA
+    assert document["policy_sha256"] == proof.V7_FLAT_POLICY_SHA256
+    assert current_receipt["policy_sha256"] == current.V7_POLICY_SHA256
     assert current_receipt["history_query_verifier_sha256"] is None
     assert current_receipt["history_join_state"] == "separate_original_history_required"
     assert set(current_receipt["inventory_row_counts"]) == set(
-        current.INVENTORY_STREAMS
+        current.V7_INVENTORY_STREAMS
     )
-    assert result.packet.plan.capture_scope == "all_current_standard_products_v6"
+    assert (
+        result.packet.plan.capture_scope
+        == "all_current_standard_products_v7_eight_algos"
+    )
     assert not result.account_complete and not result.execution_authority
     assert document["admission"] == "DENY"
     directory = MemoryDirectory(dict(files))
@@ -381,7 +401,7 @@ async def test_v6_native_current_proof_has_independent_contract_and_no_authority
     monkeypatch.setattr(storage, "_root_context", roots)
     pin = storage._seal_companion(directory, raw, chain=chain, scope=scope)
     receipt = json.loads(directory.content["readback.json"])
-    assert receipt["schema_version"] == storage.V3_READBACK_SCHEMA
+    assert receipt["schema_version"] == storage.V7_FLAT_READBACK_SCHEMA
     readback, saved_receipt = storage.read_native_account_companion(
         Path.cwd(),
         chain=chain,
@@ -395,17 +415,37 @@ async def test_v6_native_current_proof_has_independent_contract_and_no_authority
 
 
 @pytest.mark.asyncio
-async def test_v6_native_proof_rejects_v2_relabel_missing_tail_and_readback_swap(
+async def test_v6_four_algo_native_proof_remains_replayable_but_revoked(monkeypatch):
+    raw, files, chain, scope, _ = await companion_fixture(
+        monkeypatch, current_only=True, current_v7=False, verify_baseline=False
+    )
+    document = json.loads(raw)
+    assert document["schema_version"] == proof.V3_SCHEMA
+    assert document["policy_sha256"] == proof.V3_POLICY_SHA256
+    assert document["account_complete"] is False
+    assert document["execution_authority"] is False
+    assert document["admission"] == "DENY"
+    with pytest.raises(
+        proof.NativeAccountProofError,
+        match="native_account_current_sources_incomplete_or_exposed",
+    ):
+        replay(raw, files, chain, scope)
+    assert not runtime._CAPTURES and not boundary._BOUNDARIES
+
+
+@pytest.mark.asyncio
+async def test_v7_native_proof_rejects_v2_relabel_missing_tail_and_readback_swap(
     monkeypatch,
 ):
     raw, files, chain, scope, samples = await companion_fixture(
-        monkeypatch, current_only=True
+        monkeypatch, current_v7=True
     )
     document = json.loads(raw)
     for schema, policy, complete in (
         (proof.SCHEMA, proof.POLICY_SHA256, False),
         (proof.V3_SCHEMA, proof.POLICY_SHA256, False),
         (proof.V3_SCHEMA, proof.V3_POLICY_SHA256, True),
+        (proof.V3_SCHEMA, proof.V3_POLICY_SHA256, False),
     ):
         changed = {
             **document,
@@ -601,7 +641,7 @@ async def test_original_collector_phase_companion_replays_without_minting_owner(
     monkeypatch,
     record_property,
 ):
-    _, _, raw_identity = declared_native_source()
+    _, _, raw_identity = declared_native_source(current_v7=True)
     record_property("synthetic_raw_scenario", "fresh_flat")
     record_property("synthetic_raw_identity_sha256", sha(raw_identity))
     raw, files, chain, scope, _ = await companion_fixture(monkeypatch)
@@ -625,7 +665,7 @@ async def test_original_collector_phase_companion_replays_without_minting_owner(
 async def test_original_stale_anchor_and_exposed_raw_scenarios_are_exact_denials(
     monkeypatch, record_property, source_case
 ):
-    _, _, raw_identity = declared_native_source(source_case)
+    _, _, raw_identity = declared_native_source(source_case, current_v7=True)
     record_property("synthetic_raw_scenario", source_case)
     record_property("synthetic_raw_identity_sha256", sha(raw_identity))
     raw, files, chain, scope, _ = await companion_fixture(
@@ -637,6 +677,7 @@ async def test_original_stale_anchor_and_exposed_raw_scenarios_are_exact_denials
         reference=observed.source_reference(chain),
         scope=scope,
         validated_at=utc_from_ns(value["proof_persist_start"]["utc_ns"]),
+        expected_policy_sha256=current.V7_POLICY_SHA256,
     )
     receipt = json.loads(observed_source.receipt_json)
     expected = {"account_anchor_predates_publication"}
@@ -653,9 +694,12 @@ async def test_original_stale_anchor_and_exposed_raw_scenarios_are_exact_denials
     assert observed_source.execution_authority is False
     assert observed_source.flat_start_permission is False
     assert value["historical_hwm_clock_verified"] is False
-    with pytest.raises(
-        proof.NativeAccountProofError, match="current_sources_incomplete_or_exposed"
-    ):
+    expected_error = (
+        "native_account_v7_inventory_incomplete"
+        if source_case == "exposed"
+        else "current_sources_incomplete_or_exposed"
+    )
+    with pytest.raises(proof.NativeAccountProofError, match=expected_error):
         replay(raw, files, chain, scope)
     assert not runtime._CAPTURES and not boundary._BOUNDARIES
 

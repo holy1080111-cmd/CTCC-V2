@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -6,6 +7,7 @@ from decimal import Decimal
 import pytest
 
 from app.config.settings import Settings
+from app.database.repositories.demo_automation import DemoAutomationStateConflict
 from app.demo_automation import DemoAutomationSafetyError
 from app.demo_automation.service import SafeDemoAutomation
 from app.domain.demo_automation import DemoAutomationActiveTrade
@@ -215,7 +217,9 @@ class FakeDemo:
 
     async def place_order(self, request, *, before_submit=None):
         if before_submit is not None:
-            before_submit()
+            callback_result = before_submit()
+            if inspect.isawaitable(callback_result):
+                await callback_result
         self.place_calls.append(request)
         fill_size = (
             self.accumulated_fill_size
@@ -2118,10 +2122,43 @@ class MemoryAutomationRepository:
     async def load_state(self):
         return deepcopy(self.state)
 
+    async def assert_current_execution_control(self, expected_revision):
+        state = await self.load_state()
+        if state is None:
+            raise DemoAutomationStateConflict("demo_automation_control_row_missing")
+        if (
+            type(expected_revision) is not int
+            or type(state.get("_control_revision")) is not int
+            or state["_control_revision"] != expected_revision
+            or state.get("armed") is not True
+            or state.get("emergency_stop") is not False
+            or state.get("locked") is not False
+            or state.get("_restart_latch_required") is not True
+        ):
+            raise DemoAutomationStateConflict(
+                "demo_automation_control_not_currently_authorized"
+            )
+        return state["_control_revision"]
+
     async def save_state(self, state):
         if self.fail_writes:
             raise RuntimeError("synthetic persistence unavailable")
         self.state = deepcopy(state)
+
+    async def latch_emergency_stop(self, reason):
+        if self.state is None:
+            raise RuntimeError("synthetic control row missing")
+        state = deepcopy(self.state)
+        state["armed"] = False
+        state["emergency_stop"] = True
+        state["locked"] = True
+        state["lock_reasons"] = sorted(
+            {*state["lock_reasons"], "emergency_stop_engaged", reason}
+        )
+        state["_restart_latch_required"] = True
+        state["_control_revision"] += 1
+        await self.save_state(state)
+        return state["_control_revision"]
 
     async def load_runs(self, limit):
         return deepcopy(self.runs[-limit:])
@@ -2171,6 +2208,42 @@ async def test_failed_or_cancelled_arm_persistence_never_leaves_local_arm(failur
     with pytest.raises(DemoAutomationSafetyError, match="demo_automation_not_armed"):
         await service.run_once(execute=True)
     assert demo.place_calls == []
+
+
+@pytest.mark.asyncio
+async def test_cancelled_arm_after_durable_commit_requires_recovery_and_stop():
+    class CommittedThenCancelledRepository(MemoryAutomationRepository):
+        async def save_state(self, state):
+            await super().save_state(state)
+            if state["armed"]:
+                raise asyncio.CancelledError("synthetic commit acknowledgement lost")
+
+    demo = FakeDemo()
+    repository = CommittedThenCancelledRepository()
+    service = make_service(demo)
+    service.repository = repository
+    await service.recover()
+
+    with pytest.raises(asyncio.CancelledError):
+        await service.arm()
+
+    assert repository.state["armed"] is True
+    assert repository.state["_restart_latch_required"] is True
+    status = await service.status()
+    assert status.armed is False
+    assert status.emergency_stop is True
+    assert status.recovered is False
+    with pytest.raises(DemoAutomationSafetyError):
+        await service.run_once(execute=True)
+    assert demo.place_calls == []
+
+    restarted = make_service(demo)
+    restarted.repository = repository
+    await restarted.recover()
+    recovered = await restarted.status()
+    assert recovered.armed is False
+    assert recovered.emergency_stop is True
+    assert "restart_requires_explicit_clear_stop" in recovered.lock_reasons
 
 
 @pytest.mark.asyncio
@@ -2301,6 +2374,34 @@ async def test_arm_requires_durable_state_repository_even_in_synthetic_mode():
 
 
 @pytest.mark.asyncio
+async def test_disarm_persistence_failure_keeps_local_authority_revoked_and_reports_failure():
+    class RefusingRepository(MemoryAutomationRepository):
+        refuse_disarm = False
+
+        async def save_state(self, state):
+            if self.refuse_disarm and not state["armed"]:
+                raise RuntimeError("synthetic disarm commit unavailable")
+            await super().save_state(state)
+
+    repository = RefusingRepository()
+    service = make_service(FakeDemo())
+    service.repository = repository
+    await service.recover()
+    await service.arm()
+    assert repository.state["armed"] is True
+    repository.refuse_disarm = True
+
+    with pytest.raises(DemoAutomationSafetyError, match="state_persistence_failed"):
+        await service.disarm()
+
+    status = await service.status()
+    assert status.armed is False and status.recovered is False
+    with pytest.raises(DemoAutomationSafetyError, match="demo_automation_not_armed"):
+        service._ensure_execute_ready()
+    assert repository.state["armed"] is True
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("failure", (RuntimeError, asyncio.CancelledError))
 async def test_failed_or_cancelled_estop_persistence_is_not_reported_as_success(
     failure,
@@ -2418,7 +2519,7 @@ async def test_failed_or_cancelled_clear_keeps_local_estop_latched(failure):
 
 
 @pytest.mark.asyncio
-async def test_clear_commit_then_error_exposes_restart_latch_ambiguity():
+async def test_clear_commit_then_error_relatches_on_restart():
     class CommitThenRaiseRepository(MemoryAutomationRepository):
         fail_clear = False
 
@@ -2438,14 +2539,138 @@ async def test_clear_commit_then_error_exposes_restart_latch_ambiguity():
         await service.clear_emergency_stop()
     assert (await service.status()).emergency_stop is True
     assert repository.state["emergency_stop"] is False
+    assert repository.state["_restart_latch_required"] is True
 
     restarted = make_service(FakeDemo())
     restarted.repository = repository
     await restarted.recover()
     recovered = await restarted.status()
     assert recovered.armed is False
-    # This is an unresolved durable-protocol gap, not a restart EStop pass.
-    assert recovered.emergency_stop is False
+    assert recovered.emergency_stop is True
+    assert "restart_requires_explicit_clear_stop" in recovered.lock_reasons
+    assert repository.state["emergency_stop"] is True
+
+
+@pytest.mark.asyncio
+async def test_successful_clear_still_requires_explicit_clear_after_restart():
+    repository = MemoryAutomationRepository()
+    service = make_service(FakeDemo())
+    service.repository = repository
+    await service.recover()
+    await service.emergency_stop()
+
+    cleared = await service.clear_emergency_stop()
+    assert cleared.emergency_stop is False
+    assert repository.state["_restart_latch_required"] is True
+
+    restarted = make_service(FakeDemo())
+    restarted.repository = repository
+    await restarted.recover()
+    recovered = await restarted.status()
+    assert recovered.armed is False and recovered.emergency_stop is True
+    assert repository.state["emergency_stop"] is True
+    with pytest.raises(
+        DemoAutomationSafetyError, match="emergency_stop_must_be_cleared"
+    ):
+        await restarted.arm()
+
+
+@pytest.mark.asyncio
+async def test_stale_process_cannot_rearm_over_other_process_stop():
+    class VersionedRepository(MemoryAutomationRepository):
+        async def save_state(self, state):
+            current_revision = (
+                self.state["_control_revision"] if self.state is not None else 0
+            )
+            if state["_control_revision"] != current_revision + 1:
+                raise RuntimeError("synthetic_control_revision_conflict")
+            await super().save_state(state)
+
+    repository = VersionedRepository()
+    stale = make_service(FakeDemo())
+    stale.repository = repository
+    await stale.recover()
+    current = make_service(FakeDemo())
+    current.repository = repository
+    await current.recover()
+    stopped = await current.emergency_stop()
+    assert stopped.emergency_stop is True
+    durable_revision = repository.state["_control_revision"]
+
+    with pytest.raises(DemoAutomationSafetyError, match="state_persistence_failed"):
+        await stale.arm()
+    assert (await stale.status()).armed is False
+    assert repository.state["emergency_stop"] is True
+    assert repository.state["_control_revision"] == durable_revision
+
+
+@pytest.mark.asyncio
+async def test_stale_process_stop_wins_without_replacing_newer_trade_state():
+    class VersionedRepository(MemoryAutomationRepository):
+        async def save_state(self, state):
+            current_revision = (
+                self.state["_control_revision"] if self.state is not None else 0
+            )
+            if state["_control_revision"] != current_revision + 1:
+                raise RuntimeError("synthetic_control_revision_conflict")
+            await super().save_state(state)
+
+    repository = VersionedRepository()
+    stale = make_service(FakeDemo())
+    stale.repository = repository
+    await stale.recover()
+    current = make_service(FakeDemo())
+    current.repository = repository
+    await current.recover()
+    current._state["last_error"] = "newer_trade_state_marker"
+    await current._persist_state(required=True)
+    await current.arm()
+    assert repository.state["armed"] is True
+
+    stopped = await stale.emergency_stop()
+    assert stopped.emergency_stop is True and stopped.armed is False
+    assert stale._recovered is False
+    assert repository.state["last_error"] == "newer_trade_state_marker"
+    assert repository.state["emergency_stop"] is True
+    assert repository.state["_restart_latch_required"] is True
+    with pytest.raises(DemoAutomationSafetyError, match="recovery_not_completed"):
+        await stale.clear_emergency_stop()
+
+    # The other process also loses authority as soon as its next durable
+    # operation discovers the revised control row.
+    with pytest.raises(DemoAutomationSafetyError, match="state_persistence_failed"):
+        await current._persist_state(required=True)
+    assert (await current.status()).emergency_stop is True
+    assert (await current.status()).armed is False
+
+
+@pytest.mark.asyncio
+async def test_stop_readback_failure_is_not_reported_as_success():
+    class LostReadback(MemoryAutomationRepository):
+        stop_written = False
+
+        async def latch_emergency_stop(self, reason):
+            revision = await super().latch_emergency_stop(reason)
+            self.stop_written = True
+            return revision
+
+        async def load_state(self):
+            if self.stop_written:
+                raise RuntimeError("synthetic readback unavailable")
+            return await super().load_state()
+
+    repository = LostReadback()
+    service = make_service(FakeDemo())
+    service.repository = repository
+    await service.recover()
+    await service.arm()
+
+    with pytest.raises(DemoAutomationSafetyError, match="persistence_unconfirmed"):
+        await service.emergency_stop()
+    assert (await service.status()).emergency_stop is True
+    assert (await service.status()).armed is False
+    assert service._recovered is False
+    assert repository.state["emergency_stop"] is True
 
 
 @pytest.mark.asyncio
@@ -2653,6 +2878,42 @@ async def test_cancellation_after_submit_preserves_uncertainty_before_propagatin
     assert status.active_position_count == 1
     assert service.repository.state["active_trades"]
     assert len(service.repository.fingerprints) == 1
+
+
+@pytest.mark.asyncio
+async def test_cancelled_post_submit_state_write_latches_before_retrying_persistence():
+    class CancelStateWrite(MemoryAutomationRepository):
+        cancel_once = False
+
+        async def save_state(self, state):
+            if (
+                self.cancel_once
+                and state["trades_today"] > 0
+                and not state["emergency_stop"]
+            ):
+                self.cancel_once = False
+                raise asyncio.CancelledError
+            await super().save_state(state)
+
+    demo = FakeDemo()
+    repository = CancelStateWrite()
+    service = adaptive_service(demo, {"BTC-USDT-SWAP": 95})
+    service.repository = repository
+    await service.recover()
+    await service.arm()
+    repository.cancel_once = True
+
+    with pytest.raises(asyncio.CancelledError):
+        await service.run_once(execute=True)
+    status = await service.status()
+    assert len(demo.place_calls) == 1
+    assert status.armed is False and status.emergency_stop is True
+    assert status.active_position_count == 1
+    assert "post_submission_state_persistence_unconfirmed" in status.lock_reasons
+    assert service._recovered is False
+    assert repository.state["active_trades"]
+    assert repository.state["emergency_stop"] is True
+    assert repository.state["_restart_latch_required"] is True
 
 
 @pytest.mark.asyncio
