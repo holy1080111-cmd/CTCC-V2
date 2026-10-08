@@ -348,6 +348,15 @@ async def test_legacy_reserve_checks_uid_event_tombstone_before_risk(
     )
     observed = []
 
+    async def verified_write_schema(actual_session):
+        assert actual_session is session
+        observed.append("schema")
+
+    monkeypatch.setattr(
+        "app.database.repositories.qualification_ledger._require_event_journal_write_schema",
+        verified_write_schema,
+    )
+
     async def locked(actual_session, scope):
         assert actual_session is session and scope == fixture.request.scope
         return object()
@@ -367,11 +376,12 @@ async def test_legacy_reserve_checks_uid_event_tombstone_before_risk(
     with pytest.raises(QualificationLedgerError, match="event_already_recorded"):
         await repository.reserve(fixture.request)
     assert observed == [
+        "schema",
         (
             session,
             fixture.request.scope,
             fixture.request.origin.original_event_key,
-        )
+        ),
     ]
 
 

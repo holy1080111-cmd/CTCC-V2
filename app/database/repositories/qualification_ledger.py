@@ -323,6 +323,29 @@ async def _require_event_journal_schema(session):
         )
 
 
+async def _require_event_journal_write_schema(session):
+    """Pin the UID/event uniqueness and tombstone guards through a write.
+
+    A normal SELECT of the catalogs alone would allow a concurrent ALTER TABLE
+    between inspection and the reservation/intent commit. ROW EXCLUSIVE locks
+    coexist with other ordinary writers, but exclude trigger/constraint DDL.
+    Acquire them before the account advisory lock to avoid inverted ordering.
+    """
+    if session.get_bind().dialect.name != "postgresql":
+        raise QualificationLedgerError("event_ledger_postgresql_required")
+    await session.execute(text("SET LOCAL search_path TO pg_catalog, public, pg_temp"))
+    await _require_event_journal_session(session)
+    await session.execute(
+        text(
+            "LOCK TABLE public.qualification_account_scopes, "
+            "public.qualification_reservations, "
+            "public.qualification_reservation_transitions "
+            "IN ROW EXCLUSIVE MODE NOWAIT"
+        )
+    )
+    await _require_event_journal_schema(session)
+
+
 class QualificationLedgerRepository:
     def __init__(self, session_factory, *, clock):
         self.session_factory = session_factory
@@ -1298,6 +1321,7 @@ class QualificationLedgerRepository:
         request_json = canonical(request)
         request_sha256 = _canonical_json_sha256(request_json)
         async with self.session_factory() as session, session.begin():
+            await _require_event_journal_write_schema(session)
             if control_expectation is None:
                 row = await self._locked(session, request.scope)
             else:
@@ -1416,6 +1440,7 @@ class QualificationLedgerRepository:
     ):
         scope = checked(scope, LedgerScope)
         async with self.session_factory() as session, session.begin():
+            await _require_event_journal_write_schema(session)
             if control_expectation is None:
                 row = await self._locked(session, scope)
             else:

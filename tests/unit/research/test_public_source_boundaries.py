@@ -47,6 +47,11 @@ def test_public_source_has_only_explicit_reviewed_consumers():
     post_publication_consumer = (
         APP / "mie" / "validation" / "post_publication_availability_v2.py"
     )
+    post_read_batch_consumer = APP / "mie" / "validation" / "post_read_batch_v3.py"
+    post_read_batch_imports = {
+        "app.public_market_source.public_receipt_storage",
+        "app.public_market_source.public_receipt_storage.ControlledPublicReceiptJournal",
+    }
     post_publication_imports = {
         "app.public_market_source.public_market_capture",
         "app.public_market_source.public_market_capture.replay_public_capture",
@@ -85,6 +90,9 @@ def test_public_source_has_only_explicit_reviewed_consumers():
             "public_market_receipts",
             "public_receipt_storage",
         ),
+        # The V3 computational batch names only the offline journal contract;
+        # no acquisition module or additional storage capability is imported.
+        post_read_batch_consumer: ("public_receipt_storage",),
         APP / "mie" / "validation" / "public_checkpoint_service.py": (
             "public_checkpoint_hook",
             "public_market_capture",
@@ -103,6 +111,7 @@ def test_public_source_has_only_explicit_reviewed_consumers():
     }
     observed = set()
     observed_post_publication_imports = set()
+    observed_post_read_batch_imports = set()
     for path in APP.rglob("*.py"):
         if path.is_relative_to(SOURCE):
             continue
@@ -113,6 +122,17 @@ def test_public_source_has_only_explicit_reviewed_consumers():
                     if path == post_publication_consumer:
                         assert name in post_publication_imports, name
                         observed_post_publication_imports.add(name)
+                    if path == post_read_batch_consumer:
+                        assert name in post_read_batch_imports, name
+                        assert (
+                            isinstance(node, ast.ImportFrom)
+                            and node.module
+                            == "app.public_market_source.public_receipt_storage"
+                            and len(node.names) == 1
+                            and node.names[0].name == "ControlledPublicReceiptJournal"
+                            and node.names[0].asname is None
+                        ), name
+                        observed_post_read_batch_imports.add(name)
                     if path.name == "blind_window_dataset.py" and name.startswith(
                         "app.public_market_source.public_market_capture"
                     ):
@@ -133,6 +153,7 @@ def test_public_source_has_only_explicit_reviewed_consumers():
                     observed.add(path)
     assert observed == set(allowed)
     assert observed_post_publication_imports == post_publication_imports
+    assert observed_post_read_batch_imports == post_read_batch_imports
 
 
 def test_post_publication_rejects_unreviewed_public_capture_import(monkeypatch):
@@ -152,6 +173,31 @@ def test_post_publication_rejects_unreviewed_public_capture_import(monkeypatch):
         AssertionError,
         match="app.public_market_source.public_market_capture.capture_public_market",
     ):
+        test_public_source_has_only_explicit_reviewed_consumers()
+
+
+@pytest.mark.parametrize(
+    "import_line",
+    [
+        "from app.public_market_source.public_receipt_storage import OwnedPublicReceiptPublisher",
+        "import app.public_market_source.public_receipt_storage",
+        "from app.public_market_source.public_market_capture import capture_public_market",
+    ],
+)
+def test_post_read_batch_rejects_any_extra_public_source_import(
+    monkeypatch, import_line
+):
+    original_nodes = nodes
+    consumer = APP / "mie" / "validation" / "post_read_batch_v3.py"
+    unreviewed = ast.parse(import_line).body[0]
+
+    def with_unreviewed_import(path):
+        yield from original_nodes(path)
+        if path == consumer:
+            yield unreviewed
+
+    monkeypatch.setattr(sys.modules[__name__], "nodes", with_unreviewed_import)
+    with pytest.raises(AssertionError):
         test_public_source_has_only_explicit_reviewed_consumers()
 
 

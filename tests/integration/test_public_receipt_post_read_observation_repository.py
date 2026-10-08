@@ -105,7 +105,39 @@ async def isolated_database():
             async_sessionmaker(observer_engine, expire_on_commit=False), witness_repo
         )
         await witness_repo.verify_role()
-        await observation_repo.verify_role()
+        try:
+            await observation_repo.verify_role()
+        except PublicReceiptPostReadError as exc:
+            if str(exc) != "post_read_role_unavailable":
+                raise
+            # CI has an isolated ephemeral PostgreSQL cluster. Keep the
+            # production redaction unchanged while reporting only the driver
+            # class and SQLSTATE needed to diagnose this fixture failure.
+            try:
+                async with async_sessionmaker(
+                    observer_engine, expire_on_commit=False
+                )() as diagnostic_session:
+                    await PublicReceiptPostReadRepository._role_guard(
+                        diagnostic_session
+                    )
+            except Exception as diagnostic:  # noqa: BLE001 - safe CI diagnostic only
+                underlying = getattr(diagnostic, "orig", diagnostic)
+                sqlstate = getattr(underlying, "sqlstate", None) or getattr(
+                    underlying, "pgcode", None
+                )
+                safe_sqlstate = (
+                    sqlstate
+                    if isinstance(sqlstate, str)
+                    and re.fullmatch(r"[0-9A-Z]{5}", sqlstate)
+                    else "unavailable"
+                )
+                raise AssertionError(
+                    "post_read_role_diagnostic:"
+                    f"{type(diagnostic).__name__}:"
+                    f"{type(underlying).__name__}:"
+                    f"{safe_sqlstate}"
+                ) from None
+            raise
         yield (
             witness_repo,
             observation_repo,

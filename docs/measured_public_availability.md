@@ -206,6 +206,32 @@ earlier V2 in-memory sample or its candle close. A replay cutoff between V2
 and V3 observations therefore rejects a due row. This adapter is not a source
 qualification or a runtime consumer and cannot make old archive bars timely.
 
+The bounded `post_read_batch_v3` contract can then assemble one or more
+complete, UTC-aligned four-hour Development or Validation windows from **240
+to 960 exact one-minute V3 captures**. It independently replays each raw
+capture, committed witness and DB0035 row before freezing or accepting batch
+bytes. It also replays each unique journal's native inventory after the last
+minute and requires its checkpoint pin to remain unchanged through that read.
+Its ordered capture-artifact hashes are pinned by
+`MinuteAggregationPlan.source_manifest_sha256`;
+that manifest is an **after-acquisition computational identity**, not a
+preregistered source or a candidate seal. Every minute retains separate source
+validation, payload readback, committed-witness and persisted post-read clock
+times. In particular, the DB0035 time is never mislabeled `retrieved_at` and
+does not alter V1 `AvailabilityProvenance`.
+
+The batch rejects missing, duplicate or reordered minutes, changed instrument,
+repeated capture or witness identities, unknown volume units, incomplete
+15m/1H/4H windows and any due bar observed after the replay cutoff. It uses
+the latest persisted constituent observation as each aggregate's availability
+time. Its public API bounds one capture to 64 KiB, a batch to 1024 minutes and
+8 MiB, and requires `contracts` volume units verified by the underlying public
+capture source. It is a bounded proof of the replay boundary, not yet a bridge
+for the full multiwindow Dev/Val dataset. Synthetic tests do not establish a
+real 240-minute acquisition, trusted DB clock/custody, first evaluator access,
+or an untouched holdout. All predictive, promotion and execution flags stay
+false; no Gate 3 or OOS acceptance follows from this batch contract.
+
 ## Clock platform limitation and remaining acceptance
 
 The original v1 replay recognizes only English `w32tm /query /status /verbose`

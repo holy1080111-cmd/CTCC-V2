@@ -22,6 +22,7 @@ from app.database.repositories.qualification_ledger import (
     QualificationLedgerRepository,
     _require_event_journal_schema,
     _require_event_journal_session,
+    _require_event_journal_write_schema,
 )
 from app.trade_qualification.reservations import (
     LedgerScope,
@@ -271,6 +272,10 @@ async def test_schema_guard_rejects_disabled_immutable_transition(database):
                 QualificationLedgerError, match="event_ledger_schema_retention_invalid"
             ):
                 await _require_event_journal_schema(session)
+            with pytest.raises(
+                QualificationLedgerError, match="event_ledger_schema_retention_invalid"
+            ):
+                await _require_event_journal_write_schema(session)
         finally:
             # DDL is transactional; no disabled trigger survives this test.
             await session.rollback()
@@ -301,6 +306,10 @@ async def test_schema_guard_rejects_same_name_wrong_uid_unique_key(database):
                 QualificationLedgerError, match="event_ledger_schema_retention_invalid"
             ):
                 await _require_event_journal_schema(session)
+            with pytest.raises(
+                QualificationLedgerError, match="event_ledger_schema_retention_invalid"
+            ):
+                await _require_event_journal_write_schema(session)
         finally:
             # Roll back the temporary key change even if the assertion fails.
             await session.rollback()
