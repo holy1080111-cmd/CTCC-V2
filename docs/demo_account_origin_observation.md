@@ -41,8 +41,10 @@ binding compares it again to the same session's plan and rejects a changed
 in-process observation. This is lineage for an **untrusted assertion**, not
 first-party proof: a caller can put an arbitrary digest in the plan, and the
 field never changes `registration_region_verified=false`, opens the public
-route, or authorizes an order. No evidence body or account identifier is
-written to the in-process public diagnostic result.
+route, or authorizes an order. For registration evidence, the result carries
+only its digest, not the evidence body or a credential value. Its existing UID
+and main UID fields remain sensitive in-process data and must not be logged or
+exported.
 
 The signed request builder check proves which header the controlled client
 constructed, not that the exchange separately acknowledged that header. A

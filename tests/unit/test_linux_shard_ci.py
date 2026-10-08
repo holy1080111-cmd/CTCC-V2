@@ -30,8 +30,12 @@ MANIFEST = b"reviewed-manifest\n"
 SOURCE_FILES = b"{}"
 
 
-def test_gate3_ack_in_postgres_suite_only():
+def test_reviewed_modules_in_postgres_suite_only():
     for path, case in (
+        (
+            "tests/integration/test_complete_consumed_event_ledger_repository.py",
+            "test_missing_transition_denies_instead_of_publishing_empty",
+        ),
         (
             "tests/integration/test_gate3_schedule_publication_ack.py",
             "test_ack_requires_committed_pin_and_replays_after_restart",
