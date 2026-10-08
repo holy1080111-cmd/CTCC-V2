@@ -121,12 +121,35 @@ the existing transition, and remain independently inspectable after restart.
 
 ## Scope of risk and execution claims
 
-The policy hash match proves identity only. There is no owned config mapper in
-this component. It therefore does not claim that a caller-supplied policy has
-inherited the configured structural ceiling 0.5%, portfolio stop-risk ceiling
-1%, margin bucket 300 USDT, aggregate margin ceiling 60%, or leverage cap tiers
-3/5/8/10/20. A future owned mapper must pin those values before admission can be
-considered. Existing legacy aggregate-margin enforcement is a separate path.
+The `policy_sha256` pin remains the immutable original G1–G12 pre-evidence
+policy digest. It must not be replaced by a settings hash. The bounded
+`owned_demo_risk_policy` helper now freezes an explicit nonsecret allowlist of
+fields from one exact `Settings` instance into a canonical risk-config-subset
+digest. It rejects missing or mutated fields; disabled structural, bucket,
+score-risk, continuous-session, or protection guards; any structural tier above
+0.5% risk; portfolio stop-risk above 1%; bucket above 300 USDT; aggregate
+margin above 60%; changes to the selected 3/5/8/10/20x cap ladder; and weakened
+20x score, mathematical-quality, cost, or net-RR thresholds. Its separate guard
+compares that digest to `ControlPins.config_sha256` and checks that an explicit
+`PortfolioRiskPolicy` does not exceed the selected per-trade, portfolio,
+aggregate-margin, daily-loss, consecutive-loss, open-position, and leverage
+caps. The selected Demo open-position limit is checked within its configured
+2–10 range even if a `Settings` object was mutated after construction. Tighter
+numeric risk limits remain valid
+and change the digest, so a prior control pin cannot silently follow them.
+
+This is **identity comparison only**. An in-memory `Settings` object does not
+prove which `.env`, process, deployment, or operator supplied it. The helper is
+not wired into the reservation repository or final order boundary because there
+is no trusted runtime producer to authenticate that source yet. It does not
+bind the full configuration, or map weekly-loss/drawdown windows to an owned
+source. It does not prove the candidate-specific 20x quality gate, validate an
+account, establish isolated exchange margin, or grant Arm. Every
+result remains `DENY`/`execution_authority=false`; existing reserved/intent
+envelopes still say `owned_policy_verified=false`. The original G12 policy
+binding and transaction control checks remain separate required comparisons.
+The legacy automation's aggregate 60% margin hard gate exists and has focused
+tests, but that path is not the new qualification/R6 handoff.
 
 The existing `all_fill_prices_covered=false` statement remains true. The accepted
 execution design is controlled FOK with an adverse price boundary, original
