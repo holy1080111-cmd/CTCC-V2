@@ -231,10 +231,12 @@ def _event_journal_schema_mismatch_detail(trigger_rows, required, unique_rows):
 
 
 async def _require_event_journal_schema(session):
+    # pg_trigger.tgenabled is PostgreSQL's internal "char". Project it as SQL
+    # text before applying the exact origin-enabled requirement in Python.
     trigger_rows = (
         await session.execute(
             text(
-                "SELECT tab.relname, tg.tgname, tg.tgenabled, tg.tgtype, "
+                "SELECT tab.relname, tg.tgname, tg.tgenabled::text, tg.tgtype, "
                 "proc.proname, proc.pronargs, proc_ns.nspname, "
                 "proc.oid=pg_catalog.to_regprocedure('public.' || proc.proname || '()') "
                 "FROM pg_catalog.pg_trigger tg "
