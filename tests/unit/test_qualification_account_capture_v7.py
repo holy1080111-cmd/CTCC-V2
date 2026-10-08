@@ -147,6 +147,73 @@ def test_v7_packet_freezes_and_replays_without_granting_account_authority():
     assert replay == packet
 
 
+def _instrument_observation(instrument_row):
+    selected = v7_plan()
+    started = NOW + timedelta(milliseconds=10)
+    return capture.parse_demo_account_observation(
+        wire([instrument_row]),
+        plan=selected,
+        expected_plan_sha256=capture.plan_sha256(selected),
+        stream="account_instruments",
+        request_started_at=started,
+        headers_received_at=started + timedelta(milliseconds=1),
+        body_completed_at=started + timedelta(milliseconds=2),
+        barrier_completed_at=BARRIER,
+        identity_receipt_sha256="a" * 64,
+    )
+
+
+def test_v7_instrument_code_accepts_only_documented_integer_at_exact_wire_path():
+    # OKX's account/instruments response now emits instIdCode as an integer.
+    observed = _instrument_observation(row("account_instruments", instIdCode=2**50))
+    assert observed.request.stream == "account_instruments"
+    assert observed.rows[0].row_id == INSTRUMENT
+    assert b'"instIdCode": 1125899906842624' in observed.response_body
+    _instrument_observation(row("account_instruments", instIdCode=None))
+    for bad in (0, -1, 2**63, 1.5):
+        with pytest.raises(capture.AccountCaptureError, match="json_number_invalid"):
+            _instrument_observation(row("account_instruments", instIdCode=bad))
+    with pytest.raises(
+        capture.AccountCaptureError, match="source_instrument_code_invalid"
+    ):
+        _instrument_observation(row("account_instruments", instIdCode="123"))
+    with pytest.raises(capture.AccountCaptureError, match="json_number_invalid"):
+        _instrument_observation(row("account_instruments", unrelatedInteger=123))
+    with pytest.raises(capture.AccountCaptureError, match="json_number_invalid"):
+        _instrument_observation(
+            row("account_instruments", upcChg=[{"instIdCode": 123}])
+        )
+
+
+def test_v7_default_bound_admits_large_account_instrument_page_without_truncation():
+    selected = v7_plan()
+    rows = [
+        row(
+            "account_instruments",
+            instId=f"SYM{index}-USDT-SWAP",
+            instIdCode=2**50 + index,
+            descriptiveField="x" * 600,
+        )
+        for index in range(167)
+    ]
+    body = wire(rows)
+    assert 65536 < len(body) < selected.max_response_bytes
+    started = NOW + timedelta(milliseconds=10)
+    observed = capture.parse_demo_account_observation(
+        body,
+        plan=selected,
+        expected_plan_sha256=capture.plan_sha256(selected),
+        stream="account_instruments",
+        request_started_at=started,
+        headers_received_at=started + timedelta(milliseconds=1),
+        body_completed_at=started + timedelta(milliseconds=2),
+        barrier_completed_at=BARRIER,
+        identity_receipt_sha256="a" * 64,
+    )
+    assert observed.response_body == body
+    assert len(observed.rows) == 167
+
+
 def test_v7_short_algo_page_is_not_terminal_and_uses_exact_algo_cursor():
     selected = v7_plan()
     stream = "algo_smart_iceberg"

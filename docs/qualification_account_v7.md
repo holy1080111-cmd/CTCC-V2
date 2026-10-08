@@ -31,6 +31,17 @@ and page hashes, causal clocks, query parameters, cursor chain, and account
 identity before and after the inventory. Replay uses the exact V7 schema and
 plan hash; V2–V6 packet hashes and replay contracts are unchanged.
 
+The [OKX account-instruments response contract](https://www.okx.com/docs-v5/en/#trading-account-rest-api-get-instruments)
+documents `instIdCode` as an Integer or `null`. A read-only Demo diagnostic on
+2026-10-08 observed 167 SWAP rows, with `instIdCode` as an integer in every
+row and roughly 179 kB of canonical JSON. V7 therefore permits a positive,
+bounded integer only at `data[].instIdCode` in this endpoint. Every other
+wire integer, floating-point token, misplaced code, or malformed code remains
+rejected. V7's per-response default is the existing 256 KiB hard maximum;
+oversized responses still fail closed. The diagnostic used a claimed global
+route without independently verified registration provenance, so it does not
+establish a trusted account source or authority.
+
 V7 is a *current inventory lower layer*, not a complete account snapshot.
 It does not cover historical cashflows, retention, local unresolved orders,
 portfolio risk, or continuous peak/drawdown. Every packet remains

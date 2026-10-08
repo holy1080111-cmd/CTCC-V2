@@ -1,6 +1,7 @@
 """Real isolated PostgreSQL and native filesystem; synthetic exchange bytes only."""
 
 import asyncio
+import hashlib
 import json
 from datetime import timedelta
 from uuid import uuid4
@@ -762,6 +763,61 @@ async def test_missing_outcome_inhibits_new_entry_after_restart(
     assert (await ledger.read_scope(hold.scope)).ledger_revision == args[
         "expected_revision"
     ]
+
+
+async def test_orphan_initial_outcome_cannot_release_consumed_event_hold(
+    database, fixture, other
+):
+    _, _, clock, hold, _ = await setup(database, fixture)
+    async with database[1]() as session, session.begin():
+        transition = await session.scalar(
+            select(QualificationReservationTransition).filter_by(
+                reservation_id=hold.reservation_id, to_state="consumed"
+            )
+        )
+        assert transition is not None
+        session.add(
+            QualificationSubmissionOutcome(
+                outcome_id=hashlib.sha256(uuid4().bytes).hexdigest(),
+                reservation_id=hold.reservation_id,
+                intent_transition_id=transition.id,
+                sequence=1,
+                previous_sha256=None,
+                observation_kind="initial",
+                status="acknowledged",
+                intent_sha256="a" * 64,
+                exchange_request_sha256="b" * 64,
+                capture_json="{}",
+                capture_sha256="c" * 64,
+                outcome_json="{}",
+                ledger_revision=3,
+                observed_at=transition.occurred_at,
+                recorded_at=transition.occurred_at,
+            )
+        )
+    restarted = QualificationLedgerRepository(database[1], clock=clock)
+    with pytest.raises(
+        reservations.QualificationLedgerError, match="unresolved_submission"
+    ):
+        await restarted.reserve(
+            other.request.model_copy(update={"expected_ledger_revision": 3})
+        )
+    state = await restarted.read_scope(hold.scope)
+    assert state.ledger_revision == 3 and len(state.active) == 1
+
+
+async def test_valid_initial_outcome_and_spool_pass_existing_chain_guard(
+    database, fixture
+):
+    ledger, reporter, _, hold, args = await setup(database, fixture)
+    observed = await reporter.record_observation(
+        hold.scope, hold.original_event_key, **args
+    )
+    assert observed.status == "acknowledged"
+    async with database[1]() as session, session.begin():
+        row = await ledger._locked(session, hold.scope)
+        active = await ledger._active(session, hold.scope, row)
+        await ledger._require_resolved_submissions(session, active)
 
 
 async def test_legacy_consumed_without_intent_also_inhibits_new_entry(

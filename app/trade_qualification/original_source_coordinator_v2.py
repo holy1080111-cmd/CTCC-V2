@@ -53,6 +53,13 @@ from app.trade_qualification.public_source_runtime import (
     _consume_initial_public_capture_v2,
 )
 from app.trade_qualification.service import QualificationPrefixPolicy
+from app.trade_qualification.sweep_history_permission import (
+    POLICY_SHA256 as SWEEP_HISTORY_POLICY_SHA256,
+)
+from app.trade_qualification.sweep_history_permission import (
+    evaluate_sweep_history_permission,
+    verify_sweep_history_permission,
+)
 from app.trade_qualification.timing import TIMING_POLICIES, event_identity
 
 _MAX_RECEIPT_BYTES = 4096
@@ -732,6 +739,125 @@ class _OwnedBaseEventHandoffV7:
     event_receipt_json: bytes | None
 
 
+@dataclass(frozen=True, slots=True, repr=False)
+class _OwnedSweepHistoryHandoffV9:
+    original: InitialOwnedPrecursorDiagnosticV4
+    sweep_receipt_json: bytes | None
+
+
+def _evaluate_owned_sweep_history_v9(
+    public_packet,
+    derived,
+    *,
+    public_pin,
+    account_pin,
+    plan_pin,
+    data_policy,
+    created_at,
+):
+    """Replay V6 sweep evidence inside the owned original-source stack.
+
+    This is a source-lineage inspection. Historical first availability, the
+    selected G1--G11 engine, account risk and execution remain unproved.
+    """
+    if type(derived) is not precursor.OriginalCandidatePrecursorV2:
+        raise OriginalSourceCoordinatorError("owned_sweep_precursor_required")
+    document = decode(derived.receipt_json, precursor._MAX_RECEIPT)
+    if (
+        document["strategy"] != "liquidity_sweep_reversal"
+        or document["public_bundle_sha256"] != public_pin
+        or document["account_packet_sha256"] != account_pin
+        or document["account_plan_sha256"] != plan_pin
+        or document["created_at"] != created_at.isoformat()
+    ):
+        raise OriginalSourceCoordinatorError("owned_sweep_lineage_changed")
+    history = document["history_admission"]
+    if history is None:
+        return None
+    checked, _ = public_v2._parts(public_packet)
+    if checked.bundle_sha256 != public_pin:
+        raise OriginalSourceCoordinatorError("owned_sweep_public_changed")
+    g1 = data_v2.evaluate_public_market_data_v2(
+        checked,
+        expected_bundle_sha256=public_pin,
+        policy=data_policy,
+        evaluated_at=created_at,
+    )
+    g1 = data_v2.verify_public_market_data_v2(
+        g1,
+        checked,
+        expected_bundle_sha256=public_pin,
+        policy=data_policy,
+        evaluated_at=created_at,
+    )
+    if (
+        not g1.passed
+        or g1.evaluation_sha256 != document["g1"]["evaluation_sha256"]
+        or g1.source_sha256 != document["g1"]["source_sha256"]
+    ):
+        raise OriginalSourceCoordinatorError("owned_sweep_g1_changed")
+    source = decode(g1.source_json.encode(), data.MAX_SOURCE_BYTES)
+    market = MarketSnapshot.model_validate_json(
+        json.dumps(source["market"], allow_nan=False), strict=True
+    )
+    inputs = {
+        "report_id": document["report_id"],
+        "direction": document["direction"],
+        "observed_at": created_at,
+        "analysis_version": data_policy.analysis_version,
+        "expected_policy_sha256": SWEEP_HISTORY_POLICY_SHA256,
+    }
+    measured = evaluate_sweep_history_permission(market, **inputs)
+    replayed = verify_sweep_history_permission(measured, market, **inputs)
+    measured_history = decode(replayed.receipt_json, 4 * 1024 * 1024)
+    if (
+        history != measured_history
+        or measured_history["source_sha256"] != g1.source_sha256
+        or measured_history["event_key"] != document["event_key"]
+        or measured_history["policy_sha256"] != SWEEP_HISTORY_POLICY_SHA256
+    ):
+        raise OriginalSourceCoordinatorError("owned_sweep_history_changed")
+    intent = derived.intent
+    if (intent is None) is not (document["intent"] is None):
+        raise OriginalSourceCoordinatorError("owned_sweep_intent_changed")
+    if intent is not None and document["intent"] != precursor._intent_tree(intent):
+        raise OriginalSourceCoordinatorError("owned_sweep_intent_changed")
+    return canonical(
+        {
+            "schema_version": "ctcc.owned_original_sweep_history_inspection.v9",
+            "precursor_receipt_sha256": derived.receipt_sha256,
+            "public_packet_sha256": public_pin,
+            "account_packet_sha256": account_pin,
+            "account_plan_sha256": plan_pin,
+            "g1_evaluation_sha256": g1.evaluation_sha256,
+            "g1_source_sha256": g1.source_sha256,
+            "sweep_policy_sha256": SWEEP_HISTORY_POLICY_SHA256,
+            "sweep_permission_sha256": replayed.evaluation_sha256,
+            "sweep_code": replayed.code,
+            "sweep_admitted": replayed.admitted,
+            "event_key_sha256": measured_history["event_key"],
+            "intent_sha256": None
+            if intent is None
+            else sha(canonical(document["intent"])),
+            "event_expires_at": document["original_event_expires_at"],
+            "event_prefix_witness_sha256": None
+            if document["event_prefix_witness"] is None
+            else sha(canonical(document["event_prefix_witness"])),
+            "historical_first_availability_verified": False,
+            "original_source_verified": False,
+            "candidate_created": False,
+            "g1_g11_complete": False,
+            "g12_published": False,
+            "account_complete": False,
+            "execution_recheck_performed": False,
+            "atomic_risk_reserved": False,
+            "execution_authority": False,
+            "order_submitted": False,
+            "admission": "DENY",
+        }
+    )
+
+
 def _evaluate_owned_base_prefix_v6(
     public_packet,
     account_packet,
@@ -1081,6 +1207,29 @@ async def _capture_owned_original_base_event_for_boundary_v7(
     )
 
 
+async def _capture_owned_original_sweep_history_for_boundary_v9(
+    public_root,
+    account_root,
+    *,
+    instrument_id,
+    market_policy,
+    account_session,
+    session_factory,
+) -> _OwnedSweepHistoryHandoffV9:
+    return await _capture_owned_original_sources(
+        public_root,
+        account_root,
+        instrument_id=instrument_id,
+        market_policy=market_policy,
+        account_session=account_session,
+        session_factory=session_factory,
+        inspect_g1=True,
+        strategy="liquidity_sweep_reversal",
+        retain_raw_for_boundary=True,
+        inspect_sweep_history=True,
+    )
+
+
 async def _capture_owned_original_sources(
     public_root,
     account_root,
@@ -1094,14 +1243,23 @@ async def _capture_owned_original_sources(
     retain_raw_for_boundary=False,
     inspect_base_prefix=False,
     inspect_base_event=False,
+    inspect_sweep_history=False,
 ):
     if (
         type(inspect_g1) is not bool
         or type(retain_raw_for_boundary) is not bool
         or type(inspect_base_prefix) is not bool
         or type(inspect_base_event) is not bool
+        or type(inspect_sweep_history) is not bool
         or inspect_base_event
         and not inspect_base_prefix
+        or inspect_sweep_history
+        and (
+            not retain_raw_for_boundary
+            or inspect_base_prefix
+            or inspect_base_event
+            or strategy != "liquidity_sweep_reversal"
+        )
         or inspect_base_prefix
         and (not retain_raw_for_boundary or strategy not in precursor._BASE_STRATEGIES)
         or retain_raw_for_boundary
@@ -1169,6 +1327,7 @@ async def _capture_owned_original_sources(
     precursor_intent_derived = False
     prefix_receipt_json = None
     event_receipt_json = None
+    sweep_receipt_json = None
 
     def result():
         fields = {
@@ -1234,6 +1393,8 @@ async def _capture_owned_original_sources(
                 _OwnedBasePrefixHandoffV6(diagnostic, prefix_receipt_json),
                 event_receipt_json,
             )
+        if inspect_sweep_history:
+            return _OwnedSweepHistoryHandoffV9(diagnostic, sweep_receipt_json)
         if inspect_base_prefix:
             return _OwnedBasePrefixHandoffV6(diagnostic, prefix_receipt_json)
         return diagnostic
@@ -1473,6 +1634,35 @@ async def _capture_owned_original_sources(
                     raise OriginalSourceCoordinatorError("original_base_event_expired")
                 finished = event_stamp
                 event_receipt_json = checked_event
+            if inspect_sweep_history:
+                inspected_sweep = _evaluate_owned_sweep_history_v9(
+                    packet,
+                    replayed,
+                    public_pin=public_pin,
+                    account_pin=account_packet_pin,
+                    plan_pin=plan_pin,
+                    data_policy=g1_policy,
+                    created_at=created_at,
+                )
+                checked_sweep = _evaluate_owned_sweep_history_v9(
+                    packet,
+                    replayed,
+                    public_pin=public_pin,
+                    account_pin=account_packet_pin,
+                    plan_pin=plan_pin,
+                    data_policy=g1_policy,
+                    created_at=created_at,
+                )
+                if inspected_sweep != checked_sweep:
+                    raise OriginalSourceCoordinatorError(
+                        "owned_sweep_history_replay_changed"
+                    )
+                sweep_stamp = native_stamp()
+                validate_stamps((finished, sweep_stamp))
+                if utc_from_ns(sweep_stamp["utc_ns"]) >= min(expires, owned.expires_at):
+                    raise OriginalSourceCoordinatorError("owned_sweep_history_expired")
+                finished = sweep_stamp
+                sweep_receipt_json = checked_sweep
             precursor_pin = replayed.receipt_sha256
             precursor_action = precursor_doc["action"]
             precursor_code = precursor_doc["code"]
@@ -1496,6 +1686,8 @@ async def _capture_owned_original_sources(
             # A later G5 refusal cannot leave an orphaned V6 inner receipt
             # alongside an unavailable V4 precursor in the hash-only handoff.
             prefix_receipt_json = event_receipt_json = None
+        if inspect_sweep_history:
+            sweep_receipt_json = None
         return result()
     finally:
         account_session._used = True

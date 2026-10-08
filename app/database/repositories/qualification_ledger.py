@@ -1848,31 +1848,67 @@ class QualificationLedgerRepository:
         if any(item.state == "uncertain" for item in active):
             raise QualificationLedgerError("ledger_uncertain_exposure_inhibits_entry")
 
-    @staticmethod
-    async def _require_resolved_submissions(session, active):
+    async def _require_resolved_submissions(self, session, active):
         from app.database.models.submission_reporting import (
+            QualificationReportSpool,
             QualificationSubmissionOutcome,
         )
+        from app.database.repositories.submission_reporting import (
+            SubmissionReportingRepository,
+        )
+        from app.trade_evidence.submission_reporting import SubmissionReportingError
 
         consumed = {item.reservation_id for item in active if item.state == "consumed"}
         if not consumed:
             return
-        observed = set(
-            (
-                await session.scalars(
-                    select(QualificationSubmissionOutcome.reservation_id).where(
-                        QualificationSubmissionOutcome.reservation_id.in_(consumed),
-                        QualificationSubmissionOutcome.observation_kind == "initial",
-                    )
+        outcomes = (
+            await session.scalars(
+                select(QualificationSubmissionOutcome).where(
+                    QualificationSubmissionOutcome.reservation_id.in_(consumed),
+                    QualificationSubmissionOutcome.observation_kind == "initial",
                 )
-            ).all()
-        )
-        # This also covers legacy consumed holds with no DB0018 observation. A
-        # commit/response failure cannot depend on a separate EStop transaction.
-        if consumed != observed:
+            )
+        ).all()
+        observed = {item.reservation_id for item in outcomes}
+        # An initial row alone is not a resolved exchange response. Its
+        # immutable intent/capture/outcome/report chain must all read back
+        # consistently before it can stop inhibiting another event.
+        if observed != consumed or len(outcomes) != len(consumed):
             raise QualificationLedgerError(
                 "ledger_unresolved_submission_inhibits_entry"
             )
+        outcome_ids = tuple(item.outcome_id for item in outcomes)
+        spools = (
+            await session.scalars(
+                select(QualificationReportSpool).where(
+                    QualificationReportSpool.outcome_id.in_(outcome_ids)
+                )
+            )
+        ).all()
+        if len(spools) != len(consumed) or {item.outcome_id for item in spools} != set(
+            outcome_ids
+        ):
+            raise QualificationLedgerError(
+                "ledger_unresolved_submission_inhibits_entry"
+            )
+        reporter = SubmissionReportingRepository(self.session_factory, clock=self.clock)
+        try:
+            for spool in spools:
+                outcome, _, _ = await reporter._verify_spool(session, spool)
+                if outcome.reservation_id not in consumed or outcome.status not in {
+                    "acknowledged",
+                    "rejected",
+                }:
+                    raise SubmissionReportingError("submission_still_unresolved")
+        except (
+            SubmissionReportingError,
+            QualificationLedgerError,
+            ValueError,
+            TypeError,
+        ):
+            raise QualificationLedgerError(
+                "ledger_unresolved_submission_inhibits_entry"
+            ) from None
 
     @staticmethod
     async def _require_compatible_currency(session, scope):

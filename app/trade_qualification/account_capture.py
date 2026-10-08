@@ -432,6 +432,12 @@ class CurrentDemoAccountCapturePlanV7(RegionalDemoAccountCapturePlan):
     """Eight documented current algo queries; still no account authority."""
 
     contract_version: Literal["ctcc.demo_current_account_plan.v7"]
+    # The account/instruments SWAP page has exceeded the older 64 KiB default
+    # in a native Demo read. Keep the fixed 256 KiB hard ceiling and reject any
+    # larger page; changing a caller-supplied old plan does not rewrite its pin.
+    max_response_bytes: int = Field(
+        default=MAX_RESPONSE_BYTES, ge=256, le=MAX_RESPONSE_BYTES
+    )
     capture_scope: Literal["all_current_standard_products_v7_eight_algos"] = (
         "all_current_standard_products_v7_eight_algos"
     )
@@ -909,7 +915,9 @@ def _invalid_json_number(_):
     _fail("json_number_invalid")
 
 
-def _json_tree(value, *, wire, depth=0, budget=None):
+def _json_tree(
+    value, *, wire, allow_instrument_code=False, path=(), depth=0, budget=None
+):
     if budget is None:
         budget = [250000 if not wire else 50000]
     budget[0] -= 1
@@ -925,12 +933,26 @@ def _json_tree(value, *, wire, depth=0, budget=None):
             normalized = re.sub(r"[^a-z0-9]", "", key.lower())
             if normalized in _SECRET_KEYS or normalized.startswith("okaccess"):
                 _fail("secret_field_forbidden")
-            _json_tree(item, wire=wire, depth=depth + 1, budget=budget)
+            _json_tree(
+                item,
+                wire=wire,
+                allow_instrument_code=allow_instrument_code,
+                path=(*path, key),
+                depth=depth + 1,
+                budget=budget,
+            )
     elif kind is list:
         if len(value) > 8192:
             _fail("json_array_limit")
         for item in value:
-            _json_tree(item, wire=wire, depth=depth + 1, budget=budget)
+            _json_tree(
+                item,
+                wire=wire,
+                allow_instrument_code=allow_instrument_code,
+                path=(*path, None),
+                depth=depth + 1,
+                budget=budget,
+            )
     elif kind is str:
         if len(value) > (4096 if wire else MAX_RESPONSE_BYTES * 2):
             _fail("json_text_limit")
@@ -939,13 +961,23 @@ def _json_tree(value, *, wire, depth=0, budget=None):
         except UnicodeError:
             _fail("json_unicode_invalid")
     elif kind is int:
-        if wire or abs(value) > MAX_PACKET_BYTES:
+        # OKX documents one JSON integer in account/instruments. Accept it only
+        # at its exact envelope path; all other wire numbers remain rejected.
+        instrument_code = (
+            wire
+            and allow_instrument_code
+            and path == ("data", None, "instIdCode")
+            and 0 < value < 2**63
+        )
+        if (wire and not instrument_code) or (
+            not wire and abs(value) > MAX_PACKET_BYTES
+        ):
             _fail("json_number_invalid")
     elif kind is not bool and value is not None:
         _fail("json_scalar_invalid")
 
 
-def _decode_json(raw, *, limit, wire):
+def _decode_json(raw, *, limit, wire, allow_instrument_code=False):
     if type(raw) is not bytes or not 1 <= len(raw) <= limit:
         _fail("response_bytes_invalid" if wire else "packet_bytes_invalid")
     try:
@@ -955,7 +987,7 @@ def _decode_json(raw, *, limit, wire):
             parse_float=_invalid_json_number,
             parse_constant=_invalid_json_number,
         )
-        _json_tree(payload, wire=wire)
+        _json_tree(payload, wire=wire, allow_instrument_code=allow_instrument_code)
         canonical = _canonical(payload)
         if len(canonical.encode("utf-8")) > limit:
             _fail("canonical_bytes_limit")
@@ -1091,6 +1123,13 @@ def _row_record(row, stream, plan, received):
         row_id = instrument
         if _required_text(row, "instType") != "SWAP":
             _fail("history_instrument_scope_mismatch")
+        code = row.get("instIdCode")
+        if (
+            "instIdCode" in row
+            and code is not None
+            and (type(code) is not int or not 0 < code < 2**63)
+        ):
+            _fail("source_instrument_code_invalid")
         for field in ("ctType", "settleCcy", "ctValCcy", "state"):
             _required_text(row, field)
         required_numbers = {"ctVal", "ctMult", "lotSz", "minSz", "maxLmtSz", "lever"}
@@ -1346,7 +1385,10 @@ def parse_demo_account_observation(
     if completed - started > timedelta(seconds=plan.max_request_seconds):
         _fail("request_deadline_exceeded")
     payload, canonical = _decode_json(
-        response_body, limit=plan.max_response_bytes, wire=True
+        response_body,
+        limit=plan.max_response_bytes,
+        wire=True,
+        allow_instrument_code=stream == "account_instruments",
     )
     if (
         type(payload) is not dict

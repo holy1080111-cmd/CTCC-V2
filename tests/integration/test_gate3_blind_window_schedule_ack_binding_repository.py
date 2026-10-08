@@ -34,15 +34,23 @@ pytestmark = [
 ]
 
 
-async def test_restricted_pg_ack_binds_complete_original_byte_window(
-    isolated_database, monkeypatch
-):
-    pin_repository, ack_repository, _, pin_engine, ack_engine, _ = isolated_database
+@pytest.fixture
+def original_byte_case(monkeypatch):
+    # Build the synthetic source packet before the async test's loop starts.
+    # Its capture fixture owns a separate event loop for the original bytes.
     now = datetime.now(UTC).replace(microsecond=0)
     start = (now + timedelta(minutes=30)).replace(second=0)
     args, _, schedule, dataset = binding_case(
         monkeypatch, start=start, planned_at=now - timedelta(minutes=1)
     )
+    return args, schedule, dataset, start
+
+
+async def test_restricted_pg_ack_binds_complete_original_byte_window(
+    isolated_database, original_byte_case
+):
+    pin_repository, ack_repository, _, pin_engine, ack_engine, _ = isolated_database
+    args, schedule, dataset, start = original_byte_case
     seal = args["preregistration"]
     schedule_sha256 = schedule.canonical_sha256()
     assert args["expected_schedule_sha256"] == schedule_sha256
