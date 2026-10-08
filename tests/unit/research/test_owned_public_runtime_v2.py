@@ -1582,6 +1582,27 @@ def test_coherent_new_quote_bytes_cannot_replace_journal_http_observation(captur
         )
 
 
+def test_rehashed_request_parameter_order_cannot_rebind_packet(captured):
+    _, content = captured
+    directory = MemoryDirectory(dict(content))
+    changed = False
+
+    def reverse_query(event, _directory):
+        nonlocal changed
+        if event["kind"] == "request" and not changed:
+            query = event["metadata"]["query"]
+            if len(query) > 1:
+                event["metadata"]["query"] = list(reversed(query))
+                changed = True
+
+    resign_journal(directory, reverse_query)
+    assert changed
+    with pytest.raises(ValueError, match="runtime_packet_raw_join_mismatch"):
+        journal.replay_runtime_attempt(
+            directory, expected_plan_sha256=sha(directory.content["plan.json"])
+        )
+
+
 @pytest.mark.parametrize(
     "mutation", ["candidate-in-initial", "wrong-stage", "old-schema", "quote-schema"]
 )

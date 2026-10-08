@@ -61,9 +61,21 @@ maps all eight algo inventories to explicit counts and row/page hashes. It
 preserves missing history, local exposure, protection, costs and portfolio risk
 as `null` plus blockers. The versioned native proof, storage readback, clock
 boundary and one-use raw-packet handoff now accept only an exact V7 flat source.
-Their tests are synthetic; no real account capture or authenticated account
-result has passed. The projection still denies account completeness and
-execution authority.
+Their tests are synthetic; no authenticated complete account result has
+passed. The projection still denies account completeness and execution
+authority.
+
+At exact source `b72c21025a0f9bcce8cfb0c7109a32b4d14af45f` on
+2026-10-08, a separate, read-only diagnostic used the locally stored Demo
+credential and captured/replayed all 17 V7 current streams in one invocation.
+All 17 responses had process-local TLS peer evidence. The packet SHA256 was
+`cc6ee41346be4f4b8079e50c9a84111c738ab77083e3f75c30c03da9df36906d`;
+the redacted diagnostic is
+`../validation-results/demo-v7-readonly-b72c210-20261008.json` (SHA256
+`42e677f15e822009b40b30522cde676d9d1644c71d3b3b8e85f0892aeff4f780`).
+This diagnostic did not retain private raw bytes after replay, prove the
+account's registration region, bind a complete V5 history under one DB lock,
+or establish account/portfolio completeness. It granted no order authority.
 
 The V7 native runtime can also mint a one-use, same-task observation of the
 signed account-config request's private origin after original proof and
@@ -86,3 +98,14 @@ chain, an old V6 packet with V7 labels, wrong policy, and a four-algo V6
 test replay and private handoff contracts; they do not prove a real owned
 transport or account acceptance. Historical V2/V3/V4 proof policy bytes
 remain sealed.
+
+The ordered V7 current/history diagnostic reads the entire previously
+recorded V5 history chain in a separate exact-UID database transaction,
+replays the original raw page chain and checks its source reference before
+starting the new native HTTP session. After the current capture, it reads
+both chains again under the UID lock and compares the original event and
+database-timestamp digest. This establishes that a committed V5 chain was
+visible to the diagnostic before its first HTTP request. A database insert
+timestamp alone is not a commit timestamp and is not presented as one.
+The diagnostic remains `DENY`: the historical retention tail, portfolio
+components, protection and regional registration proof are still missing.

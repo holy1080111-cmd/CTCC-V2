@@ -112,3 +112,21 @@ No existing deployment, trading flag, OS clock or ACL is changed by this
 increment. New-pipeline genuine Shadow/Demo samples remain zero. Full runtime,
 historical regime admission, controlled Demo submission, outbox, forensics,
 real soak samples and final evidence examples remain separate unfinished work.
+
+## Same-invocation source-join diagnostic
+
+`post_g12_account_history_join_v3.py` adds a DENY-only diagnostic. It publishes
+and reads back a new G12 packet, collects new public-market data after the
+publication barrier, then invokes the ordered V7 current/history account
+capture. The account capture independently reads and replays a committed V5
+page chain before starting its native HTTP session, and compares that chain
+with a later same-UID locked readback. The diagnostic fixes the original
+candidate, event, entry, stop and target, replays the public-only recheck,
+and publishes its own no-clobber receipt. A readback or publication failure
+cannot be treated as a successful receipt.
+
+This is still a source-order and continuity diagnostic. Its original G1–G11
+run is caller-origin, the V5 retention tail and portfolio state are incomplete,
+and no reservation, intent or order route consumes its receipt. The fields
+`account_complete`, `execution_recheck_performed` and `execution_authority`
+remain false even if the synthetic diagnostic reaches `joined_unqualified`.

@@ -5,6 +5,7 @@ from datetime import timedelta
 
 import pytest
 
+from app.trade_qualification import account_capture_journal as journal
 from app.trade_qualification import account_current_history_join as joined
 from app.trade_qualification import account_current_source_verifier as current
 from app.trade_qualification import account_observation_index as observed
@@ -37,6 +38,11 @@ def test_v7_join_policy_is_new_and_v6_history_join_identity_is_unchanged():
     assert policy["current_policy_sha256"] == current.V7_POLICY_SHA256
     assert policy["current_capture_plan"] == "ctcc.demo_current_account_plan.v7"
     assert joined.V7_POLICY_SHA256 != joined.POLICY_SHA256
+    ordered_policy = json.loads(joined.V7_ORDERED_POLICY_BYTES)
+    assert ordered_policy["version"] == "ctcc.recorded_account_current_history_join.v3"
+    assert ordered_policy["prior_join_policy_sha256"] == joined.V7_POLICY_SHA256
+    assert ordered_policy["history_commit_before_current_request"] is False
+    assert joined.V7_ORDERED_POLICY_SHA256 != joined.V7_POLICY_SHA256
 
 
 @pytest.mark.asyncio
@@ -113,3 +119,62 @@ async def test_v7_join_denies_current_capture_before_history_completed(monkeypat
         joined.AccountSourceJoinError, match="account_join_chronology_invalid"
     ):
         join_v7(historical, early)
+
+
+@pytest.mark.asyncio
+async def test_v7_ordered_join_requires_history_terminal_db_time_before_current_request(
+    monkeypatch,
+):
+    historical = await recorded(monkeypatch)
+    fresh, _ = await recorded_v7(monkeypatch)
+    exact = joined.join_recorded_account_sources(
+        history_chain=historical,
+        history_reference=observed.source_reference(historical),
+        current_chain=fresh,
+        current_reference=observed.source_reference(fresh),
+        scope=SCOPE,
+        validated_at=NOW + timedelta(seconds=4),
+        expected_policy_sha256=joined.V7_ORDERED_POLICY_SHA256,
+    )
+    receipt = json.loads(exact.receipt_json)
+    assert receipt["schema_version"] == "ctcc.recorded_account_current_history_join.v3"
+    assert receipt["policy_sha256"] == joined.V7_ORDERED_POLICY_SHA256
+    assert receipt["history_terminal_db_timestamp_before_current_request"] is True
+    assert receipt["history_commit_before_current_request"] is False
+    assert receipt["history_original_db_chain_sha256"]
+    assert (
+        receipt["history_journal_terminal_db_recorded_at"]
+        < receipt["current_capture_started_at"]
+    )
+    assert receipt["account_complete"] is receipt["execution_authority"] is False
+    assert receipt["admission"] == "DENY"
+
+    # The body completed before current acquisition, but a late terminal DB
+    # timestamp cannot be relabelled as earlier. This still says nothing
+    # about transaction commit time.
+    delayed_terminal = journal.JournalReadback(
+        historical[-1].event,
+        NOW + timedelta(seconds=2),
+        NOW + timedelta(seconds=4),
+    )
+    delayed = (*historical[:-1], delayed_terminal)
+    # The older v2 diagnostic retains its sealed meaning; callers seeking the
+    # timestamp prerequisite must explicitly request the new v3 policy.
+    old_policy = json.loads(join_v7(delayed, fresh).receipt_json)
+    assert (
+        old_policy["schema_version"] == "ctcc.recorded_account_current_history_join.v2"
+    )
+    assert "history_terminal_db_timestamp_before_current_request" not in old_policy
+    with pytest.raises(
+        joined.AccountSourceJoinError,
+        match="account_join_history_terminal_db_timestamp_not_before_current",
+    ):
+        joined.join_recorded_account_sources(
+            history_chain=delayed,
+            history_reference=observed.source_reference(delayed),
+            current_chain=fresh,
+            current_reference=observed.source_reference(fresh),
+            scope=SCOPE,
+            validated_at=NOW + timedelta(seconds=4),
+            expected_policy_sha256=joined.V7_ORDERED_POLICY_SHA256,
+        )

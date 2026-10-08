@@ -52,8 +52,23 @@ This correction establishes only endpoint/query identity. A verified packet
 still has `account_complete=false`, `source_authenticity_verified=false`, and
 `execution_authority=false`. It does not prove authenticated account identity,
 complete pagination in a live account, whole-account revision consistency,
-full risk materialization, or Demo/Live readiness. No account request or order
-was sent for this revision; tests use synthetic data only.
+full risk materialization, or Demo/Live readiness. At this version's initial
+implementation, no account request or order was sent; the tests used synthetic
+data only.
+
+On 2026-10-08, a separate diagnostic at exact source
+`b72c21025a0f9bcce8cfb0c7109a32b4d14af45f` used locally stored Demo
+credentials for signed, read-only capture of a declared seven-day window.
+All 34 V5 streams were captured and replayed in one invocation with TLS peer
+evidence. Packet SHA256:
+`f9aec48bcb285024d84faf49210a255f1cbd867b7724d60f5542fd74f8cd2bb6`.
+The redacted diagnostic is
+`../validation-results/demo-v5-history-diagnostic-b72c210-20261008.json`
+(SHA256 `5a0ffcd1ff50ba80c6499179c8220d93ca9bc839af02182f4a618f0c5f802112`).
+It did not retain private raw bytes, prove the account's registration region,
+prove older retention beyond the declared window, or bind the separate V7
+current capture under one DB lock. It granted no account completeness or
+execution authority, and no order was sent.
 
 Primary documentation: [OKX Algo order list](https://app.okx.com/docs-v5/en/#trading-account-rest-api-get-algo-order-list), [OKX ordinary order list](https://app.okx.com/docs-v5/en/#order-book-trading-trade-get-order-list), and [OKX pagination semantics](https://www.okx.com/docs-v5/trick_en/#pagination).
 

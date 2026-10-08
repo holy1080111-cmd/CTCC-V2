@@ -4,6 +4,7 @@ Requires an explicit isolated, migrated DATABASE_URL. It never calls OKX or
 publishes a complete account snapshot or execution authority.
 """
 
+import asyncio
 import json
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
@@ -126,3 +127,44 @@ async def test_isolated_postgresql_v7_join_has_distinct_policy_receipt_and_no_au
     assert value["account_complete"] is locked.account_complete is False
     assert value["execution_authority"] is locked.execution_authority is False
     assert value["admission"] == "DENY"
+
+    ordered = await repo.read_locked_current_history_join(
+        scope,
+        history_capture_id=history_id,
+        current_capture_id=current_id,
+        expected_policy_sha256=joined.V7_ORDERED_POLICY_SHA256,
+    )
+    ordered_value = json.loads(ordered.receipt_json)
+    assert ordered_value["schema_version"] == "ctcc.demo_account_locked_source_join.v4"
+    assert ordered_value["join_policy_sha256"] == joined.V7_ORDERED_POLICY_SHA256
+    assert ordered_value["history_terminal_db_timestamp_before_current_request"] is True
+    assert ordered_value["history_commit_before_current_request"] is False
+    assert ordered_value["history_original_db_chain_sha256"]
+    assert (
+        ordered_value["history_journal_terminal_db_recorded_at"]
+        < ordered_value["current_capture_started_at"]
+    )
+    assert ordered_value["account_complete"] is ordered.account_complete is False
+    assert ordered_value["execution_authority"] is ordered.execution_authority is False
+    assert ordered_value["admission"] == "DENY"
+
+
+async def test_history_pre_read_waits_for_exact_uid_transaction_to_finish(
+    monkeypatch, database
+):
+    """A pre-request read cannot see a V5 row still behind an open UID lock."""
+    scope, repo, (history_id, _) = await _captured_v7_pair(monkeypatch, database)
+    async with database[1]() as writer, writer.begin():
+        await repo._lock(writer, scope)
+        started = asyncio.Event()
+
+        async def read_history():
+            started.set()
+            return await repo.read_chain(scope, history_id)
+
+        waiting = asyncio.create_task(read_history())
+        await asyncio.wait_for(started.wait(), timeout=2)
+        await asyncio.sleep(0.05)
+        assert not waiting.done()
+    chain = await asyncio.wait_for(waiting, timeout=5)
+    assert chain and chain[-1].event.event_json

@@ -143,9 +143,14 @@ class AccountCaptureJournalRepository:
         if type(expected_policy_sha256) is not str or expected_policy_sha256 not in {
             source_join.POLICY_SHA256,
             source_join.V7_POLICY_SHA256,
+            source_join.V7_ORDERED_POLICY_SHA256,
         }:
             raise AccountJournalError("journal_join_policy_invalid")
-        v7 = expected_policy_sha256 == source_join.V7_POLICY_SHA256
+        ordered_v7 = expected_policy_sha256 == source_join.V7_ORDERED_POLICY_SHA256
+        v7 = expected_policy_sha256 in {
+            source_join.V7_POLICY_SHA256,
+            source_join.V7_ORDERED_POLICY_SHA256,
+        }
         async with self.session_factory() as session, session.begin():
             row = await self._lock(session, scope)
             # Read the historical chain first to protect the current chain's
@@ -180,7 +185,9 @@ class AccountCaptureJournalRepository:
             )
             document = {
                 "schema_version": (
-                    "ctcc.demo_account_locked_source_join.v3"
+                    "ctcc.demo_account_locked_source_join.v4"
+                    if ordered_v7
+                    else "ctcc.demo_account_locked_source_join.v3"
                     if v7
                     else "ctcc.demo_account_locked_source_join.v2"
                 ),
@@ -217,6 +224,26 @@ class AccountCaptureJournalRepository:
                             "current_source_policy_sha256"
                         ],
                         "flat_start_permission": False,
+                    }
+                )
+            if ordered_v7:
+                document.update(
+                    {
+                        "history_journal_terminal_db_recorded_at": value[
+                            "history_journal_terminal_db_recorded_at"
+                        ],
+                        "history_original_db_chain_sha256": value[
+                            "history_original_db_chain_sha256"
+                        ],
+                        "current_capture_started_at": value[
+                            "current_capture_started_at"
+                        ],
+                        "history_terminal_db_timestamp_before_current_request": (
+                            value[
+                                "history_terminal_db_timestamp_before_current_request"
+                            ]
+                        ),
+                        "history_commit_before_current_request": False,
                     }
                 )
             receipt = canonical(document)

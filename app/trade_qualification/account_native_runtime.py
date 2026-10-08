@@ -31,6 +31,7 @@ from app.trade_qualification import account_clock_boundary as boundary
 from app.trade_qualification import account_collector as collector
 from app.trade_qualification import account_current_history_join as source_join
 from app.trade_qualification import account_current_source_verifier as current
+from app.trade_qualification import account_history_query_verifier as history
 from app.trade_qualification import account_native_clock as native
 from app.trade_qualification import account_native_exposed_observation as exposed
 from app.trade_qualification import account_native_proof as proof
@@ -43,6 +44,7 @@ from app.trade_qualification.reservations import LedgerScope
 _CAPTURES = WeakKeyDictionary()
 _ORIGIN_LEASES = WeakKeyDictionary()
 _RAW_PACKET_LEASES = WeakKeyDictionary()
+_PRE_HISTORY_READBACK_TIMEOUT_SECONDS = 30
 
 
 class NativeAccountOriginError(ValueError):
@@ -153,7 +155,20 @@ class _TimeProbeTrace:
             or utc_from_ns(stamp["utc_ns"]) >= state["current_expiry"]
         ):
             raise proof.NativeAccountProofError("native_account_source_expired")
+        pre_history = state.get("required_pre_history_readback")
+        if self.phase == "before" and pre_history is not None:
+            validate_stamps((state["started"], pre_history, stamp))
+            if (
+                state.get("first_http_request_start") is not None
+                or pre_history["monotonic_ns"] >= stamp["monotonic_ns"]
+                or pre_history["utc_ns"] >= stamp["utc_ns"]
+            ):
+                raise proof.NativeAccountProofError(
+                    "native_account_history_readback_not_before_http"
+                )
         self._append("request_start", stamp, {"endpoint": endpoint, "query": []})
+        if self.phase == "before" and pre_history is not None:
+            state["first_http_request_start"] = stamp
 
     def headers(self, *, stamp, status, headers, tls, truncated):
         if (
@@ -1420,6 +1435,81 @@ async def capture_native_exposed_account_observation(
         session._used = True
 
 
+@dataclass(frozen=True, slots=True, repr=False)
+class _CommittedHistoryPreRead:
+    reference: observed.CaptureReference
+    db_chain_sha256: str
+    history_query_receipt_sha256: str
+    terminal_db_recorded_at: datetime
+    started: dict
+    completed: dict
+    verified: dict
+
+
+async def _read_committed_history_before_http(
+    stage, repository, scope, history_capture_id, selected
+):
+    """Finish a separate exact-UID transaction before any HTTP can begin.
+
+    The returned chain is fully replayed only after `read_chain` has left its
+    transaction context. A V5 append still holding the UID lock must commit
+    before this read can complete; its earlier insert timestamp alone cannot
+    stand in for that commit boundary.
+    """
+    started = native._sample(stage)
+    chain = await repository.read_chain(scope, history_capture_id)
+    completed = native._sample(stage)
+    reference = observed.source_reference(chain)
+    verified = history.verify_history_query_chain(
+        chain, **observed._pins(reference, scope)
+    )
+    packet = source_join._packet(chain, reference)
+    verification_completed = native._sample(stage)
+    expected = packet.plan
+    if (
+        reference.capture_id != history_capture_id
+        or type(expected) is not capture.AllProductDemoAccountCapturePlan
+        or type(selected) is not capture.CurrentDemoAccountCapturePlanV7
+        or any(
+            getattr(expected, name) != getattr(selected, name)
+            for name in (
+                "environment",
+                "expected_uid",
+                "expected_main_uid",
+                "session_binding_id",
+                "settlement_currency",
+                "registration_region",
+                "origin",
+                "registration_evidence_sha256",
+            )
+        )
+        or source_join._config(packet, "config_after").get("uid")
+        != selected.expected_uid
+        or source_join._config(packet, "config_after").get("mainUid")
+        != selected.expected_main_uid
+        or packet.completed_at > utc_from_ns(started["utc_ns"])
+        or capture._utc(chain[-1].readback_at) > utc_from_ns(completed["utc_ns"])
+        or not (
+            started["monotonic_ns"] < completed["monotonic_ns"]
+            and started["utc_ns"] < completed["utc_ns"]
+            and completed["monotonic_ns"] < verification_completed["monotonic_ns"]
+            and completed["utc_ns"] < verification_completed["utc_ns"]
+        )
+    ):
+        raise proof.NativeAccountProofError(
+            "native_account_pre_http_history_readback_invalid"
+        )
+    return _CommittedHistoryPreRead(
+        reference,
+        source_join._recorded_db_chain_sha256(chain),
+        verified.receipt_sha256,
+        capture._utc(chain[-1].db_recorded_at),
+        started,
+        completed,
+        verification_completed,
+    )
+
+
 async def capture_native_current_history_join(
     session, *, session_factory, proof_root, history_capture_id
 ):
@@ -1471,6 +1561,20 @@ async def capture_native_current_history_join(
             ) as stage,
         ):
             state = native._state(stage)
+            repository = AccountCaptureJournalRepository(
+                session_factory, clock=state["clock"]
+            )
+            pre_read = None
+            if v7:
+                async with asyncio.timeout(_PRE_HISTORY_READBACK_TIMEOUT_SECONDS):
+                    pre_read = await _read_committed_history_before_http(
+                        stage, repository, scope, history_capture_id, selected
+                    )
+                if type(pre_read) is not _CommittedHistoryPreRead:
+                    raise proof.NativeAccountProofError(
+                        "native_account_pre_http_history_readback_invalid"
+                    )
+                state["required_pre_history_readback"] = pre_read.verified
             carrier = await _capture_initial_current(
                 stage, session, session_factory, proof_root
             )
@@ -1482,9 +1586,6 @@ async def capture_native_current_history_join(
                 raise proof.NativeAccountProofError(
                     "native_account_history_join_carrier_unavailable"
                 )
-            repository = AccountCaptureJournalRepository(
-                session_factory, clock=state["clock"]
-            )
             before_lock = native._sample(stage)
             deadline_ns = state.get("current_deadline")
             if (
@@ -1496,7 +1597,9 @@ async def capture_native_current_history_join(
                 )
             remaining = (deadline_ns - before_lock["monotonic_ns"]) / 1_000_000_000
             join_policy = (
-                {"expected_policy_sha256": source_join.V7_POLICY_SHA256} if v7 else {}
+                {"expected_policy_sha256": source_join.V7_ORDERED_POLICY_SHA256}
+                if v7
+                else {}
             )
             async with asyncio.timeout(remaining):
                 locked = await repository.read_locked_current_history_join(
@@ -1519,10 +1622,51 @@ async def capture_native_current_history_join(
             ledger_revision = locked_value.get("db_ledger_revision")
             active_hold_count = locked_value.get("db_active_hold_count")
             blockers = locked_value.get("locked_readback_blocking_reasons")
+            committed_before_http = False
+            if v7:
+                try:
+                    terminal_at = capture._utc(
+                        datetime.fromisoformat(
+                            locked_value["history_journal_terminal_db_recorded_at"]
+                        )
+                    )
+                    current_started_at = capture._utc(
+                        datetime.fromisoformat(
+                            locked_value["current_capture_started_at"]
+                        )
+                    )
+                    first_http = state["first_http_request_start"]
+                    validate_stamps(
+                        (
+                            state["started"],
+                            pre_read.started,
+                            pre_read.completed,
+                            pre_read.verified,
+                            first_http,
+                        )
+                    )
+                    committed_before_http = (
+                        terminal_at.isoformat()
+                        == locked_value["history_journal_terminal_db_recorded_at"]
+                        and current_started_at.isoformat()
+                        == locked_value["current_capture_started_at"]
+                        and terminal_at < current_started_at
+                        and terminal_at == pre_read.terminal_db_recorded_at
+                        and locked_value.get("history_original_db_chain_sha256")
+                        == pre_read.db_chain_sha256
+                        and locked_value.get("history_source_reference")
+                        == observed.reference_document(pre_read.reference)
+                        and pre_read.verified["monotonic_ns"]
+                        < first_http["monotonic_ns"]
+                        and pre_read.verified["utc_ns"] < first_http["utc_ns"]
+                        and utc_from_ns(first_http["utc_ns"]) < current_started_at
+                    )
+                except (KeyError, TypeError, ValueError):
+                    committed_before_http = False
             if (
                 locked_value.get("schema_version")
                 != (
-                    "ctcc.demo_account_locked_source_join.v3"
+                    "ctcc.demo_account_locked_source_join.v4"
                     if v7
                     else "ctcc.demo_account_locked_source_join.v2"
                 )
@@ -1536,9 +1680,16 @@ async def capture_native_current_history_join(
                         )
                         is None
                         or locked_value.get("join_policy_sha256")
-                        != source_join.V7_POLICY_SHA256
+                        != source_join.V7_ORDERED_POLICY_SHA256
                         or locked_value.get("current_source_policy_sha256")
                         != current.V7_POLICY_SHA256
+                        or not committed_before_http
+                        or locked_value.get(
+                            "history_terminal_db_timestamp_before_current_request"
+                        )
+                        is not True
+                        or locked_value.get("history_commit_before_current_request")
+                        is not False
                         or locked_value.get("flat_start_permission") is not False
                         or type(locked_value.get("recorded_pre_lock_blocking_reasons"))
                         is not list
@@ -1610,7 +1761,7 @@ async def capture_native_current_history_join(
             receipt = canonical(
                 {
                     "schema_version": (
-                        "ctcc.native_current_history_join_diagnostic.v2"
+                        "ctcc.native_current_history_join_diagnostic.v3"
                         if v7
                         else "ctcc.native_current_history_join_diagnostic.v1"
                     ),
@@ -1633,8 +1784,22 @@ async def capture_native_current_history_join(
                     "admission": "DENY",
                     **(
                         {
-                            "join_policy_sha256": source_join.V7_POLICY_SHA256,
+                            "join_policy_sha256": source_join.V7_ORDERED_POLICY_SHA256,
                             "current_source_policy_sha256": current.V7_POLICY_SHA256,
+                            "pre_http_history_source_reference": observed.reference_document(
+                                pre_read.reference
+                            ),
+                            "pre_http_history_db_chain_sha256": pre_read.db_chain_sha256,
+                            "pre_http_history_query_receipt_sha256": (
+                                pre_read.history_query_receipt_sha256
+                            ),
+                            "pre_http_history_readback_started": pre_read.started,
+                            "pre_http_history_readback_completed": pre_read.completed,
+                            "pre_http_history_replay_verified": pre_read.verified,
+                            "first_http_request_started": state[
+                                "first_http_request_start"
+                            ],
+                            "committed_history_readback_before_first_http": True,
                             "flat_start_permission": False,
                         }
                         if v7
@@ -1653,7 +1818,7 @@ async def capture_native_current_history_join(
             canonical(
                 {
                     "schema_version": (
-                        "ctcc.native_current_history_join_diagnostic.v2"
+                        "ctcc.native_current_history_join_diagnostic.v3"
                         if v7
                         else "ctcc.native_current_history_join_diagnostic.v1"
                     ),

@@ -72,10 +72,14 @@ python -m scripts.setup_notion_outbox `
 The report-ID property must have `title` type and the other three must have
 `rich_text` type, as required by the reviewed adapter. The 2026-09-23 connector
 readback identifies `報告名稱` as the title field; `報告編號` is a separate text
-field and cannot bind this role. These names are selection hints only: the
-connector projection does not provide the four opaque property IDs. The connector's generic
-text-field description alone cannot attest those REST types. Generic interactive
-database/source/property selection is available when nonsecret options are omitted.
+field and cannot bind this role. A 2026-10-08 connector readback confirmed the
+database/data-source IDs and these four names, but the connector projection
+does not provide the four opaque property IDs. The connector's generic
+text-field description alone cannot attest those REST types. The dedicated
+runtime REST token is not yet configured, so neither the four property IDs nor
+the production destination binding has passed the authenticated setup readback.
+Generic interactive database/source/property selection is available when
+nonsecret options are omitted.
 
 Setup defaults to `%LOCALAPPDATA%\CTCC\private-notion` on Windows and
 `~/.local/share/CTCC/private-notion` on POSIX. Token files are created exclusively,

@@ -18,6 +18,9 @@ from app.mie.validation.blind_window_schedule_ack_binding import (
     freeze_schedule_bound_blind_window_dataset_v2,
     verify_schedule_bound_blind_window_dataset_v2,
 )
+from app.mie.validation.blind_window_schedule_binding import (
+    BlindWindowScheduleBindingError,
+)
 from app.mie.validation.gate3_capture_schedule_pin import (
     Gate3CaptureSchedulePinRepository,
 )
@@ -105,7 +108,7 @@ async def test_restricted_pg_ack_binds_complete_original_byte_window(
 
         # A missing original journal segment cannot borrow a valid pin/ACK.
         with pytest.raises(
-            BlindWindowScheduleAckBindingError,
+            BlindWindowScheduleBindingError,
             match="^blind_dataset_replay_failed$",
         ):
             await verify_schedule_bound_blind_window_dataset_v2(

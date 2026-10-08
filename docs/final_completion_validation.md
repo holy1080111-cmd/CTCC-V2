@@ -4054,3 +4054,88 @@ historical candidate label cannot be assigned to a Git tree, and the cached
 source appears to be an uncommitted or otherwise unrepresented snapshot.
 That finding does not invalidate the separately checkpointed current canonical
 branch, but it does not retroactively clear the historical provenance result.
+
+## 2026-10-08 exact-source Demo read-only diagnostics
+
+The `b72c21025a0f9bcce8cfb0c7109a32b4d14af45f` source is preserved as
+an exact Git archive and full-history bundle under
+`../validation-results/checkpoint-b72c210-20261008/`. Its tree is
+`a9a0419a565b98b662272c7a9d1c589341337279` and its source manifest
+SHA256 is `f69d9191e5742aa91279f67f0a4eb957d9b877375e2b209167b7d4b35b87f2e9`.
+All 1,023 tracked manifest files and the bundle were read back. This is a
+rollback/source-identity checkpoint, not a production release.
+
+Using only authenticated, simulated-trading GET requests against the configured
+`openapi.okx.com` route, a process-local V7 capture replayed 17/17 current Demo
+account streams, and a separate V5 capture replayed 34/34 all-product
+seven-day historical streams. Every recorded response had a process-local TLS
+peer proof. Redacted receipts are
+`../validation-results/demo-v7-readonly-b72c210-20261008.json` (SHA256
+`42e677f15e822009b40b30522cde676d9d1644c71d3b3b8e85f0892aeff4f780`)
+and `../validation-results/demo-v5-history-diagnostic-b72c210-20261008.json`
+(SHA256 `5a0ffcd1ff50ba80c6499179c8220d93ca9bc839af02182f4a618f0c5f802112`).
+The two captures were separate invocations and their private raw bytes were
+discarded after in-memory replay. They do not prove a durable V5-to-V7 join,
+historical retention, funding/accrual completeness, loss/peak seeds, local
+uncertain exposure, active protection, or a complete PortfolioRiskSnapshot.
+The user's login URL alone does not prove the account's regional registration
+endpoint. [OKX's regional API guide](https://www.okx.com/docs-v5/) identifies
+`openapi.okx.com` as the Global REST endpoint and separate US/AU and EEA
+domains; the successful request is an operational diagnostic, not a durable
+registration attestation. Account completeness and execution authority remain
+false.
+
+The real account-instrument response contained integer `instIdCode` fields and
+exceeded the old 64-KiB page default. The parser now admits a strictly positive
+64-bit integer only at `data[].instIdCode` for the account-instruments stream;
+all other numeric JSON shapes still fail closed. V7's default page limit is
+256 KiB, the pre-existing hard maximum. This change was verified against the
+captured response shape and malformed/wrong-path synthetic cases, without
+loosening an explicit caller-pinned limit. No order POST was attempted. The
+transport still denies Demo and Live submission, including legacy routes.
+
+Matching GitHub CI for `b72c210` is run `37812222934`. A green result for any
+job may only be credited to this exact SHA. The current read-only captures do
+not establish Gate 3, OOS, G1--G12, Demo execution, Micro Live, or release
+acceptance.
+
+That exact CI run has since exposed two independently source-verified Linux
+failures. Shard 1 passed 1,549/1,550 cases; its sole failed integration test
+expected the wrong exception class when an original Gate 3 journal segment is
+missing. The existing V1 replay correctly rejected the missing bytes, so the
+working repair changes only the test's exception expectation. Shard 6 passed
+2,322 cases, skipped 28 platform cases, and failed one legacy synthetic
+account-state fixture because it updated rows without advancing the control
+revision required by the `0034` trigger. The working fixture repair advances
+that revision exactly once per transition and independently reads it back;
+the trigger remains unchanged. These are not a PASS for `b72c210`, and the
+working repairs require a new exact-source CI run. At this update, PostgreSQL
+and Windows jobs have not reached final results.
+
+## 2026-10-09 ordered account-source and post-G12 diagnostic working checks
+
+The ordered V7 account diagnostic now completes a separate, committed V5
+history-chain readback and raw replay under the exact account UID lock before
+its first HTTP request. A subsequent UID-locked join checks the same original
+event and database-timestamp digest against the new V7 current chain. Native
+clock witnesses distinguish database read completion from replay completion
+and the first public-time HTTP request. The local journal's insert timestamp
+alone is explicitly not treated as proof of transaction commit. The new
+post-G12 V3 diagnostic binds this ordered account evidence to a newly
+published/read-back G12 packet and later public capture in one invocation;
+its original G1--G11 run remains caller-provided and it grants no authority.
+
+One low-load Windows integration selection collected 347 tests and finished
+with 341 passed and six PostgreSQL-only skips because no local isolated
+PostgreSQL DSN was available. It covered V7 account joins, V3/V2 post-G12
+diagnostics, public packet query-order checks, Demo/Live transport hard DENY,
+Gate 3 negative replay and the account-state fixture. Ruff check/format and
+the regenerated 1,026-file source manifest passed. These are working-tree
+checks, not final exact-commit Windows, PostgreSQL or Docker acceptance.
+
+A separate read-only submit-route audit found all currently implemented OKX
+entry calls converge on a hard final-dispatch denial, including direct service
+calls. The old manual and scheduler services still do not consume a qualified
+G12/recheck/reservation/intent permit. Disabling the deny-all transport would
+therefore expose an unqualified path. `ALL_SUBMIT_ROUTES_GUARDED` remains FAIL
+for production readiness; no Demo or Live order was sent.

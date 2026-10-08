@@ -1098,7 +1098,7 @@ def _packet_join(plan, packet, requests, websocket):
             item
             for item in remaining
             if item["request"]["endpoint"] == record["endpoint"]
-            and dict(item["request"]["query"]) == dict(record["parameters"])
+            and item["request"]["query"] == record["parameters"]
             and bytes(item["body"]) == record["response_body"].encode("utf-8")
             and utc_from_ns(item["request"]["started"]["utc_ns"])
             == _time(record["request_started_at"])

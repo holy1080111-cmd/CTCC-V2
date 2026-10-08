@@ -52,6 +52,24 @@ V7_POLICY_BYTES = journal.canonical(
     }
 )
 V7_POLICY_SHA256 = journal.digest(V7_POLICY_BYTES)
+V7_ORDERED_POLICY_BYTES = journal.canonical(
+    {
+        "version": "ctcc.recorded_account_current_history_join.v3",
+        "prior_join_policy_sha256": V7_POLICY_SHA256,
+        "current_policy_sha256": current.V7_POLICY_SHA256,
+        "history_policy_sha256": history.POLICY_SHA256,
+        "history_capture_plan": "ctcc.demo_account_plan.v5",
+        "current_capture_plan": "ctcc.demo_current_account_plan.v7",
+        "history_terminal_db_timestamp_before_current_request": True,
+        "history_commit_before_current_request": False,
+        "same_recorded_local_checkpoint_required": True,
+        "complete_history_tail": False,
+        "flat_start_permission": False,
+        "account_complete": False,
+        "execution_authority": False,
+    }
+)
+V7_ORDERED_POLICY_SHA256 = journal.digest(V7_ORDERED_POLICY_BYTES)
 
 
 class AccountSourceJoinError(ValueError):
@@ -117,6 +135,26 @@ def _checkpoint(chain):
     return checkpoint
 
 
+def _recorded_db_chain_sha256(chain):
+    """Bind every original event and its DB timestamp across locked reads.
+
+    Both callers first replay the exact B1 raw chain. This digest is a local
+    continuity check, not a proof that the original transaction committed
+    before a particular network request.
+    """
+    return journal.digest(
+        journal.canonical(
+            [
+                [
+                    journal.digest(item.event.event_json),
+                    capture._utc(item.db_recorded_at).isoformat(),
+                ]
+                for item in chain
+            ]
+        )
+    )
+
+
 def join_recorded_account_sources(
     *,
     history_chain,
@@ -161,7 +199,7 @@ def _join(
     checked_bootstrap(scope, LedgerScope)
     if (
         type(policy_pin) is not str
-        or policy_pin not in {POLICY_SHA256, V7_POLICY_SHA256}
+        or policy_pin not in {POLICY_SHA256, V7_POLICY_SHA256, V7_ORDERED_POLICY_SHA256}
         or type(validated_at) is not datetime
         or type(history_chain) is not tuple
         or type(current_chain) is not tuple
@@ -179,7 +217,8 @@ def _join(
         or history_reference.capture_id == current_reference.capture_id
     ):
         _deny("account_join_source_reference_mismatch")
-    v7 = policy_pin == V7_POLICY_SHA256
+    ordered_v7 = policy_pin == V7_ORDERED_POLICY_SHA256
+    v7 = policy_pin in {V7_POLICY_SHA256, V7_ORDERED_POLICY_SHA256}
     current_policy = current.V7_POLICY_SHA256 if v7 else current.V6_POLICY_SHA256
     current_plan = (
         capture.CurrentDemoAccountCapturePlanV7
@@ -238,6 +277,16 @@ def _join(
     current_start = current_packet.observations[0].request_started_at
     if not old.history_end <= history_packet.completed_at < current_start:
         _deny("account_join_chronology_invalid")
+    if ordered_v7:
+        # Recorded timestamps alone cannot prove when the transaction
+        # committed. Native V7 separately reads the committed history chain
+        # before allowing the first HTTP request to start.
+        terminal = history_chain[-1]
+        if (
+            journal.checked_event(terminal.event)["kind"] != "terminal"
+            or not terminal.db_recorded_at < current_start
+        ):
+            _deny("account_join_history_terminal_db_timestamp_not_before_current")
     at = capture._utc(validated_at)
     if at < current_packet.completed_at:
         _deny("account_join_validation_precedes_source")
@@ -268,7 +317,9 @@ def _join(
     )
     output = {
         "schema_version": (
-            "ctcc.recorded_account_current_history_join.v2"
+            "ctcc.recorded_account_current_history_join.v3"
+            if ordered_v7
+            else "ctcc.recorded_account_current_history_join.v2"
             if v7
             else "ctcc.recorded_account_current_history_join.v1"
         ),
@@ -305,4 +356,13 @@ def _join(
     if v7:
         output["current_source_policy_sha256"] = current_policy
         output["flat_start_permission"] = False
+    if ordered_v7:
+        output["history_journal_terminal_db_recorded_at"] = capture._utc(
+            history_chain[-1].db_recorded_at
+        ).isoformat()
+        output["history_original_db_chain_sha256"] = _recorded_db_chain_sha256(
+            history_chain
+        )
+        output["history_terminal_db_timestamp_before_current_request"] = True
+        output["history_commit_before_current_request"] = False
     return RecordedAccountSourceJoin(journal.canonical(output))

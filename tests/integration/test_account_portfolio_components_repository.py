@@ -155,12 +155,23 @@ async def test_unknown_legacy_initialization_and_persisted_latch_never_become_em
             "last_completed_at": None,
         },
     )
+    expected_control_revision = 0
     for changes in cases:
         async with database[1]() as session, session.begin():
             row = await session.get(DemoAutomationState, 1)
+            assert row is not None
+            assert row.control_revision == expected_control_revision
             for key, value in changes.items():
                 setattr(row, key, value)
+            # The synthetic legacy transition must satisfy the real control
+            # revision trigger; bypassing it would mask stale-writer failures.
+            expected_control_revision += 1
+            row.control_revision = expected_control_revision
             row.updated_at = now()
+        async with database[1]() as session:
+            persisted = await session.get(DemoAutomationState, 1)
+            assert persisted is not None
+            assert persisted.control_revision == expected_control_revision
         changed = await QualificationLedgerRepository(
             database[1], clock=now
         ).read_portfolio_checkpoint(scope)
