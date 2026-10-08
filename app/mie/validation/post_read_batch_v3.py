@@ -12,7 +12,16 @@ import hashlib
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from decimal import Context, Decimal, Inexact, localcontext
+from decimal import (
+    ROUND_HALF_EVEN,
+    Context,
+    Decimal,
+    DivisionByZero,
+    Inexact,
+    InvalidOperation,
+    Overflow,
+    localcontext,
+)
 from typing import Literal
 
 from pydantic import Field, field_validator, model_validator
@@ -52,6 +61,20 @@ MAX_CAPTURE_ARTIFACT_BYTES = 64 * 1024
 MAX_BATCH_ARTIFACT_BYTES = 8 * 1024 * 1024
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _BASIS = "persisted_restricted_post_read_server_clock_unverified"
+
+
+def _exact_volume_context() -> Context:
+    """Pin every Decimal setting, including traps, independent of DefaultContext."""
+    return Context(
+        prec=256,
+        rounding=ROUND_HALF_EVEN,
+        Emin=-999999,
+        Emax=999999,
+        capitals=1,
+        clamp=0,
+        flags=[],
+        traps=[InvalidOperation, DivisionByZero, Overflow, Inexact],
+    )
 
 
 class PostReadBatchError(ValueError):
@@ -238,9 +261,7 @@ class PostReadMinuteBatchV3(Gate3Contract):
             for index, bar in enumerate(frame.bars):
                 group = self.minutes[index * width : (index + 1) * width]
                 group_sha256 = _sequence_sha256(group)
-                arithmetic = Context(prec=256)
-                arithmetic.traps[Inexact] = True
-                with localcontext(arithmetic):
+                with localcontext(_exact_volume_context()):
                     expected_volume = sum(
                         (item.row.bar.volume for item in group), Decimal(0)
                     )
@@ -359,8 +380,7 @@ def _build(
         )
     checked = tuple(checked_minutes)
     source_digest = _sequence_sha256(checked)
-    arithmetic = Context(prec=256)
-    arithmetic.traps[Inexact] = True
+    arithmetic = _exact_volume_context()
     frames = []
     for label, seconds in TARGETS:
         width = seconds // 60

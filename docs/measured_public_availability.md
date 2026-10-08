@@ -232,6 +232,10 @@ real 240-minute acquisition, trusted DB clock/custody, first evaluator access,
 or an untouched holdout. All predictive, promotion and execution flags stay
 false; no Gate 3 or OOS acceptance follows from this batch contract.
 
+The separate [multi-batch computational stitch](mie_gate3_post_read_stitch.md)
+re-verifies and joins contiguous V3 batches before calling the existing MIE
+feature replay. It does not change V1/V2/V3 evidence bytes or raise any claim.
+
 ## Clock platform limitation and remaining acceptance
 
 The original v1 replay recognizes only English `w32tm /query /status /verbose`

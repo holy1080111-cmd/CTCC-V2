@@ -80,3 +80,21 @@ credential route, and any external registration evidence still require a
 controlled authenticated Demo read; full public transport must then enforce the
 same Demo REST/WS route and simulated header at every I/O edge before the
 separate source-authority review can change.
+
+## 2026-10-08 bounded signed-read diagnostic
+
+After the local Demo write, automatic-execution, soak and startup-reconciliation
+switches were disabled, the configured 300 USDT position bucket and 1% open
+stop-risk ceiling passed `Settings` validation. With read retries fixed to zero,
+one owned-client signed `GET /api/v5/account/config` succeeded on the configured
+global Demo origin. The client used the simulated-trading header, disabled
+environment proxies and redirects, and made no order POST. A redacted,
+HMAC-only diagnostic is retained at
+`../validation-results/demo-account-config-readonly-cd0727e-20261008T193049Z.json`
+(SHA256 `b0a36a1821e9d84cf60b7e1f68586adc57b01eaf5235cdc082238e4faccfb320`).
+It records that UID/mainUid and account/position modes were present without
+publishing their raw values. The raw response was intentionally not retained,
+so this diagnostic cannot stand in for the native journal and page-chain proof.
+It does not establish the registration site, complete account history,
+controlled credential-session binding, portfolio risk or trading authority;
+all such claims remain false and the V2 public pre-I/O refusal remains in place.
