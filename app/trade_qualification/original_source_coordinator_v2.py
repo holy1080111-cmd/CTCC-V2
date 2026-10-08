@@ -46,12 +46,14 @@ from app.trade_qualification.captured_instrument_rules import (
     derive_captured_instrument_rules,
 )
 from app.trade_qualification.current_conditions import _evaluate_base_g2_g4
+from app.trade_qualification.events import extract_trigger
 from app.trade_qualification.market_bridge_v2 import public_market_context_v2
 from app.trade_qualification.models import EntryQualificationResult, GateAssessment
 from app.trade_qualification.public_source_runtime import (
     _consume_initial_public_capture_v2,
 )
 from app.trade_qualification.service import QualificationPrefixPolicy
+from app.trade_qualification.timing import TIMING_POLICIES, event_identity
 
 _MAX_RECEIPT_BYTES = 4096
 _MAX_ACCOUNT_RECEIPT_BYTES = 65536
@@ -724,6 +726,12 @@ class _OwnedBasePrefixHandoffV6:
     prefix_receipt_json: bytes | None
 
 
+@dataclass(frozen=True, slots=True, repr=False)
+class _OwnedBaseEventHandoffV7:
+    base: _OwnedBasePrefixHandoffV6
+    event_receipt_json: bytes | None
+
+
 def _evaluate_owned_base_prefix_v6(
     public_packet,
     account_packet,
@@ -880,6 +888,144 @@ def _evaluate_owned_base_prefix_v6(
     )
 
 
+def _evaluate_owned_base_event_v7(
+    public_packet,
+    derived,
+    *,
+    public_pin,
+    data_policy,
+    created_at,
+    prefix_receipt_json,
+):
+    """Replay the fixed G5 event from the same raw packet; never grant authority."""
+    if (
+        type(derived) is not precursor.OriginalCandidatePrecursorV2
+        or derived.intent is None
+        or derived.intent.strategy not in precursor._BASE_STRATEGIES
+        or type(prefix_receipt_json) is not bytes
+    ):
+        raise OriginalSourceCoordinatorError("original_base_event_input_invalid")
+    document = decode(derived.receipt_json, precursor._MAX_RECEIPT)
+    intent = derived.intent
+    prefix = decode(prefix_receipt_json, 4096)
+    if (
+        document["public_bundle_sha256"] != public_pin
+        or document["created_at"] != created_at.isoformat()
+        or document["intent"] != precursor._intent_tree(intent)
+        or prefix.get("schema_version")
+        != "ctcc.owned_original_base_prefix_inspection.v6"
+        or prefix.get("precursor_receipt_sha256") != derived.receipt_sha256
+        or prefix.get("public_packet_sha256") != public_pin
+        or prefix.get("gates")
+        != [
+            {"gate": f"G{number}", "code": "passed", "passed": True}
+            for number in range(1, 5)
+        ]
+        or prefix.get("admission") != "DENY"
+    ):
+        raise OriginalSourceCoordinatorError("original_base_event_lineage_changed")
+    checked, (_, _, _, candle_packet, _, _) = public_v2._parts(public_packet)
+    if checked.bundle_sha256 != public_pin:
+        raise OriginalSourceCoordinatorError("original_base_event_public_changed")
+    g1 = data_v2.evaluate_public_market_data_v2(
+        checked,
+        expected_bundle_sha256=public_pin,
+        policy=data_policy,
+        evaluated_at=created_at,
+    )
+    g1 = data_v2.verify_public_market_data_v2(
+        g1,
+        checked,
+        expected_bundle_sha256=public_pin,
+        policy=data_policy,
+        evaluated_at=created_at,
+    )
+    if (
+        not g1.passed
+        or g1.evaluation_sha256 != document["g1"]["evaluation_sha256"]
+        or g1.source_sha256 != document["g1"]["source_sha256"]
+        or g1.evaluation_sha256 != prefix.get("g1_result_sha256")
+        or g1.source_sha256 != prefix.get("g1_source_sha256")
+    ):
+        raise OriginalSourceCoordinatorError("original_base_event_g1_changed")
+    source = decode(g1.source_json.encode(), data.MAX_SOURCE_BYTES)
+    market = MarketSnapshot.model_validate_json(
+        json.dumps(source["market"], allow_nan=False), strict=True
+    )
+    analysis = MultiTimeframeAnalysis.model_validate_json(
+        json.dumps(source["analysis"], allow_nan=False), strict=True
+    )
+    timing_policy = TIMING_POLICIES[intent.strategy]
+    detection = extract_trigger(
+        market,
+        analysis,
+        report_id=intent.report_id,
+        strategy=intent.strategy,
+        direction=intent.direction,
+        observed_at=created_at,
+        trigger_ttl_seconds=timing_policy.trigger_ttl_seconds,
+    )
+    trigger = detection.trigger
+    key = event_identity(detection)
+    if (
+        detection.model_dump(mode="json") != document["detection"]
+        or detection.source_sha256 != g1.source_sha256
+        or detection.fail_codes
+        or trigger is None
+        or detection.setup_time is None
+        or trigger.invalidation_reason is not None
+        or trigger.trigger_time > created_at
+        or created_at >= min(trigger.expires_at, intent.expires_at)
+        or key is None
+        or key != document["event_key"]
+        or trigger.expires_at.isoformat() != document["original_event_expires_at"]
+    ):
+        raise OriginalSourceCoordinatorError("original_base_event_changed")
+    timeline = precursor._timeline(candle_packet, created_at)
+    if (
+        timeline is None
+        or timeline != document["timeline"]
+        or sha(canonical(timeline)) != document["timeline_sha256"]
+    ):
+        raise OriginalSourceCoordinatorError("original_base_event_timeline_changed")
+    witness = precursor._prefix_witness(timeline, detection)
+    if witness is None or witness != document["event_prefix_witness"]:
+        raise OriginalSourceCoordinatorError("original_base_event_witness_changed")
+    return canonical(
+        {
+            "schema_version": "ctcc.owned_original_base_event_inspection.v7",
+            "precursor_receipt_sha256": derived.receipt_sha256,
+            "precursor_intent_sha256": sha(canonical(document["intent"])),
+            "public_packet_sha256": public_pin,
+            "base_prefix_receipt_sha256": sha(prefix_receipt_json),
+            "g1_result_sha256": g1.evaluation_sha256,
+            "g1_source_sha256": g1.source_sha256,
+            "detection_sha256": sha(canonical(document["detection"])),
+            "event_key_sha256": key,
+            "timeline_sha256": document["timeline_sha256"],
+            "event_prefix_witness_sha256": sha(canonical(witness)),
+            "trigger_expires_at": trigger.expires_at.isoformat(),
+            "gate": {"gate": "G5", "code": "passed", "passed": True},
+            "historical_first_availability_verified": False,
+            "event_ledger_authenticated": False,
+            "g6_evaluated": False,
+            "g7_evaluated": False,
+            "calibrated_for_trading": False,
+            "original_source_verified": False,
+            "candidate_created": False,
+            "g1_g11_complete": False,
+            "g12_published": False,
+            "account_complete": False,
+            "qualification_performed": False,
+            "execution_recheck_performed": False,
+            "atomic_risk_reserved": False,
+            "execution_authority": False,
+            "order_submitted": False,
+            "admission": "DENY",
+        }
+    )
+
+
 async def _capture_owned_original_base_prefix_for_boundary_v6(
     public_root,
     account_root,
@@ -908,6 +1054,33 @@ async def _capture_owned_original_base_prefix_for_boundary_v6(
     )
 
 
+async def _capture_owned_original_base_event_for_boundary_v7(
+    public_root,
+    account_root,
+    *,
+    instrument_id,
+    strategy,
+    market_policy,
+    account_session,
+    session_factory,
+) -> _OwnedBaseEventHandoffV7:
+    if type(strategy) is not str or strategy not in precursor._BASE_STRATEGIES:
+        raise OriginalSourceCoordinatorError("original_base_event_strategy_unsupported")
+    return await _capture_owned_original_sources(
+        public_root,
+        account_root,
+        instrument_id=instrument_id,
+        market_policy=market_policy,
+        account_session=account_session,
+        session_factory=session_factory,
+        inspect_g1=True,
+        strategy=strategy,
+        retain_raw_for_boundary=True,
+        inspect_base_prefix=True,
+        inspect_base_event=True,
+    )
+
+
 async def _capture_owned_original_sources(
     public_root,
     account_root,
@@ -920,11 +1093,15 @@ async def _capture_owned_original_sources(
     strategy,
     retain_raw_for_boundary=False,
     inspect_base_prefix=False,
+    inspect_base_event=False,
 ):
     if (
         type(inspect_g1) is not bool
         or type(retain_raw_for_boundary) is not bool
         or type(inspect_base_prefix) is not bool
+        or type(inspect_base_event) is not bool
+        or inspect_base_event
+        and not inspect_base_prefix
         or inspect_base_prefix
         and (not retain_raw_for_boundary or strategy not in precursor._BASE_STRATEGIES)
         or retain_raw_for_boundary
@@ -991,6 +1168,7 @@ async def _capture_owned_original_sources(
     precursor_pin = precursor_intent_pin = precursor_action = precursor_code = None
     precursor_intent_derived = False
     prefix_receipt_json = None
+    event_receipt_json = None
 
     def result():
         fields = {
@@ -1051,11 +1229,14 @@ async def _capture_owned_original_sources(
             if inspect_g1
             else InitialOwnedSourcesDiagnosticV2(receipt)
         )
-        return (
-            _OwnedBasePrefixHandoffV6(diagnostic, prefix_receipt_json)
-            if inspect_base_prefix
-            else diagnostic
-        )
+        if inspect_base_event:
+            return _OwnedBaseEventHandoffV7(
+                _OwnedBasePrefixHandoffV6(diagnostic, prefix_receipt_json),
+                event_receipt_json,
+            )
+        if inspect_base_prefix:
+            return _OwnedBasePrefixHandoffV6(diagnostic, prefix_receipt_json)
+        return diagnostic
 
     try:
         started = native_stamp()
@@ -1261,6 +1442,37 @@ async def _capture_owned_original_sources(
                     raise OriginalSourceCoordinatorError("original_base_prefix_expired")
                 finished = prefix_stamp
                 prefix_receipt_json = checked
+            if inspect_base_event and replayed.intent is not None:
+                if prefix_receipt_json is None:
+                    raise OriginalSourceCoordinatorError(
+                        "original_base_event_prefix_missing"
+                    )
+                inspected_event = _evaluate_owned_base_event_v7(
+                    packet,
+                    replayed,
+                    public_pin=public_pin,
+                    data_policy=g1_policy,
+                    created_at=created_at,
+                    prefix_receipt_json=prefix_receipt_json,
+                )
+                checked_event = _evaluate_owned_base_event_v7(
+                    packet,
+                    replayed,
+                    public_pin=public_pin,
+                    data_policy=g1_policy,
+                    created_at=created_at,
+                    prefix_receipt_json=prefix_receipt_json,
+                )
+                if inspected_event != checked_event:
+                    raise OriginalSourceCoordinatorError(
+                        "original_base_event_replay_changed"
+                    )
+                event_stamp = native_stamp()
+                validate_stamps((finished, event_stamp))
+                if utc_from_ns(event_stamp["utc_ns"]) >= min(expires, owned.expires_at):
+                    raise OriginalSourceCoordinatorError("original_base_event_expired")
+                finished = event_stamp
+                event_receipt_json = checked_event
             precursor_pin = replayed.receipt_sha256
             precursor_action = precursor_doc["action"]
             precursor_code = precursor_doc["code"]
@@ -1280,6 +1492,10 @@ async def _capture_owned_original_sources(
     except Exception:  # noqa: BLE001 -- retain existing raw proofs; return static DENY
         if task.cancelling():
             raise asyncio.CancelledError from None
+        if inspect_base_event:
+            # A later G5 refusal cannot leave an orphaned V6 inner receipt
+            # alongside an unavailable V4 precursor in the hash-only handoff.
+            prefix_receipt_json = event_receipt_json = None
         return result()
     finally:
         account_session._used = True

@@ -487,7 +487,7 @@ def _account_near_portfolio_cap(source, ordinary):
             + ordinary.execution_risk.max_loss_amount
         ) / 2
         room = (
-            source.original_run.policy.portfolio.max_portfolio_risk_pct
+            min(source.original_run.policy.portfolio.max_portfolio_risk_pct, D("0.01"))
             * risk.account.equity
         )
         exposure = position(

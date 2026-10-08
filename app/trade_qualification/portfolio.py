@@ -20,6 +20,14 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, TypeAdapter, field_validator, model_validator
 
+from app.trade_qualification.hard_risk_caps import (
+    BUCKET_SETTLEMENT_CURRENCY,
+    MAX_PORTFOLIO_MARGIN_PCT,
+    MAX_PORTFOLIO_STOP_RISK_PCT,
+    MAX_SINGLE_POSITION_MARGIN_USDT,
+    MAX_TRADE_RISK_PCT,
+    rounded_up_amount,
+)
 from app.trade_qualification.models import Price, QualificationModel, ReportId, Text
 
 Digest = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
@@ -423,6 +431,8 @@ def evaluate_portfolio(
         causes.append("instrument_mismatch")
     if state.settlement_currency != spec.settlement_currency:
         causes.append("settlement_currency_mismatch")
+    if state.settlement_currency != BUCKET_SETTLEMENT_CURRENCY:
+        causes.append("position_bucket_currency_unsupported")
     if (
         spec.contract_kind != "linear_base"
         or spec.contract_value_currency != spec.base_currency
@@ -522,6 +532,11 @@ def evaluate_portfolio(
         notional = quantity * Fraction(entry)
         margin = notional / leverage
         max_loss = quantity * (abs(Fraction(entry) - Fraction(stop)) + Fraction(cost))
+        # A future durable hold rounds both sampled risk and margin upward.
+        # Apply that conservative quantum even to this pure, source-claim-only
+        # evaluation; displayed amounts below retain their exact calculation.
+        reserved_risk = rounded_up_amount(max_loss)
+        reserved_margin = rounded_up_amount(margin)
         equity = Fraction(state.equity)
         daily_pnl = sum(
             (Fraction(row.realized_pnl) for row in rows if row.closed_at >= day_start),
@@ -623,8 +638,13 @@ def evaluate_portfolio(
             ),
             (drawdown >= Fraction(limits.max_drawdown_pct), "drawdown_limit_reached"),
             (
-                max_loss / equity > Fraction(limits.risk_per_trade_pct),
+                reserved_risk / equity
+                > min(Fraction(limits.risk_per_trade_pct), MAX_TRADE_RISK_PCT),
                 "trade_risk_limit_exceeded",
+            ),
+            (
+                reserved_margin > MAX_SINGLE_POSITION_MARGIN_USDT,
+                "position_margin_bucket_exceeded",
             ),
             (
                 notional > Fraction(limits.max_order_notional),
@@ -645,17 +665,22 @@ def evaluate_portfolio(
                 "correlated_notional_limit_exceeded",
             ),
             (
-                (existing_risk + max_loss) / equity
-                > Fraction(limits.max_portfolio_risk_pct),
+                (existing_risk + reserved_risk) / equity
+                > min(
+                    Fraction(limits.max_portfolio_risk_pct),
+                    MAX_PORTFOLIO_STOP_RISK_PCT,
+                ),
                 "portfolio_risk_limit_exceeded",
             ),
             (
-                (existing_margin + margin) / equity
-                > Fraction(limits.max_portfolio_margin_pct),
+                (existing_margin + reserved_margin) / equity
+                > min(
+                    Fraction(limits.max_portfolio_margin_pct), MAX_PORTFOLIO_MARGIN_PCT
+                ),
                 "portfolio_margin_limit_exceeded",
             ),
             (
-                pending_margin + margin > Fraction(state.available_margin),
+                pending_margin + reserved_margin > Fraction(state.available_margin),
                 "available_margin_exceeded",
             ),
         ):

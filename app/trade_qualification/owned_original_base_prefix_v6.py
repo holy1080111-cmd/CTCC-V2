@@ -203,6 +203,13 @@ async def preflight_owned_base_prefix_v6(
     )
     if task is not asyncio.current_task() or task.cancelling():
         raise asyncio.CancelledError
+    return _readback_owned_base_prefix_handoff_v6(handoff, account_session)
+
+
+def _readback_owned_base_prefix_handoff_v6(
+    handoff, account_session
+) -> OwnedOriginalBasePrefixDiagnosticV6:
+    """Validate a private hash-only handoff; never create execution authority."""
     if type(handoff) is not original._OwnedBasePrefixHandoffV6:
         raise OwnedOriginalBasePrefixError("owned_base_prefix_handoff_required")
     diagnostic = handoff.original

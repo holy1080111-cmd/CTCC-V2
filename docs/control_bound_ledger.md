@@ -151,6 +151,22 @@ binding and transaction control checks remain separate required comparisons.
 The legacy automation's aggregate 60% margin hard gate exists and has focused
 tests, but that path is not the new qualification/R6 handoff.
 
+The pure portfolio evaluator and account-locked reservation coverage now also
+apply fixed, non-waivable arithmetic ceilings even if a supplied policy is
+looser: upward-rounded risk per new trade is at most 0.5% of settlement equity,
+all open stop-risk plus the new hold is at most 1%, the new position's rounded
+margin is at most 300 USDT, and aggregate position/pending/local-held margin
+plus the new hold is at most 60%. A stricter supplied policy still applies.
+The pure evaluator uses the same upward 1e-20 amount quantum as the ledger;
+the ledger independently repeats the checks against its durable active holds
+under the account lock. A settlement currency other than USDT is denied for
+the fixed bucket because no verified conversion source is present. These are
+arithmetic safety ceilings over supplied account claims, not proof of their
+source authenticity or a selected runtime setting. In particular, a configured
+bucket *below* 300 is not bound here until an authenticated configuration owner
+is wired into the transaction and final submit boundary. No migration, Arm,
+order permission, or execution-authority flag changes with these ceilings.
+
 The existing `all_fill_prices_covered=false` statement remains true. The accepted
 execution design is controlled FOK with an adverse price boundary, original
 candidate and executable-reference economics, worst sampled risk reservation,

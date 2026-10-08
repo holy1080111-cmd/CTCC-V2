@@ -649,13 +649,21 @@ def test_peak_equity_and_its_observation_window_must_be_consistent(updates):
     assert_denied(evaluate(account=account(**updates)), "peak_equity_invalid")
 
 
-@pytest.mark.parametrize("quantity", [D("10.25"), D("0.25"), D("1000")])
+@pytest.mark.parametrize("quantity", [D("10.25"), D("0.25"), D("95")])
 def test_quantities_on_the_true_lot_grid_are_accepted_without_resizing(quantity):
     result = evaluate(
         requested_contracts=quantity, policy=policy(risk_per_trade_pct=D("1"))
     )
     assert_passed(result)
     assert result.requested_contracts == quantity
+
+
+def test_valid_lot_cannot_use_loose_policy_to_exceed_structural_risk():
+    result = evaluate(
+        requested_contracts=D("1000"), policy=policy(risk_per_trade_pct=D("1"))
+    )
+    assert_denied(result, "trade_risk_limit_exceeded")
+    assert result.requested_contracts == D("1000")
 
 
 @pytest.mark.parametrize(
@@ -796,6 +804,87 @@ def test_selected_60_percent_margin_cap_counts_position_reservation_and_new_orde
     assert_passed(result) if passed else assert_denied(
         result, "portfolio_margin_limit_exceeded"
     )
+
+
+@pytest.mark.parametrize(
+    "cost,passed",
+    [(D("0"), True), (D("0.00000000000000000001"), False)],
+)
+def test_nonwaivable_half_percent_trade_risk_boundary_with_loose_policy(cost, passed):
+    result = evaluate(
+        requested_contracts=D("100"),
+        round_trip_cost_per_base=cost,
+        policy=policy(risk_per_trade_pct=D("1")),
+    )
+    assert_passed(result) if passed else assert_denied(
+        result, "trade_risk_limit_exceeded"
+    )
+
+
+def test_upward_hold_rounding_cannot_launder_risk_below_half_percent():
+    equity = D("1000.0000000000000000001")
+    result = evaluate(
+        candidate_entry=D("1000"),
+        stop_loss=D("500"),
+        requested_contracts=D("1"),
+        round_trip_cost_per_base=D("0.00000000000000000001"),
+        account=account(equity=equity, peak_equity=equity),
+        policy=policy(risk_per_trade_pct=D("1")),
+    )
+    # Exact sampled loss is under 0.5%; the durable 1e-20 ceiling is over.
+    assert D("5.0000000000000000000001") < equity * D("0.005")
+    assert_denied(result, "trade_risk_limit_exceeded")
+
+
+@pytest.mark.parametrize(
+    "existing_risk,passed",
+    [(D("9.49"), True), (D("9.49000000000000000001"), False)],
+)
+def test_nonwaivable_one_percent_portfolio_stop_risk(existing_risk, passed):
+    result = evaluate(
+        account=account(positions=(position(risk_amount=existing_risk),)),
+        policy=policy(max_portfolio_risk_pct=D("0.2")),
+    )
+    assert_passed(result) if passed else assert_denied(
+        result, "portfolio_risk_limit_exceeded"
+    )
+
+
+@pytest.mark.parametrize("contracts,passed", [(D("300"), True), (D("300.25"), False)])
+def test_single_position_usdt_bucket_is_inclusive_and_cannot_be_waived(
+    contracts, passed
+):
+    result = evaluate(
+        requested_contracts=contracts,
+        requested_leverage=1,
+        stop_loss=D("99.9"),
+        round_trip_cost_per_base=D("0"),
+    )
+    assert_passed(result) if passed else assert_denied(
+        result, "position_margin_bucket_exceeded"
+    )
+
+
+@pytest.mark.parametrize("pending,passed", [(D("299"), True), (D("300"), False)])
+def test_nonwaivable_sixty_percent_aggregate_margin_with_loose_policy(pending, passed):
+    result = evaluate(
+        account=account(
+            positions=(position(margin=D("300")),),
+            pending_reservations=(reservation(margin=pending),),
+        ),
+        policy=policy(max_portfolio_margin_pct=D("0.8")),
+    )
+    assert_passed(result) if passed else assert_denied(
+        result, "portfolio_margin_limit_exceeded"
+    )
+
+
+def test_non_usdt_settlement_cannot_guess_a_usdt_bucket_conversion():
+    result = evaluate(
+        account=account(settlement_currency="USDC"),
+        instrument=instrument(settlement_currency="USDC"),
+    )
+    assert_denied(result, "position_bucket_currency_unsupported")
 
 
 @pytest.mark.parametrize(
@@ -1206,10 +1295,11 @@ def test_recurring_margin_fraction_is_compared_exactly_before_display_rounding(
 
 @pytest.mark.parametrize(
     "limit,passed",
-    [(D("0.33333333333333333333"), False), (D("0.33333333333333333334"), True)],
+    [(D("0.00333333333333333333"), False), (D("0.00333333333333333334"), True)],
 )
 def test_recurring_risk_fraction_does_not_round_a_failure_into_a_pass(limit, passed):
-    snapshot = account(equity=D("3"), peak_equity=D("3"), available_margin=D("3"))
+    # 1/300 repeats but remains within the non-waivable 0.5% ceiling.
+    snapshot = account(equity=D("300"), peak_equity=D("300"), available_margin=D("300"))
     result = evaluate(
         account=snapshot,
         stop_loss=D("90"),

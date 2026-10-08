@@ -246,10 +246,17 @@ def test_worst_sampled_risk_actually_changes_current_portfolio_decision(source, 
     )
     risk = params["current_risk_inputs"]
     with localcontext(Context(prec=100)):
+        midpoint = (
+            baseline.candidate_risk.max_loss_amount
+            + baseline.execution_risk.max_loss_amount
+        ) / 2
         remaining = (
-            origin.evidence.pre_evidence.policy.portfolio.max_portfolio_risk_pct
+            min(
+                origin.evidence.pre_evidence.policy.portfolio.max_portfolio_risk_pct,
+                D("0.01"),
+            )
             * risk.account.equity
-            - baseline.candidate_risk.max_loss_amount
+            - midpoint
         )
     pending = PendingReservation(
         reservation_id="synthetic-new-post-barrier-pending",

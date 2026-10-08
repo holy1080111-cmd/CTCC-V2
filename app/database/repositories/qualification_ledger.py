@@ -28,6 +28,13 @@ from app.trade_qualification.event_observation import (
     VERSION as EVENT_OBSERVATION_VERSION,
 )
 from app.trade_qualification.event_observation import LedgerEventObservation
+from app.trade_qualification.hard_risk_caps import (
+    BUCKET_SETTLEMENT_CURRENCY,
+    MAX_PORTFOLIO_MARGIN_PCT,
+    MAX_PORTFOLIO_STOP_RISK_PCT,
+    MAX_SINGLE_POSITION_MARGIN_USDT,
+    MAX_TRADE_RISK_PCT,
+)
 from app.trade_qualification.models import require_aware
 from app.trade_qualification.reservations import (
     AccountLedgerClaims,
@@ -752,9 +759,17 @@ class QualificationLedgerRepository:
 
     @staticmethod
     def _coverage_caps(request, claims, active, coverage):
-        # Portfolio computations compare exact unrounded operands. Upward
-        # ledger rounding must ALSO fit caps; it cannot oversubscribe an epsilon.
+        # Scenario inputs use exact operands; the pure portfolio gate compares
+        # new risk/margin after upward rounding. The durable sampled coverage
+        # must ALSO fit caps; it cannot oversubscribe an epsilon.
+        # These fixed ceilings do not authorize the caller's policy or account
+        # claims; they only prevent looser policy values from granting room.
         policy = request.origin.evidence.pre_evidence.policy.portfolio
+        if (
+            request.scope.settlement_currency != BUCKET_SETTLEMENT_CURRENCY
+            or claims.account.settlement_currency != BUCKET_SETTLEMENT_CURRENCY
+        ):
+            raise QualificationLedgerError("ledger_bucket_currency_unsupported")
         equity = Fraction(claims.account.equity)
         pending = {
             item.reservation_id: item for item in claims.account.pending_reservations
@@ -768,10 +783,14 @@ class QualificationLedgerRepository:
         margins += [Fraction(item.coverage.margin_amount) for item in active]
         risk, margin = Fraction(coverage.risk_amount), Fraction(coverage.margin_amount)
         if (
-            risk > equity * Fraction(policy.risk_per_trade_pct)
-            or sum(risks) + risk > equity * Fraction(policy.max_portfolio_risk_pct)
+            risk > equity * min(Fraction(policy.risk_per_trade_pct), MAX_TRADE_RISK_PCT)
+            or sum(risks) + risk
+            > equity
+            * min(Fraction(policy.max_portfolio_risk_pct), MAX_PORTFOLIO_STOP_RISK_PCT)
+            or margin > MAX_SINGLE_POSITION_MARGIN_USDT
             or sum(margins) + margin
-            > equity * Fraction(policy.max_portfolio_margin_pct)
+            > equity
+            * min(Fraction(policy.max_portfolio_margin_pct), MAX_PORTFOLIO_MARGIN_PCT)
             or margin
             + sum(Fraction(item.margin) for item in pending.values())
             + sum(Fraction(item.coverage.margin_amount) for item in active)

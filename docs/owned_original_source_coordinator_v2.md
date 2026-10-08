@@ -134,3 +134,26 @@ execution and order authority false, with `admission=DENY`. Non-base strategies
 are rejected before source I/O. V4/V5 APIs and receipt bytes are unchanged.
 Synthetic tests exercise the same-task arithmetic and denial; they are not
 actual OKX Demo samples or Gate 3 evidence.
+
+## V7 same-invocation base G5 event inspection
+
+`preflight_owned_base_event_v7` is additive and limited to the same four base
+strategies. It retains the original raw public/account packets inside the same
+private task frame, replays V6 G1–G4, then derives G5 from the G1 market and
+analysis at the original creation time. The fixed trigger, event identity,
+expiry, raw candle timeline and event-prefix witness must match the precursor.
+The G5 result is replayed twice in that frame before a hash-only receipt is
+returned. Changed source, event, chronology or expiry fails closed. V4–V6
+public APIs and receipt bytes remain unchanged.
+
+V7 reports only that the G5 predicate was replayed on the observed synthetic
+source. The raw historical rows still lack proved first availability, and
+the owned frame has no authenticated all-state consumed-event ledger. G6
+therefore remains unperformed; G7 cannot follow G6. The account also lacks
+complete risk and local exposure. Every V7 receipt has `admission=DENY`,
+`historical_first_availability_verified=false`,
+`event_ledger_authenticated=false`, `g6_evaluated=false`,
+`g7_evaluated=false`, and all candidate, G12, reservation, execution and
+order authority flags false. The real Demo public-origin issuer still denies
+capture; the V7 tests use synthetic packets only and provide no Demo
+acceptance evidence.

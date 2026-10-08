@@ -66,6 +66,132 @@ def test_real_two_scenarios_and_exact_coverage(fixture):
     assert coverage.all_fill_prices_covered is False
 
 
+@pytest.mark.parametrize("over", (False, True))
+def test_ledger_rounded_trade_risk_respects_nonwaivable_half_percent(fixture, over):
+    coverage, _ = prepare_reservation(
+        fixture.request, fixture.claims, (), observed_at=fixture.now
+    )
+    equity = coverage.risk_amount * D("200")
+    if over:
+        equity -= D("0.00000000000000000001")
+    snapshot = fixture.claims.account.model_copy(
+        update={"equity": equity, "available_margin": equity}
+    )
+    claims = fixture.claims.model_copy(update={"account": snapshot})
+    if over:
+        with pytest.raises(
+            QualificationLedgerError, match="ledger_rounded_coverage_exceeds_caps"
+        ):
+            QualificationLedgerRepository._coverage_caps(
+                fixture.request, claims, (), coverage
+            )
+    else:
+        QualificationLedgerRepository._coverage_caps(
+            fixture.request, claims, (), coverage
+        )
+
+
+@pytest.mark.parametrize("over", (False, True))
+def test_ledger_rounded_portfolio_risk_respects_nonwaivable_one_percent(fixture, over):
+    coverage, _ = prepare_reservation(
+        fixture.request, fixture.claims, (), observed_at=fixture.now
+    )
+    held_risk = D("10") - coverage.risk_amount
+    if over:
+        held_risk += D("0.00000000000000000001")
+    held = reservation(risk_amount=held_risk, margin=D("0"))
+    snapshot = fixture.claims.account.model_copy(
+        update={"pending_reservations": (held,), "pending_reservation_count": 1}
+    )
+    claims = fixture.claims.model_copy(update={"account": snapshot})
+    if over:
+        with pytest.raises(
+            QualificationLedgerError, match="ledger_rounded_coverage_exceeds_caps"
+        ):
+            QualificationLedgerRepository._coverage_caps(
+                fixture.request, claims, (), coverage
+            )
+    else:
+        QualificationLedgerRepository._coverage_caps(
+            fixture.request, claims, (), coverage
+        )
+
+
+@pytest.mark.parametrize("over", (False, True))
+def test_ledger_rounded_aggregate_margin_respects_nonwaivable_sixty_percent(
+    fixture, over
+):
+    coverage, _ = prepare_reservation(
+        fixture.request, fixture.claims, (), observed_at=fixture.now
+    )
+    held_margin = D("600") - coverage.margin_amount
+    if over:
+        held_margin += D("0.00000000000000000001")
+    held = reservation(risk_amount=D("0"), margin=held_margin)
+    snapshot = fixture.claims.account.model_copy(
+        update={"pending_reservations": (held,), "pending_reservation_count": 1}
+    )
+    claims = fixture.claims.model_copy(update={"account": snapshot})
+    if over:
+        with pytest.raises(
+            QualificationLedgerError, match="ledger_rounded_coverage_exceeds_caps"
+        ):
+            QualificationLedgerRepository._coverage_caps(
+                fixture.request, claims, (), coverage
+            )
+    else:
+        QualificationLedgerRepository._coverage_caps(
+            fixture.request, claims, (), coverage
+        )
+
+
+@pytest.mark.parametrize("contracts,allowed", ((D("300"), True), (D("300.25"), False)))
+def test_ledger_single_position_bucket_is_exact_even_with_loose_policy(
+    fixture, contracts, allowed
+):
+    sample = ScenarioOperands(
+        entry=D("100"),
+        stop_loss=D("99.9"),
+        cost_per_base=D("0.01"),
+        contracts=contracts,
+        contract_value=D("0.01"),
+        leverage=1,
+    )
+    coverage = RiskCoverage(
+        candidate=sample, execution=sample, **exact_coverage(sample, sample)
+    )
+    if allowed:
+        QualificationLedgerRepository._coverage_caps(
+            fixture.request, fixture.claims, (), coverage
+        )
+    else:
+        with pytest.raises(
+            QualificationLedgerError, match="ledger_rounded_coverage_exceeds_caps"
+        ):
+            QualificationLedgerRepository._coverage_caps(
+                fixture.request, fixture.claims, (), coverage
+            )
+
+
+def test_ledger_usdt_bucket_does_not_guess_an_fx_conversion(fixture):
+    coverage, _ = prepare_reservation(
+        fixture.request, fixture.claims, (), observed_at=fixture.now
+    )
+    claims = fixture.claims.model_copy(
+        update={
+            "account": fixture.claims.account.model_copy(
+                update={"settlement_currency": "USDC"}
+            )
+        }
+    )
+    with pytest.raises(
+        QualificationLedgerError, match="ledger_bucket_currency_unsupported"
+    ):
+        QualificationLedgerRepository._coverage_caps(
+            fixture.request, claims, (), coverage
+        )
+
+
 @pytest.mark.parametrize("kind", (ReservationRequest, AccountLedgerClaims))
 def test_canonical_json_roundtrip_and_noncanonical_reject(fixture, kind):
     value = fixture.request if kind is ReservationRequest else fixture.claims
