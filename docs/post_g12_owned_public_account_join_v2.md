@@ -6,6 +6,9 @@
 另須配置第五個互不重疊的空 `join_root`。舊檔、交疊或無法開啟的
 receipt 目錄會在 G12 前拒絕。它不接受外部 G12
 receipt、`passed=true`、舊公開資料包、舊帳戶資料包、報價或發佈屏障。
+兩個預先配置的空 receipt 目錄在 G12 與任何網路等待之前各自固定原生
+device/inode 身分；各自發佈及重新開啟讀回時必須仍是同一目錄。中途被替換
+即拒絕，不能把新目錄當成本次已檢查的目錄。
 原始 G1–G11 `run` 與輸入會由現有 `_original` 重播，保留原 event、entry、
 SL、TP、report、instrument 及帳戶 UID。原始輸入仍由 caller 提供；這項重播
 **尚未**把 V4 的受控原始來源診斷接成可建立候選的來源權限。
@@ -48,6 +51,8 @@ journal、帳戶頁鏈／proof 及重查收據留在各自的 no-clobber 根目�
 失敗都拒絕回傳成功診斷；已寫入的位元組保留供稽核，不能用同一目錄重試
 或覆蓋。即使收據完整，這仍是本機同父目錄證據，沒有獨立保管的 checkpoint
 或 Windows 斷電目錄持久性保證，也不提高 `account_complete` 或交易權限。
+公開重查 receipt 的晚期發佈／讀回失敗也直接停止本次呼叫；若檔案已寫入則
+保留，不會再補寫一份缺少該雜湊的聯合診斷，也不會重新發佈或重試。
 
 目前原生 V2 Demo 公開來源的 region 認證仍被硬性拒絕，因此 production
 路徑會在 G12 前拒絕；正向單元測試只用明示 synthetic transport、時鐘與

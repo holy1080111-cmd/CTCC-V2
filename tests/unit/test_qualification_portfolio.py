@@ -778,6 +778,27 @@ def test_portfolio_margin_includes_positions_reservations_and_new_order(limit, p
 
 
 @pytest.mark.parametrize(
+    "reserved_margin,passed", [(D("299"), True), (D("300"), False)]
+)
+def test_selected_60_percent_margin_cap_counts_position_reservation_and_new_order(
+    reserved_margin, passed
+):
+    snapshot = account(
+        positions=(position(margin=D("300")),),
+        pending_reservations=(reservation(margin=reserved_margin),),
+    )
+    selected_policy = policy(
+        risk_per_trade_pct=D("0.005"),
+        max_portfolio_risk_pct=D("0.01"),
+        max_portfolio_margin_pct=D("0.60"),
+    )
+    result = evaluate(account=snapshot, policy=selected_policy)
+    assert_passed(result) if passed else assert_denied(
+        result, "portfolio_margin_limit_exceeded"
+    )
+
+
+@pytest.mark.parametrize(
     "field,cause",
     [
         ("max_open_positions", "open_position_limit_exceeded"),

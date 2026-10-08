@@ -4006,3 +4006,51 @@ disposable PostgreSQL test database only if the expected publication fails.
 It reports a sanitized SQLSTATE, constraint or fixed Gate 3 code; production
 error masking and rejection remain unchanged. It does not turn the older failed
 run into PASS or repair the still-unidentified database root cause.
+
+## 2026-10-08 measured public four-hour computational rehearsal
+
+At repository HEAD `c99415676dc5f8579f5505c9d1cd597f274af404`, one
+BTC-USDT-SWAP UTC 04:00--08:00 four-hour window from OKX public
+`history-candles`, with 240 confirmed 1m rows across three raw REST pages.
+The public collector and measured replay components matched that commit; the
+worktree also held unrelated uncommitted R7/test changes, so this is not a
+clean-whole-tree source attestation.
+The native journal retained page bytes, TLS/clock/request receipts, source
+identity and an accepted checkpoint. A separate process replayed all 240
+source rows, then deterministic aggregation produced 16 15m, four 1H and one
+4H bar. Two computations and an independent-process readback matched byte for
+byte. The 94-file artifact index read back at 94/94 hashes; the retained
+capture is under
+`../validation-results/public-minute-c994156-4h-20261008-001/`.
+The capture receipt SHA256 is
+`68065c65d878f0781f1c417300729829c8ea85e3e0e8fa648119f4215d78ba5a`;
+the aggregate result SHA256 is
+`458662ca574a2284ab34ec649bab55e91fe18c07f8a1074f81e10a399e546a46`.
+
+The first row closed at 04:01 but was observed only at 09:39:51 UTC. Every
+row is therefore an after-the-fact observation. The checkpoint is local and
+not independently protected; this evidence verifies collection, replay and
+unit-preserving aggregation only. It is not a point-in-time predictive
+dataset, sealed OOS, Gate 3 PASS, or trading authority.
+
+## 2026-10-08 dependency identity and historical candidate audit
+
+The `c994156` Windows lock check and its exact-source Linux CI dependency log
+both passed with 41 pinned wheels, 42 isolated installed distributions and a
+single additional direct-scan project metadata record. `pip check` passed.
+There is no observed current third-party dependency drift; the final
+full-validation baseline remains unaccepted until every required job passes
+on the same final source SHA. The release dependency/provenance checks remain
+hard failures, not warnings.
+
+The cached 2026-09-15 release contract verifies all 582 retained source file
+hashes. A bounded search of five distinguishing Git blob paths across all 144
+reachable commits in the canonical object store and 78 in the old checkout
+found no commit matching even those five paths; the old checkout commits were
+a subset of the 144 unique SHAs. The final key reduced survivors to zero.
+The original candidate/validation ZIP bytes and the originating
+`CANDIDATE_MATCH_FOUND` output are absent in the searched locations. Thus the
+historical candidate label cannot be assigned to a Git tree, and the cached
+source appears to be an uncommitted or otherwise unrepresented snapshot.
+That finding does not invalidate the separately checkpointed current canonical
+branch, but it does not retroactively clear the historical provenance result.

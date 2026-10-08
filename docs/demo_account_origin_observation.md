@@ -46,6 +46,22 @@ pre-I/O hard DENY. The existing original-source coordinator still attempts
 public capture before account capture; this observation does not change that
 ordering or issue a public-source capability.
 
+The missing registration proof must come from an authenticated first-party
+account/profile or API-key view, or an OKX support record, that explicitly
+names the registration site and is bound to the exact account UID and controlled
+credential session (only a nonsecret key fingerprint may be retained). A
+configured REST URL, local timezone, operator locale or signed HTTP 200 is
+insufficient. After independent proof, a new one-use read session must request
+`account/config` on that site's reviewed Demo origin, with
+`x-simulated-trading: 1`, verified TLS, no redirect, and exact UID/mainUid
+readback. This establishes a route/identity prerequisite only; history,
+portfolio, protection and execution completeness remain separate gates.
+The [OKX regional overview](https://www.okx.com/docs-v5/en/#overview) and
+[Demo services](https://www.okx.com/docs-v5/en/#overview-demo-trading-services)
+were checked again on 2026-10-08. The documented `account/config` response
+does not carry a registration-site field, so it cannot supply that independent
+proof by itself.
+
 The unit tests use synthetic account/TLS-labelled proof replay and no real
 credential or network I/O. They test local lifetime and source-binding failure
 paths, not a successful authenticated Demo account read. Real account identity,

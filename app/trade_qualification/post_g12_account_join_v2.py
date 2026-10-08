@@ -12,6 +12,7 @@ claim.
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -248,7 +249,36 @@ def _public_request_starts(packet, barrier):
     return min(starts), len(starts)
 
 
-def read_public_only_recheck_receipt_v2(root, *, expected_sha256):
+class _PublicRecheckReceiptPublicationError(PostG12AccountJoinError):
+    """A failed append must not be reclassified as a source denial."""
+
+
+def _native_directory_identity(directory):
+    identity = source_runtime._native_recheck_root_identity(directory.path)
+    if os.name != "nt":
+        held = os.fstat(directory.fd)
+        if identity != (held.st_dev, held.st_ino):
+            raise ValueError
+    return identity
+
+
+def _empty_native_receipt_root_identity(root, failure_code):
+    """Pin a provisioned empty root before G12 or any network await."""
+    try:
+        with source_runtime._native_recheck_root(root) as directory:
+            if directory.names():
+                raise ValueError
+            identity = _native_directory_identity(directory)
+        if source_runtime._native_recheck_root_identity(root) != identity:
+            raise ValueError
+        return identity
+    except Exception:  # noqa: BLE001 -- never disclose a native path
+        raise PostG12AccountJoinError(failure_code) from None
+
+
+def read_public_only_recheck_receipt_v2(
+    root, *, expected_sha256, expected_root_identity
+):
     """Reopen the distinct native root; a read receipt never grants authority."""
     try:
         if (
@@ -259,26 +289,34 @@ def read_public_only_recheck_receipt_v2(root, *, expected_sha256):
         ):
             raise ValueError
         with source_runtime._native_recheck_root(root) as directory:
+            if _native_directory_identity(directory) != expected_root_identity:
+                raise ValueError
             if set(directory.names()) != {"receipt.json"}:
                 raise ValueError
             payload = directory.read("receipt.json", public_recheck._MAX_RECEIPT_BYTES)
             if sha(payload) != expected_sha256:
                 raise ValueError
-            return public_recheck.PostG12PublicRecheckReceiptV2(payload)
+            receipt = public_recheck.PostG12PublicRecheckReceiptV2(payload)
+        if source_runtime._native_recheck_root_identity(root) != expected_root_identity:
+            raise ValueError
+        return receipt
     except Exception:  # noqa: BLE001 -- do not disclose native paths/source bytes
         raise PostG12AccountJoinError(
             "post_g12_public_recheck_readback_failed"
         ) from None
 
 
-def _publish_public_only_recheck_receipt_v2(root, receipt):
+def _publish_public_only_recheck_receipt_v2(root, receipt, *, expected_root_identity):
     if type(receipt) is not public_recheck.PostG12PublicRecheckReceiptV2:
-        raise PostG12AccountJoinError("post_g12_public_recheck_receipt_invalid")
+        raise _PublicRecheckReceiptPublicationError(
+            "post_g12_public_recheck_receipt_invalid"
+        )
     try:
         with source_runtime._native_recheck_root(root) as directory:
+            if _native_directory_identity(directory) != expected_root_identity:
+                raise ValueError
             if directory.names():
                 raise ValueError
-            identity = source_runtime._native_recheck_root_identity(directory.path)
             directory.publish("receipt.json", receipt.receipt_json)
             if (
                 directory.read("receipt.json", public_recheck._MAX_RECEIPT_BYTES)
@@ -286,15 +324,17 @@ def _publish_public_only_recheck_receipt_v2(root, receipt):
             ):
                 raise ValueError
         reopened = read_public_only_recheck_receipt_v2(
-            root, expected_sha256=receipt.receipt_sha256
+            root,
+            expected_sha256=receipt.receipt_sha256,
+            expected_root_identity=expected_root_identity,
         )
         if (
-            source_runtime._native_recheck_root_identity(root) != identity
+            source_runtime._native_recheck_root_identity(root) != expected_root_identity
             or reopened.receipt_json != receipt.receipt_json
         ):
             raise ValueError
     except Exception:  # noqa: BLE001 -- keep any partial native file
-        raise PostG12AccountJoinError(
+        raise _PublicRecheckReceiptPublicationError(
             "post_g12_public_recheck_publish_failed"
         ) from None
 
@@ -303,7 +343,7 @@ class _JoinReceiptPublicationError(PostG12AccountJoinError):
     """A failed append must not be retried by the source-denial handler."""
 
 
-def read_post_g12_join_receipt_v2(root, *, expected_sha256):
+def read_post_g12_join_receipt_v2(root, *, expected_sha256, expected_root_identity):
     """Reopen the joined diagnostic; its readback is never an order permit."""
     try:
         if (
@@ -314,32 +354,40 @@ def read_post_g12_join_receipt_v2(root, *, expected_sha256):
         ):
             raise ValueError
         with source_runtime._native_recheck_root(root) as directory:
+            if _native_directory_identity(directory) != expected_root_identity:
+                raise ValueError
             if set(directory.names()) != {"receipt.json"}:
                 raise ValueError
             payload = directory.read("receipt.json", _MAX_RECEIPT)
             if sha(payload) != expected_sha256:
                 raise ValueError
-            return PostG12OwnedPublicAccountDiagnosticV2(payload)
+            receipt = PostG12OwnedPublicAccountDiagnosticV2(payload)
+        if source_runtime._native_recheck_root_identity(root) != expected_root_identity:
+            raise ValueError
+        return receipt
     except Exception:  # noqa: BLE001 -- do not disclose private source or paths
         raise PostG12AccountJoinError("post_g12_join_readback_failed") from None
 
 
-def _publish_post_g12_join_receipt_v2(root, receipt):
+def _publish_post_g12_join_receipt_v2(root, receipt, *, expected_root_identity):
     if type(receipt) is not PostG12OwnedPublicAccountDiagnosticV2:
         raise _JoinReceiptPublicationError("post_g12_join_receipt_invalid")
     try:
         with source_runtime._native_recheck_root(root) as directory:
+            if _native_directory_identity(directory) != expected_root_identity:
+                raise ValueError
             if directory.names():
                 raise ValueError
-            identity = source_runtime._native_recheck_root_identity(directory.path)
             directory.publish("receipt.json", receipt.receipt_json)
             if directory.read("receipt.json", _MAX_RECEIPT) != receipt.receipt_json:
                 raise ValueError
         reopened = read_post_g12_join_receipt_v2(
-            root, expected_sha256=receipt.receipt_sha256
+            root,
+            expected_sha256=receipt.receipt_sha256,
+            expected_root_identity=expected_root_identity,
         )
         if (
-            source_runtime._native_recheck_root_identity(root) != identity
+            source_runtime._native_recheck_root_identity(root) != expected_root_identity
             or reopened.receipt_json != receipt.receipt_json
         ):
             raise ValueError
@@ -385,20 +433,12 @@ async def publish_capture_public_account_v2(
     ):
         original_source._roots(first, second)
     # Both receipt roots must be provisioned by the service before G12 or IO.
-    try:
-        with source_runtime._native_recheck_root(recheck_root) as directory:
-            if directory.names():
-                raise ValueError
-    except Exception:  # noqa: BLE001 -- never disclose local paths
-        raise PostG12AccountJoinError(
-            "post_g12_public_recheck_root_unavailable"
-        ) from None
-    try:
-        with source_runtime._native_recheck_root(join_root) as directory:
-            if directory.names():
-                raise ValueError
-    except Exception:  # noqa: BLE001 -- never disclose local paths
-        raise PostG12AccountJoinError("post_g12_join_root_unavailable") from None
+    recheck_root_identity = _empty_native_receipt_root_identity(
+        recheck_root, "post_g12_public_recheck_root_unavailable"
+    )
+    join_root_identity = _empty_native_receipt_root_identity(
+        join_root, "post_g12_join_root_unavailable"
+    )
     if (
         type(account_session) is not ControlledDemoAccountSession
         or account_session._used
@@ -513,7 +553,9 @@ async def publish_capture_public_account_v2(
             }
         )
         result = PostG12OwnedPublicAccountDiagnosticV2(receipt)
-        _publish_post_g12_join_receipt_v2(join_root, result)
+        _publish_post_g12_join_receipt_v2(
+            join_root, result, expected_root_identity=join_root_identity
+        )
         return result
 
     try:
@@ -657,7 +699,9 @@ async def publish_capture_public_account_v2(
             )
         pins["account_receipt_sha256"] = account.receipt_sha256
         pins["account_packet_sha256"] = reference.packet_sha256
-        _publish_public_only_recheck_receipt_v2(recheck_root, replay)
+        _publish_public_only_recheck_receipt_v2(
+            recheck_root, replay, expected_root_identity=recheck_root_identity
+        )
         pins["public_only_recheck_sha256"] = replay.receipt_sha256
         recheck_code = decode(replay.receipt_json)["code"]
         recheck_at = completed_at
@@ -677,7 +721,7 @@ async def publish_capture_public_account_v2(
         return finish()
     except asyncio.CancelledError:
         raise
-    except _JoinReceiptPublicationError:
+    except (_JoinReceiptPublicationError, _PublicRecheckReceiptPublicationError):
         raise
     except Exception:  # noqa: BLE001 -- never serialize account/source failures
         if task.cancelling():

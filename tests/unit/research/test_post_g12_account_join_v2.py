@@ -82,6 +82,8 @@ def shifted_inputs():
         ("expired_account_lease", "account_unavailable"),
         ("recheck_replay_failed", "account_unavailable"),
         ("stale_after_persist", "denied"),
+        ("late_recheck_publish_failure", None),
+        ("recheck_root_swapped", None),
     ],
 )
 async def test_new_g12_then_fresh_public_and_account_raw_page_starts(
@@ -122,6 +124,9 @@ async def test_new_g12_then_fresh_public_and_account_raw_page_starts(
             )
         receipt = original_recheck(*args, **kwargs)
         rechecks.append(receipt)
+        if fault == "recheck_root_swapped" and len(rechecks) == 2:
+            (tmp_path / "recheck").rename(tmp_path / "recheck-original")
+            (tmp_path / "recheck").mkdir()
         return receipt
 
     monkeypatch.setattr(
@@ -138,6 +143,23 @@ async def test_new_g12_then_fresh_public_and_account_raw_page_starts(
         return real_context(*args, **kwargs)
 
     monkeypatch.setattr(joined, "public_market_context_v2", final_context)
+    if fault == "late_recheck_publish_failure":
+        original_identity = joined.source_runtime._native_recheck_root_identity
+        recheck_identity_calls = 0
+
+        def fail_late_recheck_identity(path):
+            nonlocal recheck_identity_calls
+            if path == tmp_path / "recheck":
+                recheck_identity_calls += 1
+                if recheck_identity_calls == 4:
+                    raise OSError("synthetic late recheck readback failure")
+            return original_identity(path)
+
+        monkeypatch.setattr(
+            joined.source_runtime,
+            "_native_recheck_root_identity",
+            fail_late_recheck_identity,
+        )
     route = demo_public_origin.reviewed_demo_public_route("global")
     proof = {
         "classification": "owned_native_tls",
@@ -229,24 +251,53 @@ async def test_new_g12_then_fresh_public_and_account_raw_page_starts(
         account_native, "capture_initial_native_account", account_source
     )
     monkeypatch.setattr(account_native, "_consume_native_demo_raw_packet", consume)
-    result = await joined.publish_capture_public_account_v2(
-        tmp_path / "g12",
-        tmp_path / "public",
-        tmp_path / "account",
-        tmp_path / "recheck",
-        tmp_path / "join",
-        source.market,
-        run=run,
-        original_inputs=values,
-        market_policy=policy(),
-        account_session=controlled,
-        session_factory=object(),
-    )
+
+    async def invoke():
+        return await joined.publish_capture_public_account_v2(
+            tmp_path / "g12",
+            tmp_path / "public",
+            tmp_path / "account",
+            tmp_path / "recheck",
+            tmp_path / "join",
+            source.market,
+            run=run,
+            original_inputs=values,
+            market_policy=policy(),
+            account_session=controlled,
+            session_factory=object(),
+        )
+
+    if fault in {"late_recheck_publish_failure", "recheck_root_swapped"}:
+        with pytest.raises(
+            joined.PostG12AccountJoinError,
+            match="post_g12_public_recheck_publish_failed",
+        ):
+            await invoke()
+        assert len(rechecks) == 2
+        if fault == "late_recheck_publish_failure":
+            assert recheck_identity_calls == 4
+            assert (tmp_path / "recheck" / "receipt.json").read_bytes() == (
+                rechecks[0].receipt_json
+            )
+        else:
+            assert not list((tmp_path / "recheck").iterdir())
+            assert not list((tmp_path / "recheck-original").iterdir())
+        assert not list((tmp_path / "join").iterdir())
+        assert controlled._used
+        harness.assert_closed()
+        empty_registries()
+        return
+
+    result = await invoke()
     receipt = decode(result.receipt_json)
     assert receipt["code"] == expected_code
     assert (
         joined.read_post_g12_join_receipt_v2(
-            tmp_path / "join", expected_sha256=result.receipt_sha256
+            tmp_path / "join",
+            expected_sha256=result.receipt_sha256,
+            expected_root_identity=joined.source_runtime._native_recheck_root_identity(
+                tmp_path / "join"
+            ),
         ).receipt_json
         == result.receipt_json
     )
@@ -291,6 +342,9 @@ async def test_new_g12_then_fresh_public_and_account_raw_page_starts(
             joined.read_public_only_recheck_receipt_v2(
                 tmp_path / "recheck",
                 expected_sha256=receipt["public_only_recheck_sha256"],
+                expected_root_identity=joined.source_runtime._native_recheck_root_identity(
+                    tmp_path / "recheck"
+                ),
             ).receipt_json
             == rechecks[0].receipt_json
         )
@@ -300,12 +354,17 @@ async def test_new_g12_then_fresh_public_and_account_raw_page_starts(
             match="post_g12_public_recheck_publish_failed",
         ):
             joined._publish_public_only_recheck_receipt_v2(
-                tmp_path / "recheck", rechecks[0]
+                tmp_path / "recheck",
+                rechecks[0],
+                expected_root_identity=joined.source_runtime._native_recheck_root_identity(
+                    tmp_path / "recheck"
+                ),
             )
         assert (tmp_path / "recheck" / "receipt.json").read_bytes() == retained
         late_root = tmp_path / "late-recheck"
         late_root.mkdir()
         original_identity = joined.source_runtime._native_recheck_root_identity
+        late_identity_pin = original_identity(late_root)
         identity_calls = 0
 
         def late_identity(path):
@@ -323,8 +382,70 @@ async def test_new_g12_then_fresh_public_and_account_raw_page_starts(
                 joined.PostG12AccountJoinError,
                 match="post_g12_public_recheck_publish_failed",
             ):
-                joined._publish_public_only_recheck_receipt_v2(late_root, rechecks[0])
+                joined._publish_public_only_recheck_receipt_v2(
+                    late_root,
+                    rechecks[0],
+                    expected_root_identity=late_identity_pin,
+                )
         assert (late_root / "receipt.json").read_bytes() == retained
+        readback_swap_root = tmp_path / "readback-swap-recheck"
+        readback_swap_root.mkdir()
+        readback_pin = original_identity(readback_swap_root)
+        moved_readback_root = tmp_path / "readback-swap-recheck-original"
+        original_readback = joined.read_public_only_recheck_receipt_v2
+
+        def swap_during_recheck_readback(root, **kwargs):
+            root.rename(moved_readback_root)
+            root.mkdir()
+            return original_readback(root, **kwargs)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                joined,
+                "read_public_only_recheck_receipt_v2",
+                swap_during_recheck_readback,
+            )
+            with pytest.raises(
+                joined.PostG12AccountJoinError,
+                match="post_g12_public_recheck_publish_failed",
+            ):
+                joined._publish_public_only_recheck_receipt_v2(
+                    readback_swap_root,
+                    rechecks[0],
+                    expected_root_identity=readback_pin,
+                )
+        assert (moved_readback_root / "receipt.json").read_bytes() == retained
+        assert not list(readback_swap_root.iterdir())
+        swapped_root = tmp_path / "swapped-recheck"
+        swapped_root.mkdir()
+        swapped_pin = original_identity(swapped_root)
+        swapped_original = tmp_path / "swapped-recheck-original"
+        swapped_root.rename(swapped_original)
+        swapped_root.mkdir()
+        with pytest.raises(
+            joined.PostG12AccountJoinError,
+            match="post_g12_public_recheck_publish_failed",
+        ):
+            joined._publish_public_only_recheck_receipt_v2(
+                swapped_root,
+                rechecks[0],
+                expected_root_identity=swapped_pin,
+            )
+        assert not list(swapped_root.iterdir())
+        assert not list(swapped_original.iterdir())
+        (swapped_root / "receipt.json").write_bytes(rechecks[0].receipt_json)
+        with pytest.raises(
+            joined.PostG12AccountJoinError,
+            match="post_g12_public_recheck_readback_failed",
+        ):
+            joined.read_public_only_recheck_receipt_v2(
+                swapped_root,
+                expected_sha256=rechecks[0].receipt_sha256,
+                expected_root_identity=swapped_pin,
+            )
+        assert (swapped_root / "receipt.json").read_bytes() == (
+            rechecks[0].receipt_json
+        )
         (tmp_path / "recheck" / "receipt.json").write_bytes(b"synthetic-corruption")
         with pytest.raises(
             joined.PostG12AccountJoinError,
@@ -333,6 +454,9 @@ async def test_new_g12_then_fresh_public_and_account_raw_page_starts(
             joined.read_public_only_recheck_receipt_v2(
                 tmp_path / "recheck",
                 expected_sha256=receipt["public_only_recheck_sha256"],
+                expected_root_identity=joined.source_runtime._native_recheck_root_identity(
+                    tmp_path / "recheck"
+                ),
             )
     else:
         assert not rechecks
@@ -357,11 +481,18 @@ async def test_new_g12_then_fresh_public_and_account_raw_page_starts(
         with pytest.raises(
             joined.PostG12AccountJoinError, match="post_g12_join_publish_failed"
         ):
-            joined._publish_post_g12_join_receipt_v2(tmp_path / "join", result)
+            joined._publish_post_g12_join_receipt_v2(
+                tmp_path / "join",
+                result,
+                expected_root_identity=joined.source_runtime._native_recheck_root_identity(
+                    tmp_path / "join"
+                ),
+            )
         assert (tmp_path / "join" / "receipt.json").read_bytes() == retained
         late_root = tmp_path / "late-join"
         late_root.mkdir()
         original_identity = joined.source_runtime._native_recheck_root_identity
+        late_identity_pin = original_identity(late_root)
         identity_calls = 0
 
         def late_identity(path):
@@ -378,14 +509,71 @@ async def test_new_g12_then_fresh_public_and_account_raw_page_starts(
             with pytest.raises(
                 joined.PostG12AccountJoinError, match="post_g12_join_publish_failed"
             ):
-                joined._publish_post_g12_join_receipt_v2(late_root, result)
+                joined._publish_post_g12_join_receipt_v2(
+                    late_root,
+                    result,
+                    expected_root_identity=late_identity_pin,
+                )
         assert (late_root / "receipt.json").read_bytes() == retained
+        readback_swap_root = tmp_path / "readback-swap-join"
+        readback_swap_root.mkdir()
+        readback_pin = original_identity(readback_swap_root)
+        moved_readback_root = tmp_path / "readback-swap-join-original"
+        original_readback = joined.read_post_g12_join_receipt_v2
+
+        def swap_during_join_readback(root, **kwargs):
+            root.rename(moved_readback_root)
+            root.mkdir()
+            return original_readback(root, **kwargs)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                joined, "read_post_g12_join_receipt_v2", swap_during_join_readback
+            )
+            with pytest.raises(
+                joined.PostG12AccountJoinError, match="post_g12_join_publish_failed"
+            ):
+                joined._publish_post_g12_join_receipt_v2(
+                    readback_swap_root,
+                    result,
+                    expected_root_identity=readback_pin,
+                )
+        assert (moved_readback_root / "receipt.json").read_bytes() == retained
+        assert not list(readback_swap_root.iterdir())
+        swapped_root = tmp_path / "swapped-join"
+        swapped_root.mkdir()
+        swapped_pin = original_identity(swapped_root)
+        swapped_original = tmp_path / "swapped-join-original"
+        swapped_root.rename(swapped_original)
+        swapped_root.mkdir()
+        with pytest.raises(
+            joined.PostG12AccountJoinError, match="post_g12_join_publish_failed"
+        ):
+            joined._publish_post_g12_join_receipt_v2(
+                swapped_root, result, expected_root_identity=swapped_pin
+            )
+        assert not list(swapped_root.iterdir())
+        assert not list(swapped_original.iterdir())
+        (swapped_root / "receipt.json").write_bytes(result.receipt_json)
+        with pytest.raises(
+            joined.PostG12AccountJoinError, match="post_g12_join_readback_failed"
+        ):
+            joined.read_post_g12_join_receipt_v2(
+                swapped_root,
+                expected_sha256=result.receipt_sha256,
+                expected_root_identity=swapped_pin,
+            )
+        assert (swapped_root / "receipt.json").read_bytes() == result.receipt_json
         (tmp_path / "join" / "receipt.json").write_bytes(b"synthetic-corruption")
         with pytest.raises(
             joined.PostG12AccountJoinError, match="post_g12_join_readback_failed"
         ):
             joined.read_post_g12_join_receipt_v2(
-                tmp_path / "join", expected_sha256=result.receipt_sha256
+                tmp_path / "join",
+                expected_sha256=result.receipt_sha256,
+                expected_root_identity=joined.source_runtime._native_recheck_root_identity(
+                    tmp_path / "join"
+                ),
             )
     harness.assert_closed()
     empty_registries()
@@ -527,12 +715,14 @@ async def test_late_join_publish_failure_retains_bytes_without_retry(
     monkeypatch.setattr(account_native, "_configured_factory", lambda _: True)
     original_identity = joined.source_runtime._native_recheck_root_identity
     calls = 0
+    join_root = tmp_path / "join"
 
     def fail_late(path):
         nonlocal calls
-        calls += 1
-        if calls == 2:
-            raise OSError("synthetic late join identity failure")
+        if path == join_root:
+            calls += 1
+            if calls == 4:
+                raise OSError("synthetic late join identity failure")
         return original_identity(path)
 
     monkeypatch.setattr(
@@ -554,11 +744,50 @@ async def test_late_join_publish_failure_retains_bytes_without_retry(
             account_session=session(),
             session_factory=object(),
         )
-    assert calls == 2
+    assert calls == 4
     retained = (tmp_path / "join" / "receipt.json").read_bytes()
     assert decode(retained)["code"] == "denied"
     assert decode(retained)["admission"] == "DENY"
     assert not (tmp_path / "g12").exists()
+
+
+@pytest.mark.asyncio
+async def test_join_root_swap_after_preflight_cannot_publish_diagnostic(
+    shifted_inputs, tmp_path, monkeypatch
+):
+    source, values, run = shifted_inputs
+    (tmp_path / "recheck").mkdir()
+    join_root = tmp_path / "join"
+    join_root.mkdir()
+    monkeypatch.setattr(account_native, "_configured_factory", lambda _: True)
+
+    def swap_root(*_args, **_kwargs):
+        join_root.rename(tmp_path / "join-original")
+        join_root.mkdir()
+        return None, None, None, None
+
+    monkeypatch.setattr(public_runtime, "_publish_lineage_v2", swap_root)
+    controlled = session()
+    with pytest.raises(
+        joined.PostG12AccountJoinError, match="post_g12_join_publish_failed"
+    ):
+        await joined.publish_capture_public_account_v2(
+            tmp_path / "g12",
+            tmp_path / "public",
+            tmp_path / "account",
+            tmp_path / "recheck",
+            join_root,
+            source.market,
+            run=run,
+            original_inputs=values,
+            market_policy=policy(),
+            account_session=controlled,
+            session_factory=object(),
+        )
+    assert not list(join_root.iterdir())
+    assert not list((tmp_path / "join-original").iterdir())
+    assert not (tmp_path / "g12").exists()
+    assert controlled._used
 
 
 @pytest.mark.asyncio
