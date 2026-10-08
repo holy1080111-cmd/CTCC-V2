@@ -1866,7 +1866,7 @@ async def test_shadow_portfolio_enforces_aggregate_open_stop_risk() -> None:
 
 
 @pytest.mark.asyncio
-async def test_three_consecutive_stop_losses_lock_execution_for_utc_day() -> None:
+async def test_order_only_closes_stop_before_inferring_three_losses() -> None:
     demo = FakeDemo()
     symbols = ["BTC-USDT-SWAP", "ETH-USDT-SWAP", "SOL-USDT-SWAP"]
     service = adaptive_service(demo, {symbol: 95 for symbol in symbols})
@@ -1886,15 +1886,17 @@ async def test_three_consecutive_stop_losses_lock_execution_for_utc_day() -> Non
     status = await service.status()
 
     assert run.results[0].outcome == "locked"
-    assert "consecutive_loss_limit_reached" in run.results[0].reason_codes
-    assert status.consecutive_losses == 3
+    assert "trade_outcome_unconfirmed" in status.lock_reasons
+    assert status.consecutive_losses == 0
+    assert status.emergency_stop is True
     assert status.locked is True
-    assert status.active_position_count == 0
+    assert status.active_position_count == 3
+    assert service._state["realized_pnl_events"] == []
     assert demo.place_calls == []
 
 
 @pytest.mark.asyncio
-async def test_profitable_close_resets_consecutive_stop_loss_count() -> None:
+async def test_order_only_profitable_close_cannot_reset_loss_streak() -> None:
     demo = FakeDemo()
     service = adaptive_service(demo, {"BTC-USDT-SWAP": 95})
     await service.recover()
@@ -1903,12 +1905,22 @@ async def test_profitable_close_resets_consecutive_stop_loss_count() -> None:
     started_at = datetime.now(UTC) - timedelta(minutes=5)
     service._set_active_trade(tracked_trade("BTC-USDT-SWAP", started_at=started_at))
     demo.close_with_pnl("BTC-USDT-SWAP", Decimal(2))
+    demo.recent_orders[-1].raw.update(
+        {
+            "rebate": "0",
+            "fundingFee": "0",
+            "fillTime": str(int(datetime.now(UTC).timestamp() * 1000)),
+        }
+    )
 
     await service.run_once(execute=False)
     status = await service.status()
 
-    assert status.consecutive_losses == 0
-    assert status.active_position_count == 0
+    assert status.consecutive_losses == 2
+    assert status.active_position_count == 1
+    assert status.emergency_stop is True
+    assert "trade_outcome_unconfirmed" in status.lock_reasons
+    assert service._state["realized_pnl_events"] == []
 
 
 @pytest.mark.asyncio
@@ -1934,7 +1946,7 @@ async def test_utc_day_rollover_preserves_global_loss_streak_lock() -> None:
 
 
 @pytest.mark.asyncio
-async def test_late_reconciled_prior_utc_day_close_does_not_lock_new_day() -> None:
+async def test_prior_day_order_only_close_stays_unconfirmed() -> None:
     demo = FakeDemo()
     service = adaptive_service(demo, {"BTC-USDT-SWAP": 95})
     await service.recover()
@@ -1952,8 +1964,11 @@ async def test_late_reconciled_prior_utc_day_close_does_not_lock_new_day() -> No
     status = await service.status()
 
     assert status.session_date == now.date()
-    assert status.consecutive_losses == 1
-    assert status.locked is False
+    assert status.consecutive_losses == 0
+    assert status.locked is True
+    assert status.emergency_stop is True
+    assert status.active_position_count == 1
+    assert "trade_outcome_unconfirmed" in status.lock_reasons
 
 
 @pytest.mark.asyncio
@@ -2810,7 +2825,7 @@ async def test_rolling_seven_day_pnl_keeps_attribution_history_and_deduplicates(
     assert event["entry_exchange_order_id"] == "order-BTC-USDT-SWAP"
 
 
-def test_closing_pnl_deduplicates_repeated_exchange_order_id() -> None:
+def test_order_only_close_cannot_promote_plausible_complete_fields() -> None:
     started_at = datetime.now(UTC) - timedelta(minutes=5)
     closed_at = started_at + timedelta(minutes=1)
     trade = tracked_trade("BTC-USDT-SWAP", started_at=started_at)
@@ -2825,7 +2840,13 @@ def test_closing_pnl_deduplicates_repeated_exchange_order_id() -> None:
         accumulated_fill_size=Decimal(1),
         reduce_only=True,
         updated_at=closed_at,
-        raw={"pnl": "10", "fee": "-1"},
+        raw={
+            "pnl": "10",
+            "fee": "-1",
+            "rebate": "0",
+            "fundingFee": "0",
+            "fillTime": str(int(closed_at.timestamp() * 1000)),
+        },
     )
 
     outcome = SafeDemoAutomation._closing_trade_outcome(
@@ -2833,7 +2854,7 @@ def test_closing_pnl_deduplicates_repeated_exchange_order_id() -> None:
         [order, order.model_copy(deep=True)],
     )
 
-    assert outcome == (closed_at, Decimal(9), ["same-close-order"])
+    assert outcome is None
 
 
 @pytest.mark.asyncio

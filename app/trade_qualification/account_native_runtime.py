@@ -87,6 +87,7 @@ class _ObservedDemoAccountOrigin:
     uid: str
     main_uid: str
     session_binding_id: str
+    claimed_registration_evidence_sha256: str
     account_plan_sha256: str
     account_packet_sha256: str
     native_proof_sha256: str
@@ -448,6 +449,7 @@ def _mint_demo_account_origin(
             uid=plan.expected_uid,
             main_uid=plan.expected_main_uid,
             session_binding_id=plan.session_binding_id,
+            claimed_registration_evidence_sha256=plan.registration_evidence_sha256,
             account_plan_sha256=session._pin,
             account_packet_sha256=reference.packet_sha256,
             native_proof_sha256=proof_sha256,

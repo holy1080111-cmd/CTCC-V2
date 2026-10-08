@@ -26,6 +26,7 @@ class DemoPublicRouteBindingDiagnostic:
     account_uid: str
     account_main_uid: str
     session_binding_id: str
+    claimed_registration_evidence_sha256: str
     account_plan_sha256: str
     account_packet_sha256: str
     native_proof_sha256: str
@@ -73,6 +74,8 @@ def consume_native_demo_route_binding(
             or observed.uid != session._plan.expected_uid
             or observed.main_uid != session._plan.expected_main_uid
             or observed.session_binding_id != session._plan.session_binding_id
+            or observed.claimed_registration_evidence_sha256
+            != session._plan.registration_evidence_sha256
         ):
             raise ValueError
         return DemoPublicRouteBindingDiagnostic(
@@ -82,6 +85,7 @@ def consume_native_demo_route_binding(
             account_uid=observed.uid,
             account_main_uid=observed.main_uid,
             session_binding_id=observed.session_binding_id,
+            claimed_registration_evidence_sha256=observed.claimed_registration_evidence_sha256,
             account_plan_sha256=observed.account_plan_sha256,
             account_packet_sha256=observed.account_packet_sha256,
             native_proof_sha256=observed.native_proof_sha256,

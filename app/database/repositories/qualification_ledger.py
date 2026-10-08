@@ -119,6 +119,28 @@ class PortfolioLocalCheckpoint:
         return not json.loads(self.document_json)["blocking_reasons"]
 
 
+@dataclass(frozen=True, slots=True, repr=False)
+class _ConsumedEventJournalInspection:
+    """Observed UID journal rows and chains; no completeness/order authority.
+
+    Even an exact current scan cannot prove that no history was removed before
+    the read, or that a separate legacy/exchange route never traded an event.
+    """
+
+    consumed_event_keys: frozenset[str]
+    document_json: bytes
+    observed_at: datetime
+    received_at: datetime
+
+    @property
+    def sha256(self):
+        return hashlib.sha256(self.document_json).hexdigest()
+
+    @property
+    def execution_authority(self):
+        return False
+
+
 def _portfolio_checkpoint_wire(value, depth=0):
     if depth > 16:
         raise QualificationLedgerError("portfolio_checkpoint_depth_bound")
@@ -137,6 +159,104 @@ def _portfolio_checkpoint_wire(value, depth=0):
     if value is None or kind in (str, int, bool):
         return value
     raise QualificationLedgerError("portfolio_checkpoint_scalar_invalid")
+
+
+async def _require_event_journal_session(session):
+    state = (
+        await session.execute(
+            text(
+                "SELECT current_setting('session_replication_role'), "
+                "current_setting('search_path')"
+            )
+        )
+    ).one()
+    if tuple(state) != ("origin", "pg_catalog, public, pg_temp"):
+        raise QualificationLedgerError("event_ledger_session_guards_invalid")
+
+
+async def _require_event_journal_schema(session):
+    trigger_rows = (
+        await session.execute(
+            text(
+                "SELECT tab.relname, tg.tgname, tg.tgenabled, tg.tgtype, "
+                "proc.proname, proc.pronargs, proc_ns.nspname, "
+                "proc.oid=pg_catalog.to_regprocedure('public.' || proc.proname || '()') "
+                "FROM pg_catalog.pg_trigger tg "
+                "JOIN pg_catalog.pg_class tab ON tab.oid=tg.tgrelid "
+                "JOIN pg_catalog.pg_namespace ns ON ns.oid=tab.relnamespace "
+                "JOIN pg_catalog.pg_proc proc ON proc.oid=tg.tgfoid "
+                "JOIN pg_catalog.pg_namespace proc_ns ON proc_ns.oid=proc.pronamespace "
+                "WHERE ns.nspname='public' AND NOT tg.tgisinternal "
+                "AND tab.relname IN ('qualification_account_scopes', "
+                "'qualification_reservations', "
+                "'qualification_reservation_transitions')"
+            )
+        )
+    ).all()
+    guards = {
+        (table, trigger): (kind, function)
+        for table, trigger, enabled, kind, function, nargs, function_schema, oid_match in trigger_rows
+        if enabled == "O"
+        and nargs == 0
+        and function_schema == "public"
+        and oid_match is True
+    }
+    immutable = "qualification_ledger_immutable"
+    required = {
+        ("qualification_account_scopes", "qualification_scope_no_delete"): (
+            11,
+            immutable,
+        ),
+        ("qualification_account_scopes", "qualification_scope_no_truncate"): (
+            34,
+            immutable,
+        ),
+        ("qualification_account_scopes", "qualification_scope_update_guard"): (
+            19,
+            "qualification_scope_update",
+        ),
+        ("qualification_reservations", "qualification_reservation_no_delete"): (
+            11,
+            immutable,
+        ),
+        ("qualification_reservations", "qualification_reservation_no_truncate"): (
+            34,
+            immutable,
+        ),
+        ("qualification_reservations", "qualification_reservation_update_guard"): (
+            19,
+            "qualification_reservation_update",
+        ),
+        (
+            "qualification_reservation_transitions",
+            "qualification_transition_immutable",
+        ): (27, immutable),
+        (
+            "qualification_reservation_transitions",
+            "qualification_transition_no_truncate",
+        ): (34, immutable),
+    }
+    unique = (
+        await session.execute(
+            text(
+                "SELECT con.condeferrable, con.convalidated, "
+                "array_to_string(array_agg(att.attname ORDER BY ord_key.ordinality), ',') "
+                "FROM pg_catalog.pg_constraint con "
+                "JOIN pg_catalog.pg_class tab ON tab.oid=con.conrelid "
+                "JOIN pg_catalog.pg_namespace ns ON ns.oid=tab.relnamespace "
+                "JOIN LATERAL unnest(con.conkey) WITH ORDINALITY AS ord_key(attnum, ordinality) ON true "
+                "JOIN pg_catalog.pg_attribute att ON att.attrelid=tab.oid AND att.attnum=ord_key.attnum "
+                "WHERE ns.nspname='public' AND tab.relname='qualification_reservations' "
+                "AND con.conname='uq_qualification_reservations_uid_event' "
+                "AND con.contype='u' "
+                "GROUP BY con.oid, con.condeferrable, con.convalidated"
+            )
+        )
+    ).all()
+    if any(guards.get(key) != function for key, function in required.items()) or [
+        tuple(row) for row in unique
+    ] != [(False, True, "environment,account_id,original_event_key")]:
+        raise QualificationLedgerError("event_ledger_schema_retention_invalid")
 
 
 class QualificationLedgerRepository:
@@ -448,6 +568,262 @@ class QualificationLedgerRepository:
                     "ledger_event_observation_invalid"
                 ) from None
         return result
+
+    async def inspect_consumed_event_journal(self, scope):
+        """Inspect bounded UID rows and their transition chains, fail closed.
+
+        The UID lock serializes controlled writers across settlement currencies.
+        A NOWAIT SHARE lock prevents direct SQL mutation of the three journal
+        tables during fresh READ COMMITTED scans. A busy unrelated writer denies
+        inspection instead of supplying a stale or mixed snapshot. Terminal
+        tombstones count as consumed. The receipt does not assert historical
+        completeness and is not a G6 PASS input or submit permit.
+        """
+        scope = checked_bootstrap(scope, LedgerScope)
+        async with self.session_factory() as session, session.begin():
+            if session.get_bind().dialect.name != "postgresql":
+                raise QualificationLedgerError("event_ledger_postgresql_required")
+            await session.execute(
+                text("SET TRANSACTION ISOLATION LEVEL READ COMMITTED")
+            )
+            await session.execute(
+                text("SET LOCAL search_path TO pg_catalog, public, pg_temp")
+            )
+            await _require_event_journal_session(session)
+            selected = await self._locked(session, scope)
+            await session.execute(
+                text(
+                    "LOCK TABLE public.qualification_account_scopes, "
+                    "public.qualification_reservations, "
+                    "public.qualification_reservation_transitions "
+                    "IN SHARE MODE NOWAIT"
+                )
+            )
+            await _require_event_journal_schema(session)
+            observed = self._now(selected)
+            if selected.account_revision < 1 or self._claims(selected).scope != scope:
+                raise QualificationLedgerError("event_ledger_account_scope_unverified")
+            payload_bytes = await session.scalar(
+                select(
+                    func.coalesce(
+                        func.sum(
+                            func.octet_length(QualificationReservation.request_json)
+                        ),
+                        0,
+                    )
+                ).where(
+                    QualificationReservation.environment == scope.environment,
+                    QualificationReservation.account_id == scope.account_id,
+                )
+            )
+            if type(payload_bytes) is not int or payload_bytes > 32 * 1024 * 1024:
+                raise QualificationLedgerError("event_ledger_request_payload_bound")
+            records = (
+                await session.execute(
+                    select(
+                        QualificationReservation.reservation_id,
+                        QualificationReservation.environment,
+                        QualificationReservation.account_id,
+                        QualificationReservation.settlement_currency,
+                        QualificationReservation.original_event_key,
+                        QualificationReservation.state,
+                        QualificationReservation.state_revision,
+                        QualificationReservation.request_json,
+                        QualificationReservation.request_sha256,
+                        QualificationReservation.coverage_json,
+                        QualificationReservation.risk_amount,
+                        QualificationReservation.margin_amount,
+                        QualificationReservation.notional_amount,
+                        QualificationReservation.created_at,
+                        QualificationReservation.updated_at,
+                        QualificationReservation.deadline,
+                    )
+                    .where(
+                        QualificationReservation.environment == scope.environment,
+                        QualificationReservation.account_id == scope.account_id,
+                    )
+                    .order_by(QualificationReservation.original_event_key)
+                    .limit(2049)
+                )
+            ).all()
+            if len(records) > 2048:
+                raise QualificationLedgerError("event_ledger_uid_event_bound")
+            ids = [record.reservation_id for record in records]
+            transitions = (
+                (
+                    await session.scalars(
+                        select(QualificationReservationTransition)
+                        .where(
+                            QualificationReservationTransition.reservation_id.in_(ids)
+                        )
+                        .order_by(
+                            QualificationReservationTransition.reservation_id,
+                            QualificationReservationTransition.state_revision,
+                        )
+                        .limit(8193)
+                    )
+                ).all()
+                if ids
+                else []
+            )
+            if len(transitions) > 8192:
+                raise QualificationLedgerError("event_ledger_transition_bound")
+            by_id = {rid: [] for rid in ids}
+            for transition in transitions:
+                if transition.reservation_id not in by_id:
+                    raise QualificationLedgerError(
+                        "event_ledger_transition_scope_invalid"
+                    )
+                by_id[transition.reservation_id].append(transition)
+            keys = set()
+            states = {
+                name: 0
+                for name in ("reserved", "consumed", "uncertain", "reconciled_flat")
+            }
+            row_witness = []
+            journal_witness = []
+            allowed = {
+                "reserved": frozenset({"consumed", "uncertain", "reconciled_flat"}),
+                "consumed": frozenset({"uncertain"}),
+                "uncertain": frozenset(),
+                "reconciled_flat": frozenset(),
+            }
+            for record in records:
+                actual_scope = LedgerScope(
+                    environment=record.environment,
+                    account_id=record.account_id,
+                    settlement_currency=record.settlement_currency,
+                )
+                created = require_aware(record.created_at)
+                updated = require_aware(record.updated_at)
+                deadline = require_aware(record.deadline)
+                if (
+                    record.original_event_key in keys
+                    or record.reservation_id
+                    != reservation_id(actual_scope, record.original_event_key)
+                    or record.state not in states
+                    or type(record.state_revision) is not int
+                    or not 1 <= record.state_revision <= 4
+                    or not created <= updated <= observed
+                    or not created < deadline
+                ):
+                    raise QualificationLedgerError("event_ledger_reservation_invalid")
+                if _canonical_json_sha256(record.request_json) != record.request_sha256:
+                    raise QualificationLedgerError(
+                        "event_ledger_request_digest_mismatch"
+                    )
+                request = decode_reservation_request(record.request_json)
+                coverage = decode(record.coverage_json, RiskCoverage)
+                if (
+                    request.scope != actual_scope
+                    or request.origin.original_event_key != record.original_event_key
+                    or (
+                        coverage.risk_amount,
+                        coverage.margin_amount,
+                        coverage.notional_amount,
+                    )
+                    != (
+                        record.risk_amount,
+                        record.margin_amount,
+                        record.notional_amount,
+                    )
+                ):
+                    raise QualificationLedgerError(
+                        "event_ledger_request_event_mismatch"
+                    )
+                # A terminal row may have expired years ago; its tombstone is
+                # permanent. Only the original creation/transition ordering is
+                # constrained, never the current observation vs old deadline.
+                chain = by_id[record.reservation_id]
+                if len(chain) != record.state_revision:
+                    raise QualificationLedgerError("event_ledger_transition_incomplete")
+                prior = None
+                prior_time = created
+                for revision, transition in enumerate(chain, start=1):
+                    stamp = require_aware(transition.occurred_at)
+                    if (
+                        transition.state_revision != revision
+                        or transition.from_state != prior
+                        or stamp < prior_time
+                        or (
+                            revision == 1
+                            and (transition.to_state != "reserved" or stamp != created)
+                        )
+                        or (revision > 1 and transition.to_state not in allowed[prior])
+                    ):
+                        raise QualificationLedgerError(
+                            "event_ledger_transition_invalid"
+                        )
+                    journal_witness.append(
+                        [
+                            record.reservation_id,
+                            revision,
+                            prior,
+                            transition.to_state,
+                            stamp.isoformat(),
+                        ]
+                    )
+                    prior = transition.to_state
+                    prior_time = stamp
+                if prior != record.state or prior_time != updated:
+                    raise QualificationLedgerError(
+                        "event_ledger_state_journal_mismatch"
+                    )
+                keys.add(record.original_event_key)
+                states[record.state] += 1
+                row_witness.append(
+                    [
+                        record.reservation_id,
+                        record.original_event_key,
+                        record.settlement_currency,
+                        record.state,
+                        record.state_revision,
+                        record.request_sha256,
+                        created.isoformat(),
+                        updated.isoformat(),
+                    ]
+                )
+            received = self._now(selected)
+            if received < observed:
+                raise QualificationLedgerError("event_ledger_clock_reversed")
+            payload = json.dumps(
+                {
+                    "schema_version": "ctcc.consumed_event_journal_inspection.v1",
+                    "scope_sha256": digest(scope),
+                    "account_revision": selected.account_revision,
+                    "ledger_revision": selected.ledger_revision,
+                    "claims_sha256": selected.claims_sha256,
+                    "observed_at": observed.isoformat(),
+                    "received_at": received.isoformat(),
+                    "event_count": len(keys),
+                    "transition_count": len(transitions),
+                    "state_counts": states,
+                    "event_keys_sha256": _canonical_json_sha256(
+                        json.dumps(sorted(keys), separators=(",", ":"))
+                    ),
+                    "rows_sha256": _canonical_json_sha256(
+                        json.dumps(row_witness, separators=(",", ":"))
+                    ),
+                    "transitions_sha256": _canonical_json_sha256(
+                        json.dumps(journal_witness, separators=(",", ":"))
+                    ),
+                    "db_journal_row_chain_verified": True,
+                    "db_journal_complete": False,
+                    "external_event_history_complete": False,
+                    "source_authenticity_verified": False,
+                    "execution_authority": False,
+                    "admission": "DENY",
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+                allow_nan=False,
+            ).encode("ascii")
+            if len(payload) > 4096:
+                raise QualificationLedgerError("event_ledger_receipt_bound")
+            return _ConsumedEventJournalInspection(
+                frozenset(keys), payload, observed, received
+            )
 
     async def read_capture_checkpoint(self, scope):
         """Read DB-owned revision and holds, with actual bounded receipt times.

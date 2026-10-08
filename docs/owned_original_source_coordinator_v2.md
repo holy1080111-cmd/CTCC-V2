@@ -157,3 +157,39 @@ complete risk and local exposure. Every V7 receipt has `admission=DENY`,
 order authority flags false. The real Demo public-origin issuer still denies
 capture; the V7 tests use synthetic packets only and provide no Demo
 acceptance evidence.
+
+## Local consumed-event journal inspection
+
+`QualificationLedgerRepository.inspect_consumed_event_journal` is a read-only,
+bounded inspection for one exact Demo UID. It expects the DB0023 UID uniqueness
+and retention guards and the DB0027 closure policy; it does not prove those
+migrations ran with the exact reviewed function bodies. It reads
+all four reservation states across settlement currencies, including expired
+`reconciled_flat` tombstones, and checks each stored request/event binding and
+the observed ordered transition chains. It also checks the required DB0023
+UID-event uniqueness and retention triggers before returning even an empty read. It
+takes the existing UID advisory lock,
+then a NOWAIT SHARE lock on the three journal tables; contention denies the
+read. The source query runs after the UID lock under READ COMMITTED so a writer
+that committed in another currency while the reader waited is visible. More
+than 2,048 events, 8,192 transitions or 32 MiB of request bodies denies the
+read; no truncated set is returned. The receipt contains hashes and counts,
+not account payloads or an order permit.
+
+The inspection pins relation lookup to `public` before `pg_temp`, rejects a
+non-`origin` replication role, and checks the expected enabled trigger kinds,
+trigger-function schema and identity, and exact UID unique-key columns. These
+checks catch common runtime/schema drift but do not prove the historical
+function bodies were unchanged or that every earlier database session used the
+same retention controls.
+
+This checks the row chains visible in the controlled qualification DB journal
+at this read. It cannot establish that earlier history was not erased before
+inspection or that legacy routes, exchange orders or external event history are
+complete. Its receipt therefore says `db_journal_row_chain_verified=true`,
+`db_journal_complete=false`, `external_event_history_complete=false` and
+`admission=DENY`. It is not wired
+to V7 or accepted as a G6 PASS input. An owned G6 diagnostic would require a
+same-task read after G5, exact UID/source/session binding, independent account
+and legacy/exchange reconciliation, and proof that no event outside this journal
+was consumed. Missing evidence leaves G6 unperformed.

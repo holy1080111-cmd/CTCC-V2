@@ -35,6 +35,15 @@ burns the session; a failed consumption burns the lease. The digest is not writt
 the journal, proof, report or log, and this local integrity check does not
 verify provider permission, IP binding or account registration.
 
+The one-use origin and route diagnostics also carry the exact
+`claimed_registration_evidence_sha256` from the frozen capture plan. The route
+binding compares it again to the same session's plan and rejects a changed
+in-process observation. This is lineage for an **untrusted assertion**, not
+first-party proof: a caller can put an arbitrary digest in the plan, and the
+field never changes `registration_region_verified=false`, opens the public
+route, or authorizes an order. No evidence body or account identifier is
+written to the in-process public diagnostic result.
+
 The signed request builder check proves which header the controlled client
 constructed, not that the exchange separately acknowledged that header. A
 successful authenticated read on a pinned host is not an independent statement

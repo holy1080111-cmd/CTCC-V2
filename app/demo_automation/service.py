@@ -2845,45 +2845,14 @@ class SafeDemoAutomation:
         trade: DemoAutomationActiveTrade,
         orders: Iterable[OkxDemoOrderView],
     ) -> tuple[datetime, Decimal, list[str]] | None:
-        matches: dict[str, tuple[datetime, Decimal]] = {}
-        for order in orders:
-            if order.instrument_id != trade.instrument_id:
-                continue
-            if order.state.lower() not in {"filled", "partially_filled"}:
-                continue
-            if not cls._is_closing_order(order):
-                continue
-            closed_at = order.updated_at or order.created_at
-            if closed_at is None:
-                continue
-            if closed_at.tzinfo is None:
-                closed_at = closed_at.replace(tzinfo=UTC)
-            closed_at = closed_at.astimezone(UTC)
-            if closed_at < trade.started_at.astimezone(UTC):
-                continue
-            realized, present = cls._decimal_with_presence(
-                order.raw, "pnl", "fillPnl", "realizedPnl"
-            )
-            if not present:
-                continue
-            fee_signed = cls._first_decimal(order.raw, "fee", "fillFee") or D("0")
-            fee_cost = abs(fee_signed) if fee_signed < 0 else D("0")
-            rebate = cls._first_decimal(order.raw, "rebate", "fillFee") or D("0")
-            if rebate < 0:
-                rebate = D("0")
-            funding = cls._first_decimal(order.raw, "fundingFee") or D("0")
-            value = (closed_at, realized - fee_cost + rebate + funding)
-            previous = matches.get(order.order_id)
-            if previous is None or closed_at >= previous[0]:
-                matches[order.order_id] = value
-        if not matches:
-            return None
-        unique = list(matches.values())
-        return (
-            max(item[0] for item in unique),
-            sum((item[1] for item in unique), D("0")),
-            sorted(matches),
-        )
+        """Order views cannot establish a complete realized cash outcome.
+
+        Their create/update times are not fill times. Even a view carrying
+        apparent PnL, fee, rebate, and funding fields cannot prove that every
+        fill and funding bill was observed and attributed exactly once. Leave
+        the tracked trade unresolved so finalization latches Emergency Stop.
+        """
+        return None
 
     def _record_realized_pnl_event(
         self,

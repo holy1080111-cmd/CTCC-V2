@@ -35,6 +35,10 @@ async def test_native_one_use_origin_matches_reviewed_route_without_public_autho
     assert matched.account_uid == packet.plan.expected_uid
     assert matched.account_main_uid == packet.plan.expected_main_uid
     assert matched.session_binding_id == packet.plan.session_binding_id
+    assert (
+        matched.claimed_registration_evidence_sha256
+        == packet.plan.registration_evidence_sha256
+    )
     assert matched.account_packet_sha256 == reference.packet_sha256
     assert matched.native_proof_sha256 == arguments["proof_sha256"]
     assert matched.native_readback_sha256 == arguments["readback_sha256"]
@@ -71,6 +75,7 @@ async def test_native_one_use_origin_matches_reviewed_route_without_public_autho
         ("uid", "other-uid"),
         ("main_uid", "other-main-uid"),
         ("session_binding_id", "other-session"),
+        ("claimed_registration_evidence_sha256", "0" * 64),
     ],
 )
 async def test_source_mismatch_burns_lease_without_route_binding(

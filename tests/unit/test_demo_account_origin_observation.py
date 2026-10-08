@@ -99,6 +99,10 @@ async def test_native_origin_is_one_use_same_task_and_never_authoritative(monkey
     assert observed.uid == packet.plan.expected_uid
     assert observed.main_uid == packet.plan.expected_main_uid
     assert observed.session_binding_id == packet.plan.session_binding_id
+    assert (
+        observed.claimed_registration_evidence_sha256
+        == packet.plan.registration_evidence_sha256
+    )
     assert observed.account_plan_sha256 == capture.plan_sha256(packet.plan)
     assert observed.account_packet_sha256 == reference.packet_sha256
     assert observed.native_proof_sha256 == arguments["proof_sha256"]
