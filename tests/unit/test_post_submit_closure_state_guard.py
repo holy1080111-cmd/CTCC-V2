@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.database.models.qualification_ledger import QualificationReservation
+from app.database.repositories import qualification_ledger as ledger
 from app.database.repositories.qualification_ledger import QualificationLedgerRepository
 from app.trade_qualification.reservations import LedgerScope, QualificationLedgerError
 
@@ -28,11 +29,26 @@ class Session:
         return SimpleNamespace(state=self.state)
 
 
+def _stub_schema_guard(monkeypatch, session):
+    """These state-guard tests use a fake session; PG schema checks run elsewhere."""
+    seen = []
+
+    async def checked(actual):
+        assert actual is session
+        seen.append(actual)
+
+    monkeypatch.setattr(ledger, "_require_event_journal_write_schema", checked)
+    return seen
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("state", ("consumed", "uncertain"))
-async def test_post_submit_state_denies_before_caller_claims_are_read(state):
+async def test_post_submit_state_denies_before_caller_claims_are_read(
+    state, monkeypatch
+):
     now = datetime(2026, 10, 7, tzinfo=UTC)
     session = Session(state)
+    schema_checks = _stub_schema_guard(monkeypatch, session)
     repo = QualificationLedgerRepository(lambda: session, clock=lambda: now)
 
     async def locked(_session, _scope):
@@ -49,12 +65,14 @@ async def test_post_submit_state_denies_before_caller_claims_are_read(state):
             claims=object(),
             expected_revision=3,
         )
+    assert schema_checks == [session]
 
 
 @pytest.mark.asyncio
-async def test_reserved_cancellation_keeps_exact_claim_contract():
+async def test_reserved_cancellation_keeps_exact_claim_contract(monkeypatch):
     now = datetime(2026, 10, 7, tzinfo=UTC)
     session = Session("reserved")
+    schema_checks = _stub_schema_guard(monkeypatch, session)
     repo = QualificationLedgerRepository(lambda: session, clock=lambda: now)
 
     async def locked(_session, _scope):
@@ -71,3 +89,4 @@ async def test_reserved_cancellation_keeps_exact_claim_contract():
             claims=object(),
             expected_revision=2,
         )
+    assert schema_checks == [session]
