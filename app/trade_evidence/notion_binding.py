@@ -268,8 +268,15 @@ async def read_notion_resource(client, token, *, kind: str, identity: str):
         cancelled = True
         raise
     finally:
-        if response is not None:
-            await _close_response(response, pending_cancel=cancelled)
+        try:
+            if response is not None:
+                await _close_response(response, pending_cancel=cancelled)
+        finally:
+            # Notion may set a response cookie even though explicit Request
+            # objects never send it. Leave the owned client empty for the next
+            # independently validated GET; pre-existing cookies are still
+            # rejected above before any network IO.
+            client.cookies.clear()
 
 
 def database_sources(data, database_id):

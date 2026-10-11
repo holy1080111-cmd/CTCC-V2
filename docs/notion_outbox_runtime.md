@@ -23,6 +23,12 @@ separates database data-source membership from the data-source property schema.
 [data-source retrieval](https://developers.notion.com/reference/retrieve-a-data-source),
 [API versioning](https://developers.notion.com/reference/versioning).
 
+Notion can set a cookie in a GET response. Binding requests use explicit
+cookie-free `Request` objects, reject a client that already has cookies before
+IO, and clear response cookies after each closed response. This allows each
+database/data-source readback to start from the same isolated client state
+without sending the response cookie on a later request.
+
 Fair passes contain at most 16 reports, processed one at a time under a separate
 native process lease and a total async deadline. Each uses the existing durable
 lease, dispatch marker, and verified envelope. Delivered/exhausted reports remain
@@ -48,9 +54,10 @@ available at `app.state.notion_outbox_runtime`; it grants no execution authority
 
 ## Secure local setup
 
-The runtime REST token must be entered through the local hidden-input prompt,
-never through chat, command arguments, environment variables, or a report. The
-setup command performs GET requests only and leaves the worker disabled. It
+The packaged setup command takes the runtime REST token through a local
+hidden-input prompt, never through chat, command arguments, environment
+variables, or a report. The setup command performs GET requests only and leaves
+the worker disabled. It
 reads actual property IDs from the API and independently reads back the complete
 binding. A mismatch fails closed; the tool does not create replacement fields.
 
@@ -75,9 +82,15 @@ readback identifies `報告名稱` as the title field; `報告編號` is a separ
 field and cannot bind this role. A 2026-10-08 connector readback confirmed the
 database/data-source IDs and these four names, but the connector projection
 does not provide the four opaque property IDs. The connector's generic
-text-field description alone cannot attest those REST types. The dedicated
-runtime REST token is not yet configured, so neither the four property IDs nor
-the production destination binding has passed the authenticated setup readback.
+text-field description alone cannot attest those REST types. On 2026-10-11, an
+operator-authorized dedicated `CTCC V2 Outbox` connection was limited to this
+one report database and to read/insert content. A one-shot loopback password
+form supplied its token directly to the packaged setup function; the token was
+not put in chat, an environment variable, a command argument, or a report.
+Authenticated GET-only readback pinned the four actual property IDs and types
+in a user-only local private file. The worker remains disabled and no Notion
+page was created by setup; automatic delivery and Demo acceptance are still
+unverified.
 Generic interactive database/source/property selection is available when
 nonsecret options are omitted.
 

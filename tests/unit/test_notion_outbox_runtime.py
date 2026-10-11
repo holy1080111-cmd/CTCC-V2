@@ -408,6 +408,34 @@ async def test_readback_proves_database_relation_and_exact_four_properties():
 
 
 @pytest.mark.asyncio
+async def test_binding_discards_response_cookie_before_next_get():
+    first = httpx.Response(
+        200,
+        json=database(),
+        headers={"Set-Cookie": "session=synthetic; Path=/; Domain=api.notion.com"},
+    )
+    client, calls = client_for([first, schema()])
+    async with client:
+        receipt = await binding.verify_binding(client, TOKEN, destination())
+        assert not client.cookies
+    assert all(len(value) == 64 for value in receipt.values())
+    assert [request.method for request in calls] == ["GET", "GET"]
+    assert all("cookie" not in request.headers for request in calls)
+
+
+@pytest.mark.asyncio
+async def test_binding_rejects_preexisting_cookie_before_io():
+    client, calls = client_for([database()])
+    client.cookies.set("session", "synthetic", domain="api.notion.com")
+    async with client:
+        with pytest.raises(ValueError, match="notion_client_not_isolated"):
+            await binding.read_notion_resource(
+                client, TOKEN, kind="databases", identity=DB
+            )
+    assert calls == []
+
+
+@pytest.mark.asyncio
 async def test_setup_reads_actual_ids_then_independent_schema_readback():
     client, calls = client_for([database(), schema(), database(), schema()])
     choices = iter(["1", "1", "1", "2", "3"])
