@@ -65,7 +65,12 @@ async def test_v5_keeps_exact_native_raw_inputs_only_in_its_private_frame(
         expected_plan_sha256=capture.plan_sha256(current_plan()),
     )
     account_harness.assert_closed()
-    clock, _, harness, publications = setup(monkeypatch, source)
+    clock, _, harness, publications = setup(
+        monkeypatch,
+        source,
+        rest_hostname="openapi.okx.com",
+        ws_hostname="wspap.okx.com",
+    )
     monkeypatch.setattr(original, "native_stamp", clock.stamp)
     monkeypatch.setattr(account_native, "_configured_factory", lambda _: True)
     monkeypatch.setattr(

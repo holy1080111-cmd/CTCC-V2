@@ -4276,3 +4276,15 @@ or execution authority. Focused synthetic tests passed 38 cases; its one
 isolated PostgreSQL preflight case skipped locally for lack of a disposable
 database. No real future seal, new market capture or independently protected
 receipt has been produced. Gate 3, OOS, Demo and Live remain FAIL.
+
+The later `01149c6` shards also exposed the same synthetic TLS-host mismatch
+in V3, V5, V6 and V7 original-source tests. Those harnesses now present the
+global Demo hosts declared by their controlled session; six representative
+Windows cases pass locally. This changes test evidence only, not the native
+route gate or execution permissions. A separate opt-in five-GET public
+timestamp diagnostic records raw bodies, native request/header/body/validation
+stamps, TLS witnesses and unaltered exchange timestamps. It labels requested
+instrument separately from response-verified instrument because books5 does
+not echo `instId`. The diagnostic always denies source and trading authority;
+its offline checks pass 5/5. It has not yet provided a successful production
+collector or a root cause for the older future-timestamp failure.

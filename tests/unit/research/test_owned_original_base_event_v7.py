@@ -232,7 +232,12 @@ async def test_owned_v7_replays_in_one_task_or_denies_without_g12(
         expected_plan_sha256=capture.plan_sha256(current_plan()),
     )
     account_harness.assert_closed()
-    clock, _, harness, publications = setup(monkeypatch, owned_source)
+    clock, _, harness, publications = setup(
+        monkeypatch,
+        owned_source,
+        rest_hostname="openapi.okx.com",
+        ws_hostname="wspap.okx.com",
+    )
     monkeypatch.setattr(original, "native_stamp", clock.stamp)
     monkeypatch.setattr(account_native, "_configured_factory", lambda _: True)
     monkeypatch.setattr(

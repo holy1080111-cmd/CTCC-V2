@@ -58,7 +58,12 @@ def _native_account_receipt(controlled, observed_at):
 async def test_native_packet_is_replayed_into_pinned_g1_and_never_grants_authority(
     source, tmp_path, monkeypatch
 ):
-    clock, directory, harness, publications = setup(monkeypatch, source)
+    clock, directory, harness, publications = setup(
+        monkeypatch,
+        source,
+        rest_hostname="openapi.okx.com",
+        ws_hostname="wspap.okx.com",
+    )
     monkeypatch.setattr(coordinator, "native_stamp", clock.stamp)
     monkeypatch.setattr(account_native, "_configured_factory", lambda _: True)
     controlled = session()
@@ -134,7 +139,12 @@ async def test_native_packet_is_replayed_into_pinned_g1_and_never_grants_authori
 async def test_native_g1_rejection_never_starts_account_capture(
     source, tmp_path, monkeypatch
 ):
-    clock, directory, harness, publications = setup(monkeypatch, source)
+    clock, directory, harness, publications = setup(
+        monkeypatch,
+        source,
+        rest_hostname="openapi.okx.com",
+        ws_hostname="wspap.okx.com",
+    )
     monkeypatch.setattr(coordinator, "native_stamp", clock.stamp)
     monkeypatch.setattr(account_native, "_configured_factory", lambda _: True)
     original = harness.public
