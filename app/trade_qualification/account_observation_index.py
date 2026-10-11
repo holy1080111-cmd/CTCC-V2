@@ -22,7 +22,7 @@ MAX_SOURCE_BYTES = 64 * 1024 * 1024
 MAX_RECEIPT_BYTES = 8 * 1024 * 1024
 POLICY_BYTES = journal.canonical(
     {
-        "version": "ctcc.observed_execution_cashflow_policy.v2",
+        "version": "ctcc.observed_execution_cashflow_policy.v3",
         "environment": "demo",
         "region": "global",
         "query_policy_sha256": query.POLICY_SHA256,
@@ -31,6 +31,8 @@ POLICY_BYTES = journal.canonical(
         "maximum_query_end_age_seconds": 120,
         "maximum_inter_capture_gap_seconds": 3600,
         "overlap": "each_previous_query_end_must_be_covered_by_next_start",
+        "effective_overlap": "adjacent_measured_generation_intervals_must_share_an_instant",
+        "comparison_schema": "ctcc.observed_history_query_comparison.v2",
         "late_conflict_missing": "append_evidence_and_invalidate_all_prior_proofs",
         "cashflow": "signed_fillPnl_plus_signed_fee_at_actual_fillTime",
         "cashflow_scope": "linear_SWAP_settlement_fee_currency_only",
@@ -178,7 +180,7 @@ def _fraction(value):
 def _compare_verified(old, new):
     """Private comparison of receipts verified in this invocation only.
 
-    Preserves B2a comparison bytes without replaying every raw chain per pair.
+    Preserves B2a V2 comparison bytes without replaying raw chains per pair.
     This does not accept, create or cache any current account authority.
     """
     if (
@@ -194,6 +196,24 @@ def _compare_verified(old, new):
     current = {row["identity_sha256"]: row for row in new["rows"]}
     previous_domains = {(item["family"], item["product"]) for item in old["coverage"]}
     current_domains = {(item["family"], item["product"]) for item in new["coverage"]}
+    old_coverage = {(item["family"], item["product"]): item for item in old["coverage"]}
+    new_coverage = {(item["family"], item["product"]): item for item in new["coverage"]}
+    measured_intervals_uncompared = [
+        {
+            "family": family,
+            "product": product,
+            "previous_covered_intervals": old_coverage[(family, product)][
+                "covered_intervals"
+            ],
+            "current_covered_intervals": new_coverage[(family, product)][
+                "covered_intervals"
+            ],
+        }
+        for family, product in sorted(previous_domains & current_domains)
+        if not query._has_measured_overlap(
+            old_coverage[(family, product)], new_coverage[(family, product)]
+        )
+    ]
     uncompared = [
         {
             "family": family,
@@ -260,12 +280,14 @@ def _compare_verified(old, new):
             )
     return journal.canonical(
         {
-            "schema_version": "ctcc.observed_history_query_comparison.v1",
+            "schema_version": "ctcc.observed_history_query_comparison.v2",
             "previous_head_sha256": old["journal_head_sha256"],
             "current_head_sha256": new["journal_head_sha256"],
             "findings": findings,
             "uncompared_query_domains": uncompared,
+            "uncompared_generation_intervals": measured_intervals_uncompared,
             "dependent_current_claims_require_reconciliation": bool(uncompared)
+            or bool(measured_intervals_uncompared)
             or any(
                 item["kind"]
                 in {
@@ -382,6 +404,18 @@ def _replay(sources, scope, window, policy_pin, *, adjacent=True):
                         {
                             "kind": "product_domain_changed",
                             "capture_id": reference.capture_id,
+                        }
+                    )
+                if (
+                    proof_index == len(prior_sources) - 1
+                    and comparison["uncompared_generation_intervals"]
+                ):
+                    findings.append(
+                        {
+                            "kind": "effective_generation_overlap_gap",
+                            "capture_id": reference.capture_id,
+                            "compared_capture_id": prior_ref.capture_id,
+                            "domains": comparison["uncompared_generation_intervals"],
                         }
                     )
             gap = query._time(value["observed_completed_at"]) - query._time(
@@ -559,7 +593,7 @@ def _replay(sources, scope, window, policy_pin, *, adjacent=True):
     # Conflicting variants remain in the private index, but never get summed as
     # two independent financial events. The aggregate is unavailable on any gap.
     value = {
-        "schema_version": "ctcc.observed_account_execution_window.v1",
+        "schema_version": "ctcc.observed_account_execution_window.v2",
         "policy_sha256": POLICY_SHA256,
         "scope_sha256": journal.digest(
             journal.canonical(

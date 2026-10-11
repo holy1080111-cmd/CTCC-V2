@@ -71,6 +71,14 @@ dependent current claims; the comparison itself never publishes claims. A v3/v4
 comparison also records product domains present in only one observation and
 requires reconciliation, even when that domain has no rows. This prevents an
 empty v3 SWAP query from being treated as coverage of the other v4 products.
+The comparison readout is now `ctcc.observed_history_query_comparison.v2`.
+It also checks **effective measured generation-time intervals** for every
+shared family/product domain. Equal domain names with no overlapping interval
+are recorded in `uncompared_generation_intervals` with each side's bounded
+intervals, and dependent current claims require reconciliation even when both
+terminal page chains have zero rows. A genuine partial interval overlap does
+not by itself add that blocker. Earlier V1 receipts remain historical DENY
+observations and cannot be silently reinterpreted as V2 comparison evidence.
 Derived interval union merges only overlapping/touching measured intervals;
 fractional retention boundaries cannot bridge an uncovered millisecond. Reading
 the same capture twice is an audit comparison, not a fresh observation.

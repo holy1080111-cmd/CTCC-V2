@@ -692,6 +692,15 @@ class AccountObservationIndexRepository:
         latest = await self._batch(scope)
         if (0 if latest is None else latest.sequence) != expected_revision:
             observed.deny("observation_revision_conflict")
+        # A persisted predecessor belongs to its original policy epoch.  The
+        # current policy cannot replay that prefix or safely extend it under a
+        # new hash; reject before deriving or committing another B3 batch.
+        if (
+            latest is not None
+            and self._checked_document(latest, scope)["policy_sha256"]
+            != observed.POLICY_SHA256
+        ):
+            observed.deny("observation_policy_epoch_mismatch")
         sequence = expected_revision + 1
         document, replay, facts, coverage, findings, chain = await self._derive(
             scope, reference, window, sequence

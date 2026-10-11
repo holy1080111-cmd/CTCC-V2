@@ -14,7 +14,25 @@ is never a complete account net-loss, funding, lifecycle, streak or HWM claim.
 
 ## Preregistered bounded policy
 
-`account_observation_index.POLICY_BYTES` and its SHA256 bind policy v2:
+`account_observation_index.POLICY_BYTES` and its SHA256 bind policy v3. The
+diagnostic execution-window receipt is V2; prior V1 receipts retain their
+original bytes and remain historical DENY evidence. A V1 receipt or V2 policy
+pin cannot be promoted through the V3 replay:
+
+Persisted DB0021 batches from the prior B3 policy are **not** migrated by this
+change. The append path checks the last persisted predecessor's policy hash
+before deriving or committing a new batch and rejects a V2→V3 mixed prefix with
+`observation_policy_epoch_mismatch`. Old rows and their B1 source journal stay
+immutable; current-policy readback and lifecycle replay fail closed on those
+rows. Starting a new V3 epoch or migrating a V2 prefix requires a separately
+reviewed, versioned design and database validation. Until then, an account
+with a V2 prefix cannot use this B3 index for current risk qualification.
+DB0036 updates the database append guard for **new** B3 rows: it requires the
+V2 execution-window receipt, the exact reviewed V3 policy hash, and a
+same-policy predecessor. It leaves stored V1 receipts intact; downgrade refuses
+once any V2 receipt has been appended. DB0036 does not solve the old-prefix
+replay blocker or grant account authority. Its upgrade, downgrade, and
+PostgreSQL behavior still require isolated database validation.
 
 - Global Demo; existing pinned B2a v3 SWAP or v4 product query scope, explicitly
   retained in coverage. No region fallback or promotion from SWAP to all products.
@@ -26,6 +44,13 @@ is never a complete account net-loss, funding, lifecycle, streak or HWM claim.
 - Consecutive observed captures must overlap generation windows; a gap over one
   hour in capture observations is reported as incomplete. All older captures
   remain available for nonadjacent conflict/late/missing comparisons.
+- B3's private pair comparison now matches B2a comparison V2 exactly. For the
+  immediately preceding capture, shared family/product domains with no common
+  **effective measured** generation interval create a bounded
+  `effective_generation_overlap_gap` finding with both interval sets. That
+  finding blocks an observed subtotal and remains available for durable
+  reconciliation. A disjoint nonadjacent pair does not create this finding
+  when original middle captures bridge the adjacent intervals.
 - Durable sequence is a positive BIGINT. There is no 32-observation lifetime
   limit. Each proof has a 32-related-capture, 16,384-row, 64 MiB original-source
   and 8 MiB receipt budget. Persistent normalized facts preserve every accepted
@@ -100,7 +125,7 @@ are unchanged.
 Source replay is bounded separately from comparisons. Within one pure B3 replay,
 each of the `n` original B1 chains is verified by B2a once; all `n(n-1)/2`
 comparisons then use those internally verified receipts without rereading raw
-chains. The private comparison preserves the old B2a comparison bytes and
+chains. The private comparison preserves the current B2a V2 comparison bytes and
 scope/coverage/order checks. No caller receipt and no cache across invocations
 is accepted. At the 32-capture proof bound this reduces B2a chain-verifier calls
 from 1,024 to 32 in that pure replay. Repository source-membership and separate

@@ -3,6 +3,8 @@
 import json
 from dataclasses import replace
 from datetime import timedelta
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import UUID
 
 import pytest
@@ -52,6 +54,25 @@ async def capture_options(monkeypatch, rows, *, tick=0, metadata=None, end=None)
     if metadata is not None:
         pages["account_instruments"] = [metadata]
     harness.script = script(pages=pages)
+    harness.clock.calls = tick
+    await bootstrap.collect_bootstrap_recorded(session, **args)
+    harness.assert_closed()
+    return tuple(events)
+
+
+async def empty_history_window(monkeypatch, *, start_days, end_days, tick):
+    """Record a real synthetic B1 page chain with an exact empty history window."""
+    session, harness, _, args, events = setup(monkeypatch)
+    selected = regional(
+        history_start=NOW - timedelta(days=start_days),
+        history_end=NOW - timedelta(days=end_days),
+    )
+    session = type(session)(
+        credentials=credentials(),
+        plan=selected,
+        expected_plan_sha256=capture.plan_sha256(selected),
+    )
+    harness.script = script(pages=source_pages())
     harness.clock.calls = tick
     await bootstrap.collect_bootstrap_recorded(session, **args)
     harness.assert_closed()
@@ -266,6 +287,155 @@ async def test_local_comparison_preserves_b2_bytes_and_verifies_each_original_on
     result = replay(first, second)
     assert calls == [pin["expected_head_sha256"] for pin in pins]
     assert result.execution_authority is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "current_start_days,requires_gap", [(7, True), (14, False), (15, False)]
+)
+async def test_adjacent_empty_history_replays_effective_generation_overlap(
+    monkeypatch, current_start_days, requires_gap
+):
+    previous = await empty_history_window(
+        monkeypatch, start_days=20, end_days=14, tick=0
+    )
+    current = await empty_history_window(
+        monkeypatch, start_days=current_start_days, end_days=0, tick=5000
+    )
+    pins = [
+        observed._pins(observed.source_reference(chain), SCOPE)
+        for chain in (previous, current)
+    ]
+    verified = [
+        json.loads(observed.query.verify_history_query_chain(chain, **pin).receipt_json)
+        for chain, pin in zip((previous, current), pins, strict=True)
+    ]
+    comparison = observed._compare_verified(*verified)
+    assert comparison == observed.query.compare_history_query_chains(
+        previous_chain=previous,
+        previous_pins=pins[0],
+        current_chain=current,
+        current_pins=pins[1],
+    )
+    assert (
+        bool(json.loads(comparison)["uncompared_generation_intervals"]) is requires_gap
+    )
+    data = json.loads(replay(previous, current).receipt_json)
+    gaps = [
+        item
+        for item in data["findings"]
+        if item["kind"] == "effective_generation_overlap_gap"
+    ]
+    assert data["schema_version"] == "ctcc.observed_account_execution_window.v2"
+    assert bool(gaps) is requires_gap
+    if requires_gap:
+        assert gaps[0]["capture_id"] == observed.source_reference(current).capture_id
+        assert (
+            gaps[0]["compared_capture_id"]
+            == observed.source_reference(previous).capture_id
+        )
+        assert {(item["family"], item["product"]) for item in gaps[0]["domains"]} == {
+            ("bills", "*"),
+            ("fills", "SWAP"),
+        }
+        assert data["observed_fill_cashflow_total"] is None
+        assert "source_observations_require_reconciliation" in data["blocking_reasons"]
+    assert data["account_complete"] is data["execution_authority"] is False
+    assert data["admission"] == "DENY"
+
+
+@pytest.mark.asyncio
+async def test_comparison_empty_coverage_byte_parity_without_source_promotion(
+    monkeypatch,
+):
+    """Future coverage shape contract; current verified archive plans cover the domain."""
+    previous = await captured_history(monkeypatch, [])
+    current = await captured_history(monkeypatch, [], tick=5000)
+    pins = [
+        observed._pins(observed.source_reference(chain), SCOPE)
+        for chain in (previous, current)
+    ]
+    old, new = [
+        json.loads(observed.query.verify_history_query_chain(chain, **pin).receipt_json)
+        for chain, pin in zip((previous, current), pins, strict=True)
+    ]
+    for value in (old, new):
+        next(item for item in value["coverage"] if item["family"] == "bills")[
+            "covered_intervals"
+        ] = []
+    expected = observed._compare_verified(old, new)
+    assert any(
+        item["family"] == "bills"
+        for item in json.loads(expected)["uncompared_generation_intervals"]
+    )
+    # The current B1 archive policy cannot natively yield empty shared domain
+    # coverage. This isolates B2a/B3 comparison parity, not B1 source validity.
+    original = observed.query.verify_history_query_chain
+
+    def structural_receipt(chain, **kwargs):
+        if chain is previous:
+            return observed.query.HistoryQueryVerification(journal.canonical(old))
+        if chain is current:
+            return observed.query.HistoryQueryVerification(journal.canonical(new))
+        return original(chain, **kwargs)
+
+    monkeypatch.setattr(
+        observed.query, "verify_history_query_chain", structural_receipt
+    )
+    assert expected == observed.query.compare_history_query_chains(
+        previous_chain=previous,
+        previous_pins=pins[0],
+        current_chain=current,
+        current_pins=pins[1],
+    )
+
+
+@pytest.mark.asyncio
+async def test_changed_persisted_policy_is_rejected_before_new_b3_source_or_append():
+    class EmptySession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return None
+
+        def begin(self):
+            return self
+
+        async def scalar(self, _statement):
+            return None
+
+    repo = AccountObservationIndexRepository.__new__(AccountObservationIndexRepository)
+    repo.session_factory = EmptySession
+    repo.journal = SimpleNamespace(_lock=AsyncMock())
+    repo._batch = AsyncMock(return_value=SimpleNamespace(sequence=1))
+    repo._checked_document = lambda *_: {"policy_sha256": "0" * 64}
+    repo._derive = AsyncMock()
+    reference = observed.CaptureReference("a" * 32, *("b" * 64 for _ in range(4)))
+    with pytest.raises(
+        observed.AccountObservationError, match="observation_append_failed"
+    ):
+        await repo.append(SCOPE, reference, WINDOW, expected_revision=1)
+    repo._batch.assert_awaited_once()
+    repo._derive.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_nonadjacent_disjoint_empty_windows_are_bridged_by_original_middle_capture(
+    monkeypatch,
+):
+    first = await empty_history_window(monkeypatch, start_days=20, end_days=14, tick=0)
+    middle = await empty_history_window(
+        monkeypatch, start_days=15, end_days=7, tick=5000
+    )
+    last = await empty_history_window(monkeypatch, start_days=8, end_days=0, tick=10000)
+    data = json.loads(replay(first, middle, last).receipt_json)
+    assert not any(
+        item["kind"] == "effective_generation_overlap_gap" for item in data["findings"]
+    )
+    assert data["findings"] == []
+    assert data["account_complete"] is data["execution_authority"] is False
+    assert data["admission"] == "DENY"
 
 
 @pytest.mark.asyncio

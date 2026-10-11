@@ -4178,3 +4178,46 @@ remain FAIL. The combined local V2/V3 and migration-identity selection finished
 DSN was available.
 Matching exact-source CI and full schema checks remain required before even
 this narrow DB0035 mechanism may be called validated.
+
+## 2026-10-11 account coverage, policy epoch, and bounded source checks
+
+At committed checkpoint `34759d5cbe9cf2caeeeaeb88ff8f7cc244b88436`, a
+single signed Demo `GET /api/v5/account/config` with zero retries observed
+Read+Trade without Withdraw but could not verify IP binding for the key loaded
+from `C:\CTCC-V2\.env`. Its redacted receipt is
+`../../validation-results/demo-key-policy-readonly-34759d5-20261011T092041Z.json`
+(SHA256 `364becc9e19463b7b7fd9ba62c1d0424ddaa8f175989e2c866e5a90c41adb7e9`).
+No UID, IP, credential or raw private response is retained. The earlier
+independent read explicitly saw `ip=""`; neither read grants account, region,
+session, or execution authority. A separate single public-time read verified
+native clock and raw-sidecar readback, but the bounded full public diagnostic
+rejected a funding component beyond its pinned 5-second V1 freshness policy.
+Neither observation was promoted to a trusted market or account source.
+
+The B2a history comparison now records disjoint **effective measured**
+generation intervals even when the same product domain has empty terminal page
+chains. B3's private comparison remains byte-equivalent to B2a V2 and blocks
+an adjacent effective-coverage gap without treating nonadjacent pairs as gaps
+when the original middle capture bridges them. The B3 policy is V3, with SHA256
+`bb953fa3ab251c2298eda0643853afcd1d57ae4454e0aab0860f0531f54a6bba`;
+the diagnostic execution-window receipt is V2. The repository refuses a prior
+policy epoch before deriving or committing another batch. DB0036 updates the
+append trigger to accept only the reviewed V2 receipt/current policy for new
+rows and refuse a predecessor policy change. Existing V1 receipts and V2-policy
+rows remain immutable historical evidence. A database containing an old B3
+policy prefix remains blocked for new B3 append until a separately validated
+versioned replay/epoch migration exists; this patch does not silently reset it.
+
+Bounded local account selections passed 126 tests across B2a, B3, history tail,
+lifecycle, and portfolio components. A PostgreSQL policy-epoch test was skipped
+because no isolated local `DATABASE_URL` was available; DB0036 upgrade,
+downgrade, schema and write behavior require exact-source CI. The JUnit identity
+and SHA256 list is retained at
+`../../validation-results/account-effective-coverage-20261011/README.md`.
+The Windows outbox late-failure selection passed 9/9: injected `WinError 32`
+left the already durable journal byte-identical, published no envelope and
+denied subsequent dispatch. Its JUnit is
+`../../validation-results/windows-outbox-late-failure-34759d5-20261011.xml`
+(SHA256 `cddcdfce60352980e43f16a95e319de577f2bf0dfbebed66c374325a29ba63be`).
+These bounded checks are not full Windows, PostgreSQL, outbox, or Demo
+acceptance. Execution writes remain disabled, and no Demo or Live order was sent.

@@ -390,6 +390,25 @@ async def test_restart_replays_original_journal_and_idempotency(monkeypatch, dat
     ).state.account_revision == 0
 
 
+async def test_policy_epoch_change_preserves_persisted_prefix_and_rejects_append(
+    monkeypatch, database
+):
+    repo, scope, _, _, first = await stored(monkeypatch, database)
+    reference, window = await additional_capture(monkeypatch, repo, scope, [])
+    original_chain = await repo.journal.read_chain(scope, reference.capture_id)
+    # Model a deployed process upgrade after an immutable predecessor exists.
+    # This is a policy-boundary test, not a claim to migrate actual V2 bytes.
+    with monkeypatch.context() as changed:
+        changed.setattr(observed, "POLICY_SHA256", "0" * 64)
+        with pytest.raises(
+            observed.AccountObservationError, match="observation_append_failed"
+        ):
+            await repo.append(scope, reference, window, expected_revision=1)
+    assert len(await repo._rows(scope)) == 1
+    assert await repo.read(scope) == (first,)
+    assert await repo.journal.read_chain(scope, reference.capture_id) == original_chain
+
+
 @pytest.mark.parametrize("operation", ["update", "delete", "truncate"])
 async def test_database_rejects_mutation_without_losing_durable_source(
     monkeypatch, database, operation

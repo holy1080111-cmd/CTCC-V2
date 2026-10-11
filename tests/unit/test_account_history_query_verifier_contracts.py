@@ -386,6 +386,78 @@ async def test_cross_capture_late_conflicting_missing_rows_preserve_both_sources
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "current_start_days,requires_reconciliation", [(7, True), (15, False)]
+)
+async def test_empty_same_product_domains_require_measured_generation_overlap(
+    monkeypatch, current_start_days, requires_reconciliation
+):
+    """Two empty terminal chains certify no discovery only in their overlap."""
+    previous_plan = regional(
+        history_start=NOW - timedelta(days=20),
+        history_end=NOW - timedelta(days=14),
+    )
+    session, _, _, args, before = setup(monkeypatch)
+    session = type(session)(
+        credentials=credentials(),
+        plan=previous_plan,
+        expected_plan_sha256=capture.plan_sha256(previous_plan),
+    )
+    await bootstrap.collect_bootstrap_recorded(session, **args)
+    previous = tuple(before)
+    current_plan = regional(history_start=NOW - timedelta(days=current_start_days))
+    session, harness, _, args, after = setup(monkeypatch)
+    session = type(session)(
+        credentials=credentials(),
+        plan=current_plan,
+        expected_plan_sha256=capture.plan_sha256(current_plan),
+    )
+    harness.clock.calls = 5000
+    await bootstrap.collect_bootstrap_recorded(session, **args)
+    current = tuple(after)
+
+    old_receipt = json.loads(verify(previous).receipt_json)
+    new_receipt = json.loads(verify(current).receipt_json)
+    assert old_receipt["rows"] == new_receipt["rows"] == []
+    assert {(item["family"], item["product"]) for item in old_receipt["coverage"]} == {
+        (item["family"], item["product"]) for item in new_receipt["coverage"]
+    }
+    assert (old_receipt["requested_end"] < new_receipt["requested_start"]) is (
+        requires_reconciliation
+    )
+
+    comparison = json.loads(
+        verifier.compare_history_query_chains(
+            previous_chain=previous,
+            previous_pins=pins(previous),
+            current_chain=current,
+            current_pins=pins(current),
+        )
+    )
+    assert comparison["schema_version"] == "ctcc.observed_history_query_comparison.v2"
+    assert comparison["findings"] == comparison["uncompared_query_domains"] == []
+    intervals = comparison["uncompared_generation_intervals"]
+    assert bool(intervals) is requires_reconciliation
+    assert comparison["dependent_current_claims_require_reconciliation"] is (
+        requires_reconciliation
+    )
+    if requires_reconciliation:
+        assert {(item["family"], item["product"]) for item in intervals} == {
+            (item["family"], item["product"]) for item in old_receipt["coverage"]
+        }
+        assert all(
+            item["previous_covered_intervals"]
+            and item["current_covered_intervals"]
+            and item["previous_covered_intervals"][-1][1]
+            < item["current_covered_intervals"][0][0]
+            for item in intervals
+        )
+    assert comparison["account_complete"] is False
+    assert comparison["execution_authority"] is False
+    assert comparison["admission"] == "DENY"
+
+
+@pytest.mark.asyncio
 async def test_source_generation_window_never_claims_actual_fill_window(monkeypatch):
     events = await captured_history(
         monkeypatch, [row("fills_history", fillTime=ms(NOW - timedelta(days=8)))]

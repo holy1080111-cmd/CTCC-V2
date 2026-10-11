@@ -370,6 +370,15 @@ def _union(intervals):
     return result
 
 
+def _has_measured_overlap(previous, current):
+    """Require a shared measured generation-time instant, not just a domain name."""
+    return any(
+        max(_time(old_start), _time(new_start)) <= min(_time(old_end), _time(new_end))
+        for old_start, old_end in previous["covered_intervals"]
+        for new_start, new_end in current["covered_intervals"]
+    )
+
+
 def _coverage(packet, raw_sequences):
     groups, rows = {}, {}
     for index, observation in enumerate(packet.observations):
@@ -627,6 +636,31 @@ def compare_history_query_chains(
         current_domains = {
             (item["family"], item["product"]) for item in new["coverage"]
         }
+        old_coverage = {
+            (item["family"], item["product"]): item for item in old["coverage"]
+        }
+        new_coverage = {
+            (item["family"], item["product"]): item for item in new["coverage"]
+        }
+        # The two packets can name the same product family yet observe wholly
+        # disjoint effective retention windows. Empty rows then say nothing
+        # about continuity or late arrivals in the unshared interval.
+        measured_intervals_uncompared = [
+            {
+                "family": family,
+                "product": product,
+                "previous_covered_intervals": old_coverage[(family, product)][
+                    "covered_intervals"
+                ],
+                "current_covered_intervals": new_coverage[(family, product)][
+                    "covered_intervals"
+                ],
+            }
+            for family, product in sorted(previous_domains & current_domains)
+            if not _has_measured_overlap(
+                old_coverage[(family, product)], new_coverage[(family, product)]
+            )
+        ]
         uncompared = [
             {
                 "family": family,
@@ -692,12 +726,14 @@ def compare_history_query_chains(
                 )
         return journal.canonical(
             {
-                "schema_version": "ctcc.observed_history_query_comparison.v1",
+                "schema_version": "ctcc.observed_history_query_comparison.v2",
                 "previous_head_sha256": old["journal_head_sha256"],
                 "current_head_sha256": new["journal_head_sha256"],
                 "findings": findings,
                 "uncompared_query_domains": uncompared,
+                "uncompared_generation_intervals": measured_intervals_uncompared,
                 "dependent_current_claims_require_reconciliation": bool(uncompared)
+                or bool(measured_intervals_uncompared)
                 or any(
                     item["kind"]
                     in {

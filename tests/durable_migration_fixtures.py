@@ -23,6 +23,7 @@ MIGRATIONS = {
     "0033": "0033_public_receipt_publication_ack.py",
     "0034": "0034_demo_automation_control_cas.py",
     "0035": "0035_public_receipt_post_read_observation.py",
+    "0036": "0036_account_observation_policy_epoch.py",
 }
 TABLES = {
     # 0023 is constraint/trigger-only and has dedicated upgrade/downgrade
