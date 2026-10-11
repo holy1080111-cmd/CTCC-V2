@@ -1,0 +1,9 @@
+# V7 current-account observation index
+
+DB0038 adds `demo_account_current_observations` for the eight-Algo V7 current-account capture. It is separate from DB0021's B3 fills/bills history index: a current-only packet cannot satisfy a history query, and the old history receipts and policy hashes are unchanged.
+
+An append takes an exact original B1 capture reference, acquires the account-scoped PostgreSQL lock, replays the complete V7 raw page chain and body-EOF witnesses under the pinned V7 source policy, and stores a hash-bound diagnostic row. Its unique capture ID and monotonic hash chain prevent a second append from rewrapping the same observation. The repository opens a separate session after commit, rereads the original B1 bytes and new row, and recomputes both stored JSON documents. An uncertain commit or failed readback yields only a failure; it never sends or retries an exchange request.
+
+The database enforces a terminal B1 foreign key, source/account scope, exact policy identity, eight Algo terminal witnesses, immutable rows, and false `account_complete`, `flat_start_permission`, and `execution_authority`. Its trigger overwrites caller-supplied `db_recorded_at` with native DB time and requires it to be no earlier than the B1 terminal or preceding current observation. The Python readback verifies the full original source and exact receipt bytes again. This index is diagnostic only; it does not publish a portfolio revision, prove registration site or host clock, close historical retention/funding/HWM gaps, create a `PortfolioRiskSnapshot`, or authorize Demo/Live orders.
+
+The next integration must join a current observation to a separately replayed historical B3 index and local reservation/intent ledger under the same account lock. It must retain unresolved history, funding-accrual, continuous high-water-mark, protection, and uncertain-exposure gaps as unknown. No B5 runtime consumer is connected to DB0038 yet.

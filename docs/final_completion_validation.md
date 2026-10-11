@@ -4561,3 +4561,58 @@ across four plan versions. Separately, supplemental instrument and peak rows
 now reject explicit `uid` or `mainUid` conflicts with the replayed config;
 omitted identifiers do not become authenticated. Selected local tests passed,
 but these changes still require a new exact-source full CI run after commit.
+
+## 2026-10-11 exact-source replay checkpoint and registration-site probe
+
+Source `255fd9734447586c79bfae04f0fd533f132850b3` pins the Decimal
+arithmetic context for Gate 3 feature replay and 1m aggregation independently
+of caller and process defaults. The 31 focused local replay tests, Ruff,
+format and manifest checks passed. The exact archive and complete private Git
+bundle were read back at
+`../../validation-results/checkpoint-255fd97-20261011/identity.json`.
+The matching GitHub run `38151538057` was queued when this record was written;
+the patch alone grants no predictive or execution authority.
+
+The signed-in OKX profile, Demo key page and signed account/config do not
+expose an explicit registered-site field. In the official support chat, the
+automated agent returned `OKX_GLOBAL` but explicitly said that this
+classification does not prove which of `www.okx.com`, `app.okx.com` or
+`my.okx.com` holds this account's registration. A human agent referred the
+question to the in-app API technical group without confirming a site or
+issuing a case number. OKX's [published regional API guide](https://www.okx.com/docs-v5/en/)
+distinguishes the regional domains; its general site mapping cannot turn this
+account-specific uncertainty into proof. The redacted local record is
+`../../validation-results/okx-registration-site-20261011/evidence.json`
+(SHA256 `e6717d4675dc6d1ad65b6610af259eb0a70c986b74eab710c3586c00359944f0`).
+The trusted public source gate remains DENY and private order writes remain OFF.
+
+A low-load native host check at 2026-10-11 15:43 UTC again observed the Taipei
+UTC+08:00 zone and W32Time Running/Automatic, with `time.windows.com,0x9`
+shown as the synchronization source. One bounded unauthenticated diagnostic
+(`scripts/diagnose_public_timestamp.py`, five GETs, no proxy, redirect, retry,
+credential or order) then retained all five raw bodies under
+`../../validation-results/public-timestamp-20261011-1545/`. Its summary SHA256
+is `9b500d52e3a80a6aa73d2e6f3cf8cbc94122b1ac2beadcf0748c8ca9ae1a22f0`.
+Both public time samples fell inside their request intervals. The books5,
+open-interest and funding source timestamps preceded their received headers
+by approximately 53 ms, 44 ms and 7.06 s respectively; all five records
+observed TLS peer binding, exact response URL, complete body and validation
+after body completion. Funding's older source timestamp is data time, not a
+claim that the data was generated during this request. This is a diagnostic
+sample with a dirty working-tree identity, not a full OHLC/ticker/mark/WS
+capture or proof of account-specific registration site. Admission is DENY.
+
+## 2026-10-11 V7 current-account observation working slice
+
+DB0038 adds an append-only current-account diagnostic index that replays the
+original V7 B1 chain and all eight Algo EOF witnesses under the account lock.
+It stays separate from the historical B3 index. The repository commits once,
+then reopens a session to verify the stored row against original raw evidence;
+an uncertain commit or readback cannot retry a private request. DB triggers
+enforce source/scope/policy binding, immutable rows, native receipt time and
+false account-complete, flat-start and execution-authority flags. Local
+targeted tests passed 53 cases; seven isolated PostgreSQL integration cases
+were skipped because no database was available on this host. Hosted CI on the
+new exact source must run those cases before DB0038 can be accepted. The
+working slice does not resolve source authenticity, historical completeness,
+portfolio risk or Demo eligibility.
