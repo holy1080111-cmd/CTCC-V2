@@ -12,7 +12,12 @@ deployed capability; it does not enable trading.
 This working branch currently refuses new Demo and Live entries at the HTTP
 transport boundary. The new qualified one-shot authority is not ready. Enabling
 configuration flags or completing the legacy Arm procedure cannot bypass that
-containment. Existing read, cancel, close and reconciliation controls are retained.
+containment. Read and reconciliation paths remain available. Cancel and close
+code is preserved, but the current shared transport also refuses those
+exchange writes; it must not be described as an available recovery action.
+Legacy Demo automation can still display a locally armed state after its old
+flat checks without observing all-currency qualification reservations or
+unresolved intents. That display is not a qualified execution permit.
 New V2 Demo public capture is also blocked before network I/O: its earlier plan
 used a Production WebSocket and no authenticated Demo account-region binding.
 The [V2 source record](docs/public_source_runtime_v2.md) explains this boundary.

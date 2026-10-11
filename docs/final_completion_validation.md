@@ -4346,3 +4346,14 @@ imports and rejects capture, publisher and whole-module imports. The focused
 boundary and scheduled-minute tests passed locally (23 cases). This is a
 test-source boundary repair; it neither expands the module's imports nor
 grants source or execution authority. Matching final-source CI is pending.
+
+A static audit of all Demo and Live submit routes at local `876fa01` found the
+shared private transport's final authority boundary denies every non-GET.
+Consequently no order, cancel or close POST reaches OKX from this source, even
+with legacy Demo `armed=True`; no actual execution acceptance can be claimed.
+Legacy Demo Arm can persist that local state after old flat checks without
+reading DB0017 holds across currencies or unresolved consumed intents. The
+all-currency portfolio checkpoint remains diagnostic and explicitly lacks
+future-writer exclusion. This gap must be closed through the owned account and
+one-use intent boundary before a production Arm/submit path is enabled. Live
+Arm already denies. No guard was bypassed for this audit.
