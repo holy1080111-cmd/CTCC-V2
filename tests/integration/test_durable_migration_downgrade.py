@@ -60,16 +60,55 @@ database = ledger_fixtures.database
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
 
-def assert_event_state_preserved(before, after):
-    """A second DB read has fresh receipt times but must retain ledger state."""
-    assert after.scope == before.scope
-    assert after.original_event_key == before.original_event_key
-    assert after.account_revision == before.account_revision
-    assert after.ledger_revision == before.ledger_revision
-    assert after.matched == before.matched
-    assert after.request_started_at <= after.observed_at <= after.received_at
-    assert after.monotonic_started_ns <= after.monotonic_received_ns
-    assert after.monotonic_started_ns >= before.monotonic_started_ns
+async def historical_event_state(sessions, scope, event_key):
+    """Compare complete old-revision rows only in the disposable test database.
+
+    The production observer correctly rejects pre-0027 retention guards. This
+    direct read is a migration assertion, never an event-absence authority.
+    """
+    async with sessions() as session, session.begin():
+        database_name, schema = (
+            await session.execute(text("SELECT current_database(), current_schema()"))
+        ).one()
+        assert re.fullmatch(r"ctcc_migration_test_[a-f0-9]{32}", database_name)
+        assert schema == "public"
+        scope_row = await session.get(
+            QualificationAccountScope,
+            (scope.environment, scope.account_id, scope.settlement_currency),
+        )
+        assert scope_row is not None
+        reservations = (
+            await session.scalars(
+                select(QualificationReservation).filter_by(
+                    environment=scope.environment,
+                    account_id=scope.account_id,
+                    original_event_key=event_key,
+                )
+            )
+        ).all()
+        assert len(reservations) == 1
+        reservation = reservations[0]
+        assert reservation.settlement_currency == scope.settlement_currency
+        transitions = (
+            await session.scalars(
+                select(QualificationReservationTransition)
+                .filter_by(reservation_id=reservation.reservation_id)
+                .order_by(QualificationReservationTransition.state_revision)
+            )
+        ).all()
+
+        def columns(row):
+            return tuple(
+                (column.name, getattr(row, column.name))
+                for column in row.__table__.columns
+            )
+
+        return {
+            "state": reservation.state,
+            "scope": columns(scope_row),
+            "reservation": columns(reservation),
+            "transitions": tuple(columns(row) for row in transitions),
+        }
 
 
 def migrate(connection, revision, direction):
@@ -438,16 +477,21 @@ async def test_post_submit_closure_guard_upgrade_refuses_legacy_terminal(
             )
         )
     legacy_shape = await shape(engine)
-    legacy = await repo.read_event_observation(hold.scope, hold.original_event_key)
-    assert legacy.matched is not None and legacy.matched.state == "reconciled_flat"
+    with pytest.raises(
+        QualificationLedgerError, match="event_ledger_schema_retention_invalid"
+    ):
+        await repo.read_event_observation(hold.scope, hold.original_event_key)
+    legacy = await historical_event_state(sessions, hold.scope, hold.original_event_key)
+    assert legacy["state"] == "reconciled_flat"
     with pytest.raises(
         DBAPIError, match="post_submit_closure_legacy_terminal_unresolved"
     ):
         async with engine.begin() as connection:
             await migrate_public_qualified_guard_in_sandbox(connection, "upgrade")
     assert await shape(engine) == legacy_shape
-    assert_event_state_preserved(
-        legacy, await repo.read_event_observation(hold.scope, hold.original_event_key)
+    assert (
+        await historical_event_state(sessions, hold.scope, hold.original_event_key)
+        == legacy
     )
     async with sessions() as session:
         transitions = (
@@ -468,7 +512,7 @@ async def test_post_submit_closure_guard_upgrade_refuses_legacy_terminal(
 async def test_post_submit_closure_guard_upgrade_refuses_reserved_only_terminal(
     sandbox, revision, durable_fixture
 ):
-    engine, _ = sandbox
+    engine, sessions = sandbox
     repo, clock = await ledger_fixtures.initialize(sandbox, durable_fixture)
     hold = await repo.reserve(durable_fixture.request)
     clock.value += timedelta(seconds=1)
@@ -482,16 +526,23 @@ async def test_post_submit_closure_guard_upgrade_refuses_reserved_only_terminal(
     )
     assert terminal.state == "reconciled_flat"
     before = await shape(engine)
-    observation = await repo.read_event_observation(hold.scope, hold.original_event_key)
+    with pytest.raises(
+        QualificationLedgerError, match="event_ledger_schema_retention_invalid"
+    ):
+        await repo.read_event_observation(hold.scope, hold.original_event_key)
+    observation = await historical_event_state(
+        sessions, hold.scope, hold.original_event_key
+    )
+    assert observation["state"] == terminal.state
     with pytest.raises(
         DBAPIError, match="post_submit_closure_legacy_terminal_unresolved"
     ):
         async with engine.begin() as connection:
             await migrate_public_qualified_guard_in_sandbox(connection, "upgrade")
     assert await shape(engine) == before
-    assert_event_state_preserved(
-        observation,
-        await repo.read_event_observation(hold.scope, hold.original_event_key),
+    assert (
+        await historical_event_state(sessions, hold.scope, hold.original_event_key)
+        == observation
     )
 
 
@@ -546,16 +597,23 @@ async def test_post_submit_closure_guard_upgrade_refuses_incomplete_legacy_journ
             "reconciled_flat",
         ]
     before = await shape(engine)
-    terminal = await repo.read_event_observation(hold.scope, hold.original_event_key)
-    assert terminal.matched is not None and terminal.matched.state == "reconciled_flat"
+    with pytest.raises(
+        QualificationLedgerError, match="event_ledger_schema_retention_invalid"
+    ):
+        await repo.read_event_observation(hold.scope, hold.original_event_key)
+    terminal = await historical_event_state(
+        sessions, hold.scope, hold.original_event_key
+    )
+    assert terminal["state"] == "reconciled_flat"
     with pytest.raises(
         DBAPIError, match="post_submit_closure_legacy_terminal_unresolved"
     ):
         async with engine.begin() as connection:
             await migrate_public_qualified_guard_in_sandbox(connection, "upgrade")
     assert await shape(engine) == before
-    assert_event_state_preserved(
-        terminal, await repo.read_event_observation(hold.scope, hold.original_event_key)
+    assert (
+        await historical_event_state(sessions, hold.scope, hold.original_event_key)
+        == terminal
     )
 
 
@@ -965,6 +1023,11 @@ async def test_uid_event_downgrade_retains_reconciled_tombstone(
         claims=ledger_fixtures.refresh(durable_fixture.claims, clock.value),
         expected_revision=2,
     )
+    prior = await historical_event_state(
+        sandbox[1], receipt.scope, receipt.original_event_key
+    )
+    assert prior["state"] == terminal.state
+    assert dict(prior["reservation"])["reservation_id"] == terminal.reservation_id
     before = await shape(engine)
     with pytest.raises(
         DBAPIError, match="qualification_uid_event_downgrade_requires_empty"
@@ -972,6 +1035,11 @@ async def test_uid_event_downgrade_retains_reconciled_tombstone(
         async with engine.begin() as connection:
             await connection.run_sync(migrate, "0023", "downgrade")
     assert await shape(engine) == before
-    assert (
+    with pytest.raises(
+        QualificationLedgerError, match="event_ledger_schema_retention_invalid"
+    ):
         await repo.read_event_observation(receipt.scope, receipt.original_event_key)
-    ).matched == terminal
+    retained = await historical_event_state(
+        sandbox[1], receipt.scope, receipt.original_event_key
+    )
+    assert retained == prior

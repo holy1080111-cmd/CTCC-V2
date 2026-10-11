@@ -165,6 +165,8 @@ async def test_observation_denies_absence_when_retention_schema_drifts_in_transa
                 )
             )
         await original_guard(session)
+        # Keep injected DDL transactional even if the production guard regresses.
+        raise AssertionError("event_ledger_schema_drift_was_accepted")
 
     monkeypatch.setattr(
         repository_module, "_require_event_journal_schema", drift_then_check
@@ -174,8 +176,6 @@ async def test_observation_denies_absence_when_retention_schema_drifts_in_transa
             QualificationLedgerError, match="event_ledger_schema_retention_invalid"
         ):
             await repo.read_event_observation(fixture.request.scope, "f" * 64)
-    except DBAPIError:
-        pytest.skip("isolated PostgreSQL role cannot alter test schema")
     finally:
         monkeypatch.setattr(
             repository_module, "_require_event_journal_schema", original_guard
