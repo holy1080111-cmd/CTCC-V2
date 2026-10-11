@@ -1,7 +1,7 @@
 """Synthetic deterministic aggregation and causal gates; no OOS data or claims."""
 
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal, localcontext
+from decimal import Decimal, DefaultContext, localcontext
 from hashlib import sha256
 from warnings import catch_warnings, simplefilter
 
@@ -125,6 +125,33 @@ def test_deterministic_aggregation_preserves_basis_and_receipts_without_promotio
     assert first.predictive_oos_eligible is False
     assert first.execution_authority is False
     assert first.runtime_consumers == 0
+
+
+def test_aggregation_ignores_mutated_default_decimal_exponent_limit() -> None:
+    plan, minutes = inputs(count=240)
+    # Make the 4H sum exceed an artificially reduced DefaultContext Emax.
+    # The aggregate must still use its own exact, fixed arithmetic contract.
+    minutes = tuple(
+        minute.model_copy(
+            update={
+                "row": minute.row.model_copy(
+                    update={
+                        "bar": minute.row.bar.model_copy(update={"volume": Decimal(10)})
+                    }
+                )
+            }
+        )
+        for minute in minutes
+    )
+    baseline = build(plan, minutes)
+    original_emax = DefaultContext.Emax
+    try:
+        DefaultContext.Emax = 0
+        altered = build(plan, minutes)
+    finally:
+        DefaultContext.Emax = original_emax
+    assert altered.canonical_json_bytes() == baseline.canonical_json_bytes()
+    assert altered.timeframes[-1].bars[0].row.bar.volume == Decimal(2400)
 
 
 @pytest.mark.parametrize("damage", ["missing", "duplicate", "reordered", "instrument"])

@@ -10,7 +10,10 @@ accepts holdout input.
 The output contains 15m, 1H, and 4H OHLCV series. Each aggregate keeps the ordered
 constituent digest, receipt hashes and availability bases; its available time is
 the latest constituent availability. Volume is summed with bounded exact Decimal
-arithmetic, independently of the caller's Decimal context. The source volume unit
+arithmetic under a fully pinned Decimal context, independently of the caller's
+context and process `DefaultContext`. Feature replay also pins the Gate 2
+Decimal context before calculation, so identical source rows and cutoffs yield
+the same replay hash under different caller settings. The source volume unit
 remains explicit; the archive adapter labels it `source_unspecified` until a
 separate source-unit contract establishes a unit. It never calls volume USD or
 contracts by inference.

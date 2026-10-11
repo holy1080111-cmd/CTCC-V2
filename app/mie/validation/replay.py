@@ -4,7 +4,15 @@ import hashlib
 import json
 from collections.abc import Sequence
 from datetime import datetime, timedelta
-from decimal import ROUND_HALF_EVEN, Context, Decimal, localcontext
+from decimal import (
+    ROUND_HALF_EVEN,
+    Context,
+    Decimal,
+    DivisionByZero,
+    InvalidOperation,
+    Overflow,
+    localcontext,
+)
 from itertools import pairwise
 from typing import Literal
 
@@ -28,6 +36,20 @@ from app.mie.features import (
 
 D = Decimal
 SHA256_PATTERN = r"^[0-9a-f]{64}$"
+
+
+def _feature_context() -> Context:
+    """Fix Gate 2 arithmetic independently of caller and DefaultContext state."""
+    return Context(
+        prec=28,
+        rounding=ROUND_HALF_EVEN,
+        Emin=-999999,
+        Emax=999999,
+        capitals=1,
+        clamp=0,
+        flags=[],
+        traps=[InvalidOperation, DivisionByZero, Overflow],
+    )
 
 
 class ReplayValidationError(ValueError):
@@ -393,15 +415,16 @@ def replay_features_at(
         as_of=cutoff,
         bars=tuple(row.bar for row in selected),
     )
-    snapshot = mathematical_feature_snapshot(
-        window,
-        signal_alpha=signal_alpha,
-        dynamics_window=dynamics_window,
-        momentum_fast_bars=momentum_fast_bars,
-        momentum_slow_bars=momentum_slow_bars,
-        pivot_left_bars=pivot_left_bars,
-        pivot_right_bars=pivot_right_bars,
-    )
+    with localcontext(_feature_context()):
+        snapshot = mathematical_feature_snapshot(
+            window,
+            signal_alpha=signal_alpha,
+            dynamics_window=dynamics_window,
+            momentum_fast_bars=momentum_fast_bars,
+            momentum_slow_bars=momentum_slow_bars,
+            pivot_left_bars=pivot_left_bars,
+            pivot_right_bars=pivot_right_bars,
+        )
     if snapshot is None:
         raise ReplayValidationError("Gate 2 feature replay failed closed")
 

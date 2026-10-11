@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal, localcontext
+from decimal import ROUND_DOWN, Decimal, localcontext
 
 import pytest
 from pydantic import ValidationError
@@ -120,6 +120,22 @@ def test_replay_is_deterministic_shadow_only_and_ignores_future_values() -> None
     assert first.runtime_consumers == 0
     assert first.execution_authority is False
     assert first.feature_snapshot.execution_authority is False
+
+
+def test_replay_hash_is_independent_of_caller_decimal_context() -> None:
+    rows = replay_rows()
+    kwargs = {
+        "as_of": rows[29].bar.closed_at,
+        "bar_horizon": HORIZON,
+        "history_bars": 24,
+    }
+    baseline = replay_features_at(rows, **kwargs)
+    with localcontext() as context:
+        context.prec = 4
+        context.rounding = ROUND_DOWN
+        altered = replay_features_at(rows, **kwargs)
+    assert altered == baseline
+    assert altered.replay_sha256 == baseline.replay_sha256
 
 
 def test_replay_rejects_missing_duplicate_unsorted_and_late_due_rows() -> None:

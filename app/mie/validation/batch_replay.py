@@ -8,7 +8,16 @@ from __future__ import annotations
 
 import hashlib
 from datetime import datetime, timedelta
-from decimal import Context, Decimal, Inexact, localcontext
+from decimal import (
+    ROUND_HALF_EVEN,
+    Context,
+    Decimal,
+    DivisionByZero,
+    Inexact,
+    InvalidOperation,
+    Overflow,
+    localcontext,
+)
 from typing import Literal
 
 from pydantic import Field, model_validator
@@ -179,8 +188,19 @@ def aggregate_point_in_time_minutes(
             )
 
     timeframes = []
-    arithmetic = Context(prec=256)
-    arithmetic.traps[Inexact] = True
+    # Context's omitted fields inherit mutable DefaultContext settings. Pin
+    # every field so a caller cannot change aggregate bytes via that process
+    # global, including in nested Decimal operations.
+    arithmetic = Context(
+        prec=256,
+        rounding=ROUND_HALF_EVEN,
+        Emin=-999999,
+        Emax=999999,
+        capitals=1,
+        clamp=0,
+        flags=[],
+        traps=[InvalidOperation, DivisionByZero, Overflow, Inexact],
+    )
     for label, seconds in TARGETS:
         width = seconds // 60
         bars = []
