@@ -18,6 +18,7 @@ from tests.unit.test_qualification_account_capture import (
     BARRIER,
     CURSORS,
     INSTRUMENT,
+    MAIN_UID,
     NOW,
     UID,
     ms,
@@ -1028,6 +1029,26 @@ def test_supplemental_evidence_cannot_cross_account_uid(source, field):
         materialize(source=source, supplied=supplied)
 
 
+@pytest.mark.parametrize("field", ["uid", "mainUid"])
+@pytest.mark.parametrize("value", ["700002", None])
+def test_supplemental_instrument_raw_identity_must_match_config(source, field, value):
+    raw = raw_instrument(**{field: value})
+    supplied = inputs(instruments=(instrument(raw),))
+    with pytest.raises(
+        module.AccountMaterializationError,
+        match="^supplemental_account_identity_mismatch$",
+    ):
+        materialize(source=source, supplied=supplied)
+
+
+def test_supplemental_instrument_matching_explicit_config_identity_maps(source):
+    raw = raw_instrument(uid=UID, mainUid=MAIN_UID)
+    result = materialize(source=source, supplied=inputs(instruments=(instrument(raw),)))
+    assert len(result.instruments) == 1
+    assert result.instruments[0].instrument_id == INSTRUMENT
+    assert result.snapshot is None
+
+
 @pytest.mark.parametrize("state", ["reserved", "consumed", "uncertain"])
 def test_expired_local_reservation_is_retained_at_full_dual_scenario_coverage(
     source, state
@@ -1086,10 +1107,14 @@ def test_older_balance_update_does_not_grant_complete_account():
     assert result.account_complete is False
 
 
-def test_peak_raw_identity_mismatch_is_not_hidden_by_matching_evidence_scope(source):
+@pytest.mark.parametrize("field", ["uid", "mainUid"])
+@pytest.mark.parametrize("value", ["700002", None])
+def test_peak_raw_identity_mismatch_is_not_hidden_by_matching_evidence_scope(
+    source, field, value
+):
     evidence = peak_evidence()
     raw = json.loads(evidence.samples[0].raw_response)
-    raw["uid"] = "700002"
+    raw[field] = value
     bad_sample = instrument(
         raw,
         observed_at=evidence.samples[0].observed_at,
@@ -1098,7 +1123,10 @@ def test_peak_raw_identity_mismatch_is_not_hidden_by_matching_evidence_scope(sou
     evidence = evidence.model_copy(
         update={"samples": (bad_sample, evidence.samples[1])}
     )
-    with pytest.raises(module.AccountMaterializationError):
+    with pytest.raises(
+        module.AccountMaterializationError,
+        match="^supplemental_account_identity_mismatch$",
+    ):
         materialize(source=source, supplied=snapshot_inputs(peak=evidence))
 
 

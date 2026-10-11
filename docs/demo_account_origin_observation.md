@@ -131,3 +131,37 @@ observed IP binding**. It contains no raw response, API key, UID or IP address.
 The account registration site and credential-session ownership remain
 unverified. This is a read-only diagnostic, not a trusted account snapshot or
 Demo execution acceptance; order writes remain disabled.
+
+## Registration-site evidence boundary
+
+An authenticated `www.okx.com` profile that shows the same UID as a signed
+`account/config` response establishes an account-identity match for that
+observation. A country/region setting, the browser's current login host, a
+successful signed GET on the global API host, a Demo API-key page without an
+explicit site field, and the configured key's permission or IP fields do
+**not** themselves state where the account was registered. The documented
+`account/config` response has no registration-site field. These observations
+must not set
+`registration_region_authenticated=true` or open native V2/V3 Demo public I/O.
+
+The missing proof is an authenticated OKX first-party account/profile or API-key
+record, or an authenticated OKX support record, that explicitly states the
+registration site for the exact account UID. The issuer must verify the record's
+origin, capture time, exact UID and binding to the controlled key session; a
+caller-supplied URL, screenshot, text, digest, matching `mainUid`, or saved route
+diagnostic is not an issuer. The account evidence must then be joined to a new
+signed Demo `account/config` read on that site's reviewed REST origin, with
+`x-simulated-trading: 1`, verified TLS, no redirect, exact UID/mainUid and key
+policy. Sensitive identifiers and credentials stay in private source storage;
+reports retain only redacted status and digests.
+
+Until that first-party record is actually available and verified, the existing
+pre-clock and per-I/O `trusted_demo_public_origin_profile_unavailable` denial is
+intentional. A future versioned, one-use capability must be issued inside the
+same bounded task and checked again for each REST/WS request; a plan boolean or
+persisted receipt cannot replace it. The original-source coordinator currently
+acquires public data before the full account capture, so a later account-origin
+diagnostic cannot retroactively authorize the earlier public request. A
+pre-publication read-only identity/provenance phase would be required before any
+trusted-source admission. None of this grants G1, account completeness or order
+authority.

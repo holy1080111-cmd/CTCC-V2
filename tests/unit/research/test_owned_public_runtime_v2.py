@@ -300,6 +300,73 @@ def test_v2_demo_transport_rechecks_origin_before_native_io(
     assert state == {"plan": plan}
 
 
+@pytest.mark.parametrize(
+    "schema_version",
+    [
+        "ctcc.public.initial_runtime_plan.v2",
+        "ctcc.public.runtime_plan.v2",
+        "ctcc.public.initial_runtime_plan.v3",
+        "ctcc.public.runtime_plan.v3",
+    ],
+)
+@pytest.mark.parametrize("entry", ["client", "request", "ws"])
+@pytest.mark.parametrize(
+    "claim",
+    [
+        {"login_host": "www.okx.com", "browser_uid_matches_config": True},
+        {
+            "account_config": {
+                "uid": "synthetic-uid",
+                "mainUid": "synthetic-uid",
+                "perm": "read_only,trade",
+            }
+        },
+        {"registration_evidence_sha256": "b" * 64},
+        {"trusted_demo_public_origin_profile": {"verified": True}},
+        {"registration_region_authenticated": True},
+    ],
+)
+def test_login_config_or_caller_proof_cannot_open_v2_v3_demo_transport(
+    monkeypatch, schema_version, entry, claim
+):
+    """A browser login, config UID or arbitrary digest is not a site issuer."""
+    region = "global"
+    route = demo_public_origin.reviewed_demo_public_route(region)
+    plan = {
+        "schema_version": schema_version,
+        "environment": "demo",
+        "registration_region": region,
+        "registration_region_authenticated": False,
+        "account_plan_sha256": "a" * 64,
+        "demo_public_origin_policy_sha256": sha(
+            demo_public_origin_policy_v2.freeze_demo_public_origin_policy_v2(region)
+        ),
+        "rest_origin": route.rest_origin,
+        "ws_origin": route.ws_origin,
+        **claim,
+    }
+    state = {"plan": plan}
+    monkeypatch.setattr(runtime, "_state", lambda *_args, **_kwargs: state)
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("unverified_registration_site_reached_native_transport")
+
+    monkeypatch.setattr(runtime.ssl, "create_default_context", forbidden)
+    monkeypatch.setattr(runtime, "_verified_client", forbidden)
+    monkeypatch.setattr(runtime, "_event", forbidden)
+    invoke = {
+        "client": lambda: runtime._new_owned_client(object(), "quote"),
+        "request": lambda: runtime._request_scope(object(), object(), object(), None),
+        "ws": lambda: runtime._ws_options(object(), None),
+    }[entry]
+    with pytest.raises(
+        runtime.PublicSourceRuntimeError,
+        match="trusted_demo_public_origin_profile_unavailable",
+    ):
+        invoke()
+    assert state == {"plan": plan}
+
+
 @pytest.mark.asyncio
 async def test_unbound_post_g12_v2_issuer_refuses_before_publication_clock_or_io(
     inputs, tmp_path, monkeypatch

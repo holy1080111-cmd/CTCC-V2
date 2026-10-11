@@ -287,7 +287,7 @@ async def _collect(
         expected_inputs_sha256=profile_pin,
     )
     spec_gaps = set(derived.blocking_reasons)
-    specs = mapping._instruments(derived.inputs, packet.completed_at, spec_gaps)
+    specs = mapping._instruments(derived.inputs, packet, spec_gaps)
     rule_pins = {}
     for instrument_id in plan.leverage_instrument_ids:
         rules = derive_captured_instrument_rules(

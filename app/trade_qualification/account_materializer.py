@@ -426,6 +426,17 @@ def _raw(evidence):
     return row
 
 
+def _supplemental_account_identity(row, packet):
+    # These rows may omit account identifiers, but an explicit identifier must
+    # agree with the config response that anchors the replayed packet.
+    for field, expected in (
+        ("uid", packet.plan.expected_uid),
+        ("mainUid", packet.plan.expected_main_uid),
+    ):
+        if field in row and row[field] != expected:
+            _fail("supplemental_account_identity_mismatch")
+
+
 def _time(raw):
     record = capture._time_record("time", raw, "source_update")
     return record.value
@@ -471,7 +482,7 @@ def _balance(row, currency):
     return equity, available, None
 
 
-def _instruments(inputs, completed, gaps):
+def _instruments(inputs, packet, gaps):
     groups = {}
     for item in inputs.correlations:
         if item.instrument_id in groups:
@@ -483,6 +494,7 @@ def _instruments(inputs, completed, gaps):
     seen = set()
     for evidence in inputs.instruments:
         row = _raw(evidence)
+        _supplemental_account_identity(row, packet)
         name = row.get("instId")
         if (
             type(name) is not str
@@ -514,7 +526,7 @@ def _instruments(inputs, completed, gaps):
             or not 1 <= values["lever"] <= 125
             or values["minSz"] > values["maxLmtSz"]
             or name not in groups
-            or not _source_time(evidence, completed)
+            or not _source_time(evidence, packet.completed_at)
         ):
             gaps.add("instrument_mapping_incomplete")
             continue
@@ -1279,8 +1291,7 @@ def _peak(inputs, current_equity, packet, gaps):
     points = []
     for sample in evidence.samples:
         row = _raw(sample)
-        if row.get("uid") not in (None, inputs.account_id):
-            _fail("peak_account_identity_mismatch")
+        _supplemental_account_identity(row, packet)
         value, _, reason = _balance(row, inputs.settlement_currency)
         top_time = _time(row.get("uTime"))
         currency_time = (
@@ -1363,7 +1374,7 @@ def materialize_demo_portfolio_snapshot(
         packet, expected_packet_sha256
     )
     gaps.update(consistency.blocking_reasons)
-    specs = _instruments(inputs, packet.completed_at, gaps)
+    specs = _instruments(inputs, packet, gaps)
     config = records["config_before"][0][1]
     if config.get("acctLv") != "2":
         gaps.add("account_mode_mapping_unsupported")

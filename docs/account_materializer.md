@@ -19,6 +19,8 @@
 
 `copy_materialization_inputs` 在任何 serializer 前拒絕 subclasses、hidden fields、opaque scalars、iterators、非有限數字和不可信 timezone callback，回傳重新建構的 immutable inputs。`materialization_inputs_sha256` 給外部 pin；有 IO 的協調器應在 IO 前固定 copy 和外部 SHA，完成後用同一份 copy 與 `expected_inputs_sha256` 重驗。純離線 API 省略此外部 pin 不代表輸入已認證。
 
+補充的 instrument row 與 peak balance sample 可依原來源 schema 省略帳戶識別欄位；但 raw row 若帶有 `uid` 或 `mainUid`，必須與重播 packet 中 `account/config` 固定的識別值完全相同。矛盾值或明示 `null` 會拒絕映射；來源省略識別欄位時，此檢查不會憑空認證其帳戶身分。
+
 結果 `AccountMaterializationResult` 提供實際算出的 instruments、equity／available margin、positions、pending reservations、loss history、逐 row projections、原始 packet／inputs SHA 及缺口。無法表示的值用 `None`／具體 reason，不填零。只有已映射的 rows 進入 exposure tuple；projections 保留未映射 rows，未映射不會被誤當完整集合。
 
 結果固定 `state=recorded_mapping_incomplete_account`，`account_complete`、`source_authenticity_verified`、`execution_authority` 全為 false。只要 packet 有任何 `incomplete_reasons` 或映射留下任何缺口，`snapshot=None`，即使可算出部分帳戶數字或所有合成 row 都有形狀。現行驗證過的 packet 必然保留來源、歷史和跨讀取完整性缺口，因此不產生正式 `PortfolioRiskSnapshot`。沒有 caller `complete` 開關；診斷欄位不能交給 `evaluate_portfolio` 作完整風險快照。

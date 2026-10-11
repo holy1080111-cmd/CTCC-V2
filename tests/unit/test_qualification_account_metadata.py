@@ -109,9 +109,7 @@ def test_packet_rows_produce_full_exact_metadata_without_caller_rows(selected):
         == frozen
     )
     gaps = set()
-    spec = mapping._instruments(result.inputs, packet.completed_at, gaps)[
-        old.INSTRUMENT
-    ]
+    spec = mapping._instruments(result.inputs, packet, gaps)[old.INSTRUMENT]
     assert spec.contract_value == Decimal("0.01")
     assert spec.contract_value_currency == "BTC" and spec.settlement_currency == "USDT"
     assert spec.lot_size == Decimal("0.1")
@@ -234,7 +232,7 @@ def test_inverse_contract_is_preserved_without_linear_conversion():
     result = derive(packet)
     assert json.loads(result.inputs.instruments[0].raw_response) == row
     gaps = set()
-    assert mapping._instruments(result.inputs, packet.completed_at, gaps) == {}
+    assert mapping._instruments(result.inputs, packet, gaps) == {}
     assert "instrument_mapping_incomplete" in gaps
 
 

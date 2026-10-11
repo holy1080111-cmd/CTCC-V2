@@ -4518,3 +4518,46 @@ from overheating. An independent source review found no high- or medium-severity
 issue, while explicitly leaving real Demo capture and PostgreSQL behavior
 unverified pending exact-source hosted CI. The account remains incomplete and
 all exchange writes remain disabled.
+
+## 2026-10-11 dedicated Notion connection and read-only runtime
+
+At source `620c03e14afb4161c18d63c5acf593e699b47ae3`, the operator
+authorized creation of the dedicated `CTCC V2 Outbox` internal connection in
+the target Notion workspace. The connection has read/insert content only, no
+update/comment/user/agent capability, and manually selected access to the
+`CTCC 單筆訊號與交易報告` database. The API token is stored only in a
+current-user private file outside the source, validation reports and queue.
+Authenticated GET-only setup read back the database-to-data-source relation
+and pinned all four actual property IDs and types. The setup receipt has
+SHA256 `f5d942c26e86916d5c4a898c10db49951cfe1a7a41587b52167095c22184edd1`;
+the destination file has SHA256
+`f90cd87a93e671dc091a038e4fd6262ad48fc9faee385b47a93c7878e876fd0c`.
+No token, UID, IP, API response body or private header is copied into this
+record.
+
+One explicit `NotionOutboxRuntime.tick()` on an empty persistent queue
+completed with `notion_outbox_pass_complete` after its own authenticated
+binding readback. The redacted runtime evidence is
+`../../validation-results/notion-readonly-620c03e-20261011/evidence.json`
+(SHA256 `600c6ec5afc5c1e91e157800b56f949ad07f3e2def806aaa15ad4b3096e5442c`).
+The worker remains persistently disabled; there was no Notion page creation
+or exchange order write. This verifies configuration and read-only wiring,
+not producer handoff, delivery, Demo acceptance or Notion sync.
+
+The same host still reports W32Time running with automatic startup, the
+`Taipei Standard Time` UTC+08:00 zone and a `time.windows.com` synchronization
+source. A separate 32-sample monotonic/UTC conversion preflight passed; its
+redacted record is
+`../../validation-results/host-clock-readonly-620c03e-20261011/evidence.json`
+(SHA256 `85ff50b3261e8db86c6eec7795f27de77066472270551cb591959ab907ac13f6`).
+This OS preflight cannot establish OHLC/WS/account causal completeness.
+
+Authenticated OKX profile and signed Demo `account/config` observations
+matched the exact account identity and confirmed current key access, but neither
+source explicitly states the account's registration site. V2/V3 trusted public
+I/O therefore remains denied. The working safety regression rejects five
+classes of caller-supplied login/config/site claims at three native entry seams
+across four plan versions. Separately, supplemental instrument and peak rows
+now reject explicit `uid` or `mainUid` conflicts with the replayed config;
+omitted identifiers do not become authenticated. Selected local tests passed,
+but these changes still require a new exact-source full CI run after commit.
