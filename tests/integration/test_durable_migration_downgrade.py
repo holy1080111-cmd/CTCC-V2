@@ -1,4 +1,4 @@
-"""Actual PostgreSQL DDL/lock/retention tests in disposable synthetic schemas.
+"""Actual PostgreSQL DDL/lock/retention tests in disposable synthetic databases.
 
 Requires an explicitly supplied isolated DATABASE_URL. No SQLite substitute,
 exchange connection, host restart, or deployed schema change is performed.
@@ -22,6 +22,7 @@ from app.database.models.qualification_ledger import (
     QualificationReservation,
     QualificationReservationTransition,
 )
+from app.database.repositories import qualification_ledger as ledger_repository
 from app.database.repositories.account_bill_archive_claim import (
     AccountBillArchiveClaimRepository,
 )
@@ -39,6 +40,7 @@ from app.trade_qualification.reservations import (
 )
 from tests.durable_migration_fixtures import (
     DOWNGRADE_LOCKS,
+    MIGRATIONS,
     TABLES,
     RecordedDowngrade,
     load_migration,
@@ -71,13 +73,21 @@ def assert_event_state_preserved(before, after):
 
 
 def migrate(connection, revision, direction):
+    database_name, schema = connection.exec_driver_sql(
+        "SELECT current_database(), current_schema()"
+    ).one()
+    if (
+        not re.fullmatch(r"ctcc_migration_test_[a-f0-9]{32}", database_name)
+        or schema != "public"
+    ):
+        raise RuntimeError("historical_migration_connection_not_isolated")
     module = load_migration(revision)
     module.op = Operations(MigrationContext.configure(connection))
     getattr(module, direction)()
 
 
 async def migrate_public_qualified_guard_in_sandbox(connection, direction):
-    """Run 0027's actual SQL with public mapped only to disposable test schema."""
+    """Run 0027's actual public SQL only in a disposable test database."""
 
     class RecordedOperations:
         def __init__(self):
@@ -90,29 +100,119 @@ async def migrate_public_qualified_guard_in_sandbox(connection, direction):
     recorded = RecordedOperations()
     module.op = recorded
     getattr(module, direction)()
-    schema = (await connection.execute(text("SELECT current_schema()"))).scalar_one()
-    assert re.fullmatch(r"ctcc_migration_test_[a-f0-9]{32}", schema)
-    assert recorded.statements and all("public." in sql for sql in recorded.statements)
+    database_name, schema = (
+        await connection.execute(text("SELECT current_database(), current_schema()"))
+    ).one()
+    if not re.fullmatch(r"ctcc_migration_test_[a-f0-9]{32}", database_name):
+        raise RuntimeError("historical_migration_database_not_isolated")
+    if schema != "public":
+        raise RuntimeError("historical_migration_schema_not_public")
+    if not recorded.statements or any(
+        "public." not in sql for sql in recorded.statements
+    ):
+        raise RuntimeError("historical_migration_sql_not_public")
     for sql in recorded.statements:
-        await connection.execute(text(sql.replace("public.", f'"{schema}".')))
+        await connection.execute(text(sql))
 
 
 @pytest.fixture
-async def sandbox(database, revision):
+async def sandbox(database, revision, monkeypatch):
     admin = database[0]
-    assert admin.dialect.name == "postgresql"
-    schema = "ctcc_migration_test_" + uuid4().hex
-    assert re.fullmatch(r"ctcc_migration_test_[a-f0-9]{32}", schema)
-    async with admin.begin() as connection:
-        await connection.execute(text(f'CREATE SCHEMA "{schema}"'))
-    engine = create_async_engine(
-        admin.url,
-        poolclass=NullPool,
-        connect_args={"server_settings": {"search_path": f'"{schema}",pg_catalog'}},
-    )
+    if admin.dialect.name != "postgresql":
+        raise RuntimeError("historical_migration_postgresql_required")
+    # This suite creates/drops a child database. The connection must be the
+    # credential-free PostgreSQL container made by verify_final_hermetic, not
+    # merely an arbitrary DATABASE_URL whose role happens to have CREATEDB.
+    if (
+        admin.url.drivername != "postgresql+asyncpg"
+        or re.fullmatch(r"ctcc-final-[a-f0-9]{12}-postgres", admin.url.host or "")
+        is None
+        or admin.url.username != "ctcc"
+        or admin.url.password is not None
+        or admin.url.port != 5432
+        or admin.url.database != "ctcc"
+        or bool(admin.url.query)
+    ):
+        raise RuntimeError("historical_migration_hermetic_cluster_required")
+    name = "ctcc_migration_test_" + uuid4().hex
+    if not re.fullmatch(r"ctcc_migration_test_[a-f0-9]{32}", name):
+        raise RuntimeError("historical_migration_name_invalid")
+    if admin.url.database == name:
+        raise RuntimeError("historical_migration_parent_is_target")
+    engine = None
+    created_name = None
     try:
+        async with admin.connect() as connection:
+            await connection.execution_options(isolation_level="AUTOCOMMIT")
+            allowed = await connection.scalar(
+                text(
+                    "SELECT rolcreatedb OR rolsuper FROM pg_catalog.pg_roles "
+                    "WHERE rolname = current_user"
+                )
+            )
+            if allowed is not True:
+                raise RuntimeError("isolated_test_createdb_role_required")
+            parent_name = await connection.scalar(text("SELECT current_database()"))
+            if parent_name != admin.url.database or parent_name == name:
+                raise RuntimeError("historical_migration_parent_identity_invalid")
+            await connection.execute(text(f'CREATE DATABASE "{name}"'))
+            created_name = name
+        engine = create_async_engine(
+            admin.url.set(database=name),
+            poolclass=NullPool,
+            connect_args={"server_settings": {"search_path": "public,pg_catalog"}},
+        )
+
+        async def historical_write_lock(session):
+            """Permit old-revision fixture writes only in this isolated database.
+
+            Current production requires the DB0023/DB0027 public guards, which
+            cannot be present while testing their actual upgrade from DB0017.
+            Keep the same transaction and NOWAIT journal table locks; separate
+            current-head tests exercise the unpatched production guard.
+            """
+
+            await session.execute(
+                text("SET TRANSACTION ISOLATION LEVEL READ COMMITTED")
+            )
+            observed_name, schema = (
+                await session.execute(
+                    text("SELECT current_database(), current_schema()")
+                )
+            ).one()
+            if (
+                observed_name != name
+                or not re.fullmatch(r"ctcc_migration_test_[a-f0-9]{32}", observed_name)
+                or schema != "public"
+            ):
+                raise RuntimeError("historical_write_connection_not_isolated")
+            await session.execute(
+                text("SET LOCAL search_path TO pg_catalog, public, pg_temp")
+            )
+            await ledger_repository._require_event_journal_session(session)
+            await session.execute(
+                text(
+                    "LOCK TABLE public.qualification_account_scopes, "
+                    "public.qualification_reservations, "
+                    "public.qualification_reservation_transitions "
+                    "IN ROW EXCLUSIVE MODE NOWAIT"
+                )
+            )
+
+        monkeypatch.setattr(
+            ledger_repository,
+            "_require_event_journal_write_schema",
+            historical_write_lock,
+        )
         async with engine.begin() as connection:
-            for current in TABLES:
+            observed_name, schema = (
+                await connection.execute(
+                    text("SELECT current_database(), current_schema()")
+                )
+            ).one()
+            if observed_name != name or schema != "public":
+                raise RuntimeError("historical_migration_connection_not_isolated")
+            for current in MIGRATIONS:
                 if current <= revision:
                     await connection.run_sync(migrate, current, "upgrade")
         yield (
@@ -120,11 +220,27 @@ async def sandbox(database, revision):
             async_sessionmaker(engine, expire_on_commit=False, autoflush=False),
         )
     finally:
-        await engine.dispose()
-        # Only this generated synthetic namespace is disposable. Never use the
-        # application's public tables for destructive migration acceptance.
-        async with admin.begin() as connection:
-            await connection.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
+        try:
+            if engine is not None:
+                await engine.dispose()
+        finally:
+            if created_name is not None:
+                # Never drop the supplied DATABASE_URL. The generated database
+                # is the sole disposable target and has no remaining engine.
+                if created_name != name or not re.fullmatch(
+                    r"ctcc_migration_test_[a-f0-9]{32}", created_name
+                ):
+                    raise RuntimeError("historical_migration_cleanup_target_invalid")
+                async with admin.connect() as connection:
+                    await connection.execution_options(isolation_level="AUTOCOMMIT")
+                    parent_name = await connection.scalar(
+                        text("SELECT current_database()")
+                    )
+                    if parent_name != admin.url.database or parent_name == created_name:
+                        raise RuntimeError(
+                            "historical_migration_cleanup_origin_invalid"
+                        )
+                    await connection.execute(text(f'DROP DATABASE "{created_name}"'))
 
 
 async def shape(engine):
