@@ -10,6 +10,7 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.exc import DBAPIError
 
 from app.database.models.demo_automation import DemoAutomationState
 from app.database.models.okx_demo import OkxDemoSyncCheckpoint
@@ -38,10 +39,123 @@ from tests.integration.test_qualification_ledger_repository import (
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
 
+def _safe_first_append_failure(exc: Exception) -> str:
+    """Keep the synthetic SQL diagnostic free of source and account values."""
+    kind = type(exc).__name__
+    if kind not in {
+        "AccountObservationError",
+        "DBAPIError",
+        "IntegrityError",
+        "ProgrammingError",
+    }:
+        kind = "other_exception"
+    fields = [f"class={kind}"]
+    if (
+        type(exc) is AccountObservationError
+        and len(exc.args) == 1
+        and type(exc.args[0]) is str
+        and exc.args[0]
+        in {
+            "observation_policy_epoch_mismatch",
+            "observation_source_replay_invalid",
+            "observation_predecessor_missing",
+            "observation_continuation_prefix_incomplete",
+            "observation_commit_readback_unknown",
+            "observation_read_failed",
+        }
+    ):
+        fields.append(f"code={exc.args[0]}")
+    if isinstance(exc, DBAPIError):
+        # SQLAlchemy asyncpg wrapping may keep PostgreSQL diagnostics on the
+        # original error or its cause. Read only fixed fields and allowlists.
+        for origin in (exc.orig, getattr(exc.orig, "__cause__", None)):
+            if origin is None:
+                continue
+            state = getattr(origin, "sqlstate", None)
+            if (
+                type(state) is str
+                and len(state) == 5
+                and state.isascii()
+                and state.isalnum()
+                and not any(field.startswith("sqlstate=") for field in fields)
+            ):
+                fields.append(f"sqlstate={state}")
+            diag = getattr(origin, "diag", None)
+            constraint = getattr(diag, "constraint_name", None) or getattr(
+                origin, "constraint_name", None
+            )
+            if (
+                type(constraint) is str
+                and constraint
+                in {
+                    "fk_account_observation_source",
+                    "uq_account_observation_capture",
+                    "fk_observation_fact_batch",
+                    "fk_observation_coverage_batch",
+                    "fk_observation_finding_batch",
+                    "scope",
+                    "sequence_bound",
+                    "chain",
+                    "byte_bound",
+                    "bound",
+                    "digests",
+                }
+                and not any(field.startswith("constraint=") for field in fields)
+            ):
+                fields.append(f"constraint={constraint}")
+            primary = getattr(diag, "message_primary", None) or getattr(
+                origin, "message", None
+            )
+            if (
+                type(primary) is str
+                and primary
+                in {
+                    "account_observation_append_denied",
+                    "account_observation_membership_shape_denied",
+                }
+                and not any(field.startswith("db_guard=") for field in fields)
+            ):
+                fields.append(f"db_guard={primary}")
+    return ",".join(fields)
+
+
+async def _stored_with_first_append_diagnostic(monkeypatch, database):
+    """On a redacted first failure, classify one internal attempt, then fail."""
+    original_append = AccountObservationIndexRepository.append
+
+    async def observed_append(self, scope, reference, window, *, expected_revision):
+        try:
+            return await original_append(
+                self, scope, reference, window, expected_revision=expected_revision
+            )
+        except AccountObservationError as exc:
+            if expected_revision != 0 or exc.args != ("observation_append_failed",):
+                raise
+            try:
+                await self._append(scope, reference, window, expected_revision)
+            except Exception as internal:  # noqa: BLE001 -- classify synthetic DB failure
+                classification = _safe_first_append_failure(internal)
+            else:
+                classification = "internal_once_succeeded_after_public_failure"
+            raise AssertionError(
+                f"first_observation_append_failed:{classification}"
+            ) from None
+
+    monkeypatch.setattr(AccountObservationIndexRepository, "append", observed_append)
+    try:
+        return await stored(monkeypatch, database)
+    finally:
+        monkeypatch.setattr(
+            AccountObservationIndexRepository, "append", original_append
+        )
+
+
 async def test_original_balance_pages_survive_restart_and_reject_prefix_or_head_changes(
     monkeypatch, database
 ):
-    repo, scope, reference, _, first = await stored(monkeypatch, database)
+    repo, scope, reference, _, first = await _stored_with_first_append_diagnostic(
+        monkeypatch, database
+    )
     original = await repo.journal.read_chain(scope, reference.capture_id)
     later_ref, later_window = await additional_capture(monkeypatch, repo, scope, [])
     second = await repo.append(scope, later_ref, later_window, expected_revision=1)

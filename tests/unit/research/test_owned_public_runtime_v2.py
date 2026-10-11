@@ -54,9 +54,19 @@ def policy():
     )
 
 
-def setup(monkeypatch, source, *, original=None):
+def setup(
+    monkeypatch,
+    source,
+    *,
+    original=None,
+    rest_hostname="www.okx.com",
+    ws_hostname="ws.okx.com",
+):
     clock, directory, harness, publications = synthetic_runtime(
-        monkeypatch, (source, None, None) if original is None else original
+        monkeypatch,
+        (source, None, None) if original is None else original,
+        rest_hostname=rest_hostname,
+        ws_hostname=ws_hostname,
     )
     # Exercise immutable historical v2 packet/journal behavior with synthetic
     # transport only. Production has no bypass and still refuses new capture.

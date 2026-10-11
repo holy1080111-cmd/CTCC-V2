@@ -60,7 +60,9 @@ class SyntheticClock:
         return resign(value)
 
 
-def synthetic_runtime(monkeypatch, inputs):
+def synthetic_runtime(
+    monkeypatch, inputs, *, rest_hostname="www.okx.com", ws_hostname="ws.okx.com"
+):
     """Only tests replace TLS admission and native storage/clock; never production."""
     source, _values, _run = inputs
     clock = SyntheticClock(source.evaluated_at)
@@ -79,7 +81,7 @@ def synthetic_runtime(monkeypatch, inputs):
     factory = runtime.public._new_client
     proof = {
         "classification": "owned_native_tls",
-        "hostname": "www.okx.com",
+        "hostname": rest_hostname,
         "version": "TLSv1.3",
         "peer_sha256": "1" * 64,
     }
@@ -103,7 +105,7 @@ def synthetic_runtime(monkeypatch, inputs):
         runtime._event(
             owner,
             "ws_connected",
-            {"connected": state["last"], "tls": {**proof, "hostname": "ws.okx.com"}},
+            {"connected": state["last"], "tls": {**proof, "hostname": ws_hostname}},
         )
 
     monkeypatch.setattr(runtime, "_new_owned_client", new_client)

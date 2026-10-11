@@ -23,6 +23,7 @@ from app.mie.validation import (
     PointInTimeReplaySnapshot,
     ProspectiveHoldoutSpec,
 )
+from app.mie.validation.scheduled_public_minute import ScheduledPublicMinuteReceiptV1
 
 MIE_ROOT = Path(__file__).resolve().parents[3] / "app" / "mie"
 APP_ROOT = MIE_ROOT.parent
@@ -121,6 +122,7 @@ def test_mie_decision_and_trace_have_no_order_geometry() -> None:
     assert forbidden_fields.isdisjoint(ArchiveBatchPlan.model_fields)
     assert forbidden_fields.isdisjoint(ArchiveBatchManifest.model_fields)
     assert forbidden_fields.isdisjoint(AvailabilityProvenance.model_fields)
+    assert forbidden_fields.isdisjoint(ScheduledPublicMinuteReceiptV1.model_fields)
 
 
 def test_gate3_contracts_are_structurally_zero_authority() -> None:
@@ -139,6 +141,7 @@ def test_gate3_contracts_are_structurally_zero_authority() -> None:
         Gate3EvidenceArtifact,
         PointInTimeReplaySnapshot,
         ForwardDirectionLabel,
+        ScheduledPublicMinuteReceiptV1,
     ):
         assert contract_type.model_fields["runtime_consumers"].default == 0
         assert contract_type.model_fields["execution_authority"].default is False
@@ -152,6 +155,7 @@ def test_archive_rehearsal_cannot_attest_predictive_eligibility() -> None:
         ArchiveReplayDataset,
         AvailabilityProvenance,
         Gate3ProspectiveEvidenceArtifact,
+        ScheduledPublicMinuteReceiptV1,
     ):
         assert contract_type.model_fields["predictive_oos_eligible"].default is False
 

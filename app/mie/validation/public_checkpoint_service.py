@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 import uuid
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from app.database.repositories.public_receipt_witness import (
@@ -43,11 +44,24 @@ _HEX64 = re.compile(r"[a-f0-9]{64}\Z")
 
 @dataclass(frozen=True, slots=True)
 class WitnessedPublicCapture:
+    capture_id: str
     receipt_sha256: str
     witness_revision: int
     witness_record_sha256: str
     checkpoint_sha256: str
     independently_protected: bool = False
+    predictive_oos_eligible: bool = False
+    execution_authority: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class OwnedPostReadCapture:
+    """Hash-only result after independent V3 database and source readback."""
+
+    witnessed: WitnessedPublicCapture
+    blind_capture_sha256: str
+    post_read_v3_sha256: str
+    post_read_observed_at: datetime
     predictive_oos_eligible: bool = False
     execution_authority: bool = False
 
@@ -188,6 +202,7 @@ class ControlledPublicCheckpointWitness:
         ):
             raise PublicWitnessError("witness_result_unanchored")
         return WitnessedPublicCapture(
+            capture_id=published.capture_id,
             receipt_sha256=published.receipt_sha256,
             witness_revision=self._latest.revision,
             witness_record_sha256=self._latest.record_sha256,
@@ -288,5 +303,103 @@ class PublicCheckpointCaptureService:
             # collector raises. Unknown commits still block the next open.
             self._latest = witness._latest
 
+    async def capture_with_post_read_v3(
+        self,
+        *,
+        plan,
+        expected_plan_sha256,
+        preregistration,
+        expected_preregistration_sha256,
+        observation_repository,
+    ) -> OwnedPostReadCapture:
+        """Capture once, persist V3 once, then independently replay both sources.
 
-__all__ = ("PublicCheckpointCaptureService", "WitnessedPublicCapture")
+        A failure after capture or an uncertain observation append is never
+        retried. The journal and any committed database row remain available
+        for a separate reconciliation; this method grants no predictive claim.
+        """
+        from app.database.repositories.public_receipt_post_read_observation import (
+            PublicReceiptPostReadRepository,
+        )
+        from app.mie.validation.blind_window_capture import (
+            bind_blind_window_minute,
+        )
+        from app.mie.validation.post_publication_availability_v3 import (
+            freeze_post_publication_capture_v3,
+            verify_post_publication_capture_v3,
+        )
+        from app.mie.validation.prospective import Gate3ProspectivePreregistration
+
+        if (
+            type(observation_repository) is not PublicReceiptPostReadRepository
+            or type(preregistration) is not Gate3ProspectivePreregistration
+            or type(expected_preregistration_sha256) is not str
+            or preregistration.canonical_sha256() != expected_preregistration_sha256
+        ):
+            raise PublicWitnessError("scheduled_capture_inputs_invalid")
+        selected = checked(plan, PublicMinuteCapturePlanV1)
+        if selected.canonical_sha256() != expected_plan_sha256:
+            raise PublicWitnessError("scheduled_capture_plan_pin_mismatch")
+        witnessed = await self.capture(
+            plan=selected, expected_plan_sha256=expected_plan_sha256
+        )
+        checkpoint = self._journal.checkpoint
+        if (
+            checkpoint.canonical_sha256() != witnessed.checkpoint_sha256
+            or checkpoint.genesis_sha256 != self._latest.journal_key
+        ):
+            raise PublicWitnessError("scheduled_capture_checkpoint_changed")
+        source = {
+            "journal": self._journal,
+            "witness_repository": self._repository,
+            "capture_id": witnessed.capture_id,
+            "expected_plan_sha256": expected_plan_sha256,
+            "expected_receipt_sha256": witnessed.receipt_sha256,
+            "expected_journal_genesis_sha256": checkpoint.genesis_sha256,
+            "expected_capture_checkpoint_sha256": witnessed.checkpoint_sha256,
+            "expected_witness_revision": witnessed.witness_revision,
+            "expected_witness_record_sha256": witnessed.witness_record_sha256,
+        }
+        frozen = await freeze_post_publication_capture_v3(
+            observation_repository=observation_repository, **source
+        )
+        verified = await verify_post_publication_capture_v3(
+            frozen.payload,
+            expected_sha256=frozen.sha256,
+            observation_repository=observation_repository,
+            **source,
+        )
+        blind = bind_blind_window_minute(
+            journal=self._journal,
+            preregistration=preregistration,
+            expected_preregistration_sha256=expected_preregistration_sha256,
+            expected_capture_plan_sha256=expected_plan_sha256,
+            expected_capture_receipt_sha256=witnessed.receipt_sha256,
+            expected_journal_checkpoint_sha256=witnessed.checkpoint_sha256,
+            capture_id=witnessed.capture_id,
+        )
+        if (
+            verified != frozen.contract
+            or verified.v2_capture.capture_id != witnessed.capture_id
+            or verified.v2_capture.receipt_sha256 != witnessed.receipt_sha256
+            or verified.v2_capture.witness_record_sha256
+            != witnessed.witness_record_sha256
+            or verified.v2_capture.capture_sequence != blind.journal_sequence
+            or len(verified.v2_capture.rows) != 1
+            or verified.v2_capture.rows[0].source_row_sha256 != blind.source_row_sha256
+            or verified.available_at < blind.retained_at
+        ):
+            raise PublicWitnessError("scheduled_capture_post_read_mismatch")
+        return OwnedPostReadCapture(
+            witnessed=witnessed,
+            blind_capture_sha256=blind.canonical_sha256(),
+            post_read_v3_sha256=frozen.sha256,
+            post_read_observed_at=verified.available_at,
+        )
+
+
+__all__ = (
+    "OwnedPostReadCapture",
+    "PublicCheckpointCaptureService",
+    "WitnessedPublicCapture",
+)

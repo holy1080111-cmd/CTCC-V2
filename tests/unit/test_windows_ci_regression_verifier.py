@@ -162,6 +162,14 @@ def test_integration_module_classification_fails_on_new_module(tmp_path: Path):
     assert (
         "test_gate3_committed_preregistration_seal.py" not in verifier.NO_DB_INTEGRATION
     )
+    assert (
+        "test_gate3_scheduled_public_minute_preflight.py"
+        in verifier.POSTGRES_INTEGRATION
+    )
+    assert (
+        "test_gate3_scheduled_public_minute_preflight.py"
+        not in verifier.NO_DB_INTEGRATION
+    )
     integration = tmp_path / "tests" / "integration"
     integration.mkdir(parents=True)
     (tmp_path / "tests" / "unit").mkdir()

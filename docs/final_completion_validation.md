@@ -4245,3 +4245,34 @@ classified into the dedicated PostgreSQL CI suite; three local cases skipped
 because the required isolated database was unavailable. The Linux shard
 classification unit module passed 5/5. Matching exact-source CI for these
 working changes has not yet completed.
+
+## 2026-10-11 CI regression and scheduled-minute working source
+
+The exact `9b2e318` Linux shard 6 produced 2,339 passes, 28 approved
+platform skips, and one failure on the first B3 PostgreSQL observation append
+in the B5 portfolio component integration test. Its public API intentionally
+redacts the internal cause as `observation_append_failed`; the source and
+migration identity checks passed, but the cause remains unresolved. The
+`01149c6` Linux shard 0 produced 1,448 passes, one skip, and three failures
+in synthetic original-precursor tests. Those tests supplied TLS host witnesses
+for the old public route after the owned coordinator began forwarding its
+controlled Demo session, which declares the global Demo REST/WS hosts. The
+synthetic harness now uses those declared hosts in those three cases; all
+three focused tests pass. The production pre-I/O origin refusal is unchanged.
+
+The B5 case is now classified in the dedicated isolated PostgreSQL suite,
+and a test-only failure diagnostic will report only an allowlisted exception
+class, SQLSTATE, constraint or guard code if the first synthetic append fails
+again. It does not expose raw SQL, private response bytes or account values.
+Neither earlier CI run is accepted as green; a new exact-source run must
+establish the true B3 failure cause and verify its eventual repair.
+
+An opt-in Gate 3 one-minute research seam now reads the committed
+preregistration seal and schedule acknowledgments before a native due-time
+sample, attempts the exact scheduled public capture once, independently reads
+the DB0035 post-read observation, and binds the original journal minute. Its
+frozen receipt is **always `incomplete`** and grants no predictive, promotion
+or execution authority. Focused synthetic tests passed 38 cases; its one
+isolated PostgreSQL preflight case skipped locally for lack of a disposable
+database. No real future seal, new market capture or independently protected
+receipt has been produced. Gate 3, OOS, Demo and Live remain FAIL.

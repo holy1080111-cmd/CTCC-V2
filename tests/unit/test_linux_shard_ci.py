@@ -45,6 +45,14 @@ def test_reviewed_modules_in_postgres_suite_only():
             "test_seal_ack_must_commit_before_capture_claim",
         ),
         (
+            "tests/integration/test_gate3_scheduled_public_minute_preflight.py",
+            "test_exact_committed_seal_and_schedule_still_wait_before_due",
+        ),
+        (
+            "tests/integration/test_account_portfolio_components_repository.py",
+            "test_original_balance_pages_survive_restart_and_reject_prefix_or_head_changes",
+        ),
+        (
             "tests/integration/test_gate3_claim_trigger_alias_repair.py",
             "test_0032_repaired_guard_accepts_fresh_prereg_acknowledged_claim",
         ),

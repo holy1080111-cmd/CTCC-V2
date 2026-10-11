@@ -58,7 +58,12 @@ async def test_same_task_raw_sources_recompute_diagnostic_precursor_only(
         expected_plan_sha256=capture.plan_sha256(current_plan()),
     )
     account_harness.assert_closed()
-    clock, directory, harness, publications = setup(monkeypatch, source)
+    clock, directory, harness, publications = setup(
+        monkeypatch,
+        source,
+        rest_hostname="openapi.okx.com",
+        ws_hostname="wspap.okx.com",
+    )
     monkeypatch.setattr(coordinator, "native_stamp", clock.stamp)
     monkeypatch.setattr(account_native, "_configured_factory", lambda _: True)
     controlled = session()
@@ -164,7 +169,12 @@ async def test_same_task_raw_sources_recompute_diagnostic_precursor_only(
 async def test_missing_native_account_lease_stops_before_precursor(
     source, tmp_path, monkeypatch
 ):
-    clock, _, harness, publications = setup(monkeypatch, source)
+    clock, _, harness, publications = setup(
+        monkeypatch,
+        source,
+        rest_hostname="openapi.okx.com",
+        ws_hostname="wspap.okx.com",
+    )
     monkeypatch.setattr(coordinator, "native_stamp", clock.stamp)
     monkeypatch.setattr(account_native, "_configured_factory", lambda _: True)
     controlled = session()
