@@ -329,7 +329,7 @@ def _new_client():
     )
 
 
-def _client_guard(client, *, first):
+def _client_guard(client):
     if type(client) is not httpx.AsyncClient or client.is_closed:
         raise AccountCollectionError("client_invalid")
     if (
@@ -337,7 +337,7 @@ def _client_guard(client, *, first):
         or client.auth is not None
         or client.follow_redirects
         or client.params
-        or (first and client.cookies)
+        or client.cookies
         or any(client.event_hooks.values())
         or any(
             name not in {"accept", "accept-encoding", "connection", "user-agent"}
@@ -496,7 +496,7 @@ async def _page(
     _native_observer=None,
     _request_index=None,
 ):
-    _client_guard(client, first=False)
+    _client_guard(client)
     spec = capture.account_request(plan, stream, after)
     loop = asyncio.get_running_loop()
     request_wall_deadline = loop.time() + plan.max_request_seconds
@@ -574,6 +574,11 @@ async def _page(
                 or response.is_stream_consumed
             ):
                 raise AccountCollectionError("http_response_rejected")
+            # A signed read must not acquire an implicit HTTP session. HTTPX
+            # stores Set-Cookie in the owned client even when this invocation's
+            # freshly constructed Request does not send that jar on the next GET.
+            if "set-cookie" in response.headers or client.cookies:
+                raise AccountCollectionError("http_response_rejected")
             # Runtime source provenance comes from this owned response, never a
             # DTO's passed/complete flag. MockTransport can only record synthetic.
             if type(client._transport) is httpx.MockTransport:
@@ -648,6 +653,8 @@ async def _page(
             raise
         finally:
             await _close(response, pending_cancel=pending_cancel)
+    if client.cookies:
+        raise AccountCollectionError("http_response_rejected")
     completed = _phase_clock(
         clock,
         _native_observer,
@@ -820,7 +827,7 @@ async def _collect_owned_demo_account_records(
         previous_time = batch_started
         algo_ids = set()
         try:
-            _client_guard(client, first=True)
+            _client_guard(client)
             # Legacy plan contracts remain replayable in synthetic fixtures.
             # Only the reviewed v5/v6/v7 inventories reach owned HTTPS transport.
             if (

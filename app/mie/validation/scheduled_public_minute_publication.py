@@ -20,6 +20,7 @@ from pydantic import Field
 from app.mie.validation.artifact import SHA256_RE, FrozenGate3Artifact
 from app.mie.validation.contracts import Gate3Contract, Identifier, Sha256
 from app.mie.validation.prospective_capture_schedule import (
+    MINUTE_NS,
     ProspectiveCaptureScheduleV1,
 )
 from app.mie.validation.scheduled_public_minute import (
@@ -27,6 +28,7 @@ from app.mie.validation.scheduled_public_minute import (
     capture_scheduled_public_minute_once,
     verify_scheduled_public_minute_receipt,
 )
+from app.public_market_source.public_market_receipts import utc_from_ns
 from app.trade_evidence.storage import (
     _posix_root,
     _root_path,
@@ -269,6 +271,22 @@ class ScheduledMinuteReceiptStore:
         if claim != self._claim_contract(ordinal):
             raise ScheduledMinuteUnresolved("scheduled minute claim differs")
 
+    def _check_due_minute(
+        self, ordinal: int, receipt: ScheduledPublicMinuteReceiptV1
+    ) -> None:
+        if receipt.reason_code != "source_chain_replayed_custody_unproven":
+            return
+        due = receipt.due_observed_at
+        end_ns = self._schedule.plans[ordinal].end_ns
+        # utc_from_ns rounds a sub-microsecond native stamp up. A sample just
+        # before the next close may therefore equal the upper boundary here.
+        if due is None or not (
+            utc_from_ns(end_ns) <= due <= utc_from_ns(end_ns + MINUTE_NS)
+        ):
+            raise ScheduledMinuteUnresolved(
+                "scheduled minute replay time differs from sealed plan"
+            )
+
     def _read_slot(self, directory, ordinal: int) -> FrozenGate3Artifact:
         name = _ordinal_name(ordinal, self._coordinate_plan.expected_rows)
         with directory.child(name) as child:
@@ -303,6 +321,7 @@ class ScheduledMinuteReceiptStore:
                 or receipt.plan_sha256 != self._claim_contract(ordinal).plan_sha256
             ):
                 raise ScheduledMinuteUnresolved("scheduled minute receipt differs")
+            self._check_due_minute(ordinal, receipt)
             return FrozenGate3Artifact(payload=payload, sha256=digest, contract=receipt)
 
     def _claim(self, ordinal: int) -> None:
@@ -368,6 +387,7 @@ class ScheduledMinuteReceiptStore:
                         raise ScheduledMinuteUnresolved(
                             "scheduled minute delegate result differs"
                         )
+                    self._check_due_minute(ordinal, verified)
                     child.publish("receipt.json", frozen.payload)
                     if child.read("receipt.json", MAX_RECORD_BYTES) != frozen.payload:
                         raise ScheduledMinuteUnresolved(

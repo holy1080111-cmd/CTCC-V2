@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
 
 import app.mie.validation.scheduled_public_minute as capture_owner
 import app.mie.validation.scheduled_public_minute_publication as owner
+from app.mie.validation.artifact import _freeze
+from app.mie.validation.prospective_capture_schedule import MINUTE_NS
+from app.public_market_source.public_market_receipts import utc_from_ns
 
 pytestmark = pytest.mark.asyncio
 pytest_plugins = ("tests.unit.mie.test_gate3_scheduled_public_minute",)
@@ -32,6 +36,17 @@ def _inputs(case, tmp_path: Path):
         "ordinal": 0,
     }
     return root, pins, call, state, schedule
+
+
+def _with_due_time(frozen, due_at):
+    contract = capture_owner.ScheduledPublicMinuteReceiptV1.model_validate(
+        {
+            **frozen.contract.model_dump(mode="python"),
+            "due_observed_at": due_at,
+            "post_read_observed_at": due_at + timedelta(seconds=1),
+        }
+    )
+    return _freeze(contract, contract_type=type(contract))
 
 
 async def test_due_receipt_is_no_clobber_read_back_and_restart_refuses_duplicate(
@@ -59,6 +74,55 @@ async def test_due_receipt_is_no_clobber_read_back_and_restart_refuses_duplicate
         root / "minute-00000000" / "receipt.json",
         root / "minute-00000000" / "receipt.sha256",
     }
+
+
+@pytest.mark.parametrize(
+    "offset_ns,accepted",
+    [
+        (-1_000, False),
+        (0, True),
+        (MINUTE_NS, True),
+        (MINUTE_NS + 1_000, False),
+    ],
+)
+async def test_source_replay_due_time_must_match_sealed_minute_before_publish(
+    case, tmp_path, monkeypatch, offset_ns, accepted
+):
+    root, pins, call, _, schedule = _inputs(case, tmp_path)
+    original = owner.capture_scheduled_public_minute_once
+
+    async def changed_due(**kwargs):
+        frozen = await original(**kwargs)
+        due = utc_from_ns(schedule.plans[0].end_ns + offset_ns)
+        return _with_due_time(frozen, due)
+
+    monkeypatch.setattr(owner, "capture_scheduled_public_minute_once", changed_due)
+    store = owner.ScheduledMinuteReceiptStore.initialize(root, **pins)
+    if accepted:
+        frozen = await store.capture_once(**call)
+        assert store.read_ordinal(0, expected_receipt_sha256=frozen.sha256) == frozen
+    else:
+        with pytest.raises(owner.ScheduledMinuteUnresolved, match="replay time"):
+            await store.capture_once(**call)
+        assert (root / "minute-00000000" / "claim.json").is_file()
+        assert not (root / "minute-00000000" / "receipt.json").exists()
+
+
+async def test_replay_readback_rejects_impossible_due_with_matching_local_digest(
+    case, tmp_path
+):
+    root, pins, call, _, schedule = _inputs(case, tmp_path)
+    store = owner.ScheduledMinuteReceiptStore.initialize(root, **pins)
+    frozen = await store.capture_once(**call)
+    impossible = _with_due_time(
+        frozen, utc_from_ns(schedule.plans[0].end_ns + MINUTE_NS + 1_000)
+    )
+    slot = root / "minute-00000000"
+    (slot / "receipt.json").write_bytes(impossible.payload)
+    (slot / "receipt.sha256").write_bytes(impossible.sha256.encode("ascii") + b"\n")
+    restarted = owner.ScheduledMinuteReceiptStore.resume(root, **pins)
+    with pytest.raises(owner.ScheduledMinuteUnresolved, match="replay time"):
+        restarted.read_ordinal(0, expected_receipt_sha256=impossible.sha256)
 
 
 @pytest.mark.parametrize("offset,reason", [(-1, "not_due"), (60_000_000_000, "late")])

@@ -1056,16 +1056,57 @@ async def test_clock_exception_cannot_leak_secrets_in_message_or_exception_chain
 
 
 @pytest.mark.asyncio
-async def test_response_cookie_is_never_copied_into_later_signed_requests(monkeypatch):
+async def test_response_cookie_rejects_private_capture_before_later_signed_get(
+    monkeypatch,
+):
     harness = Harness(
         monkeypatch,
         response_headers={
             "Set-Cookie": "private_session=" + API_KEY + "; Secure; Path=/"
         },
     )
-    result = await harness.collect()
+    with pytest.raises(
+        module.AccountCollectionError, match="http_response_rejected"
+    ) as error:
+        await harness.collect()
+    assert len(harness.requests) == 1
     assert all("cookie" not in request.headers for request in harness.requests)
-    assert_secret_free(result.model_dump_json())
+    assert_secret_free("".join(traceback.format_exception(error.value)))
+    harness.assert_closed()
+
+
+@pytest.mark.asyncio
+async def test_client_cookie_jar_mutation_after_first_request_rejects_capture(
+    monkeypatch,
+):
+    def mutate_jar(stream, index, data):
+        if stream == "config_before":
+            harness.clients[0].cookies.set("private_session", API_KEY)
+
+    harness = Harness(monkeypatch, change=mutate_jar)
+    with pytest.raises(module.AccountCollectionError, match="http_response_rejected"):
+        await harness.collect()
+    assert len(harness.requests) == 1
+    assert "cookie" not in harness.requests[0].headers
+    harness.assert_closed()
+
+
+@pytest.mark.asyncio
+async def test_client_cookie_jar_mutation_while_closing_body_rejects_capture(
+    monkeypatch,
+):
+    harness = Harness(monkeypatch)
+    original_close = Stream.aclose
+
+    async def mutate_after_close(stream):
+        await original_close(stream)
+        harness.clients[0].cookies.set("private_session", API_KEY)
+
+    monkeypatch.setattr(Stream, "aclose", mutate_after_close)
+    with pytest.raises(module.AccountCollectionError, match="http_response_rejected"):
+        await harness.collect()
+    assert len(harness.requests) == 1
+    assert "cookie" not in harness.requests[0].headers
     harness.assert_closed()
 
 

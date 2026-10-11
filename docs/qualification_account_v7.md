@@ -26,7 +26,11 @@ HTTPS origin, a registration-evidence hash, and the eight-query scope. The
 evidence hash is an external claim until independently verified against a
 first-party account/key record. The owned collector only issues signed Demo
 GETs with `x-simulated-trading: 1`, no redirect, proxy inheritance, retry, or
-order write. The packet preserves raw response bytes, canonical JSON, receipt
+order write. A private response carrying `Set-Cookie`, or any mutation of the
+owned client's cookie jar during capture, aborts the batch before another signed
+GET; cookies cannot become an implicit account-session or source-state input.
+This transport check retains only its fixed rejection code, not cookie values.
+The packet preserves raw response bytes, canonical JSON, receipt
 and page hashes, causal clocks, query parameters, cursor chain, and account
 identity before and after the inventory. Replay uses the exact V7 schema and
 plan hash; V2–V6 packet hashes and replay contracts are unchanged.
