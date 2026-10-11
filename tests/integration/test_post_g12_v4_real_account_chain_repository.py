@@ -14,7 +14,7 @@ from app.database.repositories.account_capture_journal import (
     AccountCaptureJournalRepository,
 )
 from app.database.repositories.qualification_ledger import QualificationLedgerRepository
-from app.domain.source_primitives import canonical, sha
+from app.domain.source_primitives import canonical, sha, validate_stamps
 from app.trade_qualification import account_native_proof as native_proof
 from app.trade_qualification import account_native_proof_storage as native_storage
 from app.trade_qualification import post_g12_account_event_observation_v4 as bridge
@@ -47,6 +47,9 @@ def _native_companion(root, reference, scope_sha256, first_http, deadline):
     persist_at = datetime.now(UTC) + timedelta(milliseconds=1)
     complete_at = persist_at + timedelta(milliseconds=1)
     assert first_http < persist_at < complete_at < deadline
+    persist_stamp = _stamp(persist_at, 100_000_000)
+    complete_stamp = _stamp(complete_at, 101_000_000)
+    validate_stamps((persist_stamp, complete_stamp))
     proof = canonical(
         {
             "schema_version": native_proof.V7_FLAT_SCHEMA,
@@ -54,7 +57,7 @@ def _native_companion(root, reference, scope_sha256, first_http, deadline):
             "scope_sha256": scope_sha256,
             "source_reference": reference,
             "clock_file_sha256": part_hashes,
-            "proof_persist_start": _stamp(persist_at, 100_000_000),
+            "proof_persist_start": persist_stamp,
             "expires_at": deadline.isoformat(),
             "historical_hwm_clock_verified": False,
             "account_complete": False,
@@ -70,7 +73,7 @@ def _native_companion(root, reference, scope_sha256, first_http, deadline):
             "clock_file_sha256": part_hashes,
             "root_device": identity[0],
             "root_inode": identity[1],
-            "readback_complete": _stamp(complete_at, 110_000_000),
+            "readback_complete": complete_stamp,
             "execution_authority": False,
         }
     )
