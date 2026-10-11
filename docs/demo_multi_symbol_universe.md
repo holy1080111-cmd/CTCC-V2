@@ -52,9 +52,15 @@ Demo, and Live execution-authority switch disabled. Each instrument must pass:
 - at least 200 confirmed 4H candles;
 - latest confirmed 4H candle no older than 8 hours.
 
-For OKX derivatives, `volCcy24h` is measured in base-currency units. The
-qualification screen estimates USDT notional as `volCcy24h * last`. This is a
-liquidity screen, not a promise of executable depth or future slippage.
+For OKX derivatives, `volCcy24h` is measured in base-currency units. For an
+exactly reviewed, USDT-settled linear SWAP, this diagnostic screen estimates
+24-hour USDT notional as `volCcy24h * last`. The ticker does not report
+quote-currency turnover, and the estimate is not guaranteed to understate
+actual turnover. A missing unit or instrument identity fails the screen. The
+result is not a promise of executable depth or future slippage.
+Linearity is inferred from the reviewed USDT-settled ID and base-currency
+`ctValCcy`: this typed public client omits the exchange's `ctType`, so the
+diagnostic does not prove the reported contract type or source authenticity.
 
 Run:
 
@@ -74,8 +80,12 @@ ALL_WRITE_AUTHORITY_DISABLED=1
 ```
 
 Because exchange state and liquidity change, this qualification is renewable
-evidence, not a permanent fact. Re-run it after configuration changes and
-before any separately authorized Demo soak.
+diagnostic evidence, not a permanent fact. The script defaults to `C:\CTCC-V2`
+and reads the currently running Compose API container; it does not pin the
+container image or source tree to the canonical release identity. Its success
+marker alone does not establish trusted public source or production acceptance.
+Re-run it after configuration changes and before any separately authorized
+Demo soak.
 
 ## Runtime selection and fail-closed behavior
 

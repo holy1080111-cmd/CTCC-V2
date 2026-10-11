@@ -20,13 +20,14 @@ from decimal import Decimal
 import httpx
 
 from app.config.settings import get_settings
+from app.domain.market import SwapTickerV2
 from app.exchange.okx.public_rest import OkxPublicRestClient
 from app.exchange.okx.symbols import REVIEWED_DEMO_INSTRUMENT_IDS
 
 
 CANDIDATES = REVIEWED_DEMO_INSTRUMENT_IDS
 MAX_SPREAD_BPS = Decimal("8")
-MIN_QUOTE_NOTIONAL_24H_USDT = Decimal("10000000")
+MIN_ESTIMATED_NOTIONAL_24H_USDT = Decimal("10000000")
 MAX_MINIMUM_ORDER_NOTIONAL_USDT = Decimal("25")
 MIN_CONFIRMED_4H_CANDLES = 200
 MAX_CONFIRMED_4H_AGE_HOURS = Decimal("8")
@@ -56,6 +57,14 @@ async def inspect_symbol(
 
         instrument = instrument_rows[0]
         blockers: list[str] = []
+        parts = instrument_id.split("-")
+        reviewed_linear_usdt = (
+            instrument_id in CANDIDATES
+            and len(parts) == 3
+            and parts[1:] == ["USDT", "SWAP"]
+        )
+        if not reviewed_linear_usdt:
+            blockers.append("instrument_not_reviewed_linear_usdt_swap")
         if instrument.instrument_id != instrument_id:
             blockers.append("instrument_metadata_mismatch")
         if instrument.state != "live":
@@ -64,6 +73,10 @@ async def inspect_symbol(
             blockers.append("instrument_not_swap")
         if instrument.settlement_currency != "USDT":
             blockers.append("settlement_currency_not_usdt")
+        if type(ticker) is not SwapTickerV2:
+            blockers.append("swap_ticker_v2_required")
+        elif ticker.instrument_id != instrument_id:
+            blockers.append("ticker_instrument_mismatch")
         if (
             ticker.last <= 0
             or ticker.bid <= 0
@@ -78,14 +91,8 @@ async def inspect_symbol(
         if spread_bps > MAX_SPREAD_BPS:
             blockers.append("spread_above_8_bps")
 
-        # OKX derivatives expose volCcy24h in base-currency units. Multiplying
-        # by last produces a conservative estimated USDT notional screen.
-        quote_notional_24h = ticker.volume_quote_24h * ticker.last
-        if quote_notional_24h < MIN_QUOTE_NOTIONAL_24H_USDT:
-            blockers.append("quote_notional_24h_below_10m_usdt")
-
         minimum_order_notional: Decimal | None = None
-        base_currency = instrument_id.split("-", 1)[0]
+        base_currency = parts[0]
         if instrument.contract_currency != base_currency:
             blockers.append("contract_value_currency_not_base")
         elif instrument.contract_value is None or instrument.contract_value <= 0:
@@ -100,6 +107,26 @@ async def inspect_symbol(
             )
             if minimum_order_notional > MAX_MINIMUM_ORDER_NOTIONAL_USDT:
                 blockers.append("minimum_order_notional_above_25_usdt")
+
+        # OKX SWAP volCcy24h is base-currency volume; the ticker supplies no
+        # quote-currency turnover. Last x base volume is only a price-based
+        # estimate, never exchange-reported USDT or USD turnover.
+        estimated_usdt_notional_24h: Decimal | None = None
+        if (
+            reviewed_linear_usdt
+            and instrument.instrument_id == instrument_id
+            and instrument.instrument_type == "SWAP"
+            and instrument.settlement_currency == "USDT"
+            and instrument.contract_currency == base_currency
+            and type(ticker) is SwapTickerV2
+            and ticker.instrument_id == instrument_id
+            and ticker.last > 0
+        ):
+            estimated_usdt_notional_24h = ticker.volume_currency_24h * ticker.last
+            if estimated_usdt_notional_24h < MIN_ESTIMATED_NOTIONAL_24H_USDT:
+                blockers.append("estimated_usdt_notional_24h_below_10m")
+        else:
+            blockers.append("estimated_usdt_notional_24h_unavailable")
 
         confirmed = [candle for candle in candles if candle.confirmed]
         if len(confirmed) < MIN_CONFIRMED_4H_CANDLES:
@@ -133,7 +160,7 @@ async def inspect_symbol(
             "minimum_order_notional_usdt": decimal_text(minimum_order_notional),
             "last": decimal_text(ticker.last),
             "spread_bps": decimal_text(spread_bps),
-            "quote_notional_24h_usdt": decimal_text(quote_notional_24h),
+            "estimated_usdt_notional_24h": decimal_text(estimated_usdt_notional_24h),
             "confirmed_4h_candles": len(confirmed),
             "confirmed_4h_age_hours": decimal_text(confirmed_age_hours),
         }
@@ -236,8 +263,8 @@ async def main() -> int:
         "configured": configured,
         "policy": {
             "max_spread_bps": decimal_text(MAX_SPREAD_BPS),
-            "min_quote_notional_24h_usdt": decimal_text(
-                MIN_QUOTE_NOTIONAL_24H_USDT
+            "min_estimated_usdt_notional_24h": decimal_text(
+                MIN_ESTIMATED_NOTIONAL_24H_USDT
             ),
             "max_minimum_order_notional_usdt": decimal_text(
                 MAX_MINIMUM_ORDER_NOTIONAL_USDT
