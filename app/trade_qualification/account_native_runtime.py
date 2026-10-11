@@ -31,6 +31,7 @@ from app.trade_qualification import account_clock_boundary as boundary
 from app.trade_qualification import account_collector as collector
 from app.trade_qualification import account_current_history_join as source_join
 from app.trade_qualification import account_current_source_verifier as current
+from app.trade_qualification import account_funding_bill_audit as funding_bills
 from app.trade_qualification import account_history_query_verifier as history
 from app.trade_qualification import account_native_clock as native
 from app.trade_qualification import account_native_exposed_observation as exposed
@@ -1444,10 +1445,11 @@ class _CommittedHistoryPreRead:
     started: dict
     completed: dict
     verified: dict
+    funding_bill_consistency_receipt_sha256: str | None = None
 
 
 async def _read_committed_history_before_http(
-    stage, repository, scope, history_capture_id, selected
+    stage, repository, scope, history_capture_id, selected, *, include_funding=False
 ):
     """Finish a separate exact-UID transaction before any HTTP can begin.
 
@@ -1463,6 +1465,28 @@ async def _read_committed_history_before_http(
     verified = history.verify_history_query_chain(
         chain, **observed._pins(reference, scope)
     )
+    funding_receipt_sha256 = None
+    if include_funding:
+        audited = funding_bills.audit_funding_bill_consistency(
+            chain, reference=reference, scope=scope
+        )
+        funding_value = json.loads(audited.receipt_json)
+        if (
+            funding_value.get("source_reference")
+            != observed.reference_document(reference)
+            or funding_value.get("policy_sha256")
+            != funding_bills.CONSISTENCY_POLICY_SHA256
+            or funding_value.get("funding_accrual_at") is not None
+            or funding_value.get("net_funding_cashflow") is not None
+            or funding_value.get("source_authenticity_verified") is not False
+            or funding_value.get("account_complete") is not False
+            or funding_value.get("execution_authority") is not False
+            or funding_value.get("admission") != "DENY"
+        ):
+            raise proof.NativeAccountProofError(
+                "native_account_pre_http_funding_source_invalid"
+            )
+        funding_receipt_sha256 = audited.receipt_sha256
     packet = source_join._packet(chain, reference)
     verification_completed = native._sample(stage)
     expected = packet.plan
@@ -1507,11 +1531,37 @@ async def _read_committed_history_before_http(
         started,
         completed,
         verification_completed,
+        funding_receipt_sha256,
     )
 
 
 async def capture_native_current_history_join(
     session, *, session_factory, proof_root, history_capture_id
+):
+    return await _capture_native_current_history_join(
+        session,
+        session_factory=session_factory,
+        proof_root=proof_root,
+        history_capture_id=history_capture_id,
+        include_funding=False,
+    )
+
+
+async def capture_native_current_history_funding_join(
+    session, *, session_factory, proof_root, history_capture_id
+):
+    """V7 original-bill source linkage; always DENY and never net funding."""
+    return await _capture_native_current_history_join(
+        session,
+        session_factory=session_factory,
+        proof_root=proof_root,
+        history_capture_id=history_capture_id,
+        include_funding=True,
+    )
+
+
+async def _capture_native_current_history_join(
+    session, *, session_factory, proof_root, history_capture_id, include_funding
 ):
     """Join a native V6/V7 current capture to recorded V5 history under one call.
 
@@ -1546,6 +1596,8 @@ async def capture_native_current_history_join(
         raise proof.NativeAccountProofError(
             "native_account_history_join_scope_unsupported"
         )
+    if include_funding and not v7:
+        raise proof.NativeAccountProofError("native_account_funding_join_v7_required")
     scope = LedgerScope(
         account_id=selected.expected_uid,
         settlement_currency=selected.settlement_currency,
@@ -1567,9 +1619,19 @@ async def capture_native_current_history_join(
             pre_read = None
             if v7:
                 async with asyncio.timeout(_PRE_HISTORY_READBACK_TIMEOUT_SECONDS):
-                    pre_read = await _read_committed_history_before_http(
-                        stage, repository, scope, history_capture_id, selected
-                    )
+                    if include_funding:
+                        pre_read = await _read_committed_history_before_http(
+                            stage,
+                            repository,
+                            scope,
+                            history_capture_id,
+                            selected,
+                            include_funding=True,
+                        )
+                    else:
+                        pre_read = await _read_committed_history_before_http(
+                            stage, repository, scope, history_capture_id, selected
+                        )
                 if type(pre_read) is not _CommittedHistoryPreRead:
                     raise proof.NativeAccountProofError(
                         "native_account_pre_http_history_readback_invalid"
@@ -1602,12 +1664,19 @@ async def capture_native_current_history_join(
                 else {}
             )
             async with asyncio.timeout(remaining):
-                locked = await repository.read_locked_current_history_join(
-                    scope,
-                    history_capture_id=history_capture_id,
-                    current_capture_id=pending.reference.capture_id,
-                    **join_policy,
-                )
+                if include_funding:
+                    locked = await repository.read_locked_current_history_funding_join(
+                        scope,
+                        history_capture_id=history_capture_id,
+                        current_capture_id=pending.reference.capture_id,
+                    )
+                else:
+                    locked = await repository.read_locked_current_history_join(
+                        scope,
+                        history_capture_id=history_capture_id,
+                        current_capture_id=pending.reference.capture_id,
+                        **join_policy,
+                    )
             if type(locked) is not LockedAccountSourceJoinReadback:
                 raise proof.NativeAccountProofError(
                     "native_account_history_join_readback_invalid"
@@ -1666,7 +1735,9 @@ async def capture_native_current_history_join(
             if (
                 locked_value.get("schema_version")
                 != (
-                    "ctcc.demo_account_locked_source_join.v4"
+                    "ctcc.demo_account_locked_source_join.v5"
+                    if include_funding
+                    else "ctcc.demo_account_locked_source_join.v4"
                     if v7
                     else "ctcc.demo_account_locked_source_join.v2"
                 )
@@ -1698,6 +1769,28 @@ async def capture_native_current_history_join(
                         or set(locked_value["recorded_pre_lock_blocking_reasons"])
                         - {"current_local_revision_readback_required"}
                         != set(locked_value.get("locked_readback_blocking_reasons", ()))
+                    )
+                )
+                or (
+                    include_funding
+                    and (
+                        type(pre_read.funding_bill_consistency_receipt_sha256)
+                        is not str
+                        or re.fullmatch(
+                            r"[a-f0-9]{64}",
+                            pre_read.funding_bill_consistency_receipt_sha256,
+                        )
+                        is None
+                        or locked_value.get("funding_bill_consistency_policy_sha256")
+                        != funding_bills.CONSISTENCY_POLICY_SHA256
+                        or locked_value.get("funding_source_join_policy_sha256")
+                        != funding_bills.SOURCE_OWNED_JOIN_POLICY_SHA256
+                        or locked_value.get("funding_bill_consistency_receipt_sha256")
+                        != pre_read.funding_bill_consistency_receipt_sha256
+                        or locked_value.get("funding_accrual_at") is not None
+                        or locked_value.get("net_funding_cashflow") is not None
+                        or locked_value.get("funding_history_complete") is not False
+                        or locked_value.get("source_authenticity_verified") is not False
                     )
                 )
                 or locked_value.get("current_source_reference") != current_reference
@@ -1769,7 +1862,9 @@ async def capture_native_current_history_join(
             receipt = canonical(
                 {
                     "schema_version": (
-                        "ctcc.native_current_history_join_diagnostic.v3"
+                        "ctcc.native_current_history_join_diagnostic.v4"
+                        if include_funding
+                        else "ctcc.native_current_history_join_diagnostic.v3"
                         if v7
                         else "ctcc.native_current_history_join_diagnostic.v1"
                     ),
@@ -1790,6 +1885,32 @@ async def capture_native_current_history_join(
                     "account_revision_published": False,
                     "execution_authority": False,
                     "admission": "DENY",
+                    **(
+                        {
+                            "funding_source_join_policy_sha256": (
+                                funding_bills.SOURCE_OWNED_JOIN_POLICY_SHA256
+                            ),
+                            "funding_bill_consistency_policy_sha256": (
+                                funding_bills.CONSISTENCY_POLICY_SHA256
+                            ),
+                            "pre_http_funding_bill_consistency_receipt_sha256": (
+                                pre_read.funding_bill_consistency_receipt_sha256
+                            ),
+                            "locked_funding_bill_consistency_receipt_sha256": (
+                                locked_value["funding_bill_consistency_receipt_sha256"]
+                            ),
+                            "funding_accrual_at": None,
+                            "net_funding_cashflow": None,
+                            "funding_history_complete": False,
+                            "source_authenticity_verified": False,
+                            "registration_region_verified": False,
+                            "provider_credential_session_verified": False,
+                            "current_egress_ip_verified": False,
+                            "funding_event_attribution_verified": False,
+                        }
+                        if include_funding
+                        else {}
+                    ),
                     **(
                         {
                             "join_policy_sha256": source_join.V7_ORDERED_POLICY_SHA256,
@@ -1830,7 +1951,9 @@ async def capture_native_current_history_join(
             canonical(
                 {
                     "schema_version": (
-                        "ctcc.native_current_history_join_diagnostic.v3"
+                        "ctcc.native_current_history_join_diagnostic.v4"
+                        if include_funding
+                        else "ctcc.native_current_history_join_diagnostic.v3"
                         if v7
                         else "ctcc.native_current_history_join_diagnostic.v1"
                     ),
@@ -1842,6 +1965,20 @@ async def capture_native_current_history_join(
                     "account_revision_published": False,
                     "execution_authority": False,
                     "admission": "DENY",
+                    **(
+                        {
+                            "funding_accrual_at": None,
+                            "net_funding_cashflow": None,
+                            "funding_history_complete": False,
+                            "source_authenticity_verified": False,
+                            "registration_region_verified": False,
+                            "provider_credential_session_verified": False,
+                            "current_egress_ip_verified": False,
+                            "funding_event_attribution_verified": False,
+                        }
+                        if include_funding
+                        else {}
+                    ),
                     **({"flat_start_permission": False} if v7 else {}),
                 }
             )

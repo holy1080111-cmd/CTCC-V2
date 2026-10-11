@@ -23,6 +23,7 @@ from app.trade_qualification import account_capture as capture
 from app.trade_qualification import account_clock_boundary as boundary
 from app.trade_qualification import account_current_history_join as source_join
 from app.trade_qualification import account_current_source_verifier as current
+from app.trade_qualification import account_funding_bill_audit as funding_bills
 from app.trade_qualification import account_native_clock as native
 from app.trade_qualification import account_native_proof as proof
 from app.trade_qualification import account_native_runtime as runtime
@@ -50,6 +51,8 @@ async def _synthetic_v7_join(
     pre_read_gate=None,
     pre_read_entered=None,
     progress=None,
+    funding=False,
+    funding_mismatch=False,
 ):
     plan = current_plan_v7()
     session = ControlledDemoAccountSession(
@@ -103,7 +106,9 @@ async def _synthetic_v7_join(
         lambda: pytest.fail("account HTTP must not run in synthetic join test"),
     )
 
-    async def read_before_http(stage, repo, scope, capture_id, selected):
+    async def read_before_http(
+        stage, repo, scope, capture_id, selected, *, include_funding=False
+    ):
         marker["calls"].append("pre_read")
         if progress is not None:
             progress.append("pre_read")
@@ -112,6 +117,7 @@ async def _synthetic_v7_join(
         if pre_read_gate is not None:
             await pre_read_gate.wait()
         assert capture_id == HISTORY_ID and selected == session._plan
+        assert include_funding is funding
         assert repo.clock is not None and scope.account_id == plan.expected_uid
         if pre_read_failure:
             raise RuntimeError("simulated uncommitted history")
@@ -126,6 +132,7 @@ async def _synthetic_v7_join(
             started,
             completed,
             verified,
+            "8" * 64 if funding else None,
         )
 
     async def capture_current(stage, received_session, factory, root):
@@ -188,7 +195,7 @@ async def _synthetic_v7_join(
         *,
         history_capture_id,
         current_capture_id,
-        expected_policy_sha256,
+        expected_policy_sha256=None,
     ):
         marker["calls"].append("locked_join")
         assert repo.clock is not None
@@ -198,13 +205,19 @@ async def _synthetic_v7_join(
             scope.settlement_currency,
         ) == ("demo", plan.expected_uid, "USDT")
         assert (history_capture_id, current_capture_id) == (HISTORY_ID, CURRENT_ID)
-        assert expected_policy_sha256 == source_join.V7_ORDERED_POLICY_SHA256
+        assert expected_policy_sha256 == (
+            None if funding else source_join.V7_ORDERED_POLICY_SHA256
+        )
         marker["late"] = expired
         current_reference = observed.reference_document(reference)
         if changed_source:
             current_reference["packet_sha256"] = "0" * 64
         locked_receipt = {
-            "schema_version": "ctcc.demo_account_locked_source_join.v4",
+            "schema_version": (
+                "ctcc.demo_account_locked_source_join.v5"
+                if funding
+                else "ctcc.demo_account_locked_source_join.v4"
+            ),
             "join_receipt_sha256": "a" * 64,
             "join_policy_sha256": source_join.V7_ORDERED_POLICY_SHA256,
             "current_source_policy_sha256": current.V7_POLICY_SHA256,
@@ -239,6 +252,24 @@ async def _synthetic_v7_join(
             "execution_authority": False,
             "admission": "DENY",
         }
+        if funding:
+            locked_receipt.update(
+                {
+                    "funding_source_join_policy_sha256": (
+                        funding_bills.SOURCE_OWNED_JOIN_POLICY_SHA256
+                    ),
+                    "funding_bill_consistency_policy_sha256": (
+                        funding_bills.CONSISTENCY_POLICY_SHA256
+                    ),
+                    "funding_bill_consistency_receipt_sha256": (
+                        "9" * 64 if funding_mismatch else "8" * 64
+                    ),
+                    "funding_accrual_at": None,
+                    "net_funding_cashflow": None,
+                    "funding_history_complete": False,
+                    "source_authenticity_verified": False,
+                }
+            )
         if locked_overrides is not None:
             locked_receipt.update(locked_overrides)
         return LockedAccountSourceJoinReadback(canonical(locked_receipt))
@@ -252,7 +283,17 @@ async def _synthetic_v7_join(
         "read_locked_current_history_join",
         locked_join,
     )
-    result = await runtime.capture_native_current_history_join(
+    monkeypatch.setattr(
+        AccountCaptureJournalRepository,
+        "read_locked_current_history_funding_join",
+        locked_join,
+    )
+    capture_join = (
+        runtime.capture_native_current_history_funding_join
+        if funding
+        else runtime.capture_native_current_history_join
+    )
+    result = await capture_join(
         session,
         session_factory=None,
         proof_root=Path.cwd(),
@@ -294,6 +335,83 @@ async def test_v7_same_invocation_joins_current_and_history_without_authority(
             invocation=marker["invocation"],
             expected_receipt_sha256=value["native_current_receipt_sha256"],
         )
+
+
+@pytest.mark.asyncio
+async def test_v7_funding_join_binds_original_bill_audit_without_authority(monkeypatch):
+    result, marker = await _synthetic_v7_join(monkeypatch, funding=True)
+    value = json.loads(result.receipt_json)
+    assert marker["calls"] == ["pre_read", "native_current", "locked_join"]
+    assert value["schema_version"] == "ctcc.native_current_history_join_diagnostic.v4"
+    assert value["funding_source_join_policy_sha256"] == (
+        funding_bills.SOURCE_OWNED_JOIN_POLICY_SHA256
+    )
+    assert value["funding_bill_consistency_policy_sha256"] == (
+        funding_bills.CONSISTENCY_POLICY_SHA256
+    )
+    assert value["pre_http_funding_bill_consistency_receipt_sha256"] == "8" * 64
+    assert value["locked_funding_bill_consistency_receipt_sha256"] == "8" * 64
+    assert value["committed_history_readback_before_first_http"] is True
+    assert value["historical_native_source_observed"] is False
+    assert value["funding_accrual_at"] is value["net_funding_cashflow"] is None
+    assert value["funding_history_complete"] is False
+    assert value["source_authenticity_verified"] is False
+    assert value["registration_region_verified"] is False
+    assert value["provider_credential_session_verified"] is False
+    assert value["current_egress_ip_verified"] is False
+    assert value["funding_event_attribution_verified"] is False
+    assert value["history_tail_closed"] is False
+    assert value["snapshot"] is None
+    assert value["account_complete"] is result.account_complete is False
+    assert value["execution_authority"] is result.execution_authority is False
+    assert value["admission"] == "DENY"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["changed_funding", "expired", "pre_read_failure"])
+async def test_v7_funding_join_failure_keeps_denial(monkeypatch, case):
+    result, marker = await _synthetic_v7_join(
+        monkeypatch,
+        funding=True,
+        funding_mismatch=case == "changed_funding",
+        expired=case == "expired",
+        pre_read_failure=case == "pre_read_failure",
+    )
+    value = json.loads(result.receipt_json)
+    assert value["schema_version"] == "ctcc.native_current_history_join_diagnostic.v4"
+    assert value["code"] == "native_account_history_join_denied"
+    assert value["funding_accrual_at"] is value["net_funding_cashflow"] is None
+    assert value["funding_history_complete"] is False
+    assert value["snapshot"] is None
+    assert value["account_complete"] is result.account_complete is False
+    assert value["execution_authority"] is result.execution_authority is False
+    assert value["admission"] == "DENY"
+    if case == "pre_read_failure":
+        assert marker["calls"] == ["pre_read"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"funding_source_join_policy_sha256": "0" * 64},
+        {"funding_bill_consistency_policy_sha256": "0" * 64},
+        {"funding_accrual_at": "2026-01-01T00:00:00+00:00"},
+        {"net_funding_cashflow": "0"},
+        {"funding_history_complete": True},
+        {"source_authenticity_verified": True},
+    ],
+)
+async def test_v7_funding_join_rejects_promoted_locked_receipt(monkeypatch, override):
+    result, _ = await _synthetic_v7_join(
+        monkeypatch, funding=True, locked_overrides=override
+    )
+    value = json.loads(result.receipt_json)
+    assert value["schema_version"] == "ctcc.native_current_history_join_diagnostic.v4"
+    assert value["code"] == "native_account_history_join_denied"
+    assert value["funding_history_complete"] is False
+    assert value["source_authenticity_verified"] is False
+    assert value["execution_authority"] is False
 
 
 @pytest.mark.asyncio
@@ -455,6 +573,21 @@ async def test_pre_http_history_readback_replays_exact_v5_chain(monkeypatch):
         )
         assert result.history_query_receipt_sha256
         assert result.completed["monotonic_ns"] < result.verified["monotonic_ns"]
+        with_funding = await runtime._read_committed_history_before_http(
+            stage,
+            ReadOnlyRepo(),
+            scope,
+            history_reference.capture_id,
+            selected,
+            include_funding=True,
+        )
+        original_funding = funding_bills.audit_funding_bill_consistency(
+            historical, reference=history_reference, scope=scope
+        )
+        assert (
+            with_funding.funding_bill_consistency_receipt_sha256
+            == original_funding.receipt_sha256
+        )
         with pytest.raises(
             proof.NativeAccountProofError,
             match="native_account_pre_http_history_readback_invalid",

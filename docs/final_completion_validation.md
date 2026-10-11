@@ -4495,3 +4495,26 @@ The `be4aa933` source-bound GitHub CI run `38142731033` was still in progress
 when these working-tree changes were prepared; its result cannot validate a
 later commit. No main merge, release, Demo acceptance or Micro Live acceptance
 follows from these diagnostics.
+
+## 2026-10-11 original funding-bill source join
+
+The separate V7 native current/history funding join now recomputes the V2
+funding-bill consistency receipt from the committed original V5 B1 page chain
+before the first current-account HTTP request and again in a later exact-UID
+locked readback. Its new V4 native and V5 locked receipts require matching
+funding audit hashes and source/DB identities. The original V3 current/history
+and V2 funding audit entry points are unchanged; no account revision, risk
+snapshot, funding accrual time, net funding cashflow, G6 qualification or
+execution authority is published. A bill `ts` remains a bill generation or
+balance-update time, not an inferred funding accrual time. The reviewed OKX
+pagination contract uses the preceding page's oldest `billId` for `after`,
+and the original collector still requires an explicit terminal page after a
+short page. [OKX account bills documentation](https://www.okx.com/docs-v5/en/).
+
+The relevant synthetic unit tests passed 65/65 plus one explicit query/cursor
+case; Ruff, format and diff checks passed. The new PostgreSQL integration test
+is written but not locally executed because the laptop has recently shut down
+from overheating. An independent source review found no high- or medium-severity
+issue, while explicitly leaving real Demo capture and PostgreSQL behavior
+unverified pending exact-source hosted CI. The account remains incomplete and
+all exchange writes remain disabled.

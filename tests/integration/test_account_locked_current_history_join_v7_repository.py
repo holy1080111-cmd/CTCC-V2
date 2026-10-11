@@ -18,6 +18,8 @@ from app.database.repositories.qualification_ledger import QualificationLedgerRe
 from app.trade_qualification import account_bootstrap_runtime as bootstrap
 from app.trade_qualification import account_capture as capture
 from app.trade_qualification import account_current_history_join as joined
+from app.trade_qualification import account_funding_bill_audit as funding_bills
+from app.trade_qualification import account_observation_index as observed
 from app.trade_qualification.account_runtime import ControlledDemoAccountSession
 from app.trade_qualification.reservations import LedgerScope
 from tests.integration.test_qualification_ledger_repository import (
@@ -168,3 +170,32 @@ async def test_history_pre_read_waits_for_exact_uid_transaction_to_finish(
         assert not waiting.done()
     chain = await asyncio.wait_for(waiting, timeout=5)
     assert chain and chain[-1].event.event_json
+
+
+async def test_postgresql_v7_funding_join_replays_original_bill_source_under_uid_lock(
+    monkeypatch, database
+):
+    scope, repo, (history_id, current_id) = await _captured_v7_pair(
+        monkeypatch, database
+    )
+    original = await repo.read_chain(scope, history_id)
+    audit = funding_bills.audit_funding_bill_consistency(
+        original, reference=observed.source_reference(original), scope=scope
+    )
+    locked = await repo.read_locked_current_history_funding_join(
+        scope,
+        history_capture_id=history_id,
+        current_capture_id=current_id,
+    )
+    value = json.loads(locked.receipt_json)
+    assert value["schema_version"] == "ctcc.demo_account_locked_source_join.v5"
+    assert value["funding_bill_consistency_receipt_sha256"] == audit.receipt_sha256
+    assert value["funding_source_join_policy_sha256"] == (
+        funding_bills.SOURCE_OWNED_JOIN_POLICY_SHA256
+    )
+    assert value["funding_accrual_at"] is value["net_funding_cashflow"] is None
+    assert value["history_tail_closed"] is False
+    assert value["snapshot"] is None
+    assert value["account_complete"] is locked.account_complete is False
+    assert value["execution_authority"] is locked.execution_authority is False
+    assert value["admission"] == "DENY"

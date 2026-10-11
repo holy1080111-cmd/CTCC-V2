@@ -53,6 +53,23 @@ CONSISTENCY_POLICY_BYTES = journal.canonical(
     }
 )
 CONSISTENCY_POLICY_SHA256 = journal.digest(CONSISTENCY_POLICY_BYTES)
+SOURCE_OWNED_JOIN_POLICY_BYTES = journal.canonical(
+    {
+        "version": "ctcc.native_account_funding_bill_source_join.v1",
+        "history_plan": "ctcc.demo_account_plan.v5",
+        "current_plan": "ctcc.demo_current_account_plan.v7",
+        "source": "same_original_V5_B1_history_pre_HTTP_and_locked_post_current",
+        "funding_bill_policy_sha256": CONSISTENCY_POLICY_SHA256,
+        "bill_time": "balance_update_not_funding_accrual",
+        "funding_accrual_at": None,
+        "net_funding_cashflow": None,
+        "history_complete": False,
+        "account_complete": False,
+        "execution_authority": False,
+        "admission": "DENY",
+    }
+)
+SOURCE_OWNED_JOIN_POLICY_SHA256 = journal.digest(SOURCE_OWNED_JOIN_POLICY_BYTES)
 _ENDPOINTS = {
     "bills_recent": "/api/v5/account/bills",
     "bills_archive": "/api/v5/account/bills-archive",

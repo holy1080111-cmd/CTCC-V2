@@ -11,6 +11,7 @@ from app.database.models.account_capture_journal import DemoAccountCaptureEvent
 from app.database.repositories.qualification_ledger import QualificationLedgerRepository
 from app.trade_qualification import account_capture as capture
 from app.trade_qualification import account_current_history_join as source_join
+from app.trade_qualification import account_funding_bill_audit as funding_bills
 from app.trade_qualification import account_observation_index as observed
 from app.trade_qualification.account_capture_journal import (
     _ISSUER,
@@ -126,6 +127,39 @@ class AccountCaptureJournalRepository:
         current_capture_id,
         expected_policy_sha256=source_join.POLICY_SHA256,
     ):
+        return await self._read_locked_current_history_join(
+            scope,
+            history_capture_id=history_capture_id,
+            current_capture_id=current_capture_id,
+            expected_policy_sha256=expected_policy_sha256,
+            include_funding=False,
+        )
+
+    async def read_locked_current_history_funding_join(
+        self,
+        scope,
+        *,
+        history_capture_id,
+        current_capture_id,
+    ):
+        """New DENY-only V7 readback with original funding-bill source replay."""
+        return await self._read_locked_current_history_join(
+            scope,
+            history_capture_id=history_capture_id,
+            current_capture_id=current_capture_id,
+            expected_policy_sha256=source_join.V7_ORDERED_POLICY_SHA256,
+            include_funding=True,
+        )
+
+    async def _read_locked_current_history_join(
+        self,
+        scope,
+        *,
+        history_capture_id,
+        current_capture_id,
+        expected_policy_sha256,
+        include_funding,
+    ):
         """Reread both B1 chains and local revision under one fresh UID lock.
 
         This diagnostic proves a local DB match at readback time only. It does
@@ -146,6 +180,11 @@ class AccountCaptureJournalRepository:
             source_join.V7_ORDERED_POLICY_SHA256,
         }:
             raise AccountJournalError("journal_join_policy_invalid")
+        if (
+            include_funding
+            and expected_policy_sha256 != source_join.V7_ORDERED_POLICY_SHA256
+        ):
+            raise AccountJournalError("journal_funding_join_policy_invalid")
         ordered_v7 = expected_policy_sha256 == source_join.V7_ORDERED_POLICY_SHA256
         v7 = expected_policy_sha256 in {
             source_join.V7_POLICY_SHA256,
@@ -158,6 +197,13 @@ class AccountCaptureJournalRepository:
             history_chain = await self._read_chain_locked(
                 session, scope, history_capture_id
             )
+            funding_audit = None
+            if include_funding:
+                funding_audit = funding_bills.audit_funding_bill_consistency(
+                    history_chain,
+                    reference=observed.source_reference(history_chain),
+                    scope=scope,
+                )
             current_chain = await self._read_chain_locked(
                 session, scope, current_capture_id
             )
@@ -185,7 +231,9 @@ class AccountCaptureJournalRepository:
             )
             document = {
                 "schema_version": (
-                    "ctcc.demo_account_locked_source_join.v4"
+                    "ctcc.demo_account_locked_source_join.v5"
+                    if include_funding
+                    else "ctcc.demo_account_locked_source_join.v4"
                     if ordered_v7
                     else "ctcc.demo_account_locked_source_join.v3"
                     if v7
@@ -244,6 +292,38 @@ class AccountCaptureJournalRepository:
                             ]
                         ),
                         "history_commit_before_current_request": False,
+                    }
+                )
+            if include_funding:
+                funding_value = json.loads(funding_audit.receipt_json)
+                if (
+                    funding_value.get("source_reference")
+                    != value["history_source_reference"]
+                    or funding_value.get("policy_sha256")
+                    != funding_bills.CONSISTENCY_POLICY_SHA256
+                    or funding_value.get("funding_accrual_at") is not None
+                    or funding_value.get("net_funding_cashflow") is not None
+                    or funding_value.get("source_authenticity_verified") is not False
+                    or funding_value.get("account_complete") is not False
+                    or funding_value.get("execution_authority") is not False
+                    or funding_value.get("admission") != "DENY"
+                ):
+                    raise AccountJournalError("journal_funding_source_invalid")
+                document.update(
+                    {
+                        "funding_source_join_policy_sha256": (
+                            funding_bills.SOURCE_OWNED_JOIN_POLICY_SHA256
+                        ),
+                        "funding_bill_consistency_policy_sha256": (
+                            funding_bills.CONSISTENCY_POLICY_SHA256
+                        ),
+                        "funding_bill_consistency_receipt_sha256": (
+                            funding_audit.receipt_sha256
+                        ),
+                        "funding_accrual_at": None,
+                        "net_funding_cashflow": None,
+                        "funding_history_complete": False,
+                        "source_authenticity_verified": False,
                     }
                 )
             receipt = canonical(document)
