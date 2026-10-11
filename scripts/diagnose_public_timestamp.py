@@ -182,6 +182,8 @@ async def _capture_one(
     headers = completed = None
     tls_peer_sha256 = tls_version = None
     status = None
+    transport_failure_class = None
+    response_close_failed = False
     response_headers: tuple[tuple[str, str], ...] = ()
     try:
         async with asyncio.timeout(5):
@@ -217,9 +219,15 @@ async def _capture_one(
             else:
                 body_complete = True
             completed = native_stamp()
+    except Exception as exc:  # noqa: BLE001 -- retain partial raw diagnostic bytes
+        transport_failure_class = type(exc).__name__
+        completed = native_stamp()
     finally:
         if response is not None:
-            await response.aclose()
+            try:
+                await response.aclose()
+            except Exception:  # noqa: BLE001 -- incomplete diagnostic only
+                response_close_failed = True
     validated = native_stamp()
     record = {
         "role": role,
@@ -234,6 +242,8 @@ async def _capture_one(
         "body_complete": completed,
         "validation_time": validated,
         "body_complete_observed": body_complete,
+        "transport_failure_class": transport_failure_class,
+        "response_close_failed": response_close_failed,
         "raw_body_bytes_retained": len(raw),
         "raw_body_sha256": _sha(raw),
         "tls_peer_sha256": tls_peer_sha256,
@@ -270,7 +280,7 @@ async def run(output: Path) -> dict:
     output.mkdir(exist_ok=False)
     source = _source_identity()
     summary = {
-        "schema_version": "ctcc.public_timestamp_diagnostic.v1",
+        "schema_version": "ctcc.public_timestamp_diagnostic.v2",
         "source_identity": source,
         "origin": ORIGIN,
         "requested_instrument_id": INSTRUMENT,
@@ -281,7 +291,8 @@ async def run(output: Path) -> dict:
         "account_requests": 0,
         "order_writes": 0,
         "request_count_maximum": len(REQUESTS),
-        "request_count_actual": 0,
+        "request_count_attempted": 0,
+        "request_count_observed": 0,
         "observations": [],
         "code": "incomplete",
     }
@@ -291,9 +302,11 @@ async def run(output: Path) -> dict:
         summary["native_clock_sha256"] = _put_new(
             output / "native-clock.json", _json(clock)
         )
-        client = _client()
         for index, (role, path, query) in enumerate(REQUESTS):
-            summary["request_count_actual"] += 1
+            # A public response may set a cookie. A fresh client ensures that
+            # no cookie or connection state crosses into the next request.
+            client = _client()
+            summary["request_count_attempted"] += 1
             receipt, raw = await _capture_one(client, role, path, query)
             prefix = f"{index:02d}-{role}"
             receipt["raw_body_sha256"] = _put_new(output / f"{prefix}.raw", raw)
@@ -309,6 +322,8 @@ async def run(output: Path) -> dict:
                     or not receipt["response_url_exact"]
                     or not receipt["redirect_history_empty"]
                     or not receipt["body_complete_observed"]
+                    or receipt["transport_failure_class"] is not None
+                    or receipt["response_close_failed"]
                     or not receipt["tls_binding_verified"]
                 ):
                     raise ValueError("public_response_incomplete")
@@ -347,6 +362,9 @@ async def run(output: Path) -> dict:
                     ).get("source_minus_headers_received_ns"),
                 }
             )
+            summary["request_count_observed"] = len(summary["observations"])
+            await client.aclose()
+            client = None
         complete = all(item["code"] == "observed" for item in summary["observations"])
         market_deltas = [
             item["source_minus_headers_received_ns"]
@@ -393,7 +411,8 @@ def main() -> None:
             {
                 "code": result["code"],
                 "admission": "DENY",
-                "request_count_actual": result["request_count_actual"],
+                "request_count_attempted": result["request_count_attempted"],
+                "request_count_observed": result["request_count_observed"],
                 "summary_sha256": result["summary_sha256"],
             },
             sort_keys=True,

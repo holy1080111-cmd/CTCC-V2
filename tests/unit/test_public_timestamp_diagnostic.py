@@ -80,3 +80,18 @@ async def test_client_has_no_proxy_redirect_auth_or_retries():
         assert all(path.startswith("/api/v5/") for _, path, _ in diagnostic.REQUESTS)
     finally:
         await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_response_cookie_cannot_be_reused_by_fresh_request_client():
+    first = diagnostic._client()
+    second = diagnostic._client()
+    try:
+        first.cookies.set("untrusted", "response-value")
+        with pytest.raises(ValueError, match="public_transport_not_isolated"):
+            diagnostic._assert_isolated(first)
+        assert diagnostic._assert_isolated(second)
+        assert not second.cookies
+    finally:
+        await first.aclose()
+        await second.aclose()

@@ -4288,3 +4288,13 @@ instrument separately from response-verified instrument because books5 does
 not echo `instId`. The diagnostic always denies source and trading authority;
 its offline checks pass 5/5. It has not yet provided a successful production
 collector or a root cause for the older future-timestamp failure.
+
+The first opt-in run at `3a9dd0f` accepted the native clock and retained the
+exact first public-time response, then stopped locally before books I/O:
+the time endpoint had set a cookie, and the probe correctly refused to reuse
+that client. Its immutable `incomplete` receipt is
+`../../validation-results/public-timestamp-3a9dd0f-20261011T101117Z/summary.json`
+(SHA256 `cd006b6b925ed1c3b6bb1def928145a448dffc76ff0c39f39bb2cab0c655f54b`).
+The probe now creates a fresh isolated client for each GET, retains partial
+raw bodies on transport failure, and reports attempted versus observed counts.
+This still grants no trusted source or execution authority.
