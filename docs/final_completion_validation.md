@@ -4643,5 +4643,58 @@ a same-named restricted-writer temporary table, poisoning an immutable
 diagnostic chain. The working repair schema-qualifies its table/function
 references, pins the function search path, tests temporary-table shadowing,
 and registers the module in both CI classifications. The Windows test-list
-selection and 77 focused local unit tests passed after this change, but its
-PostgreSQL test and full exact-source CI remain pending a new commit/run.
+selection and 77 focused local unit tests passed after this change. The repair
+was committed as `32793c5d2db7d14951c5661c80828f4620e75bab`; matching
+GitHub run `38153375474` was in progress when this record was written. Its
+PostgreSQL negative test and full exact-source CI are not yet accepted.
+
+## 2026-10-12 serial Demo region diagnosis and support follow-up
+
+The user authorized a one-at-a-time read-only check of the three
+[official OKX regional API hosts](https://www.okx.com/docs-v5/en/).
+With the existing dedicated Demo key, one signed GET to
+`/api/v5/account/config` was sent to each host, each with
+`x-simulated-trading: 1`, no redirects, proxy, retry or order write. The
+`openapi.okx.com` request returned HTTP 200 / OKX code `0`; `us.okx.com` and
+`eea.okx.com` each returned HTTP 401 / code `50119`. The bounded, redacted
+diagnostic is `../../validation-results/okx-region-serial-20261012/redacted-receipt.json`
+(SHA256 `47096bf9a3a2a86f201168f2644e2ba5c29f6cbd52e3a81b631da53f205630c3`).
+OKX's [API FAQ](https://www.okx.com/en-gb/help/api-faq) says code `50119`
+usually indicates an account-domain/region mismatch. These observations
+support the current Global API routing for this Demo key. They cannot
+prove the account's original registration site or absence of an account
+migration. [OKX's official account migration guidance](https://www.okx.com/en-gb/help/country-of-residence-change/)
+states that login and API domains can change while the API key remains. The
+exact-site source gate therefore remains DENY.
+
+The existing signed-in OKX support ticket received a written follow-up asking
+an account-record-capable specialist to distinguish the current site, original
+registration site and any migration. The message contains no UID, IP, API
+credential or verification code. The UI showed the submitted message at
+2026-10-12 00:03 Asia/Taipei. At 00:12 support replied that it was checking;
+it did not supply the requested account-record fields, so the site gate remains
+DENY.
+The redacted local support receipt is
+`../../validation-results/okx-registration-support-20261012/redacted-receipt.json`
+(SHA256 `bf492d3f090691479f52da16a3455dfff6fb066cdb5337ab83b3f95fc3bdd9fc`).
+
+## 2026-10-12 B3/DB0038 diagnostic head binding (pending exact-source CI)
+
+The next source slice adds a DENY-only, in-memory bridge between independently
+replayed B3 history and DB0038 current-account index heads. It pins both latest
+heads under one exact-UID PostgreSQL lock, rereads their original B1 chains,
+rechecks the source/session join and the local ledger checkpoint, and preserves
+all historical and freshness blockers. It does not replay the entire B3 index,
+materialize a portfolio revision, or authorize execution. Four new isolated
+PostgreSQL tests cover the equal-head read, wrong/crossed pins, a changed B3
+head, and a changed local ledger checkpoint. They collect locally but require
+the final committed source in hosted PostgreSQL before acceptance.
+
+The strict Linux PostgreSQL suite classification now matches all 47 Windows
+classified PostgreSQL modules, rather than omitting 14 from that dedicated
+zero-skip job. Linux shards also have isolated PostgreSQL; this change is a
+coverage and skip-policy tightening, not evidence those modules were never
+run before. The focused local unit/classifier tests passed (26 tests), and
+Ruff, formatting, Windows selection and integration collection passed. The
+current checkout is not an exact-source CI validation until committed and
+tested at its own SHA.

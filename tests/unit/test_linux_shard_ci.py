@@ -22,12 +22,19 @@ from scripts.verify_linux_shard import (
     selected_for,
 )
 from scripts.verify_linux_shard_union import COMMON_STAGES, verify_union
+from scripts.verify_windows_regression import POSTGRES_INTEGRATION
 
 COMMIT = "a" * 40
 TREE = "b" * 40
 ARCHIVE = b"reviewed-git-archive"
 MANIFEST = b"reviewed-manifest\n"
 SOURCE_FILES = b"{}"
+
+
+def test_every_windows_classified_postgres_module_runs_in_strict_linux_postgres_suite():
+    assert {Path(path).name for path in POSTGRES_TEST_PATHS} == set(
+        POSTGRES_INTEGRATION
+    )
 
 
 def test_reviewed_modules_in_postgres_suite_only():
@@ -67,6 +74,14 @@ def test_reviewed_modules_in_postgres_suite_only():
         (
             "tests/integration/test_account_current_observation_repository.py",
             "test_v7_current_append_readback_is_separate_from_history_and_idempotent",
+        ),
+        (
+            "tests/integration/test_account_current_history_observation_repository.py",
+            "test_b3_and_db0038_same_uid_join_preserves_unknowns",
+        ),
+        (
+            "tests/integration/test_account_locked_current_history_join_v7_repository.py",
+            "test_isolated_postgresql_v7_join_has_distinct_policy_receipt_and_no_authority",
         ),
     ):
         nodeid = path + "::" + case
