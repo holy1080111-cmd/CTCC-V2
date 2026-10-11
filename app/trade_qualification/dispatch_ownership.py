@@ -2,8 +2,9 @@
 
 The existing journal is evidence, never a transferable capability. This module
 can retain one invocation's original request and compare its committed v2 intent
-with independent repository readback. It cannot issue READY: the source-owned
-account/public producers and the guarded first-byte transport do not exist yet.
+or control-bound envelope with independent repository readback. It cannot issue
+READY: the source-owned account/public producers and guarded first-byte
+transport do not exist yet.
 No constructor, digest, diagnostic observation or Arm display grants authority.
 """
 
@@ -19,6 +20,10 @@ from typing import Literal
 
 from app.database.repositories.qualification_ledger import (
     QualificationLedgerRepository,
+)
+from app.trade_qualification.control_bound_ledger import (
+    ControlBoundSubmissionIntentRecord,
+    replay_control_bound_intent,
 )
 from app.trade_qualification.reservations import (
     LedgerScope,
@@ -135,17 +140,17 @@ class _Entry:
     generation: int
     state: str = "opened"
     reason: str = "dispatch_trusted_producer_unavailable"
-    intent: SubmissionIntentRecord | None = None
+    intent: SubmissionIntentRecord | ControlBoundSubmissionIntentRecord | None = None
     task: asyncio.Task | None = None
 
 
 class DispatchOwnership(_NotTransferable):
     """One account's bounded, process-local diagnostic invocation registry.
 
-    begin() must precede durable consumption. bind_intent() accepts that same
-    invocation's committed v2 record and independently reads it back. Neither
-    operation proves source authenticity or grants a permit. require_ready()
-    always terminates the slot with DENY; there is deliberately no issuer hook.
+    begin() must precede durable consumption. The bind methods accept that same
+    invocation's committed inner v2 record or controlled envelope and read it
+    back independently. Neither operation proves source authenticity or grants
+    a permit. require_ready() always terminates the slot with DENY.
 
     Repository and clocks are application dependencies, not trust certificates.
     Python process compromise/reflection is outside this ownership boundary.
@@ -286,29 +291,44 @@ class DispatchOwnership(_NotTransferable):
             return slot
 
     @staticmethod
-    def _record_snapshot(record):
+    def _record_snapshot(record, *, control_bound):
+        expected_type = (
+            ControlBoundSubmissionIntentRecord
+            if control_bound
+            else SubmissionIntentRecord
+        )
         if (
-            type(record) is not SubmissionIntentRecord
+            type(record) is not expected_type
             or type(record.canonical_json) is not str
             or type(record.sha256) is not str
             or record.execution_authority is not False
             or record.order_retry_authority is not False
+            or (control_bound and record.admission != "DENY")
         ):
             raise DispatchOwnershipError("dispatch_intent_invalid")
-        return SubmissionIntentRecord(record.canonical_json, record.sha256)
+        return expected_type(record.canonical_json, record.sha256)
 
     @classmethod
-    def _record(cls, record, entry):
-        record = cls._record_snapshot(record)
+    def _record(cls, record, entry, *, control_bound):
+        record = cls._record_snapshot(record, control_bound=control_bound)
         try:
-            rebuilt, consumed = replay_submission_intent(
-                record.canonical_json,
-                entry.request,
-                expected_sha256=record.sha256,
-            )
+            if control_bound:
+                rebuilt, consumed = replay_control_bound_intent(
+                    record.canonical_json,
+                    entry.request,
+                    expected_sha256=record.sha256,
+                )
+                inner_json = json.loads(rebuilt.canonical_json)["intent_json"]
+            else:
+                rebuilt, consumed = replay_submission_intent(
+                    record.canonical_json,
+                    entry.request,
+                    expected_sha256=record.sha256,
+                )
+                inner_json = rebuilt.canonical_json
             # Replay above compares the *entire* canonical representation. This
             # separate marker rejects legacy v1, even when its digest is valid.
-            if json.loads(rebuilt.canonical_json)["version"] != VERSION_V2:
+            if json.loads(inner_json)["version"] != VERSION_V2:
                 raise ValueError
             if consumed.request_sha256 != entry.request_sha256:
                 raise ValueError
@@ -317,6 +337,14 @@ class DispatchOwnership(_NotTransferable):
         return rebuilt, consumed
 
     def bind_intent(self, slot, committed):
+        """Bind an uncontrolled inner v2 record for diagnostic readback only."""
+        return self._bind_intent(slot, committed, control_bound=False)
+
+    def bind_control_bound_intent(self, slot, committed):
+        """Bind the exact controlled envelope; never grant dispatch authority."""
+        return self._bind_intent(slot, committed, control_bound=True)
+
+    def _bind_intent(self, slot, committed, *, control_bound):
         """Synchronously claim one attempt, then return its owned read task.
 
         Claiming inside an async function would leave a retryable opened slot
@@ -338,12 +366,16 @@ class DispatchOwnership(_NotTransferable):
                 started, mono = self._time()
                 self._current(entry, generation, "opened")
                 self._deadline(entry, started, mono)
-                frozen, consumed = self._record(committed, entry)
+                frozen, consumed = self._record(
+                    committed, entry, control_bound=control_bound
+                )
                 if not entry.opened_at <= consumed.updated_at <= started:
                     raise DispatchOwnershipError("dispatch_intent_not_same_invocation")
                 self._cancellation(entry)
                 entry.state = "reading"
-                work = self._read_intent(entry, generation, frozen)
+                work = self._read_intent(
+                    entry, generation, frozen, control_bound=control_bound
+                )
                 try:
                     task = loop.create_task(work)
                 except Exception:  # noqa: BLE001 -- Task-factory messages are private too.
@@ -385,7 +417,7 @@ class DispatchOwnership(_NotTransferable):
             if entry.task is task:
                 entry.task = None
 
-    async def _read_intent(self, entry, generation, frozen):
+    async def _read_intent(self, entry, generation, frozen, *, control_bound):
         try:
             async with self._mutex:
                 with self._local:
@@ -398,7 +430,12 @@ class DispatchOwnership(_NotTransferable):
                 # callback/issuer. It locks the scope in a separate DB session
                 # and replays the durable request/transition journal itself.
                 try:
-                    result = await QualificationLedgerRepository.read_submission_intent(
+                    read = (
+                        QualificationLedgerRepository.read_control_bound_submission_intent
+                        if control_bound
+                        else QualificationLedgerRepository.read_submission_intent
+                    )
+                    result = await read(
                         self._repository,
                         entry.request.scope,
                         entry.request.origin.original_event_key,
@@ -417,7 +454,9 @@ class DispatchOwnership(_NotTransferable):
                     # The repository just replayed the independently read row.
                     # Exact immutable bytes must equal our pre-await replay; a
                     # third computational replay would add no lineage proof.
-                    replayed = self._record_snapshot(result)
+                    replayed = self._record_snapshot(
+                        result, control_bound=control_bound
+                    )
                     if replayed != frozen:
                         raise DispatchOwnershipError("dispatch_readback_mismatch")
                     self._current(entry, generation, "reading")

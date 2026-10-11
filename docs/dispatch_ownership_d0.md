@@ -1,10 +1,12 @@
 # D0: same-invocation lineage, with dispatch denied
 
 `app/trade_qualification/dispatch_ownership.py` adds a process-local registry for
-an original reservation request and its independently read v2 submission intent.
-It deliberately has **no production issuer, READY transition, send function or
-transport integration**. All existing entry write routes remain denied by
-`execution_authority.py` and `exchange/okx/private_rest.py`.
+an original reservation request and its independently read v2 submission intent
+or control-bound intent envelope. It deliberately has **no production issuer,
+READY transition or send function**. The shared private transport checks for an
+owner/slot but still rejects every write unconditionally. All existing entry
+write routes remain denied by `execution_authority.py` and
+`exchange/okx/private_rest.py`.
 
 This is infrastructure for a future owned coordinator. Passing its tests is not
 acceptance of authenticated account/public sources, PostgreSQL, Demo, Live or a
@@ -21,13 +23,13 @@ first-byte write guard. No migration or existing serialized contract changes.
    whose identity exists only in that owner's registry. The original candidate,
    event, policy, fixed geometry, risk and expected revisions remain in that
    request. This call itself neither reserves nor consumes risk.
-3. `bind_intent(slot, committed_record)` synchronously claims the attempt and
-   validates the exact existing v2 intent against that frozen request. It returns
-   an owner-held `asyncio.Task`, which the caller can await or cancel. That task
-   then invokes the existing repository's
-   separate-session `read_submission_intent` and compares the entire replayed
-   canonical record. A successful result is **`bound_denied`**, a diagnostic
-   lineage observation with both execution and retry authority false.
+3. `bind_intent(slot, committed_record)` validates an inner v2 intent;
+   `bind_control_bound_intent(slot, committed_envelope)` validates the exact
+   controlled envelope and its inner v2 intent. Each synchronously claims the
+   attempt and returns an owner-held `asyncio.Task`. The task calls the matching
+   repository readback method in a separate session and compares the entire
+   replayed canonical record. A successful result is **`bound_denied`**, a
+   historical lineage observation with execution and retry authority false.
 4. `require_ready(slot)` always terminates the slot with
    `dispatch_trusted_producer_unavailable`. There is no injected producer,
    callback, bool, hash, Arm display or token that can change this decision.
@@ -42,7 +44,7 @@ first-byte write guard. No migration or existing serialized contract changes.
 The canonical v2 record binds the full existing request and consumed receipt:
 reservation, original event, report/candidate, environment, exact UID,
 settlement currency, account and ledger revisions, fixed entry/SL/TP/contracts/
-leverage, exact FOK request, isolated mode, position side, expiry headers,
+leverage, proposed FOK request, isolated mode, position side, expiry headers,
 protection IDs and triggers, account packet/plan, evidence, recheck, execution
 binding and economics digests. All of those are replayed by existing intent
 code; D0 does not add a parallel order builder or accept a changed rehashed body.
@@ -54,11 +56,12 @@ Monotonic elapsed time also expires the slot when a wall clock merely stalls.
 These comparisons are local chronology checks, not host-clock attestation or
 proof that caller-supplied inputs came from trusted B/C producers.
 
-There is no v2 control owner/epoch/config pin that D0 can honestly manufacture.
-The independent durable control observation, authenticated credential session,
-verified current account revision, elapsed market path and price-bound risk
-proof must come from future controlled B/C producers. Existing v2 false fields
-remain false. Their absence is why production READY remains unavailable.
+The controlled envelope preserves historical control owner/epoch/config pins;
+D0 cannot turn them into a fresh current-control observation. Authenticated
+credential session, verified current account revision, elapsed market path and
+price-bound risk proof must come from future controlled B/C producers. The
+proposed request also is not a verified signed/wire request. Existing false
+authority fields remain false, so production READY remains unavailable.
 
 ## Race and lifetime rules
 
@@ -97,16 +100,21 @@ security boundary against arbitrary code execution.
 
 The D0 local revoke is **not** a durable EStop command and makes no claim about
 instantaneous cross-process stopping. DB0019 control remains a separate durable
-component. A future coordinator must connect both lifetimes; copying its Arm
-display property into D0 would not establish authority. The future transport
-also needs a reviewed first-byte guard and a precise DB/egress failure model.
-An HTTPX request hook or a check before `await client.request` cannot supply it.
+component. `bound_denied` proves only that the historical consumed intent was
+read back; Arm, EStop and lease state can change after consume or during that
+readback. D0 does not re-read current control, so an old armed control state in
+the envelope cannot authorize dispatch. A future coordinator must connect both
+lifetimes and recheck current control; copying an Arm display into D0 would not
+establish authority. The future transport also needs a reviewed first-byte
+guard and a precise DB/egress failure model. An HTTPX request hook or a check
+before `await client.request` cannot supply it.
 
 ## Validation scope
 
-`tests/unit/test_dispatch_ownership_contracts.py` uses genuine computational
-intent replay from explicitly synthetic fixtures and a repository read double
-defined only in tests. It exercises queued revocation/cancellation, duplicate
+`tests/unit/test_dispatch_ownership_contracts.py` and
+`tests/unit/test_dispatch_control_bound_ownership.py` use genuine computational
+intent replay from explicitly synthetic fixtures and repository read doubles
+defined only in tests. They exercise queued revocation/cancellation, duplicate
 bind, terminal replay, independent readback mismatch, changed lineage and fixed
 geometry, UTC/monotonic expiry, historical/future consumption, legacy v1, DB
 failure, request copying, foreign objects, process lifetime and DTO forgery.
