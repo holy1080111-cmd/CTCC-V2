@@ -120,23 +120,18 @@ def _safe_first_append_failure(exc: Exception) -> str:
 
 
 async def _stored_with_first_append_diagnostic(monkeypatch, database):
-    """On a redacted first failure, classify one internal attempt, then fail."""
+    """Classify the one synthetic append without a second ambiguous write."""
     original_append = AccountObservationIndexRepository.append
 
     async def observed_append(self, scope, reference, window, *, expected_revision):
-        try:
+        if expected_revision != 0:
             return await original_append(
                 self, scope, reference, window, expected_revision=expected_revision
             )
-        except AccountObservationError as exc:
-            if expected_revision != 0 or exc.args != ("observation_append_failed",):
-                raise
-            try:
-                await self._append(scope, reference, window, expected_revision)
-            except Exception as internal:  # noqa: BLE001 -- classify synthetic DB failure
-                classification = _safe_first_append_failure(internal)
-            else:
-                classification = "internal_once_succeeded_after_public_failure"
+        try:
+            return await self._append(scope, reference, window, expected_revision)
+        except Exception as internal:  # noqa: BLE001 -- synthetic first-failure only
+            classification = _safe_first_append_failure(internal)
             raise AssertionError(
                 f"first_observation_append_failed:{classification}"
             ) from None
@@ -148,6 +143,27 @@ async def _stored_with_first_append_diagnostic(monkeypatch, database):
         monkeypatch.setattr(
             AccountObservationIndexRepository, "append", original_append
         )
+
+
+async def test_first_append_diagnostic_never_retries_ambiguous_failure(monkeypatch):
+    attempts = []
+
+    async def failed_append(self, scope, reference, window, expected_revision):
+        attempts.append(expected_revision)
+        raise AccountObservationError("observation_source_replay_invalid")
+
+    async def synthetic_stored(_monkeypatch, _database):
+        repo = AccountObservationIndexRepository(lambda: None, clock=now)
+        return await repo.append(None, None, None, expected_revision=0)
+
+    monkeypatch.setattr(AccountObservationIndexRepository, "_append", failed_append)
+    monkeypatch.setitem(globals(), "stored", synthetic_stored)
+    with pytest.raises(
+        AssertionError,
+        match="first_observation_append_failed:class=AccountObservationError,code=observation_source_replay_invalid",
+    ):
+        await _stored_with_first_append_diagnostic(monkeypatch, None)
+    assert attempts == [0]
 
 
 async def test_original_balance_pages_survive_restart_and_reject_prefix_or_head_changes(
