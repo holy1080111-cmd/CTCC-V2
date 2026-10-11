@@ -9,7 +9,7 @@ from datetime import timedelta
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import event, select
+from sqlalchemy import event, select, text
 from sqlalchemy.exc import DBAPIError
 
 from app.database.models.qualification_ledger import (
@@ -132,6 +132,75 @@ async def test_missing_scope_is_error_and_unrecorded_exact_key_is_only_diagnosti
     assert (
         await repo.read_event_observation(existing.scope, existing.original_event_key)
     ).matched == existing
+
+
+@pytest.mark.parametrize("drift", ("disabled_trigger", "wrong_uid_unique_key"))
+async def test_observation_denies_absence_when_retention_schema_drifts_in_transaction(
+    database, fixture, monkeypatch, drift
+):
+    """Inject transactional DDL at the guard: the fixture DB stays unchanged."""
+    repo, _ = await fixtures.initialize(database, fixture)
+    original_guard = repository_module._require_event_journal_schema
+
+    async def drift_then_check(session):
+        if drift == "disabled_trigger":
+            await session.execute(
+                text(
+                    "ALTER TABLE public.qualification_reservation_transitions "
+                    "DISABLE TRIGGER qualification_transition_immutable"
+                )
+            )
+        else:
+            await session.execute(
+                text(
+                    "ALTER TABLE public.qualification_reservations "
+                    "DROP CONSTRAINT uq_qualification_reservations_uid_event"
+                )
+            )
+            await session.execute(
+                text(
+                    "ALTER TABLE public.qualification_reservations ADD CONSTRAINT "
+                    "uq_qualification_reservations_uid_event UNIQUE "
+                    "(environment, account_id, settlement_currency, original_event_key)"
+                )
+            )
+        await original_guard(session)
+
+    monkeypatch.setattr(
+        repository_module, "_require_event_journal_schema", drift_then_check
+    )
+    try:
+        with pytest.raises(
+            QualificationLedgerError, match="event_ledger_schema_retention_invalid"
+        ):
+            await repo.read_event_observation(fixture.request.scope, "f" * 64)
+    except DBAPIError:
+        pytest.skip("isolated PostgreSQL role cannot alter test schema")
+    finally:
+        monkeypatch.setattr(
+            repository_module, "_require_event_journal_schema", original_guard
+        )
+    # The failed read rolled the DDL back; ordinary absence remains DENY-only.
+    observed = await repo.read_event_observation(fixture.request.scope, "f" * 64)
+    assert observed.matched is None and observed.admission == "DENY"
+
+
+async def test_observation_nowait_rejects_concurrent_direct_writer_lock(
+    database, fixture
+):
+    repo, _ = await fixtures.initialize(database, fixture)
+    async with database[1]() as writer, writer.begin():
+        await writer.execute(
+            text("LOCK TABLE public.qualification_reservations IN ROW EXCLUSIVE MODE")
+        )
+        with pytest.raises(DBAPIError) as denied:
+            await asyncio.wait_for(
+                repo.read_event_observation(fixture.request.scope, "f" * 64),
+                10,
+            )
+        assert denied.value.orig.sqlstate == "55P03"  # lock_not_available
+    observed = await repo.read_event_observation(fixture.request.scope, "f" * 64)
+    assert observed.matched is None and observed.admission == "DENY"
 
 
 async def test_query_is_exact_bounded_all_state_and_defers_large_request_json(

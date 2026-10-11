@@ -670,6 +670,9 @@ class QualificationLedgerRepository:
         Read-only diagnostic, never an absence permit or issuer input. A bound
         reserve independently repeats the same query inside its transaction.
         Missing scopes/conflicts are errors, never an invented empty result.
+        The NOWAIT journal lock and schema check make this one read reject
+        concurrent direct writers and missing tombstone-retention guards;
+        neither establishes that earlier history was never removed.
         """
         scope = checked_bootstrap(scope, LedgerScope)
         reservation_id(scope, event_key)
@@ -679,7 +682,25 @@ class QualificationLedgerRepository:
             raise QualificationLedgerError("exact_ledger_clock_required")
         started = require_aware(started)
         async with self.session_factory() as session, session.begin():
+            if session.get_bind().dialect.name != "postgresql":
+                raise QualificationLedgerError("event_ledger_postgresql_required")
+            await session.execute(
+                text("SET TRANSACTION ISOLATION LEVEL READ COMMITTED")
+            )
+            await session.execute(
+                text("SET LOCAL search_path TO pg_catalog, public, pg_temp")
+            )
+            await _require_event_journal_session(session)
             row = await self._locked(session, scope)
+            await session.execute(
+                text(
+                    "LOCK TABLE public.qualification_account_scopes, "
+                    "public.qualification_reservations, "
+                    "public.qualification_reservation_transitions "
+                    "IN SHARE MODE NOWAIT"
+                )
+            )
+            await _require_event_journal_schema(session)
             observed = self._now(row)
             records = await self._event_rows_locked(session, scope, event_key)
             if len(records) > 1:
