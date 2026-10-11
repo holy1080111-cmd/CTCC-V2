@@ -1118,6 +1118,8 @@ def history_source(
     recent_only=False,
     overlap=False,
     overlap_conflict=False,
+    trade_bill=None,
+    entry_subtype="3",
 ):
     def change(pages):
         entry = row(
@@ -1126,6 +1128,7 @@ def history_source(
             ordId="801",
             tradeId="701",
             side="buy",
+            subType=entry_subtype,
             fillPx="100",
             fillSz="1",
             fillPnl="0",
@@ -1141,6 +1144,7 @@ def history_source(
             ordId="802",
             tradeId="702",
             side="sell",
+            subType="5",
             fillPx=exit_price,
             fillSz=exit_quantity,
             fillPnl=exit_pnl,
@@ -1159,6 +1163,28 @@ def history_source(
             pages["fills_recent"] = [[recent_exit, entry], []]
         if recent_only:
             pages["fills_history"] = [[]]
+        if trade_bill is not None:
+            bill_fields = {
+                "type": "2",
+                "subType": "3",
+                "instType": "SWAP",
+                "instId": INSTRUMENT,
+                "ordId": "801",
+                "tradeId": "701",
+                "ccy": "USDT",
+                "fee": entry_fee,
+                "pnl": "0",
+                "balChg": entry_fee,
+                "posBalChg": "0",
+                "px": "100",
+                "sz": "1",
+                "ts": ms(ENTRY_FILL_AT + timedelta(seconds=1)),
+                **trade_bill,
+            }
+            pages["bills_archive"] = [
+                [row("bills_archive", "901", **bill_fields)],
+                [],
+            ]
         if funding:
             pages["bills_archive"] = [
                 [
@@ -1203,6 +1229,60 @@ def test_nonempty_fills_derive_net_outcome_at_actual_exit_fill_time():
     assert result.snapshot is None
     assert "history_ingestion_watermark_unverified" in result.incomplete_reasons
     assert result.account_complete is False
+
+
+def test_matching_trade_bill_and_fill_are_retained_without_cashflow_gap():
+    result = materialize(
+        source=history_source(trade_bill={}), supplied=nonempty_history_inputs()
+    )
+    assert len(result.loss_history) == 1
+    assert "history_cashflow_inventory_unmapped" not in result.incomplete_reasons
+    assert result.snapshot is None
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("instType", "FUTURES"),
+        ("instId", "ETH-USDT-SWAP"),
+        ("subType", "5"),
+        ("ordId", "899"),
+        ("ordId", ""),
+        ("tradeId", "799"),
+        ("tradeId", ""),
+        ("ccy", "BTC"),
+        ("px", "101"),
+        ("px", ""),
+        ("sz", "2"),
+        ("fee", "-0.02"),
+        ("pnl", "0.01"),
+        ("balChg", "1000"),
+        ("balChg", ""),
+        ("posBalChg", "0.01"),
+        ("posBalChg", ""),
+    ],
+)
+def test_trade_bill_with_matching_id_but_conflicting_fill_is_unmapped(field, value):
+    result = materialize(
+        source=history_source(trade_bill={field: value}),
+        supplied=nonempty_history_inputs(),
+    )
+    assert "history_cashflow_inventory_unmapped" in result.incomplete_reasons
+    assert result.snapshot is None
+    assert result.account_complete is False
+    assert result.execution_authority is False
+
+
+@pytest.mark.parametrize("subtype", ["1", "4", "5", "200"])
+def test_trade_bill_requires_supported_subtype_and_fill_side_alignment(subtype):
+    result = materialize(
+        source=history_source(trade_bill={"subType": subtype}, entry_subtype=subtype),
+        supplied=nonempty_history_inputs(),
+    )
+    assert "history_cashflow_inventory_unmapped" in result.incomplete_reasons
+    assert result.snapshot is None
+    assert result.account_complete is False
+    assert result.execution_authority is False
 
 
 @pytest.mark.parametrize(
@@ -1264,13 +1344,9 @@ def test_history_seed_must_cover_exact_pinned_query_window(truncated):
     assert "history_recorded_window_incomplete" in result.incomplete_reasons
 
 
-def test_conflicting_recent_and_archive_fill_is_incomplete_without_selecting_a_winner():
-    result = materialize(
-        source=history_source(overlap_conflict=True), supplied=nonempty_history_inputs()
-    )
-    assert "history_overlapping_source_conflict" in result.incomplete_reasons
-    assert result.loss_history == ()
-    assert result.snapshot is None
+def test_conflicting_recent_and_archive_fill_is_rejected_before_materialization():
+    with pytest.raises(capture.AccountCaptureError, match="history_overlap_conflict"):
+        history_source(overlap_conflict=True)
 
 
 @pytest.mark.parametrize(
@@ -1299,7 +1375,7 @@ def test_external_instrument_spec_cannot_override_new_account_capture():
     assert result.snapshot is None
 
 
-def test_conflicting_recent_and_archive_order_cannot_be_hidden_by_fill_only_mapping():
+def test_conflicting_recent_and_archive_order_is_rejected_before_fill_mapping():
     def change(pages):
         pages["orders_history_recent"] = [
             [row("orders_history_recent", "850", avgPx="101")],
@@ -1310,10 +1386,8 @@ def test_conflicting_recent_and_archive_order_cannot_be_hidden_by_fill_only_mapp
             [],
         ]
 
-    result = materialize(source=packet(changes=change), supplied=snapshot_inputs())
-    assert "history_overlapping_source_conflict" in result.incomplete_reasons
-    assert result.loss_history == ()
-    assert result.snapshot is None
+    with pytest.raises(capture.AccountCaptureError, match="history_overlap_conflict"):
+        packet(changes=change)
 
 
 def test_funding_cash_bill_time_cannot_be_used_as_holding_accrual_evidence():

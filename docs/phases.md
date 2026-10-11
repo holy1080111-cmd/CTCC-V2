@@ -12,6 +12,11 @@ offline Gate 3 prerequisite; its PostgreSQL role tests and decision-time
 availability proof remain pending. It does not advance Gate 3 or trading
 authority.
 
+The current branch migration head is `0037`, which repairs a malformed
+account-observation membership regex installed by `0036`. Exact-source
+PostgreSQL CI is still required before accepting that repair. The current
+working source continues to deny all private exchange writes.
+
 Latest user-supplied construction track: [entry qualification and evidence](entry_qualification_implementation.md)
 (2026-09-11). Its domain foundation and strategy hard-gate work are local-only;
 regime/timing/location engines, evidence, final recheck, outbox, forensics and
@@ -175,7 +180,8 @@ Demo acceptance remain separately tracked. MIE/research authority is unchanged.
 
 - The 2026-09-09 discussion in project 123, including its continuation after
   midnight Taipei time, is integrated in [the core master specification](ctcc_core_master.md)
-  and `config/ctcc_core_blueprint.json`. Six strategy families, regime routing,
+  and `config/ctcc_core_blueprint.json`. The original six-family design and the
+  current eight entry-strategy implementations, regime routing,
   downward-only advisers, external evidence packs, and separate Demo/MIE
   validation tracks are design requirements, not newly qualified runtime
   strategies or an instruction to enable execution.

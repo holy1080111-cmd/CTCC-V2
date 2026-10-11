@@ -60,6 +60,12 @@ SL/TP 選擇及成本／帳戶組合風險離線引擎。同源四時間框架�
 
 ## 2. 六個策略家族與目前差距
 
+六個家族是長期研究分類。現有 entry qualification 另外列出八個方向性
+entry strategy：`trend_pullback`、`breakout_continuation`、
+`liquidity_sweep_reversal`、`fvg_return`、`order_block_return`、
+`range_reversal`、`structure_reversal`、`volatility_expansion`。兩套分類
+用途不同；八個實作存在不代表六個研究家族或任何 OOS／Demo Gate 已通過。
+
 | 策略家族 | 目標研究內容 | 目前可確認的狀態 |
 | --- | --- | --- |
 | Trend / Momentum | 趨勢、突破、squeeze、動量 | 已有分析元件；不等於整個新家族通過 OOS |

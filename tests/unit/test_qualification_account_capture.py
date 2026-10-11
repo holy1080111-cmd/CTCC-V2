@@ -1090,6 +1090,53 @@ def test_duplicate_row_ids_fail_even_when_one_copy_has_conflicting_values(change
         stream_observation("fills_history", [row("fills_history"), duplicate])
 
 
+@pytest.mark.parametrize(
+    "recent,archive",
+    [
+        ("fills_recent", "fills_history"),
+        ("bills_recent", "bills_archive"),
+        ("orders_history_recent", "orders_history_archive"),
+    ],
+)
+def test_matching_recent_archive_overlap_retains_both_original_rows(recent, archive):
+    selected, observations = records(
+        pages={
+            recent: [[row(recent, "707")], []],
+            archive: [[row(archive, "707")], []],
+        }
+    )
+    packet = verify(selected, observations)
+    overlap = [
+        page.rows[0]
+        for page in packet.observations
+        if page.request.stream in {recent, archive} and page.rows
+    ]
+    assert len(overlap) == 2
+    assert overlap[0].row_id == overlap[1].row_id == "707"
+    assert overlap[0].canonical_json == overlap[1].canonical_json
+
+
+@pytest.mark.parametrize(
+    "recent,archive,changed_field,changed_value",
+    [
+        ("fills_recent", "fills_history", "fee", "-0.02"),
+        ("bills_recent", "bills_archive", "fee", "-0.02"),
+        ("orders_history_recent", "orders_history_archive", "px", "101"),
+    ],
+)
+def test_conflicting_recent_archive_overlap_cannot_form_b1_packet(
+    recent, archive, changed_field, changed_value
+):
+    selected, observations = records(
+        pages={
+            recent: [[row(recent, "707")], []],
+            archive: [[row(archive, "707", **{changed_field: changed_value})], []],
+        }
+    )
+    with pytest.raises(module.AccountCaptureError, match="history_overlap_conflict"):
+        verify(selected, observations)
+
+
 def test_no_record_or_raw_data_changes_are_laundered_by_top_packet_rehash(packet):
     part = packet.observations[2]
     changed_row = part.rows[0].model_copy(update={"canonical_json": "{}"})

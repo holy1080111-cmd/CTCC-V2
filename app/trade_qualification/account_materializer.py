@@ -1064,6 +1064,57 @@ def _account_metadata(records, packet, inputs, gaps):
             gaps.add("account_leverage_coverage_incomplete")
 
 
+def _trade_bill_matches_fill(bill, fill):
+    """Waive only a fully matched SWAP trade bill with no extra balance movement."""
+    if (
+        bill.get("type") != "2"
+        or bill.get("instType") != "SWAP"
+        or fill.get("instType") != "SWAP"
+    ):
+        return False
+    side_by_subtype = {"3": "buy", "4": "sell", "5": "sell", "6": "buy"}
+    subtype = bill.get("subType")
+    if subtype not in side_by_subtype or fill.get("side") != side_by_subtype[subtype]:
+        return False
+    identities = (
+        ("instType", "instType"),
+        ("instId", "instId"),
+        ("subType", "subType"),
+        ("ordId", "ordId"),
+        ("tradeId", "tradeId"),
+        ("ccy", "feeCcy"),
+    )
+    amounts = (
+        ("px", "fillPx", True),
+        ("sz", "fillSz", True),
+        ("fee", "fee", False),
+        ("pnl", "fillPnl", False),
+    )
+    if not all(
+        type(bill.get(left)) is str
+        and bill[left] != ""
+        and bill[left] == fill.get(right)
+        for left, right in identities
+    ) or not all(
+        (value := _fraction(bill.get(left), positive=positive)) is not None
+        and value == _fraction(fill.get(right), positive=positive)
+        for left, right, positive in amounts
+    ):
+        return False
+    fee = _fraction(bill.get("fee"))
+    pnl = _fraction(bill.get("pnl"))
+    bal_change = _fraction(bill.get("balChg"))
+    pos_bal_change = _fraction(bill.get("posBalChg"))
+    # An additional account or position balance change needs its own mapping.
+    return (
+        fee is not None
+        and pnl is not None
+        and bal_change is not None
+        and bal_change == pnl + fee
+        and pos_bal_change == 0
+    )
+
+
 def _history(inputs, records, specs, packet, gaps):
     fills = _history_union(records, ("fills_recent", "fills_history"), gaps)
     bills = _history_union(records, ("bills_recent", "bills_archive"), gaps)
@@ -1205,7 +1256,12 @@ def _history(inputs, records, specs, packet, gaps):
     if used_fills != set(fills):
         gaps.add("history_fill_inventory_unmapped")
     if any(
-        key not in used_funding and not (key in used_fills and row.get("type") == "2")
+        key not in used_funding
+        and not (
+            key in used_fills
+            and key in fills
+            and _trade_bill_matches_fill(row, fills[key])
+        )
         for key, row in bills.items()
     ):
         gaps.add("history_cashflow_inventory_unmapped")

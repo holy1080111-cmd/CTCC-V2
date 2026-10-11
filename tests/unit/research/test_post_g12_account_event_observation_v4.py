@@ -24,6 +24,7 @@ from app.trade_qualification.reservations import (
     ScenarioOperands,
     exact_coverage,
 )
+from tests.unit.research import test_owned_public_runtime_v2 as public_fixture
 from tests.unit.research import test_post_g12_account_history_join_v3 as source_fixture
 from tests.unit.research.test_post_g12_account_history_join_v3 import (
     HISTORY_ID,
@@ -36,6 +37,20 @@ from tests.unit.test_qualification_one_shot import UID
 @pytest.fixture(scope="module")
 def source_inputs_fixture():
     return source_fixture._source_inputs_fixture.__wrapped__()
+
+
+@pytest.fixture(scope="module")
+async def captured_public_journal(source_inputs_fixture, tmp_path_factory):
+    with pytest.MonkeyPatch.context() as patch:
+        _, directory, harness, publications = public_fixture.setup(
+            patch, source_inputs_fixture[0]
+        )
+        result = await public_fixture.invoke(tmp_path_factory.mktemp("v4-public"))
+        assert result.packet is not None and result.journal_sha256 is not None
+        harness.assert_closed()
+        assert not publications
+        public_fixture.empty_registries()
+        return result, dict(directory.content)
 
 
 def _receipt(expected, *, changed=None):
@@ -75,9 +90,15 @@ def _receipt(expected, *, changed=None):
     return joined.PostG12OwnedPublicAccountHistoryDiagnosticV3(canonical(value))
 
 
-def _publish_synthetic_artifacts(root, expected, receipt):
-    """Actual six-file/sidecar bytes for the explicitly synthetic V3 double."""
+def _publish_synthetic_artifacts(root, expected, receipt, public_journal):
+    """Actual G12, public journal and sidecar bytes for the synthetic V3 double."""
     value = decode(receipt.receipt_json)
+    public_result, public_files = public_journal
+    public_directory = root / "public"
+    for name, payload in public_files.items():
+        (public_directory / name).write_bytes(payload)
+    value["public_packet_sha256"] = public_result.packet.bundle_sha256
+    value["public_journal_sha256"] = public_result.journal_sha256
     image_buffer = io.BytesIO()
     Image.new("RGB", (1, 1), (20, 30, 40)).save(image_buffer, format="PNG")
     png = image_buffer.getvalue()
@@ -223,10 +244,19 @@ def _matched(scope, key, expected):
         ("recheck_missing", "v3_artifact_readback_invalid", 0),
         ("recheck_rehashed_event", "v3_artifact_readback_invalid", 0),
         ("recheck_rehashed_time", "v3_artifact_readback_invalid", 0),
+        ("public_raw_changed", "v3_artifact_readback_invalid", 0),
+        ("public_summary_missing", "v3_artifact_readback_invalid", 0),
+        ("public_root_replaced", "v3_artifact_readback_invalid", 0),
     ),
 )
 async def test_v4_one_invocation_v3_readback_then_uid_event_only(
-    source_inputs_fixture, tmp_path, monkeypatch, fault, code, read_count
+    source_inputs_fixture,
+    captured_public_journal,
+    tmp_path,
+    monkeypatch,
+    fault,
+    code,
+    read_count,
 ):
     source, values, run = source_inputs_fixture
     scope = LedgerScope(account_id=UID, settlement_currency="USDT")
@@ -235,6 +265,7 @@ async def test_v4_one_invocation_v3_readback_then_uid_event_only(
         source.market, run, values, session, scope, HISTORY_ID
     )
     (tmp_path / "g12").mkdir()
+    (tmp_path / "public").mkdir()
     (tmp_path / "recheck").mkdir()
     (tmp_path / "join").mkdir()
     (tmp_path / "event").mkdir()
@@ -257,7 +288,10 @@ async def test_v4_one_invocation_v3_readback_then_uid_event_only(
             },
         }.get(fault)
         result = _publish_synthetic_artifacts(
-            tmp_path, expected, _receipt(expected, changed=changed)
+            tmp_path,
+            expected,
+            _receipt(expected, changed=changed),
+            captured_public_journal,
         )
         if fault in {
             "g12_rehashed_entry",
@@ -301,6 +335,18 @@ async def test_v4_one_invocation_v3_readback_then_uid_event_only(
             (tmp_path / "recheck" / "receipt.json").write_bytes(b"{}")
         if fault == "recheck_missing":
             (tmp_path / "recheck" / "receipt.json").unlink()
+        if fault == "public_raw_changed":
+            raw_path = next((tmp_path / "public").glob("event-*.raw"))
+            raw = raw_path.read_bytes()
+            raw_path.write_bytes(bytes([raw[0] ^ 1]) + raw[1:])
+        if fault == "public_summary_missing":
+            (tmp_path / "public" / "summary.json").unlink()
+        if fault == "public_root_replaced":
+            public_root = tmp_path / "public"
+            public_root.rename(tmp_path / "retired-public")
+            public_root.mkdir()
+            for name, payload in captured_public_journal[1].items():
+                (public_root / name).write_bytes(payload)
         if fault in {
             "changed_reference_readback",
             "changed_g12_readback",

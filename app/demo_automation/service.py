@@ -214,6 +214,11 @@ class SafeDemoAutomation:
     async def status(self) -> DemoAutomationStatus:
         try:
             return self._status_unchecked()
+        except DemoAutomationSafetyError:
+            # Preserve the existing fixed safety reason (for example a
+            # corrupt persisted exposure); only unexpected malformed runtime
+            # values need the generic policy diagnostic.
+            raise
         except Exception:  # noqa: BLE001 - Never disclose malformed runtime values.
             raise DemoAutomationSafetyError(
                 "demo_automation_runtime_policy_invalid"

@@ -603,6 +603,33 @@ def _read_bound_public_recheck(root, value, expected, *, root_identity):
         ) from None
 
 
+def _read_bound_public_journal(root, value, *, root_identity):
+    """Replay the raw journal and bind its summary and packet to this V3 receipt."""
+    try:
+        if source_runtime._native_recheck_root_identity(root) != root_identity:
+            raise ValueError
+        with source_runtime._reopen_runtime_journal(root) as directory:
+            plan_raw = directory.read("plan.json", source_runtime.MAX_RAW)
+            summary_raw = directory.read("summary.json", source_runtime.MAX_RAW)
+            if sha(summary_raw) != value["public_journal_sha256"]:
+                raise ValueError
+            summary, _, packet = source_runtime.replay_public_runtime(
+                directory, expected_plan_sha256=sha(plan_raw)
+            )
+            if (
+                summary["disposition"] != "captured"
+                or packet is None
+                or packet.bundle_sha256 != value["public_packet_sha256"]
+                or directory.read("summary.json", source_runtime.MAX_RAW) != summary_raw
+                or source_runtime._native_recheck_root_identity(root) != root_identity
+            ):
+                raise ValueError
+    except Exception:  # noqa: BLE001 -- no public source or path detail in denial
+        raise PostG12AccountEventObservationError(
+            "v4_public_journal_readback_failed"
+        ) from None
+
+
 async def publish_capture_inspect_history_event_v4(
     evidence_root,
     public_root,
@@ -662,6 +689,7 @@ async def publish_capture_inspect_history_event_v4(
         evidence_root_identity = source_runtime._native_recheck_root_identity(
             evidence_root
         )
+        public_root_identity = source_runtime._native_recheck_root_identity(public_root)
         recheck_root_identity = joined.prior._empty_native_receipt_root_identity(
             recheck_root, "v4_recheck_root_unavailable"
         )
@@ -748,6 +776,9 @@ async def publish_capture_inspect_history_event_v4(
                 value,
                 expected,
                 root_identity=recheck_root_identity,
+            )
+            _read_bound_public_journal(
+                public_root, value, root_identity=public_root_identity
             )
         except PostG12AccountEventObservationError:
             result = PostG12AccountEventObservationV4(

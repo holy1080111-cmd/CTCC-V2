@@ -1601,6 +1601,26 @@ async def test_real_config_change_is_diagnosed_at_verify_not_last_parser(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_conflicting_history_overlap_aborts_owned_collection_without_packet(
+    monkeypatch,
+):
+    harness = Harness(
+        monkeypatch,
+        pages={
+            "fills_recent": [[row("fills_recent", "707")], []],
+            "fills_history": [[row("fills_history", "707", fee="-0.02")], []],
+        },
+    )
+    with pytest.raises(module.AccountCollectionError) as error:
+        await harness.collect()
+    assert_diagnostic(
+        error.value, stage="verify_records", reason="history_overlap_conflict"
+    )
+    assert len(harness.requests) == len(harness.script)
+    harness.assert_closed()
+
+
+@pytest.mark.asyncio
 async def test_real_serialized_packet_limit_is_diagnosed_at_freeze(monkeypatch):
     harness = Harness(monkeypatch)
     selected = plan(max_response_bytes=1024, max_total_bytes=8192)

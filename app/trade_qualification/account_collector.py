@@ -97,6 +97,7 @@ _CAPTURE_REASONS = frozenset(
         "source_instrument_type_invalid",
         "source_quantity_unit_invalid",
         "conflicting_history_product_identity",
+        "history_overlap_conflict",
         "leverage_instrument_scope_mismatch",
         "history_window_requires_milliseconds",
         "account_capture_cannot_grant_authority",

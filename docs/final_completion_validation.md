@@ -4403,3 +4403,51 @@ persisted risk. This is limited to the legacy in-memory Demo service. The
 shared real OKX private transport still denies all writes, and source-owned
 account completion, durable intent, Demo acceptance, final-source CI, and
 Live acceptance remain unverified.
+
+After W32Time was observed Running/Automatic with the Taipei UTC+08:00 zone
+and a recent `time.windows.com` synchronization, the read-only public
+timestamp diagnostic was rerun from source `05260d7`. It attempted and
+observed five OKX public GETs, retained their response bytes and hashes, and
+found no future source timestamp. The funding data-return timestamp was
+4.286 seconds before headers receipt in this sample. The immutable summary is
+`../../validation-results/public-timestamp-05260d7-20261011T113700Z/summary.json`
+(SHA256 `01a76250065428bf0d451beb6960258d30ac88a44ded72bf70a8ebd4f47ba374`).
+The script returned `admission=DENY` by design. This diagnostic excludes OHLC,
+WS and private account capture, and cannot prove the cause of the older future
+timestamp or grant the full trusted public-source gate.
+
+The owned Demo-account B1 verifier now rejects a conflicting recent/archive
+row with the same endpoint-family `billId` or `ordId` before creating a
+`records_verified` packet. Identical rows remain in both raw page chains;
+canonical comparison changes only JSON key order and whitespace, and does not
+select a winning source. The collector emits the fixed
+`verify_records/history_overlap_conflict` diagnostic. Bounded single-worker
+adjacent synthetic regression passed 929 cases, with 14 additional V7 cases
+and targeted Ruff passing. These offline results do not prove authenticated
+account completeness or allow a Demo write.
+
+The account materializer also stopped treating a trade bill's shared `billId`
+as sufficient cashflow reconciliation. A narrow SWAP match now requires source
+identity, price/size/fee/PnL, subtype/side, `balChg = pnl + fee`, and zero
+`posBalChg`; otherwise it retains `history_cashflow_inventory_unmapped`.
+Adjacent synthetic materializer regression passed 189 cases. Other account
+and position-balance semantics remain unknown, so no complete risk snapshot
+or execution permit follows.
+
+The V4 post-G12 diagnostic now pins the public journal root before its V3
+invocation, replays retained public raw bytes after V3, and checks the journal
+summary and reconstructed packet hashes against the same V3 receipt before
+the database event read. Mutated raw bytes, a removed summary, and a replaced
+root deny that read. Focused V4 tests passed 39 cases and adjacent V3 tests
+passed 13; this remains a read-only `DENY` diagnostic, with no G1–G12 or
+execution authority.
+
+Exact-source CI for `05260d7` exposed four Linux shard-0 failures in the
+corrupt-exposure restart cases (JUnit SHA256
+`06dc2a9a84bf1f738742d6babb82ec10c92a8782a34cefc3aedfe545bab63fc2`).
+The new status wrapper had masked the existing fixed
+`portfolio_state_invalid` safety code with
+`demo_automation_runtime_policy_invalid`. The working source now preserves
+existing `DemoAutomationSafetyError` reasons while keeping a generic mapping
+for unexpected malformed values. The exact four-case test plus adjacent
+structural risk tests passed 56 locally; new exact-source CI is required.

@@ -38,6 +38,22 @@ source time 與 history seed 不填 0 或 now。2026-09-19 本次五檔回歸 1,
 order-history overlap guard 由 materializer 全檔 144 passed 驗證。兩個集合重疊，不相加。
 這是合成來源測試，不是實帳戶／完整 R5 驗收；最終 source commit 仍須整體回歸。
 
+2026-10-11 補強 B1：fills、bills、orders 各自以官方 `billId`／`ordId`
+比對近期與 archive 的同 ID 原始 row。canonical JSON 僅整理 key 順序和空白；
+所有欄位和值都必須相同。相同 row 的兩份原始頁與 receipt 保留，內容衝突則
+在 B1 `verify_records` 拒絕整個 packet，collector 回固定
+`history_overlap_conflict` 診斷，不能等到 materializer 才選 winner。
+相鄰四個合成模組單工測試 929 passed，另 V7 定向 14 passed；無真實帳戶擷取，
+完整來源與帳戶資格仍維持拒絕。
+
+Materializer 的 SWAP trade-bill 對帳豁免也已縮窄：相同 `billId` 本身不夠，
+必須同時比對成交／商品／訂單／trade ID、結算幣、價格、合約數、fee、PnL，
+檢查 subtype 與 buy/sell 一致，並要求明確的 `balChg = pnl + fee`、
+`posBalChg = 0`。缺欄、額外現金或部位餘額變動、未支援 subtype 都留下
+`history_cashflow_inventory_unmapped`。這是保守的 SWAP 子集規則；不能據此
+宣稱 isolated 或其他帳戶會計語義已全面處理。相鄰單工合成測試 189 passed，
+正式 account snapshot 和交易權限仍固定拒絕。
+
 有效 packet 仍只能是 `records_verified_incomplete_account`；`account_complete`、
 `source_authenticity_verified`、`execution_authority` 固定 false。必留缺口包括
 進階商品範圍、非 SWAP 歷史、保留期／ingestion watermark、seed／peak、同時點

@@ -1533,6 +1533,7 @@ def verify_demo_account_records(
         _fail("batch_deadline_exceeded")
     algo_ids = set()
     product_history_ids = set()
+    history_overlap_rows = {}
     for stream, pages in groups.items():
         if not pages or len(pages) > plan.max_pages_per_stream:
             _fail("inventory_stream_missing_or_limit")
@@ -1564,6 +1565,22 @@ def verify_demo_account_records(
                     if identity_key in product_history_ids:
                         _fail("conflicting_history_product_identity")
                     product_history_ids.add(identity_key)
+                if stream in _HISTORY_STREAMS:
+                    # Recent and archive endpoints can return the same source
+                    # event. Keep both original rows, but never certify a B1
+                    # packet when their values disagree for that exact ID.
+                    family = (
+                        "fills"
+                        if stream in _FILL_STREAMS
+                        else "bills"
+                        if stream in _BILL_STREAMS
+                        else "orders"
+                    )
+                    overlap_key = (family, row.row_id)
+                    previous_row = history_overlap_rows.get(overlap_key)
+                    if previous_row is not None and previous_row != row.canonical_json:
+                        _fail("history_overlap_conflict")
+                    history_overlap_rows[overlap_key] = row.canonical_json
                 if stream.startswith("algo_"):
                     if row.row_id in algo_ids:
                         _fail("conflicting_algo_type_identity")

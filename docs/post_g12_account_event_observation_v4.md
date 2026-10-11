@@ -9,7 +9,10 @@ report manifest, matches `report.json` to V3's report digest, and checks the
 original report, instrument, direction, entry, stop and target. It also reopens
 the no-clobber public-only recheck sidecar under the pre-pinned directory identity
 and compares its digest, event, public-packet hash, fixed geometry and observation
-time to the V3 receipt. Missing, changed or rehashed but inconsistent artifacts
+time to the V3 receipt. V4 pins the public root identity before V3, then
+replays the bounded raw public journal under that identity and
+compares its summary and packet hashes to that same V3 receipt. Missing, changed
+or rehashed but inconsistent artifacts
 deny the event read; previously accepted bytes are never deleted. The database
 read starts after these checks and the V3 receipt's final observation, before the
 original candidate deadline. It binds the same Demo account UID and settlement currency,
@@ -47,8 +50,10 @@ Every V4 result is `DENY`. The original G1–G11 run is still caller-origin,
 the V5 history tail and PortfolioRiskSnapshot are incomplete, and the
 post-G12 result is public-only. V4 neither reserves risk nor creates a durable
 intent, Arm state or order. Demo and Live transport hard denial remains in
-force. This late readback does not independently replay the public raw journal,
-the V5/V7 account database chains, or G12's computational evaluation hash.
+force. The public journal replay checks retained bytes and semantics; it does
+not establish a new source-owned capture or current execution inputs. V4 does
+not independently replay the V5/V7 account database chains or G12's
+computational evaluation hash.
 The sidecar's post-G12 12-gate candidate digest is pinned by its receipt SHA,
 but cannot be recomputed from V4's original 11-gate candidate alone. These
 replay gaps require a separately reviewed source-owned handoff before any risk
