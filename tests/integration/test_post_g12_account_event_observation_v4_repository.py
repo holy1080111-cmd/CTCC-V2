@@ -21,7 +21,10 @@ from tests.integration.test_qualification_ledger_repository import (
     database as database,  # noqa: PLC0414 -- isolated PostgreSQL fixture
 )
 from tests.unit.research import test_post_g12_account_history_join_v3 as source_fixture
-from tests.unit.research.test_post_g12_account_event_observation_v4 import _receipt
+from tests.unit.research.test_post_g12_account_event_observation_v4 import (
+    _publish_synthetic_artifacts,
+    _receipt,
+)
 from tests.unit.research.test_post_g12_account_history_join_v3 import HISTORY_ID
 from tests.unit.test_account_current_source_v7 import current_plan_v7
 from tests.unit.test_qualification_account_collector import credentials
@@ -91,6 +94,8 @@ async def test_v4_real_uid_lock_observation_waits_after_fresh_v3_receipt(
     await ledger.initialize_capture_scope(scope)
     join_root = tmp_path / "join"
     join_root.mkdir()
+    (tmp_path / "g12").mkdir()
+    (tmp_path / "recheck").mkdir()
     event_root = tmp_path / "event"
     event_root.mkdir()
     published = asyncio.Event()
@@ -98,7 +103,7 @@ async def test_v4_real_uid_lock_observation_waits_after_fresh_v3_receipt(
     async def synthetic_v3(*args, **kwargs):
         assert args[4] == join_root
         assert kwargs["account_session"] is account_session
-        receipt = _receipt(expected)
+        receipt = _publish_synthetic_artifacts(tmp_path, expected, _receipt(expected))
         account_session._used = True
         identity = joined.source_runtime._native_recheck_root_identity(join_root)
         joined._publish_receipt(join_root, receipt, expected_root_identity=identity)

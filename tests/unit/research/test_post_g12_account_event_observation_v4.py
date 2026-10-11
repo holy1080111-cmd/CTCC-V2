@@ -1,17 +1,21 @@
 """Synthetic V4 event observation bridge; no exchange or order authority."""
 
 import asyncio
+import io
 from contextlib import contextmanager
 from dataclasses import replace
 from datetime import timedelta
 from decimal import Decimal
 
 import pytest
+from PIL import Image
 
 from app.database.repositories.qualification_ledger import QualificationLedgerRepository
 from app.domain.source_primitives import canonical, decode, sha
+from app.trade_evidence import storage as evidence_storage
 from app.trade_qualification import post_g12_account_event_observation_v4 as bridge
 from app.trade_qualification import post_g12_account_history_join_v3 as joined
+from app.trade_qualification import post_g12_recheck_v2 as public_recheck
 from app.trade_qualification.event_observation import VERSION, LedgerEventObservation
 from app.trade_qualification.reservations import (
     LedgerScope,
@@ -68,6 +72,76 @@ def _receipt(expected, *, changed=None):
     )
     if changed:
         value.update(changed)
+    return joined.PostG12OwnedPublicAccountHistoryDiagnosticV3(canonical(value))
+
+
+def _publish_synthetic_artifacts(root, expected, receipt):
+    """Actual six-file/sidecar bytes for the explicitly synthetic V3 double."""
+    value = decode(receipt.receipt_json)
+    image_buffer = io.BytesIO()
+    Image.new("RGB", (1, 1), (20, 30, 40)).save(image_buffer, format="PNG")
+    png = image_buffer.getvalue()
+    images = {name: png for name in evidence_storage.PNG_NAMES}
+    report = {
+        "schema_version": "ctcc.trade_evidence.v1",
+        "report_id": expected["report_id"],
+        "snapshot": {
+            "report_id": expected["report_id"],
+            "instrument_id": expected["instrument_id"],
+            "direction": expected["direction"],
+            "qualification": {
+                "report_id": expected["report_id"],
+                "direction": expected["direction"],
+                "candidate_entry": expected["original_entry"],
+                "stop_loss": expected["original_stop_loss"],
+                "take_profit": expected["original_take_profit"],
+            },
+        },
+        "images": {
+            name: {"sha256": sha(png), "size_bytes": len(png)}
+            for name in evidence_storage.PNG_NAMES
+        },
+        "execution_authority": False,
+        "gate_assessments_verified": False,
+        "source_authenticity_verified": False,
+    }
+    report_raw = canonical(report)
+    evidence_directory = root / "g12" / expected["report_id"]
+    evidence_directory.mkdir()
+    for name, payload in (*images.items(), ("report.json", report_raw)):
+        (evidence_directory / name).write_bytes(payload)
+    value["g12_report_sha256"] = sha(report_raw)
+    recheck = {
+        "schema_version": public_recheck._SCHEMA,
+        "code": value["public_only_recheck_code"],
+        "public_join_sha256": "a" * 64,
+        "public_packet_sha256": value["public_packet_sha256"],
+        "origin_sha256": "b" * 64,
+        "candidate_sha256": "c" * 64,
+        "original_event_key": expected["original_event_key"],
+        "report_id": expected["report_id"],
+        "instrument_id": expected["instrument_id"],
+        "direction": expected["direction"],
+        "original_entry": expected["original_entry"],
+        "original_stop_loss": expected["original_stop_loss"],
+        "original_take_profit": expected["original_take_profit"],
+        "executable_reference": expected["original_entry"],
+        "quote_v2_packet_sha256": "d" * 64,
+        "observed_at": value["public_only_recheck_observed_at"],
+        "g1": {"passed": True},
+        "current_g2_g4": {"passed": True},
+        "original_event_zone": {"zone_code": "passed"},
+        "projected_economics": {
+            "candidate": {"code": "passed"},
+            "execution": {"code": "passed"},
+        },
+        "admission": "DENY",
+        **{name: False for name in public_recheck._FALSE_FIELDS},
+    }
+    recheck_raw = canonical(recheck)
+    public_recheck.PostG12PublicRecheckReceiptV2(recheck_raw)
+    (root / "recheck" / "receipt.json").write_bytes(recheck_raw)
+    value["public_only_recheck_sha256"] = sha(recheck_raw)
     return joined.PostG12OwnedPublicAccountHistoryDiagnosticV3(canonical(value))
 
 
@@ -142,6 +216,13 @@ def _matched(scope, key, expected):
         ("session_unconsumed", "v3_binding_invalid", 0),
         ("stale_v3", "v3_stale", 0),
         ("public_recheck_rejected", "v3_incomplete", 0),
+        ("g12_png_changed", "v3_artifact_readback_invalid", 0),
+        ("g12_report_missing", "v3_artifact_readback_invalid", 0),
+        ("g12_rehashed_entry", "v3_artifact_readback_invalid", 0),
+        ("recheck_changed", "v3_artifact_readback_invalid", 0),
+        ("recheck_missing", "v3_artifact_readback_invalid", 0),
+        ("recheck_rehashed_event", "v3_artifact_readback_invalid", 0),
+        ("recheck_rehashed_time", "v3_artifact_readback_invalid", 0),
     ),
 )
 async def test_v4_one_invocation_v3_readback_then_uid_event_only(
@@ -153,6 +234,8 @@ async def test_v4_one_invocation_v3_readback_then_uid_event_only(
     expected = bridge._original_binding(
         source.market, run, values, session, scope, HISTORY_ID
     )
+    (tmp_path / "g12").mkdir()
+    (tmp_path / "recheck").mkdir()
     (tmp_path / "join").mkdir()
     (tmp_path / "event").mkdir()
     ledger = QualificationLedgerRepository(None, clock=lambda: expected["deadline"])
@@ -173,7 +256,35 @@ async def test_v4_one_invocation_v3_readback_then_uid_event_only(
                 "public_only_recheck_code": "current_g1_rejected"
             },
         }.get(fault)
-        result = _receipt(expected, changed=changed)
+        result = _publish_synthetic_artifacts(
+            tmp_path, expected, _receipt(expected, changed=changed)
+        )
+        if fault in {
+            "g12_rehashed_entry",
+            "recheck_rehashed_event",
+            "recheck_rehashed_time",
+        }:
+            v3 = decode(result.receipt_json)
+            if fault == "g12_rehashed_entry":
+                report_path = tmp_path / "g12" / expected["report_id"] / "report.json"
+                report = decode(report_path.read_bytes())
+                report["snapshot"]["qualification"]["candidate_entry"] = "12345"
+                raw = canonical(report)
+                report_path.write_bytes(raw)
+                v3["g12_report_sha256"] = sha(raw)
+            else:
+                recheck_path = tmp_path / "recheck" / "receipt.json"
+                recheck = decode(recheck_path.read_bytes())
+                if fault == "recheck_rehashed_event":
+                    recheck["original_event_key"] = "f" * 64
+                else:
+                    recheck["observed_at"] = (
+                        expected["deadline"] - timedelta(milliseconds=700)
+                    ).isoformat()
+                raw = canonical(recheck)
+                recheck_path.write_bytes(raw)
+                v3["public_only_recheck_sha256"] = sha(raw)
+            result = joined.PostG12OwnedPublicAccountHistoryDiagnosticV3(canonical(v3))
         if fault != "session_unconsumed":
             session._used = True
         identity = joined.source_runtime._native_recheck_root_identity(
@@ -182,6 +293,14 @@ async def test_v4_one_invocation_v3_readback_then_uid_event_only(
         joined._publish_receipt(
             tmp_path / "join", result, expected_root_identity=identity
         )
+        if fault == "g12_png_changed":
+            (tmp_path / "g12" / expected["report_id"] / "4h.png").write_bytes(b"bad")
+        if fault == "g12_report_missing":
+            (tmp_path / "g12" / expected["report_id"] / "report.json").unlink()
+        if fault == "recheck_changed":
+            (tmp_path / "recheck" / "receipt.json").write_bytes(b"{}")
+        if fault == "recheck_missing":
+            (tmp_path / "recheck" / "receipt.json").unlink()
         if fault in {
             "changed_reference_readback",
             "changed_g12_readback",

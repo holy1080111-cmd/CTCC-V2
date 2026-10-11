@@ -8,6 +8,8 @@ new G12/public/account diagnostic completed. An absent row is not a permit.
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 import re
 from dataclasses import dataclass
 from pathlib import PosixPath, WindowsPath
@@ -15,6 +17,7 @@ from typing import Literal
 
 from app.database.repositories.qualification_ledger import QualificationLedgerRepository
 from app.domain.source_primitives import canonical, decode, sha
+from app.trade_evidence import storage as evidence_storage
 from app.trade_qualification import account_capture
 from app.trade_qualification import post_g12_account_history_join_v3 as joined
 from app.trade_qualification import public_source_runtime as source_runtime
@@ -40,6 +43,7 @@ _CODES = frozenset(
         "v3_incomplete",
         "v3_binding_invalid",
         "v3_stale",
+        "v3_artifact_readback_invalid",
         "ledger_observation_unavailable",
         "ledger_observation_invalid",
         "original_event_already_recorded",
@@ -69,6 +73,7 @@ class PostG12AccountEventObservationV4:
         "v3_incomplete",
         "v3_binding_invalid",
         "v3_stale",
+        "v3_artifact_readback_invalid",
         "ledger_observation_unavailable",
         "ledger_observation_invalid",
         "original_event_already_recorded",
@@ -489,6 +494,115 @@ def _bound_v3(value, expected):
     return True
 
 
+def _read_bound_g12_artifacts(root, value, expected, *, root_identity):
+    """Reopen all six G12 files; the report pins the five exact PNG bytes."""
+    try:
+        if source_runtime._native_recheck_root_identity(root) != root_identity:
+            raise ValueError
+        selected = evidence_storage._root_path(root)
+        native_root = (
+            evidence_storage._windows_root
+            if os.name == "nt"
+            else evidence_storage._posix_root
+        )
+        with (
+            native_root(selected) as directory,
+            directory.child(expected["report_id"]) as report_directory,
+        ):
+            if set(report_directory.names()) != set(evidence_storage.FILE_NAMES):
+                raise ValueError
+            packet = {
+                name: report_directory.read(
+                    name,
+                    evidence_storage.MAX_REPORT_BYTES
+                    if name == "report.json"
+                    else evidence_storage.MAX_PNG_BYTES,
+                )
+                for name in evidence_storage.FILE_NAMES
+            }
+        evidence_storage._packet(expected["report_id"], packet)
+        report = json.loads(packet["report.json"])
+        snapshot = report["snapshot"]
+        qualification = snapshot["qualification"]
+        if (
+            source_runtime._native_recheck_root_identity(root) != root_identity
+            or sha(packet["report.json"]) != value["g12_report_sha256"]
+            or any(
+                report.get(name) is not False
+                for name in (
+                    "execution_authority",
+                    "gate_assessments_verified",
+                    "source_authenticity_verified",
+                )
+            )
+            or snapshot["report_id"] != expected["report_id"]
+            or snapshot["instrument_id"] != expected["instrument_id"]
+            or snapshot["direction"] != expected["direction"]
+            or qualification["report_id"] != expected["report_id"]
+            or qualification["direction"] != expected["direction"]
+            or any(
+                str(qualification[name]) != expected[original]
+                for name, original in (
+                    ("candidate_entry", "original_entry"),
+                    ("stop_loss", "original_stop_loss"),
+                    ("take_profit", "original_take_profit"),
+                )
+            )
+        ):
+            raise ValueError
+    except Exception:  # noqa: BLE001 -- no report or path content in denial
+        raise PostG12AccountEventObservationError(
+            "v4_g12_artifact_readback_failed"
+        ) from None
+
+
+def _read_bound_public_recheck(root, value, expected, *, root_identity):
+    """Reopen the one-use public-only receipt and compare its fixed lineage."""
+    try:
+        receipt = joined.prior.read_public_only_recheck_receipt_v2(
+            root,
+            expected_sha256=value["public_only_recheck_sha256"],
+            expected_root_identity=root_identity,
+        )
+        record = decode(receipt.receipt_json, joined.public_recheck._MAX_RECEIPT_BYTES)
+        observed = joined._utc(record["observed_at"])
+        if (
+            receipt.receipt_sha256 != value["public_only_recheck_sha256"]
+            or record["code"] != value["public_only_recheck_code"]
+            or record["code"] != "projected_math_consistent_account_path_required"
+            or record["public_packet_sha256"] != value["public_packet_sha256"]
+            or record["original_event_key"] != expected["original_event_key"]
+            or record["report_id"] != expected["report_id"]
+            or record["instrument_id"] != expected["instrument_id"]
+            or record["direction"] != expected["direction"]
+            or any(
+                record[name] != expected[original]
+                for name, original in (
+                    ("original_entry", "original_entry"),
+                    ("original_stop_loss", "original_stop_loss"),
+                    ("original_take_profit", "original_take_profit"),
+                )
+            )
+            or record["observed_at"] != value["public_only_recheck_observed_at"]
+            or not joined._utc(value["publication_completed_at"])
+            < observed
+            <= joined._utc(value["observed_at"])
+            < expected["deadline"]
+            or record["g1"].get("passed") is not True
+            or record["current_g2_g4"].get("passed") is not True
+            or record["original_event_zone"].get("zone_code") != "passed"
+            or record["projected_economics"].get("candidate", {}).get("code")
+            != "passed"
+            or record["projected_economics"].get("execution", {}).get("code")
+            != "passed"
+        ):
+            raise ValueError
+    except Exception:  # noqa: BLE001 -- no public source or path detail in denial
+        raise PostG12AccountEventObservationError(
+            "v4_public_recheck_readback_failed"
+        ) from None
+
+
 async def publish_capture_inspect_history_event_v4(
     evidence_root,
     public_root,
@@ -544,6 +658,17 @@ async def publish_capture_inspect_history_event_v4(
     root_identity = joined.prior._empty_native_receipt_root_identity(
         join_root, "v4_join_root_unavailable"
     )
+    try:
+        evidence_root_identity = source_runtime._native_recheck_root_identity(
+            evidence_root
+        )
+        recheck_root_identity = joined.prior._empty_native_receipt_root_identity(
+            recheck_root, "v4_recheck_root_unavailable"
+        )
+    except Exception:  # noqa: BLE001 -- no local path in denial
+        raise PostG12AccountEventObservationError(
+            "v4_artifact_root_unavailable"
+        ) from None
     receipt = await joined.publish_capture_public_account_history_v3(
         evidence_root,
         public_root,
@@ -611,6 +736,24 @@ async def publish_capture_inspect_history_event_v4(
                 )
             },
         }
+        try:
+            _read_bound_g12_artifacts(
+                evidence_root,
+                value,
+                expected,
+                root_identity=evidence_root_identity,
+            )
+            _read_bound_public_recheck(
+                recheck_root,
+                value,
+                expected,
+                root_identity=recheck_root_identity,
+            )
+        except PostG12AccountEventObservationError:
+            result = PostG12AccountEventObservationV4(
+                code="v3_artifact_readback_invalid", **base, **pins
+            )
+    if result is None:
         try:
             observation = await ledger.read_event_observation(
                 scope, expected["original_event_key"]

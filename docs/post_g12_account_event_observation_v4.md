@@ -2,9 +2,17 @@
 
 `publish_capture_inspect_history_event_v4` owns one new V3 G12/public/account
 diagnostic invocation, reads its immutable receipt back, and then asks the
-DB0017 qualification ledger for the exact original event key. The database
-read starts after the V3 receipt's final observation and before the original
-candidate deadline. It binds the same Demo account UID and settlement currency,
+DB0017 qualification ledger for the exact original event key. Before the
+database read, V4 reopens all six G12 files through the bounded native evidence
+reader. It checks the exact file set, fully decodes the five PNGs, verifies their
+report manifest, matches `report.json` to V3's report digest, and checks the
+original report, instrument, direction, entry, stop and target. It also reopens
+the no-clobber public-only recheck sidecar under the pre-pinned directory identity
+and compares its digest, event, public-packet hash, fixed geometry and observation
+time to the V3 receipt. Missing, changed or rehashed but inconsistent artifacts
+deny the event read; previously accepted bytes are never deleted. The database
+read starts after these checks and the V3 receipt's final observation, before the
+original candidate deadline. It binds the same Demo account UID and settlement currency,
 report, candidate geometry, history locator, G12/public evidence and V7
 account-source references. A renamed report or event cannot turn an existing
 event into a new opportunity.
@@ -39,7 +47,12 @@ Every V4 result is `DENY`. The original G1–G11 run is still caller-origin,
 the V5 history tail and PortfolioRiskSnapshot are incomplete, and the
 post-G12 result is public-only. V4 neither reserves risk nor creates a durable
 intent, Arm state or order. Demo and Live transport hard denial remains in
-force. Synthetic unit tests exercise event/UID/deadline/receipt conflicts and
-no-clobber readback;
-the isolated PostgreSQL integration case must run in matching CI before its
-database behavior can be credited.
+force. This late readback does not independently replay the public raw journal,
+the V5/V7 account database chains, or G12's computational evaluation hash.
+The sidecar's post-G12 12-gate candidate digest is pinned by its receipt SHA,
+but cannot be recomputed from V4's original 11-gate candidate alone. These
+replay gaps require a separately reviewed source-owned handoff before any risk
+reservation. Synthetic unit tests exercise event/UID/deadline/receipt conflicts,
+late artifact mutation and no-clobber readback. The isolated PostgreSQL
+integration case must run in matching CI before its database behavior can be
+credited.
