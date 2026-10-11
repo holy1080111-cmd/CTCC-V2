@@ -99,6 +99,16 @@ async def test_v7_late_history_row_requires_reconciliation(monkeypatch):
     value = json.loads(
         tail_v7.verify_v7_history_tail_diagnostic(**inputs(chains)).receipt_json
     )
+    comparison_bytes = tail_v7.history.compare_history_query_chains(
+        previous_chain=chains[0],
+        previous_pins=observed._pins(observed.source_reference(chains[0]), SCOPE),
+        current_chain=chains[2],
+        current_pins=observed._pins(observed.source_reference(chains[2]), SCOPE),
+    )
+    comparison = json.loads(comparison_bytes)
+    assert comparison["schema_version"] == tail_v7.HISTORY_COMPARISON_SCHEMA_VERSION
+    assert comparison["dependent_current_claims_require_reconciliation"] is True
+    assert value["history_comparison_sha256"] == journal.digest(comparison_bytes)
     assert "late_observation_in_prior_query" in {
         finding["kind"] for finding in value["history_comparison_findings"]
     }
@@ -106,6 +116,23 @@ async def test_v7_late_history_row_requires_reconciliation(monkeypatch):
         "history_overlap_discovery_requires_reconciliation" in value["blocking_reasons"]
     )
     assert value["account_complete"] is value["execution_authority"] is False
+
+
+@pytest.mark.asyncio
+async def test_v7_legacy_comparison_schema_fails_closed(monkeypatch):
+    chains = await four_v7_chains(monkeypatch)
+    monkeypatch.setattr(
+        tail_v7.history,
+        "compare_history_query_chains",
+        lambda **_: journal.canonical(
+            {"schema_version": "ctcc.observed_history_query_comparison.v1"}
+        ),
+    )
+    with pytest.raises(
+        tail_v7.V7HistoryTailError,
+        match="v7_history_tail_comparison_schema_invalid",
+    ):
+        tail_v7.verify_v7_history_tail_diagnostic(**inputs(chains))
 
 
 @pytest.mark.asyncio
@@ -161,6 +188,19 @@ async def test_v7_saved_receipt_cannot_gain_authority_or_change_sources(monkeypa
     )
     with pytest.raises(tail_v7.V7HistoryTailError):
         tail_v7.verify_v7_history_tail_receipt(result, **changed_reference)
+
+    previous_policy = json.loads(tail_v7.POLICY_BYTES)
+    assert (
+        previous_policy.pop("history_comparison_schema")
+        == tail_v7.HISTORY_COMPARISON_SCHEMA_VERSION
+    )
+    old_policy_sha256 = journal.digest(journal.canonical(previous_policy))
+    assert old_policy_sha256 != tail_v7.POLICY_SHA256
+    old_receipt = json.loads(result.receipt_json)
+    assert old_receipt["admission"] == "DENY"
+    old_receipt["policy_sha256"] = old_policy_sha256
+    with pytest.raises(tail_v7.V7HistoryTailError, match="receipt_invalid"):
+        tail_v7.V7HistoryTailDiagnostic(journal.canonical(old_receipt))
 
     altered = json.loads(result.receipt_json)
     altered["account_complete"] = True

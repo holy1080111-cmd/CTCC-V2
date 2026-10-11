@@ -4221,3 +4221,27 @@ denied subsequent dispatch. Its JUnit is
 (SHA256 `cddcdfce60352980e43f16a95e319de577f2bf0dfbebed66c374325a29ba63be`).
 These bounded checks are not full Windows, PostgreSQL, outbox, or Demo
 acceptance. Execution writes remain disabled, and no Demo or Live order was sent.
+
+## 2026-10-11 later working-source containment
+
+The owned V2 original-source coordinator now passes its exact controlled Demo
+account session to the initial public helper. This corrects a Production-route
+fallback in the denied diagnostic. It does not authenticate the account's
+registration site or authorize an HTTP request: native V2 public capture still
+refuses before I/O. Signed `account/config` identifies the UID, mode and key
+policy but contains no registration-site field; the user's global login URL is
+not independent account-bound region evidence. The user-reported IP-bound key
+also has not been reconciled with the key observed by the two read-only probes.
+
+The three-chain account-history tail and separate V7 four-chain tail now pin
+the B2a V2 comparison schema in their policy hashes and reject another schema
+during original-chain replay. The V6 follow-up inherits the rotated
+three-chain policy hash. Prior DENY receipts remain historical and fail the
+current policy check; none gains account or execution authority. Focused tail
+tests passed 23/23, and the coordinator module passed 13 with one platform
+skip. The new DB0036 migration tests cover isolated upgrade/downgrade shape,
+writer-lock refusal and retained V2 evidence on downgrade refusal. They are
+classified into the dedicated PostgreSQL CI suite; three local cases skipped
+because the required isolated database was unavailable. The Linux shard
+classification unit module passed 5/5. Matching exact-source CI for these
+working changes has not yet completed.

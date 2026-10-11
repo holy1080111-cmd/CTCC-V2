@@ -7,6 +7,7 @@ import pytest
 
 from app.trade_qualification import account_capture_journal as journal
 from app.trade_qualification import account_history_tail_followup_current as followup
+from app.trade_qualification import account_history_tail_prerequisite as tail
 from app.trade_qualification import account_observation_index as observed
 from tests.unit.test_account_current_history_join import recorded_current
 from tests.unit.test_account_current_source_verifier import SCOPE
@@ -139,6 +140,23 @@ async def test_saved_four_chain_diagnostic_cannot_upgrade_or_change_blockers(
 ):
     chains = await four_chains(monkeypatch)
     result = followup.verify_followup_current_diagnostic(**inputs(chains))
+    previous_three_policy = json.loads(tail.POLICY_BYTES)
+    assert (
+        previous_three_policy.pop("history_comparison_schema")
+        == tail.HISTORY_COMPARISON_SCHEMA_VERSION
+    )
+    previous_followup_policy = json.loads(followup.POLICY_BYTES)
+    assert previous_followup_policy["three_chain_policy_sha256"] == tail.POLICY_SHA256
+    previous_followup_policy["three_chain_policy_sha256"] = journal.digest(
+        journal.canonical(previous_three_policy)
+    )
+    old_policy_sha256 = journal.digest(journal.canonical(previous_followup_policy))
+    assert old_policy_sha256 != followup.POLICY_SHA256
+    old_receipt = json.loads(result.receipt_json)
+    assert old_receipt["admission"] == "DENY"
+    old_receipt["policy_sha256"] = old_policy_sha256
+    with pytest.raises(followup.FollowupCurrentError, match="receipt_invalid"):
+        followup.FollowupCurrentDiagnostic(journal.canonical(old_receipt))
     changed = json.loads(result.receipt_json)
     changed["blocking_reasons"] = sorted(
         [*changed["blocking_reasons"], "caller_claimed_no_blockers"]

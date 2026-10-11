@@ -79,6 +79,11 @@ intervals, and dependent current claims require reconciliation even when both
 terminal page chains have zero rows. A genuine partial interval overlap does
 not by itself add that blocker. Earlier V1 receipts remain historical DENY
 observations and cannot be silently reinterpreted as V2 comparison evidence.
+The three-chain prerequisite and V7 four-chain tail policies now explicitly
+pin this V2 comparison schema; the V6 follow-up-current policy inherits the
+three-chain policy hash. Saved receipts from the prior policy epoch remain
+historical DENY artifacts and fail current policy validation, even when the
+same original chains can be replayed under the new policy.
 Derived interval union merges only overlapping/touching measured intervals;
 fractional retention boundaries cannot bridge an uncovered millisecond. Reading
 the same capture twice is an audit comparison, not a fresh observation.

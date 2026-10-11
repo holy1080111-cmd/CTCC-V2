@@ -23,12 +23,14 @@ from app.trade_qualification.reservations import LedgerScope, checked_bootstrap
 MAX_SOURCE_BYTES = 64 * 1024 * 1024
 MAX_RECEIPT_BYTES = 8 * 1024 * 1024
 SCHEMA_VERSION = "ctcc.demo_history_tail_followup_current.v2"
+HISTORY_COMPARISON_SCHEMA_VERSION = "ctcc.observed_history_query_comparison.v2"
 POLICY_BYTES = journal.canonical(
     {
         "version": SCHEMA_VERSION,
         "history_plan": "ctcc.demo_account_plan.v5",
         "current_plan": "ctcc.demo_current_account_plan.v7",
         "history_query_policy_sha256": history.POLICY_SHA256,
+        "history_comparison_schema": HISTORY_COMPARISON_SCHEMA_VERSION,
         "ordered_join_policy_sha256": source_join.V7_ORDERED_POLICY_SHA256,
         "current_source_policy_sha256": current.V7_POLICY_SHA256,
         "source": "four_distinct_original_B1_raw_page_chains",
@@ -398,6 +400,8 @@ def _verify(
         current_pins=observed._pins(next_ref, scope),
     )
     comparison = json.loads(comparison_bytes)
+    if comparison.get("schema_version") != HISTORY_COMPARISON_SCHEMA_VERSION:
+        _deny("v7_history_tail_comparison_schema_invalid")
     blockers = set(join_values[0]["blocking_reasons"])
     blockers.update(join_values[1]["blocking_reasons"])
     if any(

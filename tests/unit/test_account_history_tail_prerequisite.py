@@ -151,6 +151,43 @@ async def test_late_conflicting_or_missing_row_preserves_denied_evidence(
 
 
 @pytest.mark.asyncio
+async def test_v2_comparison_is_rederived_from_original_late_row_chains(monkeypatch):
+    chains = await three_chains(monkeypatch, later=[row("fills_history")])
+    value = json.loads(replay(chains).receipt_json)
+    comparison_bytes = tail.history.compare_history_query_chains(
+        previous_chain=chains[0],
+        previous_pins=observed._pins(observed.source_reference(chains[0]), SCOPE),
+        current_chain=chains[2],
+        current_pins=observed._pins(observed.source_reference(chains[2]), SCOPE),
+    )
+    comparison = json.loads(comparison_bytes)
+    assert comparison["schema_version"] == tail.HISTORY_COMPARISON_SCHEMA_VERSION
+    assert comparison["dependent_current_claims_require_reconciliation"] is True
+    assert value["history_comparison_sha256"] == journal.digest(comparison_bytes)
+    assert (
+        "history_overlap_discovery_requires_reconciliation" in value["blocking_reasons"]
+    )
+    assert value["admission"] == "DENY"
+
+
+@pytest.mark.asyncio
+async def test_legacy_comparison_schema_fails_closed(monkeypatch):
+    chains = await three_chains(monkeypatch)
+    monkeypatch.setattr(
+        tail.history,
+        "compare_history_query_chains",
+        lambda **_: journal.canonical(
+            {"schema_version": "ctcc.observed_history_query_comparison.v1"}
+        ),
+    )
+    with pytest.raises(
+        tail.HistoryTailPrerequisiteError,
+        match="history_tail_comparison_schema_invalid",
+    ):
+        replay(chains)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "change,code",
     [
@@ -230,6 +267,18 @@ async def test_saved_diagnostic_requires_original_chain_replay(monkeypatch):
         ).receipt_json
         == original.receipt_json
     )
+    previous_policy = json.loads(tail.POLICY_BYTES)
+    assert (
+        previous_policy.pop("history_comparison_schema")
+        == tail.HISTORY_COMPARISON_SCHEMA_VERSION
+    )
+    old_policy_sha256 = journal.digest(journal.canonical(previous_policy))
+    assert old_policy_sha256 != tail.POLICY_SHA256
+    old_receipt = json.loads(original.receipt_json)
+    assert old_receipt["admission"] == "DENY"
+    old_receipt["policy_sha256"] = old_policy_sha256
+    with pytest.raises(tail.HistoryTailPrerequisiteError, match="receipt_invalid"):
+        tail.HistoryTailPrerequisite(journal.canonical(old_receipt))
     modified = json.loads(original.receipt_json)
     modified["blocking_reasons"] = ["caller_claimed_no_blockers"]
     forged = tail.HistoryTailPrerequisite(journal.canonical(modified))

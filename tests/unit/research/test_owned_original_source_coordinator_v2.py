@@ -52,6 +52,16 @@ async def test_current_native_public_origin_is_still_denied_before_io(
     monkeypatch.setattr(coordinator, "native_stamp", sampled)
     monkeypatch.setattr(coordinator.initial, "native_stamp", sampled)
     monkeypatch.setattr(account_native, "_configured_factory", lambda _: True)
+    initial_capture = coordinator.initial._capture_initial_lineage_v2
+    seen_sessions = []
+
+    async def capture_with_session(*args, **kwargs):
+        seen_sessions.append(kwargs.get("demo_session"))
+        return await initial_capture(*args, **kwargs)
+
+    monkeypatch.setattr(
+        coordinator.initial, "_capture_initial_lineage_v2", capture_with_session
+    )
 
     def forbidden(*_args, **_kwargs):
         pytest.fail("public route denial must precede HTTP/account acquisition")
@@ -87,6 +97,7 @@ async def test_current_native_public_origin_is_still_denied_before_io(
         )
     )
     assert result.execution_authority is False and controlled._used is True
+    assert len(seen_sessions) == 1 and seen_sessions[0] is controlled
     assert not (tmp_path / "public").exists()
     assert not (tmp_path / "account").exists()
 

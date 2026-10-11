@@ -117,6 +117,17 @@ revision or a complete loss seed. The versioned receipt therefore always has
 the original chains before its findings can be used. The tests use synthetic
 B1 chains only.
 
+The three-chain prerequisite and the separate V7 four-chain diagnostic now pin
+the exact `ctcc.observed_history_query_comparison.v2` readout in their policy
+hashes and reject any other comparison schema during original-chain replay.
+This rotates both policy identities because a V2 comparison can require
+reconciliation for disjoint measured generation intervals even when product
+domains and row lists match. The V6 follow-up-current policy automatically
+rotates through its three-chain policy pin. Earlier receipts retain their
+historical `DENY` meaning and fail the current policy check; they cannot be
+silently rederived or used as current evidence. Receipt layouts and their
+existing schema names do not change, including the distinct V7 `.v2` name.
+
 The separate `verify_followup_current_diagnostic` adds a fourth original v6
 current capture **after** the overlapping history continuation. It replays
 the preceding three chains, independently joins the continued v5 history to

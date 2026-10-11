@@ -33,6 +33,7 @@ POSTGRES_TEST_PATHS = frozenset(
         "tests/integration/test_account_history_query_verifier_repository.py",
         "tests/integration/test_range_v5_reservation_repository.py",
         "tests/integration/test_account_observation_index_repository.py",
+        "tests/integration/test_account_observation_policy_epoch_migration.py",
         "tests/integration/test_account_bill_archive_claim_repository.py",
         "tests/integration/test_control_bound_ledger_repository.py",
         "tests/integration/test_complete_consumed_event_ledger_repository.py",

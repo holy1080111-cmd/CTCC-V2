@@ -1406,6 +1406,7 @@ async def _capture_owned_original_sources(
             instrument_id=instrument_id,
             market_policy=selected,
             invocation=invocation,
+            demo_session=account_session,
         )
         packet, journal, public_observed = _consume_initial_public_capture_v2(
             carrier, invocation

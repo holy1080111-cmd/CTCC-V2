@@ -14,11 +14,18 @@ must be local, disjoint, and free of symlink/junction ancestors. A failed or
 cancelled attempt consumes the account session; no source or order request is
 retried by this handoff.
 
+The initial public helper receives that exact controlled account session for
+its same-task route declaration. The declaration is not independent proof of
+the account's registration site, so the native V2 pre-I/O hard refusal still
+applies. The later native account-origin observation cannot retroactively
+authorize the earlier public request.
+
 The returned receipt is always `DENY`. It proves no G1–G11 calculation, G12
 publication, post-G12 recheck, complete account, reservation, intent, or order
-eligibility. The current native V2 public issuer still selects a Production
-socket for its Demo-labelled plan and refuses capture before network I/O, so
-the real path currently reports `original_source_public_unavailable`. Synthetic
+eligibility. The current native V2 public issuer receives the controlled
+session's reviewed Demo route but refuses its unverified registration claim
+before network I/O, so the real path currently reports
+`original_source_public_unavailable`. Synthetic
 join tests check only the handoff mechanism. A reviewed account-bound Demo
 public origin issuer and full source-derived gate chain remain prerequisites
 before this handoff can participate in a qualified candidate flow.
