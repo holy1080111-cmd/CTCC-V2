@@ -732,6 +732,14 @@ async def publish_capture_public_account_v2(
         if final_at >= min(origin.deadline, owned.expires_at):
             raise PostG12AccountJoinError("post_g12_recheck_expired")
         _require_final_original_g1(packet, pre, final_at)
+        # The original G1 policy and the public transport profile are distinct
+        # checks. Re-evaluate both at this final time after durable recheck
+        # readback; a stale component cannot inherit the earlier acceptance.
+        public_market_context_v2(
+            packet,
+            expected_bundle_sha256=packet.bundle_sha256,
+            evaluated_at=final_at,
+        )
         code = "joined_unqualified"
         return finish()
     except asyncio.CancelledError:
