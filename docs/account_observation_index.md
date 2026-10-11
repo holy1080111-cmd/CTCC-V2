@@ -27,12 +27,15 @@ immutable; current-policy readback and lifecycle replay fail closed on those
 rows. Starting a new V3 epoch or migrating a V2 prefix requires a separately
 reviewed, versioned design and database validation. Until then, an account
 with a V2 prefix cannot use this B3 index for current risk qualification.
-DB0036 updates the database append guard for **new** B3 rows: it requires the
-V2 execution-window receipt, the exact reviewed V3 policy hash, and a
-same-policy predecessor. It leaves stored V1 receipts intact; downgrade refuses
-once any V2 receipt has been appended. DB0036 does not solve the old-prefix
-replay blocker or grant account authority. Its upgrade, downgrade, and
-PostgreSQL behavior still require isolated database validation.
+DB0036 introduced the database append guard for **new** B3 rows: it requires
+the V2 execution-window receipt, the exact reviewed V3 policy hash, and a
+same-policy predecessor. Its historical f-string rendered the 64-character
+membership-SHA regex as `^[a-f0-9]64$`, so valid new observations were denied.
+DB0037 replaces that function under the same writer-exclusion lock; its only
+SQL change is `^[a-f0-9]{64}$`. It leaves DB0036 and stored evidence untouched,
+retains the policy/epoch checks, and refuses downgrade when any V2 receipt has
+been appended. This repair does not solve the old-prefix replay blocker or
+grant account authority. Exact-source PostgreSQL validation remains required.
 
 - Global Demo; existing pinned B2a v3 SWAP or v4 product query scope, explicitly
   retained in coverage. No region fallback or promotion from SWAP to all products.

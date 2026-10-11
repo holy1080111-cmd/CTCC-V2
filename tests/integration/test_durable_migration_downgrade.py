@@ -51,6 +51,9 @@ from tests.integration import (
 from tests.integration import test_control_bound_ledger_repository as control_fixtures
 from tests.integration import test_qualification_ledger_repository as ledger_fixtures
 from tests.integration import test_submission_reporting_repository as report_fixtures
+from tests.integration.test_demo_automation_control_cas_migration_roundtrip import (
+    _create_prior_table as create_prior_demo_automation_tables,
+)
 from tests.unit.qualification_execution_binding_fixtures import execution_binding
 from tests.unit.qualification_ledger_fixtures import ledger_fixture
 from tests.unit.qualification_range_v5_fixtures import range_v5_ledger_fixture
@@ -258,6 +261,10 @@ async def sandbox(database, revision, monkeypatch):
             ).one()
             if observed_name != name or schema != "public":
                 raise RuntimeError("historical_migration_connection_not_isolated")
+            if revision >= "0034":
+                # 0034 alters the real Demo table introduced before DB0017.
+                # Earlier durable-only sandboxes intentionally omit it.
+                await connection.run_sync(create_prior_demo_automation_tables)
             for current in MIGRATIONS:
                 if current <= revision:
                     await connection.run_sync(migrate, current, "upgrade")

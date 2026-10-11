@@ -1,4 +1,4 @@
-"""DB0036 policy-epoch migration in a disposable PostgreSQL database.
+"""DB0036/0037 policy-epoch migrations in a disposable PostgreSQL database.
 
 The shared sandbox accepts only the credential-free hermetic test cluster and
 creates its own child database. Synthetic B1/B3 rows never touch an account.
@@ -28,27 +28,25 @@ _GUARD_TABLES = (
 )
 
 
-@pytest.mark.parametrize("revision", ["0036"])
+@pytest.mark.parametrize("revision", ["0036", "0037"])
 async def test_empty_policy_epoch_downgrade_and_reupgrade_preserve_exact_shape(
     sandbox, revision
 ):
-    assert revision == "0036"
     engine, _ = sandbox
     before = await shape(engine)
     async with engine.begin() as connection:
-        await connection.run_sync(migrate, "0036", "downgrade")
+        await connection.run_sync(migrate, revision, "downgrade")
     after_downgrade = await shape(engine)
     assert after_downgrade != before
     async with engine.begin() as connection:
-        await connection.run_sync(migrate, "0036", "upgrade")
+        await connection.run_sync(migrate, revision, "upgrade")
     assert await shape(engine) == before
 
 
-@pytest.mark.parametrize("revision", ["0036"])
+@pytest.mark.parametrize("revision", ["0036", "0037"])
 async def test_policy_epoch_migration_nowait_denies_active_writer_without_drift(
     sandbox, revision
 ):
-    assert revision == "0036"
     engine, _ = sandbox
     initial = await shape(engine)
     for table in _GUARD_TABLES:
@@ -58,11 +56,11 @@ async def test_policy_epoch_migration_nowait_denies_active_writer_without_drift(
             )
             with pytest.raises(DBAPIError) as denied:
                 async with engine.begin() as migration:
-                    await migration.run_sync(migrate, "0036", "downgrade")
+                    await migration.run_sync(migrate, revision, "downgrade")
             assert denied.value.orig.sqlstate == "55P03"
         assert await shape(engine) == initial
     async with engine.begin() as connection:
-        await connection.run_sync(migrate, "0036", "downgrade")
+        await connection.run_sync(migrate, revision, "downgrade")
     old = await shape(engine)
     for table in _GUARD_TABLES:
         async with engine.begin() as writer:
@@ -71,28 +69,28 @@ async def test_policy_epoch_migration_nowait_denies_active_writer_without_drift(
             )
             with pytest.raises(DBAPIError) as denied:
                 async with engine.begin() as migration:
-                    await migration.run_sync(migrate, "0036", "upgrade")
+                    await migration.run_sync(migrate, revision, "upgrade")
             assert denied.value.orig.sqlstate == "55P03"
         assert await shape(engine) == old
     async with engine.begin() as connection:
-        await connection.run_sync(migrate, "0036", "upgrade")
+        await connection.run_sync(migrate, revision, "upgrade")
     assert await shape(engine) == initial
 
 
-@pytest.mark.parametrize("revision", ["0036"])
+@pytest.mark.parametrize("revision", ["0037"])
 async def test_v2_receipt_blocks_downgrade_and_preserves_original_source(
     monkeypatch, sandbox, revision
 ):
-    assert revision == "0036"
     engine, _ = sandbox
     repo, scope, reference, _, accepted = await stored(monkeypatch, sandbox)
     original_chain = await repo.journal.read_chain(scope, reference.capture_id)
     before = await shape(engine)
     with pytest.raises(
-        DBAPIError, match="account_observation_policy_downgrade_requires_no_v2_rows"
+        DBAPIError,
+        match="account_observation_membership_repair_downgrade_requires_no_v2_rows",
     ):
         async with engine.begin() as connection:
-            await connection.run_sync(migrate, "0036", "downgrade")
+            await connection.run_sync(migrate, revision, "downgrade")
     assert await shape(engine) == before
     assert await repo.read(scope) == (accepted,)
     assert await repo.journal.read_chain(scope, reference.capture_id) == original_chain

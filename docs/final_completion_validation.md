@@ -4357,3 +4357,24 @@ all-currency portfolio checkpoint remains diagnostic and explicitly lacks
 future-writer exclusion. This gap must be closed through the owned account and
 one-use intent boundary before a production Arm/submit path is enabled. Live
 Arm already denies. No guard was bypassed for this audit.
+
+## 2026-10-11 DB0036 membership guard root cause and working DB0037 repair
+
+Exact-source CI run `38130506132` at `ffe67a2` completed its isolated
+PostgreSQL job with 300 tests collected, 14 B3 first-append failures and three
+DB0036 migration-test setup errors. The test-only allowlisted diagnostic on
+the original first append reported SQLSTATE `P0001` and guard code
+`account_observation_membership_shape_denied`. Independent rendering of
+DB0036's migration function showed the cause: Python f-string interpolation
+changed the intended regex `^[a-f0-9]{64}$` into `^[a-f0-9]64$`. The three
+setup errors came from a durable-only test sandbox that applied DB0034 without
+the real pre-DB0017 Demo automation table. Neither failure was bypassed.
+
+The working DB0037 migration preserves DB0036 source bytes and replaces only
+the malformed regex in the installed trigger, under the original NOWAIT writer
+locks and unchanged V2 receipt, V3 policy and same-epoch checks. The sandbox
+now applies the actual four earlier Demo-table migrations before DB0034.
+Generated-SQL parity tests passed 2/2 and the affected integration tests
+collect; actual DB0037 upgrade, downgrade, first append and restart readback
+must pass the next exact-source PostgreSQL CI before acceptance. The latest
+feature source remains fail closed and has no order-write authority.

@@ -377,6 +377,26 @@ async def stored(monkeypatch, database):
     return repo, scope, reference, window, result
 
 
+async def test_db0037_first_append_and_trigger_readback(monkeypatch, database):
+    repo, scope, _, _, first = await stored(monkeypatch, database)
+    assert first.sequence == 1
+    assert not first.execution_authority
+    async with database[1]() as session:
+        definition = await session.scalar(
+            text(
+                "SELECT pg_get_functiondef("
+                "'public.account_observation_batch_guard()'::regprocedure)"
+            )
+        )
+    assert definition is not None
+    assert "^[a-f0-9]{64}$" in definition
+    assert "^[a-f0-9]64$" not in definition
+    assert observed.POLICY_SHA256 in definition
+    restarted = AccountObservationIndexRepository(database[1], clock=now)
+    assert await restarted.read(scope) == (first,)
+    assert await repo.read(scope) == (first,)
+
+
 async def test_restart_replays_original_journal_and_idempotency(monkeypatch, database):
     repo, scope, reference, window, result = await stored(monkeypatch, database)
     again = AccountObservationIndexRepository(database[1], clock=now)
