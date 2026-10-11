@@ -98,3 +98,23 @@ so this diagnostic cannot stand in for the native journal and page-chain proof.
 It does not establish the registration site, complete account history,
 controlled credential-session binding, portfolio risk or trading authority;
 all such claims remain false and the V2 public pre-I/O refusal remains in place.
+
+## 2026-10-11 Demo API-key policy read
+
+At source `1fd0a76befaf724e01334bde959da494e97cbb02`, a separate one-request,
+zero-retry signed `GET /api/v5/account/config` used the locally configured Demo
+key with order writes, automation and startup reconciliation disabled. The
+redacted diagnostic is
+`../../validation-results/demo-key-policy-readonly-1fd0a76-20261011T085421Z.json`
+(SHA256 `b43b8d70e6bd4392d29c2abb09bb9c8c371ae3e92ad7398dd80f7ee421fdf7ef`).
+It reports exact `read_only,trade` permissions with no `withdraw`, but the
+returned `ip` field was empty. Per the [OKX account configuration
+reference](https://www.okx.com/docs-v5/en/), an empty `ip` means the requesting
+key has no IP binding. This remains a Demo-key policy failure until the operator
+binds it and a new signed read confirms the changed value.
+
+The diagnostic deliberately retains no raw response, key, UID or IP address.
+It cannot prove credential-session ownership, account registration site,
+complete history or order authority; all remain false. A permission/IP
+observation, even after remediation, would be a prerequisite rather than
+acceptance of the trusted account source or Demo execution.

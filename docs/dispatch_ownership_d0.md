@@ -8,6 +8,16 @@ owner/slot but still rejects every write unconditionally. All existing entry
 write routes remain denied by `execution_authority.py` and
 `exchange/okx/private_rest.py`.
 
+The shared private transport currently rejects **every non-GET private call**,
+including legacy cancel-order, close-position and cancel-all-after maintenance
+POSTs, even if an earlier route classifier is bypassed. This is safe containment
+for a flat, disabled deployment, but it is not a usable emergency-reduction
+path for an account with exposure. Do not deploy this branch over tracked or
+uncertain exposure until a separately reviewed, account-bound maintenance
+authority is implemented and verified. The old lower-level write transport's
+ambiguous-response behavior is presently unreachable; its former positive-POST
+unit expectations are no longer acceptance evidence.
+
 This is infrastructure for a future owned coordinator. Passing its tests is not
 acceptance of authenticated account/public sources, PostgreSQL, Demo, Live or a
 first-byte write guard. No migration or existing serialized contract changes.

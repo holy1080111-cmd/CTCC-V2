@@ -115,7 +115,7 @@ async def test_live_read_has_no_demo_header_and_maintenance_has_zero_http() -> N
 
 
 @pytest.mark.asyncio
-async def test_legacy_live_write_adapter_never_sets_demo_header(
+async def test_legacy_live_write_adapter_stays_denied_without_owned_intent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     seen: list[tuple[str, str]] = []
@@ -136,12 +136,19 @@ async def test_legacy_live_write_adapter_never_sets_demo_header(
         transport=httpx.MockTransport(handler), base_url="https://openapi.okx.com"
     ) as http:
         live = OkxLiveExecutionRestClient(http, settings=execution_settings())
-        await live.cancel_all_after({"timeOut": "30", "tag": "CTCCV168"})
-        await live.cancel_order({"instId": "BTC-USDT-SWAP", "ordId": "synthetic"})
-    assert seen == [
-        ("POST", "/api/v5/trade/cancel-all-after"),
-        ("POST", "/api/v5/trade/cancel-order"),
-    ]
+        assert "x-simulated-trading" not in live._headers(
+            method="POST",
+            request_path="/api/v5/trade/cancel-order",
+            body="{}",
+        )
+        for operation, payload in (
+            ("cancel_all_after", {"timeOut": "30", "tag": "CTCCV168"}),
+            ("cancel_order", {"instId": "BTC-USDT-SWAP", "ordId": "synthetic"}),
+        ):
+            with pytest.raises(OkxPrivateApiError) as caught:
+                await getattr(live, operation)(payload)
+            assert caught.value.code == "private_write_authority_unavailable"
+    assert seen == []
 
 
 @pytest.mark.asyncio
@@ -263,12 +270,11 @@ async def test_live_caa_rejects_signed_zero_even_if_caller_mutates_dict_to_posit
 
 
 @pytest.mark.asyncio
-async def test_legacy_execution_write_transport_failure_is_never_retried(
+async def test_legacy_transport_failure_handler_is_unreachable_without_owned_intent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls = 0
-    # Isolated MockTransport regression of the old write-attempt semantics.
-    # Production's final maintenance authority check remains fail-closed.
+    # Bypassing the older route classifier cannot reach the transport now.
     monkeypatch.setattr(
         "app.exchange.okx.private_rest.enforce_live_final_dispatch",
         lambda method, path: None,
@@ -289,8 +295,8 @@ async def test_legacy_execution_write_transport_failure_is_never_retried(
                 client, settings=execution_settings()
             ).cancel_order({"instId": "BTC-USDT-SWAP", "ordId": "synthetic"})
 
-    assert calls == 1
-    assert exc_info.value.code == "transport_error"
+    assert calls == 0
+    assert exc_info.value.code == "private_write_authority_unavailable"
 
 
 @pytest.mark.asyncio
@@ -323,7 +329,7 @@ async def test_execution_transport_blocks_before_http_when_not_enabled() -> None
 
 
 @pytest.mark.asyncio
-async def test_legacy_empty_write_ack_is_ambiguous_and_not_retried(
+async def test_legacy_empty_ack_handler_is_unreachable_without_owned_intent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls = 0
@@ -350,8 +356,8 @@ async def test_legacy_empty_write_ack_is_ambiguous_and_not_retried(
                 client, settings=execution_settings()
             ).cancel_order({"instId": "BTC-USDT-SWAP", "ordId": "synthetic"})
 
-    assert calls == 1
-    assert exc_info.value.code == "ambiguous_response"
+    assert calls == 0
+    assert exc_info.value.code == "private_write_authority_unavailable"
 
 
 @pytest.mark.asyncio
