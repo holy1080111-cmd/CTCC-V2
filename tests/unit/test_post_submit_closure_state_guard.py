@@ -33,8 +33,8 @@ def _stub_schema_guard(monkeypatch, session):
     """These state-guard tests use a fake session; PG schema checks run elsewhere."""
     seen = []
 
-    async def checked(actual):
-        assert actual is session
+    async def checked(actual, scope):
+        assert actual is session and scope.account_id == "123456789"
         seen.append(actual)
 
     monkeypatch.setattr(ledger, "_require_event_journal_write_schema", checked)

@@ -282,6 +282,18 @@ async def test_exact_sources_replayed_and_late_bar_rejected_at_cutoff(
     assert len(due) == 1
     assert due[0].available_at == plan.window.end_at + timedelta(seconds=10)
 
+    with pytest.raises(PostReadBatchError, match="trailing_bar_missing"):
+        await computational_rows_at_cutoff_v3(
+            frozen.payload,
+            expected_sha256=frozen.sha256,
+            sources=sources,
+            observation_repository=repository,
+            plan=plan,
+            expected_plan_sha256=plan.canonical_sha256(),
+            horizon_seconds=14400,
+            as_of=plan.window.end_at + timedelta(hours=4),
+        )
+
     changed = frozen.contract.model_dump(mode="python")
     changed["timeframes"][0]["bars"][0]["row"]["bar"]["open"] = Decimal("100.05")
     with pytest.raises(ValidationError, match="aggregate source or time differs"):
@@ -302,7 +314,7 @@ async def test_exact_sources_replayed_and_late_bar_rejected_at_cutoff(
             plan=plan,
             expected_plan_sha256=plan.canonical_sha256(),
         )
-    assert len(seen) == 5 * len(sources)
+    assert len(seen) == 6 * len(sources)
     changed_sources = (
         sources[:10] + (replace(sources[10], expected_sha256="f" * 64),) + sources[11:]
     )
@@ -313,7 +325,7 @@ async def test_exact_sources_replayed_and_late_bar_rejected_at_cutoff(
             plan=plan,
             expected_plan_sha256=plan.canonical_sha256(),
         )
-    assert len(seen) == 5 * len(sources)
+    assert len(seen) == 6 * len(sources)
 
     initial_checkpoint = source_kwargs["journal"]._checkpoint
 

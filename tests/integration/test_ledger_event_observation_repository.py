@@ -282,6 +282,71 @@ async def test_uid_lock_covers_cross_currency_read_and_other_report_reservation(
         await s.reserve()
 
 
+async def test_waiting_reservation_does_not_hold_table_lock_ahead_of_uid(
+    database, report_pair
+):
+    """A writer waiting for this UID must not deny the holder's SHARE read."""
+    original, other = report_pair
+    s = await controls.setup(database, original)
+    key = repository_module._account_uid_lock_key(original.request.scope)
+    # PostgreSQL exposes a bigint advisory key as classid/objid halves.
+    unsigned = key & ((1 << 64) - 1)
+    parts = {"high": unsigned >> 32, "low": unsigned & ((1 << 32) - 1)}
+    waiter_query = text(
+        "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_locks "
+        "WHERE locktype='advisory' AND NOT granted AND objsubid=1 "
+        "AND classid::bigint=:high AND objid::bigint=:low "
+        "AND database=(SELECT oid FROM pg_catalog.pg_database "
+        "WHERE datname=current_database()))"
+    )
+    writer = None
+    try:
+        async with database[1]() as reader, reader.begin():
+            await reader.execute(text("SET TRANSACTION ISOLATION LEVEL READ COMMITTED"))
+            await reader.execute(
+                text("SET LOCAL search_path TO pg_catalog, public, pg_temp")
+            )
+            await repository_module._require_event_journal_session(reader)
+            await s.ledger._locked(reader, original.request.scope)
+            writer = asyncio.create_task(
+                s.ledger.reserve_control_bound(
+                    other.request, control_expectation=s.expected
+                )
+            )
+
+            async def wait_for_writer_uid_lock():
+                while True:
+                    if await reader.scalar(waiter_query, parts):
+                        return
+                    if writer.done():
+                        await writer
+                        raise AssertionError("writer_completed_before_uid_release")
+                    # Yield only for scheduling; completion is proven by pg_locks.
+                    await asyncio.sleep(0)
+
+            await asyncio.wait_for(wait_for_writer_uid_lock(), 10)
+            await reader.execute(
+                text(
+                    "LOCK TABLE public.qualification_account_scopes, "
+                    "public.qualification_reservations, "
+                    "public.qualification_reservation_transitions "
+                    "IN SHARE MODE NOWAIT"
+                )
+            )
+            assert not await s.ledger._event_rows_locked(
+                reader,
+                original.request.scope,
+                original.request.origin.original_event_key,
+            )
+            assert not writer.done()
+        receipt = await asyncio.wait_for(writer, 30)
+        assert receipt.scope == other.request.scope
+    finally:
+        if writer is not None and not writer.done():
+            writer.cancel()
+            await asyncio.gather(writer, return_exceptions=True)
+
+
 async def test_new_bound_route_rechecks_terminal_other_report_after_earlier_absence(
     database, report_pair
 ):

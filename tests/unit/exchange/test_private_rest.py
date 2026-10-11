@@ -146,7 +146,16 @@ async def test_pending_algos_use_documented_types_and_empty_cursor_terminators()
         order_type = request.url.params["ordType"]
         after = request.url.params.get("after")
         observed.append((order_type, after))
-        assert order_type in {"conditional", "oco", "trigger", "move_order_stop"}
+        assert order_type in {
+            "conditional",
+            "oco",
+            "chase",
+            "trigger",
+            "move_order_stop",
+            "iceberg",
+            "twap",
+            "smart_iceberg",
+        }
         query = request.url.query.decode()
         expected = build_signature(
             timestamp=request.headers["OK-ACCESS-TIMESTAMP"],
@@ -162,10 +171,19 @@ async def test_pending_algos_use_documented_types_and_empty_cursor_terminators()
             ("conditional", "99"): [],
             ("oco", None): [{"algoId": "80"}],
             ("oco", "80"): [],
+            ("chase", None): [{"algoId": "70"}],
+            ("chase", "70"): [],
             ("trigger", None): [],
             ("move_order_stop", None): [{"algoId": "60"}],
             ("move_order_stop", "60"): [],
+            ("iceberg", None): [{"algoId": "55"}],
+            ("iceberg", "55"): [],
+            ("twap", None): [{"algoId": "50"}],
+            ("twap", "50"): [],
+            ("smart_iceberg", None): [{"algoId": "40"}],
+            ("smart_iceberg", "40"): [],
         }[(order_type, after)]
+        rows = [{**row, "ordType": order_type} for row in rows]
         return httpx.Response(200, json={"code": "0", "msg": "", "data": rows})
 
     transport = httpx.MockTransport(handler)
@@ -179,17 +197,84 @@ async def test_pending_algos_use_documented_types_and_empty_cursor_terminators()
             clock=lambda: fixed,
         ).pending_algo_orders("BTC-USDT-SWAP")
 
-    assert [row["algoId"] for row in result] == ["100", "99", "80", "60"]
+    assert [row["algoId"] for row in result] == [
+        "100",
+        "99",
+        "80",
+        "70",
+        "60",
+        "55",
+        "50",
+        "40",
+    ]
     assert observed == [
         ("conditional", None),
         ("conditional", "100"),
         ("conditional", "99"),
         ("oco", None),
         ("oco", "80"),
+        ("chase", None),
+        ("chase", "70"),
         ("trigger", None),
         ("move_order_stop", None),
         ("move_order_stop", "60"),
+        ("iceberg", None),
+        ("iceberg", "55"),
+        ("twap", None),
+        ("twap", "50"),
+        ("smart_iceberg", None),
+        ("smart_iceberg", "40"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_unsupported_extra_algo_type_rejects_legacy_reconciliation_read() -> None:
+    settings = demo_settings()
+    fixed = datetime(2026, 8, 4, 13, 1, 2, 345000, tzinfo=UTC)
+    observed: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        order_type = request.url.params["ordType"]
+        observed.append(order_type)
+        if order_type == "chase":
+            return httpx.Response(400, json={"code": "unsupported", "data": []})
+        return httpx.Response(200, json={"code": "0", "data": []})
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="https://www.okx.com"
+    ) as http:
+        reader = OkxDemoPrivateRestClient(http, settings=settings, clock=lambda: fixed)
+        with pytest.raises(OkxPrivateApiError):
+            await reader.pending_algo_orders("BTC-USDT-SWAP")
+
+    assert observed[:3] == ["conditional", "oco", "chase"]
+    assert set(observed) == {"conditional", "oco", "chase"}
+
+
+@pytest.mark.asyncio
+async def test_pending_algo_row_type_conflict_rejects_inventory() -> None:
+    settings = demo_settings()
+    fixed = datetime(2026, 8, 4, 13, 1, 2, 345000, tzinfo=UTC)
+    observed: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        observed.append(request.url.params["ordType"])
+        rows = (
+            [{"algoId": "100", "ordType": "oco"}]
+            if request.url.params.get("after") is None
+            else []
+        )
+        return httpx.Response(200, json={"code": "0", "data": rows})
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="https://www.okx.com"
+    ) as http:
+        reader = OkxDemoPrivateRestClient(http, settings=settings, clock=lambda: fixed)
+        with pytest.raises(OkxPrivateApiError) as error:
+            await reader.pending_algo_orders("BTC-USDT-SWAP")
+
+    assert error.value.code == "pagination_incomplete"
+    assert observed == ["conditional", "conditional"]
 
 
 @pytest.mark.asyncio

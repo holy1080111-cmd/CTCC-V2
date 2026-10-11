@@ -7,6 +7,16 @@ submission authority. It is not Demo readiness or a completed qualification
 authority implementation, and does not justify marking
 `ALL_SUBMIT_ROUTES_GUARDED=PASS` in the final acceptance matrix.
 
+An independent shared-transport check now also rejects every private write
+immediately before HTTP dispatch. Tests disable the older Demo
+and Live route classifiers and exercise registered manual, run-once, and
+scheduled entries as well as maintenance requests with a synthetic HTTP
+transport; no POST reaches it.
+The new check is a second fail-closed tombstone, not a working permit issuer.
+It cannot be relaxed until an owned, durable, one-use authorization is bound to
+the exact signed request, account and credential session, current guards, and
+expiry. `ALL_SUBMIT_ROUTES_GUARDED` remains FAIL for production readiness.
+
 Manual API orders and legacy automation market, limit, FOK, run-once and scheduled
 entries all reach `OkxDemoPrivateRestClient._request`. Its synchronous boundary
 runs before credentials/payload processing and again immediately before the HTTP

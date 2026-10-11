@@ -20,6 +20,7 @@ from app.database.repositories.qualification_ledger import (
     _require_event_journal_schema,
     _require_event_journal_write_schema,
 )
+from app.trade_qualification.reservations import LedgerScope
 
 pytest_plugins = ["tests.integration.test_qualification_ledger_repository"]
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
@@ -89,7 +90,10 @@ async def test_write_guard_accepts_restricted_role_and_rejects_function_replacem
         try:
             async with AsyncSession(bind=connection) as session:
                 async with session.begin():
-                    await _require_event_journal_write_schema(session)
+                    await _require_event_journal_write_schema(
+                        session,
+                        LedgerScope(account_id="123456789", settlement_currency="USDT"),
+                    )
                     rights = (
                         await session.execute(
                             text(

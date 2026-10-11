@@ -375,6 +375,13 @@ def replay_features_at(
     due = _validate_records(due_rows, bar_horizon=bar_horizon)
     if any(row.available_at > cutoff for row in due):
         raise ReplayValidationError("a due replay bar was not available at the cutoff")
+    # The last known row must be the latest bar that could have completed at
+    # this cutoff. Otherwise a missing trailing row can be silently presented
+    # as a current point-in-time feature snapshot. Compare whole seconds to
+    # avoid constructing an overflowing timedelta from a caller's horizon.
+    age = cutoff - due[-1].bar.closed_at
+    if age.days * 86_400 + age.seconds >= bar_horizon.seconds:
+        raise ReplayValidationError("a trailing replay bar is missing at the cutoff")
 
     selected = due[-history_bars:]
     if len(selected) < max(5, dynamics_window, momentum_slow_bars + 1):

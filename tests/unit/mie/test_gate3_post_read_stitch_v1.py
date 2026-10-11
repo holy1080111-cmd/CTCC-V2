@@ -442,6 +442,15 @@ async def test_late_constituent_rejects_entire_due_aggregate(
 
 
 @pytest.mark.asyncio
+async def test_stitched_replay_rejects_missing_trailing_bar(stitch_case):
+    kwargs, _, _ = stitch_case
+    changed = dict(kwargs)
+    changed["as_of"] = changed["batches"][-1].plan.window.end_at + timedelta(minutes=15)
+    with pytest.raises(ValueError, match="trailing replay bar"):
+        await stitch.freeze_post_read_stitched_replay_v1(**changed)
+
+
+@pytest.mark.asyncio
 async def test_history_shortfall_fails_instead_of_filling_missing_bars(stitch_case):
     kwargs, _, _ = stitch_case
     changed = dict(kwargs)

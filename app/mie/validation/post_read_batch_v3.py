@@ -555,6 +555,9 @@ async def computational_rows_at_cutoff_v3(
     due = tuple(item.row for item in frame.bars if item.row.bar.closed_at <= cutoff)
     if not due or any(item.available_at > cutoff for item in due):
         raise PostReadBatchError("post_read_due_bar_unavailable")
+    age = cutoff - due[-1].bar.closed_at
+    if age.days * 86_400 + age.seconds >= frame.horizon.seconds:
+        raise PostReadBatchError("post_read_trailing_bar_missing")
     return due
 
 

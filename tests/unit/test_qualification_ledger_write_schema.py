@@ -1,11 +1,12 @@
-"""Schema drift must stop reservation/intent writes before the UID lock."""
+"""Schema drift must stop reservation/intent writes under the UID lock."""
 
 from types import SimpleNamespace
 
 import pytest
 
 from app.database.repositories import qualification_ledger as ledger
-from app.trade_qualification.reservations import QualificationLedgerError
+from app.trade_qualification.demo_control import ControlScope, account_lock_key
+from app.trade_qualification.reservations import LedgerScope, QualificationLedgerError
 from tests.unit.qualification_ledger_fixtures import ledger_fixture
 
 
@@ -34,8 +35,25 @@ def source():
     return ledger_fixture(account_id="12345678901234567890")
 
 
+def test_write_schema_uses_same_uid_lock_across_currency_and_control(source):
+    scope = source.request.scope
+    other_currency = LedgerScope(
+        environment=scope.environment,
+        account_id=scope.account_id,
+        settlement_currency="USDC",
+    )
+    control = ControlScope(scope.environment, scope.account_id)
+    assert (
+        ledger._account_uid_lock_key(scope)
+        == ledger._account_uid_lock_key(other_currency)
+        == account_lock_key(control)
+    )
+
+
 @pytest.mark.asyncio
-async def test_write_schema_pins_all_three_tables_before_catalog_read(monkeypatch):
+async def test_write_schema_pins_uid_before_all_three_tables_and_catalog_read(
+    monkeypatch, source
+):
     session = _Session()
     observed = []
 
@@ -49,15 +67,16 @@ async def test_write_schema_pins_all_three_tables_before_catalog_read(monkeypatc
 
     monkeypatch.setattr(ledger, "_require_event_journal_session", session_guard)
     monkeypatch.setattr(ledger, "_require_event_journal_schema", schema_guard)
-    await ledger._require_event_journal_write_schema(session)
+    await ledger._require_event_journal_write_schema(session, source.request.scope)
     assert observed == ["session", "schema"]
-    assert len(session.statements) == 3
+    assert len(session.statements) == 4
     assert session.statements[0] == "SET TRANSACTION ISOLATION LEVEL READ COMMITTED"
     assert (
         session.statements[1] == "SET LOCAL search_path TO pg_catalog, public, pg_temp"
     )
+    assert "pg_advisory_xact_lock" in session.statements[2]
     assert all(
-        name in session.statements[2]
+        name in session.statements[3]
         for name in (
             "public.qualification_account_scopes",
             "public.qualification_reservations",
@@ -69,7 +88,7 @@ async def test_write_schema_pins_all_three_tables_before_catalog_read(monkeypatc
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("operation", ("reserve", "consume"))
-async def test_schema_drift_aborts_before_account_mutation(
+async def test_schema_drift_aborts_before_account_row_mutation(
     monkeypatch, operation, source
 ):
     session = _Session()
@@ -78,8 +97,8 @@ async def test_schema_drift_aborts_before_account_mutation(
     )
     observed = []
 
-    async def drift(actual):
-        assert actual is session
+    async def drift(actual, scope):
+        assert actual is session and scope == source.request.scope
         observed.append("schema_drift")
         raise QualificationLedgerError("event_ledger_schema_retention_invalid")
 

@@ -275,7 +275,10 @@ async def test_schema_guard_rejects_disabled_immutable_transition(database):
             with pytest.raises(
                 QualificationLedgerError, match="event_ledger_schema_retention_invalid"
             ):
-                await _require_event_journal_write_schema(session)
+                await _require_event_journal_write_schema(
+                    session,
+                    LedgerScope(account_id="123456789", settlement_currency="USDT"),
+                )
         finally:
             # DDL is transactional; no disabled trigger survives this test.
             await session.rollback()
@@ -305,7 +308,10 @@ async def test_schema_guard_rejects_replaced_immutable_function_body(database):
                 QualificationLedgerError,
                 match=r"event_ledger_schema_retention_invalid:.*functions=qualification_ledger_immutable",
             ):
-                await _require_event_journal_write_schema(session)
+                await _require_event_journal_write_schema(
+                    session,
+                    LedgerScope(account_id="123456789", settlement_currency="USDT"),
+                )
         finally:
             # The replacement is transactional and never leaves this fixture.
             await session.rollback()
@@ -339,7 +345,10 @@ async def test_schema_guard_rejects_same_name_wrong_uid_unique_key(database):
             with pytest.raises(
                 QualificationLedgerError, match="event_ledger_schema_retention_invalid"
             ):
-                await _require_event_journal_write_schema(session)
+                await _require_event_journal_write_schema(
+                    session,
+                    LedgerScope(account_id="123456789", settlement_currency="USDT"),
+                )
         finally:
             # Roll back the temporary key change even if the assertion fails.
             await session.rollback()

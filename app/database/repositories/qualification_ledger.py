@@ -400,21 +400,40 @@ async def _require_event_journal_schema(session):
         )
 
 
-async def _require_event_journal_write_schema(session):
+def _account_uid_lock_key(scope):
+    scope = checked(scope, LedgerScope)
+    lock_bytes = hashlib.sha256(
+        (
+            "ctcc-qualification-account-v1\0"
+            + scope.environment
+            + "\0"
+            + scope.account_id
+        ).encode("ascii")
+    ).digest()[:8]
+    return int.from_bytes(lock_bytes, "big", signed=True)
+
+
+async def _require_event_journal_write_schema(session, scope):
     """Pin the UID/event uniqueness and tombstone guards through a write.
 
     A normal SELECT of the catalogs alone would allow a concurrent ALTER TABLE
     between inspection and the reservation/intent commit. ROW EXCLUSIVE locks
     coexist with other ordinary writers, but exclude trigger/constraint DDL.
-    Acquire them before the account advisory lock to avoid inverted ordering.
+    Acquire the account UID advisory lock before the table locks, matching
+    journal readers. A writer waiting for that UID must not hold ROW EXCLUSIVE
+    while a reader waits for the same UID and then requests SHARE NOWAIT.
     READ COMMITTED must be set before the first SQL read so the post-lock
     catalog check sees DDL committed while the table lock was acquired.
     """
     if session.get_bind().dialect.name != "postgresql":
         raise QualificationLedgerError("event_ledger_postgresql_required")
+    scope = checked(scope, LedgerScope)
     await session.execute(text("SET TRANSACTION ISOLATION LEVEL READ COMMITTED"))
     await session.execute(text("SET LOCAL search_path TO pg_catalog, public, pg_temp"))
     await _require_event_journal_session(session)
+    await session.execute(
+        select(func.pg_advisory_xact_lock(_account_uid_lock_key(scope)))
+    )
     await session.execute(
         text(
             "LOCK TABLE public.qualification_account_scopes, "
@@ -445,20 +464,8 @@ class QualificationLedgerRepository:
         # Account UID, not settlement currency, is the concurrency boundary.
         # A deterministic signed bigint avoids Python's process-randomized hash.
         # Acquire before every scope row lock, including reconciliation/readback.
-        lock_bytes = hashlib.sha256(
-            (
-                "ctcc-qualification-account-v1\0"
-                + keys["environment"]
-                + "\0"
-                + keys["account_id"]
-            ).encode("ascii")
-        ).digest()[:8]
         await session.execute(
-            select(
-                func.pg_advisory_xact_lock(
-                    int.from_bytes(lock_bytes, "big", signed=True)
-                )
-            )
+            select(func.pg_advisory_xact_lock(_account_uid_lock_key(scope)))
         )
         if create:
             await session.execute(
@@ -1422,7 +1429,7 @@ class QualificationLedgerRepository:
         request_json = canonical(request)
         request_sha256 = _canonical_json_sha256(request_json)
         async with self.session_factory() as session, session.begin():
-            await _require_event_journal_write_schema(session)
+            await _require_event_journal_write_schema(session, request.scope)
             if control_expectation is None:
                 row = await self._locked(session, request.scope)
             else:
@@ -1541,7 +1548,7 @@ class QualificationLedgerRepository:
     ):
         scope = checked(scope, LedgerScope)
         async with self.session_factory() as session, session.begin():
-            await _require_event_journal_write_schema(session)
+            await _require_event_journal_write_schema(session, scope)
             if control_expectation is None:
                 row = await self._locked(session, scope)
             else:

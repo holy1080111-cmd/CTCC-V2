@@ -12,7 +12,7 @@ from uuid import uuid4
 import pytest
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
-from sqlalchemy import select, text, update
+from sqlalchemy import func, select, text, update
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
@@ -202,7 +202,7 @@ async def sandbox(database, revision, monkeypatch):
             connect_args={"server_settings": {"search_path": "public,pg_catalog"}},
         )
 
-        async def historical_write_lock(session):
+        async def historical_write_lock(session, scope):
             """Permit old-revision fixture writes only in this isolated database.
 
             Current production requires the DB0023/DB0027 public guards, which
@@ -229,6 +229,13 @@ async def sandbox(database, revision, monkeypatch):
                 text("SET LOCAL search_path TO pg_catalog, public, pg_temp")
             )
             await ledger_repository._require_event_journal_session(session)
+            await session.execute(
+                select(
+                    func.pg_advisory_xact_lock(
+                        ledger_repository._account_uid_lock_key(scope)
+                    )
+                )
+            )
             await session.execute(
                 text(
                     "LOCK TABLE public.qualification_account_scopes, "

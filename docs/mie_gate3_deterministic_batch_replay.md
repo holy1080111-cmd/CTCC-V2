@@ -30,6 +30,10 @@ current-source admission, not independent proof of point-in-time custody.
 `replay_aggregated_features_at` rebuilds aggregates from the original bound minute
 records and independently retained hashes before invoking the existing MIE
 feature engine. Matching output schema alone cannot pass original-source replay.
+The feature cutoff must remain before the next expected bar close after the
+last due bar. A missing trailing bar therefore fails instead of leaving a stale
+feature snapshot apparently current; this also applies to the post-read V3
+minute-row and stitched replay paths.
 The existing purged walk-forward splitter consumes the aggregate close times and
 continues enforcing its dependency, purge and embargo rules. No candidate,
 probability model, fitted trial, cost schedule or economic threshold is selected

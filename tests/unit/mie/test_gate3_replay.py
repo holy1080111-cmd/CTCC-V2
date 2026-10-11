@@ -162,6 +162,24 @@ def test_replay_rejects_missing_duplicate_unsorted_and_late_due_rows() -> None:
         )
 
 
+def test_replay_rejects_missing_trailing_bar_at_next_close() -> None:
+    rows = replay_rows(32)
+    last_close = rows[-1].bar.closed_at
+    still_current = replay_features_at(
+        rows,
+        as_of=last_close + timedelta(seconds=HORIZON.seconds, microseconds=-1),
+        bar_horizon=HORIZON,
+    )
+    assert still_current.data_cutoff == last_close
+
+    with pytest.raises(ReplayValidationError, match="trailing replay bar"):
+        replay_features_at(
+            rows,
+            as_of=last_close + timedelta(seconds=HORIZON.seconds),
+            bar_horizon=HORIZON,
+        )
+
+
 def test_replay_requires_utc_aligned_cutoffs_and_sufficient_history() -> None:
     rows = replay_rows(32)
 

@@ -90,8 +90,11 @@ async def test_registered_live_arm_route_rejects_absent_qualification_authority(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("order_type", ("market", "limit", "fok"))
+@pytest.mark.parametrize("legacy_classifier_removed", (False, True))
 async def test_registered_demo_order_route_cannot_send_unqualified_entry(
-    monkeypatch: pytest.MonkeyPatch, order_type: str
+    monkeypatch: pytest.MonkeyPatch,
+    order_type: str,
+    legacy_classifier_removed: bool,
 ) -> None:
     observed: list[httpx.Request] = []
 
@@ -105,6 +108,9 @@ async def test_registered_demo_order_route_cannot_send_unqualified_entry(
         base_url="https://www.okx.com",
     ) as exchange_http:
         transport = OkxDemoPrivateRestClient(exchange_http, settings=config)
+        if legacy_classifier_removed:
+            monkeypatch.setattr(transport, "_before_send", lambda **_: None)
+            monkeypatch.setattr(transport, "_final_dispatch_check", lambda **_: None)
 
         class PreflightPrivate(FakePrivate):
             async def place_order(self, payload: dict[str, object]):
@@ -134,14 +140,18 @@ async def test_registered_demo_order_route_cannot_send_unqualified_entry(
 
     assert response.status_code == 502
     assert response.json()["detail"]["exchange_code"] == (
-        "demo_qualification_authority_unavailable"
+        "private_write_authority_unavailable"
+        if legacy_classifier_removed
+        else "demo_qualification_authority_unavailable"
     )
     assert observed == []
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("legacy_classifier_removed", (False, True))
 async def test_registered_live_order_route_cannot_send_after_full_preflight(
     monkeypatch: pytest.MonkeyPatch,
+    legacy_classifier_removed: bool,
 ) -> None:
     observed: list[httpx.Request] = []
 
@@ -163,6 +173,13 @@ async def test_registered_live_order_route_cannot_send_after_full_preflight(
         service.execution_client = OkxLiveExecutionRestClient(
             exchange_http, settings=service.settings
         )
+        if legacy_classifier_removed:
+            monkeypatch.setattr(
+                service.execution_client, "_before_send", lambda **_: None
+            )
+            monkeypatch.setattr(
+                service.execution_client, "_final_dispatch_check", lambda **_: None
+            )
         await seed_legacy_local_lease_for_downstream_unit_test(service)
         route = importlib.import_module("app.api.routers.okx_live")
         monkeypatch.setattr(route, "okx_live_service", service)
@@ -234,8 +251,10 @@ async def test_live_service_rejects_unqualified_precheck_before_caa_or_order():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("legacy_classifier_removed", (False, True))
 async def test_registered_demo_automation_run_once_reaches_concrete_denial(
     monkeypatch: pytest.MonkeyPatch,
+    legacy_classifier_removed: bool,
 ) -> None:
     observed: list[httpx.Request] = []
 
@@ -248,6 +267,9 @@ async def test_registered_demo_automation_run_once_reaches_concrete_denial(
         base_url="https://www.okx.com",
     ) as exchange_http:
         transport = OkxDemoPrivateRestClient(exchange_http, settings=demo_settings())
+        if legacy_classifier_removed:
+            monkeypatch.setattr(transport, "_before_send", lambda **_: None)
+            monkeypatch.setattr(transport, "_final_dispatch_check", lambda **_: None)
 
         class AutomationPreflight(FakeDemo):
             async def place_order(self, order, *, before_submit=None):
@@ -345,8 +367,10 @@ async def test_registered_demo_automation_cannot_set_leverage_before_denied_orde
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("legacy_classifier_removed", (False, True))
 async def test_registered_demo_scheduler_reaches_concrete_order_denial(
     monkeypatch: pytest.MonkeyPatch,
+    legacy_classifier_removed: bool,
 ) -> None:
     observed: list[httpx.Request] = []
     scheduled_runs = []
@@ -361,6 +385,9 @@ async def test_registered_demo_scheduler_reaches_concrete_order_denial(
         base_url="https://www.okx.com",
     ) as exchange_http:
         transport = OkxDemoPrivateRestClient(exchange_http, settings=demo_settings())
+        if legacy_classifier_removed:
+            monkeypatch.setattr(transport, "_before_send", lambda **_: None)
+            monkeypatch.setattr(transport, "_final_dispatch_check", lambda **_: None)
 
         class AutomationPreflight(FakeDemo):
             async def place_order(self, order, *, before_submit=None):

@@ -21,9 +21,21 @@ from app.trade_qualification.execution_authority import (
     enforce_demo_submission_boundary,
     enforce_live_submission_boundary,
 )
+from app.trade_qualification.private_write_authority import (
+    require_owned_private_write_authority,
+)
 
 Clock = Callable[[], datetime]
-_ALGO_ORDER_TYPES = ("conditional", "oco", "trigger", "move_order_stop")
+_ALGO_ORDER_TYPES = (
+    "conditional",
+    "oco",
+    "chase",
+    "trigger",
+    "move_order_stop",
+    "iceberg",
+    "twap",
+    "smart_iceberg",
+)
 _PRIVATE_PAGE_SIZE = 100
 _PRIVATE_MAX_PAGES = 16
 _CANCEL_ALL_AFTER_PATH = "/api/v5/trade/cancel-all-after"
@@ -266,6 +278,14 @@ class _OkxPrivateRestClientBase:
                         body_text=body_text,
                     )
                     self._final_dispatch_check(method=method, path=path)
+                    # Separate from the route classifiers: removing their
+                    # temporary hard DENY cannot expose legacy order entries.
+                    require_owned_private_write_authority(
+                        method,
+                        path,
+                        owner=getattr(self, "_qualification_dispatch_owner", None),
+                        slot=getattr(self, "_qualification_dispatch_slot", None),
+                    )
                     response = await client.request(
                         method.upper(),
                         request_url,
@@ -443,6 +463,11 @@ class _OkxPrivateRestClientBase:
                 max_pages=_PRIVATE_MAX_PAGES,
             )
             for row in current:
+                if row.get("ordType") != order_type:
+                    raise OkxPrivateApiError(
+                        "OKX pending algo type differs from its query",
+                        code="pagination_incomplete",
+                    )
                 identity = row["algoId"]
                 if identity in seen:
                     raise OkxPrivateApiError(

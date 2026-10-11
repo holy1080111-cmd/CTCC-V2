@@ -348,8 +348,8 @@ async def test_legacy_reserve_checks_uid_event_tombstone_before_risk(
     )
     observed = []
 
-    async def verified_write_schema(actual_session):
-        assert actual_session is session
+    async def verified_write_schema(actual_session, scope):
+        assert actual_session is session and scope == fixture.request.scope
         observed.append("schema")
 
     monkeypatch.setattr(

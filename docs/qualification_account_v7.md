@@ -117,3 +117,16 @@ because the older V5-only branch was skipped. A synthetic 17-stream V7 packet
 exercises this case through packet replay and materialization. This correction
 does not create a trusted account revision, complete history, or execution
 permission.
+
+The legacy private REST `pending_algo_orders` reader now queries the same
+eight pending order types as V7, each through an explicit empty cursor
+terminator and with every returned `ordType` checked against its query. Its
+former four-type query could omit chase, iceberg, TWAP, and
+smart iceberg exposure in a legacy reconciliation. As noted above, the global
+guide still lists only four while a regional guide lists eight; a rejected
+extra query fails reconciliation rather than producing a false flat result.
+The prior 17-stream read-only Demo diagnostic observed the eight queries at
+the configured global host, but did not prove regional registration. This
+correction does not make the legacy reconciliation a complete account
+snapshot: its order history remains a recent SWAP page, and V7's trusted
+identity/history and portfolio conditions remain separate blockers.
