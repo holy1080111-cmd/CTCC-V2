@@ -131,6 +131,45 @@ def demo_public_v2_headers(region: str, role: str) -> dict[str, str]:
     }
 
 
+def demo_public_v3_time_headers(region: str, role: str) -> dict[str, str]:
+    """Frozen public-only headers for the two V3 time roles, never V2 roles."""
+    demo_public_v2_route(region)
+    if type(role) is not str or role not in {"time_pre", "time_post"}:
+        raise PublicReceiptError("demo_public_v3_time_role_invalid")
+    return {
+        "Accept": "application/json",
+        "Accept-Encoding": "identity",
+        "User-Agent": "CTCC-source-time/1",
+        "x-simulated-trading": "1",
+    }
+
+
+def demo_public_v3_time_policy_sha256(region: str) -> str:
+    """Pin an additive time bracket without changing historical V2 policy."""
+    demo_public_v2_route(region)
+    return sha(
+        canonical(
+            {
+                "schema_version": "ctcc.public_exchange_time_transport.v3",
+                "registration_region": region,
+                "environment": "demo",
+                "method": "GET",
+                "endpoint": "/api/v5/public/time",
+                "query": [],
+                "roles": ["time_pre", "time_post"],
+                "headers": demo_public_v3_time_headers(region, "time_pre"),
+                "max_response_bytes": 4096,
+                "request_timeout_seconds": 2,
+                "max_observation_ns": 5_000_000_000,
+                "retries": 0,
+                "redirects": False,
+                "proxy": False,
+                "execution_authority": False,
+            }
+        )
+    )
+
+
 def demo_public_v2_policy_document(region: str) -> dict:
     rest, ws, rest_host, ws_host = demo_public_v2_route(region)
     return {

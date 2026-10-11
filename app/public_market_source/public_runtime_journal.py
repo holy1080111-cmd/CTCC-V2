@@ -15,6 +15,8 @@ from app.domain.source_primitives import (
     demo_public_v2_policy_sha256,
     demo_public_v2_quote_transport_sha256,
     demo_public_v2_route,
+    demo_public_v3_time_headers,
+    demo_public_v3_time_policy_sha256,
 )
 from app.public_market_source.public_market_receipts import (
     ClockStamp,
@@ -65,6 +67,7 @@ _KINDS = frozenset(
         "body_complete",
         "response_closed",
         "request_failed",
+        "time_validated",
         "ws_connect",
         "ws_connected",
         "ws_subscribe",
@@ -373,6 +376,57 @@ def _sealed_readback(attempt):
     )
 
 
+def _replay_open_v3_prefix(attempt, *, market_packet=None):
+    """Read back the still-open owned V3 journal before permitting post-time IO."""
+    state = _state(attempt)
+    directory = state["directory"]
+    plan_raw = directory.read("plan.json", MAX_RAW)
+    plan = decode(plan_raw, MAX_RAW)
+    if (
+        canonical(plan) != plan_raw
+        or sha(plan_raw) != state["plan_sha256"]
+        or plan.get("schema_version")
+        not in {"ctcc.public.initial_runtime_plan.v3", "ctcc.public.runtime_plan.v3"}
+    ):
+        raise PublicReceiptError("runtime_v3_prefix_plan_invalid")
+    _validate_plan(plan)
+    expected = {"plan.json"}
+    head, events, payloads = state["plan_sha256"], [], []
+    for index, event in enumerate(state["events"]):
+        name = f"event-{index:04d}.json"
+        raw_name = f"event-{index:04d}.raw"
+        encoded = directory.read(name, MAX_RAW)
+        if (
+            encoded != canonical(event)
+            or event["index"] != index
+            or event["plan_sha256"] != state["plan_sha256"]
+            or event["previous_sha256"] != head
+        ):
+            raise PublicReceiptError("runtime_v3_prefix_event_invalid")
+        expected.add(name)
+        raw = None
+        if event["raw_sha256"] is not None:
+            raw = directory.read(raw_name, MAX_RAW)
+            if len(raw) != event["raw_bytes"] or sha(raw) != event["raw_sha256"]:
+                raise PublicReceiptError("runtime_v3_prefix_raw_invalid")
+            expected.add(raw_name)
+        elif event["raw_bytes"] is not None:
+            raise PublicReceiptError("runtime_v3_prefix_raw_invalid")
+        events.append(event)
+        payloads.append(raw)
+        head = sha(encoded)
+    if head != state["head"] or set(directory.names()) != expected:
+        raise PublicReceiptError("runtime_v3_prefix_inventory_invalid")
+    _replay_semantics(
+        plan,
+        {"disposition": "rejected", "completed": None},
+        events,
+        payloads,
+        market_packet=market_packet,
+    )
+    return head, tuple(events)
+
+
 @contextmanager
 def _runtime_attempt(root, plan):
     _validate_plan(plan)
@@ -416,6 +470,11 @@ def _time(value):
 
 
 def _validate_plan(plan):
+    if type(plan) is dict and plan.get("schema_version") in {
+        "ctcc.public.initial_runtime_plan.v3",
+        "ctcc.public.runtime_plan.v3",
+    }:
+        return _validate_v3_plan(plan)
     if type(plan) is dict and plan.get("schema_version") in {
         "ctcc.public.initial_runtime_plan.v2",
         "ctcc.public.runtime_plan.v2",
@@ -597,10 +656,31 @@ def _validate_v2_plan(plan):
         _validate_plan(base)
 
 
+def _validate_v3_plan(plan):
+    """V3 adds a fixed time bracket; its V2 market plan stays byte-identical."""
+    if (
+        type(plan) is not dict
+        or "registration_region" not in plan
+        or "exchange_time_policy_sha256" not in plan
+        or type(plan["exchange_time_policy_sha256"]) is not str
+        or plan["exchange_time_policy_sha256"]
+        != demo_public_v3_time_policy_sha256(plan["registration_region"])
+    ):
+        raise PublicReceiptError("runtime_v3_time_policy_invalid")
+    base = {
+        key: value
+        for key, value in plan.items()
+        if key != "exchange_time_policy_sha256"
+    }
+    base["schema_version"] = base["schema_version"].removesuffix(".v3") + ".v2"
+    _validate_v2_plan(base)
+
+
 def _plan_start(plan):
     if plan["schema_version"] in {
         "ctcc.public.initial_runtime_plan.v1",
         "ctcc.public.initial_runtime_plan.v2",
+        "ctcc.public.initial_runtime_plan.v3",
     }:
         return plan["invocation_started"]
     return plan["barrier"]
@@ -627,6 +707,7 @@ def _packet_stage_matches(plan, barrier, *, exact=False):
     if plan["schema_version"] in {
         "ctcc.public.initial_runtime_plan.v1",
         "ctcc.public.initial_runtime_plan.v2",
+        "ctcc.public.initial_runtime_plan.v3",
     }:
         return barrier is None
     return barrier is not None and (
@@ -663,7 +744,11 @@ def _routed_request_headers(plan, role):
     rest_origin, _, rest_hostname, _ = demo_public_v2_route(region)
     if plan["rest_origin"] != rest_origin:
         raise PublicReceiptError("runtime_demo_request_headers_invalid")
-    headers = demo_public_v2_headers(region, role)
+    headers = (
+        demo_public_v3_time_headers(region, role)
+        if role in {"time_pre", "time_post"}
+        else demo_public_v2_headers(region, role)
+    )
     headers["Host"] = rest_hostname
     return [
         [name.lower(), value]
@@ -671,7 +756,28 @@ def _routed_request_headers(plan, role):
     ]
 
 
-def _replay_semantics(plan, summary, events, payloads):
+def _public_system_time(raw):
+    """Replay only OKX system-time semantics, never market-source timestamps."""
+    if type(raw) is not bytes or not 0 < len(raw) <= 4096:
+        raise PublicReceiptError("runtime_v3_time_body_invalid")
+    payload = decode(raw, 4096)
+    if (
+        type(payload) is not dict
+        or set(payload) != {"code", "msg", "data"}
+        or payload["code"] != "0"
+        or payload["msg"] != ""
+        or type(payload["data"]) is not list
+        or len(payload["data"]) != 1
+        or type(payload["data"][0]) is not dict
+        or set(payload["data"][0]) != {"ts"}
+        or type(payload["data"][0]["ts"]) is not str
+        or re.fullmatch("[1-9][0-9]{12}", payload["data"][0]["ts"]) is None
+    ):
+        raise PublicReceiptError("runtime_v3_time_body_invalid")
+    return payload["data"][0]["ts"], sha(canonical(payload))
+
+
+def _replay_semantics(plan, summary, events, payloads, *, market_packet=None):
     """Audit integrity only; a forged/replayed document never issues a carrier."""
     requests, websocket, observations = {}, {}, []
     rest_hostname, ws_hostname = _plan_tls_hostnames(plan)
@@ -679,6 +785,11 @@ def _replay_semantics(plan, summary, events, payloads):
     last = boundary
     complete = summary["disposition"] == "captured"
     before_seen, after_seen = False, False
+    v3 = plan["schema_version"] in {
+        "ctcc.public.initial_runtime_plan.v3",
+        "ctcc.public.runtime_plan.v3",
+    }
+    time_ids, time_validated = [], set()
     for event, raw in zip(events, payloads, strict=True):
         kind, meta = event["kind"], event["metadata"]
         stamp = None
@@ -692,6 +803,12 @@ def _replay_semantics(plan, summary, events, payloads):
                 before_seen = value["outcome"] == "accepted"
             elif not before_seen:
                 raise PublicReceiptError("runtime_clock_inventory_invalid")
+            if (
+                kind == "clock_after"
+                and v3
+                and (len(time_ids) != 2 or time_validated != set(time_ids))
+            ):
+                raise PublicReceiptError("runtime_v3_time_order_invalid")
             if value["outcome"] == "accepted":
                 evidence = value["observation"]
                 if evidence["schema_version"] != "ctcc.windows_clock_observation.v2":
@@ -714,6 +831,8 @@ def _replay_semantics(plan, summary, events, payloads):
                 in {
                     "ctcc.public.initial_runtime_plan.v2",
                     "ctcc.public.runtime_plan.v2",
+                    "ctcc.public.initial_runtime_plan.v3",
+                    "ctcc.public.runtime_plan.v3",
                 }
                 and "registration_region" in plan
             )
@@ -735,7 +854,12 @@ def _replay_semantics(plan, summary, events, payloads):
                 or len(requests) >= 64
                 or meta["method"] != "GET"
                 or meta["origin"] != plan["rest_origin"]
-                or meta["role"] not in {"quote", "candles", "market_aux"}
+                or meta["role"]
+                not in (
+                    {"quote", "candles", "market_aux", "time_pre", "time_post"}
+                    if v3
+                    else {"quote", "candles", "market_aux"}
+                )
                 or not before_seen
                 or after_seen
             ):
@@ -749,7 +873,10 @@ def _replay_semantics(plan, summary, events, payloads):
                 "candles": {"/api/v5/market/candles"},
                 "market_aux": {"/api/v5/market/books", "/api/v5/public/open-interest"},
             }
+            if v3:
+                paths["time_pre"] = paths["time_post"] = {"/api/v5/public/time"}
             pairs = meta["query"]
+            is_time = meta["role"] in {"time_pre", "time_post"}
             if (
                 type(pairs) is not list
                 or any(
@@ -759,11 +886,40 @@ def _replay_semantics(plan, summary, events, payloads):
                     for p in pairs
                 )
                 or len(dict(pairs)) != len(pairs)
-                or dict(pairs).get("instId") != plan["instrument_id"]
+                or (
+                    bool(pairs)
+                    if is_time
+                    else dict(pairs).get("instId") != plan["instrument_id"]
+                )
                 or meta["endpoint"] not in paths[meta["role"]]
                 or raw is not None
             ):
                 raise PublicReceiptError("runtime_request_invalid")
+            if v3:
+                if is_time:
+                    if (
+                        (meta["role"] == "time_pre" and requests)
+                        or (
+                            meta["role"] == "time_post"
+                            and (
+                                len(time_ids) != 1
+                                or time_ids[0] not in time_validated
+                                or len(websocket) != 7
+                                or not any(
+                                    item["request"]["role"] == "candles"
+                                    for item in requests.values()
+                                )
+                                or any(
+                                    item["closed"] is None for item in requests.values()
+                                )
+                            )
+                        )
+                        or len(time_ids) >= 2
+                    ):
+                        raise PublicReceiptError("runtime_v3_time_order_invalid")
+                    time_ids.append(meta["id"])
+                elif len(time_ids) != 1 or time_ids[0] not in time_validated:
+                    raise PublicReceiptError("runtime_v3_time_order_invalid")
             if routed and meta["request_headers"] != _routed_request_headers(
                 plan, meta["role"]
             ):
@@ -778,6 +934,60 @@ def _replay_semantics(plan, summary, events, payloads):
                 "failed": False,
                 "truncated": False,
             }
+        elif kind == "time_validated":
+            if (
+                not v3
+                or raw is not None
+                or set(meta)
+                != {"id", "validated", "server_time_ms", "canonical_body_sha256"}
+                or type(meta["id"]) is not int
+                or meta["id"] not in time_ids
+                or meta["id"] in time_validated
+                or after_seen
+            ):
+                raise PublicReceiptError("runtime_v3_time_validation_invalid")
+            item = requests[meta["id"]]
+            if item["closed"] is None or item["failed"] or item["truncated"]:
+                raise PublicReceiptError("runtime_v3_time_validation_invalid")
+            header_record = item["headers"]
+            if header_record is None:
+                raise PublicReceiptError("runtime_v3_time_validation_invalid")
+            safe_headers = header_record["safe_headers"]
+            fields = dict(safe_headers)
+            length = fields.get("content-length")
+            if (
+                header_record["status"] != 200
+                or header_record["truncated"]
+                or not _tls(header_record["tls"], rest_hostname)
+                or len(fields) != len(safe_headers)
+                or fields.get("content-type", "").split(";", 1)[0].strip().lower()
+                != "application/json"
+                or fields.get("content-encoding", "identity").lower() != "identity"
+                or (
+                    length is not None
+                    and (
+                        not length.isascii()
+                        or not length.isdigit()
+                        or len(length) > 10
+                        or int(length) != len(item["body"])
+                    )
+                )
+            ):
+                raise PublicReceiptError("runtime_v3_time_validation_invalid")
+            server_ms, canonical_sha256 = _public_system_time(bytes(item["body"]))
+            if (
+                meta["server_time_ms"] != server_ms
+                or meta["canonical_body_sha256"] != canonical_sha256
+                or not item["request"]["started"]["utc_ns"]
+                <= int(server_ms) * 1_000_000
+                <= header_record["received"]["utc_ns"]
+                or meta["validated"]["monotonic_ns"]
+                - item["request"]["started"]["monotonic_ns"]
+                > 5_000_000_000
+            ):
+                raise PublicReceiptError("runtime_v3_time_validation_invalid")
+            time_validated.add(meta["id"])
+            stamp = meta["validated"]
         elif kind in {
             "headers",
             "chunk",
@@ -926,6 +1136,7 @@ def _replay_semantics(plan, summary, events, payloads):
                 or kind != stages[len(websocket)]
                 or not before_seen
                 or after_seen
+                or (v3 and (len(time_ids) != 1 or time_ids[0] not in time_validated))
             ):
                 raise PublicReceiptError("runtime_ws_order_invalid")
             if kind == "ws_connect":
@@ -1001,6 +1212,8 @@ def _replay_semantics(plan, summary, events, payloads):
                 in {
                     "ctcc.public.initial_runtime_plan.v2",
                     "ctcc.public.runtime_plan.v2",
+                    "ctcc.public.initial_runtime_plan.v3",
+                    "ctcc.public.runtime_plan.v3",
                 }
                 else observations[0].get("bundle_sha256")
             )
@@ -1030,17 +1243,51 @@ def _replay_semantics(plan, summary, events, payloads):
             )
             or len(websocket) != 7
             or len(observations) != 1
+            or (
+                v3
+                and (
+                    len(time_ids) != 2
+                    or [requests[index]["request"]["role"] for index in time_ids]
+                    != ["time_pre", "time_post"]
+                    or time_validated != set(time_ids)
+                )
+            )
         ):
             raise PublicReceiptError("runtime_capture_incomplete")
         if utc_from_ns(summary["completed"]["utc_ns"]) >= _time(plan["expires_at"]):
             raise PublicReceiptError("runtime_capture_expired")
-        _packet_join(plan, observations[0], requests, websocket)
+        _packet_join(
+            plan,
+            observations[0],
+            {index: item for index, item in requests.items() if index not in time_ids},
+            websocket,
+        )
+    elif market_packet is not None:
+        market_requests = {
+            index: item for index, item in requests.items() if index not in time_ids
+        }
+        if (
+            not v3
+            or type(market_packet) is not bytes
+            or not market_requests
+            or len(websocket) != 7
+            or len(time_ids) != 1
+            or time_ids[0] not in time_validated
+            or any(
+                item["closed"] is None or item["failed"] or item["truncated"]
+                for item in market_requests.values()
+            )
+        ):
+            raise PublicReceiptError("runtime_v3_market_prefix_incomplete")
+        _packet_join(plan, decode(market_packet, MAX_RAW), market_requests, websocket)
 
 
 def _packet_join(plan, packet, requests, websocket):
     if plan["schema_version"] in {
         "ctcc.public.initial_runtime_plan.v2",
         "ctcc.public.runtime_plan.v2",
+        "ctcc.public.initial_runtime_plan.v3",
+        "ctcc.public.runtime_plan.v3",
     } and (
         packet.get("schema_version") != "ctcc.collected_public_market.v2"
         or any(

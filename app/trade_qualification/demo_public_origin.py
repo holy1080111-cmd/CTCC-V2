@@ -14,6 +14,8 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from app.domain.source_primitives import demo_public_v3_time_headers
+
 
 class DemoPublicOriginError(ValueError):
     """Fixed local route-policy failure; never contains remote data."""
@@ -287,3 +289,69 @@ def build_demo_public_ws_endpoint(route: ReviewedDemoPublicRoute) -> str:
     endpoint = route.ws_origin
     validate_demo_public_ws(route, endpoint, route.ws_hostname)
     return endpoint
+
+
+def build_demo_public_time_request_v3(
+    route: ReviewedDemoPublicRoute, role: str
+) -> httpx.Request:
+    """Construct one policy-exact public time GET; this grants no IO authority."""
+    _checked_route(route)
+    headers = demo_public_v3_time_headers(route.registration_region, role)
+    request = httpx.Request(
+        "GET",
+        route.rest_origin + "/api/v5/public/time",
+        headers=headers,
+        extensions={"timeout": httpx.Timeout(2).as_dict()},
+    )
+    validate_demo_public_time_request_v3(route, role, request)
+    return request
+
+
+def validate_demo_public_time_request_v3(
+    route: ReviewedDemoPublicRoute, role: str, request: httpx.Request
+) -> None:
+    """Keep the time role separate from all V2 instrument-scoped routes."""
+    _checked_route(route)
+    expected = demo_public_v3_time_headers(route.registration_region, role)
+    if type(request) is not httpx.Request:
+        raise DemoPublicOriginError("demo_public_time_request_invalid")
+    try:
+        body = request.content
+    except httpx.RequestNotRead:
+        raise DemoPublicOriginError("demo_public_time_request_invalid") from None
+    header_items = tuple(
+        (key.lower(), value) for key, value in request.headers.multi_items()
+    )
+    headers = dict(header_items)
+    wanted = {key.lower(): value for key, value in expected.items()}
+    wanted["host"] = route.rest_hostname
+    if (
+        request.method != "GET"
+        or request.url.scheme != "https"
+        or request.url.host != route.rest_hostname
+        or request.url.port not in (None, 443)
+        or request.url.path != "/api/v5/public/time"
+        or request.url.query
+        or request.url.username
+        or request.url.password
+        or body
+        or len(headers) != len(header_items)
+        or headers != wanted
+    ):
+        raise DemoPublicOriginError("demo_public_time_request_invalid")
+
+
+def validate_demo_public_time_response_v3(
+    route: ReviewedDemoPublicRoute,
+    role: str,
+    request: httpx.Request,
+    response: httpx.Response,
+) -> None:
+    validate_demo_public_time_request_v3(route, role, request)
+    if (
+        type(response) is not httpx.Response
+        or response.status_code != 200
+        or response.url != request.url
+        or response.history
+    ):
+        raise DemoPublicOriginError("demo_public_time_response_invalid")

@@ -9,7 +9,9 @@ from __future__ import annotations
 import asyncio
 import os
 import ssl
+from dataclasses import dataclass
 from threading import get_ident
+from typing import Literal
 from weakref import WeakKeyDictionary
 
 import httpcore
@@ -54,6 +56,17 @@ _ISSUER = object()
 _SOURCES = WeakKeyDictionary()
 _RESULTS = WeakKeyDictionary()
 _INITIAL_RESULTS = WeakKeyDictionary()
+_V3_TIME_PHASES = WeakKeyDictionary()
+
+
+@dataclass(frozen=True, slots=True)
+class _V3TimePhase:
+    attempt: object
+    pre_request_id: int
+    pre_validation_head: str
+    market_prefix_head: str | None = None
+    market_packet: object | None = None
+    market_packet_sha256: str | None = None
 
 
 def _reopen_runtime_journal(root):
@@ -126,7 +139,12 @@ def _planned_public_route(plan):
     if (
         type(plan) is not dict
         or plan.get("schema_version")
-        not in {"ctcc.public.runtime_plan.v2", "ctcc.public.initial_runtime_plan.v2"}
+        not in {
+            "ctcc.public.runtime_plan.v2",
+            "ctcc.public.initial_runtime_plan.v2",
+            "ctcc.public.runtime_plan.v3",
+            "ctcc.public.initial_runtime_plan.v3",
+        }
         or "registration_region" not in plan
     ):
         return None
@@ -172,6 +190,8 @@ def _fence_v2_demo_transport(state):
         if plan.get("schema_version") in {
             "ctcc.public.runtime_plan.v2",
             "ctcc.public.initial_runtime_plan.v2",
+            "ctcc.public.runtime_plan.v3",
+            "ctcc.public.initial_runtime_plan.v3",
         } or any(
             key in plan
             for key in (
@@ -292,8 +312,31 @@ def _check_inputs(source, *, clock, report_id, instrument_id, barrier_completed_
 def _new_owned_client(source, role):
     state = _state(source)
     _fence_v2_demo_transport(state)
-    if role not in ("quote", "candles", "market_aux") or role in state["client_roles"]:
+    v3 = state["plan"].get("schema_version") in {
+        "ctcc.public.initial_runtime_plan.v3",
+        "ctcc.public.runtime_plan.v3",
+    }
+    v3_time = v3 and role in {"time_pre", "time_post"}
+    if (
+        not (role in ("quote", "candles", "market_aux") or v3_time)
+        or role in state["client_roles"]
+    ):
         raise PublicSourceRuntimeError("public_source_client_scope_invalid")
+    if v3:
+        if role == "time_pre":
+            if (
+                _V3_TIME_PHASES.get(source) is not None
+                or state["clients"]
+                or state.get("responses")
+                or state.get("ws_claimed")
+            ):
+                raise PublicSourceRuntimeError("public_v3_time_phase_invalid")
+        elif role == "time_post":
+            _require_v3_post_time_phase(source)
+            # Burn the one-shot post-time capability before client construction.
+            _V3_TIME_PHASES.pop(source, None)
+        else:
+            _require_v3_pre_market_phase(source)
     context = ssl.create_default_context()
     client = httpx.AsyncClient(
         verify=context, trust_env=False, follow_redirects=False, auth=None
@@ -381,6 +424,21 @@ def _request_scope(source, client, request, started):
     _fence_v2_demo_transport(state)
     role, _ = _verified_client(source, client)
     route = _planned_public_route(state["plan"])
+    time_role = role in {"time_pre", "time_post"}
+    if (
+        state["plan"].get("schema_version")
+        in {
+            "ctcc.public.initial_runtime_plan.v3",
+            "ctcc.public.runtime_plan.v3",
+        }
+        and not time_role
+    ):
+        _require_v3_pre_market_phase(source)
+    if time_role and state["plan"].get("schema_version") not in {
+        "ctcc.public.initial_runtime_plan.v3",
+        "ctcc.public.runtime_plan.v3",
+    }:
+        raise PublicSourceRuntimeError("public_request_scope_invalid")
     if (
         type(request) is not httpx.Request
         or request.method != "GET"
@@ -392,9 +450,12 @@ def _request_scope(source, client, request, started):
         raise PublicSourceRuntimeError("public_request_scope_invalid")
     if route is not None:
         try:
-            demo_origin.validate_demo_public_request(
-                route, role, request, expected_instrument_id=state["instrument_id"]
-            )
+            if time_role:
+                demo_origin.validate_demo_public_time_request_v3(route, role, request)
+            else:
+                demo_origin.validate_demo_public_request(
+                    route, role, request, expected_instrument_id=state["instrument_id"]
+                )
         except demo_origin.DemoPublicOriginError:
             raise PublicSourceRuntimeError("public_request_scope_invalid") from None
     allowed_paths = {
@@ -402,16 +463,18 @@ def _request_scope(source, client, request, started):
         "candles": {candles.ENDPOINT},
         "market_aux": {p for _, p in aux.ENDPOINTS},
     }
+    if time_role:
+        allowed_paths[role] = {"/api/v5/public/time"}
     pairs = tuple(request.url.params.multi_items())
     query = dict(pairs)
     if (
         request.url.path not in allowed_paths[role]
         or len(query) != len(pairs)
-        or query.get("instId") != state["instrument_id"]
+        or (bool(query) if time_role else query.get("instId") != state["instrument_id"])
         or started != utc_from_ns(state["last"]["utc_ns"])
     ):
         raise PublicSourceRuntimeError("public_request_scope_invalid")
-    expected = {"instId": state["instrument_id"]}
+    expected = {} if time_role else {"instId": state["instrument_id"]}
     if role == "quote" and request.url.path.endswith("/mark-price"):
         expected["instType"] = "SWAP"
     elif role == "market_aux":
@@ -463,6 +526,9 @@ def _request_scope(source, client, request, started):
             sorted((name.lower(), value) for name, value in request.headers.items())
         )
     _event(source, "request", metadata)
+    if time_role:
+        state.setdefault("time_started", {})[role] = state["last"]
+        state.setdefault("time_request_ids", {})[role] = index
     return index
 
 
@@ -520,6 +586,8 @@ async def _fetch_http(source, client, request, started, policy):
                     "truncated": truncated,
                 },
             )
+            if role in {"time_pre", "time_post"} and receipt_stamp is not None:
+                state.setdefault("time_headers", {})[role] = receipt_stamp
             if clock_error is not None:
                 raise clock_error
             if (
@@ -532,13 +600,18 @@ async def _fetch_http(source, client, request, started, policy):
                 rejection = rejection or "public_response_rejected"
             if route is not None:
                 try:
-                    demo_origin.validate_demo_public_response(
-                        route,
-                        role,
-                        request,
-                        response,
-                        expected_instrument_id=state["instrument_id"],
-                    )
+                    if role in {"time_pre", "time_post"}:
+                        demo_origin.validate_demo_public_time_response_v3(
+                            route, role, request, response
+                        )
+                    else:
+                        demo_origin.validate_demo_public_response(
+                            route,
+                            role,
+                            request,
+                            response,
+                            expected_instrument_id=state["instrument_id"],
+                        )
                 except demo_origin.DemoPublicOriginError:
                     rejection = rejection or "public_response_rejected"
             if (
@@ -599,6 +672,8 @@ async def _fetch_http(source, client, request, started, policy):
                     "body_sha256": sha(bytes(body)),
                 },
             )
+            if role in {"time_pre", "time_post"}:
+                state.setdefault("time_body_complete", {})[role] = state["last"]
             if rejection is not None:
                 raise PublicSourceRuntimeError(rejection)
             if length is not None and len(body) != int(length):
@@ -621,22 +696,217 @@ async def _fetch_http(source, client, request, started, policy):
     _event(
         source, "response_closed", {"id": index, "completed": _state(source)["last"]}
     )
-    _state(source)["responses"].append(
-        (
-            request.url.path,
-            tuple(request.url.params.multi_items()),
-            bytes(body),
-            started,
-            received,
-            completed,
-        )
+    state = _state(source)
+    record = (
+        request.url.path,
+        tuple(request.url.params.multi_items()),
+        bytes(body),
+        started,
+        received,
+        completed,
     )
+    if role in {"time_pre", "time_post"}:
+        state.setdefault("time_http", {})[role] = {
+            "raw": bytes(body),
+            "request_start": state["time_started"][role],
+            "headers_received": state["time_headers"][role],
+            "body_complete": state["time_body_complete"][role],
+            "response_closed": state["last"],
+        }
+        state.setdefault("time_responses", []).append(record)
+    else:
+        state["responses"].append(record)
     return bytes(body), received, completed
+
+
+def _v3_time_prefix(source, phase, *, market_packet=None):
+    """Bind a private phase to this attempt and its original raw validation."""
+    state = _state(source)
+    if (
+        type(phase) is not _V3TimePhase
+        or phase.attempt is not state.get("attempt")
+        or state.get("time_request_ids", {}).get("time_pre") != phase.pre_request_id
+        or set(state.get("time_http", {})) != {"time_pre"}
+    ):
+        raise PublicSourceRuntimeError("public_v3_time_phase_invalid")
+    head, events = _runtime_journal._replay_open_v3_prefix(
+        phase.attempt, market_packet=market_packet
+    )
+    validated = [
+        event
+        for event in events
+        if event["kind"] == "time_validated"
+        and event["metadata"].get("id") == phase.pre_request_id
+    ]
+    if (
+        len(validated) != 1
+        or sha(canonical(validated[0])) != phase.pre_validation_head
+        or any(
+            event["kind"] == "request" and event["metadata"].get("role") == "time_post"
+            for event in events
+        )
+    ):
+        raise PublicSourceRuntimeError("public_v3_time_phase_invalid")
+    return head, events
+
+
+def _complete_owned_public_market_v3(source, packet, *, _owner):
+    """Owner-only market completion; callers cannot set a mutable phase flag."""
+    if _owner is not _ISSUER:
+        raise PublicSourceRuntimeError("public_v3_market_owner_required")
+    state = _state(source)
+    _fence_v2_demo_transport(state)
+    phase = _V3_TIME_PHASES.get(source)
+    if phase is None or phase.market_prefix_head is not None:
+        raise PublicSourceRuntimeError("public_v3_time_phase_invalid")
+    canonical_packet = public_v2._parts(packet)[0]
+    _check_packet_binding_v2(
+        state,
+        canonical_packet,
+        expected_roles=("quote", "candles", "market_aux", "time_pre"),
+    )
+    head, events = _v3_time_prefix(
+        source, phase, market_packet=canonical_packet.packet_json
+    )
+    if len(
+        [event for event in events if event["kind"].startswith("ws_")]
+    ) != 7 or not any(
+        event["kind"] == "request" and event["metadata"].get("role") == "candles"
+        for event in events
+    ):
+        raise PublicSourceRuntimeError("public_v3_market_phase_incomplete")
+    _V3_TIME_PHASES[source] = _V3TimePhase(
+        attempt=phase.attempt,
+        pre_request_id=phase.pre_request_id,
+        pre_validation_head=phase.pre_validation_head,
+        market_prefix_head=head,
+        market_packet=canonical_packet,
+        market_packet_sha256=sha(canonical_packet.packet_json),
+    )
+    return canonical_packet
+
+
+def _require_v3_pre_market_phase(source):
+    phase = _V3_TIME_PHASES.get(source)
+    if phase is None or phase.market_prefix_head is not None:
+        raise PublicSourceRuntimeError("public_v3_time_phase_invalid")
+    _v3_time_prefix(source, phase)
+
+
+def _require_v3_post_time_phase(source):
+    state = _state(source)
+    phase = _V3_TIME_PHASES.get(source)
+    if (
+        phase is None
+        or phase.market_prefix_head is None
+        or phase.market_packet is None
+        or sha(phase.market_packet.packet_json) != phase.market_packet_sha256
+    ):
+        raise PublicSourceRuntimeError("public_v3_time_phase_invalid")
+    head, _ = _v3_time_prefix(
+        source, phase, market_packet=phase.market_packet.packet_json
+    )
+    if head != phase.market_prefix_head:
+        raise PublicSourceRuntimeError("public_v3_time_phase_changed")
+    _check_packet_binding_v2(
+        state,
+        phase.market_packet,
+        expected_roles=("quote", "candles", "market_aux", "time_pre"),
+    )
+    return phase
+
+
+async def _fetch_owned_public_time_v3(source, role):
+    """One private time role; a V3 issuer must still supply trusted origin proof."""
+    state = _state(source)
+    _fence_v2_demo_transport(state)
+    if (
+        state["plan"].get("schema_version")
+        not in {"ctcc.public.initial_runtime_plan.v3", "ctcc.public.runtime_plan.v3"}
+        or role not in {"time_pre", "time_post"}
+        or role in state.get("time_http", {})
+        or role in state.get("client_roles", set())
+    ):
+        raise PublicSourceRuntimeError("public_v3_time_role_invalid")
+    if role == "time_pre":
+        if (
+            _V3_TIME_PHASES.get(source) is not None
+            or state.get("clients")
+            or state.get("responses")
+            or state.get("ws_records")
+            or state.get("ws_claimed")
+        ):
+            raise PublicSourceRuntimeError("public_v3_time_phase_invalid")
+    else:
+        _require_v3_post_time_phase(source)
+    route = _planned_public_route(state["plan"])
+    if route is None:
+        raise PublicSourceRuntimeError("public_v3_time_route_invalid")
+    client = _new_owned_client(source, role)
+    cancelled = False
+    validation_head = None
+    try:
+        started = _sample(source)
+        request = demo_origin.build_demo_public_time_request_v3(route, role)
+        raw, _, _ = await _fetch_http(
+            source,
+            client,
+            request,
+            started,
+            _PublicTimePolicyV3(),
+        )
+        observation = _state(source)["time_http"][role]
+        server_ms, canonical_sha256 = _runtime_journal._public_system_time(raw)
+        _sample(source)
+        validated = _state(source)["last"]
+        if (
+            not observation["request_start"]["utc_ns"]
+            <= int(server_ms) * 1_000_000
+            <= observation["headers_received"]["utc_ns"]
+            or validated["monotonic_ns"] - observation["request_start"]["monotonic_ns"]
+            > 5_000_000_000
+        ):
+            raise PublicSourceRuntimeError("public_v3_time_interval_invalid")
+        validation_head = _event(
+            source,
+            "time_validated",
+            {
+                "id": _state(source)["time_request_ids"][role],
+                "validated": validated,
+                "server_time_ms": server_ms,
+                "canonical_body_sha256": canonical_sha256,
+            },
+        )
+    except asyncio.CancelledError:
+        cancelled = True
+        raise
+    finally:
+        await public._close_client(client, 1, pending_cancel=cancelled)
+    if role == "time_pre":
+        phase = _V3TimePhase(
+            attempt=state["attempt"],
+            pre_request_id=state["time_request_ids"]["time_pre"],
+            pre_validation_head=validation_head,
+        )
+        _v3_time_prefix(source, phase)
+        _V3_TIME_PHASES[source] = phase
+    return server_ms
+
+
+@dataclass(frozen=True, slots=True)
+class _PublicTimePolicyV3:
+    request_timeout_seconds: Literal[2] = 2
+    max_response_bytes: Literal[4096] = 4096
 
 
 def _ws_options(source, started):
     state = _state(source)
     _fence_v2_demo_transport(state)
+    if state["plan"].get("schema_version") in {
+        "ctcc.public.initial_runtime_plan.v3",
+        "ctcc.public.runtime_plan.v3",
+    }:
+        _require_v3_pre_market_phase(source)
     route = _planned_public_route(state["plan"])
     endpoint = (
         ws.PUBLIC_WS_URL
@@ -736,7 +1006,9 @@ def _check_packet_binding(state, packet):
     _check_raw_inventory(state, observations, packet.ws)
 
 
-def _check_packet_binding_v2(state, packet):
+def _check_packet_binding_v2(
+    state, packet, *, expected_roles=("quote", "candles", "market_aux")
+):
     _, (_, _quote, provenance, candle_packet, market_aux, reference) = public_v2._parts(
         packet
     )
@@ -748,10 +1020,13 @@ def _check_packet_binding_v2(state, packet):
             *market_aux.provenance,
         ),
         reference,
+        expected_roles=expected_roles,
     )
 
 
-def _check_raw_inventory(state, observations, reference):
+def _check_raw_inventory(
+    state, observations, reference, *, expected_roles=("quote", "candles", "market_aux")
+):
     actual = list(state["responses"])
     for item in observations:
         endpoint = getattr(item, "endpoint", candles.ENDPOINT)
@@ -775,7 +1050,8 @@ def _check_raw_inventory(state, observations, reference):
         actual.pop(matches[0])
     if (
         actual
-        or len(state["clients"]) != 3
+        or sorted(role for role, _ in state["clients"].values())
+        != sorted(expected_roles)
         or any(not client.is_closed for client in state["clients"])
     ):
         raise PublicSourceRuntimeError("public_packet_inventory_mismatch")
@@ -1001,6 +1277,7 @@ async def _capture_owned(scope, policy, root, *, stage, _version=1):
         raise PublicSourceRuntimeError("public_source_capture_denied") from None
     finally:
         _SOURCES.pop(source, None)
+        _V3_TIME_PHASES.pop(source, None)
 
 
 def _consume_public_capture(value, invocation):
