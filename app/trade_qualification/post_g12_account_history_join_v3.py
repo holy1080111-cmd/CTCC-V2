@@ -26,6 +26,8 @@ from app.domain.source_primitives import (
 from app.trade_qualification import account_capture
 from app.trade_qualification import account_current_history_join as account_join
 from app.trade_qualification import account_current_source_verifier as current_source
+from app.trade_qualification import account_native_proof as native_proof
+from app.trade_qualification import account_native_proof_storage as native_storage
 from app.trade_qualification import account_native_runtime as account_native
 from app.trade_qualification import account_observation_index as observed_account
 from app.trade_qualification import original_source_coordinator_v2 as original_source
@@ -74,6 +76,9 @@ _PIN_FIELDS = (
     "public_packet_sha256",
     "public_journal_sha256",
     "native_account_join_sha256",
+    "native_account_proof_sha256",
+    "native_account_readback_sha256",
+    "history_db_chain_sha256",
     "history_reference_sha256",
     "current_reference_sha256",
     "public_only_recheck_sha256",
@@ -213,6 +218,11 @@ class PostG12OwnedPublicAccountHistoryDiagnosticV3:
                 or (account_first is None)
                 != (value["native_account_join_sha256"] is None)
                 or (account_first is None)
+                != (value["native_account_proof_sha256"] is None)
+                or (account_first is None)
+                != (value["native_account_readback_sha256"] is None)
+                or (account_first is None) != (value["history_db_chain_sha256"] is None)
+                or (account_first is None)
                 != (value["history_reference_sha256"] is None)
                 or (account_first is None)
                 != (value["current_reference_sha256"] is None)
@@ -331,6 +341,99 @@ def _stamp_time(value):
     return utc_from_ns(value["utc_ns"])
 
 
+def _account_companion_pins(
+    root, *, current_reference, scope_sha256, first_http_at, root_identity=None
+):
+    """Read the sealed V7 companion under its native directory handle."""
+    try:
+        identity = native_storage._root_identity(root)
+        if root_identity is not None and identity != root_identity:
+            raise ValueError
+        reference = observed_account.reference_document(
+            observed_account.CaptureReference(**current_reference)
+        )
+        if reference != current_reference or type(first_http_at) is not datetime:
+            raise ValueError
+        with native_storage._root_context(root) as directory:
+            if native_storage._root_identity(directory.path) != identity or set(
+                directory.names()
+            ) != {*native_proof.FILES, "proof.json", "readback.json"}:
+                raise ValueError
+            proof_raw = directory.read("proof.json", native_proof.MAX_PROOF)
+            readback_raw = directory.read("readback.json", native_storage.MAX_PART)
+            proof_doc = native_proof._canonical_document(proof_raw)
+            readback = native_proof._canonical_document(
+                readback_raw, native_storage.MAX_PART
+            )
+            file_hashes = {
+                name: sha(directory.read(name, native_storage.MAX_PART))
+                for name in native_proof.FILES
+            }
+            if (
+                type(proof_doc) is not dict
+                or proof_doc.get("schema_version") != native_proof.V7_FLAT_SCHEMA
+                or proof_doc.get("policy_sha256") != native_proof.V7_FLAT_POLICY_SHA256
+                or proof_doc.get("source_reference") != reference
+                or proof_doc.get("scope_sha256") != scope_sha256
+                or proof_doc.get("clock_file_sha256") != file_hashes
+                or proof_doc.get("historical_hwm_clock_verified") is not False
+                or proof_doc.get("account_complete") is not False
+                or proof_doc.get("execution_authority") is not False
+                or proof_doc.get("admission") != "DENY"
+                or type(readback) is not dict
+                or set(readback)
+                != {
+                    "schema_version",
+                    "proof_sha256",
+                    "clock_file_sha256",
+                    "root_device",
+                    "root_inode",
+                    "readback_complete",
+                    "execution_authority",
+                }
+                or readback["schema_version"] != native_storage.V7_FLAT_READBACK_SCHEMA
+                or readback["proof_sha256"] != sha(proof_raw)
+                or readback["clock_file_sha256"] != file_hashes
+                or type(readback["root_device"]) is not int
+                or type(readback["root_inode"]) is not int
+                or (readback["root_device"], readback["root_inode"]) != identity
+                or readback["execution_authority"] is not False
+            ):
+                raise ValueError
+            persist_at = _stamp_time(proof_doc["proof_persist_start"])
+            complete_at = _stamp_time(readback["readback_complete"])
+            validate_stamps(
+                (proof_doc["proof_persist_start"], readback["readback_complete"])
+            )
+            if (
+                not first_http_at
+                < persist_at
+                < complete_at
+                < _utc(proof_doc["expires_at"])
+            ):
+                raise ValueError
+            if (
+                directory.read("proof.json", native_proof.MAX_PROOF) != proof_raw
+                or directory.read("readback.json", native_storage.MAX_PART)
+                != readback_raw
+                or any(
+                    sha(directory.read(name, native_storage.MAX_PART))
+                    != file_hashes[name]
+                    for name in native_proof.FILES
+                )
+                or set(directory.names())
+                != {*native_proof.FILES, "proof.json", "readback.json"}
+            ):
+                raise ValueError
+        if native_storage._root_identity(root) != identity:
+            raise ValueError
+        return sha(proof_raw), sha(readback_raw), reference
+    except Exception:  # noqa: BLE001 -- no private source/path in V3 receipt
+        raise PostG12AccountHistoryJoinError(
+            "post_g12_history_account_companion_invalid"
+        ) from None
+
+
 async def publish_capture_public_account_history_v3(
     evidence_root,
     public_root,
@@ -437,6 +540,9 @@ async def publish_capture_public_account_history_v3(
         "public_packet_sha256": None,
         "public_journal_sha256": None,
         "native_account_join_sha256": None,
+        "native_account_proof_sha256": None,
+        "native_account_readback_sha256": None,
+        "history_db_chain_sha256": None,
         "history_reference_sha256": None,
         "current_reference_sha256": None,
         "public_only_recheck_sha256": None,
@@ -585,6 +691,8 @@ async def publish_capture_public_account_history_v3(
             "admission",
             "join_policy_sha256",
             "current_source_policy_sha256",
+            "native_current_proof_sha256",
+            "native_current_proof_readback_sha256",
             "pre_http_history_source_reference",
             "pre_http_history_db_chain_sha256",
             "pre_http_history_query_receipt_sha256",
@@ -624,6 +732,8 @@ async def publish_capture_public_account_history_v3(
                     "locked_history_join_receipt_sha256",
                     "pre_http_history_db_chain_sha256",
                     "pre_http_history_query_receipt_sha256",
+                    "native_current_proof_sha256",
+                    "native_current_proof_readback_sha256",
                 )
             )
         ):
@@ -717,7 +827,25 @@ async def publish_capture_public_account_history_v3(
             replay = public_recheck.verify_post_g12_public_recheck_v2(
                 replay, directory, **replay_inputs
             )
+        proof_pin, readback_pin, _ = _account_companion_pins(
+            account_root,
+            current_reference=current_ref,
+            scope_sha256=account_scope_pin,
+            first_http_at=account_first,
+        )
+        if (
+            proof_pin != account_doc["native_current_proof_sha256"]
+            or readback_pin != account_doc["native_current_proof_readback_sha256"]
+        ):
+            raise PostG12AccountHistoryJoinError(
+                "post_g12_history_account_companion_changed"
+            )
         pins["native_account_join_sha256"] = account.receipt_sha256
+        pins["native_account_proof_sha256"] = proof_pin
+        pins["native_account_readback_sha256"] = readback_pin
+        pins["history_db_chain_sha256"] = account_doc[
+            "pre_http_history_db_chain_sha256"
+        ]
         pins["history_reference_sha256"] = sha(canonical(history_ref))
         pins["current_reference_sha256"] = sha(canonical(current_ref))
         prior._publish_public_only_recheck_receipt_v2(
@@ -749,6 +877,9 @@ async def publish_capture_public_account_history_v3(
         if not recheck_persisted:
             history_start = history_end = history_verified = account_first = None
             pins["native_account_join_sha256"] = None
+            pins["native_account_proof_sha256"] = None
+            pins["native_account_readback_sha256"] = None
+            pins["history_db_chain_sha256"] = None
             pins["history_reference_sha256"] = None
             pins["current_reference_sha256"] = None
         return finish()
@@ -761,6 +892,9 @@ async def publish_capture_public_account_history_v3(
         if not recheck_persisted:
             history_start = history_end = history_verified = account_first = None
             pins["native_account_join_sha256"] = None
+            pins["native_account_proof_sha256"] = None
+            pins["native_account_readback_sha256"] = None
+            pins["history_db_chain_sha256"] = None
             pins["history_reference_sha256"] = None
             pins["current_reference_sha256"] = None
         return finish()

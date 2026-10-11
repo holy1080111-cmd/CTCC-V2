@@ -426,7 +426,10 @@ async def test_policy_epoch_change_preserves_persisted_prefix_and_rejects_append
             await repo.append(scope, reference, window, expected_revision=1)
     assert len(await repo._rows(scope)) == 1
     assert await repo.read(scope) == (first,)
-    assert await repo.journal.read_chain(scope, reference.capture_id) == original_chain
+    after = await repo.journal.read_chain(scope, reference.capture_id)
+    assert [(item.event, item.db_recorded_at) for item in after] == [
+        (item.event, item.db_recorded_at) for item in original_chain
+    ]
 
 
 @pytest.mark.parametrize("operation", ["update", "delete", "truncate"])

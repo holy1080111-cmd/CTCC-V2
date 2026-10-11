@@ -90,6 +90,8 @@ def _source_inputs_fixture():
         ("uncommitted_history", "account_unavailable"),
         ("history_replay_after_http", "account_unavailable"),
         ("missing_tail_blocker", "account_unavailable"),
+        ("companion_changed_after_native", "account_unavailable"),
+        ("companion_readback_changed_after_native", "account_unavailable"),
         ("recheck_replay_failure", "account_unavailable"),
         ("stale_after_join", "account_unavailable"),
     ],
@@ -186,6 +188,8 @@ async def test_v3_g12_public_then_committed_history_and_fresh_current(
                 {
                     "schema_version": "ctcc.native_current_history_join_diagnostic.v3",
                     "native_current_receipt_sha256": "e" * 64,
+                    "native_current_proof_sha256": "1" * 64,
+                    "native_current_proof_readback_sha256": "2" * 64,
                     "locked_history_join_receipt_sha256": "f" * 64,
                     "join_policy_sha256": account_join.V7_ORDERED_POLICY_SHA256,
                     "current_source_policy_sha256": current_source.V7_POLICY_SHA256,
@@ -224,6 +228,17 @@ async def test_v3_g12_public_then_committed_history_and_fresh_current(
 
     monkeypatch.setattr(
         account_native, "capture_native_current_history_join", account_source
+    )
+    monkeypatch.setattr(
+        joined,
+        "_account_companion_pins",
+        lambda *_args, **_kwargs: (
+            "3" * 64 if fault == "companion_changed_after_native" else "1" * 64,
+            "3" * 64
+            if fault == "companion_readback_changed_after_native"
+            else "2" * 64,
+            {},
+        ),
     )
     if fault == "recheck_replay_failure":
 
@@ -279,12 +294,18 @@ async def test_v3_g12_public_then_committed_history_and_fresh_current(
         )
         assert receipt["history_reference_sha256"] is not None
         assert receipt["current_reference_sha256"] is not None
+        assert receipt["native_account_proof_sha256"] == "1" * 64
+        assert receipt["native_account_readback_sha256"] == "2" * 64
+        assert receipt["history_db_chain_sha256"] == "8" * 64
         assert receipt["public_only_recheck_receipt_persisted"] is True
         assert (tmp_path / "recheck" / "receipt.json").exists()
     else:
         assert receipt["native_account_join_sha256"] is None
         assert receipt["history_reference_sha256"] is None
         assert receipt["current_reference_sha256"] is None
+        assert receipt["native_account_proof_sha256"] is None
+        assert receipt["native_account_readback_sha256"] is None
+        assert receipt["history_db_chain_sha256"] is None
         assert receipt["public_only_recheck_receipt_persisted"] is False
         assert not (tmp_path / "recheck" / "receipt.json").exists()
     assert receipt["admission"] == "DENY"

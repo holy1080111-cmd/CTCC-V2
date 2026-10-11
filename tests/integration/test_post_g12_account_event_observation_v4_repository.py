@@ -1,6 +1,6 @@
-"""Isolated PostgreSQL UID-lock read after a synthetic V3 publication.
+"""Isolated PostgreSQL DB0017 read after synthetic V3/B1 readback.
 
-Requires an explicit migrated DATABASE_URL. The V3 publisher is synthetic;
+Requires an explicit migrated DATABASE_URL. V3 and B1 readback are synthetic;
 the event observation is a real, read-only DB0017 transaction. No OKX IO.
 """
 
@@ -10,7 +10,11 @@ from uuid import uuid4
 
 import pytest
 
+from app.database.repositories.account_capture_journal import (
+    LockedAccountSourceJoinReadback,
+)
 from app.database.repositories.qualification_ledger import QualificationLedgerRepository
+from app.domain.source_primitives import canonical
 from app.trade_qualification import account_capture
 from app.trade_qualification import post_g12_account_event_observation_v4 as bridge
 from app.trade_qualification import post_g12_account_history_join_v3 as joined
@@ -20,8 +24,10 @@ from app.trade_qualification.reservations import LedgerScope
 from tests.integration.test_qualification_ledger_repository import (
     database as database,  # noqa: PLC0414 -- isolated PostgreSQL fixture
 )
+from tests.unit.research import test_post_g12_account_event_observation_v4 as unit_v4
 from tests.unit.research import test_post_g12_account_history_join_v3 as source_fixture
 from tests.unit.research.test_post_g12_account_event_observation_v4 import (
+    _locked_account_receipt,
     _publish_synthetic_artifacts,
     _receipt,
 )
@@ -82,8 +88,20 @@ def unique_uid_source():
     return _source_for_unique_uid()
 
 
+@pytest.fixture(scope="module")
+def public_source_inputs_fixture():
+    return source_fixture._source_inputs_fixture.__wrapped__()
+
+
+@pytest.fixture(scope="module")
+async def public_journal_fixture(public_source_inputs_fixture, tmp_path_factory):
+    return await unit_v4.captured_public_journal.__wrapped__(
+        public_source_inputs_fixture, tmp_path_factory
+    )
+
+
 async def test_v4_real_uid_lock_observation_waits_after_fresh_v3_receipt(
-    database, tmp_path, monkeypatch, unique_uid_source
+    database, tmp_path, monkeypatch, unique_uid_source, public_journal_fixture
 ):
     source, values, run, account_session, scope = unique_uid_source
     expected = bridge._original_binding(
@@ -96,14 +114,24 @@ async def test_v4_real_uid_lock_observation_waits_after_fresh_v3_receipt(
     join_root.mkdir()
     (tmp_path / "g12").mkdir()
     (tmp_path / "recheck").mkdir()
+    (tmp_path / "public").mkdir()
+    (tmp_path / "account").mkdir()
     event_root = tmp_path / "event"
     event_root.mkdir()
     published = asyncio.Event()
+    synthetic_receipt = []
 
     async def synthetic_v3(*args, **kwargs):
         assert args[4] == join_root
         assert kwargs["account_session"] is account_session
-        receipt = _publish_synthetic_artifacts(tmp_path, expected, _receipt(expected))
+        receipt = _publish_synthetic_artifacts(
+            tmp_path,
+            expected,
+            _receipt(expected),
+            public_journal_fixture,
+            account_session,
+        )
+        synthetic_receipt.append(receipt)
         account_session._used = True
         identity = joined.source_runtime._native_recheck_root_identity(join_root)
         joined._publish_receipt(join_root, receipt, expected_root_identity=identity)
@@ -112,6 +140,34 @@ async def test_v4_real_uid_lock_observation_waits_after_fresh_v3_receipt(
 
     monkeypatch.setattr(
         joined, "publish_capture_public_account_history_v3", synthetic_v3
+    )
+
+    class SyntheticAccountRepository:
+        def __init__(self, factory, *, clock):
+            assert factory is database[1] and clock is ledger.clock
+
+        async def read_locked_current_history_join(
+            self,
+            read_scope,
+            *,
+            history_capture_id,
+            current_capture_id,
+            expected_policy_sha256,
+        ):
+            assert read_scope == scope
+            assert history_capture_id == HISTORY_ID
+            assert current_capture_id == source_fixture.CURRENT_ID
+            assert (
+                expected_policy_sha256 == bridge.account_join.V7_ORDERED_POLICY_SHA256
+            )
+            return LockedAccountSourceJoinReadback(
+                canonical(
+                    _locked_account_receipt(tmp_path, expected, synthetic_receipt[0])
+                )
+            )
+
+    monkeypatch.setattr(
+        bridge, "AccountCaptureJournalRepository", SyntheticAccountRepository
     )
     async with database[1]() as writer, writer.begin():
         await ledger._locked(writer, scope)
@@ -128,7 +184,7 @@ async def test_v4_real_uid_lock_observation_waits_after_fresh_v3_receipt(
                 original_inputs=values,
                 market_policy=object(),
                 account_session=account_session,
-                session_factory=object(),
+                session_factory=database[1],
                 history_capture_id=HISTORY_ID,
                 ledger=ledger,
                 scope=scope,

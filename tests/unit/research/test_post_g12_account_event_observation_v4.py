@@ -10,9 +10,16 @@ from decimal import Decimal
 import pytest
 from PIL import Image
 
+from app.database.repositories.account_capture_journal import (
+    LockedAccountSourceJoinReadback,
+)
 from app.database.repositories.qualification_ledger import QualificationLedgerRepository
 from app.domain.source_primitives import canonical, decode, sha
 from app.trade_evidence import storage as evidence_storage
+from app.trade_qualification import account_current_history_join as account_join
+from app.trade_qualification import account_current_source_verifier as current_source
+from app.trade_qualification import account_native_proof as native_proof
+from app.trade_qualification import account_native_proof_storage as native_storage
 from app.trade_qualification import post_g12_account_event_observation_v4 as bridge
 from app.trade_qualification import post_g12_account_history_join_v3 as joined
 from app.trade_qualification import post_g12_recheck_v2 as public_recheck
@@ -90,7 +97,9 @@ def _receipt(expected, *, changed=None):
     return joined.PostG12OwnedPublicAccountHistoryDiagnosticV3(canonical(value))
 
 
-def _publish_synthetic_artifacts(root, expected, receipt, public_journal):
+def _publish_synthetic_artifacts(
+    root, expected, receipt, public_journal, account_session
+):
     """Actual G12, public journal and sidecar bytes for the synthetic V3 double."""
     value = decode(receipt.receipt_json)
     public_result, public_files = public_journal
@@ -163,7 +172,164 @@ def _publish_synthetic_artifacts(root, expected, receipt, public_journal):
     public_recheck.PostG12PublicRecheckReceiptV2(recheck_raw)
     (root / "recheck" / "receipt.json").write_bytes(recheck_raw)
     value["public_only_recheck_sha256"] = sha(recheck_raw)
+    account_directory = root / "account"
+    account_directory.mkdir(exist_ok=True)
+    binding = sha(account_session._plan.session_binding_id.encode("ascii"))
+    history_reference = {
+        "capture_id": HISTORY_ID,
+        "head_sha256": "2" * 64,
+        "plan_sha256": "3" * 64,
+        "packet_sha256": "4" * 64,
+        "session_binding_sha256": binding,
+    }
+    current_reference = {
+        "capture_id": source_fixture.CURRENT_ID,
+        "head_sha256": "5" * 64,
+        "plan_sha256": expected["account_plan_sha256"],
+        "packet_sha256": "6" * 64,
+        "session_binding_sha256": binding,
+    }
+    first_http = joined._utc(value["account_session_first_http_started_at"])
+    persist = first_http + timedelta(milliseconds=10)
+    complete = persist + timedelta(milliseconds=10)
+    parts = {name: b"{}" for name in native_proof.FILES}
+    proof_doc = {
+        "schema_version": native_proof.V7_FLAT_SCHEMA,
+        "policy_sha256": native_proof.V7_FLAT_POLICY_SHA256,
+        "scope_sha256": expected["account_scope_sha256"],
+        "source_reference": current_reference,
+        "clock_file_sha256": {name: sha(raw) for name, raw in parts.items()},
+        "proof_persist_start": {
+            "utc_ns": int(persist.timestamp() * 1_000_000_000),
+            "monotonic_ns": 100_000_000,
+        },
+        "expires_at": (expected["deadline"] + timedelta(seconds=10)).isoformat(),
+        "historical_hwm_clock_verified": False,
+        "account_complete": False,
+        "execution_authority": False,
+        "admission": "DENY",
+    }
+    proof_raw = canonical(proof_doc)
+    identity = native_storage._root_identity(account_directory)
+    readback_raw = canonical(
+        {
+            "schema_version": native_storage.V7_FLAT_READBACK_SCHEMA,
+            "proof_sha256": sha(proof_raw),
+            "clock_file_sha256": {name: sha(raw) for name, raw in parts.items()},
+            "root_device": identity[0],
+            "root_inode": identity[1],
+            "readback_complete": {
+                "utc_ns": int(complete.timestamp() * 1_000_000_000),
+                "monotonic_ns": 110_000_000,
+            },
+            "execution_authority": False,
+        }
+    )
+    for name, raw in (
+        *parts.items(),
+        ("proof.json", proof_raw),
+        ("readback.json", readback_raw),
+    ):
+        (account_directory / name).write_bytes(raw)
+    value["native_account_proof_sha256"] = sha(proof_raw)
+    value["native_account_readback_sha256"] = sha(readback_raw)
+    value["history_db_chain_sha256"] = "8" * 64
+    value["history_reference_sha256"] = sha(canonical(history_reference))
+    value["current_reference_sha256"] = sha(canonical(current_reference))
     return joined.PostG12OwnedPublicAccountHistoryDiagnosticV3(canonical(value))
+
+
+def _locked_account_receipt(root, expected, receipt):
+    value = decode(receipt.receipt_json)
+    current_reference = decode((root / "account" / "proof.json").read_bytes())[
+        "source_reference"
+    ]
+    history_reference = {
+        **current_reference,
+        "capture_id": HISTORY_ID,
+        "head_sha256": "2" * 64,
+        "plan_sha256": "3" * 64,
+        "packet_sha256": "4" * 64,
+    }
+    observed = joined._utc(value["observed_at"]) + timedelta(milliseconds=100)
+    received = observed + timedelta(milliseconds=100)
+    return {
+        "schema_version": "ctcc.demo_account_locked_source_join.v4",
+        "join_receipt_sha256": "1" * 64,
+        "history_source_reference": history_reference,
+        "current_source_reference": current_reference,
+        "scope_sha256": expected["account_scope_sha256"],
+        "session_binding_sha256": current_reference["session_binding_sha256"],
+        "recorded_local_checkpoint_sha256": "2" * 64,
+        "db_local_state_sha256": "2" * 64,
+        "db_account_revision": 0,
+        "db_ledger_revision": 0,
+        "db_active_hold_count": 0,
+        "readback_observed_at": observed.isoformat(),
+        "readback_received_at": received.isoformat(),
+        "recorded_pre_lock_blocking_reasons": [
+            "current_local_revision_readback_required",
+            "history_tail_not_atomically_closed",
+        ],
+        "locked_readback_blocking_reasons": ["history_tail_not_atomically_closed"],
+        "local_revision_readback_verified": True,
+        "exchange_atomic_revision_verified": False,
+        "history_tail_closed": False,
+        "snapshot": None,
+        "account_complete": False,
+        "account_revision_published": False,
+        "execution_authority": False,
+        "admission": "DENY",
+        "join_policy_sha256": account_join.V7_ORDERED_POLICY_SHA256,
+        "current_source_policy_sha256": current_source.V7_POLICY_SHA256,
+        "flat_start_permission": False,
+        "history_journal_terminal_db_recorded_at": (
+            joined._utc(value["account_history_readback_started_at"])
+            - timedelta(milliseconds=1)
+        ).isoformat(),
+        "history_original_db_chain_sha256": value["history_db_chain_sha256"],
+        "current_capture_started_at": (
+            joined._utc(value["account_session_first_http_started_at"])
+            + timedelta(milliseconds=1)
+        ).isoformat(),
+        "history_terminal_db_timestamp_before_current_request": True,
+        "history_commit_before_current_request": False,
+    }
+
+
+def test_native_companion_rejects_rehashed_clock_against_original_proof(
+    source_inputs_fixture, captured_public_journal, tmp_path
+):
+    source, values, run = source_inputs_fixture
+    session = _session()
+    scope = LedgerScope(account_id=UID, settlement_currency="USDT")
+    expected = bridge._original_binding(
+        source.market, run, values, session, scope, HISTORY_ID
+    )
+    for name in ("g12", "public", "recheck", "account"):
+        (tmp_path / name).mkdir()
+    receipt = _publish_synthetic_artifacts(
+        tmp_path, expected, _receipt(expected), captured_public_journal, session
+    )
+    record = decode(receipt.receipt_json)
+    account_root = tmp_path / "account"
+    proof_doc = decode((account_root / "proof.json").read_bytes())
+    part_name = native_proof.FILES[0]
+    (account_root / part_name).write_bytes(b"changed")
+    readback_path = account_root / "readback.json"
+    readback = decode(readback_path.read_bytes())
+    readback["clock_file_sha256"][part_name] = sha(b"changed")
+    readback_path.write_bytes(canonical(readback))
+    with pytest.raises(
+        joined.PostG12AccountHistoryJoinError,
+        match="post_g12_history_account_companion_invalid",
+    ):
+        joined._account_companion_pins(
+            account_root,
+            current_reference=proof_doc["source_reference"],
+            scope_sha256=expected["account_scope_sha256"],
+            first_http_at=joined._utc(record["account_session_first_http_started_at"]),
+        )
 
 
 def _observation(scope, key, expected, *, changed=None):
@@ -247,6 +413,17 @@ def _matched(scope, key, expected):
         ("public_raw_changed", "v3_artifact_readback_invalid", 0),
         ("public_summary_missing", "v3_artifact_readback_invalid", 0),
         ("public_root_replaced", "v3_artifact_readback_invalid", 0),
+        ("account_proof_changed", "account_readback_invalid", 0),
+        ("account_readback_changed", "account_readback_invalid", 0),
+        ("account_clock_changed", "account_readback_invalid", 0),
+        ("account_root_replaced", "account_readback_invalid", 0),
+        ("history_chain_changed", "account_readback_invalid", 0),
+        ("history_timestamp_changed", "account_readback_invalid", 0),
+        ("current_chain_changed", "account_readback_invalid", 0),
+        ("current_capture_changed", "account_readback_invalid", 0),
+        ("account_authority_true", "account_readback_invalid", 0),
+        ("account_db_unavailable", "account_readback_invalid", 0),
+        ("account_db_late", "account_readback_invalid", 0),
     ),
 )
 async def test_v4_one_invocation_v3_readback_then_uid_event_only(
@@ -266,12 +443,14 @@ async def test_v4_one_invocation_v3_readback_then_uid_event_only(
     )
     (tmp_path / "g12").mkdir()
     (tmp_path / "public").mkdir()
+    (tmp_path / "account").mkdir()
     (tmp_path / "recheck").mkdir()
     (tmp_path / "join").mkdir()
     (tmp_path / "event").mkdir()
     ledger = QualificationLedgerRepository(None, clock=lambda: expected["deadline"])
     calls = []
     observations = []
+    published_receipt = []
     task = asyncio.current_task()
 
     async def issue(*args, **kwargs):
@@ -292,6 +471,7 @@ async def test_v4_one_invocation_v3_readback_then_uid_event_only(
             expected,
             _receipt(expected, changed=changed),
             captured_public_journal,
+            session,
         )
         if fault in {
             "g12_rehashed_entry",
@@ -347,6 +527,19 @@ async def test_v4_one_invocation_v3_readback_then_uid_event_only(
             public_root.mkdir()
             for name, payload in captured_public_journal[1].items():
                 (public_root / name).write_bytes(payload)
+        if fault == "account_proof_changed":
+            (tmp_path / "account" / "proof.json").write_bytes(b"{}")
+        if fault == "account_readback_changed":
+            (tmp_path / "account" / "readback.json").write_bytes(b"{}")
+        if fault == "account_clock_changed":
+            first_part = native_proof.FILES[0]
+            (tmp_path / "account" / first_part).write_bytes(b"changed")
+        if fault == "account_root_replaced":
+            account_root = tmp_path / "account"
+            account_root.rename(tmp_path / "retired-account")
+            account_root.mkdir()
+            for file in (tmp_path / "retired-account").iterdir():
+                (account_root / file.name).write_bytes(file.read_bytes())
         if fault in {
             "changed_reference_readback",
             "changed_g12_readback",
@@ -358,11 +551,12 @@ async def test_v4_one_invocation_v3_readback_then_uid_event_only(
                 "changed_public_readback": "public_packet_sha256",
             }[fault]
             return _receipt(expected, changed={field: "a" * 64})
+        published_receipt.append(result)
         return result
 
     async def read_event(read_scope, key):
         assert asyncio.current_task() is task
-        assert calls == ["new_v3"]
+        assert calls == ["new_v3", "uid_account_read"]
         calls.append("uid_event_read")
         assert read_scope == scope and key == expected["original_event_key"]
         if fault == "db_unavailable":
@@ -389,7 +583,44 @@ async def test_v4_one_invocation_v3_readback_then_uid_event_only(
     async def forbidden(*_args, **_kwargs):
         raise AssertionError("V4 attempted a ledger mutation")
 
+    class SyntheticAccountRepository:
+        def __init__(self, factory, *, clock):
+            assert factory is ledger.session_factory and clock is ledger.clock
+
+        async def read_locked_current_history_join(
+            self,
+            read_scope,
+            *,
+            history_capture_id,
+            current_capture_id,
+            expected_policy_sha256,
+        ):
+            assert read_scope == scope
+            assert history_capture_id == HISTORY_ID
+            assert current_capture_id == source_fixture.CURRENT_ID
+            assert expected_policy_sha256 == account_join.V7_ORDERED_POLICY_SHA256
+            calls.append("uid_account_read")
+            if fault == "account_db_unavailable":
+                raise RuntimeError("private account SQL details remain redacted")
+            record = _locked_account_receipt(tmp_path, expected, published_receipt[0])
+            if fault == "history_chain_changed":
+                record["history_source_reference"]["packet_sha256"] = "7" * 64
+            if fault == "history_timestamp_changed":
+                record["history_original_db_chain_sha256"] = "7" * 64
+            if fault == "current_chain_changed":
+                record["current_source_reference"]["packet_sha256"] = "7" * 64
+            if fault == "current_capture_changed":
+                record["current_source_reference"]["capture_id"] = "c" * 32
+            if fault == "account_authority_true":
+                record["execution_authority"] = True
+            if fault == "account_db_late":
+                record["readback_received_at"] = expected["deadline"].isoformat()
+            return LockedAccountSourceJoinReadback(canonical(record))
+
     monkeypatch.setattr(joined, "publish_capture_public_account_history_v3", issue)
+    monkeypatch.setattr(
+        bridge, "AccountCaptureJournalRepository", SyntheticAccountRepository
+    )
     monkeypatch.setattr(ledger, "read_event_observation", read_event)
     monkeypatch.setattr(ledger, "reserve", forbidden)
     monkeypatch.setattr(ledger, "reserve_control_bound", forbidden)
@@ -406,13 +637,28 @@ async def test_v4_one_invocation_v3_readback_then_uid_event_only(
         original_inputs=values,
         market_policy=object(),
         account_session=session,
-        session_factory=object(),
+        session_factory=ledger.session_factory,
         history_capture_id=HISTORY_ID,
         ledger=ledger,
         scope=scope,
     )
     assert result.code == code
-    assert calls == ["new_v3", *("uid_event_read",) * read_count]
+    expected_account_read = code not in {
+        "v3_binding_invalid",
+        "v3_stale",
+        "v3_incomplete",
+        "v3_artifact_readback_invalid",
+    } and fault not in {
+        "account_proof_changed",
+        "account_readback_changed",
+        "account_clock_changed",
+        "account_root_replaced",
+    }
+    assert calls == [
+        "new_v3",
+        *("uid_account_read",) * expected_account_read,
+        *("uid_event_read",) * read_count,
+    ]
     assert result.admission == "DENY"
     assert result.execution_authority is False
     assert result.atomic_risk_reserved is False
@@ -615,10 +861,40 @@ async def test_v4_scope_mismatch_rejected_before_publication(
             original_inputs=values,
             market_policy=object(),
             account_session=_session(),
-            session_factory=object(),
+            session_factory=ledger.session_factory,
             history_capture_id=HISTORY_ID,
             ledger=ledger,
             scope=scope,
+        )
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_v4_rejects_different_account_and_event_database_factories(
+    source_inputs_fixture, tmp_path
+):
+    source, values, run = source_inputs_fixture
+    ledger = QualificationLedgerRepository(None, clock=lambda: run.evaluated_at)
+    with pytest.raises(
+        bridge.PostG12AccountEventObservationError,
+        match="v4_account_database_mismatch",
+    ):
+        await bridge.publish_capture_inspect_history_event_v4(
+            tmp_path / "g12",
+            tmp_path / "public",
+            tmp_path / "account",
+            tmp_path / "recheck",
+            tmp_path / "join",
+            tmp_path / "event",
+            source.market,
+            run=run,
+            original_inputs=values,
+            market_policy=object(),
+            account_session=_session(),
+            session_factory=object(),
+            history_capture_id=HISTORY_ID,
+            ledger=ledger,
+            scope=LedgerScope(account_id=UID, settlement_currency="USDT"),
         )
     assert list(tmp_path.iterdir()) == []
 
@@ -654,7 +930,7 @@ async def test_v4_existing_join_receipt_cannot_be_reused(
             original_inputs=values,
             market_policy=object(),
             account_session=_session(),
-            session_factory=object(),
+            session_factory=ledger.session_factory,
             history_capture_id=HISTORY_ID,
             ledger=ledger,
             scope=LedgerScope(account_id=UID, settlement_currency="USDT"),
@@ -696,7 +972,7 @@ async def test_v4_existing_event_receipt_rejected_before_new_v3(
             original_inputs=values,
             market_policy=object(),
             account_session=_session(),
-            session_factory=object(),
+            session_factory=ledger.session_factory,
             history_capture_id=HISTORY_ID,
             ledger=ledger,
             scope=LedgerScope(account_id=UID, settlement_currency="USDT"),

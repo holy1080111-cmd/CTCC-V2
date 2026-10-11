@@ -93,4 +93,7 @@ async def test_v2_receipt_blocks_downgrade_and_preserves_original_source(
             await connection.run_sync(migrate, revision, "downgrade")
     assert await shape(engine) == before
     assert await repo.read(scope) == (accepted,)
-    assert await repo.journal.read_chain(scope, reference.capture_id) == original_chain
+    after = await repo.journal.read_chain(scope, reference.capture_id)
+    assert [(item.event, item.db_recorded_at) for item in after] == [
+        (item.event, item.db_recorded_at) for item in original_chain
+    ]

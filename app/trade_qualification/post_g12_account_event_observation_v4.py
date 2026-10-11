@@ -15,10 +15,17 @@ from dataclasses import dataclass
 from pathlib import PosixPath, WindowsPath
 from typing import Literal
 
+from app.database.repositories.account_capture_journal import (
+    AccountCaptureJournalRepository,
+    LockedAccountSourceJoinReadback,
+)
 from app.database.repositories.qualification_ledger import QualificationLedgerRepository
 from app.domain.source_primitives import canonical, decode, sha
 from app.trade_evidence import storage as evidence_storage
 from app.trade_qualification import account_capture
+from app.trade_qualification import account_current_history_join as account_join
+from app.trade_qualification import account_current_source_verifier as current_source
+from app.trade_qualification import account_observation_index as observed_account
 from app.trade_qualification import post_g12_account_history_join_v3 as joined
 from app.trade_qualification import public_source_runtime as source_runtime
 from app.trade_qualification.account_capture_journal import digest
@@ -44,6 +51,7 @@ _CODES = frozenset(
         "v3_binding_invalid",
         "v3_stale",
         "v3_artifact_readback_invalid",
+        "account_readback_invalid",
         "ledger_observation_unavailable",
         "ledger_observation_invalid",
         "original_event_already_recorded",
@@ -57,6 +65,9 @@ _SOURCE_PINS = (
     "public_packet_sha256",
     "public_journal_sha256",
     "native_account_join_sha256",
+    "native_account_proof_sha256",
+    "native_account_readback_sha256",
+    "history_db_chain_sha256",
     "history_reference_sha256",
     "current_reference_sha256",
     "public_only_recheck_sha256",
@@ -74,6 +85,7 @@ class PostG12AccountEventObservationV4:
         "v3_binding_invalid",
         "v3_stale",
         "v3_artifact_readback_invalid",
+        "account_readback_invalid",
         "ledger_observation_unavailable",
         "ledger_observation_invalid",
         "original_event_already_recorded",
@@ -94,9 +106,13 @@ class PostG12AccountEventObservationV4:
     public_packet_sha256: str | None = None
     public_journal_sha256: str | None = None
     native_account_join_sha256: str | None = None
+    native_account_proof_sha256: str | None = None
+    native_account_readback_sha256: str | None = None
+    history_db_chain_sha256: str | None = None
     history_reference_sha256: str | None = None
     current_reference_sha256: str | None = None
     public_only_recheck_sha256: str | None = None
+    account_db_readback_sha256: str | None = None
     ledger_observation_sha256: str | None = None
     ledger_event_state: str | None = None
     admission: Literal["DENY"] = "DENY"
@@ -138,6 +154,11 @@ class PostG12AccountEventObservationV4:
                 type(self.ledger_observation_sha256) is not str
                 or _HEX.fullmatch(self.ledger_observation_sha256) is None
             )
+            or self.account_db_readback_sha256 is not None
+            and (
+                type(self.account_db_readback_sha256) is not str
+                or _HEX.fullmatch(self.account_db_readback_sha256) is None
+            )
             or self.admission != "DENY"
             or any(
                 getattr(self, name) is not False
@@ -163,6 +184,16 @@ class PostG12AccountEventObservationV4:
         else:
             complete = all(item is not None for item in source)
         if not complete:
+            raise PostG12AccountEventObservationError("v4_pin_state_invalid")
+        if (self.account_db_readback_sha256 is not None) != (
+            self.code
+            in {
+                "ledger_observation_unavailable",
+                "ledger_observation_invalid",
+                "original_event_already_recorded",
+                "trusted_execution_inputs_missing",
+            }
+        ):
             raise PostG12AccountEventObservationError("v4_pin_state_invalid")
         if self.code == "trusted_execution_inputs_missing":
             valid_observation = (
@@ -476,6 +507,9 @@ def _bound_v3(value, expected):
             "public_packet_sha256",
             "public_journal_sha256",
             "native_account_join_sha256",
+            "native_account_proof_sha256",
+            "native_account_readback_sha256",
+            "history_db_chain_sha256",
             "history_reference_sha256",
             "current_reference_sha256",
             "public_only_recheck_sha256",
@@ -630,6 +664,229 @@ def _read_bound_public_journal(root, value, *, root_identity):
         ) from None
 
 
+_LOCKED_ACCOUNT_FIELDS = frozenset(
+    {
+        "schema_version",
+        "join_receipt_sha256",
+        "history_source_reference",
+        "current_source_reference",
+        "scope_sha256",
+        "session_binding_sha256",
+        "recorded_local_checkpoint_sha256",
+        "db_local_state_sha256",
+        "db_account_revision",
+        "db_ledger_revision",
+        "db_active_hold_count",
+        "readback_observed_at",
+        "readback_received_at",
+        "recorded_pre_lock_blocking_reasons",
+        "locked_readback_blocking_reasons",
+        "local_revision_readback_verified",
+        "exchange_atomic_revision_verified",
+        "history_tail_closed",
+        "snapshot",
+        "account_complete",
+        "account_revision_published",
+        "execution_authority",
+        "admission",
+        "join_policy_sha256",
+        "current_source_policy_sha256",
+        "flat_start_permission",
+        "history_journal_terminal_db_recorded_at",
+        "history_original_db_chain_sha256",
+        "current_capture_started_at",
+        "history_terminal_db_timestamp_before_current_request",
+        "history_commit_before_current_request",
+    }
+)
+
+
+async def _read_bound_account_sources(
+    root,
+    value,
+    expected,
+    *,
+    root_identity,
+    session_factory,
+    ledger,
+    scope,
+    history_capture_id,
+):
+    """Reread pinned companion and both B1 chains; return the locked DB pin/time."""
+    try:
+        proof_pin, readback_pin, current_reference = joined._account_companion_pins(
+            root,
+            current_reference=_account_proof_reference(root, root_identity),
+            scope_sha256=expected["account_scope_sha256"],
+            first_http_at=joined._utc(value["account_session_first_http_started_at"]),
+            root_identity=root_identity,
+        )
+        if (
+            proof_pin != value["native_account_proof_sha256"]
+            or readback_pin != value["native_account_readback_sha256"]
+            or sha(canonical(current_reference)) != value["current_reference_sha256"]
+            or current_reference["capture_id"] == history_capture_id
+            or current_reference["plan_sha256"] != expected["account_plan_sha256"]
+            or sha(history_capture_id.encode("ascii"))
+            != expected["history_capture_id_sha256"]
+        ):
+            raise ValueError
+        repository = AccountCaptureJournalRepository(
+            session_factory, clock=ledger.clock
+        )
+        readback = await repository.read_locked_current_history_join(
+            scope,
+            history_capture_id=history_capture_id,
+            current_capture_id=current_reference["capture_id"],
+            expected_policy_sha256=account_join.V7_ORDERED_POLICY_SHA256,
+        )
+        if type(readback) is not LockedAccountSourceJoinReadback:
+            raise ValueError
+        record = decode(readback.receipt_json, joined._MAX_NATIVE_JOIN_RECEIPT)
+        if (
+            type(record) is not dict
+            or set(record) != _LOCKED_ACCOUNT_FIELDS
+            or canonical(record) != readback.receipt_json
+            or record["schema_version"] != "ctcc.demo_account_locked_source_join.v4"
+            or record["join_policy_sha256"] != account_join.V7_ORDERED_POLICY_SHA256
+            or record["current_source_policy_sha256"] != current_source.V7_POLICY_SHA256
+            or record["scope_sha256"] != expected["account_scope_sha256"]
+            or record["history_original_db_chain_sha256"]
+            != value["history_db_chain_sha256"]
+            or record["current_source_reference"] != current_reference
+            or sha(canonical(record["history_source_reference"]))
+            != value["history_reference_sha256"]
+            or sha(canonical(record["current_source_reference"]))
+            != value["current_reference_sha256"]
+            or record["history_source_reference"]["capture_id"] != history_capture_id
+            or record["session_binding_sha256"]
+            != current_reference["session_binding_sha256"]
+            or record["history_source_reference"]["session_binding_sha256"]
+            != current_reference["session_binding_sha256"]
+            or record["history_source_reference"]["plan_sha256"]
+            == current_reference["plan_sha256"]
+            or record["recorded_local_checkpoint_sha256"]
+            != record["db_local_state_sha256"]
+            or record["local_revision_readback_verified"] is not True
+            or record["history_terminal_db_timestamp_before_current_request"]
+            is not True
+            or record["admission"] != "DENY"
+            or record["snapshot"] is not None
+            or any(
+                record[name] is not False
+                for name in (
+                    "exchange_atomic_revision_verified",
+                    "history_tail_closed",
+                    "account_complete",
+                    "account_revision_published",
+                    "execution_authority",
+                    "flat_start_permission",
+                    "history_commit_before_current_request",
+                )
+            )
+            or any(
+                type(record[name]) is not str or _HEX.fullmatch(record[name]) is None
+                for name in (
+                    "join_receipt_sha256",
+                    "recorded_local_checkpoint_sha256",
+                    "history_original_db_chain_sha256",
+                )
+            )
+            or any(
+                type(record[name]) is not int or record[name] < 0
+                for name in (
+                    "db_account_revision",
+                    "db_ledger_revision",
+                    "db_active_hold_count",
+                )
+            )
+            or record["db_ledger_revision"] < record["db_account_revision"]
+        ):
+            raise ValueError
+        for reference in (
+            record["history_source_reference"],
+            record["current_source_reference"],
+        ):
+            if (
+                type(reference) is not dict
+                or observed_account.reference_document(
+                    observed_account.CaptureReference(**reference)
+                )
+                != reference
+            ):
+                raise ValueError
+        recorded = record["recorded_pre_lock_blocking_reasons"]
+        blockers = record["locked_readback_blocking_reasons"]
+        if (
+            type(recorded) is not list
+            or type(blockers) is not list
+            or recorded != sorted(set(recorded))
+            or blockers != sorted(set(blockers))
+            or any(type(item) is not str or not item for item in recorded + blockers)
+            or "current_local_revision_readback_required" not in recorded
+            or "history_tail_not_atomically_closed" not in blockers
+            or set(recorded) - {"current_local_revision_readback_required"}
+            != set(blockers)
+        ):
+            raise ValueError
+        terminal = joined._utc(record["history_journal_terminal_db_recorded_at"])
+        current_started = joined._utc(record["current_capture_started_at"])
+        observed = joined._utc(record["readback_observed_at"])
+        received = joined._utc(record["readback_received_at"])
+        if not (
+            terminal
+            < joined._utc(value["account_history_readback_started_at"])
+            < joined._utc(value["account_session_first_http_started_at"])
+            < current_started
+            < joined._utc(value["observed_at"])
+            < observed
+            <= received
+            < expected["deadline"]
+        ):
+            raise ValueError
+        after_proof_pin, after_readback_pin, after_reference = (
+            joined._account_companion_pins(
+                root,
+                current_reference=current_reference,
+                scope_sha256=expected["account_scope_sha256"],
+                first_http_at=joined._utc(
+                    value["account_session_first_http_started_at"]
+                ),
+                root_identity=root_identity,
+            )
+        )
+        if (
+            after_proof_pin != proof_pin
+            or after_readback_pin != readback_pin
+            or after_reference != current_reference
+        ):
+            raise ValueError
+        return readback.receipt_sha256, received
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001 -- no account, SQL or path content in denial
+        raise PostG12AccountEventObservationError(
+            "v4_account_readback_failed"
+        ) from None
+
+
+def _account_proof_reference(root, root_identity):
+    """Extract only the source locator from a pre-pinned native proof root."""
+    try:
+        with joined.native_storage._root_context(root) as directory:
+            if joined.native_storage._root_identity(directory.path) != root_identity:
+                raise ValueError
+            raw = directory.read("proof.json", joined.native_proof.MAX_PROOF)
+            reference = joined.native_proof._canonical_document(raw)["source_reference"]
+        if joined.native_storage._root_identity(root) != root_identity:
+            raise ValueError
+        return reference
+    except Exception:  # noqa: BLE001 -- no source/path disclosure
+        raise PostG12AccountEventObservationError(
+            "v4_account_readback_failed"
+        ) from None
+
+
 async def publish_capture_inspect_history_event_v4(
     evidence_root,
     public_root,
@@ -655,6 +912,8 @@ async def publish_capture_inspect_history_event_v4(
     """
     if type(ledger) is not QualificationLedgerRepository:
         raise PostG12AccountEventObservationError("v4_exact_ledger_required")
+    if session_factory is not ledger.session_factory:
+        raise PostG12AccountEventObservationError("v4_account_database_mismatch")
     scope = checked_bootstrap(scope, LedgerScope)
     expected = _original_binding(
         original_market,
@@ -690,6 +949,7 @@ async def publish_capture_inspect_history_event_v4(
             evidence_root
         )
         public_root_identity = source_runtime._native_recheck_root_identity(public_root)
+        account_root_identity = joined.native_storage._root_identity(account_root)
         recheck_root_identity = joined.prior._empty_native_receipt_root_identity(
             recheck_root, "v4_recheck_root_unavailable"
         )
@@ -758,6 +1018,9 @@ async def publish_capture_inspect_history_event_v4(
                     "public_packet_sha256",
                     "public_journal_sha256",
                     "native_account_join_sha256",
+                    "native_account_proof_sha256",
+                    "native_account_readback_sha256",
+                    "history_db_chain_sha256",
                     "history_reference_sha256",
                     "current_reference_sha256",
                     "public_only_recheck_sha256",
@@ -786,6 +1049,25 @@ async def publish_capture_inspect_history_event_v4(
             )
     if result is None:
         try:
+            account_db_pin, account_db_received_at = await _read_bound_account_sources(
+                account_root,
+                value,
+                expected,
+                root_identity=account_root_identity,
+                session_factory=session_factory,
+                ledger=ledger,
+                scope=scope,
+                history_capture_id=history_capture_id,
+            )
+            pins["account_db_readback_sha256"] = account_db_pin
+        except asyncio.CancelledError:
+            raise
+        except PostG12AccountEventObservationError:
+            result = PostG12AccountEventObservationV4(
+                code="account_readback_invalid", **base, **pins
+            )
+    if result is None:
+        try:
             observation = await ledger.read_event_observation(
                 scope, expected["original_event_key"]
             )
@@ -808,7 +1090,8 @@ async def publish_capture_inspect_history_event_v4(
                 or observation.scope != scope
                 or observation.original_event_key != expected["original_event_key"]
                 or not v3_observed
-                < observation.request_started_at
+                < account_db_received_at
+                <= observation.request_started_at
                 <= observation.observed_at
                 <= observation.received_at
                 < expected["deadline"]

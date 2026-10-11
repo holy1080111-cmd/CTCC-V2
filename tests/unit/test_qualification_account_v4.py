@@ -316,14 +316,18 @@ def test_spot_market_quantity_units_are_preserved_not_compared_blindly(unit):
     )
     if unit is None:
         del value["tgtCcy"]
+    pages = {
+        "orders_history_recent_spot": [[value], []],
+        "orders_history_archive_spot": [[]],
+    }
     if unit in {"base_ccy", "invented"}:
         with pytest.raises(
             capture.AccountCaptureError,
             match="filled_quantity_exceeds_order|source_quantity_unit_invalid",
         ):
-            verify(pages={"orders_history_recent_spot": [[value], []]})
+            verify(pages=pages)
     else:
-        packet = verify(pages={"orders_history_recent_spot": [[value], []]})
+        packet = verify(pages=pages)
         record = next(
             o.rows[0]
             for o in packet.observations

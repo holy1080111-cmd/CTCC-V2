@@ -1737,6 +1737,14 @@ async def capture_native_current_history_join(
                     v7
                     and native_value.get("policy_sha256") != proof.V7_FLAT_POLICY_SHA256
                 )
+                or (
+                    v7
+                    and any(
+                        type(native_value.get(name)) is not str
+                        or re.fullmatch(r"[a-f0-9]{64}", native_value[name]) is None
+                        for name in ("proof_sha256", "proof_readback_sha256")
+                    )
+                )
                 or locked_value.get("admission") != "DENY"
                 or locked_value.get("snapshot") is not None
                 or locked_value.get("account_complete") is not False
@@ -1786,6 +1794,10 @@ async def capture_native_current_history_join(
                         {
                             "join_policy_sha256": source_join.V7_ORDERED_POLICY_SHA256,
                             "current_source_policy_sha256": current.V7_POLICY_SHA256,
+                            "native_current_proof_sha256": native_value["proof_sha256"],
+                            "native_current_proof_readback_sha256": native_value[
+                                "proof_readback_sha256"
+                            ],
                             "pre_http_history_source_reference": observed.reference_document(
                                 pre_read.reference
                             ),

@@ -7,7 +7,7 @@ A preserved partial/source-only attempt is never accepted or resumed as current.
 import os
 from contextlib import contextmanager
 from datetime import datetime
-from pathlib import Path
+from pathlib import PosixPath, WindowsPath
 
 from app.domain.native_clock import native_stamp
 from app.domain.source_primitives import (
@@ -47,7 +47,7 @@ def _readback_schema(document):
 
 
 def _root_context(root):
-    if type(root) is not Path:
+    if type(root) not in (PosixPath, WindowsPath):
         raise proof.NativeAccountProofError("native_path_required")
     return (_windows_root if os.name == "nt" else _posix_root)(_root_path(root))
 

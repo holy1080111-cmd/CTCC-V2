@@ -144,6 +144,8 @@ async def _synthetic_v7_join(
             "schema_version": "ctcc.initial_native_account_diagnostic.v3",
             "policy_sha256": proof.V7_FLAT_POLICY_SHA256,
             "source_reference": observed.reference_document(reference),
+            "proof_sha256": "6" * 64,
+            "proof_readback_sha256": "7" * 64,
             "snapshot": None,
             "account_complete": False,
             "execution_authority": False,
@@ -273,6 +275,8 @@ async def test_v7_same_invocation_joins_current_and_history_without_authority(
     assert value["current_source_policy_sha256"] == current.V7_POLICY_SHA256
     assert value["committed_history_readback_before_first_http"] is True
     assert value["pre_http_history_db_chain_sha256"] == "4" * 64
+    assert value["native_current_proof_sha256"] == "6" * 64
+    assert value["native_current_proof_readback_sha256"] == "7" * 64
     assert value["pre_http_history_source_reference"]["capture_id"] == HISTORY_ID
     assert value["native_current_source_observed"] is True
     assert value["historical_native_source_observed"] is False

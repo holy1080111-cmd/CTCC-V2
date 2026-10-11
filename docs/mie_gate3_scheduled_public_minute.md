@@ -26,9 +26,9 @@ status remains `incomplete` with reason
 `source_chain_replayed_custody_unproven`: production role separation, trusted
 UTC, independent journal/checkpoint custody, first evaluator access and a
 complete real holdout have not been established. Predictive, promotion,
-runtime-consumer and execution authority are fixed false. The freeze helper
-returns canonical bytes and SHA-256 in memory; no file publication or
-independent custody is claimed by this seam. An interrupted invocation may
+runtime-consumer and execution authority are fixed false. The unwrapped
+function's freeze helper returns canonical bytes and SHA-256 in memory; it
+claims no file publication or independent custody. An interrupted invocation may
 leave durable raw or database evidence without a final receipt and must be
 reconciled from original stores before any later attempt.
 
@@ -38,3 +38,40 @@ disposable PostgreSQL integration test checks the exact DB0030/DB0029/ACK
 preflight and stops before public I/O; it is included in the dedicated
 PostgreSQL CI group. Local PostgreSQL skip is not acceptance. No real future
 seal, market request, Demo or Live action has been executed by this change.
+
+## One-use local receipt publication
+
+`app.mie.validation.scheduled_public_minute_publication` is an opt-in wrapper
+around that existing one-coordinate seam. The caller provides the exact,
+previously pinned capture schedule and a pre-existing, service-owned empty
+directory. `initialize` publishes the canonical schedule/root identity with
+no clobber and readback. `resume` requires the same external seal, coordinate,
+and schedule SHA-256 pins; it does not discover a new identity from the folder.
+
+`capture_once` creates `minute-<ordinal>` and writes its claim before awaiting
+the existing DB and public-source service. That directory is a one-use
+tombstone. A duplicate or restarted invocation for the same ordinal is denied,
+even if a prior call crashed before `claim.json` or before the result. Unknown
+source or database outcomes are not retried. The existing source service still
+owns journal and DB0035 replay; this wrapper cannot turn a local result file
+into independent source evidence.
+
+On a returned result, the wrapper publishes canonical `receipt.json` and a
+SHA-256 marker with the existing native no-clobber filesystem primitives,
+then reads and verifies both files and the original claim. A partial, changed,
+or missing result stays unresolved; no file is removed to make a retry pass.
+Post-restart `read_ordinal` also requires a separately retained expected
+receipt SHA-256. Calling before the due minute consumes that ordinal and
+retains `not_due`; calling late retains `late`. A future scheduler must therefore
+invoke only at the reviewed due time, and it must not use this seam as a
+poll-and-retry API.
+
+The new native-filesystem tests use synthetic schedule, database and capture
+responses to verify no-clobber, missing/late, ambiguous return, concurrent
+duplicate, crash and restart behavior. They are engineering tests, not a real
+future-window observation. The local root and digest marker are not independent
+custody or proof of first evaluator access. Windows flush/readback does not
+promise atomic directory persistence across sudden power loss. Every stored
+receipt remains `incomplete`, `computational`, predictive and promotion
+ineligible, with zero runtime consumers and execution authority. There is
+still no complete-window scheduler or Gate 3/OOS acceptance.

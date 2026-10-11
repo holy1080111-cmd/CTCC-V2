@@ -128,7 +128,9 @@ def test_exception_never_changes_positive_bill_cursor_contract(bill_id):
 
 def test_exception_packet_replays_but_account_and_execution_remain_incomplete():
     row = old.row("fills_history", tradeId="-700", subType="100", fillPnl="-1")
-    selected, items = old.records(pages={"fills_history": [[row], []]})
+    selected, items = old.records(
+        pages={"fills_recent": [[]], "fills_history": [[row], []]}
+    )
     packet = old.verify(selected, items)
     archive = [
         item for item in packet.observations if item.request.stream == "fills_history"

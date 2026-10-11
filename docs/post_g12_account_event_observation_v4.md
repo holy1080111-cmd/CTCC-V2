@@ -15,7 +15,24 @@ compares its summary and packet hashes to that same V3 receipt. Missing, changed
 or rehashed but inconsistent artifacts
 deny the event read; previously accepted bytes are never deleted. The database
 read starts after these checks and the V3 receipt's final observation, before the
-original candidate deadline. It binds the same Demo account UID and settlement currency,
+original candidate deadline. V3 also pins the sealed V7 native account proof,
+its readback receipt, and the original V5 history chain digest including DB
+timestamps. V3 compares both companion hashes with the hashes verified by the
+native runtime before accepting its later readback; the proof's clock-file hash
+map must also match the files. V4 pins the account root identity before V3,
+rereads the exact companion inventory and clock-file hashes under a native
+directory handle, and compares the proof's current-source reference and both
+companion hashes to V3.
+The native runtime performed the full proof/B1 replay during V3; this later
+companion check is a content and identity readback, not a new semantic replay.
+V4 then calls the account journal repository's V7 ordered join, which replays
+both V5 history and V7 current B1 chains under one fresh UID-locked transaction.
+It compares exact capture IDs, source-reference hashes, the original history DB
+timestamp digest, ordered timestamps, account scope, policy and false-authority
+fields before any DB0017 event query. The B1 join receipt hash is retained in
+the V4 receipt. The later DB0017 observation uses a separate UID-locked
+transaction, so these are sequential readbacks, not one atomic account/event
+snapshot. The checks bind the same Demo account UID and settlement currency,
 report, candidate geometry, history locator, G12/public evidence and V7
 account-source references. A renamed report or event cannot turn an existing
 event into a new opportunity.
@@ -52,12 +69,14 @@ post-G12 result is public-only. V4 neither reserves risk nor creates a durable
 intent, Arm state or order. Demo and Live transport hard denial remains in
 force. The public journal replay checks retained bytes and semantics; it does
 not establish a new source-owned capture or current execution inputs. V4 does
-not independently replay the V5/V7 account database chains or G12's
-computational evaluation hash.
+not independently recompute G12's computational evaluation hash.
 The sidecar's post-G12 12-gate candidate digest is pinned by its receipt SHA,
 but cannot be recomputed from V4's original 11-gate candidate alone. These
 replay gaps require a separately reviewed source-owned handoff before any risk
 reservation. Synthetic unit tests exercise event/UID/deadline/receipt conflicts,
-late artifact mutation and no-clobber readback. The isolated PostgreSQL
-integration case must run in matching CI before its database behavior can be
-credited.
+late artifact mutation, account-root/B1 reference and timestamp mutation, and
+no-clobber readback. The isolated PostgreSQL DB0017 integration uses a synthetic
+B1 readback. A separate isolated test uses real V5 and V7 B1 database chains
+at the V4 account readback helper, with synthetic HTTP and V3 timing inputs.
+Neither test proves a complete source-owned invocation; matching CI must run
+both before their database behavior can be credited.

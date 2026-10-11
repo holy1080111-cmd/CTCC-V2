@@ -49,6 +49,14 @@ from tests.unit.test_qualification_account_materializer import source_pages
 from tests.unit.test_qualification_account_v4 import script as v5_script
 
 
+def test_native_account_root_context_accepts_concrete_absolute_path(tmp_path):
+    with storage._root_context(tmp_path) as directory:
+        assert directory.names() == []
+        assert storage._root_identity(directory.path) == storage._root_identity(
+            tmp_path
+        )
+
+
 def synthetic_host(samples):
     evidence = clock_fixture()
     sample = samples()
