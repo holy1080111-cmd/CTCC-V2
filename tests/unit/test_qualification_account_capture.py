@@ -990,6 +990,59 @@ def test_config_after_must_match_initial_account_identity_and_modes(field, value
         verify(*records(pages={"config_after": [[config(**{field: value})]]}))
 
 
+@pytest.mark.parametrize("changed_field", ["perm", "ip", "label"])
+def test_changed_config_is_retained_but_explicitly_incomplete(changed_field):
+    values = {
+        "perm": "read_only,trade",
+        "ip": "8.8.8.8",
+        "label": "before",
+    }
+    changed = dict(values)
+    changed[changed_field] = {
+        "perm": "read_only",
+        "ip": "1.1.1.1",
+        "label": "after",
+    }[changed_field]
+    selected, observations = records(
+        pages={
+            "config_before": [[config(**values)]],
+            "config_after": [[config(**changed)]],
+        }
+    )
+    packet = verify(selected, observations)
+    assert "account_config_changed" in packet.incomplete_reasons
+    assert packet.account_complete is packet.execution_authority is False
+    frozen = module.freeze_demo_account_packet(
+        packet, expected_plan_sha256=module.plan_sha256(selected)
+    )
+    replayed = module.verify_demo_account_packet(
+        frozen.payload,
+        expected_sha256=frozen.sha256,
+        expected_plan_sha256=module.plan_sha256(selected),
+    )
+    assert "account_config_changed" in replayed.incomplete_reasons
+
+
+def test_config_wire_field_order_does_not_create_false_change():
+    values = config(perm="read_only,trade", ip="8.8.8.8")
+    selected, observations = records(
+        pages={
+            "config_before": [[values]],
+            "config_after": [[dict(reversed(tuple(values.items())))]],
+        }
+    )
+    packet = verify(selected, observations)
+    assert "account_config_changed" not in packet.incomplete_reasons
+    before = next(
+        item for item in packet.observations if item.request.stream == "config_before"
+    )
+    after = next(
+        item for item in packet.observations if item.request.stream == "config_after"
+    )
+    assert before.response_body != after.response_body
+    assert before.rows[0].canonical_json == after.rows[0].canonical_json
+
+
 @pytest.mark.parametrize("stream", STREAMS)
 def test_every_required_stream_must_be_present(packet, stream):
     changed = tuple(

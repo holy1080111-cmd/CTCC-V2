@@ -53,6 +53,14 @@ policy hashes remain unchanged and their current-use flat assertion remains
 revoked. V7 does not by itself prove registration origin, native ownership,
 account-wide atomicity, local liabilities, protection, or complete history.
 
+The capture retains both raw `account/config` responses. If any canonical
+configuration field changes between the before/after reads, packet replay adds
+`account_config_changed` without discarding the evidence. Current-source replay
+adds `current_account_config_changed` and cannot report `observed_flat`; the
+native current projection leaves `current_inventory_observed_empty` unknown and
+cannot issue a flat proof. This includes a permission or bound-IP change during
+capture. A different JSON object key order alone is not a configuration change.
+
 The measured balance stamp retains request start, headers, body completion and
 original receipt identity. Original account/detail `uTime` values remain
 separate last-exchange-change times. An old unchanged `uTime` is not replaced by

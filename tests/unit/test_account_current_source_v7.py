@@ -12,7 +12,7 @@ from app.trade_qualification import account_observation_index as observed
 from app.trade_qualification.account_runtime import ControlledDemoAccountSession
 from tests.unit.test_account_current_source_verifier import SCOPE, flat_pages
 from tests.unit.test_account_ingestion_journal_contracts import setup
-from tests.unit.test_qualification_account_capture import NOW, row, wire
+from tests.unit.test_qualification_account_capture import NOW, config, row, wire
 from tests.unit.test_qualification_account_capture import observe as observe_page
 from tests.unit.test_qualification_account_capture import verify as verify_packet
 from tests.unit.test_qualification_account_collector import credentials
@@ -165,6 +165,21 @@ async def test_v7_expired_or_relabelled_source_cannot_observe_flat(monkeypatch):
         )
     with pytest.raises(current.CurrentAccountSourceError):
         verify_v7(chain[:-1])
+
+
+@pytest.mark.asyncio
+async def test_v7_config_permission_or_ip_change_cannot_observe_flat(monkeypatch):
+    pages = empty_v7_pages()
+    pages["config_before"] = [[config(perm="read_only,trade", ip="8.8.8.8")]]
+    pages["config_after"] = [[config(perm="read_only", ip="1.1.1.1")]]
+    chain, _ = await recorded_v7(monkeypatch, pages=pages)
+    result = json.loads(verify_v7(chain).receipt_json)
+    assert "account_config_changed" in result["packet_incomplete_reasons"]
+    assert "current_account_config_changed" in result["blocking_reasons"]
+    assert result["observed_flat"] is False
+    assert result["observed_inventory_state"] == "incomplete_or_exposed"
+    assert result["flat_start_permission"] is False
+    assert result["execution_authority"] is False
 
 
 def test_v7_missing_algo_terminal_or_wrong_algo_id_cursor_fails_closed():

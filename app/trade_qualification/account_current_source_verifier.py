@@ -414,6 +414,11 @@ def _verify(chain, reference, scope, validated_at, policy):
     if at - earliest_received > timedelta(seconds=30):
         blocked.add("measured_current_receipt_stale")
     config = json.loads(grouped["config_after"][0].rows[0].canonical_json)
+    if (
+        grouped["config_before"][0].rows[0].canonical_json
+        != grouped["config_after"][0].rows[0].canonical_json
+    ):
+        blocked.add("current_account_config_changed")
     # A packet-wide gap can come from a historical stream. The flat diagnostic
     # concerns current inventory, so inspect its own row fields. Futures-mode
     # inapplicable top-level equity fields remain visible in raw evidence.

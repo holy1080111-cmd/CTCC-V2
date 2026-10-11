@@ -287,6 +287,9 @@ def _project(source) -> NativeCurrentComponents:
             "native_current_components_identity_incomplete"
         )
     before, after = (json.loads(page.rows[0].canonical_json) for page in config_pages)
+    config_changed = (
+        config_pages[0].rows[0].canonical_json != config_pages[1].rows[0].canonical_json
+    )
     identity = ("uid", "mainUid", "acctLv", "posMode")
     if (
         any(before.get(name) != after.get(name) for name in identity)
@@ -328,6 +331,8 @@ def _project(source) -> NativeCurrentComponents:
         for row in page.rows
     )
     blockers = set(_UNKNOWN)
+    if config_changed:
+        blockers.add("current_account_config_changed")
     if balance_gap is not None:
         blockers.add(balance_gap)
     blockers.update(cross.blocking_reasons)
@@ -341,7 +346,9 @@ def _project(source) -> NativeCurrentComponents:
     if missing_fields:
         blockers.add("current_source_fields_missing_or_inapplicable")
     inventory_empty = (
-        None if missing_fields or cross.blocking_reasons else not any(counts.values())
+        None
+        if config_changed or missing_fields or cross.blocking_reasons
+        else not any(counts.values())
     )
     receipt = canonical(
         {

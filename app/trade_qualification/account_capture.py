@@ -1594,10 +1594,19 @@ def verify_demo_account_records(
         for key in ("uid", "mainUid", "acctLv", "posMode")
     ):
         _fail("account_mode_changed")
+    # The four identity/mode keys are hard conflicts. Other config changes
+    # remain in the raw forensic packet, but cannot support a stable account
+    # observation. Compare canonical rows so wire key order alone is harmless.
+    config_changed = (
+        groups["config_before"][0].rows[0].canonical_json
+        != groups["config_after"][0].rows[0].canonical_json
+    )
     row_count = sum(len(item.rows) for item in verified)
     if row_count > plan.max_total_rows:
         _fail("inventory_rows_limit")
     gaps = set(_BASE_GAPS)
+    if config_changed:
+        gaps.add("account_config_changed")
     if is_all_product_plan(plan):
         gaps.remove("non_swap_history_not_requested")
         gaps.add("all_product_metadata_coverage_unverified")

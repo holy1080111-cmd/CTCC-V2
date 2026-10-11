@@ -11,15 +11,18 @@ from app.trade_qualification import account_native_current_components as compone
 from app.trade_qualification import account_native_runtime as native
 from app.trade_qualification import account_observation_index as observed
 from tests.unit.test_account_current_source_v7 import empty_v7_pages
-from tests.unit.test_qualification_account_capture import NOW, row
+from tests.unit.test_qualification_account_capture import NOW, config, row
 from tests.unit.test_qualification_account_capture_v7 import v7_observations, v7_plan
 
 
-def synthetic_projected_v7(*, exposed_stream=None):
+def synthetic_projected_v7(*, exposed_stream=None, changed_config=False):
     selected = v7_plan()
     pages = empty_v7_pages()
     if exposed_stream is not None:
         pages[exposed_stream] = [[row(exposed_stream)], []]
+    if changed_config:
+        pages["config_before"] = [[config(perm="read_only,trade", ip="8.8.8.8")]]
+        pages["config_after"] = [[config(perm="read_only", ip="1.1.1.1")]]
     packet = capture.verify_demo_account_records(
         v7_observations(selected, pages=pages),
         plan=selected,
@@ -80,6 +83,15 @@ def test_v7_projected_new_algo_exposure_never_appears_flat(kind):
     assert receipt["current_inventory_observed_empty"] is False
     assert "current_exchange_exposure_present" in receipt["blocking_reasons"]
     assert receipt["account_complete"] is receipt["execution_authority"] is False
+
+
+def test_v7_changed_config_cannot_project_observed_empty_inventory():
+    result, _ = synthetic_projected_v7(changed_config=True)
+    receipt = json.loads(result.receipt_json)
+    assert "current_account_config_changed" in receipt["blocking_reasons"]
+    assert receipt["current_inventory_observed_empty"] is None
+    assert receipt["snapshot"] is None
+    assert receipt["execution_authority"] is False
 
 
 def test_v7_projection_rejects_packet_schema_relabel():

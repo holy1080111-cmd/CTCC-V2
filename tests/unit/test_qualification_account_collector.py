@@ -1642,6 +1642,26 @@ async def test_real_config_change_is_diagnosed_at_verify_not_last_parser(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_owned_capture_keeps_changed_config_as_incomplete_evidence(monkeypatch):
+    harness = Harness(
+        monkeypatch,
+        change=lambda stream, index, data: (
+            [row(stream, label="changed")] if stream == "config_after" else None
+        ),
+    )
+    packet = await harness.collect()
+    assert "account_config_changed" in packet.incomplete_reasons
+    assert packet.account_complete is packet.execution_authority is False
+    before, after = (
+        next(item for item in packet.observations if item.request.stream == stream)
+        for stream in ("config_before", "config_after")
+    )
+    assert before.rows[0].canonical_json != after.rows[0].canonical_json
+    assert len(harness.requests) == 38
+    harness.assert_closed()
+
+
+@pytest.mark.asyncio
 async def test_conflicting_history_overlap_aborts_owned_collection_without_packet(
     monkeypatch,
 ):

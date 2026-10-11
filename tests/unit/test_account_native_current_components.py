@@ -203,26 +203,25 @@ async def test_v3_native_key_policy_keeps_unsafe_config_as_blocker(
 
 
 @pytest.mark.asyncio
-async def test_v3_native_key_policy_detects_changed_original_config(monkeypatch):
-    result = await owned_components(
-        monkeypatch,
-        version="v3",
-        config_rows={
-            "config_before": {"perm": "read_only,trade", "ip": "8.8.8.8"},
-            "config_after": {
-                "perm": "read_only,trade",
-                "ip": "1.1.1.1",
-                "label": "changed",
+async def test_changed_original_config_cannot_mint_native_flat_lease(monkeypatch):
+    # The original packet and redacted key-policy readout remain replayable,
+    # but the stronger current-source check rejects a flat native proof first.
+    with pytest.raises(
+        proof.NativeAccountProofError,
+        match="native_account_current_sources_incomplete_or_exposed",
+    ):
+        await owned_components(
+            monkeypatch,
+            version="v3",
+            config_rows={
+                "config_before": {"perm": "read_only,trade", "ip": "8.8.8.8"},
+                "config_after": {
+                    "perm": "read_only,trade",
+                    "ip": "1.1.1.1",
+                    "label": "changed",
+                },
             },
-        },
-    )
-    value = json.loads(result.receipt_json)
-    assert "api_key_config_changed" in value["blocking_reasons"]
-    assert "api_key_ip_binding_changed" in value["blocking_reasons"]
-    assert value["api_key_policy"]["config_policy_consistent"] is False
-    assert b"1.1.1.1" not in result.receipt_json
-    assert b"8.8.8.8" not in result.receipt_json
-    assert value["admission"] == "DENY"
+        )
 
 
 @pytest.mark.asyncio
