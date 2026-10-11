@@ -27,7 +27,6 @@ from app.demo_automation.execution_quality import (
 from app.demo_automation.risk_profile import (
     configured_score_risk_tiers,
     mathematical_adjusted_score,
-    score_risk_tier,
 )
 from app.demo_automation.structural_risk import (
     apply_cost_adjusted_reward_risk,
@@ -205,10 +204,23 @@ class SafeDemoAutomation:
         self._state["last_error"] = None
         self._normalize_portfolio_state()
         self._clear_disabled_continuous_session_locks()
+        # Invalid in-memory policy blocks Arm and runs, but recovery must
+        # still read durable exposure and persist the restart safety latch.
+        if not self._runtime_policy_valid():
+            self._state["last_error"] = "demo_automation_runtime_policy_invalid"
         await self._persist_state(required=self.repository is not None)
         self._recovered = True
 
     async def status(self) -> DemoAutomationStatus:
+        try:
+            return self._status_unchecked()
+        except Exception:  # noqa: BLE001 - Never disclose malformed runtime values.
+            raise DemoAutomationSafetyError(
+                "demo_automation_runtime_policy_invalid"
+            ) from None
+
+    def _status_unchecked(self) -> DemoAutomationStatus:
+        policy_valid = self._runtime_policy_valid()
         active_trades = self._active_trades()
         open_risk, margin_pct = self._portfolio_usage(active_trades)
         baseline_equity = self._state["baseline_equity"]
@@ -280,18 +292,18 @@ class SafeDemoAutomation:
                 else None
             ),
             score_risk_tiers=(
-                configured_score_risk_tiers(self.settings)
-                if self.settings.okx_demo_score_risk_enabled
+                self._effective_score_risk_tiers()
+                if self.settings.okx_demo_score_risk_enabled and policy_valid
                 else []
             ),
             max_open_positions=self._portfolio_position_limit(status_equity),
             portfolio_max_risk_pct=(
-                D(str(self.settings.okx_demo_portfolio_max_risk_pct))
+                self._portfolio_risk_limit()
                 if self.settings.okx_demo_score_risk_enabled
                 else D("0")
             ),
             portfolio_max_margin_pct=(
-                D(str(self.settings.okx_demo_portfolio_max_margin_pct))
+                self._portfolio_margin_limit()
                 if self.settings.okx_demo_score_risk_enabled
                 else D("0")
             ),
@@ -590,6 +602,15 @@ class SafeDemoAutomation:
             available_margin_equity = D("0")
             portfolio_view = self._active_trades()
             try:
+                if (
+                    self.settings.okx_demo_capital_bucket_enabled
+                    and not self.settings.okx_demo_score_risk_enabled
+                ):
+                    raise DemoAutomationSafetyError(
+                        "capital_bucket_requires_score_risk"
+                    )
+                self._require_runtime_policy()
+                policy_snapshot = self.settings.model_dump(mode="python")
                 snapshot = await self.demo_service.reconcile()
                 total_equity = snapshot.balance.total_equity
                 exposed_symbols = {
@@ -649,14 +670,13 @@ class SafeDemoAutomation:
                 elif (
                     self.settings.okx_demo_score_risk_enabled
                     and self._portfolio_usage(portfolio_view)[0]
-                    > D(str(self.settings.okx_demo_portfolio_max_risk_pct))
+                    > self._portfolio_risk_limit()
                 ):
                     exposure_violation = "active_portfolio_stop_risk_limit_exceeded"
                 elif (
                     self.settings.okx_demo_score_risk_enabled
                     and self._portfolio_margin_amount(portfolio_view)
-                    > risk_equity
-                    * D(str(self.settings.okx_demo_portfolio_max_margin_pct))
+                    > risk_equity * self._portfolio_margin_limit()
                 ):
                     exposure_violation = "active_portfolio_margin_limit_exceeded"
                 elif bucket_plan is not None:
@@ -738,6 +758,7 @@ class SafeDemoAutomation:
                             balance_equity=risk_equity,
                             available_margin_equity=available_margin_equity,
                             portfolio=shadow_portfolio,
+                            policy_snapshot=policy_snapshot,
                         )
                         results.append(result)
                         if result.order_submission_attempted:
@@ -953,6 +974,7 @@ class SafeDemoAutomation:
         balance_equity: Decimal,
         available_margin_equity: Decimal,
         portfolio: list[DemoAutomationActiveTrade],
+        policy_snapshot: dict[str, Any],
     ) -> tuple[DemoAutomationSymbolResult, DemoAutomationActiveTrade | None]:
         instrument_id = strategy.instrument_id
         candidate = strategy.selected_candidate
@@ -1238,6 +1260,35 @@ class SafeDemoAutomation:
                     None,
                 )
 
+            if (
+                self.settings.okx_demo_capital_bucket_enabled
+                and not self.settings.okx_demo_score_risk_enabled
+            ):
+                return (
+                    self._candidate_result(
+                        strategy.symbol,
+                        instrument_id,
+                        aligned_candidate,
+                        outcome="blocked",
+                        reference_price=reference_price,
+                        detail="capital_bucket_requires_score_risk",
+                    ),
+                    None,
+                )
+            if not self._runtime_policy_valid() or self._structural_policy_changed(
+                policy_snapshot
+            ):
+                return (
+                    self._candidate_result(
+                        strategy.symbol,
+                        instrument_id,
+                        aligned_candidate,
+                        outcome="blocked",
+                        reference_price=reference_price,
+                        detail="demo_automation_runtime_policy_invalid",
+                    ),
+                    None,
+                )
             tier, requested_risk_pct, leverage, margin_cap_pct = self._risk_profile(
                 aligned_candidate.risk_score
                 if aligned_candidate.risk_score is not None
@@ -1257,12 +1308,13 @@ class SafeDemoAutomation:
             )
             open_risk_pct, open_margin_pct = self._portfolio_usage(portfolio)
             enforce_margin_guard = self.settings.okx_demo_score_risk_enabled
-            risk_guard_limit = D(str(self.settings.okx_demo_portfolio_max_risk_pct))
-            margin_guard_limit = D(str(self.settings.okx_demo_portfolio_max_margin_pct))
+            risk_guard_limit = self._portfolio_risk_limit()
+            margin_guard_limit = self._portfolio_margin_limit()
             if self.settings.okx_demo_score_risk_enabled:
-                remaining_margin_amount = balance_equity * D(
-                    str(self.settings.okx_demo_portfolio_max_margin_pct)
-                ) - self._portfolio_margin_amount(portfolio)
+                remaining_margin_amount = (
+                    balance_equity * margin_guard_limit
+                    - self._portfolio_margin_amount(portfolio)
+                )
                 if remaining_margin_amount <= 0:
                     return (
                         self._candidate_result(
@@ -1281,8 +1333,7 @@ class SafeDemoAutomation:
                     )
                 remaining_risk = max(
                     D("0"),
-                    D(str(self.settings.okx_demo_portfolio_max_risk_pct))
-                    - open_risk_pct,
+                    risk_guard_limit - open_risk_pct,
                 )
                 requested_risk_pct = min(requested_risk_pct, remaining_risk)
                 if requested_risk_pct <= 0:
@@ -1372,8 +1423,7 @@ class SafeDemoAutomation:
                 else:
                     remaining_margin = max(
                         D("0"),
-                        D(str(self.settings.okx_demo_portfolio_max_margin_pct))
-                        - open_margin_pct,
+                        margin_guard_limit - open_margin_pct,
                     )
                     margin_cap_pct = min(margin_cap_pct, remaining_margin)
                     if margin_cap_pct <= 0:
@@ -1542,9 +1592,14 @@ class SafeDemoAutomation:
             rounded_budget_detail: str | None = None
             if notional > max_notional:
                 rounded_budget_detail = "rounded_order_exceeds_notional_cap"
+            elif (
+                sizing_candidate.protection_model == "structure"
+                and estimated_stop_loss_pct > requested_risk_pct
+            ):
+                rounded_budget_detail = "rounded_order_exceeds_position_risk_budget"
             elif self.settings.okx_demo_score_risk_enabled and (
                 open_risk_pct + estimated_stop_loss_pct
-                > D(str(self.settings.okx_demo_portfolio_max_risk_pct))
+                > min(risk_guard_limit, self._portfolio_risk_limit())
             ):
                 rounded_budget_detail = "rounded_order_exceeds_portfolio_budget"
             elif (
@@ -1556,8 +1611,7 @@ class SafeDemoAutomation:
             elif (
                 self.settings.okx_demo_score_risk_enabled
                 and self._portfolio_margin_amount(portfolio) + estimated_margin
-                > balance_equity
-                * D(str(self.settings.okx_demo_portfolio_max_margin_pct))
+                > balance_equity * margin_guard_limit
             ):
                 rounded_budget_detail = "rounded_order_exceeds_portfolio_budget"
             if rounded_budget_detail is not None:
@@ -1811,8 +1865,13 @@ class SafeDemoAutomation:
                 margin_guard_available = fresh_capital.available_equity
 
             async def before_submit() -> None:
-                nonlocal order_submission_attempted
+                nonlocal order_submission_attempted, reservation
+                nonlocal estimated_stop_loss_pct, estimated_margin_pct
                 self._ensure_execute_ready()
+                if self._structural_policy_changed(policy_snapshot):
+                    raise DemoAutomationSafetyError(
+                        "demo_automation_runtime_policy_changed_before_submit"
+                    )
                 expected_generation = self._control_generation
                 expected_revision = self._control_revision
                 try:
@@ -1847,6 +1906,10 @@ class SafeDemoAutomation:
                         "demo_automation_shared_control_unconfirmed"
                     ) from exc
                 self._ensure_execute_ready()
+                if self._structural_policy_changed(policy_snapshot):
+                    raise DemoAutomationSafetyError(
+                        "demo_automation_runtime_policy_changed_before_submit"
+                    )
                 if (
                     sizing_candidate.expires_at.tzinfo is None
                     or sizing_candidate.expires_at.utcoffset() is None
@@ -1869,7 +1932,7 @@ class SafeDemoAutomation:
                         > margin_guard_equity
                         * min(
                             margin_guard_limit,
-                            D(str(self.settings.okx_demo_portfolio_max_margin_pct)),
+                            self._portfolio_margin_limit(),
                         )
                     ):
                         self._engage_emergency(
@@ -1937,24 +2000,61 @@ class SafeDemoAutomation:
                         account_equity=margin_guard_equity,
                         position_margin_cap=current_margin_cap,
                     )
-                    current_open_risk_pct, _ = self._portfolio_usage(
-                        current_margin_portfolio
+                    if margin_guard_equity <= 0:
+                        raise DemoAutomationSafetyError(
+                            "structural_leverage_policy_changed_before_submit"
+                        )
+                    # A shadow hold can retain an earlier equity denominator
+                    # even when its current active twin has been refreshed.
+                    # Keep the larger fixed USDT loss for each instrument.
+                    held_risk_amounts: dict[str, Decimal] = {}
+                    for held in (
+                        *current_margin_portfolio,
+                        *self._active_trades(),
+                    ):
+                        amount = held.estimated_stop_loss_amount
+                        if not amount.is_finite() or amount <= 0:
+                            raise DemoAutomationSafetyError(
+                                "portfolio_stop_risk_inventory_invalid"
+                            )
+                        held_risk_amounts[held.instrument_id] = max(
+                            held_risk_amounts.get(held.instrument_id, D("0")),
+                            amount,
+                        )
+                    current_open_risk_pct = (
+                        sum(held_risk_amounts.values(), D("0")) / margin_guard_equity
+                    )
+                    # The fixed order's USDT stop loss must be divided by the
+                    # freshly reconciled equity, not the earlier sizing equity.
+                    fresh_order_risk_pct = (
+                        estimated_stop_loss_amount / margin_guard_equity
                     )
                     if (
                         leverage > current_selection.selected_leverage
                         or leverage > current_selection.leverage_cap
                         or leverage > self.settings.okx_demo_max_leverage
                         or estimated_margin > current_margin_cap
-                        or estimated_stop_loss_pct > current_risk_ceiling
-                        or current_open_risk_pct + estimated_stop_loss_pct
+                        or fresh_order_risk_pct
+                        > min(current_risk_ceiling, requested_risk_pct)
+                        or current_open_risk_pct + fresh_order_risk_pct
                         > min(
                             risk_guard_limit,
-                            D(str(self.settings.okx_demo_portfolio_max_risk_pct)),
+                            self._portfolio_risk_limit(),
                         )
                     ):
                         raise DemoAutomationSafetyError(
                             "structural_leverage_policy_changed_before_submit"
                         )
+                    reservation = reservation.model_copy(
+                        update={
+                            "estimated_stop_loss_pct": fresh_order_risk_pct,
+                            "margin_allocation_pct": (
+                                estimated_margin / margin_guard_equity
+                            ),
+                        }
+                    )
+                    estimated_stop_loss_pct = fresh_order_risk_pct
+                    estimated_margin_pct = estimated_margin / margin_guard_equity
                 order_submission_attempted = True
 
             expiry = max(
@@ -2448,12 +2548,21 @@ class SafeDemoAutomation:
         self, score: int
     ) -> tuple[DemoAutomationRiskTier | None, Decimal, int, Decimal]:
         if self.settings.okx_demo_score_risk_enabled:
-            tiers = configured_score_risk_tiers(self.settings)
+            tiers = self._effective_score_risk_tiers()
             tier = (
                 tiers[0]
                 if score < self.settings.strategy_min_score
-                else score_risk_tier(score, self.settings)
+                else next(
+                    (
+                        item
+                        for item in tiers
+                        if item.minimum_score <= score <= item.maximum_score
+                    ),
+                    None,
+                )
             )
+            if tier is None:
+                raise ValueError("score_outside_configured_demo_risk_tiers")
             return (
                 tier,
                 D(str(tier.risk_pct)),
@@ -2466,6 +2575,18 @@ class SafeDemoAutomation:
             self.settings.okx_demo_automation_leverage,
             D("1"),
         )
+
+    def _effective_score_risk_tiers(self) -> list[DemoAutomationRiskTier]:
+        tiers = configured_score_risk_tiers(self.settings)
+        if not (
+            self.settings.okx_demo_structural_dynamic_leverage_enabled
+            and self.settings.okx_demo_capital_bucket_enabled
+        ):
+            return tiers
+        return [
+            tier.model_copy(update={"risk_pct": min(tier.risk_pct, D("0.005"))})
+            for tier in tiers
+        ]
 
     def _portfolio_position_limit(
         self,
@@ -2500,6 +2621,53 @@ class SafeDemoAutomation:
             ),
             configured_position_limit=self.settings.okx_demo_max_open_positions,
         )
+
+    def _portfolio_margin_limit(self) -> Decimal:
+        configured = D(str(self.settings.okx_demo_portfolio_max_margin_pct))
+        if self.settings.okx_demo_capital_bucket_enabled:
+            # Settings can be mutated after construction. Every active bucket
+            # path must retain its 60% ceiling at each runtime check.
+            return min(configured, D("0.60"))
+        return configured
+
+    def _portfolio_risk_limit(self) -> Decimal:
+        configured = D(str(self.settings.okx_demo_portfolio_max_risk_pct))
+        if (
+            self.settings.okx_demo_structural_dynamic_leverage_enabled
+            and self.settings.okx_demo_capital_bucket_enabled
+        ):
+            return min(configured, D("0.01"))
+        return configured
+
+    def _structural_policy_changed(self, snapshot: dict[str, Any]) -> bool:
+        # Structural policy is pinned for this invocation. Even a valid
+        # mid-run relaxation cannot enlarge an already-reviewed order.
+        return (
+            bool(
+                snapshot["okx_demo_structural_dynamic_leverage_enabled"]
+                or self.settings.okx_demo_structural_dynamic_leverage_enabled
+            )
+            and self.settings.model_dump(mode="python", warnings=False) != snapshot
+        )
+
+    def _runtime_policy_valid(self) -> bool:
+        try:
+            # Pydantic's pinned core validator checks Field bounds and the
+            # model-level safety rules on a disposable copy. BaseSettings
+            # construction/model_validate would reopen env and dotenv sources.
+            checked = self.settings.model_copy()
+            type(self.settings).__pydantic_validator__.validate_python(
+                self.settings.model_dump(mode="python", warnings=False),
+                self_instance=checked,
+                strict=True,
+            )
+        except Exception:  # noqa: BLE001 - Never expose policy inputs or secrets.
+            return False
+        return True
+
+    def _require_runtime_policy(self) -> None:
+        if not self._runtime_policy_valid():
+            raise DemoAutomationSafetyError("demo_automation_runtime_policy_invalid")
 
     def _ensure_capital_bucket_currency(
         self,
@@ -3488,6 +3656,13 @@ class SafeDemoAutomation:
 
     def _configuration_blockers(self) -> list[str]:
         blockers: list[str] = []
+        if (
+            self.settings.okx_demo_capital_bucket_enabled
+            and not self.settings.okx_demo_score_risk_enabled
+        ):
+            blockers.append("capital_bucket_requires_score_risk")
+        if not self._runtime_policy_valid():
+            blockers.append("demo_automation_runtime_policy_invalid")
         if not self.settings.okx_demo_auto_execution:
             blockers.append("okx_demo_auto_execution_disabled")
         if self.settings.trading_mode != "okx_demo":

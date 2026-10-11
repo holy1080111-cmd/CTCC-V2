@@ -39,6 +39,26 @@ lower values remain valid. The aggregate ceiling is checked during sizing, after
 contract rounding, after leverage configuration, and again at the final submit
 boundary.
 
+Runtime checks also reapply the in-memory safety policy because a `Settings`
+instance can be changed after construction. The active bucket path keeps the
+60% aggregate-margin ceiling even if a later setting raises its configured
+limit. Structural sizing independently caps each trade at 0.5% stop risk and
+the open portfolio at 1%. Invalid risk, bucket, cost, or 20x-quality settings
+block new entries; a change to the structural settings during one run blocks
+that run even when both individual configurations would be valid. Recovery
+still reads durable exposure and retains the restart emergency latch before
+reporting an invalid policy. After the final fresh account read, the fixed
+order's and all held positions' USDT stop-loss amounts are divided by freshly
+reconciled equity before the per-trade and open-portfolio stop-risk checks.
+Captured and current holds use the larger fixed amount per instrument, so an
+old equity percentage cannot reduce the hard cap. A permitted equity change
+also updates the submitted result and persisted reservation percentages.
+Runtime validation checks field bounds and types without reopening environment
+or dotenv sources; malformed values return a generic blocker. These checks
+cover the legacy Demo service's synthetic execution path; the shared real OKX write
+transport remains closed until the source-owned qualification and one-use
+dispatch authority exist.
+
 A read-only validation profile is:
 
 ```env

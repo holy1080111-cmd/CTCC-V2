@@ -4378,3 +4378,28 @@ Generated-SQL parity tests passed 2/2 and the affected integration tests
 collect; actual DB0037 upgrade, downgrade, first append and restart readback
 must pass the next exact-source PostgreSQL CI before acceptance. The latest
 feature source remains fail closed and has no order-write authority.
+
+## 2026-10-11 legacy Demo structural-risk runtime correction
+
+An independent synthetic review found three ways a mutable in-memory profile
+could weaken the legacy Demo calculation: a relaxed bucket margin, structural
+risk, or 20x-quality setting after construction; a fresh equity drop that made
+a fixed order exceed its 0.5% stop-risk ceiling; and stale held-position
+percentages that let three positions exceed the 1% portfolio stop-risk ceiling.
+The runtime now strictly revalidates policy fields and cross-field rules
+without reopening env sources, caps the 300-USDT bucket path at 60% aggregate
+margin, and sums fixed USDT stop-loss amounts from held positions plus the
+pending order against freshly reconciled equity at the final pre-submit
+boundary. A permitted equity change updates reservation and submitted-result
+percentages. Malformed settings yield a generic blocker without serializing
+raw input into status warnings.
+
+Focused Windows synthetic Demo risk, automation, and related policy tests,
+Ruff lint/format, and diff whitespace checks passed locally on the working
+tree. Independent peer reproduction confirmed that the third of three symbol
+submissions was blocked before synthetic POST after equity fell from 1,000 to
+980 USDT; a separate 1,000-to-995 case kept an accepted result aligned with
+persisted risk. This is limited to the legacy in-memory Demo service. The
+shared real OKX private transport still denies all writes, and source-owned
+account completion, durable intent, Demo acceptance, final-source CI, and
+Live acceptance remain unverified.

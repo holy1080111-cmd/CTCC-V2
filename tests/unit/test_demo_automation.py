@@ -3317,7 +3317,12 @@ async def test_structural_policy_tightening_after_last_await_vetoes_order(
     assert len(demo.leverage_calls) == 1
     assert demo.place_calls == []
     assert run.results[0].order_submission_attempted is False
-    assert "structural_leverage_policy_changed_before_submit" in run.results[0].detail
+    expected = (
+        "demo_automation_runtime_policy_invalid"
+        if late_change == "tier_cap"
+        else "demo_automation_runtime_policy_changed_before_submit"
+    )
+    assert expected in run.results[0].detail
 
 
 @pytest.mark.asyncio
