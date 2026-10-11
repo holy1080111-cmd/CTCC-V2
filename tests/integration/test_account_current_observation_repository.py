@@ -243,6 +243,114 @@ async def test_db0038_replaces_caller_time_with_native_database_receipt(
     ).execution_authority is False
 
 
+async def test_db0038_restricted_writer_cannot_shadow_append_predecessor_with_temp_table(
+    monkeypatch, database
+):
+    """The trigger must read the real immutable chain, even with a temp alias."""
+    scope, reference = await original_v7(monkeypatch, database)
+    journal = AccountCaptureJournalRepository(database[1], clock=now)
+    chain = await journal.read_chain(scope, reference.capture_id)
+    fake_predecessor = "a" * 64
+    document, receipt = current_index._derive(
+        chain,
+        reference,
+        scope,
+        sequence=2,
+        previous_sha256=fake_predecessor,
+        validated_at=now(),
+    )
+    engine = database[0]
+    role = "ctcc_cobs_" + uuid4().hex[:20]
+    assert len(role) < 64 and role.replace("ctcc_cobs_", "").isalnum()
+    async with engine.begin() as connection:
+        await connection.execute(text(f"CREATE ROLE {role} NOLOGIN"))
+        await connection.execute(text(f"GRANT USAGE ON SCHEMA public TO {role}"))
+        await connection.execute(
+            text(f"GRANT SELECT ON public.demo_account_capture_events TO {role}")
+        )
+        await connection.execute(
+            text(
+                "GRANT SELECT, INSERT ON public.demo_account_current_observations "
+                f"TO {role}"
+            )
+        )
+    try:
+        async with engine.connect() as connection:
+            with pytest.raises(
+                DBAPIError, match="account_current_observation_append_denied"
+            ):
+                async with connection.begin():
+                    await connection.execute(text(f"SET LOCAL ROLE {role}"))
+                    await connection.execute(
+                        text(
+                            "CREATE TEMP TABLE demo_account_current_observations ("
+                            "environment text, account_id text, "
+                            "settlement_currency text, sequence bigint, "
+                            "event_sha256 text, db_recorded_at timestamptz) "
+                            "ON COMMIT DROP"
+                        )
+                    )
+                    await connection.execute(
+                        text(
+                            "INSERT INTO pg_temp.demo_account_current_observations "
+                            "(environment, account_id, settlement_currency, "
+                            "sequence, event_sha256, db_recorded_at) "
+                            "VALUES (:environment, :account_id, :currency, "
+                            "1, :previous, clock_timestamp())"
+                        ),
+                        {
+                            "environment": scope.environment,
+                            "account_id": scope.account_id,
+                            "currency": scope.settlement_currency,
+                            "previous": fake_predecessor,
+                        },
+                    )
+                    await connection.execute(
+                        text(
+                            "INSERT INTO public.demo_account_current_observations "
+                            "(environment, account_id, settlement_currency, "
+                            "sequence, capture_id, source_sequence, "
+                            "previous_sha256, event_sha256, document_json, receipt_json) "
+                            "VALUES (:environment, :account_id, :currency, "
+                            "2, :capture_id, :source_sequence, "
+                            ":previous, :event_sha256, :document, :receipt)"
+                        ),
+                        {
+                            "environment": scope.environment,
+                            "account_id": scope.account_id,
+                            "currency": scope.settlement_currency,
+                            "capture_id": reference.capture_id,
+                            "source_sequence": len(chain),
+                            "previous": fake_predecessor,
+                            "event_sha256": current_index.journal.digest(document),
+                            "document": document.decode("utf-8"),
+                            "receipt": receipt.decode("utf-8"),
+                        },
+                    )
+    finally:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "REVOKE SELECT, INSERT ON "
+                    "public.demo_account_current_observations FROM " + role
+                )
+            )
+            await connection.execute(
+                text(f"REVOKE SELECT ON public.demo_account_capture_events FROM {role}")
+            )
+            await connection.execute(text(f"REVOKE USAGE ON SCHEMA public FROM {role}"))
+            await connection.execute(text(f"DROP ROLE {role}"))
+    async with database[1]() as session:
+        assert (
+            await session.scalar(
+                select(func.count())
+                .select_from(Current)
+                .where(Current.account_id == scope.account_id)
+            )
+            == 0
+        )
+
+
 @pytest.mark.parametrize("revision", ["0038"])
 async def test_db0038_empty_downgrade_reupgrade_preserves_schema(sandbox, revision):
     engine, _ = sandbox

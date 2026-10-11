@@ -4616,3 +4616,32 @@ were skipped because no database was available on this host. Hosted CI on the
 new exact source must run those cases before DB0038 can be accepted. The
 working slice does not resolve source authenticity, historical completeness,
 portfolio risk or Demo eligibility.
+
+The signed-in OKX Demo key detail dialog was read again at 2026-10-11 15:52
+UTC. It displayed only Read and Trade permissions and a populated IP allowlist.
+No key, secret, passphrase, account UID or IP value was copied into the
+redacted diagnostic at
+`../../validation-results/okx-demo-key-readback-20261011/evidence.json`
+(SHA256 `d22dbf5fea88679ed2fa321b2ec3e4c1824c633e20337a63b5662c7c0475827c`).
+The dialog still contains no registered-site field; this UI observation is
+not an account-completeness or order-write preflight.
+
+The trusted B1/V7 account page-chain code uses `billId`, `ordId` and `algoId`
+for the corresponding streams, continues through short pages to a recorded
+empty termination, and rejects duplicate or non-progressing cursors. This
+aligns with the current [OKX pagination specification](https://www.okx.com/docs-v5/trick_en/#pagination),
+but neither first-page legacy order history nor bounded historical queries
+prove complete realized outcomes or funding accrual. The legacy Demo and Live
+reconciliation services still ingest at most the first 100 recent historical
+orders; they cannot be used as a complete account-history witness.
+
+The first exact DB0038 CI run `38152776062` failed Windows before pytest:
+`integration_module_classification_changed`. The new DB test was absent from
+the explicit Windows classifier and Linux PostgreSQL suite. Independent code
+review also found that the new trigger's unqualified table reads could resolve
+a same-named restricted-writer temporary table, poisoning an immutable
+diagnostic chain. The working repair schema-qualifies its table/function
+references, pins the function search path, tests temporary-table shadowing,
+and registers the module in both CI classifications. The Windows test-list
+selection and 77 focused local unit tests passed after this change, but its
+PostgreSQL test and full exact-source CI remain pending a new commit/run.

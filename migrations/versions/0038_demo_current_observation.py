@@ -23,7 +23,7 @@ _SOURCE_POLICY_SHA256 = (
 
 def upgrade():
     op.execute("""
-      CREATE TABLE demo_account_current_observations (
+      CREATE TABLE public.demo_account_current_observations (
         environment VARCHAR(8) NOT NULL, account_id VARCHAR(32) NOT NULL,
         settlement_currency VARCHAR(16) NOT NULL, sequence BIGINT NOT NULL,
         capture_id VARCHAR(32) NOT NULL, source_sequence BIGINT NOT NULL,
@@ -32,7 +32,7 @@ def upgrade():
         db_recorded_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT clock_timestamp(),
         CONSTRAINT pk_demo_account_current_observations PRIMARY KEY(environment,account_id,settlement_currency,sequence),
         CONSTRAINT uq_account_current_observation_capture UNIQUE(capture_id),
-        CONSTRAINT fk_account_current_observation_source FOREIGN KEY(capture_id,source_sequence) REFERENCES demo_account_capture_events(capture_id,sequence) ON DELETE RESTRICT,
+        CONSTRAINT fk_account_current_observation_source FOREIGN KEY(capture_id,source_sequence) REFERENCES public.demo_account_capture_events(capture_id,sequence) ON DELETE RESTRICT,
         CONSTRAINT ck_demo_account_current_observations_scope CHECK(environment='demo' AND account_id ~ '^[0-9]{1,32}$' AND settlement_currency ~ '^[A-Z0-9]{1,16}$'),
         CONSTRAINT ck_demo_account_current_observations_sequence_bound CHECK(sequence BETWEEN 1 AND 9223372036854775807 AND source_sequence BETWEEN 1 AND 8192),
         CONSTRAINT ck_demo_account_current_observations_chain CHECK(event_sha256 ~ '^[a-f0-9]{64}$' AND ((sequence=1 AND previous_sha256 IS NULL) OR (sequence>1 AND previous_sha256 ~ '^[a-f0-9]{64}$'))),
@@ -40,18 +40,18 @@ def upgrade():
       )
     """)
     op.execute(f"""
-      CREATE FUNCTION account_current_observation_guard() RETURNS trigger AS $$
+      CREATE FUNCTION public.account_current_observation_guard() RETURNS trigger AS $$
       DECLARE j JSONB; r JSONB; prior RECORD; src RECORD; first_event RECORD; lock_key BIGINT;
       BEGIN
         lock_key := ('x'||substr(encode(sha256(convert_to('ctcc-qualification-account-v1','UTF8')||decode('00','hex')||convert_to(NEW.environment,'UTF8')||decode('00','hex')||convert_to(NEW.account_id,'UTF8')),'hex'),1,16))::bit(64)::bigint;
         PERFORM pg_advisory_xact_lock(lock_key);
-        SELECT * INTO prior FROM demo_account_current_observations
+        SELECT * INTO prior FROM public.demo_account_current_observations
           WHERE environment=NEW.environment AND account_id=NEW.account_id
             AND settlement_currency=NEW.settlement_currency
           ORDER BY sequence DESC LIMIT 1;
-        SELECT * INTO src FROM demo_account_capture_events
+        SELECT * INTO src FROM public.demo_account_capture_events
           WHERE capture_id=NEW.capture_id AND sequence=NEW.source_sequence;
-        SELECT * INTO first_event FROM demo_account_capture_events
+        SELECT * INTO first_event FROM public.demo_account_capture_events
           WHERE capture_id=NEW.capture_id AND sequence=1;
         -- Never accept a caller timestamp, including one supplied despite the
         -- column default. This time is a DB receipt, not a host-clock claim.
@@ -108,29 +108,32 @@ def upgrade():
           RAISE EXCEPTION 'account_current_observation_append_denied';
         END IF;
         RETURN NEW;
-      END; $$ LANGUAGE plpgsql;
+      END; $$ LANGUAGE plpgsql SET search_path=pg_catalog,pg_temp;
     """)
     op.execute(
-        "CREATE TRIGGER account_current_observation_guard BEFORE INSERT ON demo_account_current_observations FOR EACH ROW EXECUTE FUNCTION account_current_observation_guard()"
+        "REVOKE ALL ON FUNCTION public.account_current_observation_guard() FROM PUBLIC"
     )
     op.execute(
-        "CREATE TRIGGER account_current_observation_immutable BEFORE UPDATE OR DELETE ON demo_account_current_observations FOR EACH ROW EXECUTE FUNCTION qualification_ledger_immutable()"
+        "CREATE TRIGGER account_current_observation_guard BEFORE INSERT ON public.demo_account_current_observations FOR EACH ROW EXECUTE FUNCTION public.account_current_observation_guard()"
     )
     op.execute(
-        "CREATE TRIGGER account_current_observation_no_truncate BEFORE TRUNCATE ON demo_account_current_observations FOR EACH STATEMENT EXECUTE FUNCTION qualification_ledger_immutable()"
+        "CREATE TRIGGER account_current_observation_immutable BEFORE UPDATE OR DELETE ON public.demo_account_current_observations FOR EACH ROW EXECUTE FUNCTION public.qualification_ledger_immutable()"
+    )
+    op.execute(
+        "CREATE TRIGGER account_current_observation_no_truncate BEFORE TRUNCATE ON public.demo_account_current_observations FOR EACH STATEMENT EXECUTE FUNCTION public.qualification_ledger_immutable()"
     )
 
 
 def downgrade():
     op.execute(
-        "LOCK TABLE demo_account_capture_events, demo_account_current_observations IN ACCESS EXCLUSIVE MODE NOWAIT"
+        "LOCK TABLE public.demo_account_capture_events, public.demo_account_current_observations IN ACCESS EXCLUSIVE MODE NOWAIT"
     )
     op.execute("""
       DO $$ BEGIN
-        IF EXISTS (SELECT 1 FROM demo_account_current_observations) THEN
+        IF EXISTS (SELECT 1 FROM public.demo_account_current_observations) THEN
           RAISE EXCEPTION 'account_current_observation_downgrade_requires_empty';
         END IF;
       END $$
     """)
-    op.drop_table("demo_account_current_observations")
-    op.execute("DROP FUNCTION account_current_observation_guard()")
+    op.drop_table("demo_account_current_observations", schema="public")
+    op.execute("DROP FUNCTION public.account_current_observation_guard()")

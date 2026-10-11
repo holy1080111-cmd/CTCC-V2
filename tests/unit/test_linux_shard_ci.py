@@ -64,6 +64,10 @@ def test_reviewed_modules_in_postgres_suite_only():
             "tests/integration/test_post_g12_v4_real_account_chain_repository.py",
             "test_v4_reads_real_v5_v7_b1_chains_before_separate_event_observation",
         ),
+        (
+            "tests/integration/test_account_current_observation_repository.py",
+            "test_v7_current_append_readback_is_separate_from_history_and_idempotent",
+        ),
     ):
         nodeid = path + "::" + case
         assert path in POSTGRES_TEST_PATHS

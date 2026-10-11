@@ -31,6 +31,7 @@ NO_DB_INTEGRATION = (
 POSTGRES_INTEGRATION = (
     "test_account_bill_archive_claim_repository.py",
     "test_account_capture_crash_probe_repository.py",
+    "test_account_current_observation_repository.py",
     "test_account_history_query_verifier_repository.py",
     "test_account_ingestion_journal_repository.py",
     "test_account_locked_current_history_join_v7_repository.py",

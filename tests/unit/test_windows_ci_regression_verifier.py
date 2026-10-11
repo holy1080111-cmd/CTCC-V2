@@ -143,6 +143,10 @@ def test_junit_rejects_unsafe_or_incomplete_evidence(
 
 def test_integration_module_classification_fails_on_new_module(tmp_path: Path):
     assert (
+        "test_account_current_observation_repository.py"
+        in verifier.POSTGRES_INTEGRATION
+    )
+    assert (
         "test_complete_consumed_event_ledger_repository.py"
         in verifier.POSTGRES_INTEGRATION
     )
