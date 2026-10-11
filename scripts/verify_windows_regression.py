@@ -64,6 +64,7 @@ POSTGRES_INTEGRATION = (
     "test_okx_live_schema_integration.py",
     "test_persistence_repository.py",
     "test_post_g12_account_event_observation_v4_repository.py",
+    "test_post_g12_v4_real_account_chain_repository.py",
     "test_public_receipt_witness_repository.py",
     "test_public_receipt_publication_ack_repository.py",
     "test_public_receipt_post_read_observation_repository.py",

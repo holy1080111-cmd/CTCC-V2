@@ -60,6 +60,10 @@ def test_reviewed_modules_in_postgres_suite_only():
             "tests/integration/test_public_receipt_publication_ack_repository.py",
             "test_observer_cannot_ack_own_uncommitted_witness_insert",
         ),
+        (
+            "tests/integration/test_post_g12_v4_real_account_chain_repository.py",
+            "test_v4_reads_real_v5_v7_b1_chains_before_separate_event_observation",
+        ),
     ):
         nodeid = path + "::" + case
         assert path in POSTGRES_TEST_PATHS
