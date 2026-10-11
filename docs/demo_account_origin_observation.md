@@ -118,3 +118,16 @@ It cannot prove credential-session ownership, account registration site,
 complete history or order authority; all remain false. A permission/IP
 observation, even after remediation, would be a prerequisite rather than
 acceptance of the trusted account source or Demo execution.
+
+## 2026-10-11 later Demo key-policy read
+
+After the operator confirmed that the dedicated Demo key was locally available,
+one further zero-retry signed `GET /api/v5/account/config` ran with order writes,
+automation and startup reconciliation disabled. The redacted diagnostic is
+`../../validation-results/demo-key-policy-readonly-be4aa93-20261011T132555Z.json`
+(SHA256 `33d7ab7f35903963d261bedb1f6f32cba7486ffbe02595f5748807729d1f1990`).
+It reports exact Read and Trade permissions, no Withdraw permission, and **no
+observed IP binding**. It contains no raw response, API key, UID or IP address.
+The account registration site and credential-session ownership remain
+unverified. This is a read-only diagnostic, not a trusted account snapshot or
+Demo execution acceptance; order writes remain disabled.

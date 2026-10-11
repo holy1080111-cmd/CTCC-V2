@@ -93,6 +93,7 @@ def _source_inputs_fixture():
         ("companion_changed_after_native", "account_unavailable"),
         ("companion_readback_changed_after_native", "account_unavailable"),
         ("recheck_replay_failure", "account_unavailable"),
+        ("final_g1_rejected", "denied"),
         ("stale_after_join", "account_unavailable"),
     ],
 )
@@ -248,6 +249,14 @@ async def test_v3_g12_public_then_committed_history_and_fresh_current(
         monkeypatch.setattr(
             joined.public_recheck, "evaluate_post_g12_public_recheck_v2", reject_replay
         )
+    if fault == "final_g1_rejected":
+
+        def reject_final_g1(*_args, **_kwargs):
+            raise joined.prior.PostG12AccountJoinError(
+                "post_g12_final_original_g1_rejected"
+            )
+
+        monkeypatch.setattr(joined.prior, "_require_final_original_g1", reject_final_g1)
     result = await joined.publish_capture_public_account_history_v3(
         tmp_path / "g12",
         tmp_path / "public",
@@ -283,7 +292,7 @@ async def test_v3_g12_public_then_committed_history_and_fresh_current(
     assert joined._utc(receipt["publication_completed_at"]) < joined._utc(
         receipt["public_first_request_started_at"]
     )
-    if fault is None:
+    if fault in {None, "final_g1_rejected"}:
         assert receipt["committed_history_readback_before_first_http"] is True
         assert (
             joined._utc(receipt["publication_completed_at"])

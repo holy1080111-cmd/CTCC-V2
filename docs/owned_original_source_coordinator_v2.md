@@ -206,3 +206,10 @@ now invokes unchanged V7, then reads this controlled journal twice in the same
 task. It can reject a visible duplicate and records an absent event only as a
 limited DB observation. V7 itself remains unwired to the journal, and neither
 V8 nor an empty pair of reads promotes G6 or execution authority.
+
+The opt-in [V10 same-frame observation](owned_original_event_journal_v10.md)
+keeps the original raw public/account packets and fixed G5 event inside the
+private owner during both controlled-journal reads, then replays the same event
+before returning a hash-only DENY diagnostic. This closes the V8 handoff gap
+between G5 replay and the local DB observation, but neither the DB nor V10
+proves complete legacy/exchange event history. G6 remains unperformed.

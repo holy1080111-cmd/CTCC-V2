@@ -18,6 +18,7 @@ from decimal import Decimal
 from pathlib import PosixPath, WindowsPath
 from typing import Literal
 
+from app.database.repositories.qualification_ledger import QualificationLedgerRepository
 from app.domain.analysis import MultiTimeframeAnalysis
 from app.domain.market import MarketSnapshot
 from app.domain.native_clock import native_stamp
@@ -49,9 +50,15 @@ from app.trade_qualification.current_conditions import _evaluate_base_g2_g4
 from app.trade_qualification.events import extract_trigger
 from app.trade_qualification.market_bridge_v2 import public_market_context_v2
 from app.trade_qualification.models import EntryQualificationResult, GateAssessment
+from app.trade_qualification.owned_event_journal_validation import (
+    _STABLE_JOURNAL_FIELDS,
+    _journal_document,
+    _session_identity,
+)
 from app.trade_qualification.public_source_runtime import (
     _consume_initial_public_capture_v2,
 )
+from app.trade_qualification.reservations import digest
 from app.trade_qualification.service import QualificationPrefixPolicy
 from app.trade_qualification.sweep_history_permission import (
     POLICY_SHA256 as SWEEP_HISTORY_POLICY_SHA256,
@@ -1207,6 +1214,120 @@ async def _capture_owned_original_base_event_for_boundary_v7(
     )
 
 
+async def _capture_owned_original_event_journal_for_boundary_v10(
+    public_root,
+    account_root,
+    *,
+    instrument_id,
+    strategy,
+    market_policy,
+    account_session,
+    session_factory,
+) -> bytes:
+    """Keep G5 and the controlled DB observation in one private raw frame.
+
+    The result is a DENY-only diagnostic; no incomplete event history can pass G6.
+    """
+    if type(strategy) is not str or strategy not in precursor._BASE_STRATEGIES:
+        raise OriginalSourceCoordinatorError(
+            "original_event_journal_strategy_unsupported"
+        )
+    return await _capture_owned_original_sources(
+        public_root,
+        account_root,
+        instrument_id=instrument_id,
+        market_policy=market_policy,
+        account_session=account_session,
+        session_factory=session_factory,
+        inspect_g1=True,
+        strategy=strategy,
+        retain_raw_for_boundary=True,
+        inspect_base_prefix=True,
+        inspect_base_event=True,
+        inspect_base_event_journal=True,
+    )
+
+
+async def _inspect_owned_event_journal_in_frame_v10(
+    *,
+    account_session,
+    session_factory,
+    identity,
+    event_key,
+):
+    """Observe two locked row-chain reads; absence is never a G6 PASS."""
+    pin, scope, binding = identity
+    if _session_identity(account_session, used=True) != (pin, scope, binding):
+        raise OriginalSourceCoordinatorError("original_event_journal_session_changed")
+    state = {
+        "code": "ledger_unavailable",
+        "event_key_sha256": event_key,
+        "ledger_first_sha256": None,
+        "ledger_second_sha256": None,
+        "ledger_revision": None,
+        "ledger_observed_at": None,
+        "event_seen_in_controlled_journal": None,
+    }
+    stamps = []
+
+    def stamp():
+        item = native_stamp()
+        stamps.append(item)
+        if len(stamps) >= 2:
+            validate_stamps(stamps)
+        return utc_from_ns(item["utc_ns"])
+
+    repository = QualificationLedgerRepository(session_factory, clock=stamp)
+    task = asyncio.current_task()
+    try:
+        async with asyncio.timeout(30):
+            first_start = stamp()
+            first = await repository.inspect_consumed_event_journal(scope)
+            first_finish = stamp()
+            first_doc = _journal_document(first, scope, first_start, first_finish)
+            if task is None or task.cancelling():
+                raise asyncio.CancelledError
+            second_start = stamp()
+            second = await repository.inspect_consumed_event_journal(scope)
+            second_finish = stamp()
+            second_doc = _journal_document(second, scope, second_start, second_finish)
+        if task is not asyncio.current_task() or task.cancelling():
+            raise asyncio.CancelledError
+        if _session_identity(account_session, used=True) != (pin, scope, binding):
+            raise ValueError
+        state["ledger_first_sha256"] = first.sha256
+        state["ledger_second_sha256"] = second.sha256
+        if (
+            first.received_at > second.observed_at
+            or first.consumed_event_keys != second.consumed_event_keys
+            or any(
+                first_doc[name] != second_doc[name] for name in _STABLE_JOURNAL_FIELDS
+            )
+        ):
+            state["code"] = "ledger_changed"
+            return state
+        seen = event_key in second.consumed_event_keys
+        state.update(
+            code=(
+                "event_seen_in_controlled_journal"
+                if seen
+                else "event_absent_from_controlled_journal_only"
+            ),
+            ledger_revision=second_doc["ledger_revision"],
+            ledger_observed_at=second_doc["observed_at"],
+            event_seen_in_controlled_journal=seen,
+        )
+        return state
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001 -- a failed read cannot become absence
+        if task is not None and task.cancelling():
+            raise asyncio.CancelledError from None
+        state["ledger_first_sha256"] = state["ledger_second_sha256"] = None
+        state["code"] = "ledger_unavailable"
+        return state
+
+
 async def _capture_owned_original_sweep_history_for_boundary_v9(
     public_root,
     account_root,
@@ -1243,6 +1364,7 @@ async def _capture_owned_original_sources(
     retain_raw_for_boundary=False,
     inspect_base_prefix=False,
     inspect_base_event=False,
+    inspect_base_event_journal=False,
     inspect_sweep_history=False,
 ):
     if (
@@ -1250,7 +1372,10 @@ async def _capture_owned_original_sources(
         or type(retain_raw_for_boundary) is not bool
         or type(inspect_base_prefix) is not bool
         or type(inspect_base_event) is not bool
+        or type(inspect_base_event_journal) is not bool
         or type(inspect_sweep_history) is not bool
+        or inspect_base_event_journal
+        and not inspect_base_event
         or inspect_base_event
         and not inspect_base_prefix
         or inspect_sweep_history
@@ -1299,6 +1424,11 @@ async def _capture_owned_original_sources(
         )
         if bound_plan_pin != account_session._pin:
             raise OriginalSourceCoordinatorError("original_source_region_mismatch")
+        journal_identity = (
+            _session_identity(account_session, used=False)
+            if inspect_base_event_journal
+            else None
+        )
     except OriginalSourceCoordinatorError:
         raise
     except Exception:  # noqa: BLE001 -- never expose private plan/credential text
@@ -1327,6 +1457,7 @@ async def _capture_owned_original_sources(
     precursor_intent_derived = False
     prefix_receipt_json = None
     event_receipt_json = None
+    journal_state = None
     sweep_receipt_json = None
 
     def result():
@@ -1388,6 +1519,79 @@ async def _capture_owned_original_sources(
             if inspect_g1
             else InitialOwnedSourcesDiagnosticV2(receipt)
         )
+        if inspect_base_event_journal:
+            if journal_identity is None:
+                raise OriginalSourceCoordinatorError(
+                    "original_event_journal_scope_missing"
+                )
+            plan_identity, scope, binding = journal_identity
+            if plan_identity != plan_pin:
+                raise OriginalSourceCoordinatorError(
+                    "original_event_journal_scope_changed"
+                )
+            event_key = (
+                None
+                if event_receipt_json is None
+                else decode(event_receipt_json)["event_key_sha256"]
+            )
+            state = journal_state or {
+                "code": "g5_unavailable"
+                if event_receipt_json is None
+                else "ledger_unavailable",
+                "event_key_sha256": event_key,
+                "ledger_first_sha256": None,
+                "ledger_second_sha256": None,
+                "ledger_revision": None,
+                "ledger_observed_at": None,
+                "event_seen_in_controlled_journal": None,
+            }
+            return canonical(
+                {
+                    "schema_version": "ctcc.owned_original_event_journal_in_frame.v10",
+                    "code": state["code"],
+                    "original_diagnostic_sha256": diagnostic.receipt_sha256,
+                    "public_packet_sha256": public_pin,
+                    "account_packet_sha256": account_packet_pin,
+                    "precursor_receipt_sha256": precursor_pin,
+                    "precursor_intent_sha256": precursor_intent_pin,
+                    "base_prefix_receipt_sha256": None
+                    if prefix_receipt_json is None
+                    else sha(prefix_receipt_json),
+                    "event_receipt_sha256": None
+                    if event_receipt_json is None
+                    else sha(event_receipt_json),
+                    "account_plan_sha256": plan_pin,
+                    "scope_sha256": digest(scope),
+                    "session_binding_sha256": binding,
+                    **{
+                        name: state[name]
+                        for name in (
+                            "event_key_sha256",
+                            "ledger_first_sha256",
+                            "ledger_second_sha256",
+                            "ledger_revision",
+                            "ledger_observed_at",
+                            "event_seen_in_controlled_journal",
+                        )
+                    },
+                    "g1_g5_replayed": event_receipt_json is not None,
+                    "historical_first_availability_verified": False,
+                    "event_ledger_authenticated": False,
+                    "db_journal_complete": False,
+                    "external_event_history_complete": False,
+                    "g6_evaluated": False,
+                    "g7_evaluated": False,
+                    "candidate_created": False,
+                    "g1_g11_complete": False,
+                    "g12_published": False,
+                    "account_complete": False,
+                    "execution_recheck_performed": False,
+                    "atomic_risk_reserved": False,
+                    "execution_authority": False,
+                    "order_submitted": False,
+                    "admission": "DENY",
+                }
+            )
         if inspect_base_event:
             return _OwnedBaseEventHandoffV7(
                 _OwnedBasePrefixHandoffV6(diagnostic, prefix_receipt_json),
@@ -1635,6 +1839,55 @@ async def _capture_owned_original_sources(
                     raise OriginalSourceCoordinatorError("original_base_event_expired")
                 finished = event_stamp
                 event_receipt_json = checked_event
+                if inspect_base_event_journal:
+                    event_record = decode(event_receipt_json)
+                    if (
+                        event_record["event_key_sha256"] != precursor_doc["event_key"]
+                        or journal_identity is None
+                    ):
+                        raise OriginalSourceCoordinatorError(
+                            "original_event_journal_event_changed"
+                        )
+                    journal_state = await _inspect_owned_event_journal_in_frame_v10(
+                        account_session=account_session,
+                        session_factory=session_factory,
+                        identity=journal_identity,
+                        event_key=event_record["event_key_sha256"],
+                    )
+                    if task is not asyncio.current_task() or task.cancelling():
+                        raise asyncio.CancelledError
+                    _replay_owned_original_raw_continuity(
+                        packet,
+                        owned.packet,
+                        replayed,
+                        public_pin=public_pin,
+                        account_pin=account_packet_pin,
+                        plan_pin=plan_pin,
+                        precursor_inputs=inputs,
+                    )
+                    if (
+                        _evaluate_owned_base_event_v7(
+                            packet,
+                            replayed,
+                            public_pin=public_pin,
+                            data_policy=g1_policy,
+                            created_at=created_at,
+                            prefix_receipt_json=prefix_receipt_json,
+                        )
+                        != event_receipt_json
+                    ):
+                        raise OriginalSourceCoordinatorError(
+                            "original_event_journal_replay_changed"
+                        )
+                    journal_stamp = native_stamp()
+                    validate_stamps((finished, journal_stamp))
+                    if utc_from_ns(journal_stamp["utc_ns"]) >= min(
+                        expires, owned.expires_at, replayed.intent.expires_at
+                    ):
+                        raise OriginalSourceCoordinatorError(
+                            "original_event_journal_expired"
+                        )
+                    finished = journal_stamp
             if inspect_sweep_history:
                 inspected_sweep = _evaluate_owned_sweep_history_v9(
                     packet,
@@ -1687,6 +1940,7 @@ async def _capture_owned_original_sources(
             # A later G5 refusal cannot leave an orphaned V6 inner receipt
             # alongside an unavailable V4 precursor in the hash-only handoff.
             prefix_receipt_json = event_receipt_json = None
+            journal_state = None
         if inspect_sweep_history:
             sweep_receipt_json = None
         return result()

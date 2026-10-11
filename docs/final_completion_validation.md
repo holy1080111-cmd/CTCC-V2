@@ -4451,3 +4451,47 @@ The new status wrapper had masked the existing fixed
 existing `DemoAutomationSafetyError` reasons while keeping a generic mapping
 for unexpected malformed values. The exact four-case test plus adjacent
 structural risk tests passed 56 locally; new exact-source CI is required.
+
+## 2026-10-11 same-frame G5 journal and final post-G12 G1 checks
+
+The exact `be4aa933` checkpoint preserves 1,080 tracked Git files in an
+independently checked source ZIP and complete private Git bundle. Its tree is
+`181670425f2aa7ee5e2c2789c611f8fa634aded1`, its manifest SHA256 is
+`245d54238400f8dfe48606845d6ed7202e757bcfb1619b8a1d85a814b996448e`,
+and its Git-byte dependency identity is
+`1df57051c0e883bff56b87e99ac97fd990268c33569d81363c91e9542a46dfb3`.
+The ZIP and bundle hashes are recorded in the private checkpoint identity at
+`../../validation-results/checkpoint-be4aa93-20261011/identity.json`.
+
+An opt-in V10 original-source diagnostic now keeps the raw public and account
+packets, fixed G5 event and two locked controlled-journal reads in one task.
+It replays the same raw inputs and G5 after the reads. Controlled-journal
+absence never means complete external event history: G6, candidate, G12,
+reservation and execution authority remain false. V7's existing boundary and
+G5 evaluator are unchanged; deterministic V8 absent/seen/tombstone receipt
+bytes matched `be4aa933` exactly. Focused V8/V10 tests passed 23 cases, V7
+selected tests passed five, and one full synthetic same-frame case passed.
+Laptop heat constrained broader local execution; exact-source Linux CI is
+required for wider regression.
+
+The post-G12 V2 account join and V3 history join now replay the original
+candidate's G1 data policy at the final observation, after publication and
+readback. A synthetic source case showed the generic public transport profile
+could still pass two seconds later while a one-second original quote-age
+policy failed. Both final-denial and unchanged diagnostic cases passed focused
+tests; the paths still issue only `DENY` receipts, preserving already durable
+recheck evidence.
+
+A later zero-retry signed Demo `account/config` GET at `be4aa933` again found
+Read+Trade without Withdraw but **no IP binding**. The private redacted
+diagnostic is
+`../../validation-results/demo-key-policy-readonly-be4aa93-20261011T132555Z.json`
+(SHA256 `33d7ab7f35903963d261bedb1f6f32cba7486ffbe02595f5748807729d1f1990`).
+It stores no key, UID, IP or raw account response. Registration site, full
+account history, trusted portfolio risk and Demo order authority remain
+unverified. No exchange order write was enabled or attempted.
+
+The `be4aa933` source-bound GitHub CI run `38142731033` was still in progress
+when these working-tree changes were prepared; its result cannot validate a
+later commit. No main merge, release, Demo acceptance or Micro Live acceptance
+follows from these diagnostics.

@@ -3,6 +3,7 @@
 import asyncio
 from dataclasses import replace
 from datetime import timedelta
+from types import SimpleNamespace
 
 import pytest
 
@@ -19,14 +20,21 @@ from tests.unit import qualification_prefix_fixtures as prefix
 from tests.unit import test_original_candidate_policy as original_fixture
 from tests.unit import test_qualification_account_runtime as account_runtime_fixture
 from tests.unit.qualification_engine_fixtures import engine_inputs
+from tests.unit.qualification_prefix_fixtures import DATA_POLICY
 from tests.unit.research.test_owned_original_g1_diagnostic_v3 import (
     _native_account_receipt,
 )
 from tests.unit.research.test_owned_original_source_coordinator_v2 import session
 from tests.unit.research.test_owned_public_runtime_v2 import (
+    captured as captured,  # noqa: PLC0414 -- synthetic owned public packet
+)
+from tests.unit.research.test_owned_public_runtime_v2 import (
     empty_registries,
     policy,
     setup,
+)
+from tests.unit.research.test_owned_public_runtime_v2 import (
+    source as source,  # noqa: PLC0414 -- fixture required by captured
 )
 from tests.unit.test_account_current_history_join import current_plan, recorded_current
 from tests.unit.test_account_current_source_verifier import flat_pages
@@ -34,6 +42,72 @@ from tests.unit.test_qualification_account_capture import row
 from tests.unit.test_qualification_account_collector import credentials
 from tests.unit.test_qualification_market_bridge import v2_engine_source
 from tests.unit.test_qualification_one_shot import UID
+
+
+def test_final_original_g1_can_expire_before_public_transport_profile(captured):
+    diagnostic, _ = captured
+    packet = diagnostic.packet
+    early = diagnostic.context.evaluated_at
+    final = early + timedelta(seconds=2)
+    stricter = DATA_POLICY.model_copy(update={"maximum_quote_age_seconds": 1})
+    pre = SimpleNamespace(policy=SimpleNamespace(prefix=SimpleNamespace(data=stricter)))
+
+    early_g1 = joined.data_v2.evaluate_public_market_data_v2(
+        packet,
+        expected_bundle_sha256=packet.bundle_sha256,
+        policy=stricter,
+        evaluated_at=early,
+    )
+    assert early_g1.passed
+    # The fixed transport profile can still be valid after the original
+    # candidate's stricter G1 policy has expired.
+    joined.public_market_context_v2(
+        packet, expected_bundle_sha256=packet.bundle_sha256, evaluated_at=final
+    )
+    with pytest.raises(
+        joined.PostG12AccountJoinError,
+        match="^post_g12_final_original_g1_rejected$",
+    ):
+        joined._require_final_original_g1(packet, pre, final)
+
+
+@pytest.mark.parametrize("final_passed", [True, False])
+def test_final_account_join_replays_original_g1_policy(
+    shifted_inputs, monkeypatch, final_passed
+):
+    _, _, run = shifted_inputs
+    packet = SimpleNamespace(bundle_sha256="a" * 64)
+    observed_at = original_fixture.NOW + timedelta(seconds=1)
+    evaluated = object()
+    calls = []
+
+    def evaluate(received, **kwargs):
+        calls.append(("evaluate", received, kwargs))
+        return evaluated
+
+    def verify(received, source, **kwargs):
+        calls.append(("verify", received, source, kwargs))
+        return SimpleNamespace(passed=final_passed)
+
+    monkeypatch.setattr(joined.data_v2, "evaluate_public_market_data_v2", evaluate)
+    monkeypatch.setattr(joined.data_v2, "verify_public_market_data_v2", verify)
+    if final_passed:
+        joined._require_final_original_g1(packet, run, observed_at)
+    else:
+        with pytest.raises(
+            joined.PostG12AccountJoinError,
+            match="^post_g12_final_original_g1_rejected$",
+        ):
+            joined._require_final_original_g1(packet, run, observed_at)
+    expected = {
+        "expected_bundle_sha256": packet.bundle_sha256,
+        "policy": run.policy.prefix.data,
+        "evaluated_at": observed_at,
+    }
+    assert calls == [
+        ("evaluate", packet, expected),
+        ("verify", evaluated, packet, expected),
+    ]
 
 
 @pytest.fixture(scope="module")
@@ -81,6 +155,7 @@ def shifted_inputs():
         ("stale_public_at_join", "account_unavailable"),
         ("expired_account_lease", "account_unavailable"),
         ("recheck_replay_failed", "account_unavailable"),
+        ("final_g1_rejected", "denied"),
         ("stale_after_persist", "denied"),
         ("late_recheck_publish_failure", None),
         ("recheck_root_swapped", None),
@@ -143,6 +218,14 @@ async def test_new_g12_then_fresh_public_and_account_raw_page_starts(
         return real_context(*args, **kwargs)
 
     monkeypatch.setattr(joined, "public_market_context_v2", final_context)
+    if fault == "final_g1_rejected":
+        original_final_g1 = joined._require_final_original_g1
+
+        def stale_only_at_final(*args, **kwargs):
+            original_final_g1(*args, **kwargs)
+            raise joined.PostG12AccountJoinError("post_g12_final_original_g1_rejected")
+
+        monkeypatch.setattr(joined, "_require_final_original_g1", stale_only_at_final)
     if fault == "late_recheck_publish_failure":
         original_identity = joined.source_runtime._native_recheck_root_identity
         recheck_identity_calls = 0
@@ -303,7 +386,7 @@ async def test_new_g12_then_fresh_public_and_account_raw_page_starts(
     )
     assert (tmp_path / "join" / "receipt.json").read_bytes() == result.receipt_json
     assert receipt["public_request_count"] > 0
-    persisted = fault is None or fault == "stale_after_persist"
+    persisted = fault is None or fault in {"stale_after_persist", "final_g1_rejected"}
     assert receipt["account_page_count"] == (
         len(account_packet.observations) if persisted else 0
     )

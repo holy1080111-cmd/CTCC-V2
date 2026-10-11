@@ -861,9 +861,7 @@ async def publish_capture_public_account_history_v3(
         final_at = utc_from_ns(final_stamp["utc_ns"])
         if final_at >= origin.deadline:
             raise PostG12AccountHistoryJoinError("post_g12_history_final_expired")
-        public_market_context_v2(
-            packet, expected_bundle_sha256=packet.bundle_sha256, evaluated_at=final_at
-        )
+        prior._require_final_original_g1(packet, pre, final_at)
         code = "joined_unqualified"
         return finish()
     except asyncio.CancelledError:

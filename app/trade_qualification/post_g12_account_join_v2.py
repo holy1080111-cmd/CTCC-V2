@@ -28,7 +28,7 @@ from app.domain.source_primitives import (
     utc_from_ns,
     validate_stamps,
 )
-from app.trade_qualification import account_capture
+from app.trade_qualification import account_capture, data_v2
 from app.trade_qualification import account_native_runtime as account_native
 from app.trade_qualification import original_source_coordinator_v2 as original_source
 from app.trade_qualification import post_g12_public_runtime as public_runtime
@@ -100,6 +100,25 @@ _FIELDS = frozenset(
 
 class PostG12AccountJoinError(ValueError):
     """Fixed, redacted input or receipt denial."""
+
+
+def _require_final_original_g1(packet, pre, observed_at):
+    """Replay the original G1 policy at the final account-join observation."""
+    evaluated = data_v2.evaluate_public_market_data_v2(
+        packet,
+        expected_bundle_sha256=packet.bundle_sha256,
+        policy=pre.policy.prefix.data,
+        evaluated_at=observed_at,
+    )
+    verified = data_v2.verify_public_market_data_v2(
+        evaluated,
+        packet,
+        expected_bundle_sha256=packet.bundle_sha256,
+        policy=pre.policy.prefix.data,
+        evaluated_at=observed_at,
+    )
+    if not verified.passed:
+        raise PostG12AccountJoinError("post_g12_final_original_g1_rejected")
 
 
 def _utc_text(value):
@@ -712,11 +731,7 @@ async def publish_capture_public_account_v2(
         final_at = utc_from_ns(final_stamp["utc_ns"])
         if final_at >= min(origin.deadline, owned.expires_at):
             raise PostG12AccountJoinError("post_g12_recheck_expired")
-        public_market_context_v2(
-            packet,
-            expected_bundle_sha256=packet.bundle_sha256,
-            evaluated_at=final_at,
-        )
+        _require_final_original_g1(packet, pre, final_at)
         code = "joined_unqualified"
         return finish()
     except asyncio.CancelledError:
