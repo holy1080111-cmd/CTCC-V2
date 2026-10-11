@@ -151,6 +151,10 @@ def test_integration_module_classification_fails_on_new_module(tmp_path: Path):
         in verifier.POSTGRES_INTEGRATION
     )
     assert (
+        "test_account_current_history_recency_repository.py"
+        in verifier.POSTGRES_INTEGRATION
+    )
+    assert (
         "test_account_locked_current_history_join_v7_repository.py"
         in verifier.POSTGRES_INTEGRATION
     )

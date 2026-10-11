@@ -37,6 +37,13 @@ def test_every_windows_classified_postgres_module_runs_in_strict_linux_postgres_
     )
 
 
+def test_unpacked_unit_and_integration_modules_have_distinct_pytest_names():
+    root = Path(__file__).resolve().parents[2]
+    unit = {path.name for path in (root / "tests/unit").glob("test_*.py")}
+    integration = {path.name for path in (root / "tests/integration").glob("test_*.py")}
+    assert not unit & integration
+
+
 def test_reviewed_modules_in_postgres_suite_only():
     for path, case in (
         (
@@ -78,6 +85,10 @@ def test_reviewed_modules_in_postgres_suite_only():
         (
             "tests/integration/test_account_current_history_observation_repository.py",
             "test_b3_and_db0038_same_uid_join_preserves_unknowns",
+        ),
+        (
+            "tests/integration/test_account_current_history_recency_repository.py",
+            "test_native_db_clock_after_locked_v7_chain_is_deny_only",
         ),
         (
             "tests/integration/test_account_locked_current_history_join_v7_repository.py",

@@ -4698,3 +4698,32 @@ run before. The focused local unit/classifier tests passed (26 tests), and
 Ruff, formatting, Windows selection and integration collection passed. The
 current checkout is not an exact-source CI validation until committed and
 tested at its own SHA.
+
+The first committed bridge was `9834aae24cc02ac0559329a504b6b0057f94d80e`.
+Its exact GitHub run `38155397956` failed before test execution because the
+new top-level unit and integration files had the same pytest module basename;
+none of that run's Linux/PostgreSQL jobs certifies the bridge. The failing
+source and artifacts remain preserved, and the superseded run was cancelled.
+The rename-only repair `5fead713fcb34affd3664616f2ef61b94f2e8f88`
+gave the unit file a distinct name and refreshed the manifest. Full local
+unit-plus-integration collection then exited zero and 26 focused tests passed.
+Matching run `38155621324` was active when recorded; its result, especially
+the isolated PostgreSQL join cases, remains pending. The exact `5fead71`
+source checkpoint is in `../../validation-results/checkpoint-5fead71-20261012/`.
+
+## 2026-10-12 native DB-clock recency diagnostic (pending exact-source CI)
+
+A separate v2 companion under review adds a schema-qualified native PostgreSQL clock sample
+after an exact-UID locked reread and replay of the original current B1 chain.
+It reports whether the recorded timestamp of the earliest replay-verified
+body EOF is within the existing 30-second bound of that DB sample; future,
+missing, reversed and
+overlapping page times fail closed. It leaves v1 receipts unchanged and
+retains every v1 blocker. Even a recent DB sample cannot attest the host or
+exchange clock, actual page freshness, current exchange finality, original registration site,
+funding, portfolio risk or execution authority. Its admission is always
+`DENY`; no private API or order write is used. Nine pure cases passed locally;
+four new PostgreSQL cases skipped locally because no isolated `DATABASE_URL`
+was supplied. The strict dedicated PostgreSQL job is now classified to run
+all 48 reviewed PostgreSQL modules, including these four tests, after this
+source slice is committed.
