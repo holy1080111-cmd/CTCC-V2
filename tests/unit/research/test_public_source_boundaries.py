@@ -49,6 +49,15 @@ def test_public_source_has_only_explicit_reviewed_consumers():
     )
     post_read_batch_consumer = APP / "mie" / "validation" / "post_read_batch_v3.py"
     post_read_stitch_consumer = APP / "mie" / "validation" / "post_read_stitch_v1.py"
+    scheduled_minute_consumer = (
+        APP / "mie" / "validation" / "scheduled_public_minute.py"
+    )
+    scheduled_minute_imports = {
+        "app.public_market_source.public_clock",
+        "app.public_market_source.public_clock.native_stamp",
+        "app.public_market_source.public_market_receipts",
+        "app.public_market_source.public_market_receipts.utc_from_ns",
+    }
     post_read_batch_imports = {
         "app.public_market_source.public_receipt_storage",
         "app.public_market_source.public_receipt_storage.ControlledPublicReceiptJournal",
@@ -97,6 +106,9 @@ def test_public_source_has_only_explicit_reviewed_consumers():
         # The computational stitch reopens the same offline journal contract;
         # it owns neither capture nor any additional storage capability.
         post_read_stitch_consumer: ("public_receipt_storage",),
+        # One opt-in research minute samples the native clock and converts its
+        # pinned UTC nanoseconds. It cannot import capture or storage here.
+        scheduled_minute_consumer: ("public_clock", "public_market_receipts"),
         APP / "mie" / "validation" / "public_checkpoint_service.py": (
             "public_checkpoint_hook",
             "public_market_capture",
@@ -118,6 +130,7 @@ def test_public_source_has_only_explicit_reviewed_consumers():
     observed_post_read_batch_imports = set()
     observed_post_read_stitch_imports = set()
     post_read_stitch_import_count = 0
+    observed_scheduled_minute_imports = set()
     for path in APP.rglob("*.py"):
         if path.is_relative_to(SOURCE):
             continue
@@ -156,6 +169,20 @@ def test_public_source_has_only_explicit_reviewed_consumers():
                             and node.names[0].asname is None
                         ), name
                         observed_post_read_stitch_imports.add(name)
+                    if path == scheduled_minute_consumer:
+                        assert name in scheduled_minute_imports, name
+                        assert (
+                            isinstance(node, ast.ImportFrom)
+                            and node.module
+                            in {
+                                "app.public_market_source.public_clock",
+                                "app.public_market_source.public_market_receipts",
+                            }
+                            and len(node.names) == 1
+                            and node.names[0].name in {"native_stamp", "utc_from_ns"}
+                            and node.names[0].asname is None
+                        ), name
+                        observed_scheduled_minute_imports.add(name)
                     if path.name == "blind_window_dataset.py" and name.startswith(
                         "app.public_market_source.public_market_capture"
                     ):
@@ -179,6 +206,7 @@ def test_public_source_has_only_explicit_reviewed_consumers():
     assert observed_post_read_batch_imports == post_read_batch_imports
     assert observed_post_read_stitch_imports == post_read_batch_imports
     assert post_read_stitch_import_count == 1
+    assert observed_scheduled_minute_imports == scheduled_minute_imports
 
 
 def test_post_publication_rejects_unreviewed_public_capture_import(monkeypatch):
@@ -198,6 +226,31 @@ def test_post_publication_rejects_unreviewed_public_capture_import(monkeypatch):
         AssertionError,
         match="app.public_market_source.public_market_capture.capture_public_market",
     ):
+        test_public_source_has_only_explicit_reviewed_consumers()
+
+
+@pytest.mark.parametrize(
+    "import_line",
+    [
+        "from app.public_market_source.public_market_capture import capture_public_market",
+        "from app.public_market_source.public_receipt_storage import OwnedPublicReceiptPublisher",
+        "import app.public_market_source.public_clock",
+    ],
+)
+def test_scheduled_minute_rejects_additional_public_source_capability(
+    monkeypatch, import_line
+):
+    original_nodes = nodes
+    consumer = APP / "mie" / "validation" / "scheduled_public_minute.py"
+    unreviewed = ast.parse(import_line).body[0]
+
+    def with_unreviewed_import(path):
+        yield from original_nodes(path)
+        if path == consumer:
+            yield unreviewed
+
+    monkeypatch.setattr(sys.modules[__name__], "nodes", with_unreviewed_import)
+    with pytest.raises(AssertionError):
         test_public_source_has_only_explicit_reviewed_consumers()
 
 

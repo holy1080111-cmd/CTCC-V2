@@ -4298,3 +4298,51 @@ that client. Its immutable `incomplete` receipt is
 The probe now creates a fresh isolated client for each GET, retains partial
 raw bodies on transport failure, and reports attempted versus observed counts.
 This still grants no trusted source or execution authority.
+
+## 2026-10-11 public timestamp and historical dependency reconciliation
+
+The opt-in public-only run at committed `c2af3cf` attempted and observed five
+GET responses. Its no-redirect TLS/URL checks and raw/receipt SHA-256 readback
+passed, and native W32Time was running. The immutable diagnostic is
+`../../validation-results/public-timestamp-c2af3cf-20261011T101305Z/summary.json`
+(SHA256 `a5c0f83d7bf6f073d0cb924f6153e2f94f737da4dc0042245dc45d25623a6454`).
+No private API or order request was made. The funding data-return `ts` was
+49.566 seconds older than body completion. The pinned V1 five-second freshness
+policy therefore **denies** that component; the V2 return-age diagnostic has
+separate semantics and does not retroactively promote V1. The run found no
+future source timestamp, but cannot establish the cause of the old
+`future_component_timestamp` event without its retained raw response. Public
+source and trading authority remain denied.
+
+A separate single signed Demo `account/config` GET at `ffe67a2` used the
+locally retained `C:\CTCC-V2\.env` explicitly. Its redacted receipt is
+`../../validation-results/demo-key-policy-readonly-ffe67a2-20261011T101305Z.json`
+(SHA256 `3a683f66d25098611c0efdb71adaeee7cd7437b9cfcd5d1e9da41f7400321c88`).
+It observed Read+Trade without Withdraw, but `ip_binding_observed=false` for
+the **loaded** key. The canonical working environment does not automatically
+load that file, the response does not prove the account registration region,
+and private raw bytes were not retained. This GET is a policy diagnostic only:
+trusted account ingestion, Arm, Demo execution and Live remain denied.
+
+The 9/15 integrated package's retained release contract pins 39 dependency
+records and Python 3.12.14. Rehashing its cached 582 package files and 278
+candidate-map files matched their recorded hashes. The one additional normal
+discovery record was `/app/ctcc_v2.egg-info` (`ctcc-v2==1.6.9`), an installed
+project metadata record absent from the isolated 39-record dependency set.
+The strict verifier already limits this exception to its validated path and
+full multiset; no release check was removed or downgraded. The historical
+candidate and validation ZIP bytes and the literal `CANDIDATE_MATCH_FOUND`
+output are unavailable, so this package cannot be assigned a Git tree. Its
+`baseline_identity.ok=true` proves only that narrow package check: the
+retained validation receipt says 19 focused tests passed, while prior 9,011
+application tests, Windows and Docker were not rerun. Current
+`accepted_full_validation_baseline=false` remains correct. A final release
+identity requires a new full validation on the exact final Git SHA.
+
+CI at `ffe67a2` also exposed an explicit public-source consumer boundary:
+the opt-in scheduled minute imports only `native_stamp` and `utc_from_ns`,
+but was omitted from the reviewed consumer map. The map now pins those exact
+imports and rejects capture, publisher and whole-module imports. The focused
+boundary and scheduled-minute tests passed locally (23 cases). This is a
+test-source boundary repair; it neither expands the module's imports nor
+grants source or execution authority. Matching final-source CI is pending.
