@@ -412,7 +412,11 @@ def _replay_open_v3_prefix(attempt, *, market_packet=None):
             expected.add(raw_name)
         elif event["raw_bytes"] is not None:
             raise PublicReceiptError("runtime_v3_prefix_raw_invalid")
-        events.append(event)
+        # The semantic validator consumes the persisted JSON representation.
+        # Native request metadata may contain tuples (including an empty query),
+        # while a sealed journal always stores JSON arrays. Replaying the
+        # in-memory object would reject the real no-query time request.
+        events.append(decode(encoded, MAX_RAW))
         payloads.append(raw)
         head = sha(encoded)
     if head != state["head"] or set(directory.names()) != expected:

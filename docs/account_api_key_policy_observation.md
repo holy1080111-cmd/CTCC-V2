@@ -42,3 +42,24 @@ documents `uid` as the current request account, `mainUid` as its parent,
 `ip` as the API key's bound IP list (empty when unbound). The V7 packet and
 existing receipt contracts remain unchanged; older recordings gain no new
 trading authority.
+
+## One-use native source binding (V3 diagnostic)
+
+`observe_native_demo_current_components_v3` consumes the existing one-use V7
+native raw-packet lease, recomputes the unchanged V2 current-components receipt,
+then replays this API-key policy from the *same* frozen original packet. The new
+`ctcc.native_demo_current_components.v3` receipt binds the V2 receipt hash, the
+native source/proof/readback hashes, this policy's hash and its replayed receipt
+hash. It includes only permission/IP booleans and fixed blocker codes; it never
+includes the raw UID, IP list, credential, config row or signed headers. A
+missing IP binding, Withdraw permission or changed config remains a blocker.
+The original V2 function and receipt bytes are unchanged; V3 is an explicit
+separate entry, so saved V2 evidence cannot be relabeled as V3.
+
+The V3 wrapper has stronger *source lineage* than a supplied-packet policy
+readout, but still does not independently establish the registration site,
+provider credential session, current egress-IP match, complete account history,
+portfolio risk or order permission. It returns `snapshot=None`,
+`account_complete=false`, `execution_authority=false` and `admission=DENY`.
+The tests use synthetic native proof and account responses; no private network
+request or exchange order is made by this projection.

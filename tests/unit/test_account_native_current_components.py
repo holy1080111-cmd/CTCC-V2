@@ -12,11 +12,25 @@ from app.trade_qualification import account_native_proof as proof
 from app.trade_qualification import account_native_runtime as runtime
 from app.trade_qualification import account_observation_index as observed
 from app.trade_qualification.account_runtime import ControlledDemoAccountSession
+from tests.unit import test_account_native_proof as native_fixture
 from tests.unit.test_account_native_proof import companion_fixture, replay
+from tests.unit.test_qualification_account_capture import config
 from tests.unit.test_qualification_account_collector import credentials
 
 
-async def owned_components(monkeypatch, *, source_case="fresh_flat"):
+async def owned_components(
+    monkeypatch, *, source_case="fresh_flat", version="v2", config_rows=None
+):
+    if config_rows is not None:
+        original_flat_pages = native_fixture.flat_pages
+
+        def configured_flat_pages():
+            pages = original_flat_pages()
+            for stream, changes in config_rows.items():
+                pages[stream] = [[config(**changes)]]
+            return pages
+
+        monkeypatch.setattr(native_fixture, "flat_pages", configured_flat_pages)
     raw, files, chain, scope, samples = await companion_fixture(
         monkeypatch, source_case=source_case, current_v7=True
     )
@@ -71,12 +85,17 @@ async def owned_components(monkeypatch, *, source_case="fresh_flat"):
             deadline=checked.monotonic_deadline_ns,
         )
         diagnostic = runtime.InitialNativeAccountDiagnostic(receipt, None, lease)
-        result = components.observe_native_demo_current_components(diagnostic, session)
+        project = (
+            components.observe_native_demo_current_components_v3
+            if version == "v3"
+            else components.observe_native_demo_current_components
+        )
+        result = project(diagnostic, session)
         with pytest.raises(
             components.NativeCurrentComponentsError,
             match="native_current_components_unavailable",
         ):
-            components.observe_native_demo_current_components(diagnostic, session)
+            project(diagnostic, session)
     return result
 
 
@@ -106,6 +125,103 @@ async def test_native_flat_observation_retains_unknown_risk_components(monkeypat
     assert value["snapshot"] is result.snapshot is None
     assert value["account_complete"] is result.account_complete is False
     assert value["execution_authority"] is result.execution_authority is False
+    assert value["admission"] == "DENY"
+
+
+@pytest.mark.asyncio
+async def test_v3_binds_replayed_key_policy_to_one_use_native_source(monkeypatch):
+    observed_v2 = []
+    original_project = components._project
+
+    def record_v2(source):
+        value = original_project(source)
+        observed_v2.append(value.receipt_json)
+        return value
+
+    monkeypatch.setattr(components, "_project", record_v2)
+    result = await owned_components(
+        monkeypatch,
+        version="v3",
+        config_rows={
+            "config_before": {"perm": "read_only,trade", "ip": "8.8.8.8"},
+            "config_after": {"perm": "read_only,trade", "ip": "8.8.8.8"},
+        },
+    )
+    value = json.loads(result.receipt_json)
+    policy = value["api_key_policy"]
+    assert value["schema_version"] == "ctcc.native_demo_current_components.v3"
+    assert value["policy_sha256"] == components.V7_KEY_POLICY_SHA256
+    assert len(observed_v2) == 1
+    assert json.loads(observed_v2[0])["schema_version"] == (
+        "ctcc.native_demo_current_components.v2"
+    )
+    assert value["base_v2_receipt_sha256"] == sha(observed_v2[0])
+    assert policy["permissions_observed"] is True
+    assert policy["ip_binding_list_observed"] is True
+    assert policy["config_policy_consistent"] is True
+    assert policy["blocking_reasons"] == []
+    assert policy["registration_region_verified"] is False
+    assert policy["provider_credential_session_verified"] is False
+    assert policy["current_egress_ip_verified"] is False
+    assert value["source_authenticity_verified"] is False
+    assert value["snapshot"] is result.snapshot is None
+    assert value["account_complete"] is result.account_complete is False
+    assert value["execution_authority"] is result.execution_authority is False
+    assert value["admission"] == "DENY"
+    for private in (b"700001", b"8.8.8.8", b"read_only,trade"):
+        assert private not in result.receipt_json
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("changes", "reason"),
+    [
+        ({}, "api_key_ip_binding_missing_or_malformed"),
+        (
+            {"perm": "read_only,trade,withdraw", "ip": "8.8.8.8"},
+            "api_key_withdraw_permission_enabled",
+        ),
+        (
+            {"perm": "read_only,trade", "ip": ""},
+            "api_key_ip_binding_missing_or_malformed",
+        ),
+    ],
+)
+async def test_v3_native_key_policy_keeps_unsafe_config_as_blocker(
+    monkeypatch, changes, reason
+):
+    result = await owned_components(
+        monkeypatch,
+        version="v3",
+        config_rows={"config_before": changes, "config_after": changes},
+    )
+    value = json.loads(result.receipt_json)
+    assert reason in value["blocking_reasons"]
+    assert value["api_key_policy"]["config_policy_consistent"] is False
+    assert value["snapshot"] is None
+    assert value["admission"] == "DENY"
+
+
+@pytest.mark.asyncio
+async def test_v3_native_key_policy_detects_changed_original_config(monkeypatch):
+    result = await owned_components(
+        monkeypatch,
+        version="v3",
+        config_rows={
+            "config_before": {"perm": "read_only,trade", "ip": "8.8.8.8"},
+            "config_after": {
+                "perm": "read_only,trade",
+                "ip": "1.1.1.1",
+                "label": "changed",
+            },
+        },
+    )
+    value = json.loads(result.receipt_json)
+    assert "api_key_config_changed" in value["blocking_reasons"]
+    assert "api_key_ip_binding_changed" in value["blocking_reasons"]
+    assert value["api_key_policy"]["config_policy_consistent"] is False
+    assert b"1.1.1.1" not in result.receipt_json
+    assert b"8.8.8.8" not in result.receipt_json
     assert value["admission"] == "DENY"
 
 

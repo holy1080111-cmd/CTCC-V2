@@ -11,6 +11,7 @@ import json
 from dataclasses import dataclass
 
 from app.domain.source_primitives import canonical, sha
+from app.trade_qualification import account_api_key_policy as key_policy
 from app.trade_qualification import account_capture as capture
 from app.trade_qualification import account_consistency as consistency
 from app.trade_qualification import account_materializer as materializer
@@ -53,6 +54,24 @@ V7_POLICY_BYTES = canonical(
     }
 )
 V7_POLICY_SHA256 = sha(V7_POLICY_BYTES)
+V7_KEY_POLICY_BYTES = canonical(
+    {
+        "version": "ctcc.native_demo_current_components.v3",
+        "base_policy_sha256": V7_POLICY_SHA256,
+        "api_key_policy_sha256": key_policy.POLICY_SHA256,
+        "source": "same_one_use_native_v7_packet_and_original_proof_readback",
+        "api_key_fields": "replayed_original_config_before_and_after_without_raw_values",
+        "unverified": [
+            "registration_region",
+            "provider_credential_session",
+            "current_egress_ip",
+        ],
+        "portfolio_snapshot": False,
+        "account_revision_published": False,
+        "execution_authority": False,
+    }
+)
+V7_KEY_POLICY_SHA256 = sha(V7_KEY_POLICY_BYTES)
 
 _UNKNOWN = (
     "complete_realized_outcome_window_unknown",
@@ -115,6 +134,87 @@ def observe_native_demo_current_components(
         raise NativeCurrentComponentsError(
             "native_current_components_unavailable"
         ) from None
+
+
+def observe_native_demo_current_components_v3(
+    diagnostic, session
+) -> NativeCurrentComponents:
+    """Burn the V7 native lease and bind key policy to that same source.
+
+    The earlier V2 receipt contract stays byte-for-byte unchanged. This new
+    observation records only redacted config policy; it cannot verify the
+    account's registration site, provider credential session, or egress IP.
+    """
+    try:
+        source = native._consume_native_demo_raw_packet(diagnostic, session)
+        return _project_v3(source)
+    except NativeCurrentComponentsError:
+        raise
+    except Exception:  # noqa: BLE001 -- never expose source body, UID or credentials
+        raise NativeCurrentComponentsError(
+            "native_current_components_unavailable"
+        ) from None
+
+
+def _project_v3(source) -> NativeCurrentComponents:
+    if (
+        type(source) is not native._ObservedNativeDemoAccountRawPacket
+        or type(source.packet.plan) is not capture.CurrentDemoAccountCapturePlanV7
+        or source.packet.schema_version != "ctcc.demo_current_account_capture.v7"
+    ):
+        raise NativeCurrentComponentsError("native_current_components_v7_required")
+    base = _project(source)
+    base_value = json.loads(base.receipt_json)
+    if (
+        base_value["schema_version"] != "ctcc.native_demo_current_components.v2"
+        or base_value["policy_sha256"] != V7_POLICY_SHA256
+        or base_value["native_receipt_sha256"] != source.receipt_sha256
+        or base_value["native_proof_sha256"] != source.proof_sha256
+        or base_value["native_readback_sha256"] != source.readback_sha256
+    ):
+        raise NativeCurrentComponentsError("native_current_components_source_invalid")
+    frozen = capture.freeze_demo_account_packet(
+        source.packet, expected_plan_sha256=source.reference.plan_sha256
+    )
+    if frozen.sha256 != source.reference.packet_sha256:
+        raise NativeCurrentComponentsError("native_current_components_source_invalid")
+    observed = key_policy.observe_v7_demo_api_key_policy(
+        frozen.payload,
+        expected_packet_sha256=frozen.sha256,
+        expected_plan_sha256=source.reference.plan_sha256,
+        expected_policy_sha256=key_policy.POLICY_SHA256,
+    )
+    policy_value = json.loads(observed.receipt_json)
+    reasons = policy_value["blocking_reasons"]
+    base_value.update(
+        {
+            "schema_version": "ctcc.native_demo_current_components.v3",
+            "policy_sha256": V7_KEY_POLICY_SHA256,
+            "base_v2_receipt_sha256": base.receipt_sha256,
+            "api_key_policy": {
+                "observation_scope": "same_one_use_native_v7_packet_and_proof_readback",
+                "policy_sha256": key_policy.POLICY_SHA256,
+                "original_policy_receipt_sha256": observed.receipt_sha256,
+                "permissions_observed": policy_value["permissions_observed"],
+                "ip_binding_list_observed": policy_value["ip_binding_list_observed"],
+                "config_policy_consistent": policy_value["config_policy_consistent"],
+                "blocking_reasons": reasons,
+                "registration_region_verified": False,
+                "provider_credential_session_verified": False,
+                "current_egress_ip_verified": False,
+            },
+            "blocking_reasons": sorted(
+                set(base_value["blocking_reasons"])
+                | {"api_key_" + reason for reason in reasons}
+                | {
+                    "api_key_registration_region_unverified",
+                    "api_key_provider_credential_session_unverified",
+                    "api_key_current_egress_ip_unverified",
+                }
+            ),
+        }
+    )
+    return NativeCurrentComponents(canonical(base_value))
 
 
 def _project(source) -> NativeCurrentComponents:

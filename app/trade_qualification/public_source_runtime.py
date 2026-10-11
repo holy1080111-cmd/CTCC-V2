@@ -25,6 +25,7 @@ from app.domain.source_primitives import (
     PublicReceiptError,
     canonical,
     decode,
+    demo_public_v3_time_policy_sha256,
     sha,
     utc_from_ns,
     validate_stamps,
@@ -259,6 +260,18 @@ class _CapturedPublicV2(_CapturedPublic):
 
 class _CapturedInitialPublicV2(_CapturedPublic):
     """Exact v2 initial handoff, distinct from either publication version."""
+
+    __slots__ = ()
+
+
+class _CapturedPublicV3(_CapturedPublic):
+    """Exact v3 post-publication handoff; v2 consumers cannot replay it."""
+
+    __slots__ = ()
+
+
+class _CapturedInitialPublicV3(_CapturedPublic):
+    """Exact v3 initial handoff; only the issuing task may consume it."""
 
     __slots__ = ()
 
@@ -1100,21 +1113,40 @@ async def _capture_initial_public_v2(initial_scope, policy, root):
     )
 
 
+async def _capture_after_publication_v3(publication, policy, root):
+    """Owned V3 time bracket; the Demo origin fence still denies native IO."""
+    return await _capture_owned(
+        publication, policy, root, stage="post_publication", _version=3
+    )
+
+
+async def _capture_initial_public_v3(initial_scope, policy, root):
+    """Owned V3 time bracket; only a private initial scope can enter."""
+    return await _capture_owned(
+        initial_scope, policy, root, stage="initial_public", _version=3
+    )
+
+
 async def _capture_owned(scope, policy, root, *, stage, _version=1):
     # The common transport never accepts a caller plan/DTO as ownership. Each
     # stage consumes its own exact private issuer before any clock or IO.
-    if type(stage) is not str or type(_version) is not int or _version not in (1, 2):
+    if type(stage) is not str or type(_version) is not int or _version not in (1, 2, 3):
         raise PublicSourceRuntimeError("public_capture_stage_invalid")
+    full_public = _version in (2, 3)
     if stage == "post_publication":
         from app.trade_qualification.post_g12_public_runtime import (
             _take_publication,
             _take_publication_v2,
         )
 
-        claim = (_take_publication_v2 if _version == 2 else _take_publication)(scope)
+        claim = (_take_publication_v2 if full_public else _take_publication)(scope)
         version, boundary = f"ctcc.public.runtime_plan.v{_version}", claim["barrier"]
         carrier_type, results = (
-            (_CapturedPublicV2 if _version == 2 else _CapturedPublic),
+            {
+                1: _CapturedPublic,
+                2: _CapturedPublicV2,
+                3: _CapturedPublicV3,
+            }[_version],
             _RESULTS,
         )
     elif stage == "initial_public":
@@ -1123,33 +1155,35 @@ async def _capture_owned(scope, policy, root, *, stage, _version=1):
             _take_initial_scope_v2,
         )
 
-        claim = (_take_initial_scope_v2 if _version == 2 else _take_initial_scope)(
-            scope
-        )
+        claim = (_take_initial_scope_v2 if full_public else _take_initial_scope)(scope)
         version, boundary = (
             f"ctcc.public.initial_runtime_plan.v{_version}",
             claim["invocation_started"],
         )
         carrier_type, results = (
-            (_CapturedInitialPublicV2 if _version == 2 else _CapturedInitialPublic),
+            {
+                1: _CapturedInitialPublic,
+                2: _CapturedInitialPublicV2,
+                3: _CapturedInitialPublicV3,
+            }[_version],
             _INITIAL_RESULTS,
         )
     else:
         raise PublicSourceRuntimeError("public_capture_stage_invalid")
     selected = (
-        public_v2._policy_copy(policy) if _version == 2 else public._policy_copy(policy)
+        public_v2._policy_copy(policy) if full_public else public._policy_copy(policy)
     )
     route = (
         demo_origin.reviewed_demo_public_route(claim["plan"]["registration_region"])
-        if _version == 2 and "registration_region" in claim["plan"]
+        if full_public and "registration_region" in claim["plan"]
         else None
     )
     policy_digest = (
         public_v2._policy_digest(selected, route)
-        if _version == 2
+        if full_public
         else public._digest(selected)
     )
-    if (stage == "initial_public" or _version == 2) and claim["plan"][
+    if (stage == "initial_public" or full_public) and claim["plan"][
         "policy_sha256"
     ] != policy_digest:
         raise PublicSourceRuntimeError("public_initial_policy_changed")
@@ -1158,14 +1192,22 @@ async def _capture_owned(scope, policy, root, *, stage, _version=1):
         **claim["plan"],
         "policy_sha256": policy_digest,
     }
-    if _version == 2 and (
+    if _version == 3:
+        if route is None:
+            raise PublicSourceRuntimeError(
+                "trusted_demo_public_origin_profile_unavailable"
+            )
+        plan["exchange_time_policy_sha256"] = demo_public_v3_time_policy_sha256(
+            route.registration_region
+        )
+    if full_public and (
         plan.get("stage") != stage
         or any(
             plan.get(key) != value for key, value in public_v2._plan_pins(route).items()
         )
     ):
         raise PublicSourceRuntimeError("public_v2_owned_plan_required")
-    if _version == 2:
+    if full_public:
         # This must precede journal creation, clock sampling and all network IO.
         _require_trusted_v2_demo_origin_profile(plan)
     source = _Source(_ISSUER)
@@ -1187,7 +1229,7 @@ async def _capture_owned(scope, policy, root, *, stage, _version=1):
         "ws_records": [],
     }
     state["policy"] = selected
-    if _version == 2:
+    if full_public:
         state["plan"] = plan
     state["deadline"] = state["loop"].time() + selected.total_timeout_seconds
     state["clock"] = lambda: _sample(source)
@@ -1203,7 +1245,14 @@ async def _capture_owned(scope, policy, root, *, stage, _version=1):
                 if result["outcome"] != "accepted":
                     raise PublicSourceRuntimeError("native_public_clock_rejected")
                 _accept_clock_sample(state, result)
-                if _version == 2:
+                if _version == 3:
+                    await _fetch_owned_public_time_v3(source, "time_pre")
+                    packet = await public_v2._collect_owned_public_market_v2(source)
+                    packet = _complete_owned_public_market_v3(
+                        source, packet, _owner=_ISSUER
+                    )
+                    await _fetch_owned_public_time_v3(source, "time_post")
+                elif _version == 2:
                     packet = await public_v2._collect_owned_public_market_v2(source)
                 else:
                     packet = await public.collect_public_market(
@@ -1221,16 +1270,28 @@ async def _capture_owned(scope, policy, root, *, stage, _version=1):
                 if result["outcome"] != "accepted":
                     raise PublicSourceRuntimeError("native_public_clock_rejected")
                 _accept_clock_sample(state, result)
-                if _version == 2:
+                if full_public:
                     packet = public_v2._parts(packet)[0]
-                    _check_packet_binding_v2(state, packet)
+                    _check_packet_binding_v2(
+                        state,
+                        packet,
+                        expected_roles=(
+                            "quote",
+                            "candles",
+                            "market_aux",
+                            "time_pre",
+                            "time_post",
+                        )
+                        if _version == 3
+                        else ("quote", "candles", "market_aux"),
+                    )
                 else:
                     packet = public.validate_collected_public_market(packet)
                     _check_packet_binding(state, packet)
                 _sample(source)
                 encoded = (
                     packet.packet_json
-                    if _version == 2
+                    if full_public
                     else canonical(packet.model_dump(mode="json", round_trip=True))
                 )
                 _append(
@@ -1298,6 +1359,16 @@ def _consume_initial_public_capture_v2(value, invocation):
     )
 
 
+def _consume_public_capture_v3(value, invocation):
+    return _consume_capture(value, invocation, _CapturedPublicV3, _RESULTS)
+
+
+def _consume_initial_public_capture_v3(value, invocation):
+    return _consume_capture(
+        value, invocation, _CapturedInitialPublicV3, _INITIAL_RESULTS
+    )
+
+
 def _consume_capture(value, invocation, expected, registry):
     if type(value) is not expected:
         raise PublicSourceRuntimeError("owned_public_capture_required")
@@ -1319,7 +1390,13 @@ def _consume_capture(value, invocation, expected, registry):
         raise PublicSourceRuntimeError("public_capture_expired")
     packet = (
         public_v2._parts(result[4])[0]
-        if expected in (_CapturedPublicV2, _CapturedInitialPublicV2)
+        if expected
+        in (
+            _CapturedPublicV2,
+            _CapturedInitialPublicV2,
+            _CapturedPublicV3,
+            _CapturedInitialPublicV3,
+        )
         else public.validate_collected_public_market(result[4])
     )
     return packet, result[5], stamp
@@ -1347,6 +1424,8 @@ def _replay_captured_packet(plan_raw, summary_raw, packet_raw):
     if plan["schema_version"] in {
         "ctcc.public.initial_runtime_plan.v2",
         "ctcc.public.runtime_plan.v2",
+        "ctcc.public.initial_runtime_plan.v3",
+        "ctcc.public.runtime_plan.v3",
     }:
         return _replay_captured_packet_v2(plan_raw, plan, summary, packet_raw)
     # The low-level journal verifies the raw HTTP/WS joins. The qualification

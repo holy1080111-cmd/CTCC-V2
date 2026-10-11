@@ -282,3 +282,22 @@ survival, actual account fees and funding, current portfolio risk, protection,
 reservation and submission still lack verified inputs. The native V2 Demo
 transport refusal also remains in force. Synthetic long/short replay tests
 exercise this diagnostic without creating real Demo or Live evidence.
+
+## 2026-10-11 private V3 time-bracket owner
+
+The private V3 owner now sequences a measured OKX system-time GET, the complete
+V2 candle/quote/books/open-interest/WS capture, and a second system-time GET in
+one task and one attempt. It requires the existing one-use private stage scope,
+checks the market's raw journal inventory before the second time request, and
+seals and reads back the full V3 event chain before issuing a V3-only one-use
+carrier. V2 consumers cannot consume that carrier. The open-journal V3 prefix
+replay now validates decoded persisted JSON bytes after checking exact file
+equality and hashes; an empty native query tuple is therefore checked as the
+stored JSON `[]`, and a rehashed nonempty time query is still rejected.
+
+The synthetic owner and tamper tests exercise this path without network or order
+I/O. No production issuer calls the V3 owner. The authenticated Demo registration
+region is still missing, so the unchanged pre-clock and per-I/O origin fence
+rejects real V3 capture. Its raw packet and `MarketSnapshot` projection remain
+diagnostic data with `admission=DENY`, no trusted public-source claim and no
+execution authority.
