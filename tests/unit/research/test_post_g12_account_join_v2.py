@@ -859,12 +859,21 @@ async def test_join_root_swap_after_preflight_cannot_publish_diagnostic(
     join_root = tmp_path / "join"
     join_root.mkdir()
     monkeypatch.setattr(account_native, "_configured_factory", lambda _: True)
+    stages = []
+
+    async def preclaimed(*_args, **_kwargs):
+        # The real DB custody preclaim is tested separately. Reach the later
+        # receipt-root identity check without granting any order authority.
+        stages.append("preclaim")
+        return object()
 
     def swap_root(*_args, **_kwargs):
+        stages.append("root_swap")
         join_root.rename(tmp_path / "join-original")
         join_root.mkdir()
         return None, None, None, None
 
+    monkeypatch.setattr(public_runtime, "_preclaim_lineage_v2", preclaimed)
     monkeypatch.setattr(public_runtime, "_publish_lineage_v2", swap_root)
     controlled = session()
     with pytest.raises(
@@ -883,6 +892,7 @@ async def test_join_root_swap_after_preflight_cannot_publish_diagnostic(
             account_session=controlled,
             session_factory=object(),
         )
+    assert stages == ["preclaim", "root_swap"]
     assert not list(join_root.iterdir())
     assert not list((tmp_path / "join-original").iterdir())
     assert not (tmp_path / "g12").exists()

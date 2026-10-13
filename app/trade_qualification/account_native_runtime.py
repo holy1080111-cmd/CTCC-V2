@@ -924,7 +924,9 @@ async def _capture_initial_current(
     )
     selected = capture._checked_plan(session._plan, session._pin)
     if _exposure_sink is None:
-        proof_schema, proof_policy_sha256 = proof.contract_for_plan(selected)
+        proof_schema, proof_policy_sha256 = proof.current_use_contract_for_plan(
+            selected
+        )
     else:
         if type(_exposure_sink) is not list or _exposure_sink:
             raise proof.NativeAccountProofError("native_account_exposure_sink_invalid")

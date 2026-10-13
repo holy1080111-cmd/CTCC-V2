@@ -16,6 +16,22 @@ scope, clock conflict, failed read, corrupt V4 evidence, cancellation or late
 V5 publication failure cannot create an authority claim. Already-published V4
 and V5 bytes are never removed to make a later step pass.
 
+V5 freezes the original candidate and G1 policy before V4 starts, binds the
+returned V4 candidate, account plan, event and deadline to those originals,
+then reopens the exact pinned public journal after the second local read. It
+samples a new native UTC validation time after journal readback, requires it
+to follow the second checkpoint receipt and precede the original deadline,
+then replays G1 on the same packet. A stale packet yields
+`public_g1_rejected_at_local_readback`; an unreadable or changed journal yields
+`public_journal_readback_invalid_at_local_readback`. An unavailable native
+clock, invalid ordering or elapsed deadline yields
+`public_validation_clock_invalid_at_local_readback` before G1 runs. All remain
+`DENY`; the
+local flatness field still describes only the sampled local state. Publication
+follows this sample, so the code is a historical diagnostic, not a claim of
+current eligibility or execution authority. V5 does not fetch a new quote or
+change the original trade geometry.
+
 The reader validates the nested all-currency ledger, unresolved intents, and
 legacy state shape and requires a bound 64-hex credential-session ID when a
 legacy reconciliation checkpoint exists. Missing fields or an active exposure

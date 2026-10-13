@@ -46,6 +46,21 @@ source/ledger evidence produces a bounded rejection code without private
 account, SQL or credential content. The receipt's code-specific pin checks
 prevent an incomplete path from claiming a completed observation.
 
+V4 freezes the original candidate, policy and inputs before its first await.
+After the locked account and event reads, it reopens the same pinned public
+journal and samples a new native UTC validation time after journal readback.
+It requires that sample to follow the DB receipt and precede the original
+candidate deadline, then replays the original G1 freshness policy against the
+same pinned packet. A stale packet yields
+`public_g1_rejected_at_event_readback`; an unreadable or changed journal
+yields `public_journal_readback_invalid_at_event_readback`. An unavailable
+native clock, invalid ordering or elapsed deadline yields
+`public_validation_clock_invalid_at_event_readback` before G1 runs. All remain
+`DENY`. The receipt is published after this sample, so
+its code describes only the check at that historical time, not current
+eligibility. V4 never refreshes the quote, moves Entry/SL/TP or recomputes a
+replacement candidate.
+
 The caller provides a separate empty `event_root` before V3 starts. V4 pins
 that directory and requires it to be distinct from every earlier evidence
 root. Every result writes a bounded canonical `receipt.json` without replacing

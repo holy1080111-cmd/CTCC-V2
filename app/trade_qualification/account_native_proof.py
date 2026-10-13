@@ -139,7 +139,7 @@ V7_FLAT_POLICY_SHA256 = sha(V7_FLAT_POLICY_BYTES)
 
 
 def contract_for_plan(plan):
-    """Select only the exact immutable source contract, never an old relabel."""
+    """Select an immutable historical replay contract, never an old relabel."""
     if type(plan) is capture.AllProductDemoAccountCapturePlan:
         return SCHEMA, POLICY_SHA256
     if type(plan) is capture.CurrentDemoAccountCapturePlanV6:
@@ -147,6 +147,14 @@ def contract_for_plan(plan):
     if type(plan) is capture.CurrentDemoAccountCapturePlanV7:
         return V7_FLAT_SCHEMA, V7_FLAT_POLICY_SHA256
     raise NativeAccountProofError("native_account_source_scope_unsupported")
+
+
+def current_use_contract_for_plan(plan):
+    """Keep old V7 proofs replayable without issuing a new flat precursor."""
+    contract = contract_for_plan(plan)
+    if type(plan) is capture.CurrentDemoAccountCapturePlanV7:
+        raise NativeAccountProofError("native_account_v7_flat_current_use_revoked")
+    return contract
 
 
 def contract_for_exposed_v6_plan(plan):

@@ -53,6 +53,15 @@ policy hashes remain unchanged and their current-use flat assertion remains
 revoked. V7 does not by itself prove registration origin, native ownership,
 account-wide atomicity, local liabilities, protection, or complete history.
 
+The V7 receipt remains replayable as historical evidence, but its
+`observed_flat=true` field is no longer a current-use flat qualification.
+The [versioned current-use revocation](account_current_use_revocation.md)
+replays original-page REST gateway and row times, always returns
+`current_flat_qualified=false`, and stops fresh V7 native flat-proof issuance
+before account GET. Other historical readers can still replay the old
+`observed_flat` diagnostic, but it cannot by itself clear a current-use gate.
+No older V7 event, receipt, or policy hash is rewritten.
+
 The capture retains both raw `account/config` responses. If any canonical
 configuration field changes between the before/after reads, packet replay adds
 `account_config_changed` without discarding the evidence. Current-source replay

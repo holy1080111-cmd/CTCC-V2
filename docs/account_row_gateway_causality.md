@@ -34,3 +34,9 @@ The focused synthetic regression covers a row time after gateway send but
 before host receipt, missing gateway time, no contradiction, fixed DENY fields,
 external readback pin, and rejection of caller-minted receipts. It does not
 constitute authenticated Demo account acceptance.
+
+The separate [V7 current-use revocation](account_current_use_revocation.md)
+replays this audit and retains its receipt hash. It also prevents a new V7
+native flat precursor from being issued. Existing V7 source/native proof bytes
+remain historical replay evidence; their earlier `observed_flat` diagnostic is
+not current-use flat qualification.

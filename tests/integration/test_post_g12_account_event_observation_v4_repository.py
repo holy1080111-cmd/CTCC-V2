@@ -108,6 +108,15 @@ async def test_v4_real_uid_lock_observation_waits_after_fresh_v3_receipt(
         source.market, run, values, account_session, scope, HISTORY_ID
     )
     logical_now = expected["deadline"] - timedelta(milliseconds=500)
+    validation_at = expected["deadline"] - timedelta(milliseconds=300)
+    monkeypatch.setattr(
+        bridge,
+        "native_stamp",
+        lambda: {
+            "utc_ns": int(validation_at.timestamp()) * 1_000_000_000
+            + validation_at.microsecond * 1_000
+        },
+    )
     ledger = QualificationLedgerRepository(database[1], clock=lambda: logical_now)
     await ledger.initialize_capture_scope(scope)
     join_root = tmp_path / "join"
@@ -141,6 +150,15 @@ async def test_v4_real_uid_lock_observation_waits_after_fresh_v3_receipt(
     monkeypatch.setattr(
         joined, "publish_capture_public_account_history_v3", synthetic_v3
     )
+
+    # This synthetic V3 journal uses independent test clock/source fixtures;
+    # the unit late-G1 case checks the new time fence itself.
+    def synthetic_final_g1(packet, frozen_pre, observed_at):
+        assert packet.bundle_sha256 == public_journal_fixture[0].packet.bundle_sha256
+        assert frozen_pre.evaluation_sha256 == run.evaluation_sha256
+        assert observed_at < expected["deadline"]
+
+    monkeypatch.setattr(joined.prior, "_require_final_original_g1", synthetic_final_g1)
 
     class SyntheticAccountRepository:
         def __init__(self, factory, *, clock):

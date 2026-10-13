@@ -4,7 +4,7 @@ import asyncio
 import io
 from contextlib import contextmanager
 from dataclasses import replace
-from datetime import timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -95,6 +95,23 @@ def _receipt(expected, *, changed=None):
     if changed:
         value.update(changed)
     return joined.PostG12OwnedPublicAccountHistoryDiagnosticV3(canonical(value))
+
+
+def test_v4_exact_public_packet_original_g1_expires_before_candidate(
+    source_inputs_fixture, captured_public_journal
+):
+    source, values, run = source_inputs_fixture
+    packet = captured_public_journal[0].packet
+    completed = datetime.fromisoformat(decode(packet.packet_json)["completed_at"])
+    t1, t2 = completed + timedelta(seconds=1), completed + timedelta(seconds=11)
+    scope = LedgerScope(account_id=UID, settlement_currency="USDT")
+    expected = bridge._original_binding(
+        source.market, run, values, _session(), scope, HISTORY_ID
+    )
+    assert t1 < t2 < expected["deadline"]
+    joined.prior._require_final_original_g1(packet, run, t1)
+    with pytest.raises(ValueError):
+        joined.prior._require_final_original_g1(packet, run, t2)
 
 
 def _publish_synthetic_artifacts(
@@ -390,6 +407,22 @@ def _matched(scope, key, expected):
     "fault,code,read_count",
     (
         (None, "trusted_execution_inputs_missing", 1),
+        ("late_public_g1", "public_g1_rejected_at_event_readback", 1),
+        (
+            "late_validation_clock_expired",
+            "public_validation_clock_invalid_at_event_readback",
+            1,
+        ),
+        (
+            "late_validation_stamp_unavailable",
+            "public_validation_clock_invalid_at_event_readback",
+            1,
+        ),
+        (
+            "late_public_journal_changed",
+            "public_journal_readback_invalid_at_event_readback",
+            1,
+        ),
         ("event_recorded_renamed", "original_event_already_recorded", 1),
         ("wrong_uid", "ledger_observation_invalid", 1),
         ("wrong_currency", "ledger_observation_invalid", 1),
@@ -451,7 +484,40 @@ async def test_v4_one_invocation_v3_readback_then_uid_event_only(
     calls = []
     observations = []
     published_receipt = []
+    final_g1_times = []
     task = asyncio.current_task()
+    validation_at = (
+        expected["deadline"] + timedelta(milliseconds=1)
+        if fault == "late_validation_clock_expired"
+        else expected["deadline"] - timedelta(milliseconds=300)
+    )
+
+    def validation_stamp():
+        if fault == "late_validation_stamp_unavailable":
+            raise RuntimeError("private native clock detail")
+        return {
+            "utc_ns": int(validation_at.timestamp()) * 1_000_000_000
+            + validation_at.microsecond * 1_000
+        }
+
+    monkeypatch.setattr(
+        bridge,
+        "native_stamp",
+        validation_stamp,
+    )
+
+    def final_public_g1(packet, frozen_pre, observed_at):
+        assert packet.bundle_sha256 == captured_public_journal[0].packet.bundle_sha256
+        assert frozen_pre.evaluation_sha256 == run.evaluation_sha256
+        final_g1_times.append(observed_at)
+        if fault == "late_public_g1" and observed_at > expected["deadline"] - timedelta(
+            milliseconds=600
+        ):
+            raise joined.prior.PostG12AccountJoinError(
+                "post_g12_final_original_g1_rejected"
+            )
+
+    monkeypatch.setattr(joined.prior, "_require_final_original_g1", final_public_g1)
 
     async def issue(*args, **kwargs):
         assert asyncio.current_task() is task
@@ -578,6 +644,10 @@ async def test_v4_one_invocation_v3_readback_then_uid_event_only(
             )
         observation = _observation(scope, key, expected, changed=changed)
         observations.append(observation)
+        if fault == "late_public_journal_changed":
+            raw_path = next((tmp_path / "public").glob("event-*.raw"))
+            raw = raw_path.read_bytes()
+            raw_path.write_bytes(bytes([raw[0] ^ 1]) + raw[1:])
         return observation
 
     async def forbidden(*_args, **_kwargs):
@@ -643,6 +713,19 @@ async def test_v4_one_invocation_v3_readback_then_uid_event_only(
         scope=scope,
     )
     assert result.code == code
+    if fault == "late_public_g1":
+        # The V3 observation at t1 passed. Only the later UID event read at t2
+        # crosses the original quote-age cutoff, still before candidate expiry.
+        v3_time = joined._utc(decode(published_receipt[0].receipt_json)["observed_at"])
+        assert v3_time < expected["deadline"] - timedelta(milliseconds=600)
+        assert final_g1_times == [validation_at]
+        assert observations[0].received_at < expected["deadline"]
+    if fault in {
+        "late_public_journal_changed",
+        "late_validation_clock_expired",
+        "late_validation_stamp_unavailable",
+    }:
+        assert final_g1_times == []
     expected_account_read = code not in {
         "v3_binding_invalid",
         "v3_stale",

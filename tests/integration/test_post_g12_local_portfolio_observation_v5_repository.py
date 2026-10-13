@@ -62,8 +62,36 @@ async def test_v5_real_uid_locked_local_checkpoint_stays_diagnostic(
         calls.append("db_read")
         return await original_read(read_scope)
 
+    def frozen_binding(_pre, _inputs, _session, read_scope, _capture_id):
+        assert read_scope == scope and not calls
+        return {
+            "account_scope_sha256": v4.scope_sha256,
+            "candidate_sha256": v4.candidate_sha256,
+            "original_event_key": v4.original_event_key,
+            "report_id": v4.report_id,
+            "account_plan_sha256": v4.account_plan_sha256,
+            "deadline": datetime.fromisoformat(v4.candidate_deadline_at),
+        }
+
+    def pinned_public(_root, value, *, root_identity):
+        assert _root == roots[1]
+        assert root_identity == bridge.source_runtime._native_recheck_root_identity(
+            roots[1]
+        )
+        assert value["public_packet_sha256"] == v4.public_packet_sha256
+        assert value["public_journal_sha256"] == v4.public_journal_sha256
+        return object()
+
     monkeypatch.setattr(prior, "publish_capture_inspect_history_event_v4", synthetic_v4)
     monkeypatch.setattr(ledger, "read_portfolio_checkpoint", actual_read)
+    monkeypatch.setattr(
+        prior.joined, "_original", lambda *_args: (object(), object(), object())
+    )
+    monkeypatch.setattr(prior, "_checked_original_binding", frozen_binding)
+    monkeypatch.setattr(prior, "_read_bound_public_journal", pinned_public)
+    monkeypatch.setattr(
+        prior.joined.prior, "_require_final_original_g1", lambda *_args: None
+    )
     result = await bridge.publish_capture_inspect_local_portfolio_v5(
         *roots,
         object(),

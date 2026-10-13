@@ -18,7 +18,8 @@ from app.database.repositories.qualification_ledger import (
     PortfolioLocalCheckpoint,
     QualificationLedgerRepository,
 )
-from app.domain.source_primitives import canonical, decode, sha
+from app.domain.native_clock import native_stamp
+from app.domain.source_primitives import canonical, decode, sha, utc_from_ns
 from app.trade_qualification import post_g12_account_event_observation_v4 as prior
 from app.trade_qualification import public_source_runtime as source_runtime
 from app.trade_qualification.event_observation import (
@@ -42,6 +43,9 @@ _CODES = frozenset(
         "v4_incomplete",
         "local_state_blocked",
         "local_state_stable_not_authority",
+        "public_journal_readback_invalid_at_local_readback",
+        "public_validation_clock_invalid_at_local_readback",
+        "public_g1_rejected_at_local_readback",
         "original_event_already_recorded",
     }
 )
@@ -199,13 +203,19 @@ class PostG12LocalPortfolioObservationV5:
                 ):
                     raise ValueError
                 flat = not local
-                if record["local_flat_at_reads"] is not flat or record["code"] != (
+                expected_code = (
                     "original_event_already_recorded"
                     if record["v4_code"] == "original_event_already_recorded"
                     else "local_state_stable_not_authority"
                     if flat
                     else "local_state_blocked"
-                ):
+                )
+                if record["local_flat_at_reads"] is not flat or record["code"] not in {
+                    expected_code,
+                    "public_journal_readback_invalid_at_local_readback",
+                    "public_validation_clock_invalid_at_local_readback",
+                    "public_g1_rejected_at_local_readback",
+                }:
                     raise ValueError
         except Exception:  # noqa: BLE001 -- untrusted bytes never enter exceptions
             raise PostG12LocalPortfolioObservationError("v5_receipt_invalid") from None
@@ -585,6 +595,11 @@ async def publish_capture_inspect_local_portfolio_v5(
     if session_factory is not ledger.session_factory:
         raise PostG12LocalPortfolioObservationError("v5_account_database_mismatch")
     scope = checked_bootstrap(scope, LedgerScope)
+    # Freeze the original candidate and policy before V4's first async DB step.
+    market, pre, inputs = prior.joined._original(original_market, run, original_inputs)
+    original_binding = prior._checked_original_binding(
+        pre, inputs, account_session, scope, history_capture_id
+    )
     task = asyncio.current_task()
     if task is None or task.cancelling():
         raise asyncio.CancelledError
@@ -602,6 +617,7 @@ async def publish_capture_inspect_local_portfolio_v5(
             local_root, "v5_local_root_unavailable"
         )
         event_identity = source_runtime._native_recheck_root_identity(event_root)
+        public_identity = source_runtime._native_recheck_root_identity(public_root)
     except Exception:  # noqa: BLE001 -- no filesystem path in refusal
         raise PostG12LocalPortfolioObservationError(
             "v5_local_root_unavailable"
@@ -613,9 +629,9 @@ async def publish_capture_inspect_local_portfolio_v5(
         recheck_root,
         join_root,
         event_root,
-        original_market,
-        run=run,
-        original_inputs=original_inputs,
+        market,
+        run=pre,
+        original_inputs=inputs,
         market_policy=market_policy,
         account_session=account_session,
         session_factory=session_factory,
@@ -635,9 +651,15 @@ async def publish_capture_inspect_local_portfolio_v5(
     )
     if reread.receipt_json != v4.receipt_json:
         raise PostG12LocalPortfolioObservationError("v5_v4_result_invalid")
-    if v4.scope_sha256 != prior.digest(
-        canonical([scope.environment, scope.account_id, scope.settlement_currency])
-    ) or v4.account_uid_sha256 != sha(scope.account_id.encode("ascii")):
+    if (
+        v4.scope_sha256 != original_binding["account_scope_sha256"]
+        or v4.account_uid_sha256 != sha(scope.account_id.encode("ascii"))
+        or v4.candidate_sha256 != original_binding["candidate_sha256"]
+        or v4.original_event_key != original_binding["original_event_key"]
+        or v4.report_id != original_binding["report_id"]
+        or v4.account_plan_sha256 != original_binding["account_plan_sha256"]
+        or v4.candidate_deadline_at != original_binding["deadline"].isoformat()
+    ):
         raise PostG12LocalPortfolioObservationError("v5_v4_scope_mismatch")
     record = {
         "schema_version": _SCHEMA,
@@ -693,9 +715,45 @@ async def publish_capture_inspect_local_portfolio_v5(
             raise PostG12LocalPortfolioObservationError(
                 "v5_local_checkpoint_clock_invalid"
             )
+        try:
+            packet = prior._read_bound_public_journal(
+                public_root,
+                {
+                    "public_packet_sha256": v4.public_packet_sha256,
+                    "public_journal_sha256": v4.public_journal_sha256,
+                },
+                root_identity=public_identity,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 -- changed source cannot advance
+            public_failure_code = "public_journal_readback_invalid_at_local_readback"
+        else:
+            try:
+                validation_at = utc_from_ns(native_stamp()["utc_ns"])
+                if not second_end <= validation_at < deadline:
+                    raise ValueError("v5_public_validation_clock_invalid")
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 -- unusable validation time stays DENY
+                public_failure_code = (
+                    "public_validation_clock_invalid_at_local_readback"
+                )
+            else:
+                try:
+                    prior.joined.prior._require_final_original_g1(
+                        packet, pre, validation_at
+                    )
+                    public_failure_code = None
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001 -- original G1 rejection stays DENY
+                    public_failure_code = "public_g1_rejected_at_local_readback"
         record.update(
             code=(
-                "original_event_already_recorded"
+                public_failure_code
+                if public_failure_code is not None
+                else "original_event_already_recorded"
                 if v4.code == "original_event_already_recorded"
                 else "local_state_stable_not_authority"
                 if not first_reasons

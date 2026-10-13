@@ -5309,3 +5309,86 @@ execute them. One classification unit test and static checks passed. An
 independent review found no bypass. There is no positive closure issuer yet,
 so this correctly leaves subsequent events blocked rather than claiming Demo
 continuous-execution acceptance.
+
+## 2026-10-13 a59a55f exact-source checkpoint
+
+Committed source `a59a55f99132833131c762b31469364c2f371456` has tree
+`35c6732ca20910c904a47c09b9132427cfa387e2`, migration head `0040`, and
+manifest SHA256
+`4cc1da24e5a976eca8dc8230a626dc507d271d5602b83d5c0289f39e08a0fa0b`.
+The exact archive and Git bundle are retained in
+`../../validation-results/checkpoint-a59a55f-20261013/`; their SHA256 values
+are `92c05dac82993ac064439d41994ba4b3d249f6f279407579a61890f27797fa71`
+and `6b53d9e8d6a8f0a6762bea68d22c8022f1a58a2c771f8d8db32ed516b54f2c20`.
+The bundle verified, and all 1,153 manifest members passed exact archive
+readback. A bounded scan of 1,154 source ZIP files and 418 new Git blobs
+since the prior full-history scan found zero high-confidence credential-pattern
+matches. The nonsecret security readback SHA256 is
+`834f3f0c0abbbdb8f0483bda14489f8b5948351e1d194752fc5ed84eb5d1c1dc`.
+These checks do not cover private runtime settings, logs, or a future release
+bundle. Docker image digest is not yet established.
+
+The matching [GitHub CI run 38418093148](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/38418093148)
+started for this exact SHA. At this checkpoint read, Linux shard 2 had failed;
+other shards and Windows/PostgreSQL jobs were still running. The failure is
+under investigation and CI is **not** accepted. No later uncommitted account
+revocation or post-G12 observation changes are covered by that run. No Demo or
+Live order, Notion delivery, sealed OOS evaluation, or release acceptance has
+occurred.
+
+The existing `CTCC V2 Outbox` Notion connection was independently inspected:
+its content access is limited to `CTCC 單筆訊號與交易報告`, and the locally retained
+private token, database, data source and four property pins passed fresh
+authenticated **GET-only** readback. The nonsecret evidence is
+`../../validation-results/notion-binding-readback-20261013-1528.json` (SHA256
+`11035505a3ddc235f231bf102a88bf6eaf0cec898c0bccb99db28d06ce0576f4`).
+The full remote schema hash changed since initial setup, while the four pinned
+properties remained valid; this is not a delivery test. The outbox worker stayed
+disabled and no Notion write or trading action occurred. The original four
+source-backed Notion examples remain unaccepted.
+
+After the `a59a55f` checkpoint, the historical V7 account proof was found to
+lack complete per-page gateway/source-row timing as a prerequisite for current
+flat-start use. The old proof and V7 page chain remain immutable and replayable.
+The new current-use interpreter replays those bytes into a versioned, fixed
+`DENY` receipt; missing gateway times no longer imply ordered source rows. New
+V7 flat native-proof issuance now stops before an account GET. Forty-seven
+focused and adjacent local tests passed. Independent review traced historical
+V7 readers and found no old receipt that currently grants Arm, reservation,
+intent or order authority. This revocation does not create a complete trusted
+account snapshot or positive flat-start issuer.
+
+V4/V5 post-G12 observations now freeze the original candidate and replay the
+same pinned public packet's G1 after their later account/event and local
+readbacks. The app samples a fresh native UTC validation time after journal
+readback and checks it against the DB receipt and original expiry. Journal
+readback failures and actual G1 rejections have distinct fixed `DENY` codes;
+the observations never reserve risk, create an intent or submit. V4's three
+late-bound targeted checks and V5's 25-unit focused suite passed locally,
+including a real packet that expired before the candidate deadline. These are
+historical diagnostics only: publication occurs after the validation sample,
+and no current execution eligibility is issued. PostgreSQL integration and
+exact-source full CI have not yet validated these uncommitted changes.
+
+The `a59a55f` CI Linux shard-2 failure was an outdated synthetic test setup:
+DB0039 custody preclaim now stopped the test before its intended root-swap
+fault. The test alone now stubs that separately tested preclaim, confirms the
+root swap was reached, and expects the original fail-closed publication error.
+Three targeted local tests, Ruff, formatting and diff checks passed. Production
+custody behavior was not weakened. A new exact-source CI run is still required.
+An independent combined low-load selection of 35 account, V5, root-swap and
+real G1 tests also passed. Its JUnit file is
+`../../validation-results/targeted-account-g12-ci-20261013.xml` (SHA256
+`431a53ee08f68fecc3a2bcf9718a08c0fe5714c3f7200e541bc180783b03fa29`).
+Pytest warned that Windows denied writing its optional `.pytest_cache`; that
+warning did not change the test results and is not full Windows acceptance.
+The later time-validation review separated unavailable/reversed/expired native
+validation time from a genuine original G1 rejection. Four clock-fault tests
+passed without invoking G1 or any risk/intent/order action; their JUnit SHA256
+is `68e52d8c04e2ce3f4d533c7ae2c03d9c0b3d93c411cbd441e2464a7194c73000`
+at `../../validation-results/targeted-g12-clock-20261013.xml`. After that
+change, the combined final low-load selection passed **37** tests, recorded at
+`../../validation-results/targeted-account-g12-ci-final-20261013.xml` (SHA256
+`f7ef9d41eabe1bd5e1bee0a96a768ff8266d3cb947aa173b743415c199088465`).
+The optional Windows pytest-cache warning recurred; no full Windows or Linux
+acceptance is inferred.

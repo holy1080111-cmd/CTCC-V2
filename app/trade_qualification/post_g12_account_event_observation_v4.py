@@ -20,7 +20,8 @@ from app.database.repositories.account_capture_journal import (
     LockedAccountSourceJoinReadback,
 )
 from app.database.repositories.qualification_ledger import QualificationLedgerRepository
-from app.domain.source_primitives import canonical, decode, sha
+from app.domain.native_clock import native_stamp
+from app.domain.source_primitives import canonical, decode, sha, utc_from_ns
 from app.trade_evidence import storage as evidence_storage
 from app.trade_qualification import account_capture
 from app.trade_qualification import account_current_history_join as account_join
@@ -54,6 +55,9 @@ _CODES = frozenset(
         "account_readback_invalid",
         "ledger_observation_unavailable",
         "ledger_observation_invalid",
+        "public_journal_readback_invalid_at_event_readback",
+        "public_validation_clock_invalid_at_event_readback",
+        "public_g1_rejected_at_event_readback",
         "original_event_already_recorded",
         "trusted_execution_inputs_missing",
     }
@@ -88,6 +92,9 @@ class PostG12AccountEventObservationV4:
         "account_readback_invalid",
         "ledger_observation_unavailable",
         "ledger_observation_invalid",
+        "public_journal_readback_invalid_at_event_readback",
+        "public_validation_clock_invalid_at_event_readback",
+        "public_g1_rejected_at_event_readback",
         "original_event_already_recorded",
         "trusted_execution_inputs_missing",
     ]
@@ -190,6 +197,9 @@ class PostG12AccountEventObservationV4:
             in {
                 "ledger_observation_unavailable",
                 "ledger_observation_invalid",
+                "public_journal_readback_invalid_at_event_readback",
+                "public_validation_clock_invalid_at_event_readback",
+                "public_g1_rejected_at_event_readback",
                 "original_event_already_recorded",
                 "trusted_execution_inputs_missing",
             }
@@ -205,6 +215,16 @@ class PostG12AccountEventObservationV4:
                 self.ledger_observation_sha256 is not None
                 and type(self.ledger_event_state) is str
                 and self.ledger_event_state in _STATES
+            )
+        elif self.code in {
+            "public_journal_readback_invalid_at_event_readback",
+            "public_validation_clock_invalid_at_event_readback",
+            "public_g1_rejected_at_event_readback",
+        }:
+            valid_observation = (
+                self.ledger_observation_sha256 is not None
+                and type(self.ledger_event_state) is str
+                and self.ledger_event_state in _STATES | {"absent_at_read"}
             )
         else:
             valid_observation = (
@@ -421,6 +441,14 @@ def _original_binding(
     original_market, run, original_inputs, account_session, scope, history_capture_id
 ):
     """Copy the same original pins V3 derives before any asynchronous IO."""
+    _, pre, inputs = joined._original(original_market, run, original_inputs)
+    return _checked_original_binding(
+        pre, inputs, account_session, scope, history_capture_id
+    )
+
+
+def _checked_original_binding(pre, inputs, account_session, scope, history_capture_id):
+    """Bind an already frozen original without rereading caller-owned models."""
     scope = checked_bootstrap(scope, LedgerScope)
     if type(account_session) is not joined.ControlledDemoAccountSession:
         raise PostG12AccountEventObservationError("v4_exact_account_session_required")
@@ -434,7 +462,6 @@ def _original_binding(
         or joined._CAPTURE_ID.fullmatch(history_capture_id) is None
     ):
         raise PostG12AccountEventObservationError("v4_account_scope_mismatch")
-    _, pre, inputs = joined._original(original_market, run, original_inputs)
     intent, risk_inputs, candidate = inputs["intent"], inputs["risk_inputs"], pre.result
     key = event_identity(pre.prefix.detection)
     if (
@@ -658,6 +685,7 @@ def _read_bound_public_journal(root, value, *, root_identity):
                 or source_runtime._native_recheck_root_identity(root) != root_identity
             ):
                 raise ValueError
+            return packet
     except Exception:  # noqa: BLE001 -- no public source or path detail in denial
         raise PostG12AccountEventObservationError(
             "v4_public_journal_readback_failed"
@@ -916,13 +944,9 @@ async def publish_capture_inspect_history_event_v4(
     if session_factory is not ledger.session_factory:
         raise PostG12AccountEventObservationError("v4_account_database_mismatch")
     scope = checked_bootstrap(scope, LedgerScope)
-    expected = _original_binding(
-        original_market,
-        run,
-        original_inputs,
-        account_session,
-        scope,
-        history_capture_id,
+    market, pre, inputs = joined._original(original_market, run, original_inputs)
+    expected = _checked_original_binding(
+        pre, inputs, account_session, scope, history_capture_id
     )
     base = {
         "report_id": expected["report_id"],
@@ -964,9 +988,9 @@ async def publish_capture_inspect_history_event_v4(
         account_root,
         recheck_root,
         join_root,
-        original_market,
-        run=run,
-        original_inputs=original_inputs,
+        market,
+        run=pre,
+        original_inputs=inputs,
         market_policy=market_policy,
         account_session=account_session,
         session_factory=session_factory,
@@ -1103,31 +1127,59 @@ async def publish_capture_inspect_history_event_v4(
                 < expected["deadline"]
             ):
                 raise ValueError
-            state = (
-                "absent_at_read"
-                if observation.matched is None
-                else observation.matched.state
-            )
-            result = PostG12AccountEventObservationV4(
-                code=(
-                    "trusted_execution_inputs_missing"
-                    if observation.matched is None
-                    else "original_event_already_recorded"
-                ),
-                ledger_observation_sha256=observation.sha256,
-                ledger_event_state=state,
-                v3_observed_at=value["observed_at"],
-                **base,
-                **pins,
-            )
-            _observation_bytes_for_receipt(replayed_observation, result)
-            retained_observation = replayed_observation
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 -- mismatch cannot grant absence
             result = PostG12AccountEventObservationV4(
                 code="ledger_observation_invalid", **base, **pins
             )
+    if result is None:
+        try:
+            # DB readback can finish after the V3 public check. Reopen the same
+            # pinned raw journal and replay the original G1 at this later time.
+            packet = _read_bound_public_journal(
+                public_root, value, root_identity=public_root_identity
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 -- late journal mutation stays DENY
+            code = "public_journal_readback_invalid_at_event_readback"
+        else:
+            try:
+                validation_at = utc_from_ns(native_stamp()["utc_ns"])
+                if not observation.received_at <= validation_at < expected["deadline"]:
+                    raise ValueError("v4_public_validation_clock_invalid")
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 -- unusable validation time stays DENY
+                code = "public_validation_clock_invalid_at_event_readback"
+            else:
+                try:
+                    joined.prior._require_final_original_g1(packet, pre, validation_at)
+                    code = (
+                        "trusted_execution_inputs_missing"
+                        if observation.matched is None
+                        else "original_event_already_recorded"
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001 -- original G1 rejection stays DENY
+                    code = "public_g1_rejected_at_event_readback"
+        state = (
+            "absent_at_read"
+            if observation.matched is None
+            else observation.matched.state
+        )
+        result = PostG12AccountEventObservationV4(
+            code=code,
+            ledger_observation_sha256=observation.sha256,
+            ledger_event_state=state,
+            v3_observed_at=value["observed_at"],
+            **base,
+            **pins,
+        )
+        _observation_bytes_for_receipt(replayed_observation, result)
+        retained_observation = replayed_observation
     # A late publication/readback failure propagates. Never delete an accepted
     # V3 receipt, erase this root, or reclassify a failed V4 append as success.
     _publish_receipt(
