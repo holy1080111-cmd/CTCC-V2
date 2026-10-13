@@ -63,6 +63,7 @@ POSTGRES_TEST_PATHS = frozenset(
         "tests/integration/test_okx_live_schema_integration.py",
         "tests/integration/test_persistence_repository.py",
         "tests/integration/test_post_g12_account_event_observation_v4_repository.py",
+        "tests/integration/test_post_g12_local_portfolio_observation_v5_repository.py",
         "tests/integration/test_public_receipt_post_read_observation_repository.py",
     }
 )

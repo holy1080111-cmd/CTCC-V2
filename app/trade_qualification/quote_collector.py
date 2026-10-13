@@ -33,6 +33,7 @@ from typing import Annotated, Literal
 
 import httpcore
 import httpx
+from httpcore._backends.auto import AutoBackend
 from pydantic import (
     Field,
     StringConstraints,
@@ -553,6 +554,15 @@ def _public_client(client, *, require_empty_cookies=True):
             raise QuoteCollectionError("public_client_transport_not_isolated")
         if type(transport._pool._retries) is not int or transport._pool._retries != 0:
             raise QuoteCollectionError("public_client_transport_retries_forbidden")
+        pool = transport._pool
+        if (
+            pool._proxy is not None
+            or pool._uds is not None
+            or pool._local_address is not None
+            or pool._socket_options is not None
+            or type(pool._network_backend) is not AutoBackend
+        ):
+            raise QuoteCollectionError("public_client_transport_not_isolated")
 
 
 async def _close_response(response, *, pending_cancel=False):

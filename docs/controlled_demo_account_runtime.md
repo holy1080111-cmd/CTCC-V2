@@ -41,6 +41,10 @@ claim until independently authenticated.
 The private collector owns signing and a fresh isolated HTTP client. GET only,
 `x-simulated-trading: 1`, no proxy/environment inheritance, retry, redirect or
 source substitution. Every request starts after the supplied publication barrier.
+The pre-send guard also rejects a proxy hidden inside an otherwise direct-looking
+connection pool, a Unix-domain socket, local bind override, socket options, or
+a substituted network backend. Its default direct pool is checked without
+performing network IO; synthetic route mutations must fail before signed GET.
 Native responses must expose a negotiated TLS 1.2/1.3 session under the exact
 verified client context, expected server hostname and nonempty peer certificate.
 The process-local result records peer certificate hashes. MockTransport is always

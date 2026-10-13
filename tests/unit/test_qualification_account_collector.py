@@ -13,6 +13,7 @@ import traceback
 from dataclasses import FrozenInstanceError, fields
 from datetime import datetime, timedelta, timezone, tzinfo
 
+import httpcore
 import httpx
 import pytest
 from pydantic import model_serializer
@@ -1275,6 +1276,60 @@ async def test_real_transport_configuration_rejected_before_send_with_no_network
             barrier_completed_at=BARRIER,
         )
     assert client.is_closed and send_calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "hidden_route",
+    ["nested_pool_proxy", "unix_socket", "local_bind", "socket_options", "backend"],
+)
+async def test_hidden_pool_route_is_rejected_before_signed_get(
+    monkeypatch, hidden_route
+):
+    """A direct-looking HTTPX transport cannot hide a second route in its pool."""
+    send_calls = []
+
+    async def no_send(*args, **kwargs):
+        send_calls.append(True)
+        raise AssertionError("hidden route reached signed GET")
+
+    monkeypatch.setattr(httpx.AsyncClient, "send", no_send)
+    transport = httpx.AsyncHTTPTransport(verify=True, trust_env=False, retries=0)
+    pool = transport._pool
+    if hidden_route == "nested_pool_proxy":
+        transport._pool = httpcore.AsyncConnectionPool(
+            ssl_context=pool._ssl_context,
+            proxy=httpcore.Proxy("http://synthetic-proxy.invalid:8080"),
+            retries=0,
+        )
+    elif hidden_route == "unix_socket":
+        pool._uds = "synthetic-local-socket"
+    elif hidden_route == "local_bind":
+        pool._local_address = "127.0.0.1"
+    elif hidden_route == "socket_options":
+        pool._socket_options = [(1, 2, 3)]
+    else:
+        pool._network_backend = object()
+    client = httpx.AsyncClient(transport=transport, trust_env=False)
+    monkeypatch.setattr(module, "_new_client", lambda: client)
+    with pytest.raises(module.AccountCollectionError, match="transport_not_isolated"):
+        await module.collect_demo_account_records(
+            credentials=credentials(),
+            clock=Clock(),
+            plan=plan(),
+            expected_plan_sha256=capture_api.plan_sha256(plan()),
+            barrier_completed_at=BARRIER,
+        )
+    assert client.is_closed and send_calls == []
+
+
+@pytest.mark.asyncio
+async def test_owned_default_direct_pool_passes_configuration_guard_without_io():
+    client = module._new_client()
+    try:
+        module._client_guard(client)
+    finally:
+        await client.aclose()
 
 
 @pytest.mark.asyncio

@@ -87,6 +87,36 @@ def published(expanded, tmp_path_factory):
     return root, evidence, freeze_recheck_origin(evidence)
 
 
+def test_observed_history_g12_requires_authenticated_event_ledger(expanded, tmp_path):
+    source, inputs, run = expanded
+    assert run.result.gates[5].passed
+    assert run.prefix.event_ledger_verified is False
+    original_event_key = run.prefix.timing.event_key
+    root = tmp_path / "evidence"
+    root.mkdir()
+    journal = root / "existing-state-journal.json"
+    journal.write_bytes(b"durable prior state")
+
+    def forbidden_clock():
+        pytest.fail("observed denial must precede publication clock and filesystem")
+
+    with pytest.raises(
+        EvidenceGateError, match="observed_history_event_ledger_unverified"
+    ):
+        publish_qualification_evidence(
+            root,
+            source.market,
+            run=run,
+            **inputs,
+            purpose="observed",
+            clock=forbidden_clock,
+        )
+
+    assert run.prefix.timing.event_key == original_event_key
+    assert list(root.iterdir()) == [journal]
+    assert journal.read_bytes() == b"durable prior state"
+
+
 async def current_inputs(source, original_inputs, origin):
     start = source.evaluated_at + timedelta(seconds=1)
     market, observations = _new_market(source, start, "same_interval")

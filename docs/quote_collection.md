@@ -36,7 +36,11 @@ remain trusted runtime dependencies, not attestations that can be proven by a
 hash or by constructing a data model. The collector rejects environment-proxy
 inheritance, client credentials, **pre-existing** cookies, hooks and merged default
 query values at capture entry. It builds fixed public requests and refuses
-redirects. A server may set a cookie on an otherwise valid public JSON response;
+redirects. The pre-send guard also rejects a hidden pool proxy, Unix socket,
+local bind, socket options or substituted network backend before any public
+GET. MockTransport is admitted only as a synthetic test dependency and proves
+no source authenticity. A server may set a cookie on an otherwise valid public
+JSON response;
 HTTPX records it internally, but no subsequent request forwards it. Direct
 `httpx.Request` objects are sent as-is, without `build_request` cookie merging.
 No caller cookies are cleared or replayed. Callers must use a fresh dedicated

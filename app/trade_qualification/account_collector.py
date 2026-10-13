@@ -36,6 +36,7 @@ from typing import Literal
 
 import httpcore
 import httpx
+from httpcore._backends.auto import AutoBackend
 
 from app.trade_qualification import account_capture as capture
 
@@ -357,6 +358,11 @@ def _client_guard(client):
         type(pool) is not httpcore.AsyncConnectionPool
         or type(pool._retries) is not int
         or pool._retries != 0
+        or pool._proxy is not None
+        or pool._uds is not None
+        or pool._local_address is not None
+        or pool._socket_options is not None
+        or type(pool._network_backend) is not AutoBackend
     ):
         raise AccountCollectionError("transport_not_isolated")
     context = pool._ssl_context

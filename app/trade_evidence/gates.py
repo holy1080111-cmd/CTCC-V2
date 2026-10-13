@@ -65,6 +65,7 @@ from app.trade_qualification.history_engine import (
     HistoryPreEvidencePolicyV4,
     HistoryPreEvidencePolicyV5,
     HistoryPreEvidencePolicyV6,
+    HistoryPreEvidenceRun,
     HistoryPreEvidenceRunV2,
     HistoryPreEvidenceRunV3,
     HistoryPreEvidenceRunV4,
@@ -451,6 +452,15 @@ def publish_qualification_evidence(
         )
     except Exception as exc:
         raise EvidenceGateError("pre_evidence_replay_failed") from exc
+    # A caller's consumed-event set can prove timing arithmetic, but not that
+    # the set covers legacy and exchange history. Never publish an observed
+    # history G12 from that unauthenticated G6 result.
+    if (
+        purpose == "observed"
+        and isinstance(pre, HistoryPreEvidenceRun)
+        and not pre.prefix.event_ledger_verified
+    ):
+        raise EvidenceGateError("observed_history_event_ledger_unverified")
     pin = pre.evaluation_sha256
     gate_type = (
         HistoryEvidenceGateRunV6

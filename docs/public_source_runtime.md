@@ -114,7 +114,12 @@ available through this coordinator. Its result has no execution authority.
 The producer creates three isolated HTTPX clients and one WS connection. HTTP
 clients disable environment proxies, redirects, retries, auth and hooks. Native
 SSL context, HTTP pool and negotiated SSL object identities are checked. The
-observed TLS hostname, negotiated version and peer certificate hash are retained.
+shared public-client pre-send guard also rejects a proxy nested in the direct
+pool, Unix-domain socket, local bind override, socket options, or substituted
+network backend; this applies to the owned runtime and standalone quote,
+candle and market-aux collectors. MockTransport remains a synthetic test seam,
+not native source evidence. The observed TLS hostname, negotiated version and
+peer certificate hash are retained.
 Only the pinned public GET routes and exact instrument queries are admitted.
 For candles and books, the query binding is essential because the response does
 not independently echo the requested instrument.
