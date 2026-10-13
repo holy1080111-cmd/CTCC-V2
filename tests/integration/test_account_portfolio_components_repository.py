@@ -4,6 +4,7 @@ The legacy-singleton case requires a fresh dedicated migrated B5 database. It
 leaves its explicitly synthetic records in that database; no deployed fallback.
 """
 
+import asyncio
 import hashlib
 import json
 from datetime import datetime, timedelta
@@ -11,7 +12,7 @@ from decimal import Decimal
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -53,6 +54,143 @@ from tests.integration.test_qualification_ledger_repository import (
 )
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
+
+
+async def test_demo_capture_lease_serializes_independent_repository_instances(
+    database,
+) -> None:
+    """The singleton capture lock spans private reads across two DB sessions."""
+    first = OkxDemoRepository(database[1])
+    second = OkxDemoRepository(database[1])
+    first_entered = asyncio.Event()
+    release_first = asyncio.Event()
+    second_attempted = asyncio.Event()
+    second_entered = asyncio.Event()
+
+    async def old_capture() -> None:
+        async with first.capture_lease():
+            first_entered.set()
+            await release_first.wait()
+
+    async def newer_capture() -> None:
+        second_attempted.set()
+        async with second.capture_lease():
+            second_entered.set()
+
+    first_task = asyncio.create_task(old_capture())
+    second_task = None
+    try:
+        await asyncio.wait_for(first_entered.wait(), timeout=10)
+        second_task = asyncio.create_task(newer_capture())
+        await asyncio.wait_for(second_attempted.wait(), timeout=10)
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(second_entered.wait(), timeout=0.15)
+        release_first.set()
+        await asyncio.wait_for(first_task, timeout=10)
+        await asyncio.wait_for(second_task, timeout=10)
+        assert second_entered.is_set()
+    finally:
+        release_first.set()
+        if not first_task.done():
+            first_task.cancel()
+        if second_task is not None and not second_task.done():
+            second_task.cancel()
+        pending_tasks = [first_task]
+        if second_task is not None:
+            pending_tasks.append(second_task)
+        await asyncio.gather(*pending_tasks, return_exceptions=True)
+
+
+async def test_direct_order_write_and_b5_checkpoint_use_same_table_lock_order(
+    database, monkeypatch
+) -> None:
+    """A B5 reader waiting on the writer must finish without a lock cycle."""
+    scope = LedgerScope(
+        account_id=f"123456789{uuid4().int % 10**12:012d}",
+        settlement_currency="USDT",
+    )
+    order_id = f"synthetic-lock-order-{uuid4().hex}"
+    ledger = QualificationLedgerRepository(database[1], clock=now)
+    mirror = OkxDemoRepository(database[1])
+    async with database[1]() as initial:
+        assert await initial.get(OkxDemoSyncCheckpoint, 1) is None
+    await ledger.initialize_capture_scope(scope)
+    writer_locked = asyncio.Event()
+    release_writer = asyncio.Event()
+    original_upsert = mirror._upsert_order_locked
+
+    async def paused_upsert(session, order, stamp):
+        writer_locked.set()
+        await release_writer.wait()
+        await original_upsert(session, order, stamp)
+
+    monkeypatch.setattr(mirror, "_upsert_order_locked", paused_upsert)
+    order = OkxDemoOrderView(
+        order_id=order_id,
+        instrument_id="BTC-USDT-SWAP",
+        side="buy",
+        position_side="net",
+        order_type="limit",
+        state="filled",
+        size=Decimal(1),
+        accumulated_fill_size=Decimal(1),
+        price=Decimal(60000),
+        updated_at=now(),
+        raw={"ordId": order_id, "state": "filled"},
+    )
+    writer = asyncio.create_task(
+        mirror.upsert_orders([order], action="synthetic_order_lock_test")
+    )
+    reader = None
+    try:
+        await asyncio.wait_for(writer_locked.wait(), timeout=10)
+        reader = asyncio.create_task(ledger.read_portfolio_checkpoint(scope))
+        # Observe the real PostgreSQL backend blocked on the B5 table lock;
+        # task scheduling alone would not prove the intended interleaving.
+        for _ in range(80):
+            async with database[0].connect() as observation:
+                waiting = await observation.scalar(
+                    text(
+                        "SELECT count(*) FROM pg_stat_activity "
+                        "WHERE datname = current_database() "
+                        "AND wait_event_type = 'Lock' "
+                        "AND query LIKE 'LOCK TABLE demo_automation_state%'"
+                    )
+                )
+            if waiting:
+                break
+            await asyncio.sleep(0.1)
+        else:
+            pytest.fail("B5 reader did not reach the PostgreSQL table lock")
+        release_writer.set()
+        await asyncio.wait_for(writer, timeout=10)
+        result = await asyncio.wait_for(reader, timeout=10)
+        assert not result.known_flat
+    finally:
+        release_writer.set()
+        if not writer.done():
+            writer.cancel()
+        if reader is not None and not reader.done():
+            reader.cancel()
+        tasks = [writer]
+        if reader is not None:
+            tasks.append(reader)
+        await asyncio.gather(*tasks, return_exceptions=True)
+        async with database[1]() as cleanup, cleanup.begin():
+            await cleanup.execute(
+                delete(OkxDemoOrderState).where(OkxDemoOrderState.order_id == order_id)
+            )
+            await cleanup.execute(
+                delete(OkxDemoSyncCheckpoint).where(
+                    OkxDemoSyncCheckpoint.id == 1,
+                    OkxDemoSyncCheckpoint.last_error.in_(
+                        (
+                            "okx_demo_order_write_requires_reconcile",
+                            "okx_demo_order_mirror_failure",
+                        )
+                    ),
+                )
+            )
 
 
 def _safe_first_append_failure(exc: Exception) -> str:
@@ -353,7 +491,7 @@ async def test_unknown_legacy_initialization_and_persisted_latch_never_become_em
 
 
 async def test_demo_mirror_terminal_history_is_locally_flat_but_pending_is_not(
-    database,
+    database, monkeypatch
 ):
     """Real SQL mirror and B5 readback; all account inputs are synthetic."""
     uid = f"123456789{uuid4().int % 10**12:012d}"
@@ -461,14 +599,15 @@ async def test_demo_mirror_terminal_history_is_locally_flat_but_pending_is_not(
 
             async def sync(orders: list[OkxDemoOrderView]) -> str:
                 binding_id = uuid4().hex + uuid4().hex
-                await mirror.sync_snapshot(
-                    account_config=account_config,
-                    balance=balance,
-                    positions=[],
-                    orders=orders,
-                    algo_orders=[],
-                    credential_session_binding_id=binding_id,
-                )
+                async with mirror.capture_lease():
+                    await mirror.sync_snapshot(
+                        account_config=account_config,
+                        balance=balance,
+                        positions=[],
+                        orders=orders,
+                        algo_orders=[],
+                        credential_session_binding_id=binding_id,
+                    )
                 return binding_id
 
             first_binding_id = await sync([order(order_id, "filled", historical_time)])
@@ -491,6 +630,23 @@ async def test_demo_mirror_terminal_history_is_locally_flat_but_pending_is_not(
             )
             assert not flat_document["execution_authority"]
             assert not flat_document["future_writer_exclusion"]
+
+            original_upsert = mirror._upsert_order_locked
+
+            async def interrupted_upsert(*_args):
+                raise asyncio.CancelledError
+
+            monkeypatch.setattr(mirror, "_upsert_order_locked", interrupted_upsert)
+            with pytest.raises(asyncio.CancelledError):
+                await mirror.upsert_orders(
+                    [order(f"synthetic-interrupted-{uuid4().hex}", "filled", now())],
+                    action="synthetic_interrupted_order_write",
+                )
+            monkeypatch.setattr(mirror, "_upsert_order_locked", original_upsert)
+            async with sessions() as session:
+                checkpoint = await session.get(OkxDemoSyncCheckpoint, 1)
+                assert checkpoint is not None and checkpoint.status == "error"
+            assert not (await ledger.read_portfolio_checkpoint(scope)).known_flat
 
             await sync(
                 [
@@ -564,8 +720,8 @@ async def test_demo_mirror_terminal_history_is_locally_flat_but_pending_is_not(
                     ],
                     action="synthetic_order_duplicate",
                 )
-            # A complete successful reconcile can restore the checkpoint,
-            # while the row remains blocked until a strictly newer terminal.
+            # A bounded reconcile updates rows but cannot erase an uncertain
+            # direct order write, even after the row becomes terminal.
             await sync(
                 [
                     order(order_id, "filled", historical_time),
@@ -606,20 +762,53 @@ async def test_demo_mirror_terminal_history_is_locally_flat_but_pending_is_not(
                 assert checkpoint is not None and checkpoint.order_count == 0
                 assert closed is not None and closed.state == "canceled"
             assert (await mirror.mirror_status()).order_count == 2
-            assert (await ledger.read_portfolio_checkpoint(scope)).known_flat
+            terminal_checkpoint = await ledger.read_portfolio_checkpoint(scope)
+            assert not terminal_checkpoint.known_flat
+            assert json.loads(terminal_checkpoint.document_json)["legacy"][
+                "sync_checkpoint"
+            ]["last_error"] in {
+                "okx_demo_order_write_requires_reconcile",
+                "okx_demo_order_mirror_failure",
+            }
+
+            # An independently acknowledged terminal fill can have opened a
+            # position that this old flat snapshot never observed. Even though
+            # the new order itself is terminal, it dirties the checkpoint.
+            filled_id = f"synthetic-demo-new-fill-{uuid4().hex}"
+            await mirror.upsert_orders(
+                [order(filled_id, "filled", terminal_time)],
+                action="synthetic_independent_fill",
+            )
+            async with sessions() as session:
+                checkpoint = await session.get(OkxDemoSyncCheckpoint, 1)
+                assert checkpoint is not None
+                assert checkpoint.status == "error"
+                assert (
+                    checkpoint.last_error == "okx_demo_order_write_requires_reconcile"
+                )
+            assert not (await ledger.read_portfolio_checkpoint(scope)).known_flat
+            await sync(
+                [
+                    order(order_id, "filled", historical_time),
+                    order(pending_id, "canceled", terminal_time),
+                    order(filled_id, "filled", terminal_time),
+                ]
+            )
+            assert not (await ledger.read_portfolio_checkpoint(scope)).known_flat
 
             # A caller-created config without the original raw UID cannot
             # authenticate the singleton mirror, even with no active rows.
-            await mirror.sync_snapshot(
-                account_config=account_config.model_copy(update={"raw": {}}),
-                balance=balance,
-                positions=[],
-                orders=[
-                    order(order_id, "filled", historical_time),
-                    order(pending_id, "canceled", terminal_time),
-                ],
-                algo_orders=[],
-            )
+            async with mirror.capture_lease():
+                await mirror.sync_snapshot(
+                    account_config=account_config.model_copy(update={"raw": {}}),
+                    balance=balance,
+                    positions=[],
+                    orders=[
+                        order(order_id, "filled", historical_time),
+                        order(pending_id, "canceled", terminal_time),
+                    ],
+                    algo_orders=[],
+                )
             unbound = await ledger.read_portfolio_checkpoint(scope)
             assert not unbound.known_flat
             assert (

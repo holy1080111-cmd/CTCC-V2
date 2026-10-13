@@ -223,123 +223,137 @@ class OkxDemoService:
         self._ensure_read_ready()
         async with self._lock:
             try:
-                pinned_client = (
-                    self.private_client
-                    if type(self.private_client) is OkxDemoPrivateRestClient
-                    else None
-                )
-                binding_id = (
-                    pinned_client.active_read_session_binding_id
-                    if pinned_client is not None
-                    else None
-                )
-                if binding_id is not None:
-                    # The first config precedes every component read; the second
-                    # follows them. Both must identify the exact same account.
-                    config_rows = await self.private_client.account_config()
-                    if len(config_rows) != 1:
-                        raise OkxDemoUnavailableError(
-                            "okx_demo_reconcile_account_cardinality_invalid"
-                        )
-                    first_config = parse_account_config(config_rows[0])
-                    first_identity = self._pinned_account_identity(first_config)
-                    (
-                        balance_rows,
-                        position_rows,
-                        pending_rows,
-                        history_rows,
-                        algo_rows,
-                    ) = await asyncio.gather(
-                        self.private_client.balance(),
-                        self.private_client.positions(),
-                        self.private_client.pending_orders(),
-                        self.private_client.order_history(limit=100),
-                        self.private_client.pending_algo_orders(),
-                    )
-                    final_rows = await self.private_client.account_config()
-                    if (
-                        len(final_rows) != 1
-                        or self._pinned_account_identity(
-                            parse_account_config(final_rows[0])
-                        )
-                        != first_identity
-                    ):
-                        raise OkxDemoUnavailableError(
-                            "okx_demo_reconcile_account_identity_changed"
-                        )
-                else:
-                    (
-                        config_rows,
-                        balance_rows,
-                        position_rows,
-                        pending_rows,
-                        history_rows,
-                        algo_rows,
-                    ) = await asyncio.gather(
-                        self.private_client.account_config(),
-                        self.private_client.balance(),
-                        self.private_client.positions(),
-                        self.private_client.pending_orders(),
-                        self.private_client.order_history(limit=100),
-                        self.private_client.pending_algo_orders(),
-                    )
-                if len(config_rows) != 1 or len(balance_rows) != 1:
-                    raise OkxDemoUnavailableError(
-                        "okx_demo_reconcile_account_cardinality_invalid"
-                    )
-                account_config = parse_account_config(config_rows[0])
-                balance = parse_balance(balance_rows[0])
-                positions = [
-                    item
-                    for item in (parse_position(row) for row in position_rows)
-                    if item.size != 0
-                ]
-                pending_orders = [parse_order(row) for row in pending_rows]
-                recent_orders = [parse_order(row) for row in history_rows]
-                algo_orders = [parse_algo_order(row) for row in algo_rows]
-                persisted = False
                 if self.repository is not None:
-                    sync_values = {
-                        "account_config": account_config,
-                        "balance": balance,
-                        "positions": positions,
-                        "orders": [*recent_orders, *pending_orders],
-                        "algo_orders": algo_orders,
-                    }
-                    if binding_id is not None:
-                        sync_values["credential_session_binding_id"] = binding_id
-                    await self.repository.sync_snapshot(**sync_values)
-                    persisted = True
-                if binding_id is not None and (
-                    pinned_client is None
-                    or pinned_client.active_read_session_binding_id != binding_id
-                ):
-                    raise OkxDemoUnavailableError(
-                        "okx_demo_reconcile_read_session_changed"
-                    )
+                    if type(self.repository) is OkxDemoRepository:
+                        # Serialize the exchange capture before its first
+                        # private GET and hold the DB transaction through commit.
+                        async with self.repository.capture_lease():
+                            result = await self._reconcile_once()
+                        self._last_exchange_ok_at = datetime.now(UTC)
+                        self._last_error = None
+                        return result
+                    if self.settings.environment != "test":
+                        raise OkxDemoUnavailableError(
+                            "okx_demo_capture_repository_unowned"
+                        )
+                result = await self._reconcile_once()
                 self._last_exchange_ok_at = datetime.now(UTC)
                 self._last_error = None
-                return OkxDemoReconcileResult(
-                    account_config=account_config,
-                    balance=balance,
-                    positions=positions,
-                    pending_orders=pending_orders,
-                    recent_orders=recent_orders,
-                    pending_algo_orders=algo_orders,
-                    persisted=persisted,
-                    credential_session_binding_id=binding_id,
-                )
+                return result
             except Exception as exc:
                 self._record_error(exc)
                 if self.repository is not None:
                     try:
                         await self.repository.mark_failure(self._safe_error(exc))
-                    except Exception as observation_error:  # noqa: BLE001 - IO safety boundary retains failure status; arbitrary adapter errors must not grant authority.
+                    except Exception as observation_error:  # noqa: BLE001 - IO safety boundary retains failure status.
                         logger.warning(
                             "auxiliary_io_failed kind=%s",
                             type(observation_error).__name__,
                         )
                 raise
+
+    async def _reconcile_once(self) -> OkxDemoReconcileResult:
+        pinned_client = (
+            self.private_client
+            if type(self.private_client) is OkxDemoPrivateRestClient
+            else None
+        )
+        binding_id = (
+            pinned_client.active_read_session_binding_id
+            if pinned_client is not None
+            else None
+        )
+        if binding_id is not None:
+            # The first config precedes every component read; the second
+            # follows them. Both must identify the exact same account.
+            config_rows = await self.private_client.account_config()
+            if len(config_rows) != 1:
+                raise OkxDemoUnavailableError(
+                    "okx_demo_reconcile_account_cardinality_invalid"
+                )
+            first_config = parse_account_config(config_rows[0])
+            first_identity = self._pinned_account_identity(first_config)
+            (
+                balance_rows,
+                position_rows,
+                pending_rows,
+                history_rows,
+                algo_rows,
+            ) = await asyncio.gather(
+                self.private_client.balance(),
+                self.private_client.positions(),
+                self.private_client.pending_orders(),
+                self.private_client.order_history(limit=100),
+                self.private_client.pending_algo_orders(),
+            )
+            final_rows = await self.private_client.account_config()
+            if (
+                len(final_rows) != 1
+                or self._pinned_account_identity(parse_account_config(final_rows[0]))
+                != first_identity
+            ):
+                raise OkxDemoUnavailableError(
+                    "okx_demo_reconcile_account_identity_changed"
+                )
+        else:
+            (
+                config_rows,
+                balance_rows,
+                position_rows,
+                pending_rows,
+                history_rows,
+                algo_rows,
+            ) = await asyncio.gather(
+                self.private_client.account_config(),
+                self.private_client.balance(),
+                self.private_client.positions(),
+                self.private_client.pending_orders(),
+                self.private_client.order_history(limit=100),
+                self.private_client.pending_algo_orders(),
+            )
+        if len(config_rows) != 1 or len(balance_rows) != 1:
+            raise OkxDemoUnavailableError(
+                "okx_demo_reconcile_account_cardinality_invalid"
+            )
+        account_config = parse_account_config(config_rows[0])
+        balance = parse_balance(balance_rows[0])
+        positions = [
+            item
+            for item in (parse_position(row) for row in position_rows)
+            if item.size != 0
+        ]
+        pending_orders = [parse_order(row) for row in pending_rows]
+        recent_orders = [parse_order(row) for row in history_rows]
+        algo_orders = [parse_algo_order(row) for row in algo_rows]
+        persisted = False
+        if self.repository is not None:
+            sync_values = {
+                "account_config": account_config,
+                "balance": balance,
+                "positions": positions,
+                "orders": [*recent_orders, *pending_orders],
+                "algo_orders": algo_orders,
+            }
+            if binding_id is not None:
+                sync_values["credential_session_binding_id"] = binding_id
+            await self.repository.sync_snapshot(**sync_values)
+            persisted = True
+        if binding_id is not None and (
+            pinned_client is None
+            or pinned_client.active_read_session_binding_id != binding_id
+        ):
+            raise OkxDemoUnavailableError("okx_demo_reconcile_read_session_changed")
+        result = OkxDemoReconcileResult(
+            account_config=account_config,
+            balance=balance,
+            positions=positions,
+            pending_orders=pending_orders,
+            recent_orders=recent_orders,
+            pending_algo_orders=algo_orders,
+            persisted=persisted,
+            credential_session_binding_id=binding_id,
+        )
+        return result
 
     @staticmethod
     def _pinned_account_identity(config: OkxDemoAccountConfig) -> tuple[str, ...]:

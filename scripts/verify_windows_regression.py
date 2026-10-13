@@ -35,6 +35,7 @@ POSTGRES_INTEGRATION = (
     "test_account_current_history_observation_repository.py",
     "test_account_current_history_recency_repository.py",
     "test_account_history_query_verifier_repository.py",
+    "test_account_history_prefix_repository.py",
     "test_account_ingestion_journal_repository.py",
     "test_account_locked_current_history_join_v7_repository.py",
     "test_account_locked_source_join_repository.py",

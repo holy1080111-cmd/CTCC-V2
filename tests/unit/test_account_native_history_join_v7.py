@@ -18,6 +18,21 @@ from app.database.repositories.account_capture_journal import (
     AccountCaptureJournalRepository,
     LockedAccountSourceJoinReadback,
 )
+from app.database.repositories.account_current_history_observation import (
+    AccountCurrentHistoryObservationRepository,
+    CurrentHistoryObservationReadback,
+)
+from app.database.repositories.account_current_observation import (
+    AccountCurrentObservationRepository,
+    CurrentObservationReadback,
+)
+from app.database.repositories.account_history_prefix import (
+    POLICY_SHA256 as HISTORY_PREFIX_POLICY_SHA256,
+)
+from app.database.repositories.account_history_prefix import (
+    AccountHistoryPrefixRepository,
+    HistoryPrefixReadback,
+)
 from app.domain.source_primitives import canonical, sha, utc_from_ns
 from app.trade_qualification import account_capture as capture
 from app.trade_qualification import account_clock_boundary as boundary
@@ -53,6 +68,10 @@ async def _synthetic_v7_join(
     progress=None,
     funding=False,
     funding_mismatch=False,
+    index_prefix=False,
+    prefix_failure=False,
+    prefix_overrides=None,
+    index_join_overrides=None,
 ):
     plan = current_plan_v7()
     session = ControlledDemoAccountSession(
@@ -147,6 +166,7 @@ async def _synthetic_v7_join(
             state["required_pre_history_readback"] if first_http_reversed else issued
         )
         state["current_deadline"] = issued["monotonic_ns"] + 30_000_000_000
+        state["current_expiry"] = utc_from_ns(issued["utc_ns"] + 30_000_000_000)
         native_receipt = {
             "schema_version": "ctcc.initial_native_account_diagnostic.v3",
             "policy_sha256": proof.V7_FLAT_POLICY_SHA256,
@@ -288,9 +308,99 @@ async def _synthetic_v7_join(
         "read_locked_current_history_funding_join",
         locked_join,
     )
+    if index_prefix:
+
+        async def read_prefix(repo, scope):
+            marker["calls"].append("prefix")
+            assert scope.account_id == plan.expected_uid
+            if prefix_failure:
+                raise RuntimeError("synthetic failed prefix")
+            value = {
+                "schema_version": "ctcc.account_accepted_b3_prefix.v1",
+                "policy_sha256": HISTORY_PREFIX_POLICY_SHA256,
+                "scope_sha256": proof.scope_sha256(scope),
+                "entire_accepted_b3_index_prefix_replayed": True,
+                "last_source_reference": observed.reference_document(history_reference),
+                "through_sequence": 1,
+                "head_sha256": "9" * 64,
+                "head_anchor_sha256": "a" * 64,
+                "ordered_membership_sha256": "8" * 64,
+                "current_predecessor_sequence": 0,
+                "current_predecessor_sha256": None,
+                "unresolved_findings_through_sequence": 0,
+                "local_checkpoint_sha256": "f" * 64,
+                "exchange_history_finality_verified": False,
+                "source_authenticity_verified": False,
+                "account_complete": False,
+                "execution_authority": False,
+                "admission": "DENY",
+            }
+            if prefix_overrides:
+                value.update(prefix_overrides)
+            return HistoryPrefixReadback(canonical(value))
+
+        async def append_current(repo, scope, source, *, expected_sequence):
+            marker["calls"].append("current_append")
+            assert scope.account_id == plan.expected_uid
+            assert source == reference and expected_sequence == 0
+            return CurrentObservationReadback(1, "7" * 64, b"{}", b"{}")
+
+        async def read_joined(
+            repo,
+            scope,
+            *,
+            history_sequence,
+            history_sha256,
+            current_sequence,
+            current_sha256,
+        ):
+            marker["calls"].append("index_join")
+            assert scope.account_id == plan.expected_uid
+            assert (history_sequence, history_sha256) == (1, "9" * 64)
+            assert (current_sequence, current_sha256) == (1, "7" * 64)
+            value = {
+                "schema_version": "ctcc.demo_current_history_observation_join.v1",
+                "history_index_sha256": "9" * 64,
+                "history_sequence": 1,
+                "current_index_sha256": "7" * 64,
+                "current_sequence": 1,
+                "history_source_reference": observed.reference_document(
+                    history_reference
+                ),
+                "current_source_reference": observed.reference_document(reference),
+                "db_local_state_sha256": "f" * 64,
+                "same_account_locked_head_binding": True,
+                "history_selected_head_replayed": True,
+                "current_selected_head_replayed": True,
+                "entire_history_index_replayed": False,
+                "history_index_commit_before_current_request_verified": False,
+                "source_authenticity_verified": False,
+                "flat_start_permission": False,
+                "exchange_atomic_revision_verified": False,
+                "portfolio_risk_snapshot": None,
+                "blocking_reasons": ["source_authenticity_unproven"],
+                "account_complete": False,
+                "execution_authority": False,
+                "admission": "DENY",
+            }
+            if index_join_overrides:
+                value.update(index_join_overrides)
+            return CurrentHistoryObservationReadback(canonical(value))
+
+        monkeypatch.setattr(
+            AccountHistoryPrefixRepository, "read_full_prefix", read_prefix
+        )
+        monkeypatch.setattr(
+            AccountCurrentObservationRepository, "append", append_current
+        )
+        monkeypatch.setattr(
+            AccountCurrentHistoryObservationRepository, "read_joined", read_joined
+        )
     capture_join = (
         runtime.capture_native_current_history_funding_join
         if funding
+        else runtime.capture_native_current_history_index_join_v1
+        if index_prefix
         else runtime.capture_native_current_history_join
     )
     result = await capture_join(
@@ -335,6 +445,77 @@ async def test_v7_same_invocation_joins_current_and_history_without_authority(
             invocation=marker["invocation"],
             expected_receipt_sha256=value["native_current_receipt_sha256"],
         )
+
+
+@pytest.mark.asyncio
+async def test_v7_index_prefix_is_replayed_before_current_and_rejoined_after(
+    monkeypatch,
+):
+    result, marker = await _synthetic_v7_join(monkeypatch, index_prefix=True)
+    value = json.loads(result.receipt_json)
+    assert marker["calls"] == [
+        "pre_read",
+        "prefix",
+        "native_current",
+        "locked_join",
+        "current_append",
+        "index_join",
+    ]
+    assert value["schema_version"] == (
+        "ctcc.native_current_history_index_join_diagnostic.v1"
+    )
+    assert value["history_index_prefix_replayed_before_first_http"] is True
+    assert value["history_index_committed_before_first_http"] is True
+    assert (
+        value["history_prefix_verified_native_stamp"]["monotonic_ns"]
+        < value["first_http_request_started"]["monotonic_ns"]
+    )
+    assert value["history_index_sequence"] == value["current_index_sequence"] == 1
+    assert value["history_prefix_policy_sha256"] == HISTORY_PREFIX_POLICY_SHA256
+    assert value["source_authenticity_verified"] is False
+    assert value["flat_start_permission"] is False
+    assert value["account_complete"] is result.account_complete is False
+    assert value["execution_authority"] is result.execution_authority is False
+    assert value["admission"] == "DENY"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "case",
+    [
+        "prefix_failure",
+        "reference_changed",
+        "first_http_reversed",
+        "index_promoted",
+        "index_mismatch",
+    ],
+)
+async def test_v7_index_prefix_failure_never_issues_authority(monkeypatch, case):
+    result, marker = await _synthetic_v7_join(
+        monkeypatch,
+        index_prefix=True,
+        prefix_failure=case == "prefix_failure",
+        first_http_reversed=case == "first_http_reversed",
+        prefix_overrides=(
+            {"last_source_reference": {"capture_id": "0" * 32}}
+            if case == "reference_changed"
+            else None
+        ),
+        index_join_overrides=(
+            {"execution_authority": True}
+            if case == "index_promoted"
+            else {"current_index_sha256": "0" * 64}
+            if case == "index_mismatch"
+            else None
+        ),
+    )
+    value = json.loads(result.receipt_json)
+    assert value["code"] == "native_account_history_join_denied"
+    assert value["account_complete"] is result.account_complete is False
+    assert value["execution_authority"] is result.execution_authority is False
+    assert value["admission"] == "DENY"
+    if case in ("prefix_failure", "reference_changed"):
+        assert marker["calls"] == ["pre_read", "prefix"]
 
 
 @pytest.mark.asyncio

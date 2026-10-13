@@ -4737,3 +4737,40 @@ the overall run FAIL. Its source checkpoint is in
 change replaces the invalid dataclass operation with a validated
 `LedgerScope` construction. The complete PostgreSQL suite still requires a
 new exact-source run before PASS.
+
+## 2026-10-13 bounded continuation: B3 prefix and Demo mirror safety
+
+Commit `29c371bc5dbb820f7b81a0626e280159dcc54a37` fixes the crossed-scope
+fixture and is being checked by exact-source GitHub run `38349836070`. As of
+06:21 UTC, all eight Linux shards and the dedicated PostgreSQL/restart job
+reported success; the Windows non-DB job remained in progress. These results
+belong only to that commit and do not validate the following local changes.
+
+The separate, preserved `a326b2fb864559ae8f42495d944da59b42b0d7af`
+checkpoint pins a Demo private read session and exact account identity. Its
+exact source archive, complete Git bundle and identity record are in
+`../../validation-results/checkpoint-a326b2f-20261013/`. A follow-up review
+found that two Demo mirror captures could commit in the reverse order of
+their exchange GETs, and that a direct terminal fill could leave an older
+flat checkpoint in place. The current source correction takes one PostgreSQL
+capture lease before the first private GET and uses its transaction through
+mirror commit; direct order observation revokes the old checkpoint before
+writing the order. The Demo mirror and B5 checkpoint reader now use the same
+table-lock order. A process cancellation during order DML must leave the
+checkpoint denied. That direct-order uncertainty survives a later bounded
+reconcile; a dedicated, source-complete resolution procedure is not yet
+implemented. An independent review also identified an Arm race between the
+post-reconcile local-flat read and the separate Arm commit. The final Demo
+POST boundary remains hard-denied, so no armed flag is execution authority.
+These are local source changes pending committed PostgreSQL and Windows CI;
+they do not confer order submission authority.
+
+An additional DENY-only B3 diagnostic replays every committed accepted B3
+sequence from original B1 evidence before the first current-account HTTP
+request, then joins the new DB0038 current head. Independent source review
+found no execution-authority bypass. The replay currently has a fixed
+30-second pre-HTTP deadline; large accepted histories may therefore fail
+closed. A real PostgreSQL cross-page scale measurement is still required
+before calling this path production-ready. The diagnostic does not establish
+exchange-history finality, source authenticity, portfolio completeness or
+permission to trade.

@@ -17,6 +17,21 @@ from app.database.repositories.account_capture_journal import (
     AccountCaptureJournalRepository,
     LockedAccountSourceJoinReadback,
 )
+from app.database.repositories.account_current_history_observation import (
+    AccountCurrentHistoryObservationRepository,
+    CurrentHistoryObservationReadback,
+)
+from app.database.repositories.account_current_observation import (
+    AccountCurrentObservationRepository,
+    CurrentObservationReadback,
+)
+from app.database.repositories.account_history_prefix import (
+    POLICY_SHA256 as HISTORY_PREFIX_POLICY_SHA256,
+)
+from app.database.repositories.account_history_prefix import (
+    AccountHistoryPrefixRepository,
+    HistoryPrefixReadback,
+)
 from app.database.repositories.qualification_ledger import QualificationLedgerRepository
 from app.domain.source_primitives import (
     canonical,
@@ -1544,6 +1559,7 @@ async def capture_native_current_history_join(
         proof_root=proof_root,
         history_capture_id=history_capture_id,
         include_funding=False,
+        include_index_prefix=False,
     )
 
 
@@ -1557,11 +1573,36 @@ async def capture_native_current_history_funding_join(
         proof_root=proof_root,
         history_capture_id=history_capture_id,
         include_funding=True,
+        include_index_prefix=False,
+    )
+
+
+async def capture_native_current_history_index_join_v1(
+    session, *, session_factory, proof_root, history_capture_id
+):
+    """Replay the complete accepted B3 prefix before GET, then pin DB0038.
+
+    This separate V7 flat-account diagnostic has no account or order authority.
+    The history ID is only a locator; both index heads come from PostgreSQL.
+    """
+    return await _capture_native_current_history_join(
+        session,
+        session_factory=session_factory,
+        proof_root=proof_root,
+        history_capture_id=history_capture_id,
+        include_funding=False,
+        include_index_prefix=True,
     )
 
 
 async def _capture_native_current_history_join(
-    session, *, session_factory, proof_root, history_capture_id, include_funding
+    session,
+    *,
+    session_factory,
+    proof_root,
+    history_capture_id,
+    include_funding,
+    include_index_prefix,
 ):
     """Join a native V6/V7 current capture to recorded V5 history under one call.
 
@@ -1596,7 +1637,9 @@ async def _capture_native_current_history_join(
         raise proof.NativeAccountProofError(
             "native_account_history_join_scope_unsupported"
         )
-    if include_funding and not v7:
+    if (include_funding and not v7) or (
+        include_index_prefix and (not v7 or include_funding)
+    ):
         raise proof.NativeAccountProofError("native_account_funding_join_v7_required")
     scope = LedgerScope(
         account_id=selected.expected_uid,
@@ -1617,6 +1660,7 @@ async def _capture_native_current_history_join(
                 session_factory, clock=state["clock"]
             )
             pre_read = None
+            prefix = prefix_value = prefix_verified = None
             if v7:
                 async with asyncio.timeout(_PRE_HISTORY_READBACK_TIMEOUT_SECONDS):
                     if include_funding:
@@ -1632,11 +1676,95 @@ async def _capture_native_current_history_join(
                         pre_read = await _read_committed_history_before_http(
                             stage, repository, scope, history_capture_id, selected
                         )
+                    if include_index_prefix:
+                        prefix = await AccountHistoryPrefixRepository(
+                            session_factory, clock=state["clock"]
+                        ).read_full_prefix(scope)
+                        if type(prefix) is not HistoryPrefixReadback:
+                            raise proof.NativeAccountProofError(
+                                "native_account_history_prefix_readback_invalid"
+                            )
+                        prefix_value = json.loads(prefix.receipt_json)
+                        if (
+                            canonical(prefix_value) != prefix.receipt_json
+                            or prefix_value.get("schema_version")
+                            != "ctcc.account_accepted_b3_prefix.v1"
+                            or prefix_value.get("policy_sha256")
+                            != HISTORY_PREFIX_POLICY_SHA256
+                            or prefix_value.get("scope_sha256")
+                            != proof.scope_sha256(scope)
+                            or prefix_value.get(
+                                "entire_accepted_b3_index_prefix_replayed"
+                            )
+                            is not True
+                            or prefix_value.get("last_source_reference")
+                            != observed.reference_document(pre_read.reference)
+                            or type(prefix_value.get("through_sequence")) is not int
+                            or prefix_value["through_sequence"] < 1
+                            or type(prefix_value.get("head_sha256")) is not str
+                            or re.fullmatch(
+                                r"[a-f0-9]{64}", prefix_value["head_sha256"]
+                            )
+                            is None
+                            or any(
+                                type(prefix_value.get(name)) is not str
+                                or re.fullmatch(r"[a-f0-9]{64}", prefix_value[name])
+                                is None
+                                for name in (
+                                    "head_anchor_sha256",
+                                    "ordered_membership_sha256",
+                                )
+                            )
+                            or type(prefix_value.get("current_predecessor_sequence"))
+                            is not int
+                            or not 0
+                            <= prefix_value["current_predecessor_sequence"]
+                            < 9223372036854775807
+                            or (
+                                prefix_value.get("current_predecessor_sha256")
+                                is not None
+                                if prefix_value["current_predecessor_sequence"] == 0
+                                else type(
+                                    prefix_value.get("current_predecessor_sha256")
+                                )
+                                is not str
+                                or re.fullmatch(
+                                    r"[a-f0-9]{64}",
+                                    prefix_value["current_predecessor_sha256"],
+                                )
+                                is None
+                            )
+                            or type(
+                                prefix_value.get("unresolved_findings_through_sequence")
+                            )
+                            is not int
+                            or prefix_value["unresolved_findings_through_sequence"] < 0
+                            or type(prefix_value.get("local_checkpoint_sha256"))
+                            is not str
+                            or re.fullmatch(
+                                r"[a-f0-9]{64}",
+                                prefix_value["local_checkpoint_sha256"],
+                            )
+                            is None
+                            or prefix_value.get("exchange_history_finality_verified")
+                            is not False
+                            or prefix_value.get("source_authenticity_verified")
+                            is not False
+                            or prefix_value.get("account_complete") is not False
+                            or prefix_value.get("execution_authority") is not False
+                            or prefix_value.get("admission") != "DENY"
+                        ):
+                            raise proof.NativeAccountProofError(
+                                "native_account_history_prefix_source_mismatch"
+                            )
+                        prefix_verified = native._sample(stage)
                 if type(pre_read) is not _CommittedHistoryPreRead:
                     raise proof.NativeAccountProofError(
                         "native_account_pre_http_history_readback_invalid"
                     )
-                state["required_pre_history_readback"] = pre_read.verified
+                state["required_pre_history_readback"] = (
+                    prefix_verified if include_index_prefix else pre_read.verified
+                )
             carrier = await _capture_initial_current(
                 stage, session, session_factory, proof_root
             )
@@ -1850,6 +1978,101 @@ async def _capture_native_current_history_join(
                 raise proof.NativeAccountProofError(
                     "native_account_history_join_source_mismatch"
                 )
+            indexed = indexed_value = current_indexed = None
+            if include_index_prefix:
+                first_http = state.get("first_http_request_start")
+                validate_stamps(
+                    (
+                        state["started"],
+                        pre_read.started,
+                        pre_read.completed,
+                        pre_read.verified,
+                        prefix_verified,
+                        first_http,
+                    )
+                )
+                if (
+                    prefix_verified["monotonic_ns"] >= first_http["monotonic_ns"]
+                    or prefix_verified["utc_ns"] >= first_http["utc_ns"]
+                    or prefix_value["local_checkpoint_sha256"]
+                    != locked_value["db_local_state_sha256"]
+                ):
+                    raise proof.NativeAccountProofError(
+                        "native_account_history_prefix_chronology_changed"
+                    )
+                before_index = native._sample(stage)
+                remaining = (
+                    state["current_deadline"] - before_index["monotonic_ns"]
+                ) / 1_000_000_000
+                if (
+                    remaining <= 0
+                    or utc_from_ns(before_index["utc_ns"]) >= state["current_expiry"]
+                ):
+                    raise proof.NativeAccountProofError(
+                        "native_account_history_index_lease_expired"
+                    )
+                async with asyncio.timeout(remaining):
+                    current_indexed = await AccountCurrentObservationRepository(
+                        session_factory, clock=state["clock"]
+                    ).append(
+                        scope,
+                        pending.reference,
+                        expected_sequence=prefix_value["current_predecessor_sequence"],
+                    )
+                    indexed = await AccountCurrentHistoryObservationRepository(
+                        session_factory, clock=state["clock"]
+                    ).read_joined(
+                        scope,
+                        history_sequence=prefix_value["through_sequence"],
+                        history_sha256=prefix_value["head_sha256"],
+                        current_sequence=current_indexed.sequence,
+                        current_sha256=current_indexed.event_sha256,
+                    )
+                indexed_value = json.loads(indexed.receipt_json)
+                after_index = native._sample(stage)
+                if (
+                    type(current_indexed) is not CurrentObservationReadback
+                    or type(indexed) is not CurrentHistoryObservationReadback
+                    or after_index["monotonic_ns"] >= state["current_deadline"]
+                    or utc_from_ns(after_index["utc_ns"]) >= state["current_expiry"]
+                    or canonical(indexed_value) != indexed.receipt_json
+                    or indexed_value.get("schema_version")
+                    != "ctcc.demo_current_history_observation_join.v1"
+                    or indexed_value.get("history_index_sha256")
+                    != prefix_value["head_sha256"]
+                    or indexed_value.get("history_sequence")
+                    != prefix_value["through_sequence"]
+                    or indexed_value.get("current_index_sha256")
+                    != current_indexed.event_sha256
+                    or indexed_value.get("current_sequence") != current_indexed.sequence
+                    or current_indexed.sequence
+                    != prefix_value["current_predecessor_sequence"] + 1
+                    or indexed_value.get("history_source_reference")
+                    != observed.reference_document(pre_read.reference)
+                    or indexed_value.get("current_source_reference")
+                    != current_reference
+                    or indexed_value.get("db_local_state_sha256")
+                    != prefix_value["local_checkpoint_sha256"]
+                    or indexed_value.get("same_account_locked_head_binding") is not True
+                    or indexed_value.get("history_selected_head_replayed") is not True
+                    or indexed_value.get("current_selected_head_replayed") is not True
+                    or indexed_value.get("entire_history_index_replayed") is not False
+                    or indexed_value.get(
+                        "history_index_commit_before_current_request_verified"
+                    )
+                    is not False
+                    or indexed_value.get("source_authenticity_verified") is not False
+                    or indexed_value.get("flat_start_permission") is not False
+                    or indexed_value.get("exchange_atomic_revision_verified")
+                    is not False
+                    or indexed_value.get("portfolio_risk_snapshot") is not None
+                    or indexed_value.get("account_complete") is not False
+                    or indexed_value.get("execution_authority") is not False
+                    or indexed_value.get("admission") != "DENY"
+                ):
+                    raise proof.NativeAccountProofError(
+                        "native_account_history_index_post_readback_invalid"
+                    )
             consumed = _consume_current_native_capture(
                 carrier,
                 invocation=state["invocation"],
@@ -1862,7 +2085,9 @@ async def _capture_native_current_history_join(
             receipt = canonical(
                 {
                     "schema_version": (
-                        "ctcc.native_current_history_join_diagnostic.v4"
+                        "ctcc.native_current_history_index_join_diagnostic.v1"
+                        if include_index_prefix
+                        else "ctcc.native_current_history_join_diagnostic.v4"
                         if include_funding
                         else "ctcc.native_current_history_join_diagnostic.v3"
                         if v7
@@ -1885,6 +2110,33 @@ async def _capture_native_current_history_join(
                     "account_revision_published": False,
                     "execution_authority": False,
                     "admission": "DENY",
+                    **(
+                        {
+                            "history_prefix_policy_sha256": HISTORY_PREFIX_POLICY_SHA256,
+                            "history_prefix_receipt_sha256": prefix.receipt_sha256,
+                            "history_index_sequence": prefix_value["through_sequence"],
+                            "history_index_sha256": prefix_value["head_sha256"],
+                            "history_index_ordered_membership_sha256": prefix_value[
+                                "ordered_membership_sha256"
+                            ],
+                            "history_index_prefix_replayed_before_first_http": True,
+                            "history_index_committed_before_first_http": True,
+                            "history_prefix_verified_native_stamp": prefix_verified,
+                            "history_current_index_join_receipt_sha256": (
+                                indexed.receipt_sha256
+                            ),
+                            "current_index_sequence": current_indexed.sequence,
+                            "current_index_sha256": current_indexed.event_sha256,
+                            "prior_index_join_blocking_reasons": indexed_value[
+                                "blocking_reasons"
+                            ],
+                            "exchange_history_finality_verified": False,
+                            "source_authenticity_verified": False,
+                            "flat_start_permission": False,
+                        }
+                        if include_index_prefix
+                        else {}
+                    ),
                     **(
                         {
                             "funding_source_join_policy_sha256": (
@@ -1951,7 +2203,9 @@ async def _capture_native_current_history_join(
             canonical(
                 {
                     "schema_version": (
-                        "ctcc.native_current_history_join_diagnostic.v4"
+                        "ctcc.native_current_history_index_join_diagnostic.v1"
+                        if include_index_prefix
+                        else "ctcc.native_current_history_join_diagnostic.v4"
                         if include_funding
                         else "ctcc.native_current_history_join_diagnostic.v3"
                         if v7
