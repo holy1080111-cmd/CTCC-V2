@@ -94,6 +94,15 @@ foreach ($entry in $identity.files) {
 if ($seen.Count -ne $required.Count) {
     throw 'INSTALLER_IDENTITY_FILE_SET_INCOMPLETE'
 }
+# An identity that lists exactly the required files must not silently accept a
+# different package directory with additional files or subdirectories. The
+# identity file itself may be supplied inside or outside PackageRoot.
+foreach ($member in Get-ChildItem -LiteralPath $root -Force) {
+    $isIdentityFile = -not $member.PSIsContainer -and $member.FullName -eq $identityFile
+    if ($member.PSIsContainer -or ($required -cnotcontains $member.Name -and -not $isIdentityFile)) {
+        throw 'INSTALLER_PACKAGE_MEMBER_SET_INVALID'
+    }
+}
 Write-VerifyStage 'source_hashes'
 $parseTokens = $null
 $parseErrors = $null

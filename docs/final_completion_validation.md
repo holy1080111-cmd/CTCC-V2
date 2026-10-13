@@ -5191,3 +5191,46 @@ remaining Linux shard, Windows source-bound regression and isolated PostgreSQL
 job were still in progress. These partial results do not cover the later local
 source changes above. A new exact-source CI run is required after commit; no
 final acceptance, Demo acceptance, Micro Live acceptance or release is claimed.
+
+## 2026-10-13 8c8237a checkpoint and subsequent DENY-only audits
+
+Committed source `8c8237aa3e7111f8731b4f8e75d9c88eb3c37d1f` has tree
+`c6d7416ccdeefd58084619ab6dc11b4762b54853`, migration head `0040`,
+and manifest SHA256
+`445604337e0dc8a57c9187822c85e0b487d0ef94acb7d7803dae6adb83866797`.
+The no-clobber exact archive and full Git bundle are in
+`../../validation-results/checkpoint-8c8237a-20261013/`, with SHA256 values
+`1fcf001f54cd347b8002753ff4aa6e9d64399a69ece1182ab0a49cbbff4cda75`
+and `ca9746e5545e0325cf1d554291153fb0bdcf55f64aeb5712df3deddee9fda7e3`.
+Bundle verification and 1,147-file manifest readback passed. A bounded scan
+of the 1,148 ZIP members and 390 new Git blobs since the prior full scan found
+zero high-confidence credential matches; security readback SHA256 is
+`0d7fa8638ff317e0b8c713058338c330a613f1b89d84046fca9e24806aeb62fc`.
+Private runtime files/logs and a future release bundle remain outside this
+interim scan. The matching [GitHub CI run 38413161803](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/38413161803)
+started for this exact SHA and was still running at this check; no full-suite
+or Docker acceptance is claimed.
+
+After this checkpoint, a read-only HighVol installer verifier was tightened to
+reject unlisted package members. Eleven focused native PowerShell tests passed,
+including extra-file and extra-directory rejection. The retained reviewed
+installer folder has an unlisted `__pycache__`, so it correctly fails the new
+check; an exact clean copy passed two repeatable read-only checks. Parser
+validation passed for the reviewed script; the preserved original still shows
+the `$Mode:` parser fault. Install/reinstall/upgrade/rollback and canonical
+trading integration are not accepted.
+
+A separate V7 account row/gateway audit now compares retained non-null row
+source times against the same response's original OKX REST `outTime`. A row
+later than gateway response send is a blocking contradiction; missing gateway
+time remains unknown. Official OKX documentation defines `outTime` as gateway
+response-send time in Unix microseconds, distinct from host body completion.
+Seven new-and-adjacent focused tests passed; an independent reviewer reran four.
+the resulting receipt is always `DENY` and never a PortfolioRiskSnapshot or
+execution issuer. Complete history, registered source, shared revision,
+funding/lifecycle attribution and continuous high-water mark remain unknown.
+
+The existing Windows outbox fault suite passed 9/9 on this checkpoint: late
+sharing failure leaves an already durable journal intact and stops dispatch.
+That local result does not replace the exact-head Windows CI job. No Demo or
+Live order, Notion write, full OOS evaluation, or Micro Live Arm occurred.

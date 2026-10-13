@@ -26,7 +26,10 @@ The identity JSON and installer PowerShell are each hashed and parsed from the
 same captured byte array with strict UTF-8 decoding. A source path changing
 between a hash read and a parser read cannot produce a false parser result.
 The verifier also rejects reparse-point package roots, identity parents, identity
-files, and package member files.
+files, and package member files. It rejects unlisted files and subdirectories
+under the package root, including hidden members; the pinned identity file may
+reside inside or outside that root. This is a read-only package-set check, not
+install/reinstall or rollback acceptance.
 
 The preserved original installer targets an older image and restores the Demo
 Arm/scheduler after a restart. The reviewed copy corrects that behavior by
@@ -137,3 +140,14 @@ for a full exact-current-source regression or release check. The independent
 nonsecret audit record is
 `../../validation-results/deployment-provenance-reaudit-20261013.md` (SHA256
 `51d9d871948fb7db735c73a9ec2ceff5987f970fe4970185ded7606e99ff2692`).
+
+## 2026-10-13 exact package-member check
+
+The read-only verifier now rejects files and subdirectories outside the seven
+identity-listed sources and the identity file itself. Its focused native
+PowerShell tests pass 11/11, including extra-file and extra-directory rejection.
+The retained `../reviewed-highvol-installer` working folder currently has an
+unlisted `__pycache__` directory, so the stricter verifier rejects that folder
+as a dirty package. A temporary copy containing exactly the eight pinned files
+passed two identical read-only dry-runs and was removed afterward. No installer
+or trading route was executed. The package remains blocked from deployment.

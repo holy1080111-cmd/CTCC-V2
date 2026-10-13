@@ -192,3 +192,17 @@ def test_duplicate_identity_rejects_before_execution(tmp_path):
     assert result.returncode != 0
     assert "INSTALLER_IDENTITY_FILE_SET_INVALID" in result.stderr
     assert not marker.exists()
+
+
+@pytest.mark.parametrize("extra", ["unexpected.txt", "unexpected_dir"])
+def test_unlisted_package_member_rejects_before_execution(tmp_path, extra):
+    identity, marker = package(tmp_path)
+    path = tmp_path / extra
+    if extra.endswith("_dir"):
+        path.mkdir()
+    else:
+        path.write_bytes(b"unlisted member\n")
+    result = validate(tmp_path, identity)
+    assert result.returncode != 0
+    assert "INSTALLER_PACKAGE_MEMBER_SET_INVALID" in result.stderr
+    assert not marker.exists()
