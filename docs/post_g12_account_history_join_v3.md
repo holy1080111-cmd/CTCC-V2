@@ -28,6 +28,17 @@ no-clobber and separately reopened. A late readback failure leaves already
 written bytes intact and fails the invocation. An unfinished account or
 recheck path does not publish partial account pins as complete.
 
+At the final native time after the account/history and recheck awaits, V3
+replays the original G1 policy, the public transport profile and the original
+economics-policy age for the ticker, mark, funding and capture clocks. A quote
+that ages beyond the stricter cost policy during those awaits is denied even
+if the public transport profile still accepts it. A completed diagnostic
+receipt and its already persisted evidence remain available for audit after
+this late denial; no earlier PASS becomes execution authority.
+Final expiry and freshness use the greater of native UTC and the conservative
+UTC floor implied by monotonic elapsed time since the verified public capture.
+Native source timestamps and persisted receipts are not rewritten.
+
 This remains an engineering diagnostic. Its original G1–G11 run is still
 caller-origin. The native join reports an unclosed history tail and other
 account gaps, so `account_complete=false`, `execution_authority=false`, and

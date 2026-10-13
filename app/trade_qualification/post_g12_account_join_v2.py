@@ -28,7 +28,7 @@ from app.domain.source_primitives import (
     utc_from_ns,
     validate_stamps,
 )
-from app.trade_qualification import account_capture, data_v2
+from app.trade_qualification import account_capture, current_economics_v2, data_v2
 from app.trade_qualification import account_native_runtime as account_native
 from app.trade_qualification import original_source_coordinator_v2 as original_source
 from app.trade_qualification import post_g12_public_runtime as public_runtime
@@ -119,6 +119,36 @@ def _require_final_original_g1(packet, pre, observed_at):
     )
     if not verified.passed:
         raise PostG12AccountJoinError("post_g12_final_original_g1_rejected")
+
+
+def _require_final_original_economics_quote(packet, pre, observed_at):
+    """Do not inherit a cost calculation across the final account await."""
+    try:
+        current = current_economics_v2.quote_within_economics_policy_age_v2(
+            packet, pre.policy.economics, observed_at
+        )
+    except Exception:  # noqa: BLE001 -- malformed source/policy is a fixed denial
+        raise PostG12AccountJoinError(
+            "post_g12_final_original_economics_quote_rejected"
+        ) from None
+    if not current:
+        raise PostG12AccountJoinError(
+            "post_g12_final_original_economics_quote_rejected"
+        )
+
+
+def _monotonic_final_freshness_at(public_stamp, final_stamp):
+    """Conservative cutoff from measured elapsed time, never a source timestamp.
+
+    The native UTC clock can run a few milliseconds behind the monotonic clock
+    while still satisfying the bounded clock-pair check. Do not let that small
+    skew extend the original deadline or the age of the fixed public packet.
+    Receipt observation time remains the unmodified native final UTC sample.
+    """
+    validate_stamps((public_stamp, final_stamp))
+    elapsed_ns = final_stamp["monotonic_ns"] - public_stamp["monotonic_ns"]
+    measured_floor = utc_from_ns(public_stamp["utc_ns"] + elapsed_ns)
+    return max(utc_from_ns(final_stamp["utc_ns"]), measured_floor)
 
 
 def _utc_text(value):
@@ -746,7 +776,7 @@ async def publish_capture_public_account_v2(
         final_stamp = native_stamp()
         validate_stamps((last, final_stamp))
         last = final_stamp
-        final_at = utc_from_ns(final_stamp["utc_ns"])
+        final_at = _monotonic_final_freshness_at(public_stamp, final_stamp)
         if final_at >= min(origin.deadline, owned.expires_at):
             raise PostG12AccountJoinError("post_g12_recheck_expired")
         _require_final_original_g1(packet, pre, final_at)
@@ -758,6 +788,7 @@ async def publish_capture_public_account_v2(
             expected_bundle_sha256=packet.bundle_sha256,
             evaluated_at=final_at,
         )
+        _require_final_original_economics_quote(packet, pre, final_at)
         code = "joined_unqualified"
         return finish()
     except asyncio.CancelledError:

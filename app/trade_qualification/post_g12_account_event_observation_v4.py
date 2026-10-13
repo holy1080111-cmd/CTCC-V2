@@ -21,7 +21,7 @@ from app.database.repositories.account_capture_journal import (
 )
 from app.database.repositories.qualification_ledger import QualificationLedgerRepository
 from app.domain.native_clock import native_stamp
-from app.domain.source_primitives import canonical, decode, sha, utc_from_ns
+from app.domain.source_primitives import canonical, decode, sha
 from app.trade_evidence import storage as evidence_storage
 from app.trade_qualification import account_capture
 from app.trade_qualification import account_current_history_join as account_join
@@ -59,6 +59,7 @@ _CODES = frozenset(
         "public_journal_readback_invalid_at_event_readback",
         "public_validation_clock_invalid_at_event_readback",
         "public_g1_rejected_at_event_readback",
+        "public_transport_profile_rejected_at_event_readback",
         "public_economics_quote_stale_at_event_readback",
         "original_event_already_recorded",
         "trusted_execution_inputs_missing",
@@ -97,6 +98,7 @@ class PostG12AccountEventObservationV4:
         "public_journal_readback_invalid_at_event_readback",
         "public_validation_clock_invalid_at_event_readback",
         "public_g1_rejected_at_event_readback",
+        "public_transport_profile_rejected_at_event_readback",
         "public_economics_quote_stale_at_event_readback",
         "original_event_already_recorded",
         "trusted_execution_inputs_missing",
@@ -203,6 +205,7 @@ class PostG12AccountEventObservationV4:
                 "public_journal_readback_invalid_at_event_readback",
                 "public_validation_clock_invalid_at_event_readback",
                 "public_g1_rejected_at_event_readback",
+                "public_transport_profile_rejected_at_event_readback",
                 "public_economics_quote_stale_at_event_readback",
                 "original_event_already_recorded",
                 "trusted_execution_inputs_missing",
@@ -224,6 +227,7 @@ class PostG12AccountEventObservationV4:
             "public_journal_readback_invalid_at_event_readback",
             "public_validation_clock_invalid_at_event_readback",
             "public_g1_rejected_at_event_readback",
+            "public_transport_profile_rejected_at_event_readback",
             "public_economics_quote_stale_at_event_readback",
         }:
             valid_observation = (
@@ -669,8 +673,8 @@ def _read_bound_public_recheck(root, value, expected, *, root_identity):
         ) from None
 
 
-def _read_bound_public_journal(root, value, *, root_identity):
-    """Replay the raw journal and bind its summary and packet to this V3 receipt."""
+def _read_bound_public_journal(root, value, *, root_identity, with_stamp=False):
+    """Replay the exact raw journal; optionally retain its native capture stamp."""
     try:
         if source_runtime._native_recheck_root_identity(root) != root_identity:
             raise ValueError
@@ -690,7 +694,7 @@ def _read_bound_public_journal(root, value, *, root_identity):
                 or source_runtime._native_recheck_root_identity(root) != root_identity
             ):
                 raise ValueError
-            return packet
+            return (packet, summary["completed"]) if with_stamp else packet
     except Exception:  # noqa: BLE001 -- no public source or path detail in denial
         raise PostG12AccountEventObservationError(
             "v4_public_journal_readback_failed"
@@ -1075,8 +1079,11 @@ async def publish_capture_inspect_history_event_v4(
                 expected,
                 root_identity=recheck_root_identity,
             )
-            _read_bound_public_journal(
-                public_root, value, root_identity=public_root_identity
+            _, public_stamp = _read_bound_public_journal(
+                public_root,
+                value,
+                root_identity=public_root_identity,
+                with_stamp=True,
             )
         except PostG12AccountEventObservationError:
             result = PostG12AccountEventObservationV4(
@@ -1142,16 +1149,26 @@ async def publish_capture_inspect_history_event_v4(
         try:
             # DB readback can finish after the V3 public check. Reopen the same
             # pinned raw journal and replay the original G1 at this later time.
-            packet = _read_bound_public_journal(
-                public_root, value, root_identity=public_root_identity
+            packet, late_public_stamp = _read_bound_public_journal(
+                public_root,
+                value,
+                root_identity=public_root_identity,
+                with_stamp=True,
             )
+            if late_public_stamp != public_stamp:
+                raise PostG12AccountEventObservationError(
+                    "v4_public_journal_readback_failed"
+                )
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 -- late journal mutation stays DENY
             code = "public_journal_readback_invalid_at_event_readback"
         else:
             try:
-                validation_at = utc_from_ns(native_stamp()["utc_ns"])
+                final_stamp = native_stamp()
+                validation_at = joined.prior._monotonic_final_freshness_at(
+                    public_stamp, final_stamp
+                )
                 if not observation.received_at <= validation_at < expected["deadline"]:
                     raise ValueError("v4_public_validation_clock_invalid")
             except asyncio.CancelledError:
@@ -1167,22 +1184,33 @@ async def publish_capture_inspect_history_event_v4(
                     code = "public_g1_rejected_at_event_readback"
                 else:
                     try:
-                        cost_quote_current = (
-                            current_economics.quote_within_economics_policy_age_v2(
-                                packet, pre.policy.economics, validation_at
-                            )
+                        current_economics.public_market_context_v2(
+                            packet,
+                            expected_bundle_sha256=packet.bundle_sha256,
+                            evaluated_at=validation_at,
                         )
                     except asyncio.CancelledError:
                         raise
-                    except Exception:  # noqa: BLE001 -- no private/source detail
-                        cost_quote_current = False
-                    code = (
-                        "public_economics_quote_stale_at_event_readback"
-                        if not cost_quote_current
-                        else "trusted_execution_inputs_missing"
-                        if observation.matched is None
-                        else "original_event_already_recorded"
-                    )
+                    except Exception:  # noqa: BLE001 -- live transport profile is a fixed denial
+                        code = "public_transport_profile_rejected_at_event_readback"
+                    else:
+                        try:
+                            cost_quote_current = (
+                                current_economics.quote_within_economics_policy_age_v2(
+                                    packet, pre.policy.economics, validation_at
+                                )
+                            )
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception:  # noqa: BLE001 -- no private/source detail
+                            cost_quote_current = False
+                        code = (
+                            "public_economics_quote_stale_at_event_readback"
+                            if not cost_quote_current
+                            else "trusted_execution_inputs_missing"
+                            if observation.matched is None
+                            else "original_event_already_recorded"
+                        )
         state = (
             "absent_at_read"
             if observation.matched is None

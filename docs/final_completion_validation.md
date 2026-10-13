@@ -5594,3 +5594,58 @@ the 18-case focused module passed. These are offline tests, not original-source
 availability, authenticated account acceptance, production R7 authority or
 Demo/Live acceptance. The candidate's exact commit and manifest still require
 full source-bound CI before these corrections can be counted as validated.
+
+## 2026-10-14 preserved 1d7f867 source and current diagnostics
+
+Commit `1d7f867d9c46f2b1f81648e016ba5441ce059c6f`, tree
+`86d65e8c14d9b848d8b5b2f0cb977e8031832348`, has manifest SHA256
+`36bec5f26aa6c99f5a0d7793c0a624f5adebd1d3660847e98af4d63ee406725f`.
+The exact source archive, complete-history bundle, dependency identity, bounded
+source and reachable-Git-history credential scans, and seven-file SHA256
+readback are retained under
+`../../validation-results/checkpoint-1d7f867-20261014/`. All 1,161 manifest
+members matched the archive; the reachable-history scan found zero matches to
+its six high-confidence secret patterns across 3,531 blobs. This is not a
+complete audit of runtime logs, private files, account responses, or all
+possible secret encodings. The checkpoint explicitly denies execution and
+does not accept a full validation baseline. Matching [CI run
+38446148581](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/38446148581)
+is still in progress; passing individual jobs do not validate the entire run.
+
+After the host's earlier thermal shutdowns, a low-load native clock snapshot
+found W32Time `Running/Automatic`, the `Taipei Standard Time` UTC+08:00 zone,
+and advancing UTC and monotonic clocks. The nonsecret snapshot is
+`../../validation-results/host-clock-anonymous-20261014-0242.json` (SHA256
+`5a8c0134a816f8cf6088be56f615d5f369a4081cf30e0e07aa7400fe19f7d603`).
+A new anonymous, GET-only five-request OKX public clock probe retained all
+five raw responses, had no future book/OI/funding timestamp, and recorded
+`DENY` admission. Its summary SHA256 is
+`efac9edc74e12c9d85e52cd44a63fbb3f6d01a8e8bb29c36a0c20e5f49394bfd`;
+the 12-file readback manifest SHA256 is
+`5af37faeb38293c7760f9aad1a1c585ff06f822692df90c42118a5d39a21ff19`.
+The separate 11-REST-plus-WS diagnostic observed 4H/1H/15m/5m, ticker,
+mark, books5, OI, funding, pre/post exchange time and a public WS ticker
+without a future component timestamp. Its summary SHA256 is
+`cfff97290096fe418eaa13f5a414ef7d9ec08fdf71a964a8959704084086b1a2`;
+the 28-file readback manifest SHA256 is
+`e29ec0a6a1d86402085b40e97c5b253c21b209153753e44661fd45e188b50f6b`.
+These anonymous observations do not establish the account's original
+registration site, Demo account completeness, G1--G12 authority or permission
+to trade.
+
+The following follow-up corrections remain **DENY-only**. V2/V3 repeat the frozen
+original cost-quote age after the last account await, and V3--V5 repeat the
+public transport profile after their late readbacks. V2--V5 additionally use
+a conservative elapsed-monotonic UTC floor from the verified post-public
+capture for their final expiry/freshness
+decision; native source stamps and receipts are not rewritten. Focused tests
+passed, but no complete source-bound regression has yet validated these edits.
+The existing diagnostic receipts do not persist the final native clock pair and
+effective monotonic cutoff needed for independent offline replay of this late
+decision. A future positive issuer must add that immutable proof and verify it
+on readback; these DENY-only results are not execution evidence.
+The prior exact `e66e34a` PostgreSQL run had 385 passing cases and one setup
+error: a DB0040 test imported a revision-dependent fixture without supplying
+`revision`. The current working source now parametrizes that test explicitly;
+collection, Ruff and format checks passed. Its actual PostgreSQL test and the
+complete migration/restart job must rerun on the final committed source.

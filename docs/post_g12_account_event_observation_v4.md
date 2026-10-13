@@ -55,8 +55,18 @@ same pinned packet. A stale packet yields
 `public_g1_rejected_at_event_readback`; an unreadable or changed journal
 yields `public_journal_readback_invalid_at_event_readback`. An unavailable
 native clock, invalid ordering or elapsed deadline yields
-`public_validation_clock_invalid_at_event_readback` before G1 runs. All remain
-`DENY`. The receipt is published after this sample, so
+`public_validation_clock_invalid_at_event_readback` before G1 runs. After G1,
+V4 also replays the public transport profile at this later time. A rejected
+profile yields `public_transport_profile_rejected_at_event_readback`. It then
+checks the same quote against the frozen original economics policy; an expired
+cost quote yields `public_economics_quote_stale_at_event_readback`. All remain
+`DENY`. The replayed public journal also binds its exact native capture stamp
+from `summary.json` before the database reads. The late UTC sample is paired
+with that stamp using the same bounded monotonic clock check as V2/V3, and
+freshness uses the later of native UTC and capture UTC plus measured elapsed
+time. Clock reversal, excess skew or an elapsed lease over 60 seconds yields
+`public_validation_clock_invalid_at_event_readback`. No source stamp or prior
+receipt is rewritten. The receipt is published after this sample, so
 its code describes only the check at that historical time, not current
 eligibility. V4 never refreshes the quote, moves Entry/SL/TP or recomputes a
 replacement candidate.

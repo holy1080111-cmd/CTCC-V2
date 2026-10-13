@@ -10,7 +10,13 @@ from app.database.repositories.qualification_ledger import (
     PortfolioLocalCheckpoint,
     QualificationLedgerRepository,
 )
-from app.domain.source_primitives import canonical, decode, sha
+from app.domain.source_primitives import (
+    PublicReceiptError,
+    canonical,
+    decode,
+    sha,
+    utc_from_ns,
+)
 from app.trade_qualification import post_g12_account_event_observation_v4 as prior
 from app.trade_qualification import post_g12_local_portfolio_observation_v5 as bridge
 from app.trade_qualification.event_observation import VERSION, LedgerEventObservation
@@ -161,6 +167,23 @@ def _invoke_kwargs(roots, ledger, scope):
     }
 
 
+@pytest.mark.parametrize(
+    "wall_elapsed_ns,monotonic_elapsed_ns",
+    ((-1, 1), (60_000_000_001, 60_000_000_001)),
+)
+def test_v5_public_capture_pin_rejects_clock_rollback_or_expired_lease(
+    wall_elapsed_ns, monotonic_elapsed_ns
+):
+    start_ns = 1_700_000_000_000_000_000
+    public_stamp = {"utc_ns": start_ns, "monotonic_ns": 1_000_000_000}
+    final_stamp = {
+        "utc_ns": start_ns + wall_elapsed_ns,
+        "monotonic_ns": public_stamp["monotonic_ns"] + monotonic_elapsed_ns,
+    }
+    with pytest.raises(PublicReceiptError):
+        prior.joined.prior._monotonic_final_freshness_at(public_stamp, final_stamp)
+
+
 def _setup(
     monkeypatch,
     tmp_path,
@@ -174,9 +197,13 @@ def _setup(
     v4_incomplete=False,
     event_recorded=False,
     late_public_g1=False,
+    late_transport_profile_stale=False,
     late_economics_quote_stale=False,
+    late_monotonic_quote_stale=False,
     late_public_journal_error=False,
+    final_clock_skew_ns=0,
     g1_checks=None,
+    economics_checks=None,
     deadline_override=None,
     v4_received=None,
     first_checkpoint_at=None,
@@ -191,12 +218,29 @@ def _setup(
     scope = LedgerScope(account_id="123456789012345678901", settlement_currency="USDT")
     deadline = deadline_override or datetime.now(UTC) + timedelta(seconds=30)
     validation_at = validation_at or deadline - timedelta(milliseconds=100)
+    public_stamp = (
+        decode(public_journal[1]["summary.json"])["completed"]
+        if public_journal is not None
+        else {
+            "utc_ns": int((validation_at - timedelta(seconds=1)).timestamp())
+            * 1_000_000_000
+            + validation_at.microsecond * 1000,
+            "monotonic_ns": 1_000_000_000,
+        }
+    )
+    elapsed = validation_at - utc_from_ns(public_stamp["utc_ns"])
+    elapsed_ns = (
+        (elapsed.days * 86_400 + elapsed.seconds) * 1_000_000 + elapsed.microseconds
+    ) * 1000
     monkeypatch.setattr(
         bridge,
         "native_stamp",
         lambda: {
             "utc_ns": int(validation_at.timestamp()) * 1_000_000_000
-            + validation_at.microsecond * 1_000
+            + validation_at.microsecond * 1_000,
+            "monotonic_ns": public_stamp["monotonic_ns"]
+            + elapsed_ns
+            + final_clock_skew_ns,
         },
     )
     ledger = QualificationLedgerRepository(None, clock=lambda: deadline)
@@ -240,7 +284,7 @@ def _setup(
             "deadline": deadline,
         }
 
-    def pinned_public(_root, value, *, root_identity):
+    def pinned_public(_root, value, *, root_identity, with_stamp=False):
         if late_public_journal_error:
             raise prior.PostG12AccountEventObservationError(
                 "v4_public_journal_readback_failed"
@@ -251,7 +295,8 @@ def _setup(
         )
         assert value["public_packet_sha256"] == receipt.public_packet_sha256
         assert value["public_journal_sha256"] == receipt.public_journal_sha256
-        return object()
+        packet = SimpleNamespace(bundle_sha256=receipt.public_packet_sha256)
+        return (packet, public_stamp) if with_stamp else packet
 
     def final_public_g1(_packet, _pre, observed_at):
         if g1_checks is not None:
@@ -267,10 +312,27 @@ def _setup(
     monkeypatch.setattr(
         prior.joined.prior, "_require_final_original_g1", final_public_g1
     )
-    economics_checks = []
+    transport_checks = []
+
+    def final_transport_profile(packet, *, expected_bundle_sha256, evaluated_at):
+        transport_checks.append(evaluated_at)
+        assert packet.bundle_sha256 == expected_bundle_sha256
+        if late_transport_profile_stale:
+            raise ValueError("synthetic late transport rejection")
+
+    monkeypatch.setattr(
+        bridge.current_economics,
+        "public_market_context_v2",
+        final_transport_profile,
+    )
+    observed_economics_checks = []
 
     def final_economics_age(_packet, _policy, observed_at):
-        economics_checks.append(observed_at)
+        observed_economics_checks.append(observed_at)
+        if economics_checks is not None:
+            economics_checks.append(observed_at)
+        if late_monotonic_quote_stale:
+            return observed_at < validation_at + timedelta(milliseconds=2)
         return not late_economics_quote_stale
 
     monkeypatch.setattr(
@@ -481,6 +543,76 @@ async def test_v5_later_checkpoint_rejects_original_cost_quote_age(
     record = decode(result.receipt_json)
     assert calls == ["new_v4", "local_read", "local_read"]
     assert record["code"] == "public_economics_quote_stale_at_local_readback"
+    assert record["v4_receipt_sha256"] == v4.receipt_sha256
+    assert (roots[5] / "receipt.json").read_bytes() == v4.receipt_json
+    assert all(record[field] is False for field in bridge._FALSE_FIELDS)
+    assert result.admission == "DENY"
+
+
+@pytest.mark.asyncio
+async def test_v5_monotonic_floor_prevents_late_cost_quote_resurrection(
+    tmp_path, monkeypatch
+):
+    economics_checks = []
+    roots, scope, ledger, calls, _ = _setup(
+        monkeypatch,
+        tmp_path,
+        late_monotonic_quote_stale=True,
+        final_clock_skew_ns=4_000_000,
+        economics_checks=economics_checks,
+    )
+    result = await bridge.publish_capture_inspect_local_portfolio_v5(
+        *roots, object(), **_invoke_kwargs(roots, ledger, scope)
+    )
+    record = decode(result.receipt_json)
+    deadline = datetime.fromisoformat(record["candidate_deadline_at"])
+    assert calls == ["new_v4", "local_read", "local_read"]
+    assert economics_checks == [deadline - timedelta(milliseconds=96)]
+    assert record["code"] == "public_economics_quote_stale_at_local_readback"
+    assert result.admission == "DENY" and result.execution_authority is False
+
+
+@pytest.mark.asyncio
+async def test_v5_invalid_final_clock_pair_denies_before_public_policy(
+    tmp_path, monkeypatch
+):
+    g1_checks = []
+    roots, scope, ledger, calls, _ = _setup(
+        monkeypatch,
+        tmp_path,
+        final_clock_skew_ns=6_000_000,
+        g1_checks=g1_checks,
+    )
+    result = await bridge.publish_capture_inspect_local_portfolio_v5(
+        *roots, object(), **_invoke_kwargs(roots, ledger, scope)
+    )
+    record = decode(result.receipt_json)
+    assert calls == ["new_v4", "local_read", "local_read"]
+    assert g1_checks == []
+    assert record["code"] == "public_validation_clock_invalid_at_local_readback"
+    assert result.admission == "DENY" and result.execution_authority is False
+
+
+@pytest.mark.asyncio
+async def test_v5_later_checkpoint_rejects_public_transport_profile(
+    tmp_path, monkeypatch
+):
+    roots, scope, ledger, calls, v4 = _setup(
+        monkeypatch, tmp_path, late_transport_profile_stale=True
+    )
+
+    async def forbidden(*_args, **_kwargs):
+        pytest.fail("stale public transport reached a ledger write")
+
+    monkeypatch.setattr(ledger, "reserve", forbidden)
+    monkeypatch.setattr(ledger, "reserve_control_bound", forbidden)
+    monkeypatch.setattr(ledger, "consume_with_submission_intent", forbidden)
+    result = await bridge.publish_capture_inspect_local_portfolio_v5(
+        *roots, object(), **_invoke_kwargs(roots, ledger, scope)
+    )
+    record = decode(result.receipt_json)
+    assert calls == ["new_v4", "local_read", "local_read"]
+    assert record["code"] == "public_transport_profile_rejected_at_local_readback"
     assert record["v4_receipt_sha256"] == v4.receipt_sha256
     assert (roots[5] / "receipt.json").read_bytes() == v4.receipt_json
     assert all(record[field] is False for field in bridge._FALSE_FIELDS)

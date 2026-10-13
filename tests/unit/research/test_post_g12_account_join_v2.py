@@ -2,12 +2,19 @@
 
 import asyncio
 from dataclasses import replace
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
+from math import ceil
 from types import SimpleNamespace
 
 import pytest
 
-from app.domain.source_primitives import canonical, decode, sha, utc_from_ns
+from app.domain.source_primitives import (
+    PublicReceiptError,
+    canonical,
+    decode,
+    sha,
+    utc_from_ns,
+)
 from app.trade_qualification import account_capture as capture
 from app.trade_qualification import account_native_runtime as account_native
 from app.trade_qualification import demo_public_origin, public_source_runtime
@@ -30,6 +37,7 @@ from tests.unit.research.test_owned_public_runtime_v2 import (
 )
 from tests.unit.research.test_owned_public_runtime_v2 import (
     empty_registries,
+    fresh_funding_return,
     policy,
     setup,
 )
@@ -69,6 +77,111 @@ def test_final_original_g1_can_expire_before_public_transport_profile(captured):
         match="^post_g12_final_original_g1_rejected$",
     ):
         joined._require_final_original_g1(packet, pre, final)
+
+
+def test_final_original_economics_age_can_expire_after_g1_and_transport(
+    captured, shifted_inputs
+):
+    packet = captured[0].packet
+    quote = joined.current_economics_v2.public_v2._parts(packet)[1][1]
+    stamps = (
+        quote.ticker.source_generated_at,
+        quote.mark.exchange_data_return_at,
+        quote.funding.exchange_data_return_at,
+        quote.capture_completed_at,
+    )
+    early = max(stamps) + timedelta(seconds=1)
+    late = early + timedelta(seconds=1)
+    policy = shifted_inputs[2].policy.economics.model_copy(
+        update={
+            "maximum_quote_age_seconds": ceil(
+                max((early - stamp).total_seconds() for stamp in stamps)
+            )
+        }
+    )
+    pre = SimpleNamespace(policy=SimpleNamespace(economics=policy))
+    joined.public_market_context_v2(
+        packet, expected_bundle_sha256=packet.bundle_sha256, evaluated_at=late
+    )
+    joined._require_final_original_economics_quote(packet, pre, early)
+    with pytest.raises(
+        joined.PostG12AccountJoinError,
+        match="^post_g12_final_original_economics_quote_rejected$",
+    ):
+        joined._require_final_original_economics_quote(packet, pre, late)
+
+
+def test_final_freshness_uses_monotonic_elapsed_when_utc_slightly_lags():
+    start_ns = 1_700_000_000_000_000_000
+    start = {"utc_ns": start_ns, "monotonic_ns": 1_000_000_000}
+    final = {
+        "utc_ns": start_ns + 996_000_000,
+        "monotonic_ns": start["monotonic_ns"] + 1_000_000_000,
+    }
+    # A four-millisecond wall-clock lag is inside the clock-pair tolerance,
+    # but must not grant four extra milliseconds of source or deadline age.
+    assert joined._monotonic_final_freshness_at(start, final) == utc_from_ns(
+        start_ns + 1_000_000_000
+    )
+    final["utc_ns"] = start_ns + 1_001_000_000
+    assert joined._monotonic_final_freshness_at(start, final) == utc_from_ns(
+        final["utc_ns"]
+    )
+
+
+def test_monotonic_floor_closes_four_millisecond_economics_age_gap(
+    captured, shifted_inputs
+):
+    packet = captured[0].packet
+    quote = joined.current_economics_v2.public_v2._parts(packet)[1][1]
+    stamps = (
+        quote.ticker.source_generated_at,
+        quote.mark.exchange_data_return_at,
+        quote.funding.exchange_data_return_at,
+        quote.capture_completed_at,
+    )
+    age_seconds = ceil((max(stamps) - min(stamps)).total_seconds()) + 2
+    policy = shifted_inputs[2].policy.economics.model_copy(
+        update={"maximum_quote_age_seconds": age_seconds}
+    )
+    pre = SimpleNamespace(policy=SimpleNamespace(economics=policy))
+    wall_final = min(stamps) + timedelta(seconds=age_seconds, milliseconds=-2)
+    wall_start = wall_final - timedelta(seconds=1)
+    epoch = datetime(1970, 1, 1, tzinfo=UTC)
+    offset = wall_start - epoch
+    start_ns = (
+        (offset.days * 86400 + offset.seconds) * 1_000_000 + offset.microseconds
+    ) * 1000
+    start = {"utc_ns": start_ns, "monotonic_ns": 1_000_000_000}
+    final = {
+        "utc_ns": start_ns + 1_000_000_000,
+        "monotonic_ns": start["monotonic_ns"] + 1_004_000_000,
+    }
+    joined._require_final_original_economics_quote(packet, pre, wall_final)
+    with pytest.raises(
+        joined.PostG12AccountJoinError,
+        match="^post_g12_final_original_economics_quote_rejected$",
+    ):
+        joined._require_final_original_economics_quote(
+            packet, pre, joined._monotonic_final_freshness_at(start, final)
+        )
+
+
+@pytest.mark.parametrize(
+    "utc_elapsed_ns,monotonic_elapsed_ns",
+    [(994_000_000, 1_000_000_000), (60_000_000_001, 60_000_000_001)],
+)
+def test_final_freshness_rejects_clock_rollback_or_overlong_pin(
+    utc_elapsed_ns, monotonic_elapsed_ns
+):
+    start_ns = 1_700_000_000_000_000_000
+    start = {"utc_ns": start_ns, "monotonic_ns": 1_000_000_000}
+    final = {
+        "utc_ns": start_ns + utc_elapsed_ns,
+        "monotonic_ns": start["monotonic_ns"] + monotonic_elapsed_ns,
+    }
+    with pytest.raises(PublicReceiptError):
+        joined._monotonic_final_freshness_at(start, final)
 
 
 @pytest.mark.parametrize("final_passed", [True, False])
@@ -156,6 +269,7 @@ def shifted_inputs():
         ("expired_account_lease", "account_unavailable"),
         ("recheck_replay_failed", "account_unavailable"),
         ("final_g1_rejected", "denied"),
+        ("final_economics_quote_rejected", "denied"),
         ("stale_after_persist", "denied"),
         ("late_recheck_publish_failure", None),
         ("recheck_root_swapped", None),
@@ -187,6 +301,9 @@ async def test_new_g12_then_fresh_public_and_account_raw_page_starts(
     )
     account_harness.assert_closed()
     clock, directory, harness, publications = setup(monkeypatch, source)
+    # Keep the synthetic funding source fresh enough for the original frozen
+    # economics policy; the age-expiry branch is exercised separately below.
+    fresh_funding_return(harness, clock)
     monkeypatch.setattr(joined, "native_stamp", clock.stamp)
     monkeypatch.setattr(account_native, "_configured_factory", lambda _: True)
     rechecks = []
@@ -226,6 +343,18 @@ async def test_new_g12_then_fresh_public_and_account_raw_page_starts(
             raise joined.PostG12AccountJoinError("post_g12_final_original_g1_rejected")
 
         monkeypatch.setattr(joined, "_require_final_original_g1", stale_only_at_final)
+    if fault == "final_economics_quote_rejected":
+        original_final_quote = joined._require_final_original_economics_quote
+
+        def stale_quote_only_at_final(*args, **kwargs):
+            original_final_quote(*args, **kwargs)
+            raise joined.PostG12AccountJoinError(
+                "post_g12_final_original_economics_quote_rejected"
+            )
+
+        monkeypatch.setattr(
+            joined, "_require_final_original_economics_quote", stale_quote_only_at_final
+        )
     if fault == "late_recheck_publish_failure":
         original_identity = joined.source_runtime._native_recheck_root_identity
         recheck_identity_calls = 0
@@ -386,7 +515,11 @@ async def test_new_g12_then_fresh_public_and_account_raw_page_starts(
     )
     assert (tmp_path / "join" / "receipt.json").read_bytes() == result.receipt_json
     assert receipt["public_request_count"] > 0
-    persisted = fault is None or fault in {"stale_after_persist", "final_g1_rejected"}
+    persisted = fault is None or fault in {
+        "stale_after_persist",
+        "final_g1_rejected",
+        "final_economics_quote_rejected",
+    }
     assert receipt["account_page_count"] == (
         len(account_packet.observations) if persisted else 0
     )

@@ -19,7 +19,7 @@ from app.database.repositories.qualification_ledger import (
     QualificationLedgerRepository,
 )
 from app.domain.native_clock import native_stamp
-from app.domain.source_primitives import canonical, decode, sha, utc_from_ns
+from app.domain.source_primitives import canonical, decode, sha
 from app.trade_qualification import current_economics_v2 as current_economics
 from app.trade_qualification import post_g12_account_event_observation_v4 as prior
 from app.trade_qualification import public_source_runtime as source_runtime
@@ -47,6 +47,7 @@ _CODES = frozenset(
         "public_journal_readback_invalid_at_local_readback",
         "public_validation_clock_invalid_at_local_readback",
         "public_g1_rejected_at_local_readback",
+        "public_transport_profile_rejected_at_local_readback",
         "public_economics_quote_stale_at_local_readback",
         "original_event_already_recorded",
     }
@@ -217,6 +218,7 @@ class PostG12LocalPortfolioObservationV5:
                     "public_journal_readback_invalid_at_local_readback",
                     "public_validation_clock_invalid_at_local_readback",
                     "public_g1_rejected_at_local_readback",
+                    "public_transport_profile_rejected_at_local_readback",
                     "public_economics_quote_stale_at_local_readback",
                 }:
                     raise ValueError
@@ -719,13 +721,14 @@ async def publish_capture_inspect_local_portfolio_v5(
                 "v5_local_checkpoint_clock_invalid"
             )
         try:
-            packet = prior._read_bound_public_journal(
+            packet, public_stamp = prior._read_bound_public_journal(
                 public_root,
                 {
                     "public_packet_sha256": v4.public_packet_sha256,
                     "public_journal_sha256": v4.public_journal_sha256,
                 },
                 root_identity=public_identity,
+                with_stamp=True,
             )
         except asyncio.CancelledError:
             raise
@@ -733,7 +736,10 @@ async def publish_capture_inspect_local_portfolio_v5(
             public_failure_code = "public_journal_readback_invalid_at_local_readback"
         else:
             try:
-                validation_at = utc_from_ns(native_stamp()["utc_ns"])
+                final_stamp = native_stamp()
+                validation_at = prior.joined.prior._monotonic_final_freshness_at(
+                    public_stamp, final_stamp
+                )
                 if not second_end <= validation_at < deadline:
                     raise ValueError("v5_public_validation_clock_invalid")
             except asyncio.CancelledError:
@@ -753,20 +759,33 @@ async def publish_capture_inspect_local_portfolio_v5(
                     public_failure_code = "public_g1_rejected_at_local_readback"
                 else:
                     try:
-                        cost_quote_current = (
-                            current_economics.quote_within_economics_policy_age_v2(
-                                packet, pre.policy.economics, validation_at
-                            )
+                        current_economics.public_market_context_v2(
+                            packet,
+                            expected_bundle_sha256=packet.bundle_sha256,
+                            evaluated_at=validation_at,
                         )
                     except asyncio.CancelledError:
                         raise
-                    except Exception:  # noqa: BLE001 -- no private/source detail
-                        cost_quote_current = False
-                    public_failure_code = (
-                        None
-                        if cost_quote_current
-                        else "public_economics_quote_stale_at_local_readback"
-                    )
+                    except Exception:  # noqa: BLE001 -- live transport profile is a fixed denial
+                        public_failure_code = (
+                            "public_transport_profile_rejected_at_local_readback"
+                        )
+                    else:
+                        try:
+                            cost_quote_current = (
+                                current_economics.quote_within_economics_policy_age_v2(
+                                    packet, pre.policy.economics, validation_at
+                                )
+                            )
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception:  # noqa: BLE001 -- no private/source detail
+                            cost_quote_current = False
+                        public_failure_code = (
+                            None
+                            if cost_quote_current
+                            else "public_economics_quote_stale_at_local_readback"
+                        )
         record.update(
             code=(
                 public_failure_code

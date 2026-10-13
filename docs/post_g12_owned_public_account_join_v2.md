@@ -31,7 +31,12 @@ candidate 重算公開來源 G1、目前 G2–G4、原 event／zone 與固定 En
 `public_only_recheck` 收據接著寫入獨立原生目錄的 `receipt.json`，使用
 no-clobber 建檔與即時讀回；關閉原目錄後重新開啟，核對唯一檔名、原始位元組、
 SHA256、收據格式與目錄身分。最後再取時鐘樣本，檢查候選期限、帳戶 lease
-與公開資料 freshness。收據完成落盤及分開讀回後，上層才保留其雜湊、結果碼、
+與公開資料 freshness。最終檢查把公開擷取後經過的單調時鐘時間投影為保守
+UTC 截止時間；即使原生 UTC 在允許的微小偏差內落後，也不延長原期限或報價
+壽命。來源時間戳與回執不會被改寫。接著重新套用**原始** economics policy 的報價最長年齡
+於 ticker、mark、funding 與擷取完成四個時間點。最後帳戶 await 期間即使
+G1 與公開傳輸 profile 仍合格，成本政策較嚴而已逾時也必須拒絕；不能沿用
+先前 projected economics 的 PASS。收據完成落盤及分開讀回後，上層才保留其雜湊、結果碼、
 評估時間，並標記 `public_only_recheck_receipt_persisted=true`。若最後的
 期限／freshness 驗證失敗，結果碼為 `denied`，已發佈檔案與其 pin 仍保留；
 早期／落盤失敗不得宣稱持久收據。此收據仍只證明公開資料重算診斷，不能

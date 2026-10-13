@@ -25,8 +25,17 @@ then replays G1 on the same packet. A stale packet yields
 `public_g1_rejected_at_local_readback`; an unreadable or changed journal yields
 `public_journal_readback_invalid_at_local_readback`. An unavailable native
 clock, invalid ordering or elapsed deadline yields
-`public_validation_clock_invalid_at_local_readback` before G1 runs. All remain
-`DENY`; the
+`public_validation_clock_invalid_at_local_readback` before G1 runs. After G1,
+V5 independently replays the public transport profile and frozen original
+economics quote-age policy at the later checkpoint time. Rejection yields
+`public_transport_profile_rejected_at_local_readback` or
+`public_economics_quote_stale_at_local_readback`, respectively. All remain
+`DENY`. V5 reads the exact native post-public capture stamp from the pinned,
+replayed journal and pairs it with its own final native sample. Freshness uses
+the later of native UTC and the monotonic elapsed-time floor; reversal, excess
+skew or a lease over 60 seconds yields
+`public_validation_clock_invalid_at_local_readback`. It does not rewrite the
+source stamp or any accepted receipt; the
 local flatness field still describes only the sampled local state. Publication
 follows this sample, so the code is a historical diagnostic, not a claim of
 current eligibility or execution authority. V5 does not fetch a new quote or

@@ -15,7 +15,13 @@ from app.database.repositories.account_capture_journal import (
     LockedAccountSourceJoinReadback,
 )
 from app.database.repositories.qualification_ledger import QualificationLedgerRepository
-from app.domain.source_primitives import canonical, decode, sha
+from app.domain.source_primitives import (
+    PublicReceiptError,
+    canonical,
+    decode,
+    sha,
+    utc_from_ns,
+)
 from app.trade_evidence import storage as evidence_storage
 from app.trade_qualification import account_current_history_join as account_join
 from app.trade_qualification import account_current_source_verifier as current_source
@@ -147,6 +153,23 @@ def test_original_economics_quote_can_expire_while_g1_remains_current(
     )
     with pytest.raises(ValueError, match="economics_v2_original_cost_policy_required"):
         current_economics.quote_within_economics_policy_age_v2(packet, object(), early)
+
+
+@pytest.mark.parametrize(
+    "wall_elapsed_ns,monotonic_elapsed_ns",
+    ((-1, 1), (60_000_000_001, 60_000_000_001)),
+)
+def test_v4_public_capture_pin_rejects_clock_rollback_or_expired_lease(
+    wall_elapsed_ns, monotonic_elapsed_ns
+):
+    start_ns = 1_700_000_000_000_000_000
+    public_stamp = {"utc_ns": start_ns, "monotonic_ns": 1_000_000_000}
+    final_stamp = {
+        "utc_ns": start_ns + wall_elapsed_ns,
+        "monotonic_ns": public_stamp["monotonic_ns"] + monotonic_elapsed_ns,
+    }
+    with pytest.raises(PublicReceiptError):
+        joined.prior._monotonic_final_freshness_at(public_stamp, final_stamp)
 
 
 def _publish_synthetic_artifacts(
@@ -444,8 +467,23 @@ def _matched(scope, key, expected):
         (None, "trusted_execution_inputs_missing", 1),
         ("late_public_g1", "public_g1_rejected_at_event_readback", 1),
         (
+            "late_transport_profile_stale",
+            "public_transport_profile_rejected_at_event_readback",
+            1,
+        ),
+        (
             "late_economics_quote_stale",
             "public_economics_quote_stale_at_event_readback",
+            1,
+        ),
+        (
+            "late_monotonic_quote_stale",
+            "public_economics_quote_stale_at_event_readback",
+            1,
+        ),
+        (
+            "late_clock_pair_invalid",
+            "public_validation_clock_invalid_at_event_readback",
             1,
         ),
         (
@@ -531,13 +569,43 @@ async def test_v4_one_invocation_v3_readback_then_uid_event_only(
         if fault == "late_validation_clock_expired"
         else expected["deadline"] - timedelta(milliseconds=300)
     )
+    # The broader synthetic V3 fixture is deliberately five minutes away from
+    # its DB observation. Keep its actual journal replay/tamper checks, but use
+    # a short, causally ordered native clock lease for this independent V4 test.
+    captured_stamp = decode(captured_public_journal[1]["summary.json"])["completed"]
+    public_stamp = {
+        "utc_ns": int((validation_at - timedelta(seconds=2)).timestamp())
+        * 1_000_000_000
+        + validation_at.microsecond * 1_000,
+        "monotonic_ns": 1_000_000_000,
+    }
+    native_journal_read = bridge._read_bound_public_journal
+
+    def synthetic_clock_journal(*args, **kwargs):
+        value = native_journal_read(*args, **kwargs)
+        if kwargs.get("with_stamp"):
+            packet, actual_stamp = value
+            assert actual_stamp == captured_stamp
+            return packet, public_stamp
+        return value
+
+    monkeypatch.setattr(bridge, "_read_bound_public_journal", synthetic_clock_journal)
+    capture_at = utc_from_ns(public_stamp["utc_ns"])
+    elapsed = validation_at - capture_at
+    elapsed_ns = (
+        (elapsed.days * 86_400 + elapsed.seconds) * 1_000_000 + elapsed.microseconds
+    ) * 1000
 
     def validation_stamp():
         if fault == "late_validation_stamp_unavailable":
             raise RuntimeError("private native clock detail")
         return {
             "utc_ns": int(validation_at.timestamp()) * 1_000_000_000
-            + validation_at.microsecond * 1_000
+            + validation_at.microsecond * 1_000,
+            "monotonic_ns": public_stamp["monotonic_ns"]
+            + elapsed_ns
+            + (6_000_000 if fault == "late_clock_pair_invalid" else 0)
+            + (4_000_000 if fault == "late_monotonic_quote_stale" else 0),
         }
 
     monkeypatch.setattr(
@@ -558,12 +626,28 @@ async def test_v4_one_invocation_v3_readback_then_uid_event_only(
             )
 
     monkeypatch.setattr(joined.prior, "_require_final_original_g1", final_public_g1)
+    transport_checks = []
+
+    def final_transport_profile(packet, *, expected_bundle_sha256, evaluated_at):
+        transport_checks.append(evaluated_at)
+        assert packet.bundle_sha256 == expected_bundle_sha256
+        assert expected_bundle_sha256 == captured_public_journal[0].packet.bundle_sha256
+        if fault == "late_transport_profile_stale":
+            raise ValueError("synthetic late transport rejection")
+
+    monkeypatch.setattr(
+        bridge.current_economics,
+        "public_market_context_v2",
+        final_transport_profile,
+    )
     economics_checks = []
 
     def final_economics_age(packet, policy, observed_at):
         economics_checks.append(observed_at)
         assert packet.bundle_sha256 == captured_public_journal[0].packet.bundle_sha256
         assert policy == run.policy.economics
+        if fault == "late_monotonic_quote_stale":
+            return observed_at < validation_at + timedelta(milliseconds=2)
         return fault != "late_economics_quote_stale"
 
     monkeypatch.setattr(
@@ -774,11 +858,22 @@ async def test_v4_one_invocation_v3_readback_then_uid_event_only(
         assert final_g1_times == [validation_at]
         assert observations[0].received_at < expected["deadline"]
     if fault == "late_economics_quote_stale":
-        assert final_g1_times == economics_checks == [validation_at]
+        assert final_g1_times == transport_checks == economics_checks == [validation_at]
+    if fault == "late_monotonic_quote_stale":
+        assert (
+            final_g1_times
+            == transport_checks
+            == economics_checks
+            == [validation_at + timedelta(milliseconds=4)]
+        )
+    if fault == "late_transport_profile_stale":
+        assert final_g1_times == transport_checks == [validation_at]
+        assert economics_checks == []
     if fault in {
         "late_public_journal_changed",
         "late_validation_clock_expired",
         "late_validation_stamp_unavailable",
+        "late_clock_pair_invalid",
     }:
         assert final_g1_times == []
     expected_account_read = code not in {

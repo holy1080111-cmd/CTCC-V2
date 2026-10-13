@@ -142,6 +142,11 @@ def test_mixed_version_or_estimated_quote_turnover_cannot_replay(edit):
 async def test_real_g1_v2_pass_and_source_replay():
     source = await capture_prefix_source()
     market = source.market.model_copy(deep=True)
+    # The V2 ticker must pair with coherent synthetic SWAP base/quote amounts.
+    # Construct those test-source values before the bridge serializes this market.
+    for rows in market.candles.values():
+        for candle in rows:
+            candle.volume_quote = candle.volume_currency * candle.close
     values = market.ticker.model_dump()
     contracts = values.pop("volume_24h")
     values.pop("volume_quote_24h")

@@ -32,9 +32,10 @@ from tests.integration.test_qualification_ledger_repository import (
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
 
-async def test_db0040_rendered_batch_guard_compiles_in_postgresql(sandbox):
+@pytest.mark.parametrize("revision", ["0040"])
+async def test_db0040_rendered_batch_guard_compiles_in_postgresql(sandbox, revision):
     engine, _ = sandbox
-    guard = load_migration("0040")._batch_guard()
+    guard = load_migration(revision)._batch_guard()
     production = "public.account_observation_typed_batch_guard()"
     probe = "public.account_observation_typed_batch_guard_syntax_probe()"
     assert guard.count(production) == 1

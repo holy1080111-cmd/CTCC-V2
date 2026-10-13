@@ -876,10 +876,18 @@ async def publish_capture_public_account_history_v3(
         final_stamp = native_stamp()
         validate_stamps((last, final_stamp))
         last = final_stamp
-        final_at = utc_from_ns(final_stamp["utc_ns"])
+        final_at = prior._monotonic_final_freshness_at(public_stamp, final_stamp)
         if final_at >= origin.deadline:
             raise PostG12AccountHistoryJoinError("post_g12_history_final_expired")
         prior._require_final_original_g1(packet, pre, final_at)
+        # The last account/history await may outlive both the public transport
+        # profile and the original, potentially stricter economics quote age.
+        public_market_context_v2(
+            packet,
+            expected_bundle_sha256=packet.bundle_sha256,
+            evaluated_at=final_at,
+        )
+        prior._require_final_original_economics_quote(packet, pre, final_at)
         code = "joined_unqualified"
         return finish()
     except asyncio.CancelledError:

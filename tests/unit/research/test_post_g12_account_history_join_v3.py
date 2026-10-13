@@ -22,6 +22,7 @@ from tests.unit import test_original_candidate_policy as original_fixture
 from tests.unit.qualification_engine_fixtures import engine_inputs
 from tests.unit.research.test_owned_public_runtime_v2 import (
     empty_registries,
+    fresh_funding_return,
     policy,
     setup,
 )
@@ -94,6 +95,8 @@ def _source_inputs_fixture():
         ("companion_readback_changed_after_native", "account_unavailable"),
         ("recheck_replay_failure", "account_unavailable"),
         ("final_g1_rejected", "denied"),
+        ("final_transport_profile_rejected", "denied"),
+        ("final_economics_quote_rejected", "denied"),
         ("stale_after_join", "account_unavailable"),
     ],
 )
@@ -104,6 +107,7 @@ async def test_v3_g12_public_then_committed_history_and_fresh_current(
     (tmp_path / "recheck").mkdir()
     (tmp_path / "join").mkdir()
     clock, _, harness, _ = setup(monkeypatch, source)
+    fresh_funding_return(harness, clock)
     monkeypatch.setattr(joined, "native_stamp", clock.stamp)
     monkeypatch.setattr(account_native, "_configured_factory", lambda _: True)
     route = demo_public_origin.reviewed_demo_public_route("global")
@@ -257,6 +261,28 @@ async def test_v3_g12_public_then_committed_history_and_fresh_current(
             )
 
         monkeypatch.setattr(joined.prior, "_require_final_original_g1", reject_final_g1)
+    if fault == "final_transport_profile_rejected":
+        original_context = joined.public_market_context_v2
+        context_calls = 0
+
+        def reject_final_profile(*args, **kwargs):
+            nonlocal context_calls
+            context_calls += 1
+            if context_calls == 2:
+                raise ValueError("synthetic final profile expiry")
+            return original_context(*args, **kwargs)
+
+        monkeypatch.setattr(joined, "public_market_context_v2", reject_final_profile)
+    if fault == "final_economics_quote_rejected":
+
+        def reject_final_quote(*_args, **_kwargs):
+            raise joined.prior.PostG12AccountJoinError(
+                "post_g12_final_original_economics_quote_rejected"
+            )
+
+        monkeypatch.setattr(
+            joined.prior, "_require_final_original_economics_quote", reject_final_quote
+        )
     result = await joined.publish_capture_public_account_history_v3(
         tmp_path / "g12",
         tmp_path / "public",
@@ -292,7 +318,12 @@ async def test_v3_g12_public_then_committed_history_and_fresh_current(
     assert joined._utc(receipt["publication_completed_at"]) < joined._utc(
         receipt["public_first_request_started_at"]
     )
-    if fault in {None, "final_g1_rejected"}:
+    if fault in {
+        None,
+        "final_g1_rejected",
+        "final_transport_profile_rejected",
+        "final_economics_quote_rejected",
+    }:
         assert receipt["committed_history_readback_before_first_http"] is True
         assert (
             joined._utc(receipt["publication_completed_at"])
