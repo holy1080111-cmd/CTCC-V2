@@ -41,6 +41,7 @@ POSTGRES_INTEGRATION = (
     "test_account_locked_source_join_repository.py",
     "test_account_observation_index_repository.py",
     "test_account_observation_index_typed_repository.py",
+    "test_account_observation_runtime_typed_repository.py",
     "test_account_observation_policy_epoch_migration.py",
     "test_account_portfolio_components_repository.py",
     "test_complete_consumed_event_ledger_repository.py",

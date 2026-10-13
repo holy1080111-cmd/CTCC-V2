@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from typing import Literal
 from urllib.parse import urlsplit
 
+import httpx
+
 from app.trade_qualification import control_bound_ledger as bound
 from app.trade_qualification import demo_control as control
 from app.trade_qualification.reservations import ReservationRequest
@@ -29,6 +31,12 @@ _UNPROVEN = (
     "credential_session_transport_unverified",
     "current_control_unverified",
     "first_byte_guard_unavailable",
+)
+_TRANSPORT_UNPROVEN = _UNPROVEN + (
+    "write_side_account_uid_unverified",
+    "write_side_credential_session_unverified",
+    "current_account_revision_unverified",
+    "one_use_dispatch_claim_unavailable",
 )
 
 
@@ -71,6 +79,37 @@ class PreparedDispatchDiagnosticV1:
     proposed_fields_match: bool
     version: Literal["ctcc.prepared_dispatch_diagnostic.v1"] = field(
         default=VERSION, init=False
+    )
+    admission: Literal["DENY"] = field(default="DENY", init=False)
+    execution_authority: Literal[False] = field(default=False, init=False)
+    order_retry_authority: Literal[False] = field(default=False, init=False)
+    order_submitted: Literal[False] = field(default=False, init=False)
+
+
+@dataclass(frozen=True, slots=True)
+class TransportPreparedDispatchDiagnosticV1:
+    """Non-secret observation of an HTTPX Request; permanently DENY.
+
+    The source-owned caller must pass the *same* Request to HTTPX ``send``.
+    This record intentionally retains only hashes and comparison labels, never
+    authentication headers, raw body, account UID or credential material.
+    """
+
+    code: Literal[
+        "record_invalid",
+        "prepared_invalid",
+        "prepared_mismatch",
+        "transport_visible_match_unbound",
+    ]
+    mismatches: tuple[str, ...]
+    blockers: tuple[str, ...]
+    intent_sha256: str | None
+    logical_request_sha256: str | None
+    prepared_body_sha256: str | None
+    prepared_request_sha256: str | None
+    visible_fields_match: bool
+    version: Literal["ctcc.transport_prepared_dispatch_diagnostic.v1"] = field(
+        default="ctcc.transport_prepared_dispatch_diagnostic.v1", init=False
     )
     admission: Literal["DENY"] = field(default="DENY", init=False)
     execution_authority: Literal[False] = field(default=False, init=False)
@@ -276,4 +315,132 @@ def compare_control_bound_prepared_request_v1(
         intent_sha256=replayed.sha256,
         logical_request_sha256=inner["exchange_request_sha256"],
         prepared_body_sha256=hashlib.sha256(prepared.body_bytes).hexdigest(),
+    )
+
+
+def compare_control_bound_httpx_request_v1(
+    request: ReservationRequest,
+    committed: bound.ControlBoundSubmissionIntentRecord,
+    prepared_request: httpx.Request,
+    *,
+    transport_environment: str,
+    selected_request_url: str,
+) -> TransportPreparedDispatchDiagnosticV1:
+    """Compare independently read-back intent with actual prepared HTTPX bytes.
+
+    The transport observes its own Request object immediately before ``send``.
+    Historical UID/session pins are copied only to replay the older logical
+    comparator; they do *not* attest the write credential or account. Both
+    checks are explicit blockers even when visible wire fields agree.
+    """
+    try:
+        if type(committed) is not bound.ControlBoundSubmissionIntentRecord:
+            raise ValueError("record_type")
+        replayed, _ = bound.replay_control_bound_intent(
+            committed.canonical_json, request, expected_sha256=committed.sha256
+        )
+        outer = json.loads(replayed.canonical_json)
+        inner = json.loads(outer["intent_json"])
+        logical = inner["exchange_request"]
+        state = control.decode(outer["consume_control_state_json"])
+        historical_uid = logical["account_uid"]
+        historical_session = state.pins.credential_session_sha256
+    except (ValueError, TypeError, KeyError, RecursionError, OverflowError):
+        return TransportPreparedDispatchDiagnosticV1(
+            "record_invalid",
+            (),
+            ("record_invalid",) + _TRANSPORT_UNPROVEN,
+            None,
+            None,
+            None,
+            None,
+            False,
+        )
+
+    try:
+        if (
+            type(prepared_request) is not httpx.Request
+            or type(transport_environment) is not str
+            or type(selected_request_url) is not str
+            or prepared_request.headers.get_list("authorization")
+            or prepared_request.headers.get_list("cookie")
+        ):
+            raise ValueError("request_shape")
+        body_bytes = prepared_request.content
+        if type(body_bytes) is not bytes:
+            raise ValueError("request_body")
+        safe_headers = tuple(
+            (name, value)
+            for name, value in prepared_request.headers.multi_items()
+            if name.lower() in _SAFE_HEADERS
+        )
+        projection = PreparedOkxRequestProjectionV1(
+            method=prepared_request.method,
+            url=str(prepared_request.url),
+            safe_headers=safe_headers,
+            body_bytes=body_bytes,
+            environment=transport_environment,
+            account_uid=historical_uid,
+            credential_session_sha256=historical_session,
+        )
+        # This validates the HTTPX body's exact bytes and public header shape
+        # before constructing any durable or loggable diagnostic output.
+        _prepared_parts(projection)
+        body_sha256 = hashlib.sha256(body_bytes).hexdigest()
+        fingerprint = hashlib.sha256(
+            json.dumps(
+                {
+                    "method": prepared_request.method,
+                    "url": str(prepared_request.url),
+                    "safe_headers": safe_headers,
+                    "body_sha256": body_sha256,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+            ).encode("ascii")
+        ).hexdigest()
+    except (
+        ValueError,
+        TypeError,
+        UnicodeError,
+        httpx.RequestNotRead,
+        RecursionError,
+        OverflowError,
+    ):
+        return TransportPreparedDispatchDiagnosticV1(
+            "prepared_invalid",
+            (),
+            ("prepared_invalid",) + _TRANSPORT_UNPROVEN,
+            replayed.sha256,
+            inner["exchange_request_sha256"],
+            None,
+            None,
+            False,
+        )
+
+    compared = compare_control_bound_prepared_request_v1(request, committed, projection)
+    mismatches = list(compared.mismatches)
+    # The older comparator intentionally accepts JSON-equivalent proposals.
+    # The actual write seam has a fixed serializer; accepting whitespace or
+    # key-order drift would leave the signed bytes different from the intent's
+    # replayed body. This is a diagnostic byte comparison, not a precommitted
+    # wire hash or proof that HTTPX has crossed its internal first await.
+    expected_body_bytes = json.dumps(
+        logical["body"], separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
+    if body_bytes != expected_body_bytes:
+        mismatches.append("body_bytes")
+    if str(prepared_request.url) != selected_request_url:
+        mismatches.append("selected_target")
+    visible_match = compared.code == "wire_binding_unavailable" and not mismatches
+    return TransportPreparedDispatchDiagnosticV1(
+        "transport_visible_match_unbound" if visible_match else "prepared_mismatch",
+        tuple(mismatches),
+        _TRANSPORT_UNPROVEN,
+        compared.intent_sha256,
+        compared.logical_request_sha256,
+        body_sha256,
+        fingerprint,
+        visible_match,
     )

@@ -20,8 +20,33 @@ signature, credential-session, current-control and first-byte bindings. A
 different body serialization can have the same logical comparison result while
 its byte SHA differs.
 
-This module is not connected to a route, owner READY transition or transport.
-Future admission requires a source-owned prepared request, authenticated account
-and public producers, a durable one-use dispatch claim, fresh Arm/EStop/expiry
-checks, and a reviewed first-byte guard. No historical readback can substitute
-for those checks or permit a retry after an unknown exchange response.
+The private REST transport now also has a bounded, internal observation path.
+For an exact `DispatchOwnership` slot whose control-bound intent was independently
+read back, it builds one HTTPX `Request`, compares that object's exact UTF-8 body
+bytes, method, URL and public headers against the historical logical intent, and
+the final send branch is wired to use that **same object** after the hard-DENY
+gates. The immutable diagnostic stores only
+hashes, mismatch labels and blocker labels: no raw body, UID, API key, passphrase,
+signature or authentication headers. HTTPX `MockTransport` tests confirm that a
+visible match, body/header/origin drift, expiry, cancellation and revocation all
+end with zero order sends. The direct write routes remain hard-DENY before
+signing, and the independent owned-write gate remains hard-DENY even in tests
+that deliberately bypass the earlier classifiers.
+
+The present Demo transport does not yet populate the intent's `expTime` header
+from a trusted dispatch producer. Tests add that header to a synthetic client
+only to exercise the comparison, and verify that an absent header mismatches.
+The order-create body uses one compact, sorted-key UTF-8 serialization for
+signing, observation and HTTPX; equivalent JSON with different bytes mismatches.
+
+The observed bytes are not precommitted in the durable logical intent. The
+selected origin is not in that intent. In particular, copying a historical UID
+or credential-session hash from the account readback cannot prove which UID or
+credential signed this *write*: the present `DemoPinnedReadSession` is GET-only.
+Current account/control revision and one-use dispatch claim are also unproved,
+and HTTPX can await internally before its first byte. These are explicit
+blockers in `TransportPreparedDispatchDiagnosticV1`; a visible match still says
+`admission=DENY`, never READY or permission to retry an ambiguous submission.
+Future admission requires authenticated write-side identity, source-owned
+public/account producers, fresh Arm/EStop/revision/expiry checks, a durable
+one-use claim, and a reviewed first-byte guard.

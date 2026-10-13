@@ -20,6 +20,7 @@ import httpx
 from app.config.settings import Settings, get_settings
 from app.exchange.okx.errors import OkxPrivateApiError
 from app.okx_live.execution_authority import enforce_live_final_dispatch
+from app.trade_qualification.dispatch_ownership import DispatchOwnership, DispatchSlot
 from app.trade_qualification.execution_authority import (
     enforce_demo_final_dispatch,
     enforce_demo_submission_boundary,
@@ -206,6 +207,12 @@ class _OkxPrivateRestClientBase:
         self._external_client = client
         self._clock = clock or (lambda: datetime.now(UTC))
         self._clock_injected = clock is not None
+        self._last_prepared_dispatch_diagnostic = None
+
+    @property
+    def last_prepared_dispatch_diagnostic(self):
+        """Non-secret, DENY-only observation; never a submission permit."""
+        return self._last_prepared_dispatch_diagnostic
 
     def _credentials(self) -> tuple[str, str, str]:
         raise NotImplementedError
@@ -295,6 +302,7 @@ class _OkxPrivateRestClientBase:
         body: dict[str, Any] | None = None,
         write: bool = False,
     ) -> list[dict[str, Any]]:
+        self._last_prepared_dispatch_diagnostic = None
         self._before_send(method=method, path=path)
         if (
             type(path) is not str
@@ -312,11 +320,19 @@ class _OkxPrivateRestClientBase:
         )
         request_path = path if not query else f"{path}?{query}"
         request_url = self._rest_base_url() + request_path
+        order_create = method.upper() == "POST" and path == "/api/v5/trade/order"
         body_text = (
             ""
             if body is None
-            else json.dumps(body, separators=(",", ":"), ensure_ascii=False)
+            else json.dumps(
+                body,
+                sort_keys=order_create,
+                separators=(",", ":"),
+                ensure_ascii=False,
+                allow_nan=not order_create,
+            )
         )
+        body_bytes = None if body is None else body_text.encode("utf-8")
 
         own_client = self._external_client is None
         client = self._external_client or httpx.AsyncClient(
@@ -356,6 +372,45 @@ class _OkxPrivateRestClientBase:
                         request_path=request_path,
                         body_text=body_text,
                     )
+                    prepared_write_request = None
+                    if write:
+                        # HTTPX must send this very Request object. Signing and
+                        # the byte observation share one immutable body encoding;
+                        # a second JSON serialization cannot drift after replay.
+                        prepared_write_request = client.build_request(
+                            method.upper(),
+                            request_url,
+                            headers=headers,
+                            content=body_bytes,
+                        )
+                        if order_create:
+                            owner = getattr(self, "_qualification_dispatch_owner", None)
+                            slot = getattr(self, "_qualification_dispatch_slot", None)
+                            if (
+                                type(owner) is DispatchOwnership
+                                and type(slot) is DispatchSlot
+                            ):
+                                try:
+                                    environment = (
+                                        "demo"
+                                        if type(self) is OkxDemoPrivateRestClient
+                                        else "live"
+                                        if type(self) is OkxLiveExecutionRestClient
+                                        else "unknown"
+                                    )
+                                    self._last_prepared_dispatch_diagnostic = (
+                                        owner.observe_prepared_request(
+                                            slot,
+                                            prepared_write_request,
+                                            environment=environment,
+                                            selected_request_url=request_url,
+                                        )
+                                    )
+                                except Exception:  # noqa: BLE001 - no private error text
+                                    raise OkxPrivateApiError(
+                                        "Private write observation is unavailable",
+                                        code="private_write_authority_unavailable",
+                                    ) from None
                     self._final_dispatch_check(method=method, path=path)
                     # Separate from the route classifiers: removing their
                     # temporary hard DENY cannot expose legacy order entries.
@@ -365,14 +420,21 @@ class _OkxPrivateRestClientBase:
                         owner=getattr(self, "_qualification_dispatch_owner", None),
                         slot=getattr(self, "_qualification_dispatch_slot", None),
                     )
-                    response = await client.request(
-                        method.upper(),
-                        request_url,
-                        headers=headers,
-                        content=body_text if body is not None else None,
-                        auth=None,
-                        follow_redirects=False,
-                    )
+                    if prepared_write_request is not None:
+                        response = await client.send(
+                            prepared_write_request,
+                            auth=None,
+                            follow_redirects=False,
+                        )
+                    else:
+                        response = await client.request(
+                            method.upper(),
+                            request_url,
+                            headers=headers,
+                            content=body_text if body is not None else None,
+                            auth=None,
+                            follow_redirects=False,
+                        )
                     self._after_response_check(method=method, path=path)
                     response.raise_for_status()
                     payload = response.json()

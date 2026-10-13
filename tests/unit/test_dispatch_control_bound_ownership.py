@@ -5,14 +5,18 @@ or exchange transport is used.
 """
 
 import asyncio
+import hashlib
 import json
 from datetime import timedelta
 
+import httpx
 import pytest
 
 from app.database.repositories.qualification_ledger import (
     QualificationLedgerRepository,
 )
+from app.exchange.okx.errors import OkxPrivateApiError
+from app.exchange.okx.private_rest import OkxDemoPrivateRestClient
 from app.trade_qualification import control_bound_ledger as bound
 from app.trade_qualification import demo_control as control
 from app.trade_qualification.dispatch_ownership import (
@@ -20,6 +24,7 @@ from app.trade_qualification.dispatch_ownership import (
     DispatchOwnershipError,
 )
 from app.trade_qualification.submission_intent import build_submission_intent
+from tests.unit.exchange.test_private_rest import demo_settings
 from tests.unit.qualification_execution_binding_fixtures import (
     consumed_receipt,
     execution_binding,
@@ -150,6 +155,166 @@ async def test_exact_controlled_envelope_binds_only_as_denied_diagnostic(
     ):
         owner.require_ready(slot)
     assert owner.inspect(slot).state == "denied"
+
+
+async def _bound_transport_probe(monkeypatch, controlled):
+    fixture, inner, outer, _, _ = controlled
+    owner, _, clock = _owner(monkeypatch, controlled)
+    slot = owner.begin(fixture.request)
+    clock.after_commit(fixture)
+    await owner.bind_control_bound_intent(slot, outer)
+    document = json.loads(inner.canonical_json)
+    logical = document["exchange_request"]
+    sent = []
+
+    def forbidden(request):
+        sent.append(request)
+        pytest.fail("qualified diagnostic must never dispatch an order")
+
+    monkeypatch.setattr(
+        OkxDemoPrivateRestClient, "_before_send", lambda self, **_: None
+    )
+    monkeypatch.setattr(
+        OkxDemoPrivateRestClient, "_final_dispatch_check", lambda self, **_: None
+    )
+    http = httpx.AsyncClient(
+        transport=httpx.MockTransport(forbidden), base_url="https://www.okx.com"
+    )
+    client = OkxDemoPrivateRestClient(http, settings=demo_settings())
+    client._qualification_dispatch_owner = owner
+    client._qualification_dispatch_slot = slot
+    client._request_extra_headers = lambda **_: {
+        "expTime": logical["headers"]["expTime"]
+    }
+    return fixture, logical, owner, clock, http, client, sent
+
+
+@pytest.mark.asyncio
+async def test_httpx_exact_request_observation_is_readback_bound_but_denied(
+    monkeypatch, controlled
+):
+    fixture, logical, owner, _, http, client, sent = await _bound_transport_probe(
+        monkeypatch, controlled
+    )
+    try:
+        with pytest.raises(OkxPrivateApiError) as denied:
+            await client.place_order(dict(reversed(tuple(logical["body"].items()))))
+        observed = client.last_prepared_dispatch_diagnostic
+        assert denied.value.code == "private_write_authority_unavailable"
+        assert observed.code == "transport_visible_match_unbound"
+        assert observed.visible_fields_match is True
+        assert observed.mismatches == ()
+        assert observed.admission == "DENY"
+        assert observed.execution_authority is False
+        assert observed.order_retry_authority is False
+        assert observed.order_submitted is False
+        assert (
+            observed.prepared_body_sha256
+            == hashlib.sha256(
+                json.dumps(
+                    logical["body"], separators=(",", ":"), ensure_ascii=False
+                ).encode("utf-8")
+            ).hexdigest()
+        )
+        assert len(observed.prepared_request_sha256) == 64
+        assert "write_side_account_uid_unverified" in observed.blockers
+        assert "write_side_credential_session_unverified" in observed.blockers
+        assert "current_account_revision_unverified" in observed.blockers
+        assert "first_byte_guard_unavailable" in observed.blockers
+        assert fixture.request.scope.account_id not in repr(observed)
+        assert "demo-secret" not in repr(observed)
+        assert sent == []
+        assert owner.inspect(client._qualification_dispatch_slot).state == "denied"
+        with pytest.raises(OkxPrivateApiError):
+            await client.place_order(logical["body"])
+        assert client.last_prepared_dispatch_diagnostic is None
+        assert sent == []
+    finally:
+        await http.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "changed",
+    ("body", "equivalent_body_bytes", "expiry", "expiry_absent", "selected_origin"),
+)
+async def test_httpx_request_drift_tombstones_slot_before_any_send(
+    monkeypatch, controlled, changed
+):
+    _, logical, owner, _, http, client, sent = await _bound_transport_probe(
+        monkeypatch, controlled
+    )
+    try:
+        body = dict(logical["body"])
+        if changed == "body":
+            body["px"] = "0.1"
+        elif changed == "expiry":
+            client._request_extra_headers = lambda **_: {"expTime": "1"}
+        elif changed == "expiry_absent":
+            client._request_extra_headers = lambda **_: {}
+        elif changed == "equivalent_body_bytes":
+            original = http.build_request
+
+            def changed_encoding(method, url, **kwargs):
+                kwargs["content"] = json.dumps(
+                    json.loads(kwargs["content"]), indent=2
+                ).encode("utf-8")
+                return original(method, url, **kwargs)
+
+            monkeypatch.setattr(http, "build_request", changed_encoding)
+        else:
+            original = http.build_request
+
+            def changed_target(method, url, **kwargs):
+                source = httpx.URL(url)
+                return original(
+                    method,
+                    f"https://us.okx.com{source.raw_path.decode('ascii')}",
+                    **kwargs,
+                )
+
+            monkeypatch.setattr(http, "build_request", changed_target)
+        with pytest.raises(OkxPrivateApiError) as denied:
+            await client.place_order(body)
+        observed = client.last_prepared_dispatch_diagnostic
+        assert denied.value.code == "private_write_authority_unavailable"
+        assert observed.code == "prepared_mismatch"
+        assert {
+            "body": "body",
+            "equivalent_body_bytes": "body_bytes",
+            "expiry": "exptime",
+            "expiry_absent": "exptime",
+            "selected_origin": "selected_target",
+        }[changed] in observed.mismatches
+        assert owner.inspect(client._qualification_dispatch_slot).state == "denied"
+        assert sent == []
+    finally:
+        await http.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid", ("revoked", "expired", "cancelled"))
+async def test_transport_observation_rejects_inactive_owner_before_send(
+    monkeypatch, controlled, invalid
+):
+    fixture, logical, owner, clock, http, client, sent = await _bound_transport_probe(
+        monkeypatch, controlled
+    )
+    try:
+        if invalid == "revoked":
+            owner.revoke_now()
+        elif invalid == "expired":
+            clock.now = fixture.request.origin.deadline
+            clock.monotonic += 1000
+        else:
+            owner.cancel(client._qualification_dispatch_slot)
+        with pytest.raises(OkxPrivateApiError) as denied:
+            await client.place_order(logical["body"])
+        assert denied.value.code == "private_write_authority_unavailable"
+        assert client.last_prepared_dispatch_diagnostic is None
+        assert sent == []
+    finally:
+        await http.aclose()
 
 
 @pytest.mark.asyncio

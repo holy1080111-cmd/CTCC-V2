@@ -107,6 +107,12 @@ Authenticated GET-only readback pinned the four actual property IDs and types
 in a user-only local private file. The worker remains disabled and no Notion
 page was created by setup; automatic delivery and Demo acceptance are still
 unverified.
+On 2026-10-13, the existing private token and pinned destination passed a new
+authenticated GET-only database/data-source schema readback. The nonsecret
+receipt is `../validation-results/notion-binding-readback-20261013.json` outside
+the source tree. This confirms the binding at that observation time, not a
+Notion page write, outbox delivery, or Demo acceptance. The reviewed setup
+left the worker disabled; this readback did not enable it.
 Generic interactive database/source/property selection is available when
 nonsecret options are omitted.
 

@@ -25,6 +25,9 @@ from app.trade_qualification.control_bound_ledger import (
     ControlBoundSubmissionIntentRecord,
     replay_control_bound_intent,
 )
+from app.trade_qualification.prepared_dispatch_diagnostic import (
+    compare_control_bound_httpx_request_v1,
+)
 from app.trade_qualification.reservations import (
     LedgerScope,
     ReservationRequest,
@@ -485,6 +488,54 @@ class DispatchOwnership(_NotTransferable):
         with self._local:
             self._context()
             return self._observation(self._entry(slot))
+
+    def observe_prepared_request(
+        self, slot, prepared_request, *, environment, selected_request_url
+    ):
+        """Compare one read-back controlled intent with transport-built bytes.
+
+        This synchronous observation runs before the final write DENY. It does
+        not validate the write credential's UID/session, refresh account state,
+        or grant the slot READY. Invalid, expired, cancelled and revoked slots
+        cannot yield a matching diagnostic.
+        """
+        with self._local:
+            self._active()
+            entry = self._entry(slot)
+            if (
+                entry.state != "bound_denied"
+                or type(entry.intent) is not ControlBoundSubmissionIntentRecord
+                or self._loop is not asyncio.get_running_loop()
+            ):
+                self._finish(entry, "denied", "dispatch_slot_terminal_or_replayed")
+                raise DispatchOwnershipError("dispatch_slot_terminal_or_replayed")
+            self._cancellation(entry)
+            now, mono = self._time()
+            try:
+                self._deadline(entry, now, mono)
+            except DispatchOwnershipError:
+                self._finish(entry, "denied", "dispatch_slot_expired")
+                raise
+            observed = compare_control_bound_httpx_request_v1(
+                entry.request,
+                entry.intent,
+                prepared_request,
+                transport_environment=environment,
+                selected_request_url=selected_request_url,
+            )
+            # Observation consumes this diagnostic attempt even when all
+            # visible fields match. A later retry must begin a new durable
+            # invocation; the historical slot cannot be recycled.
+            self._finish(
+                entry,
+                "denied",
+                (
+                    "dispatch_trusted_producer_unavailable"
+                    if observed.visible_fields_match
+                    else "dispatch_intent_binding_failed"
+                ),
+            )
+            return observed
 
     def cancel(self, slot):
         """Synchronously tombstone this invocation, including an awaited read."""

@@ -160,6 +160,22 @@ the used session. A stored B3 receipt cannot be passed as an owned session.
 Old B1/B2a wrappers, their wire bytes, materializer v1 and all trading boundaries
 are unchanged.
 
+`collect_observed_execution_window_typed_v1` is a separate owned entrypoint for
+the DB0040 typed epoch. It checks the one-use controlled Demo session and the
+global history plan before I/O, finalizes the original signed B1 page chain,
+reads that committed chain in a new database session, and replays B2a V2 from
+its original bytes before asking the typed repository to append. DB0040
+independently replays the same source and reads its commit back in another
+session. The old V1 runtime and DB0021 chain are untouched. This route only
+records typed fill-record and bill-balance-update observations. It never turns
+an order's creation time into fill time, a bill's `ts` into funding accrual,
+or an observed subtotal into a complete loss window. A late failure preserves
+committed B1/DB0040 evidence and cannot repeat the consumed signed session.
+The return remains `account_complete=false`,
+`source_authenticity_verified=false`, `execution_authority=false`,
+`admission=DENY`; it does not establish registration region, history finality,
+streak seed, HWM, portfolio snapshot, or Demo authority.
+
 ## Validation scope
 
 Source replay is bounded separately from comparisons. Within one pure B3 replay,

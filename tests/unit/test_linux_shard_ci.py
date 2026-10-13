@@ -94,6 +94,10 @@ def test_reviewed_modules_in_postgres_suite_only():
             "tests/integration/test_account_locked_current_history_join_v7_repository.py",
             "test_isolated_postgresql_v7_join_has_distinct_policy_receipt_and_no_authority",
         ),
+        (
+            "tests/integration/test_account_observation_runtime_typed_repository.py",
+            "test_one_owned_signed_b1_capture_commits_typed_b3_and_reads_it_back",
+        ),
     ):
         nodeid = path + "::" + case
         assert path in POSTGRES_TEST_PATHS
