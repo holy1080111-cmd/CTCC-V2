@@ -15,6 +15,7 @@ from app.trade_qualification import account_capture_journal as journal
 from app.trade_qualification import account_current_history_join as joined
 from app.trade_qualification import account_current_source_verifier as current
 from app.trade_qualification import account_funding_bill_audit as funding_bills
+from app.trade_qualification import account_history_query_verifier as history_query
 from app.trade_qualification import account_observation_index as observed
 from tests.unit.test_account_current_source_v7 import recorded_v7
 from tests.unit.test_account_current_source_verifier import SCOPE, flat_pages, recorded
@@ -148,6 +149,46 @@ async def test_v7_locked_join_rereads_both_b1_chains_under_uid_lock_and_denies(
     assert value["snapshot"] is None
     assert value["account_complete"] is locked.account_complete is False
     assert value["account_revision_published"] is False
+    assert value["execution_authority"] is locked.execution_authority is False
+    assert value["admission"] == "DENY"
+
+
+@pytest.mark.asyncio
+async def test_typed_v7_locked_join_pins_v2_query_but_does_not_claim_commit(
+    monkeypatch,
+):
+    repo, history, fresh, history_id, current_id, calls, sessions = await _fixture(
+        monkeypatch
+    )
+    pure = joined.join_recorded_account_sources_v2(
+        history_chain=history,
+        history_reference=observed.source_reference(history),
+        current_chain=fresh,
+        current_reference=observed.source_reference(fresh),
+        scope=SCOPE,
+        validated_at=NOW + timedelta(seconds=4),
+    )
+    pure_value = json.loads(pure.receipt_json)
+    locked = await repo.read_locked_current_history_typed_join(
+        SCOPE,
+        history_capture_id=history_id,
+        current_capture_id=current_id,
+    )
+    value = json.loads(locked.receipt_json)
+    assert calls == ["uid_lock", history_id, current_id, "checkpoint"]
+    assert len(sessions) == 1 and not sessions[0].lock.locked()
+    assert value["schema_version"] == "ctcc.demo_account_locked_source_join.v6"
+    assert value["join_policy_sha256"] == joined.V7_ORDERED_TYPED_POLICY_SHA256
+    assert value["join_receipt_sha256"] == pure.receipt_sha256
+    assert value["history_query_policy_sha256"] == history_query.V2_POLICY_SHA256
+    assert (
+        value["history_query_receipt_sha256"]
+        == pure_value["history_query_receipt_sha256"]
+    )
+    assert value["history_commit_before_current_request"] is False
+    assert value["history_tail_closed"] is False
+    assert value["flat_start_permission"] is False
+    assert value["account_complete"] is locked.account_complete is False
     assert value["execution_authority"] is locked.execution_authority is False
     assert value["admission"] == "DENY"
 

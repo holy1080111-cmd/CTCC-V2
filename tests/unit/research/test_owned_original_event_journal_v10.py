@@ -4,6 +4,7 @@ import asyncio
 import inspect
 from dataclasses import replace
 from datetime import timedelta
+from types import SimpleNamespace
 
 import pytest
 
@@ -13,6 +14,7 @@ from app.trade_qualification import account_capture as capture
 from app.trade_qualification import account_native_runtime as account_native
 from app.trade_qualification import original_source_coordinator_v2 as original
 from app.trade_qualification import owned_original_event_journal_v10 as boundary
+from app.trade_qualification import qualification_runtime as initial
 from app.trade_qualification.account_observation_index import CaptureReference
 from tests.unit import qualification_prefix_fixtures as prefix
 from tests.unit import test_original_candidate_policy as original_fixture
@@ -62,6 +64,9 @@ async def test_v10_keeps_raw_g5_frame_across_locked_journal_reads(
         expected_plan_sha256=capture.plan_sha256(current_plan()),
     )
     account_harness.assert_closed()
+    monkeypatch.setattr(
+        initial, "uuid", SimpleNamespace(uuid4=lambda: SimpleNamespace(hex="a" * 32))
+    )
     clock, _, harness, publications = setup(
         monkeypatch,
         owned_source,
@@ -162,6 +167,9 @@ async def test_v10_keeps_raw_g5_frame_across_locked_journal_reads(
         session_factory=state["factory"],
     )
     record = decode(result.receipt_json)
+    assert sha(result.receipt_json) == (
+        "66d35ec3405652aaef3bd2c029822988b7e1522658b4a4a1a98eee08457149bd"
+    )
     assert state["g5_calls"] == 3 and state["db_calls"] == 2
     assert record["code"] == "event_absent_from_controlled_journal_only"
     assert record["g1_g5_replayed"] is True

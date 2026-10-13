@@ -39,6 +39,7 @@ from app.trade_qualification import account_clock_boundary as boundary
 from app.trade_qualification import account_current_history_join as source_join
 from app.trade_qualification import account_current_source_verifier as current
 from app.trade_qualification import account_funding_bill_audit as funding_bills
+from app.trade_qualification import account_history_query_verifier as history_query
 from app.trade_qualification import account_native_clock as native
 from app.trade_qualification import account_native_proof as proof
 from app.trade_qualification import account_native_runtime as runtime
@@ -72,6 +73,7 @@ async def _synthetic_v7_join(
     prefix_failure=False,
     prefix_overrides=None,
     index_join_overrides=None,
+    typed_history=False,
 ):
     plan = current_plan_v7()
     session = ControlledDemoAccountSession(
@@ -79,12 +81,15 @@ async def _synthetic_v7_join(
         plan=plan,
         expected_plan_sha256=capture.plan_sha256(plan),
     )
+    binding_sha256 = (
+        sha(plan.session_binding_id.encode("ascii")) if typed_history else "e" * 64
+    )
     reference = observed.CaptureReference(
         capture_id=CURRENT_ID,
         head_sha256="c" * 64,
         plan_sha256=session._pin,
         packet_sha256="d" * 64,
-        session_binding_sha256="e" * 64,
+        session_binding_sha256=binding_sha256,
     )
     history_reference = observed.CaptureReference(
         capture_id=HISTORY_ID,
@@ -125,8 +130,17 @@ async def _synthetic_v7_join(
         lambda: pytest.fail("account HTTP must not run in synthetic join test"),
     )
 
+    expected_typed_history = typed_history
+
     async def read_before_http(
-        stage, repo, scope, capture_id, selected, *, include_funding=False
+        stage,
+        repo,
+        scope,
+        capture_id,
+        selected,
+        *,
+        include_funding=False,
+        typed_history=False,
     ):
         marker["calls"].append("pre_read")
         if progress is not None:
@@ -137,6 +151,7 @@ async def _synthetic_v7_join(
             await pre_read_gate.wait()
         assert capture_id == HISTORY_ID and selected == session._plan
         assert include_funding is funding
+        assert typed_history is expected_typed_history
         assert repo.clock is not None and scope.account_id == plan.expected_uid
         if pre_read_failure:
             raise RuntimeError("simulated uncommitted history")
@@ -226,7 +241,7 @@ async def _synthetic_v7_join(
         ) == ("demo", plan.expected_uid, "USDT")
         assert (history_capture_id, current_capture_id) == (HISTORY_ID, CURRENT_ID)
         assert expected_policy_sha256 == (
-            None if funding else source_join.V7_ORDERED_POLICY_SHA256
+            None if funding or typed_history else source_join.V7_ORDERED_POLICY_SHA256
         )
         marker["late"] = expired
         current_reference = observed.reference_document(reference)
@@ -236,10 +251,16 @@ async def _synthetic_v7_join(
             "schema_version": (
                 "ctcc.demo_account_locked_source_join.v5"
                 if funding
+                else "ctcc.demo_account_locked_source_join.v6"
+                if typed_history
                 else "ctcc.demo_account_locked_source_join.v4"
             ),
             "join_receipt_sha256": "a" * 64,
-            "join_policy_sha256": source_join.V7_ORDERED_POLICY_SHA256,
+            "join_policy_sha256": (
+                source_join.V7_ORDERED_TYPED_POLICY_SHA256
+                if typed_history
+                else source_join.V7_ORDERED_POLICY_SHA256
+            ),
             "current_source_policy_sha256": current.V7_POLICY_SHA256,
             "history_original_db_chain_sha256": "4" * 64,
             "history_journal_terminal_db_recorded_at": (
@@ -290,6 +311,13 @@ async def _synthetic_v7_join(
                     "source_authenticity_verified": False,
                 }
             )
+        if typed_history:
+            locked_receipt.update(
+                {
+                    "history_query_policy_sha256": history_query.V2_POLICY_SHA256,
+                    "history_query_receipt_sha256": "5" * 64,
+                }
+            )
         if locked_overrides is not None:
             locked_receipt.update(locked_overrides)
         return LockedAccountSourceJoinReadback(canonical(locked_receipt))
@@ -306,6 +334,11 @@ async def _synthetic_v7_join(
     monkeypatch.setattr(
         AccountCaptureJournalRepository,
         "read_locked_current_history_funding_join",
+        locked_join,
+    )
+    monkeypatch.setattr(
+        AccountCaptureJournalRepository,
+        "read_locked_current_history_typed_join",
         locked_join,
     )
     if index_prefix:
@@ -397,7 +430,9 @@ async def _synthetic_v7_join(
             AccountCurrentHistoryObservationRepository, "read_joined", read_joined
         )
     capture_join = (
-        runtime.capture_native_current_history_funding_join
+        runtime.capture_native_current_history_typed_join_v1
+        if typed_history
+        else runtime.capture_native_current_history_funding_join
         if funding
         else runtime.capture_native_current_history_index_join_v1
         if index_prefix
@@ -445,6 +480,79 @@ async def test_v7_same_invocation_joins_current_and_history_without_authority(
             invocation=marker["invocation"],
             expected_receipt_sha256=value["native_current_receipt_sha256"],
         )
+
+
+@pytest.mark.asyncio
+async def test_v7_typed_native_commit_visibility_is_bound_and_deny_only(monkeypatch):
+    result, marker = await _synthetic_v7_join(monkeypatch, typed_history=True)
+    value = json.loads(result.receipt_json)
+    assert marker["calls"] == ["pre_read", "native_current", "locked_join"]
+    assert value["schema_version"] == (
+        "ctcc.native_current_history_typed_join_diagnostic.v1"
+    )
+    assert value["policy_sha256"] == runtime._TYPED_HISTORY_COMMIT_POLICY_SHA256
+    assert value["join_policy_sha256"] == (source_join.V7_ORDERED_TYPED_POLICY_SHA256)
+    assert value["history_query_policy_sha256"] == history_query.V2_POLICY_SHA256
+    assert value["history_query_receipt_sha256"] == "5" * 64
+    assert value["session_binding_sha256"] == sha(
+        current_plan_v7().session_binding_id.encode("ascii")
+    )
+    assert value["pre_http_history_source_reference"]["capture_id"] == HISTORY_ID
+    assert value["local_b1_commit_visible_before_first_http"] is True
+    assert value["committed_history_readback_before_first_http"] is True
+    assert value["exchange_history_finality_verified"] is False
+    assert value["source_authenticity_verified"] is False
+    assert value["flat_start_permission"] is False
+    assert value["account_complete"] is result.account_complete is False
+    assert value["execution_authority"] is result.execution_authority is False
+    assert value["snapshot"] is None and value["admission"] == "DENY"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "case",
+    (
+        "pre_read_failure",
+        "first_http_reversed",
+        "history_query_receipt_changed",
+        "history_query_policy_changed",
+        "session_binding_changed",
+        "journal_timestamp_changed",
+    ),
+)
+async def test_v7_typed_commit_proof_denies_missing_or_changed_source(
+    monkeypatch, case
+):
+    locked_overrides = {
+        "history_query_receipt_changed": {"history_query_receipt_sha256": "0" * 64},
+        "history_query_policy_changed": {"history_query_policy_sha256": "0" * 64},
+        "session_binding_changed": {"session_binding_sha256": "0" * 64},
+        "journal_timestamp_changed": {
+            "history_journal_terminal_db_recorded_at": (
+                NOW + timedelta(seconds=3)
+            ).isoformat()
+        },
+    }.get(case)
+    result, marker = await _synthetic_v7_join(
+        monkeypatch,
+        typed_history=True,
+        pre_read_failure=case == "pre_read_failure",
+        first_http_reversed=case == "first_http_reversed",
+        locked_overrides=locked_overrides,
+    )
+    value = json.loads(result.receipt_json)
+    assert value["schema_version"] == (
+        "ctcc.native_current_history_typed_join_diagnostic.v1"
+    )
+    assert value["code"] == "native_account_history_join_denied"
+    assert value["account_complete"] is False
+    assert value["execution_authority"] is False
+    assert value["admission"] == "DENY"
+    assert marker["calls"] == (
+        ["pre_read"]
+        if case == "pre_read_failure"
+        else ["pre_read", "native_current", "locked_join"]
+    )
 
 
 @pytest.mark.asyncio

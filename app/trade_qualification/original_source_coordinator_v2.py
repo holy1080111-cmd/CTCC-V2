@@ -30,10 +30,12 @@ from app.domain.source_primitives import (
     validate_stamps,
 )
 from app.exchange.okx.symbols import REVIEWED_DEMO_INSTRUMENT_IDS
+from app.strategies.structural_protection import select_structural_protection
 from app.trade_qualification import account_capture as capture
 from app.trade_qualification import account_native_runtime as account_native
 from app.trade_qualification import data, data_v2
 from app.trade_qualification import demo_public_origin_preflight as origin_preflight
+from app.trade_qualification import native_original_bracket_policy_v1 as native_bracket
 from app.trade_qualification import native_original_g1_policy_v1 as native_g1
 from app.trade_qualification import original_candidate_precursor_v2 as precursor
 from app.trade_qualification import public_market_collector_v2 as public_v2
@@ -1159,6 +1161,152 @@ def _evaluate_owned_base_event_v7(
     )
 
 
+def _evaluate_owned_bracket_v11(
+    public_packet,
+    account_packet,
+    derived,
+    *,
+    public_pin,
+    account_pin,
+    plan_pin,
+    data_policy,
+    created_at,
+    prefix_receipt_json,
+    event_receipt_json,
+):
+    """Inspect fixed geometry from the same raw packets; G8/G9 remain unevaluated."""
+    if (
+        type(derived) is not precursor.OriginalCandidatePrecursorV2
+        or derived.intent is None
+        or type(event_receipt_json) is not bytes
+        or type(prefix_receipt_json) is not bytes
+        or created_at >= derived.intent.expires_at
+        or _evaluate_owned_base_event_v7(
+            public_packet,
+            derived,
+            public_pin=public_pin,
+            data_policy=data_policy,
+            created_at=created_at,
+            prefix_receipt_json=prefix_receipt_json,
+        )
+        != event_receipt_json
+    ):
+        raise OriginalSourceCoordinatorError("owned_bracket_original_event_changed")
+    document = decode(derived.receipt_json, precursor._MAX_RECEIPT)
+    event = decode(event_receipt_json, 4096)
+    intent = derived.intent
+    if (
+        document["account_packet_sha256"] != account_pin
+        or document["account_plan_sha256"] != plan_pin
+        or document["intent"] != precursor._intent_tree(intent)
+        or event["event_key_sha256"] != document["event_key"]
+        or created_at >= intent.expires_at
+    ):
+        raise OriginalSourceCoordinatorError("owned_bracket_lineage_changed")
+    checked, _ = public_v2._parts(public_packet)
+    if checked.bundle_sha256 != public_pin:
+        raise OriginalSourceCoordinatorError("owned_bracket_public_changed")
+    g1 = data_v2.verify_public_market_data_v2(
+        data_v2.evaluate_public_market_data_v2(
+            checked,
+            expected_bundle_sha256=public_pin,
+            policy=data_policy,
+            evaluated_at=created_at,
+        ),
+        checked,
+        expected_bundle_sha256=public_pin,
+        policy=data_policy,
+        evaluated_at=created_at,
+    )
+    if (
+        not g1.passed
+        or g1.evaluation_sha256 != document["g1"]["evaluation_sha256"]
+        or g1.source_sha256 != event["g1_source_sha256"]
+    ):
+        raise OriginalSourceCoordinatorError("owned_bracket_g1_changed")
+    rules = derive_captured_instrument_rules(
+        account_packet,
+        instrument_id=intent.instrument_id,
+        expected_plan_sha256=plan_pin,
+        expected_packet_sha256=account_pin,
+    )
+    if rules.receipt_sha256 != document["instrument_rules_sha256"]:
+        raise OriginalSourceCoordinatorError("owned_bracket_instrument_changed")
+    source = decode(g1.source_json.encode(), data.MAX_SOURCE_BYTES)
+    market = MarketSnapshot.model_validate_json(
+        json.dumps(source["market"], allow_nan=False), strict=True
+    )
+    analysis = MultiTimeframeAnalysis.model_validate_json(
+        json.dumps(source["analysis"], allow_nan=False), strict=True
+    )
+    detection = extract_trigger(
+        market,
+        analysis,
+        report_id=intent.report_id,
+        strategy=intent.strategy,
+        direction=intent.direction,
+        observed_at=created_at,
+        trigger_ttl_seconds=TIMING_POLICIES[intent.strategy].trigger_ttl_seconds,
+    )
+    if (
+        detection.model_dump(mode="json") != document["detection"]
+        or sha(canonical(document["detection"])) != event["detection_sha256"]
+        or detection.source_sha256 != g1.source_sha256
+        or event_identity(detection) != event["event_key_sha256"]
+    ):
+        raise OriginalSourceCoordinatorError("owned_bracket_detection_changed")
+    selected = select_structural_protection(
+        detection,
+        market,
+        analysis,
+        observed_at=created_at,
+        entry=intent.candidate_entry,
+        tick_size=rules.tick_size,
+        **native_bracket.fixed_native_original_bracket_policy(),
+    )
+    if (
+        selected.reference_entry != intent.candidate_entry
+        or selected.source_sha256 != g1.source_sha256
+        or selected.report_id != intent.report_id
+        or selected.instrument_id != intent.instrument_id
+        or selected.direction != intent.direction
+        or selected.strategy != intent.strategy
+        or selected.execution_authority is not False
+        or selected.policy_calibrated is not False
+        or selected.economics_validated is not False
+    ):
+        raise OriginalSourceCoordinatorError("owned_bracket_selection_changed")
+    audit = selected.to_audit_json().encode("ascii")
+    if not 0 < len(audit) <= 8 * 1024 * 1024:
+        raise OriginalSourceCoordinatorError("owned_bracket_audit_unbounded")
+    available = selected.protection_valid
+    bracket = selected.selected if available else None
+    stop = None if bracket is None else bracket.stop.final_stop
+    target = None if bracket is None else bracket.target.final_target
+    if available and (
+        bracket is None
+        or not bracket.valid
+        or type(stop) is not Decimal
+        or type(target) is not Decimal
+        or not (
+            stop < intent.candidate_entry < target
+            if intent.direction == "long"
+            else target < intent.candidate_entry < stop
+        )
+    ):
+        raise OriginalSourceCoordinatorError("owned_bracket_geometry_invalid")
+    return {
+        "selection_sha256": sha(audit),
+        "report_id": intent.report_id,
+        "instrument_id": intent.instrument_id,
+        "direction": intent.direction,
+        "original_entry": format(intent.candidate_entry, "f"),
+        "fixed_stop_loss": None if stop is None else format(stop, "f"),
+        "fixed_take_profit": None if target is None else format(target, "f"),
+        "bracket_available": available,
+    }
+
+
 async def _capture_owned_original_base_prefix_for_boundary_v6(
     public_root,
     account_root,
@@ -1245,6 +1393,35 @@ async def _capture_owned_original_event_journal_for_boundary_v10(
         inspect_base_prefix=True,
         inspect_base_event=True,
         inspect_base_event_journal=True,
+    )
+
+
+async def _capture_owned_original_bracket_for_boundary_v11(
+    public_root,
+    account_root,
+    *,
+    instrument_id,
+    strategy,
+    market_policy,
+    account_session,
+    session_factory,
+):
+    """Own base G1--G5 and inspect one fixed bracket before losing raw custody."""
+    if type(strategy) is not str or strategy not in precursor._BASE_STRATEGIES:
+        raise OriginalSourceCoordinatorError("owned_bracket_strategy_unsupported")
+    return await _capture_owned_original_sources(
+        public_root,
+        account_root,
+        instrument_id=instrument_id,
+        market_policy=market_policy,
+        account_session=account_session,
+        session_factory=session_factory,
+        inspect_g1=True,
+        strategy=strategy,
+        retain_raw_for_boundary=True,
+        inspect_base_prefix=True,
+        inspect_base_event=True,
+        inspect_base_bracket=True,
     )
 
 
@@ -1366,6 +1543,7 @@ async def _capture_owned_original_sources(
     inspect_base_event=False,
     inspect_base_event_journal=False,
     inspect_sweep_history=False,
+    inspect_base_bracket=False,
 ):
     if (
         type(inspect_g1) is not bool
@@ -1374,6 +1552,9 @@ async def _capture_owned_original_sources(
         or type(inspect_base_event) is not bool
         or type(inspect_base_event_journal) is not bool
         or type(inspect_sweep_history) is not bool
+        or type(inspect_base_bracket) is not bool
+        or inspect_base_bracket
+        and (not inspect_base_event or inspect_base_event_journal)
         or inspect_base_event_journal
         and not inspect_base_event
         or inspect_base_event
@@ -1418,6 +1599,8 @@ async def _capture_owned_original_sources(
             )
         selected = public_v2._policy_copy(market_policy)
         g1_policy = native_g1.fixed_native_original_g1_policy() if inspect_g1 else None
+        if inspect_base_bracket:
+            native_bracket.fixed_native_original_bracket_policy()
         prepared = origin_preflight._prepare_controlled_demo_route(account_session)
         route, bound_plan_pin = origin_preflight._consume_controlled_demo_route(
             prepared, account_session
@@ -1459,6 +1642,7 @@ async def _capture_owned_original_sources(
     event_receipt_json = None
     journal_state = None
     sweep_receipt_json = None
+    bracket_state = None
 
     def result():
         fields = {
@@ -1519,6 +1703,82 @@ async def _capture_owned_original_sources(
             if inspect_g1
             else InitialOwnedSourcesDiagnosticV2(receipt)
         )
+        if inspect_base_bracket:
+            inspected = bracket_state is not None
+            if inspected is not (event_receipt_json is not None):
+                raise OriginalSourceCoordinatorError("owned_bracket_inspection_missing")
+            return canonical(
+                {
+                    "schema_version": "ctcc.owned_original_bracket_boundary.v11",
+                    "code": (
+                        "fixed_bracket_observed_unqualified"
+                        if inspected and bracket_state["bracket_available"]
+                        else "bracket_unavailable"
+                        if inspected
+                        else "precursor_no_intent"
+                        if precursor_pin is not None and precursor_intent_pin is None
+                        else "source_unavailable"
+                    ),
+                    "original_diagnostic_sha256": diagnostic.receipt_sha256,
+                    "public_packet_sha256": public_pin,
+                    "account_packet_sha256": account_packet_pin,
+                    "account_plan_sha256": plan_pin,
+                    "precursor_receipt_sha256": precursor_pin,
+                    "precursor_intent_sha256": precursor_intent_pin,
+                    "base_prefix_receipt_sha256": None
+                    if prefix_receipt_json is None
+                    else sha(prefix_receipt_json),
+                    "base_event_receipt_sha256": None
+                    if event_receipt_json is None
+                    else sha(event_receipt_json),
+                    "event_key_sha256": None
+                    if event_receipt_json is None
+                    else decode(event_receipt_json)["event_key_sha256"],
+                    "bracket_policy_sha256": native_bracket.POLICY_RECORD_SHA256,
+                    "bracket_selection_sha256": None
+                    if not inspected
+                    else bracket_state["selection_sha256"],
+                    "report_id": None if not inspected else bracket_state["report_id"],
+                    "instrument_id": None
+                    if not inspected
+                    else bracket_state["instrument_id"],
+                    "direction": None if not inspected else bracket_state["direction"],
+                    "original_entry": None
+                    if not inspected
+                    else bracket_state["original_entry"],
+                    "fixed_stop_loss": None
+                    if not inspected
+                    else bracket_state["fixed_stop_loss"],
+                    "fixed_take_profit": None
+                    if not inspected
+                    else bracket_state["fixed_take_profit"],
+                    "bracket_inspected": inspected,
+                    "bracket_available": inspected
+                    and bracket_state["bracket_available"],
+                    "g1_g5_replayed": inspected,
+                    "admission": "DENY",
+                    **{
+                        name: False
+                        for name in (
+                            "historical_first_availability_verified",
+                            "event_ledger_authenticated",
+                            "g6_evaluated",
+                            "g7_evaluated",
+                            "g8_evaluated",
+                            "g9_evaluated",
+                            "original_source_verified",
+                            "candidate_created",
+                            "g1_g11_complete",
+                            "g12_published",
+                            "account_complete",
+                            "execution_recheck_performed",
+                            "atomic_risk_reserved",
+                            "execution_authority",
+                            "order_submitted",
+                        )
+                    },
+                }
+            )
         if inspect_base_event_journal:
             if journal_identity is None:
                 raise OriginalSourceCoordinatorError(
@@ -1839,6 +2099,34 @@ async def _capture_owned_original_sources(
                     raise OriginalSourceCoordinatorError("original_base_event_expired")
                 finished = event_stamp
                 event_receipt_json = checked_event
+                if inspect_base_bracket:
+                    bracket_inputs = {
+                        "public_pin": public_pin,
+                        "account_pin": account_packet_pin,
+                        "plan_pin": plan_pin,
+                        "data_policy": g1_policy,
+                        "created_at": created_at,
+                        "prefix_receipt_json": prefix_receipt_json,
+                        "event_receipt_json": event_receipt_json,
+                    }
+                    bracket_first = _evaluate_owned_bracket_v11(
+                        packet, owned.packet, replayed, **bracket_inputs
+                    )
+                    bracket_second = _evaluate_owned_bracket_v11(
+                        packet, owned.packet, replayed, **bracket_inputs
+                    )
+                    if bracket_first != bracket_second:
+                        raise OriginalSourceCoordinatorError(
+                            "owned_bracket_replay_changed"
+                        )
+                    bracket_stamp = native_stamp()
+                    validate_stamps((finished, bracket_stamp))
+                    if utc_from_ns(bracket_stamp["utc_ns"]) >= min(
+                        expires, owned.expires_at, replayed.intent.expires_at
+                    ):
+                        raise OriginalSourceCoordinatorError("owned_bracket_expired")
+                    finished = bracket_stamp
+                    bracket_state = bracket_second
                 if inspect_base_event_journal:
                     event_record = decode(event_receipt_json)
                     if (
@@ -1941,6 +2229,7 @@ async def _capture_owned_original_sources(
             # alongside an unavailable V4 precursor in the hash-only handoff.
             prefix_receipt_json = event_receipt_json = None
             journal_state = None
+            bracket_state = None
         if inspect_sweep_history:
             sweep_receipt_json = None
         return result()

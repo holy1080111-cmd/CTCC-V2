@@ -7,6 +7,7 @@ import shutil
 import httpx
 import pytest
 
+from app.mie.validation import measured_public_replay
 from app.mie.validation.batch_replay import (
     MinuteAggregationPlan,
     aggregate_point_in_time_minutes,
@@ -205,6 +206,101 @@ def test_source_revision_conflict_preserves_old_record_and_denies(
         minutes(journal, storage_fixture_capture(packet, files).receipt)
     with pytest.raises(PublicReceiptError, match="source_revision_conflict"):
         minutes(journal, first.receipt)
+
+
+def test_minute_replay_denies_revision_appended_during_materialization(
+    monkeypatch, tmp_path
+):
+    fixture, first, _root, journal = setup(monkeypatch, tmp_path)
+    journal._publish_owned(first)
+
+    def changed(request, body):
+        if request.url.path.endswith("candles"):
+            body["data"][0][4] = "100.5"
+        return body
+
+    fixture.mutate_response = changed
+    packet, files = fixture.collect()
+    revision = storage_fixture_capture(packet, files)
+    original = measured_public_replay.parsed_rows
+    appended = False
+
+    def append_after_first_read(raw):
+        nonlocal appended
+        if not appended:
+            appended = True
+            with pytest.raises(PublicReceiptError, match="source_revision_conflict"):
+                journal._publish_owned(revision)
+        return original(raw)
+
+    monkeypatch.setattr(measured_public_replay, "parsed_rows", append_after_first_read)
+    with pytest.raises(
+        PublicReceiptError, match="journal_changed_during_minute_replay"
+    ):
+        minutes(journal, first.receipt)
+    assert appended
+    assert journal.checkpoint.sequence == 2
+    assert journal.read_all()[0][-1][3]["disposition"] == "rejected_source_revision"
+
+
+def test_minute_replay_denies_unanchored_append_during_materialization(
+    monkeypatch, tmp_path
+):
+    _fixture, first, root, journal = setup(monkeypatch, tmp_path)
+    journal._publish_owned(first)
+    original = measured_public_replay.parsed_rows
+    appended = False
+
+    def append_unanchored(raw):
+        nonlocal appended
+        if not appended:
+            appended = True
+            (root / "unanchored.tmp").write_bytes(b"incomplete")
+        return original(raw)
+
+    monkeypatch.setattr(measured_public_replay, "parsed_rows", append_unanchored)
+    with pytest.raises(PublicReceiptError, match="journal_final_readback_failed"):
+        minutes(journal, first.receipt)
+    assert appended
+
+
+def test_minute_replay_denies_other_instance_append_with_stale_checkpoint(
+    monkeypatch, tmp_path
+):
+    fixture, first, root, journal = setup(monkeypatch, tmp_path)
+    journal._publish_owned(first)
+    other = storage.resume_public_receipt_journal(
+        root=root, trusted_checkpoint=journal.checkpoint
+    )
+
+    def changed(request, body):
+        if request.url.path.endswith("candles"):
+            body["data"][0][4] = "100.5"
+        return body
+
+    fixture.mutate_response = changed
+    packet, files = fixture.collect()
+    revision = storage_fixture_capture(packet, files)
+    original = measured_public_replay.parsed_rows
+    appended = False
+
+    def append_from_other_instance(raw):
+        nonlocal appended
+        if not appended:
+            appended = True
+            with pytest.raises(PublicReceiptError, match="source_revision_conflict"):
+                other._publish_owned(revision)
+        return original(raw)
+
+    monkeypatch.setattr(
+        measured_public_replay, "parsed_rows", append_from_other_instance
+    )
+    with pytest.raises(PublicReceiptError, match="journal_final_readback_failed"):
+        minutes(journal, first.receipt)
+    assert appended
+    assert journal.checkpoint.sequence == 1
+    assert other.checkpoint.sequence == 2
+    assert other.read_all()[0][-1][3]["disposition"] == "rejected_source_revision"
 
 
 def test_240_measured_minutes_aggregate_deterministically_with_delayed_availability(

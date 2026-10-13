@@ -31,6 +31,7 @@ def measured_public_minutes(
         for value in (capture_id, expected_receipt_sha256, expected_plan_sha256)
     ):
         raise PublicReceiptError("controlled_journal_required")
+    checkpoint = journal.checkpoint
     entries, first_rows = journal.read_all()
     selected = [entry for entry in entries if entry[1].capture_id == capture_id]
     if len(selected) != 1:
@@ -95,6 +96,21 @@ def measured_public_minutes(
                 ),
             )
         )
+    # The full replay may hold up to the journal byte budget. Release its
+    # inventory before the independent final readback to bound peak memory.
+    del entries, first_rows, selected
+    # The first read lease ends before row materialization. A later conflicting
+    # revision or unanchored append must not leave an apparently current row in
+    # this call's result. Replaying the full inventory also catches changes made
+    # through a different journal instance with a stale local checkpoint.
+    if journal.checkpoint != checkpoint:
+        raise PublicReceiptError("journal_changed_during_minute_replay")
+    try:
+        journal.read_all()
+    except (OSError, ValueError) as exc:
+        raise PublicReceiptError("journal_final_readback_failed") from exc
+    if journal.checkpoint != checkpoint:
+        raise PublicReceiptError("journal_changed_during_minute_replay")
     # The raw order was verified strictly descending; this is specified order
     # conversion, never sorting, dropping duplicates or repairing malformed data.
     return tuple(reversed(minutes))

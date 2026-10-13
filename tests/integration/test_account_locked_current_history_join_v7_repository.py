@@ -19,6 +19,10 @@ from app.trade_qualification import account_bootstrap_runtime as bootstrap
 from app.trade_qualification import account_capture as capture
 from app.trade_qualification import account_current_history_join as joined
 from app.trade_qualification import account_funding_bill_audit as funding_bills
+from app.trade_qualification import account_history_query_verifier as history_query
+from app.trade_qualification import account_native_clock as native_clock
+from app.trade_qualification import account_native_proof as native_proof
+from app.trade_qualification import account_native_runtime as native_runtime
 from app.trade_qualification import account_observation_index as observed
 from app.trade_qualification.account_runtime import ControlledDemoAccountSession
 from app.trade_qualification.reservations import LedgerScope
@@ -149,6 +153,101 @@ async def test_isolated_postgresql_v7_join_has_distinct_policy_receipt_and_no_au
     assert ordered_value["account_complete"] is ordered.account_complete is False
     assert ordered_value["execution_authority"] is ordered.execution_authority is False
     assert ordered_value["admission"] == "DENY"
+
+
+async def test_isolated_postgresql_typed_v7_join_replays_b1_and_denies(
+    monkeypatch, database
+):
+    scope, repo, (history_id, current_id) = await _captured_v7_pair(
+        monkeypatch, database
+    )
+    original = await repo.read_chain(scope, history_id)
+    reference = observed.source_reference(original)
+    typed_query = history_query.verify_history_query_chain_v2(
+        original, **observed._pins(reference, scope)
+    )
+
+    locked = await repo.read_locked_current_history_typed_join(
+        scope,
+        history_capture_id=history_id,
+        current_capture_id=current_id,
+    )
+    value = json.loads(locked.receipt_json)
+    assert value["schema_version"] == "ctcc.demo_account_locked_source_join.v6"
+    assert value["join_policy_sha256"] == joined.V7_ORDERED_TYPED_POLICY_SHA256
+    assert value["history_source_reference"] == observed.reference_document(reference)
+    assert value["history_query_policy_sha256"] == history_query.V2_POLICY_SHA256
+    assert value["history_query_receipt_sha256"] == typed_query.receipt_sha256
+    assert value[
+        "history_original_db_chain_sha256"
+    ] == joined._recorded_db_chain_sha256(original)
+    assert value["history_terminal_db_timestamp_before_current_request"] is True
+    assert value["history_commit_before_current_request"] is False
+    assert value["local_revision_readback_verified"] is True
+    assert value["exchange_atomic_revision_verified"] is False
+    assert value["history_tail_closed"] is False
+    assert value["flat_start_permission"] is False
+    assert value["snapshot"] is None
+    assert value["account_complete"] is locked.account_complete is False
+    assert value["execution_authority"] is locked.execution_authority is False
+    assert value["admission"] == "DENY"
+
+
+async def test_postgresql_typed_pre_http_readback_uses_committed_b1_and_exact_binding(
+    monkeypatch, database
+):
+    scope, repo, (history_id, current_id) = await _captured_v7_pair(
+        monkeypatch, database
+    )
+    history_chain = await repo.read_chain(scope, history_id)
+    current_chain = await repo.read_chain(scope, current_id)
+    history_reference = observed.source_reference(history_chain)
+    current_reference = observed.source_reference(current_chain)
+    selected = joined._packet(current_chain, current_reference).plan
+    typed_query = history_query.verify_history_query_chain_v2(
+        history_chain, **observed._pins(history_reference, scope)
+    )
+
+    with native_clock._initial_stage(
+        plan_sha256=current_reference.plan_sha256,
+        scope_sha256=native_proof.scope_sha256(scope),
+    ) as stage:
+        native_repo = AccountCaptureJournalRepository(
+            repo.session_factory, clock=native_clock._state(stage)["clock"]
+        )
+        pre_read = await native_runtime._read_committed_history_before_http(
+            stage, native_repo, scope, history_id, selected, typed_history=True
+        )
+        assert pre_read.reference == history_reference
+        assert pre_read.db_chain_sha256 == joined._recorded_db_chain_sha256(
+            history_chain
+        )
+        assert pre_read.history_query_receipt_sha256 == typed_query.receipt_sha256
+        assert (
+            native_clock._state(stage)["started"]["monotonic_ns"]
+            < pre_read.started["monotonic_ns"]
+            < pre_read.completed["monotonic_ns"]
+            < pre_read.verified["monotonic_ns"]
+        )
+        assert (
+            pre_read.started["utc_ns"]
+            < pre_read.completed["utc_ns"]
+            < pre_read.verified["utc_ns"]
+        )
+
+        mismatched = capture.CurrentDemoAccountCapturePlanV7(
+            **{
+                **capture._plain(selected),
+                "session_binding_id": "different-private-session",
+            }
+        )
+        with pytest.raises(
+            native_proof.NativeAccountProofError,
+            match="native_account_pre_http_history_readback_invalid",
+        ):
+            await native_runtime._read_committed_history_before_http(
+                stage, native_repo, scope, history_id, mismatched, typed_history=True
+            )
 
 
 async def test_history_pre_read_waits_for_exact_uid_transaction_to_finish(

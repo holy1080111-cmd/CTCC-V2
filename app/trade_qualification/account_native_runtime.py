@@ -61,6 +61,20 @@ _CAPTURES = WeakKeyDictionary()
 _ORIGIN_LEASES = WeakKeyDictionary()
 _RAW_PACKET_LEASES = WeakKeyDictionary()
 _PRE_HISTORY_READBACK_TIMEOUT_SECONDS = 30
+_TYPED_HISTORY_COMMIT_POLICY_BYTES = canonical(
+    {
+        "version": "ctcc.native_v7_typed_history_commit_visibility.v1",
+        "history_query_policy_sha256": history.V2_POLICY_SHA256,
+        "ordered_join_policy_sha256": source_join.V7_ORDERED_TYPED_POLICY_SHA256,
+        "proof": "separate_uid_locked_b1_readback_and_replay_before_first_http",
+        "scope": "same_invocation_exact_uid_session_plan",
+        "exchange_history_finality": False,
+        "account_complete": False,
+        "flat_start_permission": False,
+        "execution_authority": False,
+    }
+)
+_TYPED_HISTORY_COMMIT_POLICY_SHA256 = sha(_TYPED_HISTORY_COMMIT_POLICY_BYTES)
 
 
 class NativeAccountOriginError(ValueError):
@@ -1464,7 +1478,14 @@ class _CommittedHistoryPreRead:
 
 
 async def _read_committed_history_before_http(
-    stage, repository, scope, history_capture_id, selected, *, include_funding=False
+    stage,
+    repository,
+    scope,
+    history_capture_id,
+    selected,
+    *,
+    include_funding=False,
+    typed_history=False,
 ):
     """Finish a separate exact-UID transaction before any HTTP can begin.
 
@@ -1477,9 +1498,12 @@ async def _read_committed_history_before_http(
     chain = await repository.read_chain(scope, history_capture_id)
     completed = native._sample(stage)
     reference = observed.source_reference(chain)
-    verified = history.verify_history_query_chain(
-        chain, **observed._pins(reference, scope)
+    verify_history = (
+        history.verify_history_query_chain_v2
+        if typed_history
+        else history.verify_history_query_chain
     )
+    verified = verify_history(chain, **observed._pins(reference, scope))
     funding_receipt_sha256 = None
     if include_funding:
         audited = funding_bills.audit_funding_bill_consistency(
@@ -1509,6 +1533,13 @@ async def _read_committed_history_before_http(
         reference.capture_id != history_capture_id
         or type(expected) is not capture.AllProductDemoAccountCapturePlan
         or type(selected) is not capture.CurrentDemoAccountCapturePlanV7
+        or (typed_history and type(repository) is not AccountCaptureJournalRepository)
+        or (
+            typed_history
+            and reference.session_binding_sha256
+            != sha(selected.session_binding_id.encode("ascii"))
+        )
+        or (typed_history and reference.plan_sha256 != capture.plan_sha256(expected))
         or any(
             getattr(expected, name) != getattr(selected, name)
             for name in (
@@ -1595,6 +1626,26 @@ async def capture_native_current_history_index_join_v1(
     )
 
 
+async def capture_native_current_history_typed_join_v1(
+    session, *, session_factory, proof_root, history_capture_id
+):
+    """Prove local B1 commit visibility before V7 HTTP; always deny trading.
+
+    This is separate from the old V7 source joins. It binds the typed-time
+    history query to an independent committed DB read and a native first-HTTP
+    stamp, but does not close exchange history or qualify a portfolio.
+    """
+    return await _capture_native_current_history_join(
+        session,
+        session_factory=session_factory,
+        proof_root=proof_root,
+        history_capture_id=history_capture_id,
+        include_funding=False,
+        include_index_prefix=False,
+        include_typed_history=True,
+    )
+
+
 async def _capture_native_current_history_join(
     session,
     *,
@@ -1603,6 +1654,7 @@ async def _capture_native_current_history_join(
     history_capture_id,
     include_funding,
     include_index_prefix,
+    include_typed_history=False,
 ):
     """Join a native V6/V7 current capture to recorded V5 history under one call.
 
@@ -1637,8 +1689,13 @@ async def _capture_native_current_history_join(
         raise proof.NativeAccountProofError(
             "native_account_history_join_scope_unsupported"
         )
-    if (include_funding and not v7) or (
-        include_index_prefix and (not v7 or include_funding)
+    if (
+        (include_funding and not v7)
+        or (include_index_prefix and (not v7 or include_funding))
+        or (
+            include_typed_history
+            and (not v7 or include_funding or include_index_prefix)
+        )
     ):
         raise proof.NativeAccountProofError("native_account_funding_join_v7_required")
     scope = LedgerScope(
@@ -1671,6 +1728,15 @@ async def _capture_native_current_history_join(
                             history_capture_id,
                             selected,
                             include_funding=True,
+                        )
+                    elif include_typed_history:
+                        pre_read = await _read_committed_history_before_http(
+                            stage,
+                            repository,
+                            scope,
+                            history_capture_id,
+                            selected,
+                            typed_history=True,
                         )
                     else:
                         pre_read = await _read_committed_history_before_http(
@@ -1788,12 +1854,18 @@ async def _capture_native_current_history_join(
             remaining = (deadline_ns - before_lock["monotonic_ns"]) / 1_000_000_000
             join_policy = (
                 {"expected_policy_sha256": source_join.V7_ORDERED_POLICY_SHA256}
-                if v7
+                if v7 and not include_typed_history
                 else {}
             )
             async with asyncio.timeout(remaining):
                 if include_funding:
                     locked = await repository.read_locked_current_history_funding_join(
+                        scope,
+                        history_capture_id=history_capture_id,
+                        current_capture_id=pending.reference.capture_id,
+                    )
+                elif include_typed_history:
+                    locked = await repository.read_locked_current_history_typed_join(
                         scope,
                         history_capture_id=history_capture_id,
                         current_capture_id=pending.reference.capture_id,
@@ -1857,6 +1929,16 @@ async def _capture_native_current_history_join(
                         < first_http["monotonic_ns"]
                         and pre_read.verified["utc_ns"] < first_http["utc_ns"]
                         and utc_from_ns(first_http["utc_ns"]) < current_started_at
+                        and (
+                            not include_typed_history
+                            or (
+                                state.get("required_pre_history_readback")
+                                == pre_read.verified
+                                and pending.reference.plan_sha256 == session._pin
+                                and pending.reference.session_binding_sha256
+                                == sha(selected.session_binding_id.encode("ascii"))
+                            )
+                        )
                     )
                 except (KeyError, TypeError, ValueError):
                     committed_before_http = False
@@ -1865,6 +1947,8 @@ async def _capture_native_current_history_join(
                 != (
                     "ctcc.demo_account_locked_source_join.v5"
                     if include_funding
+                    else "ctcc.demo_account_locked_source_join.v6"
+                    if include_typed_history
                     else "ctcc.demo_account_locked_source_join.v4"
                     if v7
                     else "ctcc.demo_account_locked_source_join.v2"
@@ -1879,7 +1963,11 @@ async def _capture_native_current_history_join(
                         )
                         is None
                         or locked_value.get("join_policy_sha256")
-                        != source_join.V7_ORDERED_POLICY_SHA256
+                        != (
+                            source_join.V7_ORDERED_TYPED_POLICY_SHA256
+                            if include_typed_history
+                            else source_join.V7_ORDERED_POLICY_SHA256
+                        )
                         or locked_value.get("current_source_policy_sha256")
                         != current.V7_POLICY_SHA256
                         or not committed_before_http
@@ -1897,6 +1985,15 @@ async def _capture_native_current_history_join(
                         or set(locked_value["recorded_pre_lock_blocking_reasons"])
                         - {"current_local_revision_readback_required"}
                         != set(locked_value.get("locked_readback_blocking_reasons", ()))
+                    )
+                )
+                or (
+                    include_typed_history
+                    and (
+                        locked_value.get("history_query_policy_sha256")
+                        != history.V2_POLICY_SHA256
+                        or locked_value.get("history_query_receipt_sha256")
+                        != pre_read.history_query_receipt_sha256
                     )
                 )
                 or (
@@ -2087,6 +2184,8 @@ async def _capture_native_current_history_join(
                     "schema_version": (
                         "ctcc.native_current_history_index_join_diagnostic.v1"
                         if include_index_prefix
+                        else "ctcc.native_current_history_typed_join_diagnostic.v1"
+                        if include_typed_history
                         else "ctcc.native_current_history_join_diagnostic.v4"
                         if include_funding
                         else "ctcc.native_current_history_join_diagnostic.v3"
@@ -2110,6 +2209,21 @@ async def _capture_native_current_history_join(
                     "account_revision_published": False,
                     "execution_authority": False,
                     "admission": "DENY",
+                    **(
+                        {
+                            "policy_sha256": _TYPED_HISTORY_COMMIT_POLICY_SHA256,
+                            "scope_sha256": proof.scope_sha256(scope),
+                            "current_plan_sha256": session._pin,
+                            "session_binding_sha256": pending.reference.session_binding_sha256,
+                            "history_query_policy_sha256": history.V2_POLICY_SHA256,
+                            "history_query_receipt_sha256": pre_read.history_query_receipt_sha256,
+                            "local_b1_commit_visible_before_first_http": True,
+                            "exchange_history_finality_verified": False,
+                            "source_authenticity_verified": False,
+                        }
+                        if include_typed_history
+                        else {}
+                    ),
                     **(
                         {
                             "history_prefix_policy_sha256": HISTORY_PREFIX_POLICY_SHA256,
@@ -2165,7 +2279,11 @@ async def _capture_native_current_history_join(
                     ),
                     **(
                         {
-                            "join_policy_sha256": source_join.V7_ORDERED_POLICY_SHA256,
+                            "join_policy_sha256": (
+                                source_join.V7_ORDERED_TYPED_POLICY_SHA256
+                                if include_typed_history
+                                else source_join.V7_ORDERED_POLICY_SHA256
+                            ),
                             "current_source_policy_sha256": current.V7_POLICY_SHA256,
                             "native_current_proof_sha256": native_value["proof_sha256"],
                             "native_current_proof_readback_sha256": native_value[
@@ -2205,6 +2323,8 @@ async def _capture_native_current_history_join(
                     "schema_version": (
                         "ctcc.native_current_history_index_join_diagnostic.v1"
                         if include_index_prefix
+                        else "ctcc.native_current_history_typed_join_diagnostic.v1"
+                        if include_typed_history
                         else "ctcc.native_current_history_join_diagnostic.v4"
                         if include_funding
                         else "ctcc.native_current_history_join_diagnostic.v3"

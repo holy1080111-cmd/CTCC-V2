@@ -151,6 +151,23 @@ class AccountCaptureJournalRepository:
             include_funding=True,
         )
 
+    async def read_locked_current_history_typed_join(
+        self, scope, *, history_capture_id, current_capture_id
+    ):
+        """Separately replay typed V7 history/current sources under the UID lock.
+
+        The receipt deliberately leaves the pure join's commit flag false. A
+        same-invocation native coordinator must prove the earlier independent
+        transaction readback and first HTTP ordering itself.
+        """
+        return await self._read_locked_current_history_join(
+            scope,
+            history_capture_id=history_capture_id,
+            current_capture_id=current_capture_id,
+            expected_policy_sha256=source_join.V7_ORDERED_TYPED_POLICY_SHA256,
+            include_funding=False,
+        )
+
     async def _read_locked_current_history_join(
         self,
         scope,
@@ -178,6 +195,7 @@ class AccountCaptureJournalRepository:
             source_join.POLICY_SHA256,
             source_join.V7_POLICY_SHA256,
             source_join.V7_ORDERED_POLICY_SHA256,
+            source_join.V7_ORDERED_TYPED_POLICY_SHA256,
         }:
             raise AccountJournalError("journal_join_policy_invalid")
         if (
@@ -185,10 +203,15 @@ class AccountCaptureJournalRepository:
             and expected_policy_sha256 != source_join.V7_ORDERED_POLICY_SHA256
         ):
             raise AccountJournalError("journal_funding_join_policy_invalid")
-        ordered_v7 = expected_policy_sha256 == source_join.V7_ORDERED_POLICY_SHA256
+        typed_v7 = expected_policy_sha256 == source_join.V7_ORDERED_TYPED_POLICY_SHA256
+        ordered_v7 = expected_policy_sha256 in {
+            source_join.V7_ORDERED_POLICY_SHA256,
+            source_join.V7_ORDERED_TYPED_POLICY_SHA256,
+        }
         v7 = expected_policy_sha256 in {
             source_join.V7_POLICY_SHA256,
             source_join.V7_ORDERED_POLICY_SHA256,
+            source_join.V7_ORDERED_TYPED_POLICY_SHA256,
         }
         async with self.session_factory() as session, session.begin():
             row = await self._lock(session, scope)
@@ -210,7 +233,12 @@ class AccountCaptureJournalRepository:
             checkpoint = await self.ledger._bootstrap_checkpoint(session, scope, row)
             if checkpoint.observed_at < current_chain[-1].readback_at:
                 raise AccountJournalError("journal_join_readback_clock_regressed")
-            joined = source_join.join_recorded_account_sources(
+            join_sources = (
+                source_join.join_recorded_account_sources_v2
+                if typed_v7
+                else source_join.join_recorded_account_sources
+            )
+            joined = join_sources(
                 history_chain=history_chain,
                 history_reference=observed.source_reference(history_chain),
                 current_chain=current_chain,
@@ -233,6 +261,8 @@ class AccountCaptureJournalRepository:
                 "schema_version": (
                     "ctcc.demo_account_locked_source_join.v5"
                     if include_funding
+                    else "ctcc.demo_account_locked_source_join.v6"
+                    if typed_v7
                     else "ctcc.demo_account_locked_source_join.v4"
                     if ordered_v7
                     else "ctcc.demo_account_locked_source_join.v3"
@@ -292,6 +322,17 @@ class AccountCaptureJournalRepository:
                             ]
                         ),
                         "history_commit_before_current_request": False,
+                    }
+                )
+            if typed_v7:
+                document.update(
+                    {
+                        "history_query_policy_sha256": value[
+                            "history_query_policy_sha256"
+                        ],
+                        "history_query_receipt_sha256": value[
+                            "history_query_receipt_sha256"
+                        ],
                     }
                 )
             if include_funding:

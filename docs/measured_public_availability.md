@@ -113,6 +113,11 @@ WORM storage and cryptographic nonrepudiation are outside this local mechanism.
 `measured_public_minutes` replays the whole bounded journal, locates exact raw
 rows, rejects revised batches and creates existing `BoundMinute` records. It
 does not assign research partitions, seal candidates or make Gate 3 pass.
+Before returning, it checks that its starting checkpoint is unchanged and
+replays the full inventory again. A revision or unanchored append detected
+during row materialization denies the result, including when the earlier row
+was accepted. This is call-level consistency, not independent checkpoint
+custody or a guarantee against changes after the call returns.
 Its v1 `measured_row_receipt` availability is the capture-validation instant,
 which precedes durable publication. The journal entry's
 `payload_readback_complete` also precedes `entry.json` publication, full-chain
