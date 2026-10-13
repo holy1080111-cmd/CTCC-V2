@@ -388,11 +388,14 @@ class NotionDeliveryAdapter:
         destination: NotionDestination,
         policy: NotionAdapterPolicy | None = None,
         clock: Callable[[], datetime] = outbox.actual_utc,
+        pre_create_check: Callable[[], None] | None = None,
     ):
         _client(client, initial=True)
         _secret(token)
         if not callable(clock):
             raise NotionAdapterError("notion_clock_invalid")
+        if pre_create_check is not None and not callable(pre_create_check):
+            raise NotionAdapterError("notion_pre_create_check_invalid")
         self._client = client
         self._token = token
         self._destination = _copy(destination, NotionDestination)
@@ -400,6 +403,8 @@ class NotionDeliveryAdapter:
             NotionAdapterPolicy() if policy is None else policy, NotionAdapterPolicy
         )
         self._clock = clock
+        self._pre_create_check = pre_create_check
+        self.pre_create_check_failed = False
         self._busy = False
         self.rate_limited = False
         self.rate_limit_retry_after_seconds = None
@@ -543,6 +548,7 @@ class NotionDeliveryAdapter:
         started = outbox._now(self._clock)
         if started < payload.submitted_at or started >= claim.lease_expires_at:
             raise NotionAdapterError("notion_clock_or_lease_invalid")
+        self.pre_create_check_failed = False
         created = False
         proofs = []
         status, page_id = "uncertain", None
@@ -601,6 +607,17 @@ class NotionDeliveryAdapter:
                             for pin in target.properties
                         },
                     }
+                    # This is the final synchronous, cooperative queue check
+                    # before a possibly-sent create. A different thread may
+                    # still publish after it; no network-wide lock is claimed.
+                    if self._pre_create_check is not None:
+                        try:
+                            self._pre_create_check()
+                        except Exception:  # noqa: BLE001 - The trusted local check must not leak path text.
+                            self.pre_create_check_failed = True
+                            raise NotionAdapterError(
+                                "notion_pre_create_check_failed"
+                            ) from None
                     created = (
                         True  # Before any possibly-sent create, not after success.
                     )
@@ -642,7 +659,12 @@ class NotionDeliveryAdapter:
         except NotionAdapterError as exc:
             status = (
                 "not_created_retryable"
-                if not created and exc.code == "notion_read_transient"
+                if not created
+                and exc.code
+                in {
+                    "notion_read_transient",
+                    "notion_pre_create_check_failed",
+                }
                 else "uncertain"
             )
             page_id = None

@@ -4,6 +4,7 @@ All state mutations lock the same scope row BEFORE observing the supplied clock.
 Successful persistence is not an authenticated account snapshot or order permit.
 """
 
+import asyncio
 import hashlib
 import json
 import time
@@ -68,6 +69,10 @@ from app.trade_qualification.submission_intent import (
 def _canonical_json_sha256(value: str) -> str:
     """Hash canonical JSON already emitted or verified by the caller."""
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+_CONTROL_RESERVATION_READBACK_DB_TIMEOUT_MS = 5000
+_CONTROL_RESERVATION_READBACK_CANCEL_AFTER_SECONDS = 10
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -671,7 +676,7 @@ class QualificationLedgerRepository:
             )
         ).all()
 
-    async def read_event_observation(self, scope, event_key):
+    async def read_event_observation(self, scope, event_key, *, db_timeout_ms=None):
         """Measured exact UID/event lookup, retaining terminal tombstones.
 
         Read-only diagnostic, never an absence permit or issuer input. A bound
@@ -679,8 +684,13 @@ class QualificationLedgerRepository:
         Missing scopes/conflicts are errors, never an invented empty result.
         The NOWAIT journal lock and schema check make this one read reject
         concurrent direct writers and missing tombstone-retention guards;
-        neither establishes that earlier history was never removed.
+        neither establishes that earlier history was never removed. The optional
+        per-statement DB timeout is used only by control-bound reserve readback.
         """
+        if db_timeout_ms is not None and (
+            type(db_timeout_ms) is not int or not 1 <= db_timeout_ms <= 30000
+        ):
+            raise QualificationLedgerError("ledger_event_observation_timeout_invalid")
         scope = checked_bootstrap(scope, LedgerScope)
         reservation_id(scope, event_key)
         monotonic_started = time.monotonic_ns()
@@ -697,6 +707,16 @@ class QualificationLedgerRepository:
             await session.execute(
                 text("SET LOCAL search_path TO pg_catalog, public, pg_temp")
             )
+            if db_timeout_ms is not None:
+                # Transaction-local server limits end advisory-lock waits and
+                # each read statement. The default diagnostic remains unchanged.
+                await session.execute(
+                    text(
+                        "SELECT pg_catalog.set_config('lock_timeout', :deadline, true), "
+                        "pg_catalog.set_config('statement_timeout', :deadline, true)"
+                    ),
+                    {"deadline": f"{db_timeout_ms}ms"},
+                )
             await _require_event_journal_session(session)
             row = await self._locked(session, scope)
             await session.execute(
@@ -1417,10 +1437,44 @@ class QualificationLedgerRepository:
         return await self._reserve(request)
 
     async def reserve_control_bound(self, request, *, control_expectation):
-        """Record current durable control with the hold; still DENY admission."""
-        return await self._reserve(
+        """Commit a control-bound hold, then independently read its exact event.
+
+        A failed post-commit read is uncertain, not a rollback or retry signal.
+        The hold remains durable and its receipt is never execution authority.
+        """
+        receipt = await self._reserve(
             request, control_expectation=bound.freeze_expectation(control_expectation)
         )
+        try:
+            # Request cancellation of slow connection acquisition or an overall
+            # slow read. SQLAlchemy cleanup is awaited; it has no hard wall bound.
+            async with asyncio.timeout(
+                _CONTROL_RESERVATION_READBACK_CANCEL_AFTER_SECONDS
+            ):
+                observed = await self.read_event_observation(
+                    receipt.scope,
+                    receipt.original_event_key,
+                    db_timeout_ms=_CONTROL_RESERVATION_READBACK_DB_TIMEOUT_MS,
+                )
+            if type(observed) is not LedgerEventObservation:
+                raise ValueError("exact_ledger_event_observation_required")
+            replayed = LedgerEventObservation.model_validate_json(
+                observed.canonical_json, strict=True
+            )
+            if (
+                replayed != observed
+                or observed.scope != receipt.scope
+                or observed.original_event_key != receipt.original_event_key
+                or observed.matched != receipt
+                or receipt.state != "reserved"
+                or observed.request_started_at < receipt.updated_at
+            ):
+                raise ValueError("reserved_event_readback_mismatch")
+        except Exception:  # noqa: BLE001 -- committed hold must survive unknown readback
+            raise QualificationLedgerError(
+                "ledger_reservation_commit_readback_unknown"
+            ) from None
+        return receipt
 
     async def _control_locked(self, session, scope, expectation, *, request=None):
         state, event_sha = await DemoControlRepository.read_in_transaction(

@@ -4792,8 +4792,10 @@ The redacted receipt is
 `../../validation-results/okx-region-serial-20261012/redacted-receipt.json`
 (SHA256 `47096bf9a3a2a86f201168f2644e2ba5c29f6cbd52e3a81b631da53f205630c3`).
 This proves the credential's current API route, not the account's original
-registration website: OKX documents that a residence migration can change
-the API domain while retaining the API key. The signed account config and
+registration website: [OKX's country-of-residence guidance](https://www.okx.com/en-gb/help/country-of-residence-change)
+documents that a residence migration can change the API domain while retaining
+the API key; [OKX's API guide](https://www.okx.com/docs-v5/) maps regional
+registration websites to API domains. The signed account config and
 logged-in profile do not state the original site. An official web-support
 follow-up on 2026-10-13 likewise produced no account-record answer. Its AI
 reply claimed a ticket number, but the logged-in ticket page displayed zero
@@ -4804,6 +4806,25 @@ receipt is
 Account-origin admission remains DENY; do not infer the original site from
 the current Global route.
 
+The separate authenticated OKX ticket form was then submitted under the
+account-and-identity category. OKX displayed a successful submission and
+readback of formal ticket `39818376`, with a support specialist following up.
+The redacted receipt is
+`../../validation-results/okx-registration-support-20261013/formal-ticket-receipt.json`
+(SHA256 `1a72c030680f57b37a8969f1c40d6d030f8475883d4ef97c56e36ef42c08d6ac`).
+No original-site or migration answer has arrived, so this ticket is a pending
+first-party inquiry, not a source-admission certificate.
+
+At 15:01 Asia/Taipei, the specialist replied with the generic OKX website
+address and referred API questions to a technical group; the reply did not
+identify this account's original registration site, migration history or
+current API region from account records. A focused follow-up requesting those
+specific records, or an explicit inability to verify, was sent and visibly
+read back in the same ticket at 15:17. The redacted receipt is
+`../../validation-results/okx-registration-support-20261013/follow-up-receipt.json`
+(SHA256 `589730ec1806fd5e667c6d0910671863ccd9fad6ded3c3d2930d4fa196c2b57b`).
+Account-origin admission remains DENY.
+
 A read-only secret-content scan at `aad5cb45` found no confirmed plaintext
 credential in tracked source or reachable Git-history text blobs, or in 579
 recent text artifacts. Binary blobs, older validation artifacts, ignored
@@ -4812,7 +4833,12 @@ the final Security Gate is therefore not yet PASS. A separate local change
 now denies non-test structural Demo Arm before account reads or Arm state
 write because the B5 mirror/ledger flat read and Arm write are not one atomic
 account-scoped transaction. Its targeted tests passed locally; it remains
-uncommitted and cannot be counted under the `aad5cb45` CI run.
+uncommitted and cannot be counted under the `aad5cb45` CI run. This DENY-only
+Arm change and the 33-capture B3 probe were subsequently committed and pushed
+as `57719e7f31a77e4c76cabff46cd21510c4b991b5` (tree
+`5f62117c7a8b8eb019d91c355350c4dd783cc4d5`). Its exact-source GitHub
+run `38358929832` is still in progress; no complete Windows/Linux/PostgreSQL
+result has been claimed for this SHA.
 
 The next local source slice also adds an opt-in isolated PostgreSQL probe for
 33 synthetic B3 captures, crossing the 32-row prefix page boundary. The
@@ -4824,3 +4850,84 @@ HTTP or account credential is involved. This is **not** a passing scale result
 until the exact changed source completes that hosted job; 256/1024 capture
 scale, memory/SQL-plan measurements and the full pre-HTTP deadline remain
 open.
+
+At 2026-10-13 14:51 Asia/Taipei, Windows Time Service was running with an
+automatic start setting; its most recent reported synchronization was from
+`time.windows.com` at 14:47:51. A fresh five-request public timestamp
+diagnostic against exact source `57719e7` retained the raw response and
+headers for time-before, books5, open interest, funding and time-after. All
+five source timestamps were observed and none was in the future relative to
+its response headers. The funding timestamp represents an older funding
+observation, not a fresh ticker. The summary is
+`../../validation-results/public-timestamp-20261013-1452/summary.json`
+(SHA256 `8b579a9b1ea7a81a9638e279647f1076ba5c5f63cbafbdd4a4a2e1d16c926ad8`).
+This bounded clock check is diagnostic only: it does not prove the full
+market snapshot chain, exchange source identity, or account-origin admission.
+
+The 9/15–9/16 cached integrated-deployment source was compared against all
+214 locally reachable Git commits. Its 582 listed files match their retained
+release-contract lengths and SHA256 values, but 26 of their Git blob IDs are
+absent from the local object store. The nearest commit, `ba8dd2474aea6eca99bd627bd057f192d9927ada`,
+matches only 556/582 source files; 12 same-path files differ, 14 source paths
+are missing, and that Git tree has eight files omitted from the deployment
+source set. The detailed, redacted method and path-level result are in
+`../../validation-results/dependency-baseline-provenance-audit-20261013/candidate-tree-match.json`
+(SHA256 `844af6dfea10b24373c095e91412d901b07ad16eaeacf6bf260cbfba196e4c26`).
+The original ZIP bytes are unavailable, so no known tree SHA may be asserted
+as the historical full-validation identity. The currently hashed Windows and
+Linux dependency locks still have `accepted_full_validation_baseline=false`;
+the strict release check remains active pending full validation of a final
+exact source SHA.
+
+The already-pushed `57719e7` source is separately preserved in
+`../../validation-results/checkpoint-57719e7-20261013/`: exact Git archive
+(SHA256 `a73e7050e2eb6e63c251f4efd169013e07a014a37dd6891907e0175715a88489`),
+verified complete-history Git bundle
+(SHA256 `6eb1f3b870f880bae54ed5f36d762b7341be3daf4f00504cc1f52b6d036edd3a`),
+and readback identity JSON
+(SHA256 `c7b9b78ca90c4d2660ffa67f61a9799c1e3dd470df72d279da7f87524b243f69`).
+This is a local committed-source rollback point, not a final release bundle;
+it does not contain the current uncommitted changes, a database backup or a
+Docker image digest. Bundle contents require the final secret audit before
+distribution.
+
+The current source slice adds three fail-closed boundaries. The Notion outbox
+worker pauses the entire queue if any report envelope lacks its durable state
+journal, or any state journal lacks its envelope; a later schema readback cannot
+turn an orphaned job into a dispatch. Already written journals are retained.
+An orphan created after the final local check may race with an in-flight Notion
+request; the next check pauses later dispatch, so no global atomic Notion
+publication guarantee is claimed. A failed check before page create is recorded
+as receipted `not_created_retryable`, not as an ambiguous remote create.
+An account-scoped control-bound reservation now performs a separate-session
+readback of its committed exact event and receipt before returning. A changed,
+missing or unavailable readback returns the static unknown result while the
+committed hold and event tombstone remain. PostgreSQL statement and lock
+timeouts bound the read itself, but connection cleanup has no absolute wall
+deadline. The new PostgreSQL integration cases for this path have not yet run
+against a database on this Windows host and require exact-source hosted
+validation. Neither boundary grants order-submit authority.
+
+An optional scheduled public-minute window coordinator now pins its sealed
+schedule and each previous receipt before a one-shot next-minute claim. Its
+four-minute synthetic continuation and failure tests passed locally, but every
+window remains `INCOMPLETE` and computational-only. There is no live public
+acquisition, independently attested timing, full real dataset, sealed OOS or
+Gate 3 admission. The updated runtime and Notion-adapter targeted selection
+passed locally (167 passed, one skipped); a broader outbox selection was run
+before the final adapter edit and is not counted for this tree. Lint and
+manifest checks passed on this source slice. Those targeted results are not a
+substitute for full Windows/Linux/PostgreSQL/Docker
+regression on the final exact SHA.
+
+A source-only review of every registered OKX order route found no currently
+reachable order POST outside the shared private transport. Manual Demo, Demo
+run-once/scheduler/FOK, manual Live, Live automation and direct private-client
+calls converge on `app/exchange/okx/private_rest.py`; its owned private-write
+guard unconditionally denies non-GET requests. This is evidence of a current
+hard stop, **not** a production submit-route acceptance result. The legacy
+services do not consume an owned R7 → control-bound reservation → durable
+intent invocation, and a future positive issuer must close the transport
+last-await/first-byte race, bind exact signed request bytes and account/control
+revision, and account for pre-order leverage writes. No Demo or Live POST was
+made during this audit.

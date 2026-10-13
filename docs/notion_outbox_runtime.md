@@ -36,7 +36,23 @@ terminal. Expired claimed work can recover; expired dispatching work becomes
 uncertain. An ambiguous page create or cancellation never automatically creates
 another page. An uncertain or unresolved dispatched report pauses every later
 request, including schema GETs after restart. Orphan journals from a late
-publication failure are retained.
+publication failure are retained. A detected missing envelope or state journal
+pauses the whole queue before schema GET; the runtime checks the pairing again after
+schema readback, before each dispatch, immediately before a page-create request
+after the adapter's remote query, and after each report attempt. It never repairs
+or deletes a partial record automatically. These are cooperative observations,
+not one atomic exclusion boundary spanning Notion network IO: a different
+producer can publish a partial record after the last local check while a request
+is in flight. The following check pauses later HTTP, but cannot unsend an earlier
+Notion request. Holding the shared queue lock across network IO would reject
+concurrent durable producer writes, especially on Windows. This limitation does
+not grant order authority; runtime reporting acceptance remains pending until
+real delivery and recovery are verified.
+If the final local check itself fails before `/v1/pages` is called, the adapter
+records a receipted `not_created_retryable` result and the runtime pauses that
+pass even if a later root scan succeeds. A genuine ambiguous create remains
+`uncertain`; only a fresh explicit pass after the local cause is resolved can
+consider the receipted unsent job again.
 Unknown work needs explicit outbox reconciliation while workers are quiesced.
 Independent queues and external Notion edits do not have an exactly-once guarantee.
 

@@ -11,12 +11,13 @@ from datetime import datetime, timedelta
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from app.database.models.qualification_ledger import (
     QualificationReservation,
     QualificationReservationTransition,
 )
+from app.database.repositories import qualification_ledger as ledger_module
 from app.database.repositories.demo_control import DemoControlRepository
 from app.database.repositories.qualification_ledger import QualificationLedgerRepository
 from app.trade_qualification import control_bound_ledger as bound
@@ -30,6 +31,7 @@ from app.trade_qualification.reservations import (
 from app.trade_qualification.submission_intent import build_submission_intent
 from tests.integration import test_qualification_ledger_repository as fixtures
 from tests.unit.qualification_execution_binding_fixtures import execution_binding
+from tests.unit.qualification_ledger_fixtures import ledger_fixture
 from tests.unit.qualification_range_v5_fixtures import range_v5_ledger_fixture
 
 database = fixtures.database
@@ -151,6 +153,208 @@ async def test_control_bound_exact_inner_v2_replay_build_bytes_and_no_authority(
         assert body[name] is False
     assert TOKEN.decode() not in reserved.evidence_json + intent.canonical_json
     assert TOKEN.hex() not in reserved.evidence_json + intent.canonical_json
+
+
+async def test_control_bound_reserve_reads_committed_event_in_new_session(
+    database, fixture, monkeypatch
+):
+    s = await setup(database, fixture)
+    read = s.ledger.read_event_observation
+    observations = []
+    session_factory = s.ledger.session_factory
+    sessions = []
+
+    def count_session():
+        session = session_factory()
+        sessions.append(session)
+        return session
+
+    async def record_read(scope, event_key, *, db_timeout_ms=None):
+        observation = await read(scope, event_key, db_timeout_ms=db_timeout_ms)
+        observations.append(observation)
+        return observation
+
+    monkeypatch.setattr(s.ledger, "session_factory", count_session)
+    monkeypatch.setattr(s.ledger, "read_event_observation", record_read)
+    receipt = await s.reserve()
+    assert len(sessions) == 2 and sessions[0] is not sessions[1]
+    assert len(observations) == 1
+    assert observations[0].matched == receipt
+    assert observations[0].request_started_at >= receipt.updated_at
+    assert receipt.state == "reserved" and receipt.durable_record_only
+    assert (await s.ledger.read_scope(receipt.scope)).active == (receipt,)
+
+
+@pytest.mark.parametrize("failure", ["exception", "missing_event"])
+async def test_control_bound_reserve_unknown_readback_keeps_committed_hold(
+    database, fixture, monkeypatch, failure
+):
+    s = await setup(database, fixture)
+    read = s.ledger.read_event_observation
+
+    async def unavailable(scope, event_key, *, db_timeout_ms=None):
+        if failure == "exception":
+            raise RuntimeError("private_database_error_must_not_escape")
+        observation = await read(scope, event_key, db_timeout_ms=db_timeout_ms)
+        return observation.model_copy(update={"matched": None})
+
+    monkeypatch.setattr(s.ledger, "read_event_observation", unavailable)
+    with pytest.raises(
+        QualificationLedgerError, match="^ledger_reservation_commit_readback_unknown$"
+    ):
+        await s.reserve()
+
+    restarted = QualificationLedgerRepository(database[1], clock=s.clock)
+    observed = await restarted.read_event_observation(
+        fixture.request.scope, fixture.request.origin.original_event_key
+    )
+    assert observed.matched is not None
+    assert observed.matched.state == "reserved"
+    assert observed.matched.scope == fixture.request.scope
+    assert (
+        observed.matched.original_event_key == fixture.request.origin.original_event_key
+    )
+    assert (
+        await journal(database, observed.matched, 1)
+    ).reason_code == bound.RESERVED_REASON
+    with pytest.raises(QualificationLedgerError, match="event_already_recorded"):
+        await restarted.reserve_control_bound(
+            fixture.request, control_expectation=s.expected
+        )
+
+
+async def test_control_bound_readback_denies_after_unrelated_event_revision(
+    database, fixture, monkeypatch
+):
+    s = await setup(database, fixture)
+    other = ledger_fixture("short", account_id=fixture.request.scope.account_id)
+    assert (
+        other.request.origin.original_event_key
+        != fixture.request.origin.original_event_key
+    )
+    assert other.request.risk_inputs.account == fixture.request.risk_inputs.account
+    assert other.request.risk_inputs.authority == fixture.request.risk_inputs.authority
+    other_request = other.request.model_copy(update={"expected_ledger_revision": 2})
+    other_repo = QualificationLedgerRepository(database[1], clock=s.clock)
+    read = s.ledger.read_event_observation
+    other_receipts = []
+
+    async def advance_ledger_before_readback(scope, event_key, *, db_timeout_ms=None):
+        other_receipts.append(
+            await asyncio.create_task(other_repo.reserve(other_request))
+        )
+        return await read(scope, event_key, db_timeout_ms=db_timeout_ms)
+
+    monkeypatch.setattr(
+        s.ledger, "read_event_observation", advance_ledger_before_readback
+    )
+    with pytest.raises(
+        QualificationLedgerError, match="^ledger_reservation_commit_readback_unknown$"
+    ):
+        await s.reserve()
+
+    assert len(other_receipts) == 1
+    restarted = QualificationLedgerRepository(database[1], clock=s.clock)
+    original = await restarted.read_event_observation(
+        fixture.request.scope, fixture.request.origin.original_event_key
+    )
+    unrelated = await restarted.read_event_observation(
+        other_request.scope, other_request.origin.original_event_key
+    )
+    assert original.matched is not None and original.matched.state == "reserved"
+    assert unrelated.matched == other_receipts[0]
+    assert original.ledger_revision == unrelated.ledger_revision == 3
+    assert original.matched.ledger_revision == 3
+    with pytest.raises(QualificationLedgerError, match="event_already_recorded"):
+        await restarted.reserve_control_bound(
+            fixture.request, control_expectation=s.expected
+        )
+
+
+@pytest.mark.parametrize("timeout_kind", ["database", "wall"])
+async def test_control_bound_post_commit_lock_timeout_keeps_hold_and_closes_reader(
+    database, fixture, monkeypatch, timeout_kind
+):
+    s = await setup(database, fixture)
+    monkeypatch.setattr(
+        ledger_module,
+        "_CONTROL_RESERVATION_READBACK_DB_TIMEOUT_MS",
+        300 if timeout_kind == "database" else 5000,
+    )
+    monkeypatch.setattr(
+        ledger_module,
+        "_CONTROL_RESERVATION_READBACK_CANCEL_AFTER_SECONDS",
+        10 if timeout_kind == "database" else 3,
+    )
+    reserve = s.ledger._reserve
+    committed = asyncio.Event()
+    holder_ready = asyncio.Event()
+    reader_lock_attempted = asyncio.Event()
+    reader_identity = None
+
+    async def pause_after_commit(*args, **kwargs):
+        receipt = await reserve(*args, **kwargs)
+        committed.set()
+        await holder_ready.wait()
+        return receipt
+
+    monkeypatch.setattr(s.ledger, "_reserve", pause_after_commit)
+    reservation_task = asyncio.create_task(s.reserve())
+    try:
+        await asyncio.wait_for(committed.wait(), 20)
+        async with database[1]() as holder, holder.begin():
+            # The independent read starts only after the committed hold exists
+            # and this separate transaction owns the same UID advisory lock.
+            await s.ledger._locked(holder, fixture.request.scope)
+            locked = s.ledger._locked
+
+            async def observe_reader_lock_attempt(session, scope):
+                nonlocal reader_identity
+                reader_identity = (
+                    await session.execute(
+                        text(
+                            "SELECT pid, backend_start FROM pg_catalog.pg_stat_activity "
+                            "WHERE pid=pg_catalog.pg_backend_pid()"
+                        )
+                    )
+                ).one()
+                reader_lock_attempted.set()
+                return await locked(session, scope)
+
+            monkeypatch.setattr(s.ledger, "_locked", observe_reader_lock_attempt)
+            holder_ready.set()
+            await asyncio.wait_for(reader_lock_attempted.wait(), 8)
+            with pytest.raises(
+                QualificationLedgerError,
+                match="^ledger_reservation_commit_readback_unknown$",
+            ):
+                await asyncio.wait_for(reservation_task, 15)
+            # NullPool must close this exact failed/canceled reader before its
+            # caller returns. Other CI sessions do not affect this observation.
+            assert reader_identity is not None
+            reader_pid, reader_backend_start = reader_identity
+            assert not await holder.scalar(
+                text(
+                    "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_stat_activity "
+                    "WHERE pid=:pid AND backend_start=:backend_start)"
+                ),
+                {"pid": reader_pid, "backend_start": reader_backend_start},
+            )
+    finally:
+        holder_ready.set()
+        if not reservation_task.done():
+            reservation_task.cancel()
+            await asyncio.gather(reservation_task, return_exceptions=True)
+
+    restarted = QualificationLedgerRepository(database[1], clock=s.clock)
+    observed = await restarted.read_event_observation(
+        fixture.request.scope, fixture.request.origin.original_event_key
+    )
+    assert observed.matched is not None and observed.matched.state == "reserved"
+    with pytest.raises(QualificationLedgerError, match="event_already_recorded"):
+        await restarted.reserve_control_bound(
+            fixture.request, control_expectation=s.expected
+        )
 
 
 async def test_control_bound_committed_intent_stop_restart_historical_readback(

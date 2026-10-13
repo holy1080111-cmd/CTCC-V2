@@ -257,6 +257,27 @@ class ScheduledMinuteReceiptStore:
             raise ScheduledMinuteUnresolved("store inventory is unresolved")
         return names
 
+    def inspect_inventory(
+        self,
+    ) -> tuple[ScheduledMinuteStoreIdentityV1, tuple[int, ...]]:
+        """Read the pinned root and every claimed ordinal without inferring pins.
+
+        A caller must still supply an independently retained receipt digest to
+        ``read_ordinal`` for each claim. This inventory is only a durable
+        presence check; a directory name does not prove successful capture.
+        """
+        try:
+            with _root_context(self._root) as directory:
+                names = self._check_root(directory)
+        except ScheduledMinutePublicationError:
+            raise
+        except Exception as exc:
+            raise ScheduledMinuteUnresolved("store inventory is unresolved") from exc
+        ordinals = tuple(
+            sorted(int(name[7:]) for name in names if name != "identity.json")
+        )
+        return self._identity, ordinals
+
     def _claim_contract(self, ordinal: int) -> ScheduledMinuteClaimV1:
         return ScheduledMinuteClaimV1(
             store_identity_sha256=self._identity.canonical_sha256(),
@@ -324,11 +345,41 @@ class ScheduledMinuteReceiptStore:
             self._check_due_minute(ordinal, receipt)
             return FrozenGate3Artifact(payload=payload, sha256=digest, contract=receipt)
 
-    def _claim(self, ordinal: int) -> None:
+    def _claim(
+        self,
+        ordinal: int,
+        *,
+        expected_previous_receipt_sha256s: tuple[str, ...] | None = None,
+    ) -> None:
         name = _ordinal_name(ordinal, self._coordinate_plan.expected_rows)
+        if expected_previous_receipt_sha256s is not None and (
+            type(expected_previous_receipt_sha256s) is not tuple
+            or len(expected_previous_receipt_sha256s) != ordinal
+            or any(
+                type(digest) is not str or SHA256_RE.fullmatch(digest) is None
+                for digest in expected_previous_receipt_sha256s
+            )
+        ):
+            raise ScheduledMinutePublicationError(
+                "scheduled minute previous receipt pins are invalid"
+            )
         try:
             with _root_context(self._root) as directory:
                 names = self._check_root(directory)
+                existing_ordinals = tuple(
+                    sorted(
+                        int(existing[7:])
+                        for existing in names
+                        if existing != "identity.json"
+                    )
+                )
+                if (
+                    expected_previous_receipt_sha256s is not None
+                    and existing_ordinals != tuple(range(ordinal))
+                ):
+                    raise ScheduledMinuteUnresolved(
+                        "scheduled minute sequence is unresolved"
+                    )
                 for existing in names:
                     if existing == "identity.json":
                         continue
@@ -337,7 +388,16 @@ class ScheduledMinuteReceiptStore:
                         raise ScheduledMinutePublicationError(
                             "scheduled minute ordinal already claimed"
                         )
-                    self._read_slot(directory, existing_ordinal)
+                    checked = self._read_slot(directory, existing_ordinal)
+                    if expected_previous_receipt_sha256s is not None and (
+                        checked.sha256
+                        != expected_previous_receipt_sha256s[existing_ordinal]
+                        or checked.contract.reason_code
+                        != "source_chain_replayed_custody_unproven"
+                    ):
+                        raise ScheduledMinuteUnresolved(
+                            "scheduled minute prior source is unresolved"
+                        )
                 directory.mkdir(name)
                 with directory.child(name) as child:
                     payload = self._claim_contract(ordinal).canonical_json_bytes()
@@ -417,9 +477,13 @@ class ScheduledMinuteReceiptStore:
         capture_service,
         observation_repository,
         ordinal: int,
+        expected_previous_receipt_sha256s: tuple[str, ...] | None = None,
     ) -> FrozenGate3Artifact[ScheduledPublicMinuteReceiptV1]:
         """Claim before the delegated await; never recapture after any claim."""
-        self._claim(ordinal)
+        self._claim(
+            ordinal,
+            expected_previous_receipt_sha256s=expected_previous_receipt_sha256s,
+        )
         frozen = await capture_scheduled_public_minute_once(
             seal_observer=seal_observer,
             schedule_repository=schedule_repository,

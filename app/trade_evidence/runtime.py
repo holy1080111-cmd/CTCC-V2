@@ -37,6 +37,7 @@ SAFE_CODES = frozenset(
         "notion_secret_inside_outbox",
         "notion_outbox_directory_limit",
         "notion_outbox_case_alias",
+        "notion_outbox_job_pair_incomplete",
         "notion_secret_path_invalid",
         "notion_secret_path_reparse",
         "notion_secret_inside_git_source",
@@ -73,12 +74,23 @@ def discover_jobs(root: Path) -> tuple[str, ...]:
             raise NotionBindingError("notion_outbox_directory_limit")
         if len({name.casefold() for name in names}) != len(names):
             raise NotionBindingError("notion_outbox_case_alias")
-        reports = []
+        reports, journals = set(), set()
         for name in names:
             if name.endswith(".json"):
                 report_id = name[:-5]
                 outbox._name(report_id)
-                reports.append(report_id)
+                reports.add(report_id)
+            elif name.endswith(".state"):
+                report_id = name[:-6]
+                outbox._name(report_id)
+                journals.add(report_id)
+        if reports != journals:
+            # A late publisher failure may have left a durable first event
+            # without its envelope. Keep that evidence and stop this queue;
+            # another complete report is not permission to skip the orphan.
+            raise NotionBindingError(
+                "notion_outbox_job_pair_incomplete", retry_after_seconds=None
+            )
         # Ordering is scheduler fairness only. The existing worker independently
         # verifies every complete journal, lease and envelope before dispatch.
         return tuple(sorted(reports))
@@ -222,13 +234,22 @@ class NotionOutboxRuntime:
                         raise
                     if self._stop.is_set():
                         raise asyncio.CancelledError
+                    # A producer can publish while the remote schema GETs run.
+                    # Recheck the complete root before selecting any dispatch.
+                    discover_jobs(root)
+
+                    def check_queue_pairs():
+                        discover_jobs(root)
+
                     adapter = notion_adapter.NotionDeliveryAdapter(
                         client=client,
                         token=token,
                         destination=destination,
                         clock=self._clock,
+                        pre_create_check=check_queue_pairs,
                     )
                     for report_id in batch:
+                        discover_jobs(root)
                         self.last_result = await outbox_worker.run_outbox_pass(
                             root,
                             report_ids=(report_id,),
@@ -246,6 +267,16 @@ class NotionOutboxRuntime:
                                 self._clock(),
                                 adapter.rate_limit_retry_after_seconds,
                             )
+                        # Persist a verified remote cooldown first, then
+                        # preserve a precise pause for an interrupted local
+                        # publication observed during the adapter's awaits.
+                        discover_jobs(root)
+                        if adapter.pre_create_check_failed:
+                            self.status, self.last_code = (
+                                "paused",
+                                "notion_outbox_pre_create_check_failed",
+                            )
+                            return None
                         if adapter.rate_limited or any(
                             item.outbox_status in {"uncertain", "dispatching"}
                             or item.status == "failed"
