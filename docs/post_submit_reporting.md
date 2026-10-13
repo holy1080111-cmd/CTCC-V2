@@ -1,5 +1,34 @@
 # Post-submit reporting integration
 
+## Transport-owned response observation (2026-10-13)
+
+The Demo private REST client now has a dormant `place_order_observed` path through
+the **same** final order guards as `place_order`. Every production POST remains
+DENY. When an authorized owner eventually exists, this path will pair the exact
+prepared request-body hash with the original bounded response bytes, the HTTP
+status, and separate send-invocation, HTTPX-response-return, and body-observation
+times. These are application observation bounds, not exact socket header receipt,
+first-byte dispatch, or exchange source timestamps. The
+private frozen observation and its response digest do not contain headers, a
+credential, an account UID, a parsed acknowledgement, or permission to retry. Raw
+response bytes are excluded from `repr`; they are not a Notion payload.
+The caller/client clock and returned HTTPX response still do not prove the
+first-byte dispatch boundary, the write-side account UID or the controlled
+credential session. A matching digest cannot remove those blockers.
+
+The transport does not substitute a timestamp or an empty body on contradictory
+headers, a body-length mismatch, an oversized body or an interrupted response;
+it marks those incomplete. `transport_complete` proves only complete raw HTTP
+bytes. Those bytes can still contain malformed JSON, which remains retained
+transport evidence but cannot be an exchange acknowledgement. Downstream
+submission classification must mark that result uncertain. A timeout before a
+response or cancellation still raises: the upstream consumed intent must
+remain unresolved, be reconciled, and never trigger an automatic resend. This
+slice adds no durable transport capture or trade-to-outbox producer. It cannot
+claim a real order, fill, protection, authenticated account, Notion delivery, or
+forensic outcome. Its focused HTTP test uses only `MockTransport` and temporary
+test-local guard stubs; the normal guarded test confirms zero HTTP sends.
+
 ## Current production integration boundary (2026-10-08)
 
 The durable components exist, but the trade-to-outbox path is **not yet

@@ -2,6 +2,8 @@
 
 `publish_capture_public_account_v2` 把現有 G12 發佈、原生公開資料收集與
 原生 Demo 帳戶頁鏈收集放在同一個 task、同一次呼叫。呼叫者須預先配置
+DB0039 專用 repository；缺少本次預先 claim 或出版後持久讀回，就在新來源
+請求前拒絕，不能走無 custody 的觀察路徑。呼叫者也須配置
 與 G12、公開 journal、帳戶 proof 根目錄互不重疊的空 `recheck_root`；
 另須配置第五個互不重疊的空 `join_root`。舊檔、交疊或無法開啟的
 receipt 目錄會在 G12 前拒絕。它不接受外部 G12

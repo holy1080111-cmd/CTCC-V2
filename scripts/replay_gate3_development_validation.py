@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 from datetime import UTC, datetime, time, timedelta
 from pathlib import Path
 
@@ -41,6 +42,7 @@ from app.research.external_benchmarks.contracts import (
     ExternalArtifactAcquisitionRequest,
 )
 from app.research.external_benchmarks.evidence_io import (
+    MAX_EVIDENCE_BYTES,
     evidence_path,
     read_contract_json,
 )
@@ -48,6 +50,8 @@ from scripts.verify_mie_gate3_batch_qualification import (
     DEFAULT_QUALIFICATION_PATH,
     verify_qualification_file,
 )
+
+SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 
 
 def digest(data: bytes) -> str:
@@ -63,6 +67,23 @@ def publish(root: Path, name: str, data: bytes) -> str:
     if target.read_bytes() != data:
         raise ValueError("rehearsal artifact readback mismatch")
     return digest(data)
+
+
+def read_acquisition_receipt_bytes(
+    root: Path, relative_path: str
+) -> tuple[ExternalArtifactAcquisitionReceipt, bytes]:
+    """Parse and hash the same bounded original receipt bytes exactly once."""
+    path = evidence_path(root, relative_path, create_parents=False)
+    if not path.is_file():
+        raise ValueError("acquisition receipt is not a regular file")
+    size = path.stat().st_size
+    if not 0 < size <= MAX_EVIDENCE_BYTES:
+        raise ValueError("acquisition receipt byte size is invalid")
+    with path.open("rb") as stream:
+        payload = stream.read(MAX_EVIDENCE_BYTES + 1)
+    if len(payload) != size or path.stat().st_size != size:
+        raise ValueError("acquisition receipt changed during bounded read")
+    return ExternalArtifactAcquisitionReceipt.model_validate_json(payload), payload
 
 
 def new_plan(public_plan: BinanceBatchPlan) -> ArchiveBatchPlan:
@@ -100,8 +121,34 @@ def new_plan(public_plan: BinanceBatchPlan) -> ArchiveBatchPlan:
 
 
 def run(
-    root: Path, output: Path, plan_path: Path | None, expected_plan: str | None
+    root: Path,
+    output: Path,
+    plan_path: Path | None,
+    expected_plan: str | None,
+    *,
+    selected_group: tuple[DatasetPartition, str] | None = None,
+    expected_manifest_sha256: str | None = None,
 ) -> dict:
+    if selected_group is not None and (
+        type(selected_group) is not tuple
+        or len(selected_group) != 2
+        or type(selected_group[0]) is not DatasetPartition
+        or selected_group[0]
+        not in (DatasetPartition.DEVELOPMENT, DatasetPartition.VALIDATION)
+        or type(selected_group[1]) is not str
+        or selected_group[1] not in ("BTCUSDT", "ETHUSDT")
+        or plan_path is None
+        or expected_plan is None
+        or expected_manifest_sha256 is None
+    ):
+        raise ValueError(
+            "one-group replay requires exact retained plan and manifest pins"
+        )
+    if expected_manifest_sha256 is not None and (
+        type(expected_manifest_sha256) is not str
+        or SHA256_RE.fullmatch(expected_manifest_sha256) is None
+    ):
+        raise ValueError("retained archive manifest SHA256 is invalid")
     if root.is_symlink():
         raise ValueError("source dataset root cannot be a symlink")
     root = root.resolve(strict=True)
@@ -138,6 +185,8 @@ def run(
         raise ValueError(
             "replay plan differs from the declared development/validation scope"
         )
+    if selected_group is not None and selected_group[1] not in plan.symbols:
+        raise ValueError("selected group is absent from the retained plan")
 
     prepared = {entry.request_id: entry for entry in preparation.entries}
     sources = []
@@ -154,8 +203,8 @@ def run(
                 request = read_contract_json(
                     root, f"{prefix}-request.json", ExternalArtifactAcquisitionRequest
                 )
-                acquired = read_contract_json(
-                    root, f"{prefix}-receipt.json", ExternalArtifactAcquisitionReceipt
+                acquired, acquired_bytes = read_acquisition_receipt_bytes(
+                    root, f"{prefix}-receipt.json"
                 )
                 if (
                     request.canonical_sha256() != entry.request_sha256
@@ -196,11 +245,7 @@ def run(
                 receipt_links.append(
                     {
                         "request_id": coordinate.request_id,
-                        "original_receipt_sha256": digest(
-                            evidence_path(
-                                root, f"{prefix}-receipt.json", create_parents=False
-                            ).read_bytes()
-                        ),
+                        "original_receipt_sha256": digest(acquired_bytes),
                         "derived_archive_receipt_sha256": receipt.canonical_sha256(),
                     }
                 )
@@ -209,6 +254,11 @@ def run(
     manifest = load_archive_batch_rehearsal(
         tuple(sources), plan=plan, expected_plan_sha256=plan_pin
     )
+    if (
+        expected_manifest_sha256 is not None
+        and manifest.canonical_sha256() != expected_manifest_sha256
+    ):
+        raise ValueError("rebuilt archive manifest differs from retained SHA256")
     output.mkdir(parents=True, exist_ok=False)
     files = {
         "archive-plan.json": publish(
@@ -219,56 +269,69 @@ def run(
         ),
     }
     results = []
-    for partition in (DatasetPartition.DEVELOPMENT, DatasetPartition.VALIDATION):
-        for symbol in plan.symbols:
-            instrument = f"{symbol.removesuffix('USDT')}-USDT-SWAP"
-            minute_plan, minutes = archive_batch_minutes(
-                manifest,
-                archive_bytes=tuple(item.archive_bytes for item in sources),
-                expected_plan_sha256=plan_pin,
-                partition=partition,
-                instrument_id=instrument,
-            )
-            pins = {
-                "expected_plan_sha256": minute_plan.canonical_sha256(),
-                "expected_source_sha256": minute_source_sha256(minutes),
-            }
-            first = aggregate_point_in_time_minutes(minutes, plan=minute_plan, **pins)
-            second = aggregate_point_in_time_minutes(minutes, plan=minute_plan, **pins)
-            if first.canonical_json_bytes() != second.canonical_json_bytes():
-                raise ValueError("deterministic repeated aggregation changed")
-            historical_rejections = []
-            for series in first.timeframes:
-                try:
-                    replay_features_at(
-                        tuple(item.row for item in series.bars),
-                        as_of=minute_plan.window.end_at,
-                        bar_horizon=series.horizon,
-                    )
-                except ReplayValidationError as exc:
-                    if str(exc) != "a due replay bar was not available at the cutoff":
-                        raise
-                    historical_rejections.append(series.horizon.label)
-                else:
-                    raise ValueError(
-                        "historical archive unexpectedly gained causal availability"
-                    )
-            name = f"{partition.value}-{symbol}-aggregation.json"
-            files[name] = publish(output, name, first.canonical_json_bytes())
-            results.append(
-                {
-                    "partition": partition.value,
-                    "symbol": symbol,
-                    "minute_count": len(minutes),
-                    "aggregate_counts": [len(item.bars) for item in first.timeframes],
-                    "aggregation_sha256": first.canonical_sha256(),
-                    "historical_cutoff_rejections": historical_rejections,
-                    "deterministic_repeat": True,
-                }
-            )
-            print(f"REHEARSAL_GROUP_COMPLETE={partition.value}:{symbol}", flush=True)
+    groups = (
+        (selected_group,)
+        if selected_group is not None
+        else tuple(
+            (partition, symbol)
+            for partition in (DatasetPartition.DEVELOPMENT, DatasetPartition.VALIDATION)
+            for symbol in plan.symbols
+        )
+    )
+    for partition, symbol in groups:
+        instrument = f"{symbol.removesuffix('USDT')}-USDT-SWAP"
+        minute_plan, minutes = archive_batch_minutes(
+            manifest,
+            archive_bytes=tuple(item.archive_bytes for item in sources),
+            expected_plan_sha256=plan_pin,
+            partition=partition,
+            instrument_id=instrument,
+        )
+        pins = {
+            "expected_plan_sha256": minute_plan.canonical_sha256(),
+            "expected_source_sha256": minute_source_sha256(minutes),
+        }
+        first = aggregate_point_in_time_minutes(minutes, plan=minute_plan, **pins)
+        second = aggregate_point_in_time_minutes(minutes, plan=minute_plan, **pins)
+        if first.canonical_json_bytes() != second.canonical_json_bytes():
+            raise ValueError("deterministic repeated aggregation changed")
+        historical_rejections = []
+        for series in first.timeframes:
+            try:
+                replay_features_at(
+                    tuple(item.row for item in series.bars),
+                    as_of=minute_plan.window.end_at,
+                    bar_horizon=series.horizon,
+                )
+            except ReplayValidationError as exc:
+                if str(exc) != "a due replay bar was not available at the cutoff":
+                    raise
+                historical_rejections.append(series.horizon.label)
+            else:
+                raise ValueError(
+                    "historical archive unexpectedly gained causal availability"
+                )
+        name = f"{partition.value}-{symbol}-aggregation.json"
+        files[name] = publish(output, name, first.canonical_json_bytes())
+        result = {
+            "partition": partition.value,
+            "symbol": symbol,
+            "minute_count": len(minutes),
+            "aggregate_counts": [len(item.bars) for item in first.timeframes],
+            "aggregation_sha256": first.canonical_sha256(),
+            "historical_cutoff_rejections": historical_rejections,
+            "deterministic_repeat": True,
+        }
+        if selected_group is not None:
+            result["repeat_aggregation_sha256"] = second.canonical_sha256()
+        results.append(result)
+        print(f"REHEARSAL_GROUP_COMPLETE={partition.value}:{symbol}", flush=True)
     summary = {
-        "schema": "ctcc.gate3.development_validation_rehearsal.v1",
+        "schema": (
+            "ctcc.gate3.development_validation_group_rehearsal.v1"
+            if selected_group is not None
+            else "ctcc.gate3.development_validation_rehearsal.v1"
+        ),
         "plan_sha256": plan_pin,
         "manifest_sha256": manifest.canonical_sha256(),
         "source_artifacts": len(sources),
@@ -297,10 +360,31 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--plan", type=Path)
     parser.add_argument("--expected-plan-sha256")
+    parser.add_argument("--expected-manifest-sha256")
+    parser.add_argument("--group-partition", choices=("development", "validation"))
+    parser.add_argument("--group-symbol", choices=("BTCUSDT", "ETHUSDT"))
     args = parser.parse_args()
     if (args.plan is None) != (args.expected_plan_sha256 is None):
         parser.error("a retained plan and its independent SHA256 are required together")
-    result = run(args.dataset_root, args.output, args.plan, args.expected_plan_sha256)
+    if (args.group_partition is None) != (args.group_symbol is None):
+        parser.error("one-group replay requires both partition and symbol")
+    if args.group_partition is not None and (
+        args.plan is None or args.expected_manifest_sha256 is None
+    ):
+        parser.error("one-group replay requires retained plan and manifest SHA256 pins")
+    selected_group = (
+        None
+        if args.group_partition is None
+        else (DatasetPartition(args.group_partition), args.group_symbol)
+    )
+    result = run(
+        args.dataset_root,
+        args.output,
+        args.plan,
+        args.expected_plan_sha256,
+        selected_group=selected_group,
+        expected_manifest_sha256=args.expected_manifest_sha256,
+    )
     print(f"MIE_DEVELOPMENT_VALIDATION_REHEARSAL_ROWS={result['source_rows']}")
     print("MIE_PREDICTIVE_OOS_ELIGIBLE=0")
 

@@ -7,12 +7,13 @@
 `PreEvidenceRun`、精確七欄 original inputs，以及固定公開收集政策、Demo
 帳戶 plan／外部 plan pin／明示 credentials。沒有 injected publisher、collector、
 order callback、caller PASS 或舊 `EvidenceGateRun` 參數。
-`purpose="observed"` 只能使用本模組預設的 `actual_utc`；注入 clock 會在
-G12／檔案／網路之前拒絕。`purpose="synthetic_test"` 仍可注入測試時鐘。
-這只移除觀測標籤下的 caller clock 控制，host UTC 並非獨立可信校時證明，
-也不會把結果提升為真實 Demo／Shadow 樣本或執行許可。
+`purpose="observed"` 現在一律在 G12／檔案／網路之前拒絕，因為這條舊路徑
+沒有 DB0039 的預先 claim 與出版後持久讀回；注入 clock 仍會先被拒絕。
+`purpose="synthetic_test"` 保留離線合成測試及可注入測試時鐘，不能當作
+真實 Demo／Shadow 樣本或執行許可。新的觀察路徑須使用
+[G12 持久 custody](g12_invocation_custody.md)。
 
-## 實際順序與停止條件
+## 合成測試路徑的順序與停止條件
 
 1. 先驗 exact 原始型別、bounded scalar、已知時區與隱藏欄位；不執行不明
    `__class__`／serializer／timezone callback。忽略 caller quality 的值，品質重算。

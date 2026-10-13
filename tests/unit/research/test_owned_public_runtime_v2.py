@@ -68,6 +68,21 @@ def setup(
         rest_hostname=rest_hostname,
         ws_hostname=ws_hostname,
     )
+    # These public/account collector tests use a synthetic G12 custodian so
+    # they can isolate capture ordering. Production requires a committed
+    # DB0039 claim and publication readback; that contract has its own tests.
+    synthetic_claim = object()
+
+    async def synthetic_preclaim(repository, *_args, **_kwargs):
+        assert repository is None
+        return synthetic_claim
+
+    async def synthetic_publication(repository, claim, *_args, **_kwargs):
+        assert repository is None and claim is synthetic_claim
+        return object()
+
+    monkeypatch.setattr(coordinator, "_preclaim_lineage_v2", synthetic_preclaim)
+    monkeypatch.setattr(coordinator, "_complete_lineage_v2", synthetic_publication)
     # Exercise immutable historical v2 packet/journal behavior with synthetic
     # transport only. Production has no bypass and still refuses new capture.
     monkeypatch.setattr(

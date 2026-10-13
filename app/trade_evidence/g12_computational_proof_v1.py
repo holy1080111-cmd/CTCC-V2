@@ -309,7 +309,14 @@ def publish_g12_computational_proof_v1(
     clock: Callable[[], datetime] = storage.actual_utc,
     render_profile: Literal["v1", "liquidity_v2"] = "v1",
 ) -> G12ComputationalProofDiagnosticV1:
-    """Accept G1--G11 only; publish fresh G12 and immediately read back; DENY."""
+    """Publish only for synthetic tests; observed lacks DB0039 custody."""
+    if type(purpose) is not str or purpose != "synthetic_test":
+        code = (
+            "g12_proof_observed_custody_unavailable"
+            if type(purpose) is str and purpose == "observed"
+            else "g12_proof_purpose_denied"
+        )
+        raise G12ComputationalProofError(code)
     try:
         evidence_root, proof_root = _root(evidence_root), _root(proof_root)
         if (

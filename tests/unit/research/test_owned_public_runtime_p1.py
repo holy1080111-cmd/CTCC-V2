@@ -64,6 +64,7 @@ def synthetic_runtime(
     monkeypatch, inputs, *, rest_hostname="www.okx.com", ws_hostname="ws.okx.com"
 ):
     """Only tests replace TLS admission and native storage/clock; never production."""
+    monkeypatch.setattr(coordinator, "_require_v1_custody", lambda: None)
     source, _values, _run = inputs
     clock = SyntheticClock(source.evaluated_at)
     packets = synthetic_publisher(monkeypatch)
@@ -125,6 +126,31 @@ async def invoke(inputs, tmp_path):
         original_inputs=values,
         market_policy=policy(counts=(240, 240, 240, 240)),
     )
+
+
+@pytest.mark.asyncio
+async def test_v1_observed_entry_denies_before_clock_g12_or_public_io(
+    inputs, tmp_path, monkeypatch
+):
+    source, values, run = inputs
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("uncustodied V1 reached clock, G12, or public IO")
+
+    monkeypatch.setattr(coordinator, "native_stamp", forbidden)
+    monkeypatch.setattr(coordinator, "publish_qualification_evidence", forbidden)
+    monkeypatch.setattr(coordinator, "_capture_after_publication", forbidden)
+    with pytest.raises(ValueError, match="^public_runtime_v1_custody_unavailable$"):
+        await coordinator.publish_capture_public_recheck(
+            tmp_path / "g12",
+            tmp_path / "fresh",
+            source.market,
+            run=run,
+            original_inputs=values,
+            market_policy=policy(counts=(240, 240, 240, 240)),
+        )
+    assert not (tmp_path / "g12").exists()
+    assert not (tmp_path / "fresh").exists()
 
 
 def replay(directory):

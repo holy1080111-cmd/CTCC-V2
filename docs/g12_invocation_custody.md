@@ -5,9 +5,9 @@ Migration `0039` adds append-only `g12_invocation_claims` and
 and durable submission intent. Both records are always `DENY` and cannot be
 converted into order permission.
 
-An opt-in `G12InvocationCustodyRepository` on the existing
+An exact `G12InvocationCustodyRepository` is now required on the existing
 `post_g12_public_runtime` V2 path, V2 account join, V3 account-history join, or
-V4 event observation commits one preclaim **before** that invocation publishes
+V4 event observation (through V3). It commits one preclaim **before** that invocation publishes
 G12. The claim pins the exact Demo account UID hash and account-plan hash,
 original event, report, instrument, direction, entry, SL, TP, earliest deadline,
 the already replayed G1–G11 run hash, original market and input-envelope hashes,
@@ -33,10 +33,15 @@ forensics but cannot resume the invocation or dispatch an order.
 
 The schema's immutable triggers reject update, delete and truncate, and check
 the record hashes, event/claim links and fixed false-authority fields. The
-repository performs separate transaction/session readbacks. Production role
+repository performs separate transaction/session readbacks. A missing or
+wrong-type repository now refuses before G12 publication; a missing committed
+publication refuses before post-G12 capture. The older caller-origin
+`one_shot.publish_capture_recheck(purpose="observed")` is denied before G12
+because it has no DB0039 custody dependency. Its explicit `synthetic_test`
+mode remains for offline regression only. Production role
 grants, backup/WAL recovery, database/host clock agreement and migration
 round-trip acceptance still require deployment validation. The existing Demo
-public-origin pre-I/O denial runs before an opt-in preclaim; this change does
+public-origin pre-I/O denial runs before a DB preclaim; this change does
 not bypass that denial.
 
 This is **hash custody, not full source custody**. The original G1–G11 run and

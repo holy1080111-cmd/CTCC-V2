@@ -19,6 +19,13 @@ import httpx
 
 from app.config.settings import Settings, get_settings
 from app.exchange.okx.errors import OkxPrivateApiError
+from app.exchange.okx.transport_observation import (
+    ObservedOrderResult,
+    observe_order_response,
+)
+from app.exchange.okx.transport_observation import (
+    _utc as observation_utc,
+)
 from app.okx_live.execution_authority import enforce_live_final_dispatch
 from app.trade_qualification.dispatch_ownership import DispatchOwnership, DispatchSlot
 from app.trade_qualification.execution_authority import (
@@ -301,7 +308,8 @@ class _OkxPrivateRestClientBase:
         params: dict[str, Any] | None = None,
         body: dict[str, Any] | None = None,
         write: bool = False,
-    ) -> list[dict[str, Any]]:
+        observe_order: bool = False,
+    ) -> list[dict[str, Any]] | ObservedOrderResult:
         self._last_prepared_dispatch_diagnostic = None
         self._before_send(method=method, path=path)
         if (
@@ -321,6 +329,11 @@ class _OkxPrivateRestClientBase:
         request_path = path if not query else f"{path}?{query}"
         request_url = self._rest_base_url() + request_path
         order_create = method.upper() == "POST" and path == "/api/v5/trade/order"
+        if observe_order and not order_create:
+            raise OkxPrivateApiError(
+                "Order observation requires the exact order route",
+                code="private_order_observation_route_rejected",
+            )
         body_text = (
             ""
             if body is None
@@ -421,6 +434,30 @@ class _OkxPrivateRestClientBase:
                         slot=getattr(self, "_qualification_dispatch_slot", None),
                     )
                     if prepared_write_request is not None:
+                        if observe_order:
+                            started_at = observation_utc(self._clock)
+                            response = await client.send(
+                                prepared_write_request,
+                                stream=True,
+                                auth=None,
+                                follow_redirects=False,
+                            )
+                            observation = await observe_order_response(
+                                prepared_write_request,
+                                response,
+                                send_invoked_at=started_at,
+                                clock=self._clock,
+                            )
+                            self._after_response_check(method=method, path=path)
+                            # This is a private, non-authorizing pair.  Only
+                            # retained raw response bytes may be classified
+                            # against the consumed intent by a future owner.
+                            response_digest = (
+                                hashlib.sha256(observation.raw_body).hexdigest()
+                                if observation.raw_body is not None
+                                else None
+                            )
+                            return ObservedOrderResult(observation, response_digest)
                         response = await client.send(
                             prepared_write_request,
                             auth=None,
@@ -695,6 +732,31 @@ class _OkxPrivateRestClientBase:
 
 class OkxDemoPrivateRestClient(_OkxPrivateRestClientBase):
     """Authenticated OKX Demo REST client with simulation permanently enabled."""
+
+    async def place_order_observed(
+        self, payload: dict[str, Any]
+    ) -> ObservedOrderResult:
+        """Future controlled-owner hook; all current order dispatch remains DENY.
+
+        A response is paired with the exact prepared body hash and retained raw
+        bytes.  The caller must not treat HTTP 200 as an acknowledgement, and
+        must resolve a raised/cancelled call against its durable intent without
+        resubmitting.  This method shares the final write guards with place_order.
+        """
+
+        result = await self._request(
+            "POST",
+            "/api/v5/trade/order",
+            body=payload,
+            write=True,
+            observe_order=True,
+        )
+        if type(result) is not ObservedOrderResult:
+            raise OkxPrivateApiError(
+                "Order observation result is unavailable",
+                code="private_order_observation_unavailable",
+            )
+        return result
 
     def _unbound_read_values(
         self,

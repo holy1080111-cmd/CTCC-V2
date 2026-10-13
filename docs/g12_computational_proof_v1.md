@@ -1,9 +1,13 @@
 # G12 computational proof V1 (diagnostic only)
 
 `publish_g12_computational_proof_v1` accepts an original G1–G11 run, the raw
-market and its exact original input envelope. It first uses the existing
-versioned G1–G11 replay and publishes a **new** G12 six-file packet. Only a
-passing, fresh `written` receipt may then create `proof.json` in a separate,
+market and its exact original input envelope **only for `synthetic_test`**.
+Every purpose other than an exact built-in `"synthetic_test"` string, including
+`"observed"`, unknown values and string subclasses, is denied before root access,
+clock or G12 because this wrapper has no DB0039 prepublication custody. The
+synthetic path uses the existing versioned G1–G11 replay and publishes a **new**
+G12 six-file packet. Only a passing, fresh `written` receipt may then create
+`proof.json` in a separate,
 pre-existing, empty service-owned directory. Both directories use the existing
 native no-clobber publisher and bounded readback. A failed or interrupted late
 proof step can leave the six G12 files or a partial proof; neither is repaired,

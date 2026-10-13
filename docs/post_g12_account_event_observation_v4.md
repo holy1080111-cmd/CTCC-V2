@@ -3,6 +3,8 @@
 `publish_capture_inspect_history_event_v4` owns one new V3 G12/public/account
 diagnostic invocation, reads its immutable receipt back, and then asks the
 DB0017 qualification ledger for the exact original event key. Before the
+V3 invocation can publish G12, it requires DB0039 prepublication custody;
+V3 must read back that publication before any post-G12 source request. Before the
 database read, V4 reopens all six G12 files through the bounded native evidence
 reader. It checks the exact file set, fully decodes the five PNGs, verifies their
 report manifest, matches `report.json` to V3's report digest, and checks the

@@ -81,9 +81,11 @@ timing, zone, fixed protection and current economics/risk checks remain in
 order; changed HTF, stale capture, consumed event, expiry or original input
 mutation stops the run. The original deadline is retained, never extended.
 
-The owned `publish_capture_recheck` diagnostic orchestrator accepts exact V2
-original inputs and retains its publication barrier before any new capture.
-It is still not mounted in an execution route. Neither computational PASS,
+The legacy `publish_capture_recheck` diagnostic orchestrator accepts exact V2
+original inputs in explicit synthetic-test mode and retains its publication
+barrier before any synthetic new capture. Its `observed` mode now refuses before
+G12 without DB0039 custody, and it is not mounted in an execution route.
+Neither computational PASS,
 native publication nor readback grants source authenticity or order authority.
 
 The synthetic tests construct OHLC, volume and executable quotes before first

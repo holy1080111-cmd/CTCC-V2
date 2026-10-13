@@ -137,3 +137,63 @@ predictive OOS. Its calendar boundary appears in the plan solely to preserve the
 existing split contract. Independent historical row-availability evidence, actual
 candidate development/trial records, a candidate seal before fresh heldout access,
 and formal OOS acceptance remain required before Gate 4.
+
+## Bounded Development/Validation replay after an interrupted full run
+
+The full 120-archive rehearsal previously stopped after publishing its plan and
+manifest under a laptop thermal precaution. A retained plan and manifest may be
+reused only with their separately recorded canonical SHA-256 pins. The one-group
+mode still checks all 120 original archive bytes and rebuilds the **whole**
+Development/Validation manifest, then aggregates just one selected partition
+and symbol in a new output directory. It never opens a holdout archive or fits
+a candidate. A changed source, plan, or manifest stops before output creation.
+Run one group at a time, allowing the host to cool between invocations:
+
+```powershell
+python -B -m scripts.replay_gate3_development_validation `
+  --dataset-root <existing-public-dataset-root> `
+  --plan <retained-archive-plan.json> `
+  --expected-plan-sha256 <independently-retained-plan-sha256> `
+  --expected-manifest-sha256 <independently-retained-manifest-sha256> `
+  --group-partition development --group-symbol BTCUSDT `
+  --output <new-development-BTCUSDT-directory>
+```
+
+Repeat with `development/ETHUSDT`, `validation/BTCUSDT`, and
+`validation/ETHUSDT`, each to a different new directory. Every group repeats
+aggregation from the same source rows and records both output hashes; all three
+timeframes must reject the old historical cutoff because the archives were
+observed later. A crash leaves that group's partial directory unresolved;
+do not overwrite it or interpret other groups as a complete batch.
+
+After retaining each `summary.json` SHA-256 **outside** its output directory,
+the read-only four-group verifier checks exact group coverage, external plan,
+manifest, and summary pins, source/aggregate file hashes, bar coordinates,
+late-cutoff rejection, and zero authority. Its final report uses exclusive file
+creation and readback:
+
+```powershell
+python -B -m scripts.verify_gate3_development_validation_groups `
+  --plan <retained-archive-plan.json> `
+  --expected-plan-sha256 <independently-retained-plan-sha256> `
+  --manifest <retained-archive-manifest.json> `
+  --expected-manifest-sha256 <independently-retained-manifest-sha256> `
+  --group-output <development-BTCUSDT-directory> `
+  --expected-summary-sha256 <retained-development-BTCUSDT-summary-sha256> `
+  --group-output <development-ETHUSDT-directory> `
+  --expected-summary-sha256 <retained-development-ETHUSDT-summary-sha256> `
+  --group-output <validation-BTCUSDT-directory> `
+  --expected-summary-sha256 <retained-validation-BTCUSDT-summary-sha256> `
+  --group-output <validation-ETHUSDT-directory> `
+  --expected-summary-sha256 <retained-validation-ETHUSDT-summary-sha256> `
+  --output <new-four-group-report.json>
+```
+
+This verifier checks pinned outputs; it does not reopen the source ZIPs.
+This is a reproducible **computational rehearsal** of already retrieved
+archives. The old 2024/2025 archive rows have no measured historical first
+receipt, and the retrospective holdout was exposed before candidate sealing.
+The verifier does not reauthenticate source transport or establish independent
+custody of pins. Point-in-time predictive eligibility, sealed OOS, Gate 4,
+execution, and Live acceptance remain false. Focused tests use synthetic
+manifests and aggregate outputs; no full historical replay is part of CI.

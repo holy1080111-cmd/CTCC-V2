@@ -688,6 +688,26 @@ async def test_observed_purpose_rejects_injected_clock_before_g12_or_network(
 
 
 @pytest.mark.asyncio
+async def test_legacy_observed_path_requires_durable_g12_custody_before_publication(
+    inputs, tmp_path, monkeypatch
+):
+    args = arguments(inputs, tmp_path)
+    args.update(purpose="observed", clock=module.actual_utc)
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("legacy observed path crossed G12 publication or network")
+
+    monkeypatch.setattr(module, "publish_qualification_evidence", forbidden)
+    monkeypatch.setattr(module.public_capture, "_new_client", forbidden)
+    monkeypatch.setattr(module.private_capture, "_new_client", forbidden)
+    with pytest.raises(
+        module.OneShotInputError, match="^one_shot_observed_custody_unavailable$"
+    ):
+        await module.publish_capture_recheck(**args)
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("clock_case", ["expired", "reversed", "bad_type"])
 async def test_invalid_clock_never_opens_fresh_clients(
     inputs, tmp_path, monkeypatch, clock_case

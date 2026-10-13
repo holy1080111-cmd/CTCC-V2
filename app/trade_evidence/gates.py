@@ -426,7 +426,9 @@ def publish_qualification_evidence(
     Failed earlier gates never reach the clock, preparation or filesystem. A
     post-write expiry retains the actual receipt but fails G12. Existing files,
     including an identical packet, cannot pass this one-shot API. No G13 fetch,
-    clock adjustment, source authentication or execution takes place.
+    clock adjustment, source authentication or execution takes place. This is
+    a low-level renderer; ``observed`` labels output but does not prove DB0039
+    custody or authorize any post-G12 capture, reservation, or order write.
     """
     if (
         type(purpose) is not str

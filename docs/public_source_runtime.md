@@ -81,13 +81,15 @@ actual native evidence; synthetic tests are not that evidence.
 
 ## Post-G12 invocation
 
-`publish_capture_public_recheck` is an unmounted diagnostic coordinator. It calls
-the real G12 publisher, requires a newly written receipt and its readback, then
-creates an opaque scope for that invocation. A loaded receipt, copied object,
-caller timestamp or `passed=true` cannot create this scope. The original replay
-inputs remain explicitly unauthenticated.
+The legacy `publish_capture_public_recheck` coordinator is hard-denied before
+clock sampling, G12 publication or public I/O: it has no DB0039 prepublication
+claim and publication readback. Its historical flow below runs only in explicit
+synthetic tests that replace the internal preflight denial. The production V2
+path requires that durable custody. Neither route treats a loaded receipt,
+caller timestamp or `passed=true` as authority; original replay inputs remain
+unauthenticated.
 
-The coordinator uses this sequence:
+The historical synthetic-test coordinator uses this sequence:
 
 1. Replay the original candidate and publish/read back G12 evidence.
 2. Record a native UTC/monotonic publication barrier and unchanged expiry.

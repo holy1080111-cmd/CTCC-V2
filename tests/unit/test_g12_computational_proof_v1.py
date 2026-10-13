@@ -53,6 +53,44 @@ def _publish(tmp_path, original, *, render_profile="v1"):
     return evidence, sidecar, result
 
 
+class _SyntheticPurposeSubclass(str):
+    pass
+
+
+@pytest.mark.parametrize(
+    ("purpose", "code"),
+    [
+        ("observed", "g12_proof_observed_custody_unavailable"),
+        ("unknown", "g12_proof_purpose_denied"),
+        (_SyntheticPurposeSubclass("synthetic_test"), "g12_proof_purpose_denied"),
+    ],
+)
+def test_non_synthetic_proof_denies_before_root_clock_or_g12(
+    tmp_path, original, monkeypatch, purpose, code
+):
+    source, inputs, run = original
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("uncustodied G12 proof reached root, clock, or publisher")
+
+    monkeypatch.setattr(proof, "_root", forbidden)
+    monkeypatch.setattr(proof.gates, "publish_qualification_evidence", forbidden)
+    with pytest.raises(
+        proof.G12ComputationalProofError,
+        match=f"^{code}$",
+    ):
+        proof.publish_g12_computational_proof_v1(
+            tmp_path / "evidence",
+            tmp_path / "proof",
+            source.market,
+            run=run,
+            original_inputs=inputs,
+            purpose=purpose,
+            clock=forbidden,
+        )
+    assert not list(tmp_path.iterdir())
+
+
 def test_new_g12_proof_replays_all_gates_and_exact_six_bytes(tmp_path, original):
     evidence, sidecar, result = _publish(tmp_path, original)
     source, inputs, run = original

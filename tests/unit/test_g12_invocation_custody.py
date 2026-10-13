@@ -5,6 +5,7 @@ from dataclasses import replace
 from datetime import timedelta
 
 import pytest
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.domain.source_primitives import decode
 from app.trade_evidence import gates
@@ -101,7 +102,7 @@ def test_postpublication_requires_new_six_file_write_and_same_root(tmp_path):
         custody.prepare_g12_publication(committed, evidence, tmp_path)
 
 
-def test_postcommit_file_change_denies_before_fresh_capture(tmp_path):
+def test_postcommit_file_change_denies_before_fresh_capture(tmp_path, monkeypatch):
     source, inputs, run = original()
     claim = custody.prepare_g12_claim(
         tmp_path,
@@ -126,16 +127,20 @@ def test_postcommit_file_change_denies_before_fresh_capture(tmp_path):
         db_recorded_at=evidence.receipt.completed_at + timedelta(milliseconds=1),
     )
 
-    class Repository:
-        async def publication(self, _claim, _publication):
-            report = tmp_path / source.report_id / "report.json"
-            report.write_bytes(report.read_bytes() + b" ")
-            return returned
+    async def changed_after_commit(_self, _claim, _publication):
+        report = tmp_path / source.report_id / "report.json"
+        report.write_bytes(report.read_bytes() + b" ")
+        return returned
+
+    monkeypatch.setattr(
+        custody.G12InvocationCustodyRepository, "publication", changed_after_commit
+    )
+    repository = custody.G12InvocationCustodyRepository(async_sessionmaker())
 
     with pytest.raises(custody.G12InvocationCustodyError, match="postcommit"):
         asyncio.run(
             runtime._complete_lineage_v2(
-                Repository(), committed, tmp_path, evidence, source.market, run, inputs
+                repository, committed, tmp_path, evidence, source.market, run, inputs
             )
         )
 
@@ -245,6 +250,38 @@ def test_failed_preclaim_cannot_publish_g12_or_start_capture(tmp_path, monkeypat
     )
     assert result.code == "public_v2_denied" and not called
     assert result.execution_authority is False
+
+
+def test_missing_custody_repository_cannot_publish_or_capture(tmp_path, monkeypatch):
+    source, inputs, run = original()
+    evidence_root, public_root = tmp_path / "evidence", tmp_path / "public"
+    evidence_root.mkdir()
+    public_root.mkdir()
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("G12 publication without DB0039 custody")
+
+    monkeypatch.setattr(runtime, "_publish_lineage_v2", forbidden)
+    monkeypatch.setattr(runtime, "_capture_after_publication_v2", forbidden)
+    result = asyncio.run(
+        runtime.publish_capture_public_v2(
+            evidence_root,
+            public_root,
+            source.market,
+            run=run,
+            original_inputs=inputs,
+            market_policy=public_policy(),
+        )
+    )
+    assert result.code == "public_v2_denied"
+    assert result.evidence is None and result.packet is None
+    assert result.execution_authority is False
+    with pytest.raises(ValueError, match="^g12_custody_repository_required$"):
+        asyncio.run(
+            runtime._complete_lineage_v2(
+                None, object(), evidence_root, object(), source.market, run, inputs
+            )
+        )
 
 
 def test_failed_publication_readback_cannot_start_capture(tmp_path, monkeypatch):

@@ -255,6 +255,7 @@ _PREFLIGHT_CODES = frozenset(
         "one_shot_purpose_invalid",
         "one_shot_runtime_policy_invalid",
         "one_shot_observed_clock_injected",
+        "one_shot_observed_custody_unavailable",
         "one_shot_original_input_envelope_invalid",
         "one_shot_intent_or_run_invalid",
         "one_shot_intent_invalid",
@@ -483,8 +484,9 @@ async def publish_capture_recheck(
 ) -> OneShotCaptureResult:
     """Publish here once, capture through owned GET/socket clients, recheck.
 
-    This explicit API can read Demo account data with supplied credentials, but
-    it has no order or reservation dependency. It is not installed in a router,
+    Only the explicit synthetic-test mode can proceed. The observed mode lacks
+    DB0039 G12 custody and stops during preflight. This API has no order or
+    reservation dependency. It is not installed in a router,
     scheduler or startup hook. No raw packet is automatically persisted. Failed
     earlier gates perform no filesystem/network operations. Cancellation is
     propagated; a failed/expired packet is never retried under another report ID.
@@ -505,6 +507,11 @@ async def publish_capture_recheck(
             raise OneShotInputError("one_shot_runtime_policy_invalid")
         if purpose == "observed" and clock is not actual_utc:
             raise OneShotInputError("one_shot_observed_clock_injected")
+        if purpose == "observed":
+            # This legacy caller-origin path has no DB0039 preclaim/publication
+            # custody. Do not let it publish a fresh G12 without the durable
+            # boundary used by the newer native-source coordinator.
+            raise OneShotInputError("one_shot_observed_custody_unavailable")
         market, pre, inputs = _original(original_market, run, original_inputs)
         selected = public_capture._policy_copy(market_policy)
         plan = accounts._checked_plan(account_plan, expected_account_plan_sha256)

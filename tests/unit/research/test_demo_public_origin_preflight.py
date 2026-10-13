@@ -340,6 +340,18 @@ async def test_controlled_route_declaration_cannot_publish_g12_before_region_pro
     inputs, tmp_path, monkeypatch
 ):
     source, values, run = inputs
+    origin_checks = []
+    original_origin_guard = (
+        public_source_runtime._require_trusted_v2_demo_origin_profile
+    )
+
+    def checked_origin(plan):
+        origin_checks.append(plan)
+        return original_origin_guard(plan)
+
+    monkeypatch.setattr(
+        public_source_runtime, "_require_trusted_v2_demo_origin_profile", checked_origin
+    )
 
     def forbidden(*_args, **_kwargs):
         pytest.fail("unverified_demo_route_entered_publication_or_io")
@@ -357,8 +369,12 @@ async def test_controlled_route_declaration_cannot_publish_g12_before_region_pro
         original_inputs=values,
         market_policy=public_policy(),
         demo_session=session(),
+        g12_custody_repository=object.__new__(
+            post_g12.g12_invocation_custody.G12InvocationCustodyRepository
+        ),
     )
     assert result.code == "public_v2_denied"
     assert result.evidence is None and result.packet is None
+    assert len(origin_checks) == 1
     assert not (tmp_path / "g12").exists()
     assert result.admission == "DENY" and result.execution_authority is False

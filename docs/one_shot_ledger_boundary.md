@@ -1,6 +1,9 @@
 # R7 one-shot → DB0017 event boundary (diagnostic)
 
-`publish_capture_inspect_event_ledger` owns the existing G12 publication,
+`publish_capture_inspect_event_ledger` owns the existing G12 publication only
+in its explicit synthetic-test path. The legacy `purpose="observed"` route is
+denied before G12 because it lacks a DB0039 preclaim and publication readback.
+In that synthetic-test path it owns the
 post-publication public and Demo account captures, and fixed-candidate recorded
 recheck in one invocation. It then validates the G12/recheck/capture lineage and
 reads the original event key through DB0017's account-scoped, locked

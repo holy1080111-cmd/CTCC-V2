@@ -5122,3 +5122,72 @@ Twenty-four targeted tests passed and an independent reviewer found no
 concrete arithmetic defect. Trade existence, complete real costs, point-in-time
 row availability and a sealed unseen holdout remain unproven. Gate 3, OOS,
 Shadow, Demo and Micro Live acceptance stay FAIL; no live order is authorized.
+
+## 2026-10-13 b656 checkpoint and later bounded safety work
+
+Committed source `b656c169255c336a7b5b6cf1fc56464db5ed1da8` has tree
+`f2df5835f9d652ad09650d64d66380982b47cd2a`, migration head `0040`, and
+manifest SHA256 `96d4d85ac24194ab119d7a6a530297319d3a1195a1a8a9a5f483ab8588dee141`.
+Its exact archive and Git bundle are preserved in
+`../../validation-results/checkpoint-b656c16-20261013/`, with SHA256 values
+`17abd25966f213c1548e60eb72aff8c031dbd41ee4c6cf4795443860475ef9f7`
+and `26da913f040204a1576dea309c893f7266201bc818f491e4128f71efc28d0fb4`.
+The checkpoint source ZIP's 1,144 members and 359 new Git blobs since the prior
+all-object history scan had zero findings for the eight high-confidence
+credential patterns; the nonsecret readback SHA256 is
+`fa3ebba9e4d14d814c3db12152902883741eabc7a78d419e7f711bc2fbd9d154`.
+This is a scoped pattern scan, not a final secret audit of private runtime
+settings, logs or the future release bundle.
+
+The historical 9/15 candidate re-audit independently rehashed all 582 source
+manifest members and all 278 candidate members against the extracted source.
+The old dependency difference was one extra source-tree `ctcc-v2==1.6.9`
+egg-info discovery record; the narrow release check still rejects unrelated
+dependency drift. The original candidate and full-validation ZIP bytes were not
+recovered in the bounded search. The nonsecret audit record is
+`../../validation-results/deployment-provenance-reaudit-20261013.md` (SHA256
+`51d9d871948fb7db735c73a9ec2ceff5987f970fe4970185ded7606e99ff2692`).
+Neither that contract nor the old 9,011-test claim validates current source.
+
+After `b656c16`, the observed V2 G12 path was changed to require a DB0039
+claim committed and independently read back before publication, followed by a
+committed/read-back publication before fresh public or account capture. The
+legacy one-shot observed route, older V1 public recheck issuer and standalone
+computational proof wrapper now deny observed publication without that custody;
+explicit synthetic-only tests remain. Independent review found the two older
+issuers and verified the bounded repair. This improves publication lineage but
+does not authenticate original market/account input or grant reservation or
+order authority. A test that had used a fake custody repository was repaired
+to exercise the real postcommit file readback under the exact DB0039 type gate;
+the custody, transport-observation and MIE groups then passed 30 focused tests
+together. This is a bounded local regression, not a full-suite acceptance.
+
+The bounded MIE Development/Validation replay now supports one partition and
+symbol at a time against retained plan and rebuilt manifest hashes. A separate
+four-group verifier checks pinned outputs and exact coverage. Independent review
+found and repaired a repeated-receipt-read race so parsing and receipt hash use
+the same captured bytes. Eight focused synthetic tests passed twice, including
+one independent local rerun. No full 172,800-row archive replay was run on this
+thermally unstable host. Late historical archive observations and an exposed
+holdout still bar predictive Gate 3, OOS and Gate 4 claims.
+
+The private Demo transport also has a dormant, private response-observation
+path with exact prepared request-body hash, bounded raw response bytes and
+digest, and application observation time bounds. It shares the current hard
+order DENYs, performs one write attempt, never classifies HTTP 200 as a fill,
+and grants neither execution nor retry authority. An independent review found
+that early clock errors could leave a streamed response open; the repair closes
+the response across every post-send validation. Fourteen MockTransport tests
+and three adjacent private REST tests passed on independent local rerun. The
+larger adjacent regression was deliberately interrupted for host thermal
+safety and is **not** counted as passing. No exchange order or Notion write was
+performed by this slice. A durable transport-to-outbox handoff, actual fills,
+protection readback and realized forensics remain unimplemented.
+
+The exact `b656c16` GitHub run is
+[38407558127](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/38407558127).
+At 2026-10-13 14:12 UTC, seven of eight Linux shards had succeeded, while the
+remaining Linux shard, Windows source-bound regression and isolated PostgreSQL
+job were still in progress. These partial results do not cover the later local
+source changes above. A new exact-source CI run is required after commit; no
+final acceptance, Demo acceptance, Micro Live acceptance or release is claimed.

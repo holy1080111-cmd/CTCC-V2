@@ -114,3 +114,26 @@ not increase the timeout, print package content or paths, weaken identity or
 parser checks, or execute the installer. Local PowerShell 5.1 focused tests
 passed 9/9; the timeout's actual cause remains unproven pending a matching
 exact-source CI run.
+
+## 2026-10-13 historical candidate re-audit
+
+The September 15 `CANDIDATE_MATCH_FOUND` source can be narrowed to the extracted
+`Demo-Integrated/907285d56e2045759c9219b300b52b6a/source` tree. The
+preserved release contract independently matches all 582 source-manifest paths
+and all 278 candidate members to that tree, with no missing or different file.
+Its `deployment-result.json` selected `source_set=candidate`. The original
+console line and the contract-named candidate and full-validation ZIP bytes were
+not recovered in the bounded search, so their hashes and 9,011 historical test
+passes remain contract claims rather than fresh archive verification.
+
+The baseline and candidate `pyproject.toml` both hash to
+`7a6962a2611ef95eb1f7cdb47ec3ef689aea0e0defb03e55b47cd21cdcae4bf3`.
+The 39-versus-40 ordinary dependency inventory difference is exactly the
+source-tree `ctcc-v2==1.6.9` egg-info record; isolated inventory is 39. The
+narrow metadata exception in `verify_runtime.py` still rejects unrelated
+package drift. Current canonical source has a different dependency file and
+Linux/Windows lock identity, so this historical explanation never substitutes
+for a full exact-current-source regression or release check. The independent
+nonsecret audit record is
+`../../validation-results/deployment-provenance-reaudit-20261013.md` (SHA256
+`51d9d871948fb7db735c73a9ec2ceff5987f970fe4970185ded7606e99ff2692`).

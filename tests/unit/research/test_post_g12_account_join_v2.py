@@ -747,6 +747,18 @@ async def test_unverified_demo_origin_stops_before_g12_public_and_account_io(
     (tmp_path / "recheck").mkdir()
     (tmp_path / "join").mkdir()
     monkeypatch.setattr(account_native, "_configured_factory", lambda _: True)
+    origin_checks = []
+    original_origin_guard = (
+        public_source_runtime._require_trusted_v2_demo_origin_profile
+    )
+
+    def checked_origin(plan):
+        origin_checks.append(plan)
+        return original_origin_guard(plan)
+
+    monkeypatch.setattr(
+        public_source_runtime, "_require_trusted_v2_demo_origin_profile", checked_origin
+    )
 
     def forbidden(*_args, **_kwargs):
         pytest.fail("unverified Demo origin must stop before G12 or account IO")
@@ -767,6 +779,9 @@ async def test_unverified_demo_origin_stops_before_g12_public_and_account_io(
         market_policy=policy(),
         account_session=controlled,
         session_factory=object(),
+        g12_custody_repository=object.__new__(
+            public_runtime.g12_invocation_custody.G12InvocationCustodyRepository
+        ),
     )
     receipt = decode(result.receipt_json)
     assert receipt["code"] == "denied"
@@ -778,6 +793,7 @@ async def test_unverified_demo_origin_stops_before_g12_public_and_account_io(
     assert receipt["public_only_recheck_receipt_persisted"] is False
     assert receipt["admission"] == "DENY"
     assert receipt["execution_authority"] is False
+    assert len(origin_checks) == 1
     assert controlled._used
     assert not (tmp_path / "g12").exists()
     assert not list((tmp_path / "recheck").iterdir())

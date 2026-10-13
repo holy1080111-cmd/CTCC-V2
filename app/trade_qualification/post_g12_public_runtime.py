@@ -132,6 +132,11 @@ def _take_publication_exact(value, expected):
     return result
 
 
+def _require_v1_custody():
+    """The legacy public-only V1 issuer has no DB0039 claim/readback path."""
+    raise ValueError("public_runtime_v1_custody_unavailable")
+
+
 async def publish_capture_public_recheck(
     evidence_root,
     public_root,
@@ -141,11 +146,12 @@ async def publish_capture_public_recheck(
     original_inputs,
     market_policy,
 ) -> PublicRecheckDiagnostic:
-    """Fixed sources and clock; caller callbacks/clients/old receipts are absent.
+    """Legacy observed issuer is closed until it has durable G12 custody.
 
-    Both native roots must already exist and be controlled by the service. The new
-    public root must be empty. A failed attempt is retained and is not retried there.
+    Synthetic tests may replace only the internal preflight denial to exercise
+    the historical collector. Production cannot publish through this V1 path.
     """
+    _require_v1_custody()
     # Reuse only the existing bounded immutable-input/versioned replay helper;
     # do not invoke the old account collector or its diagnostic orchestration.
     from app.trade_qualification.one_shot import _original
@@ -536,13 +542,11 @@ def _publish_lineage_v2(
 async def _preclaim_lineage_v2(
     repository, evidence_root, market, pre, inputs, *, demo_session
 ):
-    """Optional DB preclaim, committed/read back before this task publishes G12.
+    """Required DB preclaim, committed/read back before this task publishes G12.
 
     This is a diagnostic custody dependency, never a second authority path.
     A known-invalid public origin must not consume an event tombstone.
     """
-    if repository is None:
-        return None
     if type(repository) is not g12_invocation_custody.G12InvocationCustodyRepository:
         raise ValueError("g12_custody_repository_required")
     declared = origin_preflight._declared_demo_public_plan(demo_session)
@@ -572,10 +576,8 @@ async def _preclaim_lineage_v2(
 async def _complete_lineage_v2(
     repository, claim, evidence_root, evidence, market, pre, inputs
 ):
-    if repository is None:
-        if claim is not None:
-            raise ValueError("g12_custody_unbound_claim")
-        return None
+    if type(repository) is not g12_invocation_custody.G12InvocationCustodyRepository:
+        raise ValueError("g12_custody_repository_required")
     if claim is None or evidence is None:
         raise ValueError("g12_custody_new_publication_required")
     g12_invocation_custody.require_original_unchanged(claim, market, pre, inputs)
@@ -601,6 +603,10 @@ async def publish_capture_public_v2(
     g12_custody_repository=None,
 ):
     """Actual new G12, native v2 public acquisition and raw current G1.
+
+    A DB0039 claim must commit and read back before G12, and its publication
+    must commit and read back before any post-G12 source request. No bare
+    observed path may silently skip either durable step.
 
     Original inputs undergo the existing full gate replay, but their caller
     origin is not authenticated. This entry cannot promote them to original

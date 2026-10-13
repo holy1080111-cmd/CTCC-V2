@@ -1,8 +1,10 @@
 # Post-G12 V7 account-history join diagnostic
 
 `publish_capture_public_account_history_v3` is a separate DENY-only path. It
-leaves the V2 API and receipt bytes unchanged. It accepts the exact current
+leaves the V2 receipt bytes unchanged. It accepts the exact current
 V7 Demo account session and a V5 history capture ID as a database locator.
+It requires a DB0039 repository: a committed prepublication claim and a
+committed publication readback must precede the new public/account requests.
 The ID supplies no history claim: the native account runtime rereads and
 replays the committed V5 chain before its first HTTP request, then captures
 V7 current account data and checks both under the exact UID lock. The V5 and
