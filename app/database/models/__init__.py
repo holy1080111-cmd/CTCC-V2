@@ -19,6 +19,10 @@ from app.database.models.demo_automation import (
     DemoAutomationState,
 )
 from app.database.models.demo_control import DemoAccountControl, DemoControlJournal
+from app.database.models.g12_invocation_custody import (
+    G12InvocationClaim,
+    G12InvocationPublication,
+)
 from app.database.models.gate3_capture_schedule_claim import (
     Gate3CaptureScheduleClaimAck,
     Gate3CaptureScheduleKeyClaim,
@@ -122,6 +126,8 @@ __all__ = [
     "DemoSoakSession",
     "DemoStrategyControl",
     "Fill",
+    "G12InvocationClaim",
+    "G12InvocationPublication",
     "Gate3CaptureScheduleClaimAck",
     "Gate3CaptureScheduleKeyClaim",
     "Gate3CaptureScheduleLegacyInventory",

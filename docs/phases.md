@@ -12,8 +12,10 @@ offline Gate 3 prerequisite; its PostgreSQL role tests and decision-time
 availability proof remain pending. It does not advance Gate 3 or trading
 authority.
 
-The current branch migration head is `0038`, which adds an immutable V7
-current-account diagnostic observation. `0037` repairs a malformed
+The current branch migration head is `0039`, which adds append-only diagnostic
+pre-G12 invocation and six-file publication custody. It does not grant trusted
+source, reservation or order authority. `0038` adds an immutable V7
+current-account diagnostic observation; `0037` repairs a malformed
 account-observation membership regex installed by `0036`. Exact-source
 PostgreSQL CI is still required before accepting the new schema. The current
 working source continues to deny all private exchange writes.

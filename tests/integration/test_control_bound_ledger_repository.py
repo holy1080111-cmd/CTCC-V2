@@ -40,6 +40,13 @@ pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 TOKEN = b"T" * 32
 
 
+@pytest.fixture
+def other_direction_fixture(fixture):
+    # ledger_fixture captures synthetic source using asyncio.run; build it
+    # before pytest enters the asynchronous test's event loop.
+    return ledger_fixture("short", account_id=fixture.request.scope.account_id)
+
+
 def command():
     return uuid4().hex * 2
 
@@ -224,10 +231,10 @@ async def test_control_bound_reserve_unknown_readback_keeps_committed_hold(
 
 
 async def test_control_bound_readback_denies_after_unrelated_event_revision(
-    database, fixture, monkeypatch
+    database, fixture, other_direction_fixture, monkeypatch
 ):
     s = await setup(database, fixture)
-    other = ledger_fixture("short", account_id=fixture.request.scope.account_id)
+    other = other_direction_fixture
     assert (
         other.request.origin.original_event_key
         != fixture.request.origin.original_event_key

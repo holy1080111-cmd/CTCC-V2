@@ -427,6 +427,7 @@ async def publish_capture_public_account_v2(
     market_policy,
     account_session,
     session_factory,
+    g12_custody_repository=None,
 ) -> PostG12OwnedPublicAccountDiagnosticV2:
     """New G12/readback and both fresh native sources in one invocation.
 
@@ -510,7 +511,7 @@ async def publish_capture_public_account_v2(
         )
     )
     invocation = object()
-    publication = None
+    publication = custody_claim = None
     last = None
     code = "new_g12_required"
     pins = {
@@ -578,6 +579,14 @@ async def publish_capture_public_account_v2(
         return result
 
     try:
+        custody_claim = await public_runtime._preclaim_lineage_v2(
+            g12_custody_repository,
+            evidence_root,
+            market,
+            pre,
+            inputs,
+            demo_session=account_session,
+        )
         publication, evidence, origin, last = public_runtime._publish_lineage_v2(
             evidence_root,
             market,
@@ -589,6 +598,15 @@ async def publish_capture_public_account_v2(
         )
         if publication is None or origin is None:
             return finish()
+        await public_runtime._complete_lineage_v2(
+            g12_custody_repository,
+            custody_claim,
+            evidence_root,
+            evidence,
+            market,
+            pre,
+            inputs,
+        )
         if (
             origin.candidate.candidate_entry != intent.candidate_entry
             or origin.candidate.stop_loss != candidate.stop_loss

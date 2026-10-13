@@ -12,6 +12,32 @@ Every output remains `account_complete=False`,
 fill subtotal* only when its named query/window policy is satisfied. That zero
 is never a complete account net-loss, funding, lifecycle, streak or HWM claim.
 
+## Typed source-time replay (B3 V4 policy, diagnostic only)
+
+`replay_observation_index_typed_v1` is a separate, pure B3 replay from the
+original pinned B1 journal chains. Its `TYPED_POLICY_SHA256` binds the B2a V2
+query policy and emits `ctcc.observed_account_execution_window.v3`. Each capture
+binds both the recomputed B2a V2 receipt and its independently derived legacy
+V1 receipt hash. It refuses a V1 query result, policy substitution, missing
+predecessor hash, wrong family time domain, integer-as-boolean coverage, or a
+legacy `generation_at` row. Pair comparisons use the family-specific
+`source_ts_at` and issue `ctcc.observed_history_query_comparison.v3`; they retain
+late, conflicting, missing and disjoint-interval evidence. Actual fill
+cashflows still use `fillTime` for occurrence and do not use `ts` as execution
+time. A bill `ts` is balance-update completion, never funding accrual.
+
+This V3 window receipt is **not** accepted by the DB0021/DB0037 B3 append path
+or any current risk/execution consumer. Existing persisted facts and SQL witness
+selection use a `generation_at` column, and the database guard accepts only the
+old V2 window schema and B3 V3 policy. Making typed B3 durable requires a
+reviewed versioned schema/policy epoch, migration, original-chain readback,
+PostgreSQL concurrency/recovery checks, and explicit downstream upgrades. The
+old replay, its policy and persisted receipts remain byte-identical historical
+DENY evidence; a V3 diagnostic must never be relabeled as an accepted DB batch.
+The typed diagnostic still reports source authenticity, account completeness
+and execution authority as false, and it cannot support a complete loss window
+or any Demo/Live order.
+
 ## Preregistered bounded policy
 
 `account_observation_index.POLICY_BYTES` and its SHA256 bind policy v3. The

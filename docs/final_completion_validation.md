@@ -4997,3 +4997,87 @@ proof cases completed successfully on Windows with cache writing disabled;
 Ruff lint, format check and Git whitespace check passed for the changed source.
 PostgreSQL integration and the complete final-source suite remain unrun for
 this local slice.
+
+## 2026-10-13 9/15 deployment identity re-audit and exact-head CI
+
+The B2a timestamp and computational G12 slices above were subsequently
+committed and pushed as `2453d33ad31223502fbd710c8b8129ab576f01b5`
+(tree `cbdedf026dd20e519843ef5ed975d497413c8a50`, migration head
+`0038`). This is the last exact committed source at the time of this note;
+later local changes, including DB0039, are not covered by its CI run.
+
+The historical 9/15 integrated candidate is the source folder under
+`C:\Users\holy1\AppData\Local\CTCC\Demo-Integrated\907285d56e2045759c9219b300b52b6a\source`.
+Its sibling `release-contract.json` hashes to
+`f8d31e56f2231826d0e891de941f76efeb27de1ec38771383e534ee407f7fa8a`;
+the candidate and full-validation ZIP contract hashes are respectively
+`1a8d0b511a8e8ef7106b5cc6734ac0e017e0ce46072fc4426400b77781715eca`
+and `828abf8ae5da8c25949b13580da2f7e11d8e795a383bbef3ce1b095506240795`.
+The deployment result records `source_set=candidate` and a matching candidate
+identity. Sampled changed source, dependency declaration, DB0017 migration
+and Dockerfile bytes independently match that contract. The original literal
+`CANDIDATE_MATCH_FOUND` console line was not retained, and the candidate ZIP
+does not prove a Git commit or tree; it is not the canonical source.
+
+The 9/15 dependency mismatch was one extra `/app/ctcc_v2.egg-info` project
+metadata distribution in an ordinary package scan. The isolated Python scan
+matched the contracted 39 distributions and Python 3.12.14. The revised
+release check accepts only that one path- and version-checked duplicate and
+still rejects missing, changed or other duplicate dependencies. Its 19/19
+focused checks do not substitute for the historical 9,011-case validation.
+The current source has a different `pyproject.toml` SHA256,
+`c47e6ba2cbb0f938ea961a7ff075e550e3c66c30b883e2d4fd1162ca94f83785`;
+its Linux and Windows validation lock SHA256 values are
+`a44e649cb1d21d3790e132c21699cc172e77ed87682929320cf8f6190fe014e4`
+and `a4b4bb7f390a62fe0f032aa23ab0c288494d61956fc91bc40ffc2fab034d6f16`.
+The lock records still set `accepted_full_validation_baseline=false`. A new
+exact-source full validation and release contract are mandatory; the old
+identity cannot be reused or weakened.
+
+The earlier `f3d03ae` PostgreSQL CI job completed with 359 of 362 cases
+passing. One 33-capture prefix scale check measured 37,342 ms against its
+30,000 ms requirement while replaying 98 original B1 chains. The other two
+failures were a synthetic fixture invoking `asyncio.run()` inside an active
+test loop and an old-DB0025 migration test expecting a reservation receipt
+despite the current post-commit retention readback correctly failing closed.
+The local repairs retain every historical hold and the 30-second scale
+threshold; they require a new exact-source PostgreSQL run. The
+`f3d03ae` Windows job subsequently passed its source-bound 14,838 selected
+cases: 14,809 passed, 29 explicitly classified POSIX-only skips, zero
+failures/errors. Its saved `windows-identity.json` records the exact `f3d03ae`
+commit/tree, JUnit hash
+`a56b17c4e3d872efbed3b65ec5ca00bec957e20b375b4e7081e2a616bad5cca2`,
+and `dependency_full_validation_baseline_accepted=false`. This is valuable
+platform regression evidence, not a pass for later source. The
+[`2453d33` CI run](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/38375284649)
+is also still in progress as of this note. Neither run is a final-source PASS.
+
+## 2026-10-13 pending DB0039 and submit-boundary review
+
+The local DB0039 G12 custody slice records a prepublication claim and the
+subsequent six-file publication in separate append-only database rows. It
+checks claim-to-publication chronology at both SQL insertion and independent
+readback, then reopens the same six files under one identity-checked native
+root before starting any post-G12 public or account request. A second review
+found and verified fixes for future completion time, changes during the
+database await, and split root/file reads. The local targeted run reported 54
+passes and four PostgreSQL skips because no isolated PostgreSQL instance is
+available on this laptop. The broad G12 suite was interrupted without a
+failure result; exact-source PostgreSQL and full CI are still required. This
+diagnostic custody grants neither source authenticity nor execution authority.
+
+The new pure B3 typed replay uses family-specific source timestamp semantics
+while preserving the original V1/V2 replay path and always returns DENY. Its
+reported 51 local unit passes are not a PostgreSQL persistence acceptance.
+The B1 33-capture page-local replay optimization and two historical
+PostgreSQL test repairs also need an exact-source PostgreSQL run; the existing
+30-second scale threshold remains unchanged.
+
+A read-only submit-route audit found a common final OKX private REST endpoint
+for Demo/Live manual and automation orders. The current execution authority
+and private-write guard refuse every new-order POST before network dispatch,
+so there is no presently enabled Demo or Live trading route. The legacy Demo
+and Live service entrypoints have not all been connected to fresh post-G12
+source, atomic qualification reservation and the new durable intent. Thus
+`ALL_SUBMIT_ROUTES_GUARDED` is not a production PASS; opening the current
+transport guard alone would be unsafe.

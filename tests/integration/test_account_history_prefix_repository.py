@@ -184,6 +184,9 @@ async def test_cross_page_33_prefix_scale_and_fail_closed(
     assert receipt.receipt_sha256 == measurement["expected_receipt_sha256"]
     assert value["through_sequence"] == 33 and page_reads == 2
     assert source_chain_reads >= 33
+    # Every original source is read, including the page-boundary predecessor;
+    # a second read of each already verified chain would exhaust this budget.
+    assert source_chain_reads <= 34
     assert elapsed_ms < 30_000  # necessary, not sufficient for the full pre-HTTP path
 
     missing = AccountHistoryPrefixRepository(database[1], clock=now)

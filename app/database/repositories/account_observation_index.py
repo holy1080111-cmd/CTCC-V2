@@ -360,7 +360,9 @@ class AccountObservationIndexRepository:
         overflow |= len(selected) + 1 > observed.MAX_CAPTURES
         return sorted(selected) if not overflow else [], counts, overflow
 
-    async def _derive(self, scope, reference, window, sequence):
+    async def _derive_with_current_source(
+        self, scope, reference, window, sequence, *, cached_predecessor=None
+    ):
         chain, single = await self._source(scope, reference, window)
         selected, counts, overflow = await self._witnesses(
             scope, sequence - 1, single, window
@@ -389,7 +391,21 @@ class AccountObservationIndexRepository:
                 observed.deny("observation_witness_missing")
             data = self._checked_document(row, scope)
             ref = observed.CaptureReference(**data["reference"])
-            original, checked = await self._source(scope, ref, _window(data["window"]))
+            source_window = _window(data["window"])
+            # A completed B3 batch pins a terminal B1 event, and DB0020
+            # forbids mutating/deleting its events. Within this one bounded
+            # page read, the immediately preceding batch's original source
+            # was already replayed and checked against its durable members.
+            # Reuse only that exact reference/window; all other witnesses
+            # still require a fresh original-chain read.
+            if (
+                cached_predecessor is not None
+                and number == sequence - 1
+                and cached_predecessor[:2] == (ref, source_window)
+            ):
+                original, checked = cached_predecessor[2:]
+            else:
+                original, checked = await self._source(scope, ref, source_window)
             await self._stored_membership(scope, row, checked)
             if number == sequence - 1:
                 previous_source = json.loads(checked.receipt_json)
@@ -531,19 +547,50 @@ class AccountObservationIndexRepository:
                 journal.canonical(values)
             )
             document[f"{name}_membership_count"] = len(values)
-        return journal.canonical(document), replay, facts, coverage, findings, chain
+        return (
+            journal.canonical(document),
+            replay,
+            facts,
+            coverage,
+            findings,
+            chain,
+            single,
+        )
+
+    async def _derive(self, scope, reference, window, sequence):
+        # Keep the original six-part internal contract for append and audit
+        # callers. Readback also needs the current original-source replay to
+        # verify normalized membership; retain that exact replay there rather
+        # than independently loading the same immutable completed B1 chain.
+        result = await self._derive_with_current_source(
+            scope, reference, window, sequence
+        )
+        return result[:-1]
 
     async def read(self, scope, *, after=0, limit=PAGE_SIZE):
         try:
             result = []
+            previous_source = None
             for row in await self._rows(scope, after=after, limit=limit):
                 data = self._checked_document(row, scope)
                 reference, window = (
                     observed.CaptureReference(**data["reference"]),
                     _window(data["window"]),
                 )
-                document, replay, _, _, findings, chain = await self._derive(
-                    scope, reference, window, row.sequence
+                (
+                    document,
+                    replay,
+                    _,
+                    _,
+                    findings,
+                    chain,
+                    single,
+                ) = await self._derive_with_current_source(
+                    scope,
+                    reference,
+                    window,
+                    row.sequence,
+                    cached_predecessor=previous_source,
                 )
                 if (
                     row.document_json.encode() != document
@@ -553,7 +600,6 @@ class AccountObservationIndexRepository:
                     < capture._utc(chain[-1].db_recorded_at)
                 ):
                     observed.deny("observation_persisted_replay_mismatch")
-                _, single = await self._source(scope, reference, window)
                 await self._stored_membership(scope, row, single)
                 async with self.session_factory() as session, session.begin():
                     saved = (
@@ -573,6 +619,7 @@ class AccountObservationIndexRepository:
                         row.sequence, row.event_sha256, document, replay
                     )
                 )
+                previous_source = (reference, window, chain, single)
             return tuple(result)
         except Exception:  # noqa: BLE001 -- never expose private raw or SQL errors
             raise observed.AccountObservationError("observation_read_failed") from None

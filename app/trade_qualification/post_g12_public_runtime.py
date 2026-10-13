@@ -32,6 +32,7 @@ from app.trade_qualification import current_conditions_v2 as current_v2
 from app.trade_qualification import (
     current_economics_v2,
     data_v2,
+    g12_invocation_custody,
     original_event_v2,
 )
 from app.trade_qualification import demo_public_origin as demo_origin
@@ -532,6 +533,62 @@ def _publish_lineage_v2(
     return publication, evidence, origin, last
 
 
+async def _preclaim_lineage_v2(
+    repository, evidence_root, market, pre, inputs, *, demo_session
+):
+    """Optional DB preclaim, committed/read back before this task publishes G12.
+
+    This is a diagnostic custody dependency, never a second authority path.
+    A known-invalid public origin must not consume an event tombstone.
+    """
+    if repository is None:
+        return None
+    if type(repository) is not g12_invocation_custody.G12InvocationCustodyRepository:
+        raise ValueError("g12_custody_repository_required")
+    declared = origin_preflight._declared_demo_public_plan(demo_session)
+    source_runtime._require_trusted_v2_demo_origin_profile(
+        {
+            "environment": "demo",
+            "rest_origin": _V2_DEMO_REST_ORIGIN,
+            "ws_origin": _V2_DEMO_WS_ORIGIN,
+            **declared,
+        }
+    )
+    plan = demo_session._plan
+    claim = g12_invocation_custody.prepare_g12_claim(
+        evidence_root,
+        market,
+        pre,
+        inputs,
+        account_uid=plan.expected_uid,
+        account_plan_sha256=demo_session._pin,
+    )
+    committed = await repository.claim(claim)
+    g12_invocation_custody.require_prepublication_root(committed, evidence_root)
+    g12_invocation_custody.require_original_unchanged(committed, market, pre, inputs)
+    return committed
+
+
+async def _complete_lineage_v2(
+    repository, claim, evidence_root, evidence, market, pre, inputs
+):
+    if repository is None:
+        if claim is not None:
+            raise ValueError("g12_custody_unbound_claim")
+        return None
+    if claim is None or evidence is None:
+        raise ValueError("g12_custody_new_publication_required")
+    g12_invocation_custody.require_original_unchanged(claim, market, pre, inputs)
+    publication = g12_invocation_custody.prepare_g12_publication(
+        claim, evidence, evidence_root
+    )
+    committed = await repository.publication(claim, publication)
+    g12_invocation_custody.require_committed_publication_files(
+        claim, committed, evidence, evidence_root
+    )
+    return committed
+
+
 async def publish_capture_public_v2(
     evidence_root,
     public_root,
@@ -541,6 +598,7 @@ async def publish_capture_public_v2(
     original_inputs,
     market_policy,
     demo_session=None,
+    g12_custody_repository=None,
 ):
     """Actual new G12, native v2 public acquisition and raw current G1.
 
@@ -569,7 +627,7 @@ async def publish_capture_public_v2(
     if task is None or task.cancelling():
         raise asyncio.CancelledError
     invocation = object()
-    last = publication = None
+    last = publication = custody_claim = None
     evidence = packet = context = current_g1 = final_g1 = None
     current_conditions = event_zone = economics = journal = None
 
@@ -584,6 +642,14 @@ async def publish_capture_public_v2(
         return utc_from_ns(stamp["utc_ns"])
 
     try:
+        custody_claim = await _preclaim_lineage_v2(
+            g12_custody_repository,
+            evidence_root,
+            market,
+            pre,
+            inputs,
+            demo_session=demo_session,
+        )
         publication, evidence, origin, last = _publish_lineage_v2(
             evidence_root,
             market,
@@ -600,6 +666,15 @@ async def publish_capture_public_v2(
                 utc_from_ns(last["utc_ns"]),
                 evidence=evidence,
             )
+        await _complete_lineage_v2(
+            g12_custody_repository,
+            custody_claim,
+            evidence_root,
+            evidence,
+            market,
+            pre,
+            inputs,
+        )
         carrier = await _capture_after_publication_v2(
             publication, selected, public_root
         )

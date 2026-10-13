@@ -904,6 +904,7 @@ async def publish_capture_inspect_history_event_v4(
     history_capture_id,
     ledger: QualificationLedgerRepository,
     scope: LedgerScope,
+    g12_custody_repository=None,
 ) -> PostG12AccountEventObservationV4:
     """Create this call's V3, read it back, then inspect its exact UID/event.
 
@@ -970,6 +971,11 @@ async def publish_capture_inspect_history_event_v4(
         account_session=account_session,
         session_factory=session_factory,
         history_capture_id=history_capture_id,
+        **(
+            {}
+            if g12_custody_repository is None
+            else {"g12_custody_repository": g12_custody_repository}
+        ),
     )
     result = None
     retained_observation = None

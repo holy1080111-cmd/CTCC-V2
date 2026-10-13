@@ -47,6 +47,26 @@ POLICY_BYTES = journal.canonical(
     }
 )
 POLICY_SHA256 = journal.digest(POLICY_BYTES)
+_TYPED_SOURCE_TS_DOMAINS = {
+    "fills": "fill_record_generated_at",
+    "bills": "balance_update_completed_at",
+}
+TYPED_POLICY_BYTES = journal.canonical(
+    {
+        "version": "ctcc.observed_execution_cashflow_policy.v4",
+        "predecessor_policy_sha256": POLICY_SHA256,
+        "query_policy_sha256": query.V2_POLICY_SHA256,
+        "query_schema": "ctcc.observed_account_history_query.v2",
+        "comparison_schema": "ctcc.observed_history_query_comparison.v3",
+        "source_ts_domains": _TYPED_SOURCE_TS_DOMAINS,
+        "execution_time": "fillTime_not_source_ts",
+        "funding_accrual": "unknown_not_bill_ts",
+        "persistent_append": "not_authorized_by_this_pure_replay",
+        "account_complete": False,
+        "execution_authority": False,
+    }
+)
+TYPED_POLICY_SHA256 = journal.digest(TYPED_POLICY_BYTES)
 
 
 class AccountObservationError(ValueError):
@@ -183,6 +203,56 @@ def _compare_verified(old, new):
     Preserves B2a V2 comparison bytes without replaying raw chains per pair.
     This does not accept, create or cache any current account authority.
     """
+    return _compare_verified_internal(old, new, typed=False)
+
+
+def _typed_receipt(value):
+    """Reject a legacy or caller-relabelled query receipt at this private seam."""
+    if (
+        type(value) is not dict
+        or value.get("schema_version") != "ctcc.observed_account_history_query.v2"
+        or value.get("policy_sha256") != query.V2_POLICY_SHA256
+        or value.get("state") != "retained_typed_source_ts_query_verified"
+        or value.get("admission") != "DENY"
+        or value.get("account_complete") is not False
+        or value.get("source_authenticity_verified") is not False
+        or value.get("execution_authority") is not False
+    ):
+        deny("observation_typed_query_required")
+    journal._sha(value.get("legacy_v1_receipt_sha256"))
+    for item in value["queries"]:
+        family = query._family(item["stream"])
+        if item.get("time_domain") != _TYPED_SOURCE_TS_DOMAINS.get(family):
+            deny("observation_typed_domain_invalid")
+    for item in value["coverage"]:
+        if (
+            item.get("time_domain") != _TYPED_SOURCE_TS_DOMAINS.get(item["family"])
+            or type(item.get("requested_source_ts_window_covered")) is not bool
+            or "requested_generation_window_covered" in item
+        ):
+            deny("observation_typed_domain_invalid")
+    for item in value["rows"]:
+        if (
+            item.get("source_ts_semantics")
+            != _TYPED_SOURCE_TS_DOMAINS.get(item["family"])
+            or type(item.get("source_ts_at")) is not str
+            or "generation_at" in item
+        ):
+            deny("observation_typed_domain_invalid")
+
+
+def _compare_verified_typed(old, new):
+    """Compare only V2 receipts just recomputed from original B1 chains."""
+    _typed_receipt(old)
+    _typed_receipt(new)
+    return _compare_verified_internal(old, new, typed=True)
+
+
+def _compare_verified_internal(old, new, *, typed):
+    time_field = "source_ts_at" if typed else "generation_at"
+    interval_field = (
+        "uncompared_source_ts_intervals" if typed else "uncompared_generation_intervals"
+    )
     if (
         old["scope_sha256"] != new["scope_sha256"]
         or old["policy_sha256"] != new["policy_sha256"]
@@ -202,6 +272,7 @@ def _compare_verified(old, new):
         {
             "family": family,
             "product": product,
+            **({"time_domain": _TYPED_SOURCE_TS_DOMAINS[family]} if typed else {}),
             "previous_covered_intervals": old_coverage[(family, product)][
                 "covered_intervals"
             ],
@@ -234,7 +305,7 @@ def _compare_verified(old, new):
                 else "conflicting_overlap"
             )
         else:
-            at = query._time(row["generation_at"])
+            at = query._time(row[time_field])
             covered_before = any(
                 coverage_item["family"] == row["family"]
                 and coverage_item["product"] in {"*", row["product"]}
@@ -260,7 +331,7 @@ def _compare_verified(old, new):
     for key, row in prior.items():
         if key in current:
             continue
-        at = query._time(row["generation_at"])
+        at = query._time(row[time_field])
         if any(
             coverage_item["family"] == row["family"]
             and coverage_item["product"] in {"*", row["product"]}
@@ -280,12 +351,14 @@ def _compare_verified(old, new):
             )
     return journal.canonical(
         {
-            "schema_version": "ctcc.observed_history_query_comparison.v2",
+            "schema_version": "ctcc.observed_history_query_comparison.v3"
+            if typed
+            else "ctcc.observed_history_query_comparison.v2",
             "previous_head_sha256": old["journal_head_sha256"],
             "current_head_sha256": new["journal_head_sha256"],
             "findings": findings,
             "uncompared_query_domains": uncompared,
-            "uncompared_generation_intervals": measured_intervals_uncompared,
+            interval_field: measured_intervals_uncompared,
             "dependent_current_claims_require_reconciliation": bool(uncompared)
             or bool(measured_intervals_uncompared)
             or any(
@@ -316,10 +389,27 @@ def replay_observation_index(
         raise AccountObservationError("observation_source_replay_invalid") from None
 
 
-def _replay(sources, scope, window, policy_pin, *, adjacent=True):
+def replay_observation_index_typed_v1(
+    sources, *, scope, window, expected_policy_sha256=TYPED_POLICY_SHA256
+):
+    """Recompute typed source-time evidence; no DB append or current authority."""
+    try:
+        return _replay(
+            sources, scope, window, expected_policy_sha256, source_ts_v2=True
+        )
+    except AccountObservationError:
+        raise
+    except Exception:  # noqa: BLE001 -- private source details never leave replay
+        raise AccountObservationError(
+            "observation_typed_source_replay_invalid"
+        ) from None
+
+
+def _replay(sources, scope, window, policy_pin, *, adjacent=True, source_ts_v2=False):
     checked_bootstrap(scope, LedgerScope)
     window_data = window_document(window)
-    if type(policy_pin) is not str or policy_pin != POLICY_SHA256:
+    required_policy = TYPED_POLICY_SHA256 if source_ts_v2 else POLICY_SHA256
+    if type(policy_pin) is not str or policy_pin != required_policy:
         deny("observation_policy_mismatch")
     if type(sources) is not tuple or not 1 <= len(sources) <= MAX_CAPTURES:
         deny("observation_capture_bound")
@@ -339,8 +429,15 @@ def _replay(sources, scope, window, policy_pin, *, adjacent=True):
         if total_bytes > MAX_SOURCE_BYTES:
             deny("observation_source_byte_bound")
         pins = _pins(reference, scope)
-        verified = query.verify_history_query_chain(chain, **pins)
+        verifier = (
+            query.verify_history_query_chain_v2
+            if source_ts_v2
+            else query.verify_history_query_chain
+        )
+        verified = verifier(chain, **pins)
         value = json.loads(verified.receipt_json)
+        if source_ts_v2:
+            _typed_receipt(value)
         actual_reference = source_reference(chain)
         if reference_document(actual_reference) != reference_document(reference):
             deny("observation_source_session_or_pin_mismatch")
@@ -351,12 +448,17 @@ def _replay(sources, scope, window, policy_pin, *, adjacent=True):
             ):
                 findings.append(
                     {
-                        "kind": "generation_cutoff_regressed",
+                        "kind": "source_ts_cutoff_regressed"
+                        if source_ts_v2
+                        else "generation_cutoff_regressed",
                         "capture_id": reference.capture_id,
                     }
                 )
             for proof_index, (_, prior_ref) in enumerate(prior_sources):
-                comparison = json.loads(_compare_verified(proofs[proof_index], value))
+                comparator = (
+                    _compare_verified_typed if source_ts_v2 else _compare_verified
+                )
+                comparison = json.loads(comparator(proofs[proof_index], value))
                 for item in comparison["findings"]:
                     if item["kind"] not in {"matching_overlap", "new_observation"}:
                         findings.append(
@@ -408,14 +510,24 @@ def _replay(sources, scope, window, policy_pin, *, adjacent=True):
                     )
                 if (
                     proof_index == len(prior_sources) - 1
-                    and comparison["uncompared_generation_intervals"]
+                    and comparison[
+                        "uncompared_source_ts_intervals"
+                        if source_ts_v2
+                        else "uncompared_generation_intervals"
+                    ]
                 ):
                     findings.append(
                         {
-                            "kind": "effective_generation_overlap_gap",
+                            "kind": "effective_source_ts_overlap_gap"
+                            if source_ts_v2
+                            else "effective_generation_overlap_gap",
                             "capture_id": reference.capture_id,
                             "compared_capture_id": prior_ref.capture_id,
-                            "domains": comparison["uncompared_generation_intervals"],
+                            "domains": comparison[
+                                "uncompared_source_ts_intervals"
+                                if source_ts_v2
+                                else "uncompared_generation_intervals"
+                            ],
                         }
                     )
             gap = query._time(value["observed_completed_at"]) - query._time(
@@ -430,7 +542,9 @@ def _replay(sources, scope, window, policy_pin, *, adjacent=True):
             ):
                 findings.append(
                     {
-                        "kind": "generation_overlap_gap",
+                        "kind": "source_ts_overlap_gap"
+                        if source_ts_v2
+                        else "generation_overlap_gap",
                         "capture_id": reference.capture_id,
                     }
                 )
@@ -483,8 +597,12 @@ def _replay(sources, scope, window, policy_pin, *, adjacent=True):
                             "product",
                             "identity_sha256",
                             "row_sha256",
-                            "generation_at",
                             "fill_at",
+                            *(
+                                ("source_ts_at", "source_ts_semantics")
+                                if source_ts_v2
+                                else ("generation_at",)
+                            ),
                         )
                     },
                     "first_observed_at": value["observed_completed_at"],
@@ -502,6 +620,15 @@ def _replay(sources, scope, window, policy_pin, *, adjacent=True):
             {
                 **reference_document(reference),
                 "query_receipt_sha256": verified.receipt_sha256,
+                **(
+                    {
+                        "legacy_v1_query_receipt_sha256": value[
+                            "legacy_v1_receipt_sha256"
+                        ]
+                    }
+                    if source_ts_v2
+                    else {}
+                ),
                 "observed_completed_at": value["observed_completed_at"],
                 "requested_start": value["requested_start"],
                 "requested_end": value["requested_end"],
@@ -511,14 +638,22 @@ def _replay(sources, scope, window, policy_pin, *, adjacent=True):
         previous = chain, reference, value
         prior_sources.append((chain, reference))
     latest = proofs[-1]
-    generated_end = query._time(latest["requested_end"])
+    source_ts_end = query._time(latest["requested_end"])
     blockers = set()
-    if window.ended_at > generated_end - timedelta(seconds=300):
-        blockers.add("generation_observation_tail_below_policy")
-    if query._time(latest["observed_completed_at"]) - generated_end > timedelta(
+    if window.ended_at > source_ts_end - timedelta(seconds=300):
+        blockers.add(
+            "source_ts_observation_tail_below_policy"
+            if source_ts_v2
+            else "generation_observation_tail_below_policy"
+        )
+    if query._time(latest["observed_completed_at"]) - source_ts_end > timedelta(
         seconds=120
     ):
-        blockers.add("generation_query_cutoff_stale")
+        blockers.add(
+            "source_ts_query_cutoff_stale"
+            if source_ts_v2
+            else "generation_query_cutoff_stale"
+        )
     domains = {(item["family"], item["product"]) for item in latest["coverage"]}
     coverages = []
     for family, product in sorted(domains):
@@ -532,19 +667,24 @@ def _replay(sources, scope, window, policy_pin, *, adjacent=True):
             ]
         )
         covered = any(
-            start <= window.started_at and end >= generated_end
+            start <= window.started_at and end >= source_ts_end
             for start, end in intervals
         )
-        coverages.append(
-            {
-                "family": family,
-                "product": product,
-                "generation_window_covered": covered,
-                "intervals": [[a.isoformat(), b.isoformat()] for a, b in intervals],
-            }
-        )
+        coverage = {
+            "family": family,
+            "product": product,
+            "source_ts_window_covered"
+            if source_ts_v2
+            else "generation_window_covered": covered,
+            "intervals": [[a.isoformat(), b.isoformat()] for a, b in intervals],
+        }
+        if source_ts_v2:
+            coverage["time_domain"] = _TYPED_SOURCE_TS_DOMAINS[family]
+        coverages.append(coverage)
         if not covered:
-            blockers.add("generation_window_gap")
+            blockers.add(
+                "source_ts_window_gap" if source_ts_v2 else "generation_window_gap"
+            )
     if findings:
         blockers.add("source_observations_require_reconciliation")
     cashflows, total = [], Fraction(0)
@@ -575,33 +715,40 @@ def _replay(sources, scope, window, policy_pin, *, adjacent=True):
             continue
         gross, fee = _amount(raw.get("fillPnl")), _amount(raw.get("fee"))
         total += gross + fee
-        cashflows.append(
-            {
-                "identity_sha256": identity,
-                "row_sha256": row_sha,
-                "instrument_id": raw["instId"],
-                "execution_at": item["fill_at"],
-                "generation_at": item["generation_at"],
-                "currency": scope.settlement_currency,
-                "gross_fill_pnl": _fraction(gross),
-                "signed_fee": _fraction(fee),
-                "observed_fill_cashflow": _fraction(gross + fee),
-                "lifecycle_completion": "unknown",
-                "locators": item["locators"],
-            }
-        )
+        cashflow = {
+            "identity_sha256": identity,
+            "row_sha256": row_sha,
+            "instrument_id": raw["instId"],
+            "execution_at": item["fill_at"],
+            "source_ts_at" if source_ts_v2 else "generation_at": item[
+                "source_ts_at" if source_ts_v2 else "generation_at"
+            ],
+            "currency": scope.settlement_currency,
+            "gross_fill_pnl": _fraction(gross),
+            "signed_fee": _fraction(fee),
+            "observed_fill_cashflow": _fraction(gross + fee),
+            "lifecycle_completion": "unknown",
+            "locators": item["locators"],
+        }
+        if source_ts_v2:
+            cashflow["source_ts_semantics"] = item["source_ts_semantics"]
+        cashflows.append(cashflow)
     # Conflicting variants remain in the private index, but never get summed as
     # two independent financial events. The aggregate is unavailable on any gap.
     value = {
-        "schema_version": "ctcc.observed_account_execution_window.v2",
-        "policy_sha256": POLICY_SHA256,
+        "schema_version": "ctcc.observed_account_execution_window.v3"
+        if source_ts_v2
+        else "ctcc.observed_account_execution_window.v2",
+        "policy_sha256": required_policy,
         "scope_sha256": journal.digest(
             journal.canonical(
                 [scope.environment, scope.account_id, scope.settlement_currency]
             )
         ),
         "window": window_data,
-        "generation_observation_cutoff": generated_end.isoformat(),
+        "source_ts_observation_cutoff"
+        if source_ts_v2
+        else "generation_observation_cutoff": source_ts_end.isoformat(),
         "observed_completed_at": latest["observed_completed_at"],
         "captures": captures,
         "source_index": list(rows.values()),

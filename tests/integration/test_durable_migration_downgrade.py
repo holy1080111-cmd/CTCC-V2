@@ -694,7 +694,34 @@ async def test_control_bound_reporting_downgrade_rejects_retained_v3_outcome(
         await connection.run_sync(migrate, "0025", "upgrade")
     fixture = control_bound_range_fixture
     setup = await control_fixtures.setup(sandbox, fixture)
-    hold = await setup.reserve()
+    # DB0025 predates the current retention guard. The production post-commit
+    # observer must deny its readback, while the committed hold must survive.
+    with pytest.raises(
+        QualificationLedgerError, match="^ledger_reservation_commit_readback_unknown$"
+    ):
+        await setup.reserve()
+    scope = fixture.request.scope
+    event_key = fixture.request.origin.original_event_key
+    with pytest.raises(
+        QualificationLedgerError, match="event_ledger_schema_retention_invalid"
+    ):
+        await setup.ledger.read_event_observation(scope, event_key)
+    assert (await historical_event_state(sandbox[1], scope, event_key))["state"] == (
+        "reserved"
+    )
+    async with sandbox[1]() as session:
+        scope_row = await session.get(
+            QualificationAccountScope,
+            (scope.environment, scope.account_id, scope.settlement_currency),
+        )
+        row = await session.get(
+            QualificationReservation, reservation_id(scope, event_key)
+        )
+        assert scope_row is not None and row is not None
+        hold = setup.ledger._receipt(row, scope_row)
+    assert hold.state == "reserved" and hold.state_revision == 1
+    # Continue only inside the disposable migration fixture to construct a
+    # retained synthetic outcome. This is not a runtime retry or exchange IO.
     outer = await setup.consume()
     body = json.loads(json.loads(outer.canonical_json)["intent_json"])
     setup.clock.value += timedelta(milliseconds=1)

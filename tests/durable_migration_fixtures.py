@@ -26,6 +26,7 @@ MIGRATIONS = {
     "0036": "0036_account_observation_policy_epoch.py",
     "0037": "0037_account_observation_membership_regex_repair.py",
     "0038": "0038_demo_current_observation.py",
+    "0039": "0039_g12_invocation_custody.py",
 }
 TABLES = {
     # 0023 is constraint/trigger-only and has dedicated upgrade/downgrade

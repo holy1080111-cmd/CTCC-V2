@@ -448,6 +448,7 @@ async def publish_capture_public_account_history_v3(
     account_session,
     session_factory,
     history_capture_id,
+    g12_custody_repository=None,
 ) -> PostG12OwnedPublicAccountHistoryDiagnosticV3:
     """Inspect one new G12 and one post-publication V7 current/history join.
 
@@ -547,7 +548,7 @@ async def publish_capture_public_account_history_v3(
         "current_reference_sha256": None,
         "public_only_recheck_sha256": None,
     }
-    publication = None
+    publication = custody_claim = None
     invocation = object()
     barrier = public_first = history_start = history_end = history_verified = (
         account_first
@@ -608,6 +609,14 @@ async def publish_capture_public_account_history_v3(
         return receipt
 
     try:
+        custody_claim = await public_runtime._preclaim_lineage_v2(
+            g12_custody_repository,
+            evidence_root,
+            market,
+            pre,
+            inputs,
+            demo_session=account_session,
+        )
         publication, evidence, origin, last = public_runtime._publish_lineage_v2(
             evidence_root,
             market,
@@ -619,6 +628,15 @@ async def publish_capture_public_account_history_v3(
         )
         if publication is None or origin is None:
             return finish()
+        await public_runtime._complete_lineage_v2(
+            g12_custody_repository,
+            custody_claim,
+            evidence_root,
+            evidence,
+            market,
+            pre,
+            inputs,
+        )
         if (
             origin.candidate.candidate_entry != intent.candidate_entry
             or origin.candidate.stop_loss != candidate.stop_loss
