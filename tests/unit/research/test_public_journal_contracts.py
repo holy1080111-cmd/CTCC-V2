@@ -144,6 +144,7 @@ def test_memory_adapter_240_minute_aggregation_is_deterministic(monkeypatch):
         storage.ControlledPublicReceiptJournal, "read_all", lambda _: verified
     )
     journal = object.__new__(storage.ControlledPublicReceiptJournal)
+    journal._checkpoint = checkpoint
     rows = measured_public_minutes(
         journal=journal,
         capture_id=packet.capture_id,

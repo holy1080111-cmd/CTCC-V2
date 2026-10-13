@@ -34,6 +34,7 @@ def _inputs(case, tmp_path: Path):
         "capture_service": kwargs["capture_service"],
         "observation_repository": kwargs["observation_repository"],
         "ordinal": 0,
+        "expected_previous_receipt_sha256s": (),
     }
     return root, pins, call, state, schedule
 
@@ -74,6 +75,86 @@ async def test_due_receipt_is_no_clobber_read_back_and_restart_refuses_duplicate
         root / "minute-00000000" / "receipt.json",
         root / "minute-00000000" / "receipt.sha256",
     }
+
+
+async def test_store_requires_exact_previous_pins_before_any_ordinal_claim(
+    case, tmp_path
+):
+    root, pins, call, state, _ = _inputs(case, tmp_path)
+    store = owner.ScheduledMinuteReceiptStore.initialize(root, **pins)
+
+    without_pins = {
+        key: value
+        for key, value in call.items()
+        if key != "expected_previous_receipt_sha256s"
+    }
+    with pytest.raises(TypeError, match="expected_previous_receipt_sha256s"):
+        await store.capture_once(**without_pins)
+    with pytest.raises(
+        owner.ScheduledMinutePublicationError, match="previous receipt pins"
+    ):
+        await store.capture_once(**{**call, "expected_previous_receipt_sha256s": None})
+    with pytest.raises(owner.ScheduledMinuteUnresolved, match="sequence is unresolved"):
+        await store.capture_once(
+            **{
+                **call,
+                "ordinal": 1,
+                "expected_previous_receipt_sha256s": ("0" * 64,),
+            }
+        )
+    assert state["captures"] == 0
+    assert not (root / "minute-00000000").exists()
+    assert not (root / "minute-00000001").exists()
+
+
+async def test_store_rejects_changed_previous_pin_without_consuming_next_ordinal(
+    case, tmp_path
+):
+    root, pins, call, state, _ = _inputs(case, tmp_path)
+    store = owner.ScheduledMinuteReceiptStore.initialize(root, **pins)
+    first = await store.capture_once(**call)
+    restarted = owner.ScheduledMinuteReceiptStore.resume(root, **pins)
+    with pytest.raises(
+        owner.ScheduledMinuteUnresolved, match="prior source is unresolved"
+    ):
+        await restarted.capture_once(
+            **{
+                **call,
+                "ordinal": 1,
+                "expected_previous_receipt_sha256s": ("0" * 64,),
+            }
+        )
+    assert restarted.read_ordinal(0, expected_receipt_sha256=first.sha256) == first
+    assert not (root / "minute-00000001").exists()
+    assert state["captures"] == 1
+
+
+async def test_store_rejects_incomplete_previous_source_without_new_claim(
+    case, tmp_path, monkeypatch
+):
+    root, pins, call, state, schedule = _inputs(case, tmp_path)
+    monkeypatch.setattr(
+        capture_owner,
+        "native_stamp",
+        lambda: {"utc_ns": schedule.plans[0].end_ns - 1},
+    )
+    store = owner.ScheduledMinuteReceiptStore.initialize(root, **pins)
+    first = await store.capture_once(**call)
+    assert first.contract.reason_code == "not_due"
+    restarted = owner.ScheduledMinuteReceiptStore.resume(root, **pins)
+    with pytest.raises(
+        owner.ScheduledMinuteUnresolved, match="prior source is unresolved"
+    ):
+        await restarted.capture_once(
+            **{
+                **call,
+                "ordinal": 1,
+                "expected_previous_receipt_sha256s": (first.sha256,),
+            }
+        )
+    assert restarted.read_ordinal(0, expected_receipt_sha256=first.sha256) == first
+    assert not (root / "minute-00000001").exists()
+    assert state["captures"] == 0
 
 
 @pytest.mark.parametrize(
@@ -191,7 +272,13 @@ async def test_crash_after_claim_keeps_unresolved_ordinal_and_blocks_restart(
     with pytest.raises(owner.ScheduledMinutePublicationError, match="already claimed"):
         await restarted.capture_once(**call)
     with pytest.raises(owner.ScheduledMinuteUnresolved, match="receipt is unresolved"):
-        await restarted.capture_once(**{**call, "ordinal": 1})
+        await restarted.capture_once(
+            **{
+                **call,
+                "ordinal": 1,
+                "expected_previous_receipt_sha256s": ("0" * 64,),
+            }
+        )
     assert state["captures"] == 1
 
 

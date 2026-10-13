@@ -213,3 +213,10 @@ private owner during both controlled-journal reads, then replays the same event
 before returning a hash-only DENY diagnostic. This closes the V8 handoff gap
 between G5 replay and the local DB observation, but neither the DB nor V10
 proves complete legacy/exchange event history. G6 remains unperformed.
+
+The [V12 same-frame bracket/journal diagnostic](owned_original_bracket_journal_v12.md)
+also inspects the original fixed V11 entry/stop/target before those journal
+reads and replays the bracket afterwards. It binds the V10 and V11 nested
+receipts to one source invocation without joining standalone receipts. It
+remains DENY-only: controlled-journal absence is not complete G6 history, and
+observed geometry is not a qualified G8/G9 bracket or execution authority.

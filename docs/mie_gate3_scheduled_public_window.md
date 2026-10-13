@@ -43,10 +43,14 @@ window readback does not independently reauthenticate the raw public journal,
 PostgreSQL roles and server clock, host UTC, first evaluator access, candidate
 seal custody, complete real development/validation and holdout datasets, or a
 single formal evaluation. Those remain separate fail-closed requirements.
-The underlying legacy `ScheduledMinuteReceiptStore.capture_once` still accepts
-calls without prior receipt pins; strict multi-minute order is guaranteed only
-through this coordinator. A future deployed scheduler must exclusively use the
-coordinator or make those pins mandatory at the store boundary. The stored
+The underlying `ScheduledMinuteReceiptStore.capture_once` now requires the
+exact externally retained prior receipt SHA-256 tuple. Under the native root
+operation, it verifies a contiguous claimed prefix and replays each prior
+receipt with the matching pin and source-chain reason before creating the next
+one-use claim. A missing or unresolved prior receipt leaves its original
+tombstone intact and denies the next ordinal. The coordinator remains the
+default-off window interface; these store checks close a direct-call bypass,
+but the caller still has to protect prior pins independently. The stored
 `due_observed_at` has microsecond precision and cannot prove the exact
 nanosecond boundary accepted by the original capture clock; actual HTTP
 request start also needs separate causal verification. Neither this local

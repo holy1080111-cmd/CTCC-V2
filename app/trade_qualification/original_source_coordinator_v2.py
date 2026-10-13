@@ -1425,6 +1425,39 @@ async def _capture_owned_original_bracket_for_boundary_v11(
     )
 
 
+async def _capture_owned_original_bracket_journal_for_boundary_v12(
+    public_root,
+    account_root,
+    *,
+    instrument_id,
+    strategy,
+    market_policy,
+    account_session,
+    session_factory,
+):
+    """Inspect fixed geometry and the UID event journal in one raw-source frame."""
+    if type(strategy) is not str or strategy not in precursor._BASE_STRATEGIES:
+        raise OriginalSourceCoordinatorError(
+            "owned_bracket_journal_strategy_unsupported"
+        )
+    return await _capture_owned_original_sources(
+        public_root,
+        account_root,
+        instrument_id=instrument_id,
+        market_policy=market_policy,
+        account_session=account_session,
+        session_factory=session_factory,
+        inspect_g1=True,
+        strategy=strategy,
+        retain_raw_for_boundary=True,
+        inspect_base_prefix=True,
+        inspect_base_event=True,
+        inspect_base_bracket=True,
+        inspect_base_event_journal=True,
+        inspect_base_bracket_journal=True,
+    )
+
+
 async def _inspect_owned_event_journal_in_frame_v10(
     *,
     account_session,
@@ -1544,6 +1577,7 @@ async def _capture_owned_original_sources(
     inspect_base_event_journal=False,
     inspect_sweep_history=False,
     inspect_base_bracket=False,
+    inspect_base_bracket_journal=False,
 ):
     if (
         type(inspect_g1) is not bool
@@ -1553,8 +1587,15 @@ async def _capture_owned_original_sources(
         or type(inspect_base_event_journal) is not bool
         or type(inspect_sweep_history) is not bool
         or type(inspect_base_bracket) is not bool
+        or type(inspect_base_bracket_journal) is not bool
         or inspect_base_bracket
-        and (not inspect_base_event or inspect_base_event_journal)
+        and (
+            not inspect_base_event
+            or inspect_base_event_journal
+            and not inspect_base_bracket_journal
+        )
+        or inspect_base_bracket_journal
+        and not (inspect_base_bracket and inspect_base_event_journal)
         or inspect_base_event_journal
         and not inspect_base_event
         or inspect_base_event
@@ -1644,7 +1685,7 @@ async def _capture_owned_original_sources(
     sweep_receipt_json = None
     bracket_state = None
 
-    def result():
+    def result(kind=None):
         fields = {
             "schema_version": (
                 "ctcc.original_owned_precursor_diagnostic.v4"
@@ -1703,7 +1744,61 @@ async def _capture_owned_original_sources(
             if inspect_g1
             else InitialOwnedSourcesDiagnosticV2(receipt)
         )
-        if inspect_base_bracket:
+        if inspect_base_bracket_journal and kind is None:
+            bracket_json = result("bracket")
+            journal_json = result("journal")
+            bracket = decode(bracket_json)
+            journal = decode(journal_json)
+            bracket_code = bracket["code"]
+            journal_code = journal["code"]
+            code_v12 = (
+                bracket_code
+                if bracket_code in {"source_unavailable", "precursor_no_intent"}
+                else journal_code
+                if journal_code
+                in {
+                    "g5_unavailable",
+                    "ledger_unavailable",
+                    "ledger_changed",
+                    "event_seen_in_controlled_journal",
+                }
+                else "bracket_unavailable"
+                if bracket_code == "bracket_unavailable"
+                else "joined_inspected_unqualified"
+            )
+            return canonical(
+                {
+                    "schema_version": "ctcc.owned_original_bracket_journal.v12",
+                    "code": code_v12,
+                    "bracket_receipt_json": bracket_json.decode("ascii"),
+                    "bracket_receipt_sha256": sha(bracket_json),
+                    "journal_receipt_json": journal_json.decode("ascii"),
+                    "journal_receipt_sha256": sha(journal_json),
+                    "admission": "DENY",
+                    **{
+                        name: False
+                        for name in (
+                            "source_authenticity_verified",
+                            "historical_first_availability_verified",
+                            "event_ledger_authenticated",
+                            "g6_evaluated",
+                            "g7_evaluated",
+                            "g8_evaluated",
+                            "g9_evaluated",
+                            "candidate_created",
+                            "g1_g11_complete",
+                            "g12_published",
+                            "account_complete",
+                            "execution_recheck_performed",
+                            "atomic_risk_reserved",
+                            "durable_intent_created",
+                            "execution_authority",
+                            "order_submitted",
+                        )
+                    },
+                }
+            )
+        if inspect_base_bracket and kind != "journal":
             inspected = bracket_state is not None
             if inspected is not (event_receipt_json is not None):
                 raise OriginalSourceCoordinatorError("owned_bracket_inspection_missing")
@@ -1779,7 +1874,7 @@ async def _capture_owned_original_sources(
                     },
                 }
             )
-        if inspect_base_event_journal:
+        if inspect_base_event_journal and kind != "bracket":
             if journal_identity is None:
                 raise OriginalSourceCoordinatorError(
                     "original_event_journal_scope_missing"
@@ -2166,6 +2261,16 @@ async def _capture_owned_original_sources(
                     ):
                         raise OriginalSourceCoordinatorError(
                             "original_event_journal_replay_changed"
+                        )
+                    if inspect_base_bracket_journal and (
+                        bracket_state is None
+                        or _evaluate_owned_bracket_v11(
+                            packet, owned.packet, replayed, **bracket_inputs
+                        )
+                        != bracket_state
+                    ):
+                        raise OriginalSourceCoordinatorError(
+                            "owned_bracket_changed_across_journal_read"
                         )
                     journal_stamp = native_stamp()
                     validate_stamps((finished, journal_stamp))

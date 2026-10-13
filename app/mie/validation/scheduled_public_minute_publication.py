@@ -349,10 +349,10 @@ class ScheduledMinuteReceiptStore:
         self,
         ordinal: int,
         *,
-        expected_previous_receipt_sha256s: tuple[str, ...] | None = None,
+        expected_previous_receipt_sha256s: tuple[str, ...],
     ) -> None:
         name = _ordinal_name(ordinal, self._coordinate_plan.expected_rows)
-        if expected_previous_receipt_sha256s is not None and (
+        if (
             type(expected_previous_receipt_sha256s) is not tuple
             or len(expected_previous_receipt_sha256s) != ordinal
             or any(
@@ -373,10 +373,11 @@ class ScheduledMinuteReceiptStore:
                         if existing != "identity.json"
                     )
                 )
-                if (
-                    expected_previous_receipt_sha256s is not None
-                    and existing_ordinals != tuple(range(ordinal))
-                ):
+                if name in names:
+                    raise ScheduledMinutePublicationError(
+                        "scheduled minute ordinal already claimed"
+                    )
+                if existing_ordinals != tuple(range(ordinal)):
                     raise ScheduledMinuteUnresolved(
                         "scheduled minute sequence is unresolved"
                     )
@@ -384,12 +385,8 @@ class ScheduledMinuteReceiptStore:
                     if existing == "identity.json":
                         continue
                     existing_ordinal = int(existing[7:])
-                    if existing == name:
-                        raise ScheduledMinutePublicationError(
-                            "scheduled minute ordinal already claimed"
-                        )
                     checked = self._read_slot(directory, existing_ordinal)
-                    if expected_previous_receipt_sha256s is not None and (
+                    if (
                         checked.sha256
                         != expected_previous_receipt_sha256s[existing_ordinal]
                         or checked.contract.reason_code
@@ -477,9 +474,9 @@ class ScheduledMinuteReceiptStore:
         capture_service,
         observation_repository,
         ordinal: int,
-        expected_previous_receipt_sha256s: tuple[str, ...] | None = None,
+        expected_previous_receipt_sha256s: tuple[str, ...],
     ) -> FrozenGate3Artifact[ScheduledPublicMinuteReceiptV1]:
-        """Claim before the delegated await; never recapture after any claim."""
+        """Verify the pinned complete prefix, then claim before any await."""
         self._claim(
             ordinal,
             expected_previous_receipt_sha256s=expected_previous_receipt_sha256s,

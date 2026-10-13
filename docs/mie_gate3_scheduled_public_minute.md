@@ -48,9 +48,13 @@ directory. `initialize` publishes the canonical schedule/root identity with
 no clobber and readback. `resume` requires the same external seal, coordinate,
 and schedule SHA-256 pins; it does not discover a new identity from the folder.
 
-`capture_once` creates `minute-<ordinal>` and writes its claim before awaiting
-the existing DB and public-source service. That directory is a one-use
-tombstone. A duplicate or restarted invocation for the same ordinal is denied,
+`capture_once` requires the exact externally retained SHA-256 tuple for every
+earlier ordinal. It verifies the complete contiguous prefix and each earlier
+source-chain receipt under the native root operation before creating
+`minute-<ordinal>` and writing its claim. An omitted, changed, incomplete, or
+unresolved prior receipt denies the new claim without removing earlier files.
+The newly created directory is a one-use tombstone. A duplicate or restarted
+invocation for the same ordinal is denied,
 even if a prior call crashed before `claim.json` or before the result. Unknown
 source or database outcomes are not retried. The existing source service still
 owns journal and DB0035 replay; this wrapper cannot turn a local result file

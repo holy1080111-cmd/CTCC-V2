@@ -17,6 +17,6 @@ Every V11 result has `admission=DENY` and `execution_authority=false`.
 Historical first availability, authenticated event history, G6–G9, calibrated
 economics, complete account risk, G12, reservation, intent and execution are
 not established. In particular, a geometrically available bracket is not a
-qualified candidate and cannot authorize an order. V10 event-journal and V11
-bracket diagnostics currently use separate one-use account sessions; their
-receipts must not be joined after the fact.
+qualified candidate and cannot authorize an order. Standalone V10 and V11
+diagnostics use separate one-use account sessions; their receipts must not be
+joined after the fact. The separate V12 entry point inspects both in one frame.
