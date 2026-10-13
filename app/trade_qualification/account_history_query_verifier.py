@@ -1,7 +1,7 @@
 """B2a: replay private B1 bytes and observed Global fills/bills query coverage.
 
-This proves a bounded, generation-time query as recorded, never account history,
-native transport ownership, an execution-time loss window or trading authority.
+This proves a bounded, family-typed source-ts query as recorded, never account
+history, native transport ownership, an execution-time loss window or authority.
 No IO, credential, settings or caller completeness assertion is accepted here.
 """
 
@@ -34,9 +34,31 @@ POLICY_BYTES = journal.canonical(
     }
 )
 POLICY_SHA256 = journal.digest(POLICY_BYTES)
+V2_POLICY_BYTES = journal.canonical(
+    {
+        "version": "ctcc.global_observed_history_query_policy.v2",
+        "predecessor_policy_sha256": POLICY_SHA256,
+        "documentation": "https://app.okx.com/docs-v5/en/",
+        "documentation_reviewed": "2026-10-13",
+        "source_ts_domains": {
+            "fills": "fill_record_generated_at",
+            "bills": "balance_update_completed_at",
+        },
+        "fill_time": "actual_execution_time_not_source_ts",
+        "archive_apply_status_ts": "first_server_receipt_not_bill_source_ts",
+        "comparison": "not_issued_by_v2_until_downstream_contracts_are_versioned",
+        "account_complete": False,
+        "execution_authority": False,
+    }
+)
+V2_POLICY_SHA256 = journal.digest(V2_POLICY_BYTES)
 _HISTORY_FAMILIES = frozenset(
     {"fills_recent", "fills_history", "bills_recent", "bills_archive"}
 )
+_SOURCE_TS_DOMAINS = {
+    "fills": "fill_record_generated_at",
+    "bills": "balance_update_completed_at",
+}
 _PAGE_KINDS = frozenset(
     {
         "request_start",
@@ -379,7 +401,7 @@ def _has_measured_overlap(previous, current):
     )
 
 
-def _coverage(packet, raw_sequences):
+def _coverage(packet, raw_sequences, *, source_ts_v2=False):
     groups, rows = {}, {}
     for index, observation in enumerate(packet.observations):
         stream = observation.request.stream
@@ -409,17 +431,22 @@ def _coverage(packet, raw_sequences):
                 stamp = times.get("ts")
                 if stamp is None:
                     _deny("history_query_generation_time_missing")
-                rows[key] = {
+                item = {
                     "family": _family(stream),
                     "product": raw.get("instType"),
                     "identity_sha256": key,
                     "row_sha256": row_sha,
-                    "generation_at": stamp.isoformat(),
                     "fill_at": None
                     if times.get("fillTime") is None
                     else times["fillTime"].isoformat(),
                     "locators": [locator],
                 }
+                if source_ts_v2:
+                    item["source_ts_at"] = stamp.isoformat()
+                    item["source_ts_semantics"] = _SOURCE_TS_DOMAINS[item["family"]]
+                else:
+                    item["generation_at"] = stamp.isoformat()
+                rows[key] = item
     queries = []
     intervals = {}
     products = (
@@ -438,23 +465,22 @@ def _coverage(packet, raw_sequences):
         covered = [] if start > end else [(start, end)]
         for target in products if domain == "fills" and product == "*" else (product,):
             intervals.setdefault((domain, target), []).extend(covered)
-        queries.append(
-            {
-                "stream": stream,
-                "endpoint": pages[0].request.endpoint,
-                "product": product,
-                "cursor": "billId",
-                "time_domain": "source_record_generation_ts",
-                "supported_days": days,
-                "retained_from": retained_from.isoformat(),
-                "covered_intervals": [
-                    [a.isoformat(), b.isoformat()] for a, b in covered
-                ],
-                "page_receipts": [page.receipt_sha256 for page in pages],
-                "terminal_receipt": pages[-1].receipt_sha256,
-                "row_count": sum(len(page.rows) for page in pages),
-            }
-        )
+        query = {
+            "stream": stream,
+            "endpoint": pages[0].request.endpoint,
+            "product": product,
+            "cursor": "billId",
+            "time_domain": _SOURCE_TS_DOMAINS[domain]
+            if source_ts_v2
+            else "source_record_generation_ts",
+            "supported_days": days,
+            "retained_from": retained_from.isoformat(),
+            "covered_intervals": [[a.isoformat(), b.isoformat()] for a, b in covered],
+            "page_receipts": [page.receipt_sha256 for page in pages],
+            "terminal_receipt": pages[-1].receipt_sha256,
+            "row_count": sum(len(page.rows) for page in pages),
+        }
+        queries.append(query)
     coverage = []
     for family, product in (
         *(("fills", product) for product in products),
@@ -465,16 +491,17 @@ def _coverage(packet, raw_sequences):
             a <= packet.plan.history_start and b >= packet.plan.history_end
             for a, b in merged
         )
-        coverage.append(
-            {
-                "family": family,
-                "product": product,
-                "covered_intervals": [
-                    [a.isoformat(), b.isoformat()] for a, b in merged
-                ],
-                "requested_generation_window_covered": covers,
-            }
-        )
+        item = {
+            "family": family,
+            "product": product,
+            "covered_intervals": [[a.isoformat(), b.isoformat()] for a, b in merged],
+        }
+        if source_ts_v2:
+            item["time_domain"] = _SOURCE_TS_DOMAINS[family]
+            item["requested_source_ts_window_covered"] = covers
+        else:
+            item["requested_generation_window_covered"] = covers
+        coverage.append(item)
     return queries, coverage, list(rows.values())
 
 
@@ -489,6 +516,11 @@ def verify_history_query_chain(
     expected_policy_sha256=POLICY_SHA256,
 ):
     """Recompute a private audit result from exact B1 readbacks, not claim DTOs."""
+    if (
+        type(expected_policy_sha256) is not str
+        or expected_policy_sha256 != POLICY_SHA256
+    ):
+        _deny("history_query_policy_mismatch")
     try:
         return _verify(
             chain,
@@ -506,9 +538,73 @@ def verify_history_query_chain(
     raise HistoryQueryVerificationError("history_query_verification_invalid")
 
 
-def _verify(chain, head, plan_pin, packet_pin, account_id, currency, policy_pin):
-    if type(policy_pin) is not str or policy_pin != POLICY_SHA256:
+def verify_history_query_chain_v2(
+    chain,
+    *,
+    expected_head_sha256,
+    expected_plan_sha256,
+    expected_packet_sha256,
+    expected_account_id,
+    expected_settlement_currency,
+    expected_policy_sha256=V2_POLICY_SHA256,
+):
+    """Replay original B1 bytes directly into a separately pinned typed receipt.
+
+    V1 bytes and downstream V1 comparison/index contracts stay historical DENY
+    artifacts. A V1 receipt is not an input, and no caller can relabel it as V2.
+    """
+    if (
+        type(expected_policy_sha256) is not str
+        or expected_policy_sha256 != V2_POLICY_SHA256
+    ):
         _deny("history_query_policy_mismatch")
+    try:
+        # Derive both receipts from the same pinned original B1 readback. Never
+        # accept a caller-supplied V1 receipt or reinterpret its mislabeled ts.
+        predecessor = _verify(
+            chain,
+            expected_head_sha256,
+            expected_plan_sha256,
+            expected_packet_sha256,
+            expected_account_id,
+            expected_settlement_currency,
+            POLICY_SHA256,
+        )
+        return _verify(
+            chain,
+            expected_head_sha256,
+            expected_plan_sha256,
+            expected_packet_sha256,
+            expected_account_id,
+            expected_settlement_currency,
+            V2_POLICY_SHA256,
+            predecessor_receipt_sha256=predecessor.receipt_sha256,
+        )
+    except HistoryQueryVerificationError:
+        raise
+    except Exception:  # noqa: BLE001 -- no private parser or source text leakage
+        raise HistoryQueryVerificationError(
+            "history_query_verification_invalid"
+        ) from None
+
+
+def _verify(
+    chain,
+    head,
+    plan_pin,
+    packet_pin,
+    account_id,
+    currency,
+    policy_pin,
+    *,
+    predecessor_receipt_sha256=None,
+):
+    if type(policy_pin) is not str or policy_pin not in {
+        POLICY_SHA256,
+        V2_POLICY_SHA256,
+    }:
+        _deny("history_query_policy_mismatch")
+    source_ts_v2 = policy_pin == V2_POLICY_SHA256
     if (
         type(account_id) is not str
         or capture._ID.fullmatch(account_id) is None
@@ -561,10 +657,14 @@ def _verify(chain, head, plan_pin, packet_pin, account_id, currency, policy_pin)
         != initial["local_checkpoint_sha256"]
     ):
         _deny("history_query_checkpoint_mismatch")
-    queries, coverage, rows = _coverage(packet, raw_sequences)
+    queries, coverage, rows = _coverage(
+        packet, raw_sequences, source_ts_v2=source_ts_v2
+    )
     value = {
-        "schema_version": "ctcc.observed_account_history_query.v1",
-        "policy_sha256": POLICY_SHA256,
+        "schema_version": "ctcc.observed_account_history_query.v2"
+        if source_ts_v2
+        else "ctcc.observed_account_history_query.v1",
+        "policy_sha256": policy_pin,
         "scope_sha256": journal.digest(
             journal.canonical(["demo", account_id, currency])
         ),
@@ -575,7 +675,9 @@ def _verify(chain, head, plan_pin, packet_pin, account_id, currency, policy_pin)
         "requested_start": plan.history_start.isoformat(),
         "requested_end": plan.history_end.isoformat(),
         "observed_completed_at": packet.completed_at.isoformat(),
-        "state": "retained_query_chain_verified",
+        "state": "retained_typed_source_ts_query_verified"
+        if source_ts_v2
+        else "retained_query_chain_verified",
         "queries": queries,
         "coverage": coverage,
         "rows": rows,
@@ -594,6 +696,9 @@ def _verify(chain, head, plan_pin, packet_pin, account_id, currency, policy_pin)
             "current_owned_session_authority",
         ],
     }
+    if source_ts_v2:
+        journal._sha(predecessor_receipt_sha256)
+        value["legacy_v1_receipt_sha256"] = predecessor_receipt_sha256
     return HistoryQueryVerification(journal.canonical(value))
 
 

@@ -82,10 +82,22 @@ async def test_owned_capture_finalization_separate_read_and_exact_query_replay(
     monkeypatch.setattr(AccountCaptureJournalRepository, "read_chain", read)
     result = await bootstrap.collect_bootstrap_query_verified(session, **args)
     data = json.loads(result.query_verification.receipt_json)
+    public = json.loads(result.receipt_json)
+    old = verify(events)
     assert len(reads) == 1
-    assert result.query_verification == verify(events)
-    assert data["state"] == "retained_query_chain_verified"
-    assert all(item["requested_generation_window_covered"] for item in data["coverage"])
+    assert result.query_verification == verifier.verify_history_query_chain_v2(
+        tuple(events), **pins(events)
+    )
+    assert data["schema_version"] == "ctcc.observed_account_history_query.v2"
+    assert data["policy_sha256"] == verifier.V2_POLICY_SHA256
+    assert data["legacy_v1_receipt_sha256"] == old.receipt_sha256
+    assert data["state"] == "retained_typed_source_ts_query_verified"
+    assert all(item["requested_source_ts_window_covered"] for item in data["coverage"])
+    assert public["schema_version"] == "ctcc.demo_bootstrap_query_observation.v2"
+    assert public["policy_sha256"] == verifier.V2_POLICY_SHA256
+    assert (
+        public["query_verification_sha256"] == result.query_verification.receipt_sha256
+    )
     assert len(data["coverage"]) == (7 if v4 else 2)
     recent = next(item for item in data["queries"] if item["stream"] == "fills_recent")
     archive = next(
@@ -94,6 +106,16 @@ async def test_owned_capture_finalization_separate_read_and_exact_query_replay(
     assert recent["covered_intervals"][0][0] > data["requested_start"]
     assert archive["covered_intervals"][0][0] == data["requested_start"]
     assert recent["supported_days"] == 3 and archive["supported_days"] == 28
+    assert recent["time_domain"] == archive["time_domain"] == "fill_record_generated_at"
+    assert all(
+        item["time_domain"]
+        == (
+            "balance_update_completed_at"
+            if item["family"] == "bills"
+            else "fill_record_generated_at"
+        )
+        for item in data["coverage"]
+    )
     assert data["unverified"] and "execution_time_loss_window" in data["unverified"]
     assert not result.account_complete and not result.execution_authority
     assert result.admission == "DENY"
@@ -103,11 +125,56 @@ async def test_owned_capture_finalization_separate_read_and_exact_query_replay(
     assert all(secret.encode() not in result.receipt_json for secret in SECRETS)
     if v4:
         assert any(len(row["locators"]) == 2 for row in data["rows"])
+        assert {item["source_ts_semantics"] for item in data["rows"]} == {
+            "fill_record_generated_at",
+            "balance_update_completed_at",
+        }
+        assert all(
+            "generation_at" not in item and "source_ts_at" in item
+            for item in data["rows"]
+        )
+        fill = next(item for item in data["rows"] if item["family"] == "fills")
+        bill = next(item for item in data["rows"] if item["family"] == "bills")
+        assert (
+            fill["source_ts_at"]
+            == bill["source_ts_at"]
+            == (NOW - timedelta(seconds=1)).isoformat()
+        )
+        assert fill["fill_at"] == (NOW - timedelta(seconds=3)).isoformat()
+        assert bill["fill_at"] is None
     else:
         # Actual terminal-only fixture is an observed empty query, never a seed.
         assert data["rows"] == []
     assert all(request.method == "GET" for request in harness.requests)
     harness.assert_closed()
+
+
+@pytest.mark.asyncio
+async def test_v1_receipt_cannot_be_relabelled_as_v2(monkeypatch):
+    session, _, _, args, events = setup(monkeypatch, v4=True)
+    await bootstrap.collect_bootstrap_recorded(session, **args)
+    original = verify(events)
+    with pytest.raises(verifier.HistoryQueryVerificationError, match="policy_mismatch"):
+        verifier.verify_history_query_chain_v2(
+            tuple(events),
+            **pins(events),
+            expected_policy_sha256=verifier.POLICY_SHA256,
+        )
+    with pytest.raises(verifier.HistoryQueryVerificationError, match="policy_mismatch"):
+        verifier.verify_history_query_chain(
+            tuple(events),
+            **pins(events),
+            expected_policy_sha256=verifier.V2_POLICY_SHA256,
+        )
+    revised = verifier.verify_history_query_chain_v2(tuple(events), **pins(events))
+    assert verify(events) == original
+    assert revised.receipt_sha256 != original.receipt_sha256
+    assert (
+        json.loads(revised.receipt_json)["legacy_v1_receipt_sha256"]
+        == original.receipt_sha256
+    )
+    assert original.account_complete is original.execution_authority is False
+    assert revised.account_complete is revised.execution_authority is False
 
 
 @pytest.mark.asyncio

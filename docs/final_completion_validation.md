@@ -4808,7 +4808,8 @@ the current Global route.
 
 The separate authenticated OKX ticket form was then submitted under the
 account-and-identity category. OKX displayed a successful submission and
-readback of formal ticket `39818376`, with a support specialist following up.
+readback of a formal ticket, with a support specialist following up. The ticket
+identifier is retained only in the private redacted receipt.
 The redacted receipt is
 `../../validation-results/okx-registration-support-20261013/formal-ticket-receipt.json`
 (SHA256 `1a72c030680f57b37a8969f1c40d6d030f8475883d4ef97c56e36ef42c08d6ac`).
@@ -4931,3 +4932,68 @@ intent invocation, and a future positive issuer must close the transport
 last-await/first-byte race, bind exact signed request bytes and account/control
 revision, and account for pre-order leverage writes. No Demo or Live POST was
 made during this audit.
+
+## 2026-10-13 exact-source continuation and pending local slices
+
+The reservation readback, outbox pair barrier and computational-only public
+window above were committed as `ffe6af3fb2f928a5406cc19de9d84eb49d8836e9`.
+The reviewed HighVol compatibility setting was then committed as
+`f3d03aeb727724e73886c4cc4628ae5cf9d4a0be` (tree
+`5b84509d53635ade258126e05514c39a33ac4532`). The setting accepts the
+legacy installer flag only when false; a true value fails startup with
+`CANONICAL_V2_DISPATCH_INTEGRATION_REQUIRED`. This prevents the installer flag
+from being silently ignored. It does not integrate HighVol into the canonical
+strategy, safety kernel, risk or execution chain. The reviewed installer copy
+passed native PowerShell parsing and seven-file source identity checks; actual
+install, reinstall, upgrade and rollback remain unaccepted.
+
+Exact-head GitHub run [38366007040](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/38366007040)
+started on `f3d03ae`. At 2026-10-13 09:08 UTC, all eight Linux full-suite
+shards had succeeded, while the Windows non-DB and isolated PostgreSQL/restart
+jobs were still running with no reported failure. Both were within their
+180-minute workflow limit. The run cannot validate changes made after
+`f3d03ae`, and neither outstanding job is counted as PASS.
+
+The current local B2a patch adds a versioned interpretation for OKX history
+timestamps. The existing V1 chain and digest are preserved; V2 replays that
+same pinned B1 chain and retains the V1 predecessor digest. OKX bill `ts` is
+balance-update completion, fill `fillTime` is execution time, fill `ts` is fill
+record generation, and archive-application `ts` is first server request
+receipt. The V2 distinction does not retroactively validate V1 consumers,
+funding accrual timing, complete account history, or realized forensics. The
+current bootstrap emits the V2 query observation, but account-source
+admission remains DENY until the rest of the semantic chain and authenticated
+source finality are verified.
+
+The current local G12 computational proof slice accepts only the original
+G1–G11 run and publishes a fresh six-file G12 packet. A separate no-clobber
+sidecar records its full run digest and six file hashes, then immediate readback
+replays G1–G11, the G12 calculation, renderer and exact file bytes. The publish
+entrypoint rejects an old G12 run. Independent review showed that a caller who
+controls an old packet and the sidecar can construct a matching sidecar for
+standalone readback; that readback proves only computational consistency, not
+fresh publication provenance. `publication_provenance_verified=False` and
+`admission=DENY` are fixed. The sidecar holds no private account values and
+grants no execution authority. Full original inputs and the full run must be retained
+separately for post-restart replay; source authenticity, a publication barrier,
+new post-G12 market/account observations, continuation, portfolio risk,
+reservation, durable intent and execution eligibility remain missing.
+
+The original Notion directive was read back directly on 2026-10-13. Its four
+required real evidence examples remain 0/4 accepted. The authenticated OKX
+ticket still had no account-record confirmation of the original
+registration site at the 17:15 Asia/Taipei readback. Sequential signed GETs only established
+the credential's current Global API route; they do not lift public-source
+admission. No Demo or Live order has been sent by this continuation.
+
+Independent reviewers checked both local slices. B2a's V1 receipts and hashes
+were byte-identical on the same synthetic B1 v3/v4 chains before and after the
+V2 addition; the old downstream V1 comparison/index/current join/native proof,
+funding and tail paths still require versioned semantic upgrade. The G12
+reviewer reproduced the caller-controlled sidecar limitation described above,
+which is now explicitly marked unverified in the result and covered by a
+regression case. After that correction, the 59 B2a unit cases and 12 G12
+proof cases completed successfully on Windows with cache writing disabled;
+Ruff lint, format check and Git whitespace check passed for the changed source.
+PostgreSQL integration and the complete final-source suite remain unrun for
+this local slice.

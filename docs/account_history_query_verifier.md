@@ -3,9 +3,9 @@
 `collect_bootstrap_query_verified` uses the existing controlled account session,
 collector and B1 journal. After acquisition and durable finalization, it reads the
 whole journal in another database session and calls
-`verify_history_query_chain`. No account request is added or retried by B2a.
+`verify_history_query_chain_v2`. No account request is added or retried by B2a.
 
-The new `ctcc.demo_bootstrap_query_observation.v1` public receipt binds the B1
+The `ctcc.demo_bootstrap_query_observation.v2` public receipt binds the B1
 head, packet, plan, policy and private verifier result by hashes. It contains no
 UID, query rows or credential values. Both result objects and receipts retain
 `account_complete=False`, `execution_authority=False` and `admission=DENY`.
@@ -30,8 +30,13 @@ are sorted, repaired or dropped to disguise malformed input. Equal overlap is
 represented by one derived row identity with **all original locators** retained;
 different bytes for the same family/bill ID fail. Private raw source stays in B1.
 
-The fixed policy `ctcc.global_observed_history_query_policy.v1` supports Global
-Demo v3 SWAP and v4 standard-product fills/bills queries. Its supported archive
+The original `ctcc.global_observed_history_query_policy.v1` stays byte-identical
+for historical DENY receipts and dependent comparison/index contracts. The
+versioned `ctcc.global_observed_history_query_policy.v2` is now used by the B2a
+owned capture. It replays original B1 bytes through V1 and binds the exact V1
+receipt hash, but issues a separate V2 receipt; a saved V1 receipt is never
+accepted as V2 input. Both policies support Global Demo v3 SWAP and v4
+standard-product fills/bills queries. Their supported archive
 lookback is at most **28 days measured at actual capture completion**. This is
 an implementation bound wholly inside the documented three-month retention,
 not a replacement claim about OKX retention. Each recent fill query contributes
@@ -40,10 +45,19 @@ is combined with recent coverage separately for each applicable family/product.
 A short recent interval therefore does not truncate a valid archive interval.
 
 The API reference currently documents fills as three days, fills-history and
-bills-archive as three months, and bills as seven days. The verifier uses `ts`
-for these filtered queries and retains actual `fillTime` separately. [OKX API
-reference](https://www.okx.com/docs-v5/en/). Timestamp filtering and cursor
-pagination are separate operations. [OKX pagination
+bills-archive as three months, and bills as seven days. V2 preserves raw `ts`
+but labels its meaning by family: fills `ts` is **fill-record generation**,
+while account bills `ts` is **balance-update completion**. Neither is actual
+fill execution time (`fillTime`), and quarterly archive apply/status `ts` means
+the first server receipt of that archive request. V2 rows use `source_ts_at`
+plus `source_ts_semantics`; queries and coverage carry their family-specific
+`time_domain`. The raw milliseconds remain in B1; V2 renders the exact UTC
+instant. The V1 `generation_at` label is never copied into V2. [OKX
+bills](https://app.okx.com/docs-v5/en/#trading-account-rest-api-get-bills-details-last-7-days),
+[fills](https://app.okx.com/docs-v5/en/#order-book-trading-trade-get-transaction-details-last-3-days),
+and [quarterly archive](https://app.okx.com/docs-v5/en/#trading-account-rest-api-get-bills-details-since-2021)
+define these clocks. Timestamp filtering and cursor pagination are separate
+operations. [OKX pagination
 guide](https://www.okx.com/docs-v5/trick_en/#pagination).
 
 Order pages remain part of exact packet/journal replay, but their retention and
@@ -53,7 +67,7 @@ denies verification. No other region is silently substituted.
 
 ## Scope of a positive query result
 
-`retained_query_chain_verified` means that the stated source generation-time
+`retained_typed_source_ts_query_verified` means that the stated source `ts`
 query, as recorded, has been replayed through its terminal and its retained
 interval derived. It does not mean that all executions before a cutoff have
 already appeared, or that no later correction can arrive. It does not establish
@@ -62,7 +76,8 @@ high-water marks, complete liabilities/product coverage or account authority.
 Those facts remain explicitly unverified. A recorded empty query is not an
 account-inception assertion or a zero risk seed.
 
-`compare_history_query_chains` independently replays two pinned journal chains.
+`compare_history_query_chains` independently replays two pinned **V1** journal
+chains. It has not been upgraded to consume the V2 typed-time receipt.
 It records matching/conflicting overlap, a newly observed row inside a previously
 covered interval, and a formerly observed row missing from the current covered
 interval. It retains both locator sets and does not overwrite either observation.
@@ -72,13 +87,21 @@ comparison also records product domains present in only one observation and
 requires reconciliation, even when that domain has no rows. This prevents an
 empty v3 SWAP query from being treated as coverage of the other v4 products.
 The comparison readout is now `ctcc.observed_history_query_comparison.v2`.
-It also checks **effective measured generation-time intervals** for every
+It also checks **effective measured source-`ts` intervals** for every
 shared family/product domain. Equal domain names with no overlapping interval
 are recorded in `uncompared_generation_intervals` with each side's bounded
 intervals, and dependent current claims require reconciliation even when both
 terminal page chains have zero rows. A genuine partial interval overlap does
 not by itself add that blocker. Earlier V1 receipts remain historical DENY
 observations and cannot be silently reinterpreted as V2 comparison evidence.
+The comparison remains a V1 contract with its historical `generation_at`
+field name for bills; it is not a V2 typed-time comparison.
+`account_current_history_join`, `account_native_proof`,
+`account_funding_bill_audit`, the observation index, and the lifecycle/tail
+paths still replay V1. Their saved receipts and database projections are not
+upgraded by the owned bootstrap V2 receipt. In particular, this change does
+not establish account completeness, a typed-time forensics chain, or a valid
+funding-accrual clock for any of those consumers.
 The three-chain prerequisite and V7 four-chain tail policies now explicitly
 pin this V2 comparison schema; the V6 follow-up-current policy inherits the
 three-chain policy hash. Saved receipts from the prior policy epoch remain
@@ -110,7 +133,7 @@ loss streak under existing portfolio rules. It does not prove the old
 `loss_streak_at_history_start` when the reset lies inside the required loss
 window. Keep an earlier genuine seed or introduce a separate versioned reset
 anchor; never fill the old seed with zero or omit daily/7-day outcomes. Bill
-generation time remains distinct from funding accrual. B2a implements neither
+balance-update completion remains distinct from funding accrual. B2a implements neither
 reset/lifecycle nor HWM issuance.
 
 ## Validation

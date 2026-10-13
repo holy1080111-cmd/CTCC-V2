@@ -397,7 +397,7 @@ async def collect_bootstrap_query_verified(
         ):
             raise runtime.AccountRuntimeError("account_runtime_invalid")
         chain = await journal_repository.read_chain(owner.scope, owner.capture_id)
-        verified = verifier.verify_history_query_chain(
+        verified = verifier.verify_history_query_chain_v2(
             chain,
             expected_head_sha256=owner.previous,
             expected_plan_sha256=session._pin,
@@ -407,14 +407,14 @@ async def collect_bootstrap_query_verified(
         )
         receipt = journal.canonical(
             {
-                "schema_version": "ctcc.demo_bootstrap_query_observation.v1",
+                "schema_version": "ctcc.demo_bootstrap_query_observation.v2",
                 "capture_id": owner.capture_id,
                 "journal_head_sha256": owner.previous,
                 "plan_sha256": session._pin,
                 "packet_sha256": owner.owned_packet_sha256,
                 "query_verification_sha256": verified.receipt_sha256,
-                "policy_sha256": verifier.POLICY_SHA256,
-                "state": "recorded_generation_time_query_verified",
+                "policy_sha256": verifier.V2_POLICY_SHA256,
+                "state": "recorded_typed_source_ts_query_verified",
                 "account_complete": False,
                 "source_authenticity_verified": False,
                 "execution_authority": False,

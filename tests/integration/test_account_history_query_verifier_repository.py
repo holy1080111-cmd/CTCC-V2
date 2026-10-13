@@ -109,9 +109,11 @@ async def test_b2_independent_postgresql_readback_replays_exact_bytes(
     monkeypatch, database
 ):
     result, chain, pins, _, _ = await persisted_capture(monkeypatch, database)
-    assert (
-        verifier.verify_history_query_chain(chain, **pins) == result.query_verification
-    )
+    v1 = verifier.verify_history_query_chain(chain, **pins)
+    v2 = verifier.verify_history_query_chain_v2(chain, **pins)
+    assert v2 == result.query_verification
+    assert json.loads(v2.receipt_json)["legacy_v1_receipt_sha256"] == v1.receipt_sha256
+    assert v1.receipt_sha256 != v2.receipt_sha256
     assert result.account_complete is result.execution_authority is False
     assert all(item.db_recorded_at <= item.readback_at for item in chain)
     assert result.recorded.bootstrap.transport_provenance == "synthetic_transport"
@@ -122,7 +124,7 @@ async def test_b2_incomplete_read_view_preserves_postgresql_journal(
 ):
     _, chain, pins, repo, scope = await persisted_capture(monkeypatch, database)
     with pytest.raises(verifier.HistoryQueryVerificationError):
-        verifier.verify_history_query_chain(chain[:-1], **pins)
+        verifier.verify_history_query_chain_v2(chain[:-1], **pins)
     reloaded = await repo.read_chain(
         scope, journal.checked_event(chain[0].event)["capture_id"]
     )

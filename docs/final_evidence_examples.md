@@ -73,3 +73,15 @@ For the current directive, evidence must satisfy the original list and the
 newer real-source sample requirements; one artifact may satisfy both only when
 its actual lineage proves both. No synthetic fixture or the current G1
 historical diagnostic counts. All four original examples remain NOT ACCEPTED.
+
+## 2026-10-13 original-source readback
+
+The [original construction directive](https://app.notion.com/p/3d832165a6888173bfb1df896604fc7c)
+was fetched directly again. Its final-output list still specifies the four
+examples above, including a summary image with liquidity and gate results.
+Notion reported a 2026-10-11 last edit and `unverified` page status; the later
+status entries did not replace that original list. The
+[implementation plan](https://app.notion.com/p/3d832165a68881b3981cd9692986f031)
+and [V2 execution report](https://app.notion.com/p/3da32165a688817ab205dea8b1592424)
+still distinguish the original four from a newer four-category acceptance
+grouping. No authentic example was accepted by this read-only check: 0/4.
