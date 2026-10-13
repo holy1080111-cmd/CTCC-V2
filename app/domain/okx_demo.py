@@ -143,6 +143,8 @@ class OkxDemoReconcileResult(BaseModel):
     recent_orders: list[OkxDemoOrderView]
     pending_algo_orders: list[OkxDemoAlgoOrderView]
     persisted: bool
+    # Random, non-secret ID for the one pinned private GET session, if used.
+    credential_session_binding_id: str | None = None
     reconciled_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 

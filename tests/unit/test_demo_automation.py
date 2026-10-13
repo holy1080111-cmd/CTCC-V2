@@ -1,5 +1,6 @@
 import asyncio
 import inspect
+import json
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -8,6 +9,7 @@ import pytest
 
 from app.config.settings import Settings
 from app.database.repositories.demo_automation import DemoAutomationStateConflict
+from app.database.repositories.qualification_ledger import PortfolioLocalCheckpoint
 from app.demo_automation import DemoAutomationSafetyError
 from app.demo_automation.service import SafeDemoAutomation
 from app.domain.demo_automation import DemoAutomationActiveTrade
@@ -83,7 +85,13 @@ class FakeDemo:
     ) -> None:
         self.place_calls = []
         self.leverage_calls = []
+        self.reconcile_calls = 0
+        self.reconcile_persisted = True
+        self.reconcile_binding_id: str | None = "a" * 64
         self.account_level = "2"
+        self.account_uid = "123456789"
+        self.reconcile_uid: str | None = None
+        self.reconcile_main_uid: str | None = None
         self.equity = Decimal(10000)
         self.available_equity: Decimal | None = None
         self.adjusted_equity = Decimal(0)
@@ -144,7 +152,21 @@ class FakeDemo:
             )
         )
 
+    async def account_config(self) -> OkxDemoAccountConfig:
+        return OkxDemoAccountConfig(
+            uid=self.account_uid,
+            account_level=self.account_level,
+            position_mode="net_mode",
+            raw={
+                "uid": self.account_uid,
+                "mainUid": self.account_uid,
+                "acctLv": self.account_level,
+                "posMode": "net_mode",
+            },
+        )
+
     async def reconcile(self) -> OkxDemoReconcileResult:
+        self.reconcile_calls += 1
         pending_algo_orders: list[OkxDemoAlgoOrderView] = []
         if self.protection_present:
             for position in self.positions:
@@ -176,9 +198,19 @@ class FakeDemo:
                 )
         return OkxDemoReconcileResult(
             account_config=OkxDemoAccountConfig(
+                uid=self.reconcile_uid or self.account_uid,
                 account_level=self.account_level,
                 position_mode="net_mode",
-                raw={"posMode": "net_mode"},
+                raw={
+                    "uid": self.reconcile_uid or self.account_uid,
+                    "mainUid": (
+                        self.reconcile_main_uid
+                        or self.reconcile_uid
+                        or self.account_uid
+                    ),
+                    "acctLv": self.account_level,
+                    "posMode": "net_mode",
+                },
             ),
             balance=OkxDemoBalanceSnapshot(
                 total_equity=self.equity + self.other_asset_equity,
@@ -205,7 +237,8 @@ class FakeDemo:
             pending_orders=list(self.pending_orders),
             recent_orders=list(self.recent_orders),
             pending_algo_orders=pending_algo_orders,
-            persisted=True,
+            persisted=self.reconcile_persisted,
+            credential_session_binding_id=self.reconcile_binding_id,
         )
 
     async def set_leverage(self, request):
@@ -520,14 +553,77 @@ def structural_dynamic_updates() -> dict[str, object]:
     }
 
 
+class MemoryLocalCheckpointRepository:
+    """Synthetic initialized-flat B5 readback for legacy automation unit tests."""
+
+    def __init__(self) -> None:
+        self.views: list[dict[str, object]] = []
+        self.scopes = []
+        self.hashes: list[str] = []
+
+    async def read_portfolio_checkpoint(self, scope) -> PortfolioLocalCheckpoint:
+        self.scopes.append(scope)
+        stamp = datetime.now(UTC) + timedelta(microseconds=len(self.scopes))
+        view = {
+            "schema_version": "ctcc.portfolio_local_checkpoint.v2",
+            "environment": scope.environment,
+            "account_id": scope.account_id,
+            "requested_settlement_currency": scope.settlement_currency,
+            "currency_states": [
+                {
+                    "scope": {
+                        "environment": scope.environment,
+                        "account_id": scope.account_id,
+                        "settlement_currency": scope.settlement_currency,
+                    },
+                    "account_revision": 0,
+                    "ledger_revision": 0,
+                    "claims_sha256": None,
+                    "active": [],
+                }
+            ],
+            "unresolved_intents": [],
+            "legacy": {
+                "automation": {},
+                "sync_checkpoint": {
+                    "status": "reconciled",
+                    "exact_uid_bound": True,
+                    "credential_session_binding_id": "a" * 64,
+                    "order_count": 0,
+                    "position_count": 0,
+                    "algo_order_count": 0,
+                    "updated_at": stamp.isoformat(),
+                },
+                "positions": [],
+                "orders": [],
+                "algos": [],
+            },
+            "blocking_reasons": [],
+            "future_writer_exclusion": False,
+            "execution_authority": False,
+        }
+        if self.views:
+            view = self.views.pop(0)
+        result = PortfolioLocalCheckpoint(
+            document_json=json.dumps(view, sort_keys=True).encode(),
+            observed_at=stamp,
+            received_at=stamp,
+        )
+        self.hashes.append(result.state_sha256)
+        return result
+
+
 def make_service(
     demo: FakeDemo,
     *,
     strategy: FakeStrategy | None = None,
     market_hub: FakeHub | None = None,
     public_client: FakePublic | None = None,
+    local_checkpoint_repository=None,
     **setting_updates,
 ) -> SafeDemoAutomation:
+    if local_checkpoint_repository is None:
+        local_checkpoint_repository = MemoryLocalCheckpointRepository()
     return SafeDemoAutomation(
         settings=configured_settings(**setting_updates),
         strategy_service=strategy or FakeStrategy(candidate()),
@@ -536,6 +632,7 @@ def make_service(
         market_hub=market_hub or FakeHub(),
         market_client=FakeClient(),
         repository=MemoryAutomationRepository(),
+        local_checkpoint_repository=local_checkpoint_repository,
     )
 
 

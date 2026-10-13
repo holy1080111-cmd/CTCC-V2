@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -28,6 +29,8 @@ from app.domain.okx_demo import (
 )
 from app.okx_demo.equity import resolve_demo_risk_capital
 
+_TERMINAL_ORDER_STATES = ("filled", "canceled", "mmp_canceled")
+
 
 class OkxDemoRepository:
     """PostgreSQL mirror for current OKX Demo account state.
@@ -47,9 +50,18 @@ class OkxDemoRepository:
         positions: list[OkxDemoPositionView],
         orders: list[OkxDemoOrderView],
         algo_orders: list[OkxDemoAlgoOrderView],
+        credential_session_binding_id: str | None = None,
     ) -> OkxDemoMirrorStatus:
+        if credential_session_binding_id is not None and (
+            type(credential_session_binding_id) is not str
+            or len(credential_session_binding_id) != 64
+            or any(
+                char not in "0123456789abcdef" for char in credential_session_binding_id
+            )
+        ):
+            raise ValueError("okx_demo_credential_session_binding_invalid")
         now = datetime.now(UTC)
-        deduped_orders = {item.order_id: item for item in orders if item.order_id}
+        unique_orders = self._unique_orders(orders)
         deduped_positions = {
             item.position_key: item
             for item in positions
@@ -65,6 +77,16 @@ class OkxDemoRepository:
 
         async with self.session_factory() as session:  # noqa: SIM117 - Keep database session and transaction lifetimes explicit at the durable boundary.
             async with session.begin():
+                # B5 takes SHARE locks in this order. Hold stronger locks for
+                # the complete mirror transaction so two captures cannot
+                # publish a stale active count or race an order-state check.
+                await session.execute(
+                    text(
+                        "LOCK TABLE okx_demo_sync_checkpoints, okx_demo_order_state, "
+                        "okx_demo_position_state, okx_demo_algo_order_state "
+                        "IN SHARE ROW EXCLUSIVE MODE"
+                    )
+                )
                 balance_values = {
                     "id": 1,
                     "total_equity": balance.total_equity,
@@ -94,26 +116,47 @@ class OkxDemoRepository:
                 for algo in deduped_algo_orders.values():
                     session.add(self._algo_row(algo, now))
 
-                for order in deduped_orders.values():
-                    values = self._order_values(order, now)
-                    stmt = pg_insert(OkxDemoOrderState).values(**values)
-                    await session.execute(
-                        stmt.on_conflict_do_update(
-                            index_elements=[OkxDemoOrderState.order_id],
-                            set_={k: v for k, v in values.items() if k != "order_id"},
-                        )
-                    )
+                for order in unique_orders.values():
+                    await self._upsert_order_locked(session, order, now)
 
+                # Recent terminal orders remain in the mirror for forensic
+                # history. Count every still nonterminal mirrored order for
+                # the B5 checkpoint, including one absent from a later bounded
+                # history page; absence alone cannot prove it was closed.
+                active_order_count = await session.scalar(
+                    select(func.count())
+                    .select_from(OkxDemoOrderState)
+                    .where(OkxDemoOrderState.state.not_in(_TERMINAL_ORDER_STATES))
+                )
+                if active_order_count is None:
+                    raise RuntimeError("okx_demo_active_order_count_unknown")
+                uid = account_config.uid
+                uid_bound = (
+                    type(uid) is str
+                    and uid.isascii()
+                    and uid.isdigit()
+                    and 1 <= len(uid) <= 32
+                    and type(account_config.raw) is dict
+                    and account_config.raw.get("uid") == uid
+                )
                 details = {
                     "position_mode": account_config.position_mode,
                     "account_level": account_config.account_level,
                     "total_equity": str(balance.total_equity),
                     "available_equity": str(balance.available_equity),
+                    "orders_observed_in_snapshot": len(unique_orders),
+                    "account_uid_sha256": (
+                        hashlib.sha256(uid.encode("ascii")).hexdigest()
+                        if uid_bound
+                        else None
+                    ),
+                    # Random per-capture nonce; no credential or key digest is stored.
+                    "credential_session_binding_id": credential_session_binding_id,
                 }
                 checkpoint_values = {
                     "id": 1,
                     "status": "reconciled",
-                    "order_count": len(deduped_orders),
+                    "order_count": active_order_count,
                     "position_count": len(deduped_positions),
                     "algo_order_count": len(deduped_algo_orders),
                     "details": details,
@@ -138,7 +181,7 @@ class OkxDemoRepository:
                         before=None,
                         after={
                             **details,
-                            "orders": len(deduped_orders),
+                            "orders": len(unique_orders),
                             "positions": len(deduped_positions),
                             "algo_orders": len(deduped_algo_orders),
                         },
@@ -151,7 +194,7 @@ class OkxDemoRepository:
                         severity="info",
                         payload={
                             **details,
-                            "orders": len(deduped_orders),
+                            "orders": len(unique_orders),
                             "positions": len(deduped_positions),
                             "algo_orders": len(deduped_algo_orders),
                         },
@@ -191,7 +234,7 @@ class OkxDemoRepository:
                         pending_order_count=len(
                             [
                                 item
-                                for item in deduped_orders.values()
+                                for item in unique_orders.values()
                                 if item.state in {"live", "partially_filled"}
                             ]
                         ),
@@ -218,29 +261,35 @@ class OkxDemoRepository:
         self, orders: list[OkxDemoOrderView], *, action: str
     ) -> None:
         now = datetime.now(UTC)
-        valid = {item.order_id: item for item in orders if item.order_id}
-        if not valid:
-            return
-        async with self.session_factory() as session, session.begin():
-            for order in valid.values():
-                values = self._order_values(order, now)
-                stmt = pg_insert(OkxDemoOrderState).values(**values)
+        try:
+            unique_orders = self._unique_orders(orders)
+            if not unique_orders:
+                return
+            async with self.session_factory() as session, session.begin():
                 await session.execute(
-                    stmt.on_conflict_do_update(
-                        index_elements=[OkxDemoOrderState.order_id],
-                        set_={k: v for k, v in values.items() if k != "order_id"},
+                    text("LOCK TABLE okx_demo_order_state IN SHARE ROW EXCLUSIVE MODE")
+                )
+                for order in unique_orders.values():
+                    await self._upsert_order_locked(session, order, now)
+                session.add(
+                    AuditLog(
+                        actor="ctcc-system",
+                        action=action,
+                        resource_type="okx_demo_order",
+                        resource_id=next(iter(unique_orders)),
+                        before=None,
+                        after={
+                            "order_ids": list(unique_orders),
+                            "count": len(unique_orders),
+                        },
                     )
                 )
-            session.add(
-                AuditLog(
-                    actor="ctcc-system",
-                    action=action,
-                    resource_type="okx_demo_order",
-                    resource_id=next(iter(valid)),
-                    before=None,
-                    after={"order_ids": list(valid), "count": len(valid)},
-                )
-            )
+        except ValueError:
+            # This path can run after an exchange acknowledgement. Leave the
+            # existing order row intact and invalidate a previously flat B5
+            # checkpoint even when the rejected row would add exposure.
+            await self.mark_failure("okx_demo_order_mirror_conflict")
+            raise
 
     async def mark_failure(self, message: str) -> None:
         now = datetime.now(UTC)
@@ -317,6 +366,10 @@ class OkxDemoRepository:
 
     @staticmethod
     def _order_values(order: OkxDemoOrderView, now: datetime) -> dict[str, Any]:
+        if order.updated_at is not None and (
+            order.updated_at.tzinfo is None or order.updated_at.utcoffset() is None
+        ):
+            raise ValueError("okx_demo_order_update_time_invalid")
         return {
             "order_id": order.order_id,
             "client_order_id": order.client_order_id,
@@ -336,6 +389,48 @@ class OkxDemoRepository:
             "exchange_updated_at": order.updated_at,
             "persisted_at": now,
         }
+
+    @staticmethod
+    def _unique_orders(
+        orders: list[OkxDemoOrderView],
+    ) -> dict[str, OkxDemoOrderView]:
+        unique: dict[str, OkxDemoOrderView] = {}
+        for order in orders:
+            if type(order.order_id) is not str or not order.order_id:
+                raise ValueError("okx_demo_order_identity_missing")
+            if order.order_id in unique:
+                raise ValueError("okx_demo_order_identity_duplicate")
+            unique[order.order_id] = order
+        return unique
+
+    async def _upsert_order_locked(
+        self, session: AsyncSession, order: OkxDemoOrderView, now: datetime
+    ) -> None:
+        values = self._order_values(order, now)
+        previous = await session.get(OkxDemoOrderState, order.order_id)
+        if previous is not None:
+            changed = any(
+                getattr(previous, key) != value
+                for key, value in values.items()
+                if key not in {"order_id", "persisted_at"}
+            )
+            if not changed:
+                return
+            previous_time = previous.exchange_updated_at
+            current_time = order.updated_at
+            if (
+                previous_time is None
+                or current_time is None
+                or current_time <= previous_time
+            ):
+                raise ValueError("okx_demo_order_revision_unproven")
+        stmt = pg_insert(OkxDemoOrderState).values(**values)
+        await session.execute(
+            stmt.on_conflict_do_update(
+                index_elements=[OkxDemoOrderState.order_id],
+                set_={k: v for k, v in values.items() if k != "order_id"},
+            )
+        )
 
     @staticmethod
     def _position_row(

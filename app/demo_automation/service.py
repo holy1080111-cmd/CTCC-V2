@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 from collections import deque
 from collections.abc import Iterable
@@ -12,6 +13,11 @@ from typing import Any
 
 from app.config.settings import Settings, get_settings
 from app.database.repositories.demo_automation import DemoAutomationRepository
+from app.database.repositories.okx_demo import OkxDemoRepository
+from app.database.repositories.qualification_ledger import (
+    PortfolioLocalCheckpoint,
+    QualificationLedgerRepository,
+)
 from app.demo_automation import DemoAutomationBusyError, DemoAutomationSafetyError
 from app.demo_automation.capital_bucket import (
     DemoCapitalBucketPlan,
@@ -52,12 +58,14 @@ from app.domain.okx_demo import (
 from app.domain.realtime import RealtimeSnapshot
 from app.domain.risk import AccountRiskState, RiskLimits
 from app.domain.strategy import StrategyDecision, TradeCandidate
+from app.exchange.okx.private_rest import OkxDemoPrivateRestClient
 from app.exchange.okx.public_rest import OkxPublicRestClient
 from app.exchange.okx.symbols import to_instrument_id
 from app.okx_demo.equity import DemoRiskCapital, resolve_demo_risk_capital
 from app.okx_demo.service import OkxDemoService, okx_demo_service
 from app.risk import RiskService
 from app.strategies import StrategyService
+from app.trade_qualification.reservations import LedgerScope
 
 logger = logging.getLogger(__name__)
 D = Decimal
@@ -82,6 +90,7 @@ class SafeDemoAutomation:
         demo_service: OkxDemoService | None = None,
         public_client: OkxPublicRestClient | None = None,
         repository: DemoAutomationRepository | None = None,
+        local_checkpoint_repository: QualificationLedgerRepository | None = None,
         strategy_control_repository=None,
         market_hub=None,
         market_client=None,
@@ -96,6 +105,14 @@ class SafeDemoAutomation:
             from app.database.session import AsyncSessionFactory
 
             self.repository = DemoAutomationRepository(AsyncSessionFactory)
+        self.local_checkpoint_repository = local_checkpoint_repository
+        if (
+            self.local_checkpoint_repository is None
+            and type(self.repository) is DemoAutomationRepository
+        ):
+            self.local_checkpoint_repository = QualificationLedgerRepository(
+                self.repository.session_factory, clock=lambda: datetime.now(UTC)
+            )
         self.strategy_control_repository = strategy_control_repository
         if strategy_control_repository is None and self.settings.environment != "test":
             from app.database.repositories.performance import DemoPerformanceRepository
@@ -358,12 +375,128 @@ class SafeDemoAutomation:
         if not self._recovered:
             raise DemoAutomationSafetyError("demo_automation_recovery_not_completed")
         generation = self._control_generation
+        structural_enabled = self.settings.okx_demo_structural_dynamic_leverage_enabled
         blockers = self._configuration_blockers()
         if blockers:
             raise DemoAutomationSafetyError(";".join(blockers))
         if self._state["emergency_stop"]:
             raise DemoAutomationSafetyError("emergency_stop_must_be_cleared")
+        if structural_enabled and self.settings.environment != "test":
+            demo = self.demo_service
+            if (
+                type(demo) is not OkxDemoService
+                or type(demo.private_client) is not OkxDemoPrivateRestClient
+                or demo.settings is not self.settings
+                or demo.private_client.settings is not self.settings
+            ):
+                raise DemoAutomationSafetyError(
+                    "structural_rollout_credential_session_unconfirmed"
+                )
+            try:
+                with demo.private_client.pinned_read_session() as read_session:
+                    return await self._arm_checked(
+                        generation, read_session, structural_enabled
+                    )
+            except DemoAutomationSafetyError:
+                raise
+            except Exception:  # noqa: BLE001 - Never reveal credential or transport details.
+                raise DemoAutomationSafetyError(
+                    "structural_rollout_credential_session_unconfirmed"
+                ) from None
+        return await self._arm_checked(generation, None, structural_enabled)
+
+    async def _arm_checked(
+        self, generation: int, read_session: Any, structural_enabled: bool
+    ) -> DemoAutomationStatus:
+        local_scope = None
+        local_before = None
+        initial_identity = None
+        if structural_enabled:
+            # The legacy exchange view alone cannot establish a flat rollout:
+            # durable holds and consumed intents can survive without positions.
+            try:
+                if self.settings.environment != "test" and (
+                    type(self.demo_service) is not OkxDemoService
+                    or type(self.demo_service.repository) is not OkxDemoRepository
+                    or self.demo_service.repository.session_factory
+                    is not self.repository.session_factory
+                ):
+                    raise ValueError("structural_rollout_mirror_repository_invalid")
+                account_config = await self.demo_service.account_config()
+                initial_identity = self._arm_account_identity(account_config)
+                uid = account_config.uid
+                if (
+                    type(uid) is not str
+                    or type(account_config.raw) is not dict
+                    or account_config.raw.get("uid") != uid
+                ):
+                    raise ValueError("account_uid_missing_or_mismatched")
+                local_scope = LedgerScope(account_id=uid, settlement_currency="USDT")
+                local_before, before_view = await self._local_flat_checkpoint(
+                    local_scope
+                )
+            except Exception:  # noqa: BLE001 - Any account/DB fault denies Arm without exposing UID or raw rows.
+                raise DemoAutomationSafetyError(
+                    "structural_rollout_local_flat_unconfirmed"
+                ) from None
         snapshot = await self.demo_service.reconcile()
+        if local_scope is not None:
+            if snapshot.persisted is not True:
+                raise DemoAutomationSafetyError(
+                    "structural_rollout_reconcile_not_persisted"
+                )
+            binding_id = snapshot.credential_session_binding_id
+            if (
+                type(binding_id) is not str
+                or len(binding_id) != 64
+                or any(char not in "0123456789abcdef" for char in binding_id)
+                or (read_session is not None and binding_id != read_session.binding_id)
+            ):
+                raise DemoAutomationSafetyError(
+                    "structural_rollout_credential_session_unconfirmed"
+                )
+            if (
+                snapshot.account_config.uid != local_scope.account_id
+                or type(snapshot.account_config.raw) is not dict
+                or snapshot.account_config.raw.get("uid") != local_scope.account_id
+            ):
+                raise DemoAutomationSafetyError(
+                    "structural_rollout_account_uid_changed"
+                )
+            try:
+                if (
+                    self._arm_account_identity(snapshot.account_config)
+                    != initial_identity
+                ):
+                    raise ValueError("account_identity_changed")
+            except Exception:  # noqa: BLE001 - A malformed account view cannot authorize Arm.
+                raise DemoAutomationSafetyError(
+                    "structural_rollout_account_identity_changed"
+                ) from None
+            try:
+                local_after, after_view = await self._local_flat_checkpoint(local_scope)
+            except Exception:  # noqa: BLE001 - An uncertain second read cannot authorize Arm.
+                raise DemoAutomationSafetyError(
+                    "structural_rollout_local_flat_unconfirmed"
+                ) from None
+            if (
+                after_view["legacy"]["sync_checkpoint"].get(
+                    "credential_session_binding_id"
+                )
+                != binding_id
+            ):
+                raise DemoAutomationSafetyError(
+                    "structural_rollout_reconcile_binding_changed"
+                )
+            if (
+                local_before is None
+                or local_before.received_at > local_after.observed_at
+                or self._local_exposure_projection(before_view)
+                != self._local_exposure_projection(after_view)
+            ):
+                raise DemoAutomationSafetyError(
+                    "structural_rollout_local_checkpoint_changed"
+                )
         if (
             snapshot.positions
             or snapshot.pending_orders
@@ -395,6 +528,14 @@ class SafeDemoAutomation:
             )
         if generation != self._control_generation or self._state["emergency_stop"]:
             raise DemoAutomationSafetyError("demo_automation_arm_revoked")
+        if (
+            self.settings.okx_demo_structural_dynamic_leverage_enabled
+            is not structural_enabled
+            or self._configuration_blockers()
+        ):
+            raise DemoAutomationSafetyError("demo_automation_arm_policy_changed")
+        if read_session is not None:
+            read_session.verify_current()
         # Persist the candidate first. No other task may observe an armed local
         # state while this write is blocked, failed or cancelled.
         await self._persist_state(
@@ -405,9 +546,155 @@ class SafeDemoAutomation:
             restart_latch_required=True,
         )
         if generation != self._control_generation or self._state["emergency_stop"]:
-            raise DemoAutomationSafetyError("demo_automation_arm_revoked")
+            await self._revoke_committed_arm("demo_automation_arm_revoked")
+        if (
+            self.settings.okx_demo_structural_dynamic_leverage_enabled
+            is not structural_enabled
+            or self._configuration_blockers()
+        ):
+            await self._revoke_committed_arm("demo_automation_arm_policy_changed")
+        if read_session is not None:
+            try:
+                read_session.verify_current()
+            except Exception:  # noqa: BLE001 - The commit may have succeeded; keep local authority revoked.
+                await self._revoke_committed_arm(
+                    "structural_rollout_credential_session_unconfirmed"
+                )
         self._state["armed"] = True
         return await self.status()
+
+    async def _revoke_committed_arm(self, reason: str) -> None:
+        # Arm's commit was acknowledged but a later check failed. Attempt a
+        # durable stop; even if that write is uncertain, local authority stays
+        # revoked and the restart latch remains required.
+        self._recovered = False
+        try:
+            await self.emergency_stop()
+        except Exception:  # noqa: BLE001 - A failed EStop write never restores authority.
+            self._state["last_error"] = "arm_revocation_persistence_uncertain"
+        raise DemoAutomationSafetyError(reason)
+
+    @staticmethod
+    def _arm_account_identity(config: Any) -> tuple[str, str, str, str]:
+        raw = config.raw
+        uid = config.uid
+        main_uid = raw.get("mainUid") if type(raw) is dict else None
+        account_level = raw.get("acctLv") if type(raw) is dict else None
+        position_mode = raw.get("posMode") if type(raw) is dict else None
+        if (
+            type(uid) is not str
+            or not uid.isascii()
+            or not uid.isdigit()
+            or not 1 <= len(uid) <= 32
+            or uid[0] == "0"
+            or type(main_uid) is not str
+            or not main_uid.isascii()
+            or not main_uid.isdigit()
+            or not 1 <= len(main_uid) <= 32
+            or main_uid[0] == "0"
+            or raw.get("uid") != uid
+            or type(account_level) is not str
+            or account_level != config.account_level
+            or type(position_mode) is not str
+            or position_mode != config.position_mode
+        ):
+            raise ValueError("structural_rollout_account_identity_invalid")
+        return uid, main_uid, account_level, position_mode
+
+    async def _local_flat_checkpoint(
+        self, scope: LedgerScope
+    ) -> tuple[PortfolioLocalCheckpoint, dict[str, Any]]:
+        repository = self.local_checkpoint_repository
+        if repository is None:
+            raise DemoAutomationSafetyError("structural_rollout_local_ledger_missing")
+        if self.settings.environment != "test" and (
+            type(repository) is not QualificationLedgerRepository
+            or type(self.repository) is not DemoAutomationRepository
+            or repository.session_factory is not self.repository.session_factory
+        ):
+            raise DemoAutomationSafetyError("structural_rollout_local_ledger_invalid")
+        point = await repository.read_portfolio_checkpoint(scope)
+        try:
+            if type(point) is not PortfolioLocalCheckpoint or not point.known_flat:
+                raise DemoAutomationSafetyError(
+                    "structural_rollout_local_exposure_unresolved"
+                )
+            view = json.loads(point.document_json)
+            legacy = view.get("legacy") if type(view) is dict else None
+            states = view.get("currency_states") if type(view) is dict else None
+            sync = legacy.get("sync_checkpoint") if type(legacy) is dict else None
+            if (
+                type(view) is not dict
+                or view.get("schema_version") != "ctcc.portfolio_local_checkpoint.v2"
+                or (view.get("environment"), view.get("account_id"))
+                != (scope.environment, scope.account_id)
+                or view.get("requested_settlement_currency")
+                != scope.settlement_currency
+                or view.get("blocking_reasons") != []
+                or type(states) is not list
+                or not states
+                or not any(
+                    type(state) is dict
+                    and type(state.get("scope")) is dict
+                    and state["scope"].get("settlement_currency")
+                    == scope.settlement_currency
+                    for state in states
+                )
+                or any(
+                    type(state) is not dict
+                    or type(state.get("scope")) is not dict
+                    or (
+                        state["scope"].get("environment"),
+                        state["scope"].get("account_id"),
+                    )
+                    != (scope.environment, scope.account_id)
+                    or type(state.get("active")) is not list
+                    or state["active"]
+                    for state in states
+                )
+                or view.get("unresolved_intents") != []
+                or type(legacy) is not dict
+                or type(legacy.get("automation")) is not dict
+                or any(
+                    legacy.get(name) != [] for name in ("positions", "orders", "algos")
+                )
+                or type(sync) is not dict
+                or sync.get("status") != "reconciled"
+                or sync.get("exact_uid_bound") is not True
+                or any(
+                    type(sync.get(name)) is not int or sync[name] != 0
+                    for name in ("order_count", "position_count", "algo_order_count")
+                )
+                or view.get("execution_authority") is not False
+                or view.get("future_writer_exclusion") is not False
+                or type(point.observed_at) is not datetime
+                or type(point.received_at) is not datetime
+                or point.observed_at.tzinfo is None
+                or point.received_at.tzinfo is None
+                or point.observed_at.utcoffset() is None
+                or point.received_at.utcoffset() is None
+                or point.observed_at > point.received_at
+            ):
+                raise ValueError("local_flat_checkpoint_invalid")
+        except (TypeError, ValueError, KeyError, DemoAutomationSafetyError):
+            raise DemoAutomationSafetyError(
+                "structural_rollout_local_checkpoint_invalid"
+            ) from None
+        return point, view
+
+    @staticmethod
+    def _local_exposure_projection(view: dict[str, Any]) -> tuple[Any, ...]:
+        # Reconcile legitimately advances the legacy sync checkpoint time.
+        # Every local hold, intent and legacy exposure source must stay fixed.
+        legacy = view["legacy"]
+        return (
+            view["currency_states"],
+            view["unresolved_intents"],
+            legacy.get("automation"),
+            legacy.get("positions"),
+            legacy.get("orders"),
+            legacy.get("algos"),
+        )
 
     async def disarm(self) -> DemoAutomationStatus:
         self._control_generation += 1

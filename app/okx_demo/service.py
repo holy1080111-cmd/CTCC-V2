@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
@@ -100,12 +101,14 @@ class OkxDemoService:
         self._ensure_read_ready()
         try:
             rows = await self.private_client.account_config()
-            if not rows:
-                raise OkxDemoUnavailableError("okx_demo_account_config_empty")
+            if len(rows) != 1:
+                raise OkxDemoUnavailableError(
+                    "okx_demo_account_config_cardinality_invalid"
+                )
             parse_account_config(rows[0])
             balance_rows = await self.private_client.balance()
-            if not balance_rows:
-                raise OkxDemoUnavailableError("okx_demo_balance_empty")
+            if len(balance_rows) != 1:
+                raise OkxDemoUnavailableError("okx_demo_balance_cardinality_invalid")
             parse_balance(balance_rows[0])
             self._last_exchange_ok_at = datetime.now(UTC)
             self._last_error = None
@@ -117,8 +120,8 @@ class OkxDemoService:
     async def account_config(self) -> OkxDemoAccountConfig:
         self._ensure_read_ready()
         rows = await self.private_client.account_config()
-        if not rows:
-            raise OkxDemoUnavailableError("okx_demo_account_config_empty")
+        if len(rows) != 1:
+            raise OkxDemoUnavailableError("okx_demo_account_config_cardinality_invalid")
         try:
             parsed = parse_account_config(rows[0])
         except Exception:
@@ -131,8 +134,8 @@ class OkxDemoService:
     async def balance(self) -> OkxDemoBalanceSnapshot:
         self._ensure_read_ready()
         rows = await self.private_client.balance()
-        if not rows:
-            raise OkxDemoUnavailableError("okx_demo_balance_empty")
+        if len(rows) != 1:
+            raise OkxDemoUnavailableError("okx_demo_balance_cardinality_invalid")
         try:
             parsed = parse_balance(rows[0])
         except Exception:
@@ -220,24 +223,69 @@ class OkxDemoService:
         self._ensure_read_ready()
         async with self._lock:
             try:
-                (
-                    config_rows,
-                    balance_rows,
-                    position_rows,
-                    pending_rows,
-                    history_rows,
-                    algo_rows,
-                ) = await asyncio.gather(
-                    self.private_client.account_config(),
-                    self.private_client.balance(),
-                    self.private_client.positions(),
-                    self.private_client.pending_orders(),
-                    self.private_client.order_history(limit=100),
-                    self.private_client.pending_algo_orders(),
+                pinned_client = (
+                    self.private_client
+                    if type(self.private_client) is OkxDemoPrivateRestClient
+                    else None
                 )
-                if not config_rows or not balance_rows:
+                binding_id = (
+                    pinned_client.active_read_session_binding_id
+                    if pinned_client is not None
+                    else None
+                )
+                if binding_id is not None:
+                    # The first config precedes every component read; the second
+                    # follows them. Both must identify the exact same account.
+                    config_rows = await self.private_client.account_config()
+                    if len(config_rows) != 1:
+                        raise OkxDemoUnavailableError(
+                            "okx_demo_reconcile_account_cardinality_invalid"
+                        )
+                    first_config = parse_account_config(config_rows[0])
+                    first_identity = self._pinned_account_identity(first_config)
+                    (
+                        balance_rows,
+                        position_rows,
+                        pending_rows,
+                        history_rows,
+                        algo_rows,
+                    ) = await asyncio.gather(
+                        self.private_client.balance(),
+                        self.private_client.positions(),
+                        self.private_client.pending_orders(),
+                        self.private_client.order_history(limit=100),
+                        self.private_client.pending_algo_orders(),
+                    )
+                    final_rows = await self.private_client.account_config()
+                    if (
+                        len(final_rows) != 1
+                        or self._pinned_account_identity(
+                            parse_account_config(final_rows[0])
+                        )
+                        != first_identity
+                    ):
+                        raise OkxDemoUnavailableError(
+                            "okx_demo_reconcile_account_identity_changed"
+                        )
+                else:
+                    (
+                        config_rows,
+                        balance_rows,
+                        position_rows,
+                        pending_rows,
+                        history_rows,
+                        algo_rows,
+                    ) = await asyncio.gather(
+                        self.private_client.account_config(),
+                        self.private_client.balance(),
+                        self.private_client.positions(),
+                        self.private_client.pending_orders(),
+                        self.private_client.order_history(limit=100),
+                        self.private_client.pending_algo_orders(),
+                    )
+                if len(config_rows) != 1 or len(balance_rows) != 1:
                     raise OkxDemoUnavailableError(
-                        "okx_demo_reconcile_missing_account_data"
+                        "okx_demo_reconcile_account_cardinality_invalid"
                     )
                 account_config = parse_account_config(config_rows[0])
                 balance = parse_balance(balance_rows[0])
@@ -251,14 +299,24 @@ class OkxDemoService:
                 algo_orders = [parse_algo_order(row) for row in algo_rows]
                 persisted = False
                 if self.repository is not None:
-                    await self.repository.sync_snapshot(
-                        account_config=account_config,
-                        balance=balance,
-                        positions=positions,
-                        orders=[*recent_orders, *pending_orders],
-                        algo_orders=algo_orders,
-                    )
+                    sync_values = {
+                        "account_config": account_config,
+                        "balance": balance,
+                        "positions": positions,
+                        "orders": [*recent_orders, *pending_orders],
+                        "algo_orders": algo_orders,
+                    }
+                    if binding_id is not None:
+                        sync_values["credential_session_binding_id"] = binding_id
+                    await self.repository.sync_snapshot(**sync_values)
                     persisted = True
+                if binding_id is not None and (
+                    pinned_client is None
+                    or pinned_client.active_read_session_binding_id != binding_id
+                ):
+                    raise OkxDemoUnavailableError(
+                        "okx_demo_reconcile_read_session_changed"
+                    )
                 self._last_exchange_ok_at = datetime.now(UTC)
                 self._last_error = None
                 return OkxDemoReconcileResult(
@@ -269,6 +327,7 @@ class OkxDemoService:
                     recent_orders=recent_orders,
                     pending_algo_orders=algo_orders,
                     persisted=persisted,
+                    credential_session_binding_id=binding_id,
                 )
             except Exception as exc:
                 self._record_error(exc)
@@ -281,6 +340,29 @@ class OkxDemoService:
                             type(observation_error).__name__,
                         )
                 raise
+
+    @staticmethod
+    def _pinned_account_identity(config: OkxDemoAccountConfig) -> tuple[str, ...]:
+        raw = config.raw
+        uid = raw.get("uid") if type(raw) is dict else None
+        main_uid = raw.get("mainUid") if type(raw) is dict else None
+        account_level = raw.get("acctLv") if type(raw) is dict else None
+        position_mode = raw.get("posMode") if type(raw) is dict else None
+        if (
+            type(uid) is not str
+            or re.fullmatch(r"[1-9][0-9]{0,39}", uid) is None
+            or type(main_uid) is not str
+            or re.fullmatch(r"[1-9][0-9]{0,39}", main_uid) is None
+            or type(account_level) is not str
+            or account_level != config.account_level
+            or type(position_mode) is not str
+            or position_mode != config.position_mode
+            or uid != config.uid
+        ):
+            raise OkxDemoUnavailableError(
+                "okx_demo_reconcile_account_identity_incomplete"
+            )
+        return uid, main_uid, account_level, position_mode
 
     async def place_order(
         self,

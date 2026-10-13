@@ -1250,6 +1250,19 @@ class QualificationLedgerRepository:
                         "updated_at",
                     )
                 }
+                uid_bound = (
+                    type(row.details) is dict
+                    and row.details.get("account_uid_sha256")
+                    == hashlib.sha256(scope.account_id.encode("ascii")).hexdigest()
+                )
+                legacy["sync_checkpoint"]["exact_uid_bound"] = uid_bound
+                legacy["sync_checkpoint"]["credential_session_binding_id"] = (
+                    row.details.get("credential_session_binding_id")
+                    if type(row.details) is dict
+                    else None
+                )
+                if not uid_bound:
+                    blocked.add("legacy_reconciliation_uid_unbound")
                 if (
                     row.status != "reconciled"
                     or row.reconciled_at is None
@@ -1304,7 +1317,7 @@ class QualificationLedgerRepository:
             payload = json.dumps(
                 _portfolio_checkpoint_wire(
                     {
-                        "schema_version": "ctcc.portfolio_local_checkpoint.v1",
+                        "schema_version": "ctcc.portfolio_local_checkpoint.v2",
                         "environment": scope.environment,
                         "account_id": scope.account_id,
                         "requested_settlement_currency": scope.settlement_currency,

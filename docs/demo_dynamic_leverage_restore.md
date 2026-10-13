@@ -89,3 +89,42 @@ The guard requires the same raw row's positive `usdPx` for a currency conversion
 it never treats USD and USDT as equal or fills missing margin/FX with zero.
 This legacy guard is separate from still-required trusted account-source,
 qualification, durable reservation and intent acceptance.
+
+## Structural Arm local-flat preflight
+
+Before structural Demo Arm, the automation opens one immutable GET-only
+credential session in the owned Demo REST client. It pins the key, secret,
+passphrase, region origin and transport settings across the initial signed
+`account/config`, reconciliation and read retries; any settings drift denies
+Arm. Reconciliation reads account/config before and after its account
+components and requires exactly one config row with the same exact UID,
+main UID, account mode and position mode. It requires exactly one balance
+row. No credential material or credential hash enters the mirror.
+
+The exact `uid` selects the `demo`/`USDT` ledger scope. Arm reads the existing B5
+`ctcc.portfolio_local_checkpoint.v2` observation before and after exchange
+reconciliation. Both reads must report local flat across all settlement
+currencies and legacy state. The legacy mirror checkpoint stores a hash of
+the exact UID from its reconciled account/config; a missing or mismatched hash
+blocks B5 without adding the raw UID to the mirror details. The private B5
+ledger observation still carries its exact account scope. A random per-capture
+binding ID must match the reconciled result and the second mirror readback;
+an intervening mirror overwrite denies Arm. The second account/config UID
+must match, and
+the local hold, consumed-intent, automation and legacy exposure projection
+must remain unchanged. The legacy reconciliation timestamp can advance, so
+the two full receipt hashes are not required to match. Missing UID, missing
+local scope, an unpersisted reconciliation, a mismatched mirror session factory,
+uncertain or unresolved rows, changed local state, and a changed credential
+session deny Arm. A structural-mode or automation-policy change during Arm
+also denies it; if detected after the durable Arm write, the service latches
+an emergency stop and revokes local authority.
+
+This is a rollout preflight, **not** an execution permit. B5 explicitly
+records `future_writer_exclusion=false` and `execution_authority=false`;
+legacy writers do not share the UID lock. A new reservation or uncertain
+result can appear after Arm. The final submit boundary still needs a fresh
+source-owned portfolio, account-scoped transaction, durable reservation and
+intent, and post-G12 recheck. These GETs do not establish an atomic
+provider-side account snapshot or complete historical account source. No
+Demo or Live write is authorized by this preflight alone.

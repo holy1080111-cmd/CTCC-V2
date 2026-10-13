@@ -7,7 +7,11 @@ import hmac
 import itertools
 import json
 import re
-from collections.abc import Callable
+import secrets
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
@@ -39,6 +43,74 @@ _ALGO_ORDER_TYPES = (
 _PRIVATE_PAGE_SIZE = 100
 _PRIVATE_MAX_PAGES = 16
 _CANCEL_ALL_AFTER_PATH = "/api/v5/trade/cancel-all-after"
+
+
+@dataclass(slots=True, repr=False)
+class _DemoReadLease:
+    active: bool = True
+
+
+@dataclass(frozen=True, slots=True, repr=False, eq=False)
+class DemoPinnedReadSession:
+    """Private, GET-only Demo transport snapshot; the ID contains no secrets."""
+
+    _owner: OkxDemoPrivateRestClient = field(repr=False)
+    _settings: Settings = field(repr=False)
+    _environment: str = field(repr=False)
+    _credentials: tuple[str, str, str] = field(repr=False)
+    _origin: str = field(repr=False)
+    _timeout_seconds: float = field(repr=False)
+    _read_max_retries: int = field(repr=False)
+    _user_agent: str = field(repr=False)
+    _lease: _DemoReadLease = field(repr=False)
+    binding_id: str
+
+    def verify_current(self) -> None:
+        """Reject a closed/foreign session or any changed source setting."""
+        if (
+            not self._lease.active
+            or _DEMO_READ_SESSION.get() is not self
+            or self._owner.settings is not self._settings
+        ):
+            raise OkxPrivateApiError(
+                "Demo read session is no longer active",
+                code="demo_read_session_invalid",
+            )
+        if self._settings.environment != self._environment:
+            raise OkxPrivateApiError(
+                "Demo read session settings changed",
+                code="demo_read_session_settings_changed",
+            )
+        if self._environment != "test" and (
+            self._owner._external_client is not None or self._owner._clock_injected
+        ):
+            raise OkxPrivateApiError(
+                "Demo read transport is not runtime-owned",
+                code="demo_read_transport_invalid",
+            )
+        try:
+            current = self._owner._unbound_read_values()
+        except Exception:  # noqa: BLE001 - no source or credential value may escape
+            raise OkxPrivateApiError(
+                "Demo read session settings changed",
+                code="demo_read_session_settings_changed",
+            ) from None
+        if current != (
+            self._credentials,
+            self._origin,
+            self._timeout_seconds,
+            self._read_max_retries,
+            self._user_agent,
+        ):
+            raise OkxPrivateApiError(
+                "Demo read session settings changed",
+                code="demo_read_session_settings_changed",
+            )
+
+
+_DEMO_READ_SESSION: ContextVar[DemoPinnedReadSession | None] = ContextVar(
+    "ctcc_okx_demo_pinned_read_session", default=None
+)
 
 
 def _validate_cancel_all_after_dispatch(
@@ -133,6 +205,7 @@ class _OkxPrivateRestClientBase:
         self.settings = settings or get_settings()
         self._external_client = client
         self._clock = clock or (lambda: datetime.now(UTC))
+        self._clock_injected = clock is not None
 
     def _credentials(self) -> tuple[str, str, str]:
         raise NotImplementedError
@@ -148,6 +221,12 @@ class _OkxPrivateRestClientBase:
 
     def _extra_headers(self) -> dict[str, str]:
         return {}
+
+    def _user_agent(self) -> str:
+        return f"CTCC-V2/{self.settings.app_version}"
+
+    def _after_response_check(self, *, method: str, path: str) -> None:
+        """A private reader may reject settings changed during network IO."""
 
     def _request_extra_headers(
         self, *, method: str, path: str, write: bool
@@ -198,7 +277,7 @@ class _OkxPrivateRestClientBase:
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json",
-            "User-Agent": f"CTCC-V2/{self.settings.app_version}",
+            "User-Agent": self._user_agent(),
             "OK-ACCESS-KEY": api_key,
             "OK-ACCESS-SIGN": signature,
             "OK-ACCESS-PASSPHRASE": passphrase,
@@ -294,6 +373,7 @@ class _OkxPrivateRestClientBase:
                         auth=None,
                         follow_redirects=False,
                     )
+                    self._after_response_check(method=method, path=path)
                     response.raise_for_status()
                     payload = response.json()
                     response_shape_code = "ambiguous_response" if write else None
@@ -554,13 +634,117 @@ class _OkxPrivateRestClientBase:
 class OkxDemoPrivateRestClient(_OkxPrivateRestClientBase):
     """Authenticated OKX Demo REST client with simulation permanently enabled."""
 
+    def _unbound_read_values(
+        self,
+    ) -> tuple[tuple[str, str, str], str, float, int, str]:
+        if not self.settings.okx_demo_credentials_configured:
+            raise OkxPrivateApiError(
+                "OKX Demo credentials are not configured",
+                code="credentials_missing",
+            )
+        credentials = (
+            self.settings.okx_demo_api_key.get_secret_value(),
+            self.settings.okx_demo_api_secret.get_secret_value(),
+            self.settings.okx_demo_api_passphrase.get_secret_value(),
+        )
+        origin = _validated_origin(
+            self.settings.okx_demo_rest_base_url,
+            frozenset(
+                {
+                    "openapi.okx.com",
+                    "www.okx.com",
+                    "us.okx.com",
+                    "eea.okx.com",
+                    "tr.okx.com",
+                }
+            ),
+        )
+        return (
+            credentials,
+            origin,
+            self.settings.okx_demo_timeout_seconds,
+            self.settings.okx_demo_read_max_retries,
+            f"CTCC-V2/{self.settings.app_version}",
+        )
+
+    @contextmanager
+    def pinned_read_session(self) -> Iterator[DemoPinnedReadSession]:
+        """Pin all Demo GET signatures and transport policy across awaits/tasks.
+
+        ContextVar propagation gives every asyncio.gather child the same frozen
+        credential set. A closed session cannot authorize a detached child task.
+        """
+        if type(self) is not OkxDemoPrivateRestClient or _DEMO_READ_SESSION.get():
+            raise OkxPrivateApiError(
+                "Demo read session cannot be nested or substituted",
+                code="demo_read_session_invalid",
+            )
+        if self.settings.environment != "test" and (
+            self._external_client is not None or self._clock_injected
+        ):
+            raise OkxPrivateApiError(
+                "Demo read transport is not runtime-owned",
+                code="demo_read_transport_invalid",
+            )
+        credentials, origin, timeout, retries, user_agent = self._unbound_read_values()
+        lease = _DemoReadLease()
+        session = DemoPinnedReadSession(
+            _owner=self,
+            _settings=self.settings,
+            _environment=self.settings.environment,
+            _credentials=credentials,
+            _origin=origin,
+            _timeout_seconds=timeout,
+            _read_max_retries=retries,
+            _user_agent=user_agent,
+            _lease=lease,
+            binding_id=secrets.token_hex(32),
+        )
+        token = _DEMO_READ_SESSION.set(session)
+        try:
+            session.verify_current()
+            yield session
+        finally:
+            lease.active = False
+            _DEMO_READ_SESSION.reset(token)
+
+    def _active_read_session(self) -> DemoPinnedReadSession | None:
+        session = _DEMO_READ_SESSION.get()
+        if session is None:
+            return None
+        if session._owner is not self:
+            raise OkxPrivateApiError(
+                "Demo read session belongs to another client",
+                code="demo_read_session_invalid",
+            )
+        session.verify_current()
+        return session
+
+    @property
+    def active_read_session_binding_id(self) -> str | None:
+        session = self._active_read_session()
+        return None if session is None else session.binding_id
+
     def _before_send(self, *, method: str, path: str) -> None:
+        session = self._active_read_session()
+        if session is not None and (type(method) is not str or method.upper() != "GET"):
+            raise OkxPrivateApiError(
+                "Pinned Demo session allows GET only",
+                code="demo_read_session_get_only",
+            )
         enforce_demo_submission_boundary(method, path)
 
     def _final_dispatch_check(self, *, method: str, path: str) -> None:
+        self._active_read_session()
         enforce_demo_final_dispatch(method, path)
 
+    def _after_response_check(self, *, method: str, path: str) -> None:
+        self._active_read_session()
+
     def _credentials(self) -> tuple[str, str, str]:
+        session = self._active_read_session()
+        if session is not None:
+            return session._credentials
         if not self.settings.okx_demo_credentials_configured:
             raise OkxPrivateApiError(
                 "OKX Demo credentials are not configured",
@@ -573,6 +757,9 @@ class OkxDemoPrivateRestClient(_OkxPrivateRestClientBase):
         )
 
     def _rest_base_url(self) -> str:
+        session = self._active_read_session()
+        if session is not None:
+            return session._origin
         return _validated_origin(
             self.settings.okx_demo_rest_base_url,
             frozenset(
@@ -587,10 +774,22 @@ class OkxDemoPrivateRestClient(_OkxPrivateRestClientBase):
         )
 
     def _timeout_seconds(self) -> float:
+        session = self._active_read_session()
+        if session is not None:
+            return session._timeout_seconds
         return self.settings.okx_demo_timeout_seconds
 
     def _read_max_retries(self) -> int:
+        session = self._active_read_session()
+        if session is not None:
+            return session._read_max_retries
         return self.settings.okx_demo_read_max_retries
+
+    def _user_agent(self) -> str:
+        session = self._active_read_session()
+        if session is not None:
+            return session._user_agent
+        return super()._user_agent()
 
     def _extra_headers(self) -> dict[str, str]:
         return {"x-simulated-trading": "1"}
