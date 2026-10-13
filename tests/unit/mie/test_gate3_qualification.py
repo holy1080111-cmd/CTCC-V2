@@ -11,6 +11,7 @@ from app.mie.validation import (
     Gate3DatasetQualification,
     HoldoutAccessState,
 )
+from app.research.external_benchmarks.evidence_io import ExternalEvidenceIOError
 from scripts.verify_mie_gate3_batch_qualification import (
     verify_qualification_file,
 )
@@ -46,6 +47,25 @@ def test_committed_batch_qualification_is_fail_closed() -> None:
     assert qualification.runtime_consumers == 0
     assert qualification.execution_authority is False
     assert qualification.real_order_tested is False
+
+
+@pytest.mark.parametrize(
+    "injection, reason",
+    (
+        (b'"predictive_oos_eligible":true,', "repeats a key"),
+        (b'"unrelated":{"claim":true,"claim":false},', "repeats a key"),
+        (b'"unrelated":NaN,', "non-JSON number"),
+        (b'"unrelated":Infinity,', "non-JSON number"),
+    ),
+)
+def test_committed_qualification_rejects_ambiguous_json(
+    tmp_path: Path, injection: bytes, reason: str
+) -> None:
+    original = QUALIFICATION_PATH.read_bytes()
+    target = tmp_path / "qualification.json"
+    target.write_bytes(b"{" + injection + original.lstrip()[1:])
+    with pytest.raises(ExternalEvidenceIOError, match=reason):
+        verify_qualification_file(target)
 
 
 def test_exposed_holdout_cannot_be_marked_predictive_eligible() -> None:

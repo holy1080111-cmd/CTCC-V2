@@ -5,6 +5,10 @@ from pathlib import Path
 import pytest
 
 from app.research.external_benchmarks.binance import BinanceKlineCoordinates
+from app.research.external_benchmarks.binance_batch_contracts import (
+    BinanceBatchPlan,
+    canonical_binance_batch_plan,
+)
 from app.research.external_benchmarks.evidence_io import (
     ExternalEvidenceIOError,
     read_contract_json,
@@ -77,3 +81,42 @@ def test_read_does_not_create_missing_evidence_directories(
         )
 
     assert not (tmp_path / "missing").exists()
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "top_level_duplicate",
+        "nested_duplicate",
+        "nan",
+        "infinity",
+        "negative_infinity",
+    ),
+)
+def test_external_contract_reader_rejects_ambiguous_json(
+    tmp_path: Path, mutation: str
+) -> None:
+    plan = canonical_binance_batch_plan()
+    raw = plan.model_dump_json(indent=2).encode("utf-8")
+    if mutation == "top_level_duplicate":
+        raw = b'{"plan_id":"forged",' + raw[1:]
+    elif mutation == "nested_duplicate":
+        raw = raw.replace(
+            b'"partition": "development"',
+            b'"partition":"forged","partition": "development"',
+            1,
+        )
+    else:
+        constant = {
+            "nan": b"NaN",
+            "infinity": b"Infinity",
+            "negative_infinity": b"-Infinity",
+        }[mutation]
+        raw = raw.replace(
+            b'"plan_id": "binance.btc_eth.1m.calendar_split.v1"',
+            b'"plan_id": ' + constant,
+            1,
+        )
+    (tmp_path / "plan.json").write_bytes(raw)
+    with pytest.raises(ExternalEvidenceIOError, match="repeats a key|non-JSON number"):
+        read_contract_json(tmp_path, "plan.json", BinanceBatchPlan)

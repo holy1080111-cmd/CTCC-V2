@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import os
 import tempfile
+from decimal import Decimal
 from pathlib import Path, PurePosixPath
 from typing import TypeVar
 
@@ -13,6 +15,36 @@ MAX_EVIDENCE_BYTES = 2 * 1024 * 1024
 
 class ExternalEvidenceIOError(RuntimeError):
     pass
+
+
+def preflight_unique_json(payload: bytes, *, maximum: int = MAX_EVIDENCE_BYTES) -> None:
+    """Reject ambiguous JSON before Pydantic interprets pinned source bytes."""
+
+    if type(payload) is not bytes or not 0 < len(payload) <= maximum:
+        raise ExternalEvidenceIOError("evidence JSON byte size is invalid")
+
+    def unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ExternalEvidenceIOError("evidence JSON repeats a key")
+            result[key] = value
+        return result
+
+    def reject_constant(_value: str) -> None:
+        raise ExternalEvidenceIOError("evidence JSON contains a non-JSON number")
+
+    try:
+        json.loads(
+            payload.decode("utf-8"),
+            object_pairs_hook=unique_object,
+            parse_constant=reject_constant,
+            parse_float=Decimal,
+        )
+    except ExternalEvidenceIOError:
+        raise
+    except (ValueError, UnicodeError, RecursionError) as exc:
+        raise ExternalEvidenceIOError("evidence JSON is invalid") from exc
 
 
 def real_directory(path: Path, name: str) -> Path:
@@ -125,7 +157,9 @@ def read_contract_json[ModelT: BaseModel](
     if path.stat().st_size > MAX_EVIDENCE_BYTES:
         raise ExternalEvidenceIOError("evidence input exceeds its byte limit")
     try:
-        payload = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError) as exc:
+        with path.open("rb") as handle:
+            payload = handle.read(MAX_EVIDENCE_BYTES + 1)
+    except OSError as exc:
         raise ExternalEvidenceIOError("evidence input could not be read") from exc
+    preflight_unique_json(payload)
     return model_type.model_validate_json(payload)

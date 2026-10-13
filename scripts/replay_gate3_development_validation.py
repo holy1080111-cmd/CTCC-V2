@@ -44,6 +44,7 @@ from app.research.external_benchmarks.contracts import (
 from app.research.external_benchmarks.evidence_io import (
     MAX_EVIDENCE_BYTES,
     evidence_path,
+    preflight_unique_json,
     read_contract_json,
 )
 from scripts.verify_mie_gate3_batch_qualification import (
@@ -138,6 +139,28 @@ def new_plan(public_plan: BinanceBatchPlan) -> ArchiveBatchPlan:
     )
 
 
+def read_retained_plan(
+    plan_path: Path, expected_sha256: str | None
+) -> ArchiveBatchPlan:
+    """Reopen the exact canonical plan bytes, not only their parsed meaning."""
+
+    maximum = 64 * 1024
+    if plan_path.is_symlink() or not plan_path.is_file():
+        raise ValueError("retained replay plan must be a regular source")
+    try:
+        with plan_path.open("rb") as handle:
+            raw = handle.read(maximum + 1)
+    except OSError as exc:
+        raise ValueError("retained replay plan could not be read") from exc
+    preflight_unique_json(raw, maximum=maximum)
+    plan = ArchiveBatchPlan.model_validate_json(raw)
+    if raw != plan.canonical_json_bytes():
+        raise ValueError("retained replay plan JSON is not canonical")
+    if plan.canonical_sha256() != expected_sha256:
+        raise ValueError("retained replay plan pin changed")
+    return plan
+
+
 def run(
     root: Path,
     output: Path,
@@ -185,17 +208,11 @@ def run(
         or preparation.plan_sha256 != public_plan.canonical_sha256()
     ):
         raise ValueError("original public batch identity changed")
-    if plan_path is not None and (
-        plan_path.is_symlink() or plan_path.stat().st_size > 64 * 1024
-    ):
-        raise ValueError("retained replay plan must be a bounded regular source")
     plan = (
         new_plan(public_plan)
         if plan_path is None
-        else ArchiveBatchPlan.model_validate_json(plan_path.read_bytes())
+        else read_retained_plan(plan_path, expected_plan)
     )
-    if plan_path is not None and plan.canonical_sha256() != expected_plan:
-        raise ValueError("retained replay plan pin changed")
     reference_plan = new_plan(public_plan)
     if plan.model_dump(exclude={"created_at"}) != reference_plan.model_dump(
         exclude={"created_at"}

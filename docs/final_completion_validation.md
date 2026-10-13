@@ -5474,3 +5474,16 @@ and 3/5/8/10/20x leverage ceilings. These are scoped offline findings, not
 Demo or Live acceptance. The original Notion specification's four real evidence
 examples remain 0/4; no synthetic example is counted. No group message or
 order was sent.
+
+A subsequent source-reader audit found the same duplicate-key ambiguity in
+external reference evidence, the committed Gate 3 batch qualification and the
+retained development/validation plan. Those readers now preflight one bounded
+set of original UTF-8 bytes for duplicate keys and nonstandard numeric constants
+before their existing Pydantic JSON validation. The retained plan additionally
+requires exact canonical bytes, so a different raw document cannot reuse the
+same parsed canonical hash. The three focused modules recorded 38 passes and
+one explicit Windows symlink-privilege skip (JUnit SHA256
+`1f6c4ef913909c6ea0dea975edda379c03001b30aaaac07cb9c5498e56fe458d`).
+The Linux symlink case and the exact-source complete CI still need to execute
+for this follow-up. This closes an ambiguity in local evidence parsing, not
+historical point-in-time availability or OOS eligibility.

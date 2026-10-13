@@ -34,9 +34,11 @@ from app.mie.validation.replay import PointInTimeBar
 from app.research.external_benchmarks.contracts import (
     ExternalArtifactAcquisitionReceipt,
 )
+from app.research.external_benchmarks.evidence_io import ExternalEvidenceIOError
 from scripts.replay_gate3_development_validation import (
     publish,
     read_acquisition_receipt_bytes,
+    read_retained_plan,
     run,
 )
 from scripts.verify_gate3_development_validation_groups import verify_four_groups
@@ -483,3 +485,53 @@ def test_original_receipt_rejects_non_json_number(tmp_path: Path) -> None:
     (tmp_path / "receipt.json").write_bytes(b'{"request_id":NaN}')
     with pytest.raises(ValueError, match="non-JSON number"):
         read_acquisition_receipt_bytes(tmp_path, "receipt.json")
+
+
+def test_retained_plan_rejects_different_raw_bytes_with_same_model_hash(
+    tmp_path: Path,
+) -> None:
+    plan, _ = fixture_plan_manifest()
+    raw = plan.canonical_json_bytes()
+    target = tmp_path / "plan.json"
+    target.write_bytes(raw)
+    assert read_retained_plan(target, plan.canonical_sha256()) == plan
+
+    noncanonical = b" " + raw
+    assert (
+        ArchiveBatchPlan.model_validate_json(noncanonical).canonical_sha256()
+        == plan.canonical_sha256()
+    )
+    target.write_bytes(noncanonical)
+    with pytest.raises(ValueError, match="not canonical"):
+        read_retained_plan(target, plan.canonical_sha256())
+
+
+@pytest.mark.parametrize(
+    "mutation, reason",
+    (
+        ("top_level_duplicate", "repeats a key"),
+        ("nested_duplicate", "repeats a key"),
+        ("nan", "non-JSON number"),
+        ("infinity", "non-JSON number"),
+    ),
+)
+def test_retained_plan_rejects_ambiguous_raw_json(
+    tmp_path: Path, mutation: str, reason: str
+) -> None:
+    plan, _ = fixture_plan_manifest()
+    raw = plan.canonical_json_bytes()
+    if mutation == "top_level_duplicate":
+        raw = b'{"plan_id":"forged",' + raw[1:]
+    elif mutation == "nested_duplicate":
+        raw = raw.replace(
+            b'"development":{',
+            b'"development":{"partition":"forged"},"development":{',
+            1,
+        )
+    else:
+        constant = {"nan": b"NaN", "infinity": b"Infinity"}[mutation]
+        raw = raw.replace(b'"expected_rows":5760', b'"expected_rows":' + constant, 1)
+    target = tmp_path / "plan.json"
+    target.write_bytes(raw)
+    with pytest.raises(ExternalEvidenceIOError, match=reason):
+        read_retained_plan(target, plan.canonical_sha256())

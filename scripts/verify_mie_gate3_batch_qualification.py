@@ -21,7 +21,10 @@ from app.research.external_benchmarks import (
     BinanceBatchPreparation,
     canonical_binance_batch_plan,
 )
-from app.research.external_benchmarks.evidence_io import read_contract_json
+from app.research.external_benchmarks.evidence_io import (
+    preflight_unique_json,
+    read_contract_json,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_QUALIFICATION_PATH = (
@@ -66,11 +69,13 @@ def _load_json[ModelT: BaseModel](
     if resolved.stat().st_size > MAX_QUALIFICATION_BYTES:
         raise Gate3BatchQualificationError("qualification input is too large")
     try:
-        payload = resolved.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError) as exc:
+        with resolved.open("rb") as handle:
+            payload = handle.read(MAX_QUALIFICATION_BYTES + 1)
+    except OSError as exc:
         raise Gate3BatchQualificationError(
             "qualification input could not be read"
         ) from exc
+    preflight_unique_json(payload, maximum=MAX_QUALIFICATION_BYTES)
     return model_type.model_validate_json(payload)
 
 
