@@ -47,7 +47,11 @@ def _sha(raw: bytes) -> str:
 
 def _json(raw: object) -> bytes:
     return json.dumps(
-        raw, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        raw,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
     ).encode("utf-8")
 
 
@@ -69,13 +73,22 @@ def _strict_object(pairs: list[tuple[str, object]]) -> dict:
     return result
 
 
+def _reject_non_json_constant(_value: str) -> None:
+    raise ValueError("source_json_invalid")
+
+
 def inspect_raw(role: str, raw: bytes, stamps: tuple[dict, dict, dict, dict]) -> dict:
     """Interpret one raw response without changing or repairing its timestamp."""
     validate_stamps(stamps)
     if role not in {item[0] for item in REQUESTS} or not 0 < len(raw) <= MAX_BODY:
         raise ValueError("diagnostic_input_invalid")
     try:
-        payload = json.loads(raw, object_pairs_hook=_strict_object)
+        payload = json.loads(
+            raw,
+            object_pairs_hook=_strict_object,
+            parse_constant=_reject_non_json_constant,
+        )
+        canonical_json = _json(payload)  # Reject overflowed finite-looking numbers.
     except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
         raise ValueError("source_json_invalid") from exc
     if (
@@ -118,7 +131,7 @@ def inspect_raw(role: str, raw: bytes, stamps: tuple[dict, dict, dict, dict]) ->
         <= source_ns
         <= body["utc_ns"],
         "body_sha256": _sha(raw),
-        "canonical_json_sha256": _sha(_json(payload)),
+        "canonical_json_sha256": _sha(canonical_json),
         "validation_after_body": validation["monotonic_ns"] >= body["monotonic_ns"],
     }
 

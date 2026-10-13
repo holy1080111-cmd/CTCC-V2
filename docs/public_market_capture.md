@@ -156,6 +156,22 @@ funding return-age 診斷規則套到 V1 失敗紀錄。89 筆事件鏈與 51 �
 `../../validation-results/ctcc-public-initial-bb68-20261008/`。舊紀錄保留原樣，
 不得放寬新鮮度或修改來源時間來追求通過。
 
+2026-10-13 18:23 台北時間，使用 `scripts/diagnose_public_components.py` 在
+**匿名 Global production public** 位址做一次固定、無憑證的時間診斷：
+11 筆 GET 覆蓋前後 server time、4H／1H／15m／5m K 線、REST ticker、mark、
+books5、OI 與 funding；另外在 443 埠做一次公開 ticker WS 訂閱。
+GET 無代理、重導、重試或 cookie 跨請求；WS 無代理、重導、重連或登入。
+28 份原始 application body／時間收據／主機時鐘檔的讀回 hash 全部一致，
+REST／WS TLS peer 綁定觀察均為 true，11 筆 GET 與 WS 訊息均可解碼，
+本次沒有 future component。最新 K 線 `ts` 明確是 **bar open**，不是 HTTP
+response time；funding `ts` 在本次收據中比 headers receipt 早約 48 秒，不因此補值、改時間
+或認定其滿足交易新鮮度。summary SHA256
+`0e28612e8b9054b434c1b3ff6c83f83347fa3c1866b0f142cbd4baae1eddfc8b`，
+原始檔保存在 `../../validation-results/public-components-20261013-182314/`。
+擷取時工作樹仍有其他施工修改，這是診斷，不是最終 exact-source regression；
+account requests 與 order writes 均為 0，admission 始終 `DENY`。匿名 Global
+production 回應不能證明帳戶原始註冊站點，也不能充當 Demo 來源或候選資格。
+
 ## 仍未完成
 
 新受控公開 minute acquisition journal 使用版本化 attempt v2，在 HTTP 前後透過

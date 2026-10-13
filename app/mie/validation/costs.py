@@ -16,6 +16,7 @@ from app.mie.validation.contracts import CostModel
 D = Decimal
 BASIS_POINTS = D("10000")
 DECIMAL_PRECISION = 50
+SECONDS_PER_365_DAY_YEAR = D(365 * 24 * 60 * 60)
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,8 +36,14 @@ class CostedObservation:
 @dataclass(frozen=True, slots=True)
 class ReturnPathMetrics:
     sample_count: int
+    observation_interval_seconds: int
     gross_compound_return: Decimal
     net_compound_return: Decimal
+    mean_net_return_per_observation: Decimal
+    annualized_sharpe_ratio: Decimal | None
+    annualized_sortino_ratio: Decimal | None
+    risk_free_return_per_observation: Decimal
+    annualization_periods_per_year: Decimal
     turnover: Decimal
     maximum_drawdown: Decimal
     cvar_loss: Decimal
@@ -91,6 +98,37 @@ def _cvar_loss(returns: Sequence[Decimal], confidence_level: Decimal) -> Decimal
     tail_count = max(1, tail_count)
     losses = sorted((-value for value in returns), reverse=True)
     return sum(losses[:tail_count], D("0")) / D(tail_count)
+
+
+def _annualized_risk_ratios(
+    net_returns: Sequence[Decimal], observation_interval_seconds: int
+) -> tuple[Decimal, Decimal | None, Decimal | None, Decimal]:
+    """Zero-risk-free, 365-day ratios for the regular costed period series.
+
+    Sharpe is undefined for a constant sample; Sortino is undefined when its
+    downside denominator is zero. Undefined ratios are ``None``. These are
+    period ratios, never inferred closed-trade statistics.
+    """
+
+    count = D(len(net_returns))
+    mean = sum(net_returns, D("0")) / count
+    periods_per_year = SECONDS_PER_365_DAY_YEAR / D(observation_interval_seconds)
+    if len(net_returns) < 2:
+        return mean, None, None, periods_per_year
+    sample_variance = sum(((value - mean) ** 2 for value in net_returns), D("0")) / D(
+        len(net_returns) - 1
+    )
+    downside_variance = (
+        sum((min(value, D("0")) ** 2 for value in net_returns), D("0")) / count
+    )
+    annualizer = periods_per_year.sqrt()
+    sharpe = (
+        None if sample_variance == 0 else mean / sample_variance.sqrt() * annualizer
+    )
+    sortino = (
+        None if downside_variance == 0 else mean / downside_variance.sqrt() * annualizer
+    )
+    return mean, sharpe, sortino, periods_per_year
 
 
 def evaluate_costed_return_path(
@@ -182,10 +220,19 @@ def evaluate_costed_return_path(
         spread_cost = sum((item.spread_cost for item in observations), D("0"))
         slippage_cost = sum((item.slippage_cost for item in observations), D("0"))
         total_cost = fee_cost + funding_cost + spread_cost + slippage_cost
+        mean_net_return, sharpe, sortino, periods_per_year = _annualized_risk_ratios(
+            net_returns, observation_interval_seconds
+        )
         return ReturnPathMetrics(
             sample_count=len(observations),
+            observation_interval_seconds=observation_interval_seconds,
             gross_compound_return=_compound(gross_returns),
             net_compound_return=_compound(net_returns),
+            mean_net_return_per_observation=mean_net_return,
+            annualized_sharpe_ratio=sharpe,
+            annualized_sortino_ratio=sortino,
+            risk_free_return_per_observation=D("0"),
+            annualization_periods_per_year=periods_per_year,
             turnover=sum((item.turnover for item in observations), D("0")),
             maximum_drawdown=_maximum_drawdown(net_returns),
             cvar_loss=_cvar_loss(net_returns, confidence),

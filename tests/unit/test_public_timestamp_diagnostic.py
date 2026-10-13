@@ -68,6 +68,17 @@ def test_duplicate_json_key_and_other_instrument_are_rejected(role, raw, error):
         diagnostic.inspect_raw(role, raw, _stamps(1_791_700_000_000))
 
 
+@pytest.mark.parametrize("invalid", [b"NaN", b"Infinity", b"-Infinity", b"1e999"])
+def test_non_json_or_overflowed_numeric_field_cannot_be_observed(invalid):
+    raw = (
+        b'{"code":"0","msg":"","data":[{"ts":"1791700000000","unexpected":'
+        + invalid
+        + b"}]}"
+    )
+    with pytest.raises(ValueError, match="source_json_invalid"):
+        diagnostic.inspect_raw("time_pre", raw, _stamps(1_791_700_000_000))
+
+
 @pytest.mark.asyncio
 async def test_client_has_no_proxy_redirect_auth_or_retries():
     client = diagnostic._client()

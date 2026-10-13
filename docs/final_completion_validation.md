@@ -5081,3 +5081,44 @@ and Live service entrypoints have not all been connected to fresh post-G12
 source, atomic qualification reservation and the new durable intent. Thus
 `ALL_SUBMIT_ROUTES_GUARDED` is not a production PASS; opening the current
 transport guard alone would be unsafe.
+
+## 2026-10-13 typed account custody, route isolation and public-clock continuation
+
+The next uncommitted source slice advances the migration head from `0039` to
+`0040`. It adds separate, append-only B3 typed account observation batches,
+facts, coverage and findings with source-time family semantics. Fill records
+retain their execution time separately; a bill timestamp is a balance-update
+completion time, not proof of funding accrual. Original B1 chains are replayed
+and the older V1/V2 bytes are not rewritten. All typed outputs remain `DENY`.
+The author reported 63 relevant local unit passes and 47 migration-identity
+passes; seven PostgreSQL cases collected but did not execute because local
+PostgreSQL is unavailable. An independent read-only reviewer found no concrete
+fail-open defect, but PostgreSQL schema, concurrency, downgrade and readback
+acceptance remain pending for a matching committed source SHA.
+
+Registered legacy Demo/Live manual mutation routes and automation start and
+execute entrypoints now reject before calling their old services. This prevents
+an unqualified Demo automation from modifying leverage on the way to a
+denied order. Read-only and dry-run routes remain available. Thirty-eight
+targeted tests passed without private HTTP writes. The common final private
+transport guard still denies writes. These early rejects are a safety state,
+not an implemented source-owned G12/recheck/reservation/intent pipeline or an
+`ALL_SUBMIT_ROUTES_GUARDED` production acceptance.
+
+A bounded anonymous Global-production public diagnostic observed 11 REST GETs
+and one WS ticker on port 443, retained 28 artifacts, and read back all raw,
+receipt and clock hashes with zero mismatch. No future timestamp, account
+request or order write was observed in that capture. An independent review
+then identified permissive nonfinite JSON parsing and WS-error ACK handling;
+both the new component probe and the original five-GET timestamp probe now
+reject those malformed inputs, with 25 local offline tests passing. The
+earlier capture is retained as evidence for its then-current script only;
+the corrected script requires a new exact-source capture. Neither version
+authenticates this account's registration region or qualifies Demo data.
+
+Offline MIE arithmetic now includes period Sharpe/Sortino and closed-trade
+descriptive profit factor, expectancy and direction/symbol/regime slices.
+Twenty-four targeted tests passed and an independent reviewer found no
+concrete arithmetic defect. Trade existence, complete real costs, point-in-time
+row availability and a sealed unseen holdout remain unproven. Gate 3, OOS,
+Shadow, Demo and Micro Live acceptance stay FAIL; no live order is authorized.

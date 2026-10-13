@@ -40,6 +40,12 @@ router = APIRouter(
 )
 
 
+def _require_qualified_dispatch() -> None:
+    # No source-owned QualifiedDispatchCoordinator can issue a current invocation
+    # permit. A Live Arm or request confirmation alone grants no write authority.
+    raise OkxLiveSafetyError("live_qualified_dispatch_coordinator_unavailable")
+
+
 def _safe_exchange_code(exc: Exception) -> str | None:
     value = str(getattr(exc, "code", "") or "")
     return value if re.fullmatch(r"[A-Za-z0-9_]{1,32}", value) else None
@@ -220,6 +226,7 @@ async def unresolved_execution_intents() -> list[OkxLiveIntentResolutionExpectat
 )
 async def place_order(request: OkxLiveOrderRequest) -> OkxLiveWriteResult:
     try:
+        _require_qualified_dispatch()
         return await okx_live_service.place_order(request)
     except Exception as exc:
         raise _http_error(exc) from exc
@@ -228,6 +235,7 @@ async def place_order(request: OkxLiveOrderRequest) -> OkxLiveWriteResult:
 @router.post("/orders/cancel", response_model=OkxLiveWriteResult)
 async def cancel_order(request: OkxLiveCancelRequest) -> OkxLiveWriteResult:
     try:
+        _require_qualified_dispatch()
         return await okx_live_service.cancel_order(request)
     except Exception as exc:
         raise _http_error(exc) from exc
@@ -236,6 +244,7 @@ async def cancel_order(request: OkxLiveCancelRequest) -> OkxLiveWriteResult:
 @router.post("/positions/close", response_model=OkxLiveWriteResult)
 async def close_position(request: OkxLiveCloseRequest) -> OkxLiveWriteResult:
     try:
+        _require_qualified_dispatch()
         return await okx_live_service.close_position(request)
     except Exception as exc:
         raise _http_error(exc) from exc
@@ -244,6 +253,7 @@ async def close_position(request: OkxLiveCloseRequest) -> OkxLiveWriteResult:
 @router.post("/leverage", response_model=OkxLiveWriteResult)
 async def set_leverage(request: OkxLiveLeverageRequest) -> OkxLiveWriteResult:
     try:
+        _require_qualified_dispatch()
         return await okx_live_service.set_leverage(request)
     except Exception as exc:
         raise _http_error(exc) from exc
@@ -264,6 +274,7 @@ async def automation_start(
             detail="automation_start_requires_execute_true",
         )
     try:
+        _require_qualified_dispatch()
         return await controlled_live_automation.start(symbols=request.symbols)
     except Exception as exc:
         raise _http_error(exc) from exc
@@ -279,6 +290,8 @@ async def automation_run_once(
     request: OkxLiveAutomationRunRequest,
 ) -> OkxLiveAutomationRunResult:
     try:
+        if request.execute:
+            _require_qualified_dispatch()
         return await controlled_live_automation.run_once(
             symbols=request.symbols,
             execute=request.execute,

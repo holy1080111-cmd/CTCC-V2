@@ -22,6 +22,12 @@ from app.okx_demo.service import okx_demo_service
 router = APIRouter(prefix="/api/okx-demo", tags=["okx-demo"])
 
 
+def _require_qualified_dispatch() -> None:
+    # No source-owned QualifiedDispatchCoordinator can issue a current invocation
+    # permit. Legacy confirmation phrases never authorize an exchange mutation.
+    raise OkxDemoSafetyError("demo_qualified_dispatch_coordinator_unavailable")
+
+
 def _http_error(exc: Exception) -> HTTPException:
     if isinstance(exc, OkxDemoSafetyError):
         return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
@@ -138,6 +144,7 @@ async def place_order(
     _: None = Depends(require_ctcc_token),
 ) -> OkxDemoWriteResult:
     try:
+        _require_qualified_dispatch()
         return await okx_demo_service.place_order(request)
     except Exception as exc:
         raise _http_error(exc) from exc
@@ -149,6 +156,7 @@ async def cancel_order(
     _: None = Depends(require_ctcc_token),
 ) -> OkxDemoWriteResult:
     try:
+        _require_qualified_dispatch()
         return await okx_demo_service.cancel_order(request)
     except Exception as exc:
         raise _http_error(exc) from exc
@@ -160,6 +168,7 @@ async def close_position(
     _: None = Depends(require_ctcc_token),
 ) -> OkxDemoWriteResult:
     try:
+        _require_qualified_dispatch()
         return await okx_demo_service.close_position(request)
     except Exception as exc:
         raise _http_error(exc) from exc
@@ -171,6 +180,7 @@ async def set_leverage(
     _: None = Depends(require_ctcc_token),
 ) -> OkxDemoWriteResult:
     try:
+        _require_qualified_dispatch()
         return await okx_demo_service.set_leverage(request)
     except Exception as exc:
         raise _http_error(exc) from exc

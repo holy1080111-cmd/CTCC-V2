@@ -12,7 +12,7 @@ Every output remains `account_complete=False`,
 fill subtotal* only when its named query/window policy is satisfied. That zero
 is never a complete account net-loss, funding, lifecycle, streak or HWM claim.
 
-## Typed source-time replay (B3 V4 policy, diagnostic only)
+## Typed source-time replay and separate DB0040 persistence (diagnostic only)
 
 `replay_observation_index_typed_v1` is a separate, pure B3 replay from the
 original pinned B1 journal chains. Its `TYPED_POLICY_SHA256` binds the B2a V2
@@ -27,16 +27,27 @@ cashflows still use `fillTime` for occurrence and do not use `ts` as execution
 time. A bill `ts` is balance-update completion, never funding accrual.
 
 This V3 window receipt is **not** accepted by the DB0021/DB0037 B3 append path
-or any current risk/execution consumer. Existing persisted facts and SQL witness
-selection use a `generation_at` column, and the database guard accepts only the
-old V2 window schema and B3 V3 policy. Making typed B3 durable requires a
-reviewed versioned schema/policy epoch, migration, original-chain readback,
-PostgreSQL concurrency/recovery checks, and explicit downstream upgrades. The
-old replay, its policy and persisted receipts remain byte-identical historical
-DENY evidence; a V3 diagnostic must never be relabeled as an accepted DB batch.
-The typed diagnostic still reports source authenticity, account completeness
-and execution authority as false, and it cannot support a complete loss window
-or any Demo/Live order.
+or any current risk/execution consumer. DB0040 adds a separate typed B3 chain,
+with separate normalized fact and coverage tables, its own append-only sequence
+and a distinct persistence policy. The new table stores `source_ts_at` and its
+family-specific meaning: fills `ts` is fill-record generation; bills `ts` is
+balance-update completion. `fillTime` alone is the observed trade occurrence.
+No bill timestamp is funding accrual. The DB0040 SQL guard binds the original
+B1 terminal, DENY fields, policy hashes, membership and typed time domains;
+the repository independently replays original B1 chains and B2a V2 with its
+V1 predecessor hash before post-commit readback. DB0040 does not migrate or
+rewrite the DB0021 chain. Backfilling any old capture into the typed epoch
+requires an original B1 replay and a fresh typed sequence, never a copied old
+receipt or a bridge from the old B3 head hash.
+
+The V3 pure-replay policy expressly does not authorize persistence by itself.
+DB0040's separate persistence policy wraps the diagnostic receipt and keeps
+`account_complete=False`, `source_authenticity_verified=False`,
+`execution_authority=False`, and `admission=DENY`. Existing portfolio,
+current-history, qualification, risk and execution consumers still use their
+prior contracts and acquire no new permission. PostgreSQL migration and
+repository acceptance must pass on the exact final source before this new
+durable path is considered validated.
 
 ## Preregistered bounded policy
 

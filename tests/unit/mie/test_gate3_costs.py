@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from decimal import Decimal
+from decimal import Decimal, localcontext
 
 import pytest
 
@@ -40,6 +40,9 @@ def test_costed_return_path_reports_every_declared_cost_and_risk_metric() -> Non
     )
 
     assert result.sample_count == 3
+    assert result.observation_interval_seconds == 900
+    assert result.risk_free_return_per_observation == 0
+    assert result.annualization_periods_per_year == D("35040")
     assert result.turnover == D("2")
     assert result.fee_cost == D("0.0002")
     assert result.funding_cost == D("0.00010")
@@ -55,6 +58,13 @@ def test_costed_return_path_reports_every_declared_cost_and_risk_metric() -> Non
     )
     assert D("0") < result.maximum_drawdown < D("1")
     assert result.cvar_loss == D("0.02005")
+    with localcontext() as context:
+        context.prec = 50
+        assert result.mean_net_return_per_observation == (
+            D("0.00965") - D("0.02005") - D("0.0003")
+        ) / D(3)
+    assert result.annualized_sharpe_ratio is not None
+    assert result.annualized_sortino_ratio is not None
     assert result.authority == "offline_descriptive_only"
     assert result.runtime_consumers == 0
     assert result.execution_authority is False
@@ -151,3 +161,55 @@ def test_terminal_flatten_and_funding_cadence_are_applied() -> None:
             cost_model=declared_cost_model(funding_interval_seconds=1_000),
             observation_interval_seconds=900,
         )
+
+
+def test_annualized_period_ratios_keep_undefined_denominators_unknown() -> None:
+    zero_cost = declared_cost_model(
+        fee_bps=D(0),
+        funding_bps=D(0),
+        spread_bps=D(0),
+        slippage_bps=D(0),
+    )
+    constant_profit = evaluate_costed_return_path(
+        (D("0.01"), D("0.01")),
+        (D(1), D(1)),
+        cost_model=zero_cost,
+        observation_interval_seconds=900,
+    )
+    assert constant_profit.mean_net_return_per_observation == D("0.01")
+    assert constant_profit.annualized_sharpe_ratio is None
+    assert constant_profit.annualized_sortino_ratio is None
+
+    constant_loss = evaluate_costed_return_path(
+        (D("-0.01"), D("-0.01")),
+        (D(1), D(1)),
+        cost_model=zero_cost,
+        observation_interval_seconds=900,
+    )
+    assert constant_loss.annualized_sharpe_ratio is None
+    with localcontext() as context:
+        context.prec = 50
+        assert constant_loss.annualized_sortino_ratio == -D("35040").sqrt()
+
+    one_period = evaluate_costed_return_path(
+        (D("0.01"),),
+        (D(1),),
+        cost_model=zero_cost,
+        observation_interval_seconds=900,
+    )
+    assert one_period.annualized_sharpe_ratio is None
+    assert one_period.annualized_sortino_ratio is None
+
+
+def test_annualized_period_ratios_ignore_callers_decimal_context() -> None:
+    parameters = {
+        "asset_returns": (D("0.0123456789"), D("-0.0065432101")),
+        "exposures": (D(1), D(1)),
+        "cost_model": declared_cost_model(),
+        "observation_interval_seconds": 900,
+    }
+    baseline = evaluate_costed_return_path(**parameters)
+    with localcontext() as caller_context:
+        caller_context.prec = 8
+        replay = evaluate_costed_return_path(**parameters)
+    assert replay == baseline

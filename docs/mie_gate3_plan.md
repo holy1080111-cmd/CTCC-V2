@@ -40,6 +40,17 @@ improvement: the database clock and custody and first evaluator access remain
 unproven. It does not repair the 2024/2025 source receipts, which were retrieved
 in 2026, or the previously exposed 2026 retrospective holdout.
 
+The offline cost calculator also reports period-based mean net return and
+365-day annualized Sharpe/Sortino under an explicit zero risk-free return. A
+zero-variance or zero-downside denominator remains undefined (`None`). A
+separate arithmetic helper summarizes caller-supplied, already closed trades by
+direction, symbol and regime, with net expectancy, profit factor, and average
+win/loss; zero-loss profit factor remains undefined. It rejects outcomes not
+available at the declared UTC cutoff, but it cannot authenticate trade
+existence, complete fees/funding, ledger coverage, or a sealed holdout. These
+figures are descriptive tooling only; no real OOS evaluation or Gate 3
+promotion has occurred.
+
 The latest known Development/Validation replay attempt retained a 120-archive,
 172,800-row manifest but stopped before aggregation under the laptop thermal
 precaution (`../validation-results/mie-gate3-devval-replay-20261005/STOPPED.json`,

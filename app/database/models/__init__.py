@@ -8,6 +8,12 @@ from app.database.models.account_observation_index import (
     DemoAccountObservationFact,
     DemoAccountObservationFinding,
 )
+from app.database.models.account_observation_index_typed import (
+    DemoAccountObservationTypedBatch,
+    DemoAccountObservationTypedCoverage,
+    DemoAccountObservationTypedFact,
+    DemoAccountObservationTypedFinding,
+)
 from app.database.models.analysis import (
     AnalysisRun,
     StrategyEvaluation,
@@ -116,6 +122,10 @@ __all__ = [
     "DemoAccountObservationCoverage",
     "DemoAccountObservationFact",
     "DemoAccountObservationFinding",
+    "DemoAccountObservationTypedBatch",
+    "DemoAccountObservationTypedCoverage",
+    "DemoAccountObservationTypedFact",
+    "DemoAccountObservationTypedFinding",
     "DemoAutomationFingerprint",
     "DemoAutomationRun",
     "DemoAutomationState",

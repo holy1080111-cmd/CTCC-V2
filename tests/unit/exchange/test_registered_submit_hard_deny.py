@@ -1,24 +1,29 @@
-"""Registered API order routes reach the concrete, fail-closed OKX transport.
+"""Registered legacy API writes stop before preflight and private transport.
 
 All account and market preflight inputs are synthetic. MockTransport records any
-private HTTP request and cannot reach the exchange; these tests establish only
-current hard denial, not qualified G12/R7/R6 execution authority.
+private HTTP request and cannot reach the exchange. The independent final private
+transport denial remains covered separately; these routes issue no qualification.
 """
 
 from __future__ import annotations
 
-import asyncio
 import importlib
 import inspect
+from datetime import UTC, datetime
 
 import httpx
 import pytest
 
 from app.api.security import require_ctcc_token
-from app.domain.demo_automation import EXECUTE_PHRASE
+from app.domain.demo_automation import EXECUTE_PHRASE, DemoAutomationRunResult
+from app.domain.okx_demo import DEMO_CONFIRMATION_PHRASE
 from app.domain.okx_live import (
     LIVE_ARM_PHRASE,
     LIVE_AUTOMATION_EXECUTE_PHRASE,
+    LIVE_CANCEL_PHRASE,
+    LIVE_CLOSE_PHRASE,
+    LIVE_LEVERAGE_PHRASE,
+    OkxLiveAutomationRunResult,
 )
 from app.exchange.okx.errors import OkxPrivateApiError
 from app.exchange.okx.private_rest import (
@@ -60,6 +65,180 @@ from tests.unit.test_okx_live_service import (
     seed_legacy_local_lease_for_downstream_unit_test,
     service_fixture,
 )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("environment", "path", "payload"),
+    (
+        (
+            "demo",
+            "/api/okx-demo/orders",
+            demo_order().model_dump(mode="json"),
+        ),
+        (
+            "demo",
+            "/api/okx-demo/orders/cancel",
+            {
+                "instrument_id": "BTC-USDT-SWAP",
+                "order_id": "123",
+                "confirmation": DEMO_CONFIRMATION_PHRASE,
+            },
+        ),
+        (
+            "demo",
+            "/api/okx-demo/positions/close",
+            {
+                "instrument_id": "BTC-USDT-SWAP",
+                "confirmation": DEMO_CONFIRMATION_PHRASE,
+            },
+        ),
+        (
+            "demo",
+            "/api/okx-demo/leverage",
+            {
+                "instrument_id": "BTC-USDT-SWAP",
+                "leverage": 3,
+                "confirmation": DEMO_CONFIRMATION_PHRASE,
+            },
+        ),
+        (
+            "live",
+            "/api/okx-live/orders",
+            live_order().model_dump(mode="json"),
+        ),
+        (
+            "live",
+            "/api/okx-live/orders/cancel",
+            {
+                "instrument_id": "BTC-USDT-SWAP",
+                "order_id": "123",
+                "idempotency_key": "CTCCXabcdef",
+                "confirmation": LIVE_CANCEL_PHRASE,
+            },
+        ),
+        (
+            "live",
+            "/api/okx-live/positions/close",
+            {
+                "instrument_id": "BTC-USDT-SWAP",
+                "idempotency_key": "CTCCXabcdef",
+                "confirmation": LIVE_CLOSE_PHRASE,
+            },
+        ),
+        (
+            "live",
+            "/api/okx-live/leverage",
+            {
+                "instrument_id": "BTC-USDT-SWAP",
+                "leverage": 3,
+                "idempotency_key": "CTCCXabcdef",
+                "confirmation": LIVE_LEVERAGE_PHRASE,
+            },
+        ),
+    ),
+)
+async def test_manual_mutation_routes_never_invoke_legacy_service_or_private_http(
+    monkeypatch: pytest.MonkeyPatch,
+    environment: str,
+    path: str,
+    payload: dict[str, object],
+) -> None:
+    observed: list[httpx.Request] = []
+    called: list[str] = []
+
+    def exchange_handler(request: httpx.Request) -> httpx.Response:
+        observed.append(request)
+        pytest.fail("legacy route reached mutating private HTTP")
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(exchange_handler),
+        base_url="https://www.okx.com",
+    ) as exchange_http:
+
+        class LegacyServiceTrap:
+            def __getattr__(self, action: str):
+                async def mutate(*_args, **_kwargs):
+                    called.append(action)
+                    return await exchange_http.post("/api/v5/trade/order", json={})
+
+                return mutate
+
+        route = importlib.import_module(f"app.api.routers.okx_{environment}")
+        monkeypatch.setattr(route, f"okx_{environment}_service", LegacyServiceTrap())
+        app.dependency_overrides[require_ctcc_token] = lambda: None
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://testserver",
+            ) as api_http:
+                response = await api_http.post(
+                    path,
+                    json={
+                        **payload,
+                        "passed": True,
+                        "qualified_dispatch_permit": "caller-invented",
+                    },
+                )
+        finally:
+            app.dependency_overrides.pop(require_ctcc_token, None)
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == (
+        f"{environment}_qualified_dispatch_coordinator_unavailable"
+    )
+    assert called == []
+    assert observed == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("environment", ("demo", "live"))
+async def test_automation_dry_run_remains_available(
+    monkeypatch: pytest.MonkeyPatch, environment: str
+) -> None:
+    now = datetime.now(UTC)
+    calls: list[tuple[object, bool, str]] = []
+    if environment == "demo":
+        route = importlib.import_module("app.api.routers.demo_automation")
+        path = "/api/demo-automation/run-once"
+        worker_name = "safe_demo_automation"
+        result = DemoAutomationRunResult(
+            trigger="manual",
+            execute=False,
+            started_at=now,
+            completed_at=now,
+            results=[],
+        )
+    else:
+        route = importlib.import_module("app.api.routers.okx_live")
+        path = "/api/okx-live/automation/run-once"
+        worker_name = "controlled_live_automation"
+        result = OkxLiveAutomationRunResult(
+            trigger="manual",
+            execute=False,
+            started_at=now,
+            completed_at=now,
+            results=[],
+        )
+
+    class DryRunWorker:
+        async def run_once(self, *, symbols=None, execute=False, trigger="manual"):
+            calls.append((symbols, execute, trigger))
+            return result
+
+    monkeypatch.setattr(route, worker_name, DryRunWorker())
+    app.dependency_overrides[require_ctcc_token] = lambda: None
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+        ) as api_http:
+            response = await api_http.post(path, json={"execute": False})
+    finally:
+        app.dependency_overrides.pop(require_ctcc_token, None)
+
+    assert response.status_code == 200
+    assert response.json()["execute"] is False
+    assert calls == [(None, False, "manual")]
 
 
 @pytest.mark.asyncio
@@ -138,11 +317,9 @@ async def test_registered_demo_order_route_cannot_send_unqualified_entry(
         finally:
             app.dependency_overrides.pop(require_ctcc_token, None)
 
-    assert response.status_code == 502
-    assert response.json()["detail"]["exchange_code"] == (
-        "private_write_authority_unavailable"
-        if legacy_classifier_removed
-        else "demo_qualification_authority_unavailable"
+    assert response.status_code == 409
+    assert response.json()["detail"] == (
+        "demo_qualified_dispatch_coordinator_unavailable"
     )
     assert observed == []
 
@@ -196,18 +373,13 @@ async def test_registered_live_order_route_cannot_send_after_full_preflight(
         finally:
             app.dependency_overrides.pop(require_ctcc_token, None)
 
-    assert response.status_code == 502
-    # Live API intentionally withholds long internal exchange/safety codes.
-    assert response.json()["detail"] == {
-        "message": "okx_live_exchange_request_failed",
-        "exchange_code": None,
-    }
-    assert [request.url.path for request in observed] == [
-        "/api/v5/account/max-size",
-    ]
-    assert intents.rows["CTCCLabcdef"]["status"] == "rejected"
-    assert intents.rows["CTCCLabcdef"]["detail_codes"] == ["order_precheck_rejected"]
-    assert service.arm_status().armed is False
+    assert response.status_code == 409
+    assert response.json()["detail"] == (
+        "live_qualified_dispatch_coordinator_unavailable"
+    )
+    assert observed == []
+    assert intents.rows == {}
+    assert service.arm_status().armed is True
 
 
 @pytest.mark.asyncio
@@ -301,15 +473,15 @@ async def test_registered_demo_automation_run_once_reaches_concrete_denial(
         finally:
             app.dependency_overrides.pop(require_ctcc_token, None)
 
-    assert response.status_code == 200
-    assert response.json()["results"][-1]["outcome"] == "error"
-    assert len(preflight.place_calls) == 1
-    assert preflight.place_calls[0].order_type == "fok"
+    assert response.status_code == 409
+    assert response.json()["detail"] == (
+        "demo_qualified_dispatch_coordinator_unavailable"
+    )
+    assert preflight.place_calls == []
     assert observed == []
     status = await service.status()
-    assert status.emergency_stop is True
-    assert status.armed is False
-    assert "order_submission_outcome_unconfirmed" in status.lock_reasons
+    assert status.emergency_stop is False
+    assert status.armed is True
 
 
 @pytest.mark.asyncio
@@ -357,24 +529,24 @@ async def test_registered_demo_automation_cannot_set_leverage_before_denied_orde
         finally:
             app.dependency_overrides.pop(require_ctcc_token, None)
 
-    assert response.status_code == 200
-    assert response.json()["results"][-1]["outcome"] == "error"
+    assert response.status_code == 409
+    assert response.json()["detail"] == (
+        "demo_qualified_dispatch_coordinator_unavailable"
+    )
     assert preflight.place_calls == []
     assert observed == []
     status = await service.status()
-    assert status.emergency_stop is True
-    assert status.armed is False
+    assert status.emergency_stop is False
+    assert status.armed is True
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("legacy_classifier_removed", (False, True))
-async def test_registered_demo_scheduler_reaches_concrete_order_denial(
+async def test_registered_demo_scheduler_is_denied_before_creation(
     monkeypatch: pytest.MonkeyPatch,
     legacy_classifier_removed: bool,
 ) -> None:
     observed: list[httpx.Request] = []
-    scheduled_runs = []
-    completed = asyncio.Event()
 
     def exchange_handler(request: httpx.Request) -> httpx.Response:
         observed.append(request)
@@ -404,16 +576,6 @@ async def test_registered_demo_scheduler_reaches_concrete_order_denial(
         service = make_service(preflight, okx_demo_scan_initial_delay_seconds=0)
         await service.recover()
         await service.arm()
-        original_run_once = service.run_once
-
-        async def run_one_scheduled_iteration(**kwargs):
-            result = await original_run_once(**kwargs)
-            scheduled_runs.append(result)
-            service._stop.set()
-            completed.set()
-            return result
-
-        monkeypatch.setattr(service, "run_once", run_one_scheduled_iteration)
         route = importlib.import_module("app.api.routers.demo_automation")
         monkeypatch.setattr(route, "safe_demo_automation", service)
         app.dependency_overrides[require_ctcc_token] = lambda: None
@@ -423,32 +585,28 @@ async def test_registered_demo_scheduler_reaches_concrete_order_denial(
                 base_url="http://testserver",
             ) as api_http:
                 response = await api_http.post("/api/demo-automation/start")
-                await asyncio.wait_for(completed.wait(), timeout=5)
-                await api_http.post("/api/demo-automation/stop")
         finally:
             app.dependency_overrides.pop(require_ctcc_token, None)
             await service.stop()
 
-    assert response.status_code == 200
-    assert len(scheduled_runs) == 1
-    assert scheduled_runs[0].trigger == "scheduled"
-    assert scheduled_runs[0].results[-1].outcome == "error"
-    assert len(preflight.place_calls) == 1
-    assert preflight.place_calls[0].order_type == "fok"
+    assert response.status_code == 409
+    assert response.json()["detail"] == (
+        "demo_qualified_dispatch_coordinator_unavailable"
+    )
+    assert service.running is False
+    assert preflight.place_calls == []
     assert observed == []
     status = await service.status()
-    assert status.emergency_stop is True
-    assert status.armed is False
+    assert status.emergency_stop is False
+    assert status.armed is True
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("scheduled", (False, True))
-async def test_registered_live_automation_routes_reach_concrete_denial(
+async def test_registered_live_automation_routes_deny_before_execution(
     monkeypatch: pytest.MonkeyPatch, scheduled: bool
 ) -> None:
     observed: list[httpx.Request] = []
-    scheduled_runs = []
-    completed = asyncio.Event()
 
     def exchange_handler(request: httpx.Request) -> httpx.Response:
         observed.append(request)
@@ -481,16 +639,6 @@ async def test_registered_live_automation_routes_reach_concrete_denial(
             market_hub=FakeLiveHub(),
             market_client=FakeLiveMarketClient(),
         )
-        if scheduled:
-            original_run_once = worker.run_once
-
-            async def run_one_scheduled_iteration(**kwargs):
-                result = await original_run_once(**kwargs)
-                scheduled_runs.append(result)
-                completed.set()
-                return result
-
-            monkeypatch.setattr(worker, "run_once", run_one_scheduled_iteration)
         route = importlib.import_module("app.api.routers.okx_live")
         monkeypatch.setattr(route, "controlled_live_automation", worker)
         app.dependency_overrides[require_ctcc_token] = lambda: None
@@ -512,25 +660,15 @@ async def test_registered_live_automation_routes_reach_concrete_denial(
                         "symbols": ["BTC-USDT-SWAP"],
                     },
                 )
-                if scheduled:
-                    await asyncio.wait_for(completed.wait(), timeout=5)
-                    await api_http.post("/api/okx-live/automation/stop")
         finally:
             app.dependency_overrides.pop(require_ctcc_token, None)
             await worker.stop()
 
-    assert response.status_code == 200
-    result = scheduled_runs[0] if scheduled else response.json()
-    assert (result.trigger if scheduled else result["trigger"]) == (
-        "scheduled" if scheduled else "manual"
+    assert response.status_code == 409
+    assert response.json()["detail"] == (
+        "live_qualified_dispatch_coordinator_unavailable"
     )
-    outcomes = (
-        [item.outcome for item in result.results]
-        if scheduled
-        else [item["outcome"] for item in result["results"]]
-    )
-    assert outcomes == ["error"]
-    assert [request.url.path for request in observed] == ["/api/v5/account/max-size"]
-    assert len(intents.rows) == 1
-    assert next(iter(intents.rows.values()))["status"] == "rejected"
-    assert service.arm_status().armed is False
+    assert worker.running is False
+    assert observed == []
+    assert intents.rows == {}
+    assert service.arm_status().armed is True

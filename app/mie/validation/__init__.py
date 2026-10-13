@@ -87,6 +87,12 @@ from app.mie.validation.costs import (
     ReturnPathMetrics,
     evaluate_costed_return_path,
 )
+from app.mie.validation.economic_metrics import (
+    ClosedTradeOutcome,
+    DescriptiveTradeMetrics,
+    TradeProfitSummary,
+    summarize_closed_trade_outcomes,
+)
 from app.mie.validation.gate3_preregistration_seal_observer import (
     Gate3CommittedSealAckReadback,
     Gate3CommittedSealError,
@@ -181,11 +187,13 @@ __all__ = [
     "BoundMinute",
     "CalculatedReliabilityBin",
     "CandidateSpec",
+    "ClosedTradeOutcome",
     "ComponentVersion",
     "CostModel",
     "CostedObservation",
     "DatasetIdentity",
     "DatasetPartition",
+    "DescriptiveTradeMetrics",
     "DeterministicMinuteBatch",
     "DevelopmentValidationSplit",
     "EvaluationPlan",
@@ -242,6 +250,7 @@ __all__ = [
     "ReturnPathMetrics",
     "ReviewerMetadata",
     "SealLedgerError",
+    "TradeProfitSummary",
     "TrialRegistry",
     "TrialTestResult",
     "UncertaintyPlan",
@@ -285,6 +294,7 @@ __all__ = [
     "replay_features_at",
     "replay_features_walk_forward",
     "replay_plan_bound_walk_forward_folds",
+    "summarize_closed_trade_outcomes",
     "verify_archive_batch_manifest",
     "verify_archive_batch_plan",
     "verify_archive_observation_receipt",

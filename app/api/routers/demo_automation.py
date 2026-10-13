@@ -16,6 +16,12 @@ from app.domain.demo_automation import (
 router = APIRouter(prefix="/api/demo-automation", tags=["demo-automation"])
 
 
+def _require_qualified_dispatch() -> None:
+    # No source-owned QualifiedDispatchCoordinator can issue a current invocation
+    # permit. An Arm or execute confirmation alone grants no write authority.
+    raise DemoAutomationSafetyError("demo_qualified_dispatch_coordinator_unavailable")
+
+
 def _http_error(exc: Exception) -> HTTPException:
     if isinstance(exc, DemoAutomationSafetyError):
         return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
@@ -69,6 +75,7 @@ async def disarm(
 @router.post("/start", response_model=DemoAutomationStatus)
 async def start(_: None = Depends(require_ctcc_token)) -> DemoAutomationStatus:
     try:
+        _require_qualified_dispatch()
         return await safe_demo_automation.start()
     except Exception as exc:
         raise _http_error(exc) from exc
@@ -88,6 +95,8 @@ async def run_once(
     _: None = Depends(require_ctcc_token),
 ) -> DemoAutomationRunResult:
     try:
+        if request.execute:
+            _require_qualified_dispatch()
         return await safe_demo_automation.run_once(
             symbols=request.symbols,
             execute=request.execute,
