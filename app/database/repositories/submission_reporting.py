@@ -1,6 +1,7 @@
 """Atomic private submission observations; separate, order-free file projection."""
 
 from dataclasses import dataclass
+from datetime import datetime
 
 from sqlalchemy import select
 
@@ -46,6 +47,44 @@ class SubmissionObservationReceipt:
     capture_sha256: str
     execution_authority: bool = False
     order_retry_authority: bool = False
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class InitialSubmissionLineage:
+    """Private DB0018/DB0017 readback, never a closure or execution permit.
+
+    The three JSON values are exact persisted bytes-as-text, including the
+    private exchange response in ``capture_json``. Keep this object out of
+    logs, public reports, and outbox payloads.
+    """
+
+    reservation_id: str
+    original_event_key: str
+    intent_transition_id: int
+    intent_json: str
+    intent_sha256: str
+    outcome_id: str
+    outcome_json: str
+    capture_json: str
+    capture_sha256: str
+    exchange_request_sha256: str
+    reservation_request_sha256: str
+    report_sha256: str
+    status: str
+    observed_at: datetime
+    recorded_at: datetime
+
+    @property
+    def execution_authority(self) -> bool:
+        return False
+
+    @property
+    def order_retry_authority(self) -> bool:
+        return False
+
+    @property
+    def reconciliation_authority(self) -> bool:
+        return False
 
 
 @dataclass(frozen=True, slots=True)
@@ -486,6 +525,80 @@ class SubmissionReportingRepository(QualificationLedgerRepository):
                 outcome.intent_sha256,
                 outcome.capture_sha256,
             )
+
+    async def read_initial_lineage(self, scope, event_key, *, expected_outcome_id):
+        """Replay the committed initial outcome in an independent DB session.
+
+        Callers supply only the account/event locator and expected outcome pin.
+        The intent, capture, and outcome are read from the database, not from a
+        caller-provided receipt. Any missing or conflicting row is a denial.
+        """
+        try:
+            scope = reservations.checked(scope, reservations.LedgerScope)
+            rid = reservations.reservation_id(scope, event_key)
+            expected = pin(expected_outcome_id)
+            async with self.session_factory() as session, session.begin():
+                account = await self._locked(session, scope)
+                outcome = await session.get(QualificationSubmissionOutcome, expected)
+                if (
+                    outcome is None
+                    or outcome.reservation_id != rid
+                    or outcome.ledger_revision > account.ledger_revision
+                    or outcome.observation_kind != "initial"
+                    or outcome.sequence != 1
+                    or outcome.previous_sha256 is not None
+                ):
+                    raise SubmissionReportingError("submission_lineage_readback_denied")
+                spool = await session.scalar(
+                    select(QualificationReportSpool).filter_by(
+                        outcome_id=outcome.outcome_id
+                    )
+                )
+                if spool is None:
+                    raise SubmissionReportingError("submission_lineage_readback_denied")
+                # Replays the persisted reservation, V2/V3 intent, exact capture,
+                # outcome document, report and spool policy before exposing any
+                # private source bytes to the caller.
+                await self._verify_spool(session, spool)
+                reservation = await session.get(QualificationReservation, rid)
+                intent = await session.get(
+                    QualificationReservationTransition, outcome.intent_transition_id
+                )
+                if (
+                    reservation is None
+                    or intent is None
+                    or intent.evidence_json is None
+                    or intent.reservation_id != rid
+                    or reservation.original_event_key != event_key
+                    or sha(intent.evidence_json.encode()) != outcome.intent_sha256
+                    or sha(reservation.request_json.encode())
+                    != reservation.request_sha256
+                    or sha(outcome.capture_json.encode()) != outcome.capture_sha256
+                    or sha(outcome.outcome_json.encode()) != outcome.outcome_id
+                    or spool.reservation_id != rid
+                ):
+                    raise SubmissionReportingError("submission_lineage_readback_denied")
+                return InitialSubmissionLineage(
+                    reservation_id=rid,
+                    original_event_key=reservation.original_event_key,
+                    intent_transition_id=intent.id,
+                    intent_json=intent.evidence_json,
+                    intent_sha256=outcome.intent_sha256,
+                    outcome_id=outcome.outcome_id,
+                    outcome_json=outcome.outcome_json,
+                    capture_json=outcome.capture_json,
+                    capture_sha256=outcome.capture_sha256,
+                    exchange_request_sha256=outcome.exchange_request_sha256,
+                    reservation_request_sha256=reservation.request_sha256,
+                    report_sha256=spool.report_sha256,
+                    status=outcome.status,
+                    observed_at=outcome.observed_at,
+                    recorded_at=outcome.recorded_at,
+                )
+        except Exception:  # noqa: BLE001 -- Private DB/readback errors stay redacted.
+            raise SubmissionReportingError(
+                "submission_lineage_readback_denied"
+            ) from None
 
     async def pending_ids(self, namespace, *, limit=16, after=""):
         namespace = queue(namespace)

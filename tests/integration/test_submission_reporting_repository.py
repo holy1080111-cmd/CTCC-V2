@@ -389,6 +389,64 @@ async def test_atomic_ack_restart_projection_and_idempotent_readback(
         ].startswith("CTA")
 
 
+@pytest.mark.parametrize("status", ("acknowledged", "rejected", "uncertain"))
+async def test_initial_lineage_readback_uses_committed_db_bytes_without_authority(
+    database, fixture, status
+):
+    _, repository, clock, hold, args = await setup(database, fixture, status=status)
+    observed = await repository.record_observation(
+        hold.scope, hold.original_event_key, **args
+    )
+    # This repository instance opens a new session after the writer committed.
+    restarted = SubmissionReportingRepository(database[1], clock=clock)
+    lineage = await restarted.read_initial_lineage(
+        hold.scope,
+        hold.original_event_key,
+        expected_outcome_id=observed.outcome_id,
+    )
+    async with database[1]() as session:
+        outcome = await session.get(QualificationSubmissionOutcome, observed.outcome_id)
+        reservation = await session.get(QualificationReservation, hold.reservation_id)
+        intent = await session.get(
+            QualificationReservationTransition, outcome.intent_transition_id
+        )
+        assert lineage.intent_json == intent.evidence_json
+        assert lineage.capture_json == outcome.capture_json
+        assert lineage.outcome_json == outcome.outcome_json
+        assert lineage.reservation_request_sha256 == reservation.request_sha256
+    assert lineage.reservation_id == hold.reservation_id
+    assert lineage.status == status
+    assert (
+        lineage.intent_sha256
+        == hashlib.sha256(lineage.intent_json.encode()).hexdigest()
+    )
+    assert (
+        lineage.capture_sha256
+        == hashlib.sha256(lineage.capture_json.encode()).hexdigest()
+    )
+    assert (
+        lineage.outcome_id == hashlib.sha256(lineage.outcome_json.encode()).hexdigest()
+    )
+    assert not (
+        lineage.execution_authority
+        or lineage.order_retry_authority
+        or lineage.reconciliation_authority
+    )
+    assert "capture_json" not in repr(lineage)
+    with pytest.raises(SubmissionReportingError, match="lineage_readback_denied"):
+        await restarted.read_initial_lineage(
+            hold.scope,
+            hold.original_event_key,
+            expected_outcome_id="f" * 64,
+        )
+    with pytest.raises(SubmissionReportingError, match="lineage_readback_denied"):
+        await restarted.read_initial_lineage(
+            hold.scope,
+            "e" * 64,
+            expected_outcome_id=observed.outcome_id,
+        )
+
+
 @pytest.mark.parametrize("status", ("rejected", "uncertain"))
 async def test_rejected_unknown_retained_but_never_projected(
     database, fixture, tmp_path, status

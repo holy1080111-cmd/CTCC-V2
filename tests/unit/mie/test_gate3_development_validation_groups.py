@@ -135,6 +135,11 @@ def synthetic_aggregate(
         expected_minute_rows=1440,
         volume_unit="source_unspecified",
     )
+    source_member = next(
+        member
+        for member in manifest.members
+        if member.receipt.partition == partition and member.receipt.symbol == symbol
+    )
     timeframes = []
     for label, seconds in TARGETS:
         bars = []
@@ -156,13 +161,13 @@ def synthetic_aggregate(
                         source_row_id=f"synthetic:{partition}:{symbol}:{label}:{ordinal}",
                         source_row_sha256=content_sha,
                         instrument_id=instrument,
-                        available_at=START + timedelta(days=9, seconds=1),
+                        available_at=source_member.receipt.retrieved_at,
                         bar=bar,
                     ),
                     constituent_sha256=content_sha,
                     constituent_count=width,
                     availability_bases=(AvailabilityBasis.ARCHIVE_OBSERVATION,) * width,
-                    receipt_sha256s=(sha("synthetic-receipt"),) * width,
+                    receipt_sha256s=(source_member.receipt_sha256,) * width,
                 )
             )
         timeframes.append(
@@ -348,6 +353,50 @@ def test_changed_artifact_or_manifest_pin_denies(tmp_path: Path) -> None:
         stream.write(b"\n")
     with pytest.raises(ValueError, match="digest"):
         verify_inputs(inputs)
+
+
+@pytest.mark.parametrize("damage", ["receipt_substitution", "availability_shift"])
+def test_rehashed_group_cannot_replace_manifest_source_availability(
+    tmp_path: Path, damage: str
+) -> None:
+    inputs = write_groups(tmp_path)
+    plan_path, plan_sha, manifest_path, manifest_sha, paths, hashes = inputs
+    directory = paths[0]
+    aggregate_path = directory / "development-BTCUSDT-aggregation.json"
+    aggregate_payload = json.loads(aggregate_path.read_bytes())
+    first_bar = aggregate_payload["timeframes"][0]["bars"][0]
+    if damage == "receipt_substitution":
+        first_bar["receipt_sha256s"][0] = sha("substituted-receipt")
+    else:
+        first_bar["row"]["available_at"] = (
+            (START + timedelta(days=10)).isoformat().replace("+00:00", "Z")
+        )
+    aggregate = DeterministicMinuteBatch.model_validate_json(
+        json.dumps(aggregate_payload)
+    )
+    aggregate_bytes = aggregate.canonical_json_bytes()
+    aggregate_path.write_bytes(aggregate_bytes)
+
+    summary_path = directory / "summary.json"
+    summary = json.loads(summary_path.read_bytes())
+    summary["results"][0]["aggregation_sha256"] = aggregate.canonical_sha256()
+    summary["results"][0]["repeat_aggregation_sha256"] = aggregate.canonical_sha256()
+    summary["files"][aggregate_path.name] = sha(aggregate_bytes)
+    summary_bytes = (
+        json.dumps(summary, sort_keys=True, separators=(",", ":")) + "\n"
+    ).encode()
+    summary_path.write_bytes(summary_bytes)
+    resigned_hashes = (sha(summary_bytes), *hashes[1:])
+
+    with pytest.raises(ValueError, match="source availability"):
+        verify_four_groups(
+            plan_path=plan_path,
+            expected_plan_sha256=plan_sha,
+            manifest_path=manifest_path,
+            expected_manifest_sha256=manifest_sha,
+            group_outputs=paths,
+            expected_summary_sha256s=resigned_hashes,
+        )
 
 
 def test_one_group_requires_prior_plan_and_manifest_pin_before_source_io(

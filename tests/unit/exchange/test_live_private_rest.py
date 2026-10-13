@@ -75,6 +75,31 @@ async def test_live_authenticated_get_uses_live_signature_without_demo_header() 
 
 
 @pytest.mark.asyncio
+async def test_live_order_history_uses_ord_id_chain_without_demo_header() -> None:
+    observed = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/v5/trade/orders-history"
+        assert request.url.params["instType"] == "SWAP"
+        assert request.url.params["limit"] == "100"
+        assert "x-simulated-trading" not in request.headers
+        after = request.url.params.get("after")
+        observed.append(after)
+        rows = [{"ordId": "300"}] if after is None else []
+        return httpx.Response(200, json={"code": "0", "msg": "", "data": rows})
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="https://openapi.okx.com"
+    ) as client:
+        rows = await OkxLivePrivateRestClient(
+            client, settings=live_settings()
+        ).order_history()
+
+    assert rows == [{"ordId": "300"}]
+    assert observed == [None, "300"]
+
+
+@pytest.mark.asyncio
 async def test_live_client_does_not_fall_back_to_demo_credentials() -> None:
     settings = live_settings(
         okx_live_api_key="",

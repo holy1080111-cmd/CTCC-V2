@@ -47,12 +47,17 @@ settlement scopes belonging to the same account.
 
 Reserve and consume reject an active reservation in another settlement currency:
 cross-currency conversion and aggregate caps are unsupported and are not claimed.
-Within the selected settlement scope, any uncertain reservation or consumed hold
-without a committed initial observation rejects new entry. This includes legacy
-consumed records without a DB0018 observation. A lost outcome commit therefore
+Within the selected settlement scope, every uncertain reservation and every
+consumed hold rejects new entry, including one with a committed initial ACK or
+rejection and legacy consumed records without a DB0018 observation. The ledger
+replays a present initial outcome and spool for audit, but neither response is a
+fill, protection, or final-flat closure witness. A lost outcome commit therefore
 leaves the earlier durable consumed intent as the inhibit, even if a separate
-EStop write cannot complete. Read and explicit verified reconciliation remain
-available. Expiry/restart cannot release these holds or replay an order.
+EStop write cannot complete. Readback remains available; DB0027 and the
+repository forbid post-submit `consumed`/`uncertain` to `reconciled_flat` until
+a separate verified closure issuer exists. Expiry/restart cannot release these
+holds or replay an order. A never-consumed `reserved` hold may be cancelled under
+the existing pre-submit flat-claim checks; that is not post-submit reconciliation.
 
 An identical retry of the **persistence operation** reads its existing outcome;
 different captures, intent pins, policies or queue identities conflict. A failed
@@ -102,10 +107,12 @@ startup or roll back exchange state.
 This API records the **initial submit return or unknown result**. The append-only
 schema reserves a reconciliation observation kind, but this producer refuses to
 turn a caller-supplied initial capture into a later reconciled ACK. A future
-source-bound order/fill/protection reconciliation adapter must append that true
-evidence; existing explicit verified flat reconciliation can retire holds without
-rewriting prior outcomes. Rejected/uncertain reports remain in the private spool
-and are ineligible for confirmed-submission delivery.
+source-bound order/fill/protection reconciliation adapter and a separately
+verified post-submit closure issuer must establish the missing chronology before
+any consumed or uncertain hold can be retired; DB0027 currently forbids that
+transition even when caller claims say flat. A never-consumed `reserved` hold has
+a distinct pre-submit cancellation path. Rejected/uncertain reports remain in
+the private spool and are ineligible for confirmed-submission delivery.
 
 Migration 0018 preserves 0017's triggers and identities. New tables reject UPDATE
 and DELETE, enforce relational binding and unique initial/eligible records, and

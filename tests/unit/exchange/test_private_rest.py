@@ -131,6 +131,115 @@ async def test_pending_orders_are_unfiltered_and_page_until_empty_terminal() -> 
 
 
 @pytest.mark.asyncio
+async def test_order_history_short_pages_continue_to_explicit_empty_terminal() -> None:
+    observed = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/v5/trade/orders-history"
+        assert request.url.params["instType"] == "SWAP"
+        assert request.url.params["instId"] == "BTC-USDT-SWAP"
+        assert request.url.params["limit"] == "3"
+        assert request.headers["x-simulated-trading"] == "1"
+        after = request.url.params.get("after")
+        observed.append(after)
+        rows = {
+            None: [{"ordId": "200"}, {"ordId": "199"}],
+            "199": [{"ordId": "198"}],
+            "198": [],
+        }[after]
+        return httpx.Response(200, json={"code": "0", "msg": "", "data": rows})
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="https://www.okx.com"
+    ) as client:
+        rows = await OkxDemoPrivateRestClient(
+            client, settings=demo_settings()
+        ).order_history("BTC-USDT-SWAP", limit=3)
+
+    assert [row["ordId"] for row in rows] == ["200", "199", "198"]
+    assert observed == [None, "199", "198"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fault", ["duplicate_on_page", "cursor_not_advanced"])
+async def test_order_history_rejects_duplicate_or_nonprogressing_cursor(
+    fault: str,
+) -> None:
+    observed = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        after = request.url.params.get("after")
+        observed.append(after)
+        rows = (
+            [{"ordId": "200"}, {"ordId": "200"}]
+            if fault == "duplicate_on_page"
+            else [{"ordId": "200"}, {"ordId": "199"}]
+            if after is None
+            else [{"ordId": "199"}]
+        )
+        return httpx.Response(200, json={"code": "0", "msg": "", "data": rows})
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="https://www.okx.com"
+    ) as client:
+        with pytest.raises(OkxPrivateApiError) as error:
+            await OkxDemoPrivateRestClient(
+                client, settings=demo_settings()
+            ).order_history(limit=3)
+
+    assert error.value.code == "pagination_incomplete"
+    assert observed == ([None] if fault == "duplicate_on_page" else [None, "199"])
+
+
+@pytest.mark.asyncio
+async def test_order_history_page_cap_without_terminal_fails_closed() -> None:
+    observed = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        observed.append(request.url.params.get("after"))
+        return httpx.Response(
+            200,
+            json={
+                "code": "0",
+                "msg": "",
+                "data": [{"ordId": str(200 - len(observed))}],
+            },
+        )
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="https://www.okx.com"
+    ) as client:
+        with pytest.raises(OkxPrivateApiError) as error:
+            await OkxDemoPrivateRestClient(
+                client, settings=demo_settings()
+            ).order_history()
+
+    assert error.value.code == "pagination_incomplete"
+    assert len(observed) == 16
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("limit", [True, 0, -1, 101, "100", 1.0])
+async def test_order_history_rejects_invalid_page_limit_before_request(limit) -> None:
+    observed = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        observed.append(request)
+        return httpx.Response(200, json={"code": "0", "data": []})
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="https://www.okx.com"
+    ) as client:
+        with pytest.raises(OkxPrivateApiError) as error:
+            await OkxDemoPrivateRestClient(
+                client, settings=demo_settings()
+            ).order_history(limit=limit)
+
+    assert error.value.code == "pagination_limit_invalid"
+    assert observed == []
+
+
+@pytest.mark.asyncio
 async def test_pending_algos_use_documented_types_and_empty_cursor_terminators() -> (
     None
 ):

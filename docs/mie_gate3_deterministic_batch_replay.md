@@ -169,8 +169,9 @@ do not overwrite it or interpret other groups as a complete batch.
 After retaining each `summary.json` SHA-256 **outside** its output directory,
 the read-only four-group verifier checks exact group coverage, external plan,
 manifest, and summary pins, source/aggregate file hashes, bar coordinates,
-late-cutoff rejection, and zero authority. Its final report uses exclusive file
-creation and readback:
+each bar's ordered constituent receipt hashes and maximum retrieval time
+against the pinned manifest, late-cutoff rejection, and zero authority. Its
+final report uses exclusive file creation and readback:
 
 ```powershell
 python -B -m scripts.verify_gate3_development_validation_groups `
@@ -189,7 +190,8 @@ python -B -m scripts.verify_gate3_development_validation_groups `
   --output <new-four-group-report.json>
 ```
 
-This verifier checks pinned outputs; it does not reopen the source ZIPs.
+This verifier checks pinned outputs and their manifest receipt coordinates; it
+does not reopen the source ZIPs or independently authenticate the receipts.
 This is a reproducible **computational rehearsal** of already retrieved
 archives. The old 2024/2025 archive rows have no measured historical first
 receipt, and the retrospective holdout was exposed before candidate sealing.

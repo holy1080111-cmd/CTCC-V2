@@ -102,6 +102,13 @@ verified union of current exposure and local holds. A separate transaction must
 then generate the authenticated account revision used by R6/R7; this module never
 calls the older caller-claims `reconcile_scope` as a shortcut.
 
+The legacy Demo/Live mirror's SWAP `orders-history` read follows its `ordId`
+cursor through an explicit empty terminal page, including after a short page;
+invalid or over-budget chains fail closed. The `limit` argument is the OKX
+per-page size (1–100), not a total-history cap. This mirror read retains no
+trusted raw page-chain receipt and does not prove fills, bills, realized PnL,
+account completeness, or flat-start permission.
+
 ## Validation
 
 Synthetic tests exercise v5's 34-stream inventory, plus legacy 23-stream and

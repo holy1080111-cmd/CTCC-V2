@@ -225,6 +225,12 @@ def _check_group(
         or len(aggregate.timeframes) != len(TARGETS)
     ):
         raise ValueError("group aggregate lineage or deterministic result differs")
+    daily_receipts = {
+        member.receipt.day_start_at.date(): member
+        for member in manifest.members
+        if member.receipt.partition == DatasetPartition(partition)
+        and member.receipt.symbol == symbol
+    }
     counts = []
     for series, (label, seconds) in zip(aggregate.timeframes, TARGETS, strict=True):
         expected_count = (window.end_at - window.start_at) // timedelta(seconds=seconds)
@@ -236,17 +242,32 @@ def _check_group(
         ):
             raise ValueError("group aggregate coverage differs")
         for ordinal, item in enumerate(series.bars, start=1):
+            bar_start = window.start_at + timedelta(seconds=(ordinal - 1) * seconds)
+            constituents = []
+            for index in range(width):
+                source_day = (bar_start + timedelta(minutes=index)).date()
+                member = daily_receipts.get(source_day)
+                if member is None:
+                    raise ValueError("group aggregate source receipt is missing")
+                constituents.append(member)
+            expected_receipt_sha256s = tuple(
+                member.receipt_sha256 for member in constituents
+            )
+            expected_available_at = max(
+                member.receipt.retrieved_at for member in constituents
+            )
             if (
                 item.row.instrument_id != aggregate.plan.instrument_id
                 or item.row.bar.closed_at
                 != window.start_at + timedelta(seconds=ordinal * seconds)
                 or item.constituent_count != width
-                or len(item.receipt_sha256s) != width
+                or item.receipt_sha256s != expected_receipt_sha256s
+                or item.row.available_at != expected_available_at
                 or item.availability_bases
                 != (AvailabilityBasis.ARCHIVE_OBSERVATION,) * width
                 or item.row.source_row_sha256 != item.constituent_sha256
             ):
-                raise ValueError("group aggregate bar or availability basis differs")
+                raise ValueError("group aggregate bar or source availability differs")
         try:
             replay_features_at(
                 tuple(item.row for item in series.bars),

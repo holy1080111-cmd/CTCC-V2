@@ -621,10 +621,18 @@ class _OkxPrivateRestClientBase:
     async def order_history(
         self, instrument_id: str | None = None, limit: int = 100
     ) -> list[dict[str, Any]]:
-        return await self._request(
-            "GET",
+        """Read the bounded SWAP order-history chain; ``limit`` is per page."""
+        if type(limit) is not int or not 1 <= limit <= _PRIVATE_PAGE_SIZE:
+            raise OkxPrivateApiError(
+                "OKX private order-history page limit is invalid",
+                code="pagination_limit_invalid",
+            )
+        return await self._cursor_chain(
             "/api/v5/trade/orders-history",
-            params={"instType": "SWAP", "instId": instrument_id, "limit": str(limit)},
+            params={"instType": "SWAP", "instId": instrument_id},
+            cursor_field="ordId",
+            page_size=limit,
+            max_pages=_PRIVATE_MAX_PAGES,
         )
 
     async def pending_algo_orders(

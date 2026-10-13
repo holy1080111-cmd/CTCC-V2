@@ -5392,3 +5392,53 @@ change, the combined final low-load selection passed **37** tests, recorded at
 `f7ef9d41eabe1bd5e1bee0a96a768ff8266d3cb947aa173b743415c199088465`).
 The optional Windows pytest-cache warning recurred; no full Windows or Linux
 acceptance is inferred.
+
+## 2026-10-13 ba7d38c exact-source checkpoint and bounded follow-up
+
+The next committed source is `ba7d38cd80464c583841e72d52a631cbcb76f42c`
+with tree `23a5d5bacfb95c49ea5fe6542086b31374a7a6ca`, migration head `0040`,
+and manifest SHA256
+`23aa6a52d97cc35be1b8312e5cbb6747511b2472b04eac5af75ef58bc0cdab4d`.
+Its exact archive and Git bundle are retained in
+`../../validation-results/checkpoint-ba7d38c-20261013/` (SHA256
+`2a5d79b1e8ea1a6a344c9d1dacf8a2b414de88070781917df76e5fc07e3cb35c`
+and `ddcb5a28fea6604e40475471ab564fe051d177ccf7f0650dd3eaf226e1aeffca`).
+The Git bundle verified and all 1,156 manifest members matched the archive
+readback. A bounded scan of its 1,157 source files and 436 new Git blobs since
+the previous full-history scan found zero high-confidence credential-pattern
+matches; it is not a complete runtime/log/ZIP security acceptance. The
+[matching CI run 38424239317](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/38424239317)
+was still in progress at this checkpoint and cannot be borrowed by later
+working-tree changes. Remote `main` remained
+`d3f206a59888ef3d72732fa30deaa8278ac72cc5`; no PR, merge, tag, release,
+Demo order, or Live order resulted from this checkpoint.
+
+The subsequently reviewed unauthenticated time-route diagnostic retained
+one exact `GET /api/v5/public/time` per official global, US/AU and EEA Demo
+REST route in
+`../../validation-results/demo-public-time-route-diagnostic-20261013-r1/`.
+Each returned HTTP 200 with a server timestamp between its measured request
+start and header receipt. The independently re-read summary SHA256 is
+`fb4d9239b26ae7758187786d8a683a12782854d89eab369450ab8c909031ba88`.
+Windows W32Time was running automatically, with a recent synchronization;
+native clock checks before and after the probes passed. Because **all three**
+public endpoints responded, response success does not identify this account's
+registration site. The diagnostic remains `admission=DENY`, and no market,
+account, G12 or execution route consumes it. It is not R5 source acceptance.
+
+The four-group Gate 3 computational verifier now checks each aggregate bar's
+ordered minute-source receipt hashes and maximum retrieved-at timestamp
+against the pinned manifest. Ten targeted tests passed, including re-hashed
+receipt-substitution and availability-shift denial. The source archives were
+retrieved too late to prove historical point-in-time availability and the old
+holdout was previously exposed; Gate 3 and sealed OOS remain unaccepted.
+The legacy Demo/Live SWAP order-history mirror now follows its `ordId` cursor
+through an explicit empty terminal page and denies invalid, repeated,
+non-advancing or over-budget chains. Four related local test modules passed;
+this legacy mirror has no raw R5 receipt and cannot prove realized PnL or
+flat-start. A new private DB0017/DB0018 initial-lineage readback replays
+persisted intent, capture, outcome and spool without issuing submit, retry or
+closure authority. Its three PostgreSQL integration variants collected but
+were **skipped locally** without an isolated database; only a matching CI
+execution can validate them. None of these follow-up changes belongs to the
+`ba7d38c` archive or CI run until separately committed and checked.
