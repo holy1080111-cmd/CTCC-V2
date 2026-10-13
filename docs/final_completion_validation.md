@@ -4774,3 +4774,53 @@ closed. A real PostgreSQL cross-page scale measurement is still required
 before calling this path production-ready. The diagnostic does not establish
 exchange-history finality, source authenticity, portfolio completeness or
 permission to trade.
+
+## 2026-10-13 exact-source and account-origin continuation
+
+The B3-prefix and Demo-mirror changes above are committed and pushed as
+`aad5cb45cac21683ed73092ccc34963fc95ddc69` (tree
+`39f50edee3d32dafc4132794a2f46e474187b662`). The exact-source GitHub
+run `38357181292` was still in progress when this note was written. A passing
+job from an earlier source is not evidence for this tree. The native Demo
+order POST boundary remains denied.
+
+One signed, GET-only Demo `account/config` request was made serially to each
+documented API region. The existing Demo credential returned HTTP 200/code 0
+from `openapi.okx.com`; `us.okx.com` and `eea.okx.com` returned HTTP 401/code
+50119. No redirect, proxy, retry, account mutation or order write was used.
+The redacted receipt is
+`../../validation-results/okx-region-serial-20261012/redacted-receipt.json`
+(SHA256 `47096bf9a3a2a86f201168f2644e2ba5c29f6cbd52e3a81b631da53f205630c3`).
+This proves the credential's current API route, not the account's original
+registration website: OKX documents that a residence migration can change
+the API domain while retaining the API key. The signed account config and
+logged-in profile do not state the original site. An official web-support
+follow-up on 2026-10-13 likewise produced no account-record answer. Its AI
+reply claimed a ticket number, but the logged-in ticket page displayed zero
+open tickets and the AI could not verify that number. The redacted follow-up
+receipt is
+`../../validation-results/okx-registration-support-20261013/redacted-receipt.json`
+(SHA256 `ea25073c2e3cad6cdc3536e3972b1cddca05f8f68314165051269c529fd40fba`).
+Account-origin admission remains DENY; do not infer the original site from
+the current Global route.
+
+A read-only secret-content scan at `aad5cb45` found no confirmed plaintext
+credential in tracked source or reachable Git-history text blobs, or in 579
+recent text artifacts. Binary blobs, older validation artifacts, ignored
+private configuration and a future final bundle were outside that scan;
+the final Security Gate is therefore not yet PASS. A separate local change
+now denies non-test structural Demo Arm before account reads or Arm state
+write because the B5 mirror/ledger flat read and Arm write are not one atomic
+account-scoped transaction. Its targeted tests passed locally; it remains
+uncommitted and cannot be counted under the `aad5cb45` CI run.
+
+The next local source slice also adds an opt-in isolated PostgreSQL probe for
+33 synthetic B3 captures, crossing the 32-row prefix page boundary. The
+dedicated hermetic PostgreSQL job enables it from a source-controlled constant
+and preserves a redacted measurement JSON with elapsed time, page count,
+B1-chain read count and receipt hashes. It checks independently reconstructed
+ordered membership, omitted second page, and an appended new head. No private
+HTTP or account credential is involved. This is **not** a passing scale result
+until the exact changed source completes that hosted job; 256/1024 capture
+scale, memory/SQL-plan measurements and the full pre-HTTP deadline remain
+open.

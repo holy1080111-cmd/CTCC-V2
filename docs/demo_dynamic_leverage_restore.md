@@ -92,8 +92,20 @@ qualification, durable reservation and intent acceptance.
 
 ## Structural Arm local-flat preflight
 
-Before structural Demo Arm, the automation opens one immutable GET-only
-credential session in the owned Demo REST client. It pins the key, secret,
+As of 2026-10-13, structural Demo Arm is denied outside the `test`
+environment with `structural_rollout_atomic_flat_start_unavailable` before
+account reads or an Arm state write. The B5 UID row lock ends when the local
+checkpoint is returned, before the separate automation Arm transaction.
+Serializing Demo mirror capture does not exclude a new reservation or intent
+in that gap. The checks below remain implemented for test validation, but
+they do not grant production Arm or Demo order authority. Re-enabling this
+path requires an account-scoped atomic flat-start/Arm boundary with
+PostgreSQL concurrency evidence; the private order POST boundary remains
+denied independently.
+
+The retained production preflight path, currently unreachable from public
+Arm, would open one immutable GET-only credential session in the owned Demo
+REST client. It pins the key, secret,
 passphrase, region origin and transport settings across the initial signed
 `account/config`, reconciliation and read retries; any settings drift denies
 Arm. Reconciliation reads account/config before and after its account

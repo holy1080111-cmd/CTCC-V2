@@ -851,6 +851,16 @@ def main():
                 "postgres-intent",
                 postgres_command,
                 mounts=test_results_mount,
+                extra_environment=(
+                    (
+                        "-e",
+                        "CTCC_RUN_B3_PREFIX_33=1",
+                        "-e",
+                        "CTCC_B3_SCALE_RECEIPT_DIR=/validation-results",
+                    )
+                    if args.suite == "postgres"
+                    else ()
+                ),
                 timeout=POSTGRES_TEST_TIMEOUT_SECONDS,
             )
             identity["postgres_tests"] = verify_pytest_report(

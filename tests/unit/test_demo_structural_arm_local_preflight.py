@@ -50,6 +50,35 @@ def _service(demo, repository):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("environment", ("development", "production"))
+async def test_non_test_structural_arm_denied_before_fake_source_or_state_write(
+    environment: str,
+) -> None:
+    demo = FakeDemo()
+    local_repository = MemoryLocalCheckpointRepository()
+    service = make_service(
+        demo,
+        local_checkpoint_repository=local_repository,
+        environment=environment,
+        okx_demo_score_risk_enabled=True,
+        okx_demo_max_open_positions=3,
+        **structural_dynamic_updates(),
+    )
+    await service.recover()
+
+    with pytest.raises(
+        DemoAutomationSafetyError,
+        match="structural_rollout_atomic_flat_start_unavailable",
+    ):
+        await service.arm()
+
+    assert demo.reconcile_calls == 0
+    assert local_repository.scopes == []
+    assert (await service.status()).armed is False
+    assert service.repository.state["armed"] is False
+
+
+@pytest.mark.asyncio
 async def test_initialized_flat_uid_can_arm_across_expected_sync_time_update() -> None:
     demo = FakeDemo()
     repository = MemoryLocalCheckpointRepository()

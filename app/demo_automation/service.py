@@ -382,6 +382,13 @@ class SafeDemoAutomation:
         if self._state["emergency_stop"]:
             raise DemoAutomationSafetyError("emergency_stop_must_be_cleared")
         if structural_enabled and self.settings.environment != "test":
+            # B5's UID lock ends before the automation Arm CAS. Another
+            # reservation or intent writer can change local exposure in that
+            # gap, even when the Demo mirror capture itself is serialized.
+            raise DemoAutomationSafetyError(
+                "structural_rollout_atomic_flat_start_unavailable"
+            )
+        if structural_enabled and self.settings.environment != "test":
             demo = self.demo_service
             if (
                 type(demo) is not OkxDemoService
