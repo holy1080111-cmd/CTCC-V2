@@ -26,6 +26,7 @@ from app.trade_qualification.engine import PreEvidenceRun
 from app.trade_qualification.executable_economics import (
     _compare_economics_numeric_tail,
 )
+from app.trade_qualification.executable_quote_v2 import ExecutableQuoteV2
 from app.trade_qualification.market_bridge_v2 import public_market_context_v2
 from app.trade_qualification.recheck_models import copy_recheck_origin
 
@@ -169,6 +170,31 @@ def _comparison(candidate, execution, entry, reference, direction, stop):
     return tuple(sorted(values.items()))
 
 
+def quote_within_economics_policy_age_v2(packet, policy, observed_at):
+    """Check the original cost-policy age against all four pinned quote clocks.
+
+    A later account or ledger read cannot inherit an earlier projected-cost
+    result merely because the public transport profile still accepts the same
+    packet. This is a source-age predicate, never an execution permit.
+    """
+    if type(policy) is not EconomicsPolicy:
+        raise ValueError("economics_v2_original_cost_policy_required")
+    now = data._utc(observed_at)
+    _, (_, quote, _, _, _, _) = public_v2._parts(packet)
+    if type(quote) is not ExecutableQuoteV2:
+        raise ValueError("economics_v2_exact_quote_required")
+    maximum_age = timedelta(seconds=policy.maximum_quote_age_seconds)
+    return all(
+        stamp <= now and now - stamp <= maximum_age
+        for stamp in (
+            quote.ticker.source_generated_at,
+            quote.mark.exchange_data_return_at,
+            quote.funding.exchange_data_return_at,
+            quote.capture_completed_at,
+        )
+    )
+
+
 def evaluate_current_projected_economics_v2(packet, *, origin, current_g1, observed_at):
     """Recompute both fixed-geometry scenarios from the same fresh V2 quote.
 
@@ -265,16 +291,7 @@ def evaluate_current_projected_economics_v2(packet, *, origin, current_g1, obser
         "funding_pair_sha256": g1.funding_pair_sha256,
         "observed_at": now,
     }
-    maximum_age = timedelta(seconds=policy.maximum_quote_age_seconds)
-    if any(
-        now - stamp > maximum_age
-        for stamp in (
-            quote.ticker.source_generated_at,
-            quote.mark.exchange_data_return_at,
-            quote.funding.exchange_data_return_at,
-            quote.capture_completed_at,
-        )
-    ):
+    if not quote_within_economics_policy_age_v2(checked, policy, now):
         return CurrentProjectedEconomicsDiagnosticV2(
             **values,
             code="projected_quote_source_stale",

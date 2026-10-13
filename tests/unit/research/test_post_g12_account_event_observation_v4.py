@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime, timedelta
 from decimal import Decimal
+from math import ceil
 
 import pytest
 from PIL import Image
@@ -20,6 +21,7 @@ from app.trade_qualification import account_current_history_join as account_join
 from app.trade_qualification import account_current_source_verifier as current_source
 from app.trade_qualification import account_native_proof as native_proof
 from app.trade_qualification import account_native_proof_storage as native_storage
+from app.trade_qualification import current_economics_v2 as current_economics
 from app.trade_qualification import post_g12_account_event_observation_v4 as bridge
 from app.trade_qualification import post_g12_account_history_join_v3 as joined
 from app.trade_qualification import post_g12_recheck_v2 as public_recheck
@@ -112,6 +114,39 @@ def test_v4_exact_public_packet_original_g1_expires_before_candidate(
     joined.prior._require_final_original_g1(packet, run, t1)
     with pytest.raises(ValueError):
         joined.prior._require_final_original_g1(packet, run, t2)
+
+
+def test_original_economics_quote_can_expire_while_g1_remains_current(
+    source_inputs_fixture, captured_public_journal
+):
+    _, _, run = source_inputs_fixture
+    packet = captured_public_journal[0].packet
+    completed = datetime.fromisoformat(decode(packet.packet_json)["completed_at"])
+    early = completed + timedelta(seconds=1)
+    late = early + timedelta(seconds=1)
+    quote = current_economics.public_v2._parts(packet)[1][1]
+    stamps = (
+        quote.ticker.source_generated_at,
+        quote.mark.exchange_data_return_at,
+        quote.funding.exchange_data_return_at,
+        quote.capture_completed_at,
+    )
+    age = ceil(max((early - stamp).total_seconds() for stamp in stamps))
+    assert 1 <= age <= 60
+    strict = run.policy.economics.model_copy(update={"maximum_quote_age_seconds": age})
+    joined.prior._require_final_original_g1(packet, run, late)
+    current_economics.public_market_context_v2(
+        packet, expected_bundle_sha256=packet.bundle_sha256, evaluated_at=late
+    )
+    assert current_economics.quote_within_economics_policy_age_v2(packet, strict, early)
+    assert not current_economics.quote_within_economics_policy_age_v2(
+        packet, strict, late
+    )
+    assert not current_economics.quote_within_economics_policy_age_v2(
+        packet, strict, min(stamps) - timedelta(microseconds=1)
+    )
+    with pytest.raises(ValueError, match="economics_v2_original_cost_policy_required"):
+        current_economics.quote_within_economics_policy_age_v2(packet, object(), early)
 
 
 def _publish_synthetic_artifacts(
@@ -409,6 +444,11 @@ def _matched(scope, key, expected):
         (None, "trusted_execution_inputs_missing", 1),
         ("late_public_g1", "public_g1_rejected_at_event_readback", 1),
         (
+            "late_economics_quote_stale",
+            "public_economics_quote_stale_at_event_readback",
+            1,
+        ),
+        (
             "late_validation_clock_expired",
             "public_validation_clock_invalid_at_event_readback",
             1,
@@ -518,6 +558,19 @@ async def test_v4_one_invocation_v3_readback_then_uid_event_only(
             )
 
     monkeypatch.setattr(joined.prior, "_require_final_original_g1", final_public_g1)
+    economics_checks = []
+
+    def final_economics_age(packet, policy, observed_at):
+        economics_checks.append(observed_at)
+        assert packet.bundle_sha256 == captured_public_journal[0].packet.bundle_sha256
+        assert policy == run.policy.economics
+        return fault != "late_economics_quote_stale"
+
+    monkeypatch.setattr(
+        bridge.current_economics,
+        "quote_within_economics_policy_age_v2",
+        final_economics_age,
+    )
 
     async def issue(*args, **kwargs):
         assert asyncio.current_task() is task
@@ -720,6 +773,8 @@ async def test_v4_one_invocation_v3_readback_then_uid_event_only(
         assert v3_time < expected["deadline"] - timedelta(milliseconds=600)
         assert final_g1_times == [validation_at]
         assert observations[0].received_at < expected["deadline"]
+    if fault == "late_economics_quote_stale":
+        assert final_g1_times == economics_checks == [validation_at]
     if fault in {
         "late_public_journal_changed",
         "late_validation_clock_expired",

@@ -195,7 +195,6 @@ def test_fixed_base_catalog_retains_original_failures(captured, strategy):
         "structure_reversal",
         "volatility_expansion",
         "range_reversal",
-        "liquidity_sweep_reversal",
     ],
 )
 @pytest.mark.parametrize("direction", ["long", "short"])
@@ -216,6 +215,21 @@ def test_history_source_remains_explicit_wait_without_borrowed_stage_c(
         )
     else:
         assert value["code"] == value["precursor"]["code"]
+
+
+@pytest.mark.parametrize("direction", ["long", "short"])
+def test_swap_vwap_v2_sweep_cannot_borrow_legacy_history_policy(
+    direction, tmp_path_factory
+):
+    _, _, raw, account = capture_history(
+        "liquidity_sweep_reversal", direction, tmp_path_factory
+    )
+    with pytest.raises(FullPublicNumericV2Error, match="numeric_v2_raw_source_denied"):
+        diagnose_full_public_economics_v2(
+            raw.packet,
+            account,
+            **arguments(raw, account, strategy="liquidity_sweep_reversal"),
+        )
 
 
 @pytest.mark.parametrize(

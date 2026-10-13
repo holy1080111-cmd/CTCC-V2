@@ -60,6 +60,17 @@ retains the exchange microsecond `inTime`/`outTime` pair when present, and
 marks absent pairs as incomplete. It never substitutes host receipt time for
 exchange processing time. V6 gateway policy/receipt V1 remain replayable.
 
+An independent, DENY-only V7 native chronology proof now binds the historical
+native-clock proof to those exact B1 pages. It requires all original gateway
+pairs and all *recognized* source-row timestamps to be present and ordered
+against their own page's `outTime`; rows with no recognized clock remain
+explicitly counted as unknown. Its stored-companion entry point independently
+reads back the old no-clobber proof before replay. The old V7 native proof
+policy/receipt and issuance revocation remain unchanged. This new offline
+receipt does not establish registration provenance, complete account/portfolio
+state, current-use flat qualification, or execution authority; see
+[the row/gateway contract](account_row_gateway_causality.md).
+
 The V7 native current-components policy (`ctcc.native_demo_current_components.v2`)
 maps all eight algo inventories to explicit counts and row/page hashes. It
 preserves missing history, local exposure, protection, costs and portfolio risk

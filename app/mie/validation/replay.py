@@ -38,10 +38,10 @@ D = Decimal
 SHA256_PATTERN = r"^[0-9a-f]{64}$"
 
 
-def _feature_context() -> Context:
-    """Fix Gate 2 arithmetic independently of caller and DefaultContext state."""
+def _fixed_decimal_context(precision: int) -> Context:
+    """Pin every Decimal setting used by replay and forward labels."""
     return Context(
-        prec=28,
+        prec=precision,
         rounding=ROUND_HALF_EVEN,
         Emin=-999999,
         Emax=999999,
@@ -50,6 +50,11 @@ def _feature_context() -> Context:
         flags=[],
         traps=[InvalidOperation, DivisionByZero, Overflow],
     )
+
+
+def _feature_context() -> Context:
+    """Fix Gate 2 arithmetic independently of caller and DefaultContext state."""
+    return _fixed_decimal_context(28)
 
 
 class ReplayValidationError(ValueError):
@@ -502,7 +507,10 @@ def forward_direction_label(
     if outcome.available_at > observed_at:
         raise ReplayValidationError("outcome label was read before it became available")
 
-    forward_return = outcome.bar.close / base.bar.close - D("1")
+    # V1 historically used the default 28-digit, half-even context. Pin all
+    # settings at those values without changing default-context label bytes.
+    with localcontext(_fixed_decimal_context(28)):
+        forward_return = outcome.bar.close / base.bar.close - D("1")
     return ForwardDirectionLabel(
         instrument_id=base.instrument_id,
         feature_cutoff=cutoff,
@@ -604,7 +612,7 @@ def forward_direction_label_v2(
     if any(row.available_at > read for row in rows):
         raise ReplayValidationError("outcome was read before it became available")
 
-    with localcontext(Context(prec=plan.decimal_precision, rounding=ROUND_HALF_EVEN)):
+    with localcontext(_fixed_decimal_context(plan.decimal_precision)):
         rebuilt = replay_features_at(
             rows,
             as_of=decision,
@@ -620,7 +628,7 @@ def forward_direction_label_v2(
     if rebuilt != snapshot or rebuilt.replay_sha256 != snapshot.replay_sha256:
         raise ReplayValidationError("V2 feature replay differs from original source")
 
-    with localcontext(Context(prec=50, rounding=ROUND_HALF_EVEN)):
+    with localcontext(_fixed_decimal_context(50)):
         forward_return = outcome.bar.close / base.bar.close - D("1")
     outcome_window = tuple(
         row for row in rows if base_closed_at <= row.bar.closed_at <= target_at

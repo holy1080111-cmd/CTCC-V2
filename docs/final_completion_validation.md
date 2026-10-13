@@ -5546,3 +5546,51 @@ Ruff check, format and diff checks passed. The exact-source full CI for this
 follow-up is still required; the older `e66e34a` run does not validate these
 new files. Trusted R5 source, production G1--G12/R7/R6, Demo/Live, OOS and
 release acceptance remain **DENY/FAIL**.
+
+## 2026-10-14 640def2 exact-source CI and next fail-closed corrections
+
+Commit `640def22d261d9b8defe5eb070c4cd8539185bb5` has tree
+`99601ce9b12de8bc4541bf16be6c8c79072e069d` and manifest SHA256
+`37c5be390992df610f47e07fb40076290879744360eaf707dd1b03b61f18b25f`.
+Its exact source ZIP, complete-history Git bundle, independent 1,159-member
+manifest readback, bounded credential scan and SHA256SUMS are retained in
+`../../validation-results/checkpoint-640def2-20261014/`. The checkpoint
+explicitly does **not** accept full validation. The matching [CI run
+38441654569](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/38441654569)
+found genuine failures in Linux shards 3, 5 and 7. Shards 3 and 5 used
+synthetic SWAP candles whose quote turnover did not agree with their base
+volume and prices under the new V2 source validation. Their 21 and eight
+failing cases respectively cannot be counted as production regressions or
+silently ignored; the next candidate repairs those test-source bytes before
+raw capture. Shard 7 had two historical sweep tests that still expected a
+WAIT diagnostic from a V2 SWAP sweep using a legacy V1 policy pin, plus one
+synthetic V10 receipt expecting the old SHA after the versioned VWAP
+correction. The V2 sweep must remain blocked until its downstream contract is
+reviewed; the next candidate splits those two cases into explicit denial
+tests. The V10 test now checks full readback, DENY state and GET-only behavior
+before pinning the new deterministic SHA; its targeted case passed locally.
+Shards 0, 1, 4 and 6 passed with exact-source evidence. The run as a whole is
+**FAIL**; no old-source result can validate the following working-tree
+corrections. Shard 2, Windows and PostgreSQL were still running when this
+record was updated.
+
+The next candidate also reapplies the **original** economics-policy
+quote-age limit at the late V4 account-event and V5 local-portfolio readbacks.
+Even when G1 still accepts the public packet, a quote older than that frozen
+cost limit receives a distinct DENY. Eight focused R7 cases passed. This
+DENY-only diagnostic still compares UTC stamps at its late readbacks; it must
+also pin monotonic elapsed time or reacquire a fresh quote before it can form
+part of an execution authority, because a host-clock rollback could otherwise
+understate age. A separate
+DENY-only V7 native-account chronology receipt replays the pinned historical
+proof and original B1 chain, requiring every page's OKX gateway clock pair and
+every recognized, present source timestamp within its own page's `outTime`.
+Rows without a recognized source clock remain explicitly unknown and cannot
+claim complete source-time coverage; the old V7 proof issuer stays revoked.
+Adjacent synthetic tests passed 21/21 and the new module passed 6/6. Gate 3
+V1/V2 labels and V2 feature rebuild now use fully
+pinned Decimal contexts; existing default-result label hashes stayed stable and
+the 18-case focused module passed. These are offline tests, not original-source
+availability, authenticated account acceptance, production R7 authority or
+Demo/Live acceptance. The candidate's exact commit and manifest still require
+full source-bound CI before these corrections can be counted as validated.

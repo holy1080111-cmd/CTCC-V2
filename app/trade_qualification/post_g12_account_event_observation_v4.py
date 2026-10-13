@@ -27,6 +27,7 @@ from app.trade_qualification import account_capture
 from app.trade_qualification import account_current_history_join as account_join
 from app.trade_qualification import account_current_source_verifier as current_source
 from app.trade_qualification import account_observation_index as observed_account
+from app.trade_qualification import current_economics_v2 as current_economics
 from app.trade_qualification import post_g12_account_history_join_v3 as joined
 from app.trade_qualification import public_source_runtime as source_runtime
 from app.trade_qualification.account_capture_journal import digest
@@ -58,6 +59,7 @@ _CODES = frozenset(
         "public_journal_readback_invalid_at_event_readback",
         "public_validation_clock_invalid_at_event_readback",
         "public_g1_rejected_at_event_readback",
+        "public_economics_quote_stale_at_event_readback",
         "original_event_already_recorded",
         "trusted_execution_inputs_missing",
     }
@@ -95,6 +97,7 @@ class PostG12AccountEventObservationV4:
         "public_journal_readback_invalid_at_event_readback",
         "public_validation_clock_invalid_at_event_readback",
         "public_g1_rejected_at_event_readback",
+        "public_economics_quote_stale_at_event_readback",
         "original_event_already_recorded",
         "trusted_execution_inputs_missing",
     ]
@@ -200,6 +203,7 @@ class PostG12AccountEventObservationV4:
                 "public_journal_readback_invalid_at_event_readback",
                 "public_validation_clock_invalid_at_event_readback",
                 "public_g1_rejected_at_event_readback",
+                "public_economics_quote_stale_at_event_readback",
                 "original_event_already_recorded",
                 "trusted_execution_inputs_missing",
             }
@@ -220,6 +224,7 @@ class PostG12AccountEventObservationV4:
             "public_journal_readback_invalid_at_event_readback",
             "public_validation_clock_invalid_at_event_readback",
             "public_g1_rejected_at_event_readback",
+            "public_economics_quote_stale_at_event_readback",
         }:
             valid_observation = (
                 self.ledger_observation_sha256 is not None
@@ -1156,15 +1161,28 @@ async def publish_capture_inspect_history_event_v4(
             else:
                 try:
                     joined.prior._require_final_original_g1(packet, pre, validation_at)
-                    code = (
-                        "trusted_execution_inputs_missing"
-                        if observation.matched is None
-                        else "original_event_already_recorded"
-                    )
                 except asyncio.CancelledError:
                     raise
                 except Exception:  # noqa: BLE001 -- original G1 rejection stays DENY
                     code = "public_g1_rejected_at_event_readback"
+                else:
+                    try:
+                        cost_quote_current = (
+                            current_economics.quote_within_economics_policy_age_v2(
+                                packet, pre.policy.economics, validation_at
+                            )
+                        )
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:  # noqa: BLE001 -- no private/source detail
+                        cost_quote_current = False
+                    code = (
+                        "public_economics_quote_stale_at_event_readback"
+                        if not cost_quote_current
+                        else "trusted_execution_inputs_missing"
+                        if observation.matched is None
+                        else "original_event_already_recorded"
+                    )
         state = (
             "absent_at_read"
             if observation.matched is None

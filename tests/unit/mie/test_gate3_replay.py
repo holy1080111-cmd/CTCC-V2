@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import UTC, datetime, timedelta
-from decimal import ROUND_DOWN, Decimal, localcontext
+from decimal import ROUND_DOWN, Decimal, DefaultContext, Inexact, localcontext
 
 import pytest
 from pydantic import ValidationError
@@ -292,6 +292,27 @@ def test_forward_label_remains_hidden_until_outcome_is_available() -> None:
     assert label.execution_authority is False
 
 
+def test_v1_forward_label_pins_legacy_default_arithmetic() -> None:
+    rows = replay_rows(40)
+    args = {
+        "feature_cutoff": rows[29].bar.closed_at,
+        "read_at": rows[31].bar.closed_at,
+        "bar_horizon": HORIZON,
+        "outcome_horizon_seconds": HORIZON.seconds * 2,
+    }
+    baseline = forward_direction_label(rows, **args)
+    assert baseline.forward_return == D("0.001943634596695821185617104")
+    assert canonical_digest(baseline.model_dump(mode="json")) == (
+        "7fb3f13cdfb7268ed0ed4fcfafa63841c869bf88e779cdf2bd196113e6b7182a"
+    )
+
+    with localcontext() as ambient:
+        ambient.prec = 4
+        ambient.rounding = ROUND_DOWN
+        altered = forward_direction_label(rows, **args)
+    assert altered == baseline
+
+
 def test_forward_label_requires_exact_aligned_boundary_rows() -> None:
     rows = replay_rows(40)
 
@@ -362,6 +383,47 @@ def v2_label(rows, decision, read, *, snapshot=None, plan=None):
         bar_horizon=HORIZON,
         outcome_horizon_seconds=HORIZON.seconds * 2,
     )
+
+
+def test_v2_forward_label_pins_all_decimal_settings() -> None:
+    rows, decision, read = delayed_v2_source()
+    plan = v2_feature_plan()
+    snapshot = replay_features_at(
+        rows,
+        as_of=decision,
+        bar_horizon=HORIZON,
+        history_bars=plan.history_bars,
+    )
+    args = {
+        "replay_snapshot": snapshot,
+        "feature_plan": plan,
+        "expected_feature_plan_sha256": plan.canonical_sha256,
+        "decision_at": decision,
+        "read_at": read,
+        "bar_horizon": HORIZON,
+        "outcome_horizon_seconds": HORIZON.seconds * 2,
+    }
+    baseline = forward_direction_label_v2(rows, **args)
+    assert baseline.forward_return == D(
+        "0.0019436345966958211856171039844509232264334305151"
+    )
+    assert canonical_digest(baseline.model_dump(mode="json")) == (
+        "8dfb4b50cd44a60c20d873c823e6b7f165db7f664ce7779b5e28804f409fe0ba"
+    )
+
+    prior_inexact = DefaultContext.traps[Inexact]
+    prior_emax = DefaultContext.Emax
+    try:
+        DefaultContext.traps[Inexact] = True
+        DefaultContext.Emax = 0
+        with localcontext() as ambient:
+            ambient.prec = 4
+            ambient.rounding = ROUND_DOWN
+            altered = forward_direction_label_v2(rows, **args)
+    finally:
+        DefaultContext.traps[Inexact] = prior_inexact
+        DefaultContext.Emax = prior_emax
+    assert altered == baseline
 
 
 def test_v2_label_keeps_actual_decision_and_outcome_receipts_separate() -> None:

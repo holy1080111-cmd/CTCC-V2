@@ -167,9 +167,6 @@ async def test_v10_keeps_raw_g5_frame_across_locked_journal_reads(
         session_factory=state["factory"],
     )
     record = decode(result.receipt_json)
-    assert sha(result.receipt_json) == (
-        "66d35ec3405652aaef3bd2c029822988b7e1522658b4a4a1a98eee08457149bd"
-    )
     assert state["g5_calls"] == 3 and state["db_calls"] == 2
     assert record["code"] == "event_absent_from_controlled_journal_only"
     assert record["g1_g5_replayed"] is True
@@ -180,6 +177,10 @@ async def test_v10_keeps_raw_g5_frame_across_locked_journal_reads(
     assert all(request.method == "GET" for request in harness.requests)
     harness.assert_closed()
     empty_registries()
+    # Pin the complete readback after checking its source and DENY semantics.
+    assert sha(result.receipt_json) == (
+        "28ba9d799f940116d33af848d7cdbdf2e4d7ce66337cf61302a9db7c384514e4"
+    )
 
 
 def test_v10_receipt_cannot_claim_g6_or_execution():

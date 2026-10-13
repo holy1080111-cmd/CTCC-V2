@@ -40,3 +40,28 @@ replays this audit and retains its receipt hash. It also prevents a new V7
 native flat precursor from being issued. Existing V7 source/native proof bytes
 remain historical replay evidence; their earlier `observed_flat` diagnostic is
 not current-use flat qualification.
+
+The separate `ctcc.demo_native_current_v7_chronology_proof.v1` offline contract
+can now replay an independently pinned historical V7 native-clock proof and
+its complete original B1 page chain. It requires every page's original OKX
+`inTime`/`outTime` pair, all pairs within the measured request/header window,
+and every *recognized* source timestamp present and no later than the **same
+page's** `outTime`. A row such as account config may have no recognized source
+clock at all. The receipt counts those rows separately and fixes
+`source_time_coverage_complete=false`; it never treats zero clock fields as
+proof of availability or account completeness. A missing value for a recognized
+timestamp prevents even this limited chronology proof. The receipt binds the
+historical native proof, source reference,
+gateway and row-audit receipts, and ordered per-page raw/receipt and per-row
+source hashes. A second call with an externally pinned receipt SHA replays all
+of those inputs. The stored-companion entry point first independently reopens
+the historical no-clobber native proof/readback and then checks these exact
+bytes again; its synthetic test also rejects a mismatched stored readback pin.
+Missing/malformed gateway time, a future row time, changed
+source, stale original proof, or mismatched pin denies. The proof contains no
+raw private rows or credential data; all authority and flat-start fields stay
+false. This is an offline diagnostic over a pre-existing proof, not a new
+native runtime issuer or a newly durable chronology receipt. The V7 native runtime
+issuance revocation remains in force; an owned, separately durable current-use
+issuer/readback and complete account/portfolio evidence are still required
+before any Demo qualification.

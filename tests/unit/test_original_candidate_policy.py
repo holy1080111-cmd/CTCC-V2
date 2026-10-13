@@ -42,6 +42,15 @@ async def raw_sources(monkeypatch, direction="long", *, neutral=False):
     # before the 5m trigger bar opens at 10:05 and closes at 10:10.
     monkeypatch.setattr(prefix, "CAPTURED_AT", NOW)
     market = prefix.prefix_market(direction)
+    # Build coherent synthetic SWAP turnover before the raw transport capture.
+    # These are fixture source bytes, never a repair of an observed exchange row.
+    market.candles = {
+        frame: [
+            row.model_copy(update={"volume_quote": row.volume_currency * row.close})
+            for row in rows
+        ]
+        for frame, rows in market.candles.items()
+    }
     bid, ask, price = market.ticker.bid, market.ticker.ask, market.ticker.last
     at = NOW + timedelta(seconds=1)
     original_ticker = public_fixture.ticker
@@ -77,6 +86,7 @@ async def raw_sources(monkeypatch, direction="long", *, neutral=False):
             if neutral:
                 for values in data:
                     values[1:5] = ["100", "100.1", "99.9", "100"]
+                    values[7] = str(Decimal(values[6]) * Decimal(100))
             if params.get("after"):
                 data = [
                     values for values in data if int(values[0]) < int(params["after"])

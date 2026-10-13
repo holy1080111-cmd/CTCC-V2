@@ -10,7 +10,7 @@ import copy
 import json
 from contextlib import contextmanager
 from dataclasses import replace
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -197,8 +197,42 @@ async def companion_fixture(
     current_only=False,
     current_v7=True,
     verify_baseline=True,
+    gateway_case=None,
 ):
-    session, harness, _, args, events = setup(monkeypatch, v4=True)
+    if gateway_case not in {
+        None,
+        "ordered",
+        "missing",
+        "malformed",
+        "row_after_outtime",
+    }:
+        raise ValueError("unsupported_synthetic_gateway_case")
+    holder = {}
+    gateway_bodies = []
+
+    def gateway_response(stream, _index, rows):
+        request = holder["harness"].requests[-1]
+        started = datetime.fromisoformat(request.headers["OK-ACCESS-TIMESTAMP"])
+        changed = copy.deepcopy(rows)
+        if stream == "account_position_risk" and gateway_case == "row_after_outtime":
+            changed[0]["ts"] = ms(started + timedelta(milliseconds=1))
+        delta = started - datetime(1970, 1, 1, tzinfo=UTC)
+        micros = (delta.days * 86400 + delta.seconds) * 1_000_000 + delta.microseconds
+        if stream == "balance" and gateway_case == "missing":
+            body = wire(changed)
+        elif stream == "balance" and gateway_case == "malformed":
+            body = wire(changed, inTime="malformed", outTime=str(micros + 200))
+        else:
+            body = wire(changed, inTime=str(micros + 100), outTime=str(micros + 200))
+        gateway_bodies.append(body)
+        return body
+
+    session, harness, _, args, events = setup(
+        monkeypatch,
+        v4=True,
+        **({"change": gateway_response} if gateway_case is not None else {}),
+    )
+    holder["harness"] = harness
     if current_only or current_v7:
         selected = current_plan_v7() if current_v7 else current_plan()
         session = ControlledDemoAccountSession(
@@ -243,10 +277,9 @@ async def companion_fixture(
         recorded, owner = await bootstrap._collect_recorded(
             session, **args, _native_observer=state["observer"]
         )
-        assert (
-            tuple(page.response_body for page in recorded.bootstrap.packet.observations)
-            == expected_bodies
-        )
+        assert tuple(
+            page.response_body for page in recorded.bootstrap.packet.observations
+        ) == (tuple(gateway_bodies) if gateway_case is not None else expected_bodies)
         original = tuple(events)
         with pytest.raises(
             proof.NativeAccountProofError, match="original_tls_required"

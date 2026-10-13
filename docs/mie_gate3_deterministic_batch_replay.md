@@ -50,6 +50,11 @@ measured availability, and the outcome read. A decision must occur after the
 base receipt and before the next bar closes. The complete outcome series must
 be available by the read time. The original `ForwardDirectionLabel` and
 `forward_direction_label` retain their existing bar-close semantics unchanged.
+Both label functions now pin every Decimal arithmetic setting independently of
+the caller and process `DefaultContext`: V1 keeps its legacy default 28-digit,
+half-even result bytes, while V2 keeps its 50-digit, half-even result bytes.
+This arithmetic fix does not establish source availability or predictive
+eligibility.
 
 The V2 label also hashes the modeled base and outcome `FeatureBar` contents
 separately. Its `outcome_window_rows_sha256` covers every validated

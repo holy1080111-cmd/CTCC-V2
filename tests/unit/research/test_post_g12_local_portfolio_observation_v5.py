@@ -2,6 +2,7 @@
 
 import asyncio
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 
@@ -173,6 +174,7 @@ def _setup(
     v4_incomplete=False,
     event_recorded=False,
     late_public_g1=False,
+    late_economics_quote_stale=False,
     late_public_journal_error=False,
     g1_checks=None,
     deadline_override=None,
@@ -221,7 +223,11 @@ def _setup(
 
     def frozen_original(*_args):
         assert not calls
-        return object(), object(), object()
+        return (
+            object(),
+            SimpleNamespace(policy=SimpleNamespace(economics=object())),
+            object(),
+        )
 
     def frozen_binding(_pre, _inputs, _session, _scope, _capture_id):
         assert not calls and _scope == scope
@@ -260,6 +266,17 @@ def _setup(
     monkeypatch.setattr(prior, "_read_bound_public_journal", pinned_public)
     monkeypatch.setattr(
         prior.joined.prior, "_require_final_original_g1", final_public_g1
+    )
+    economics_checks = []
+
+    def final_economics_age(_packet, _policy, observed_at):
+        economics_checks.append(observed_at)
+        return not late_economics_quote_stale
+
+    monkeypatch.setattr(
+        bridge.current_economics,
+        "quote_within_economics_policy_age_v2",
+        final_economics_age,
     )
 
     async def issue(*args, **kwargs):
@@ -442,6 +459,32 @@ async def test_v5_later_checkpoint_rejects_stale_original_public_g1(
     assert record["atomic_risk_reserved"] is False
     assert record["durable_intent_created"] is False
     assert record["order_submitted"] is False
+
+
+@pytest.mark.asyncio
+async def test_v5_later_checkpoint_rejects_original_cost_quote_age(
+    tmp_path, monkeypatch
+):
+    roots, scope, ledger, calls, v4 = _setup(
+        monkeypatch, tmp_path, late_economics_quote_stale=True
+    )
+
+    async def forbidden(*_args, **_kwargs):
+        pytest.fail("stale cost quote reached a ledger write")
+
+    monkeypatch.setattr(ledger, "reserve", forbidden)
+    monkeypatch.setattr(ledger, "reserve_control_bound", forbidden)
+    monkeypatch.setattr(ledger, "consume_with_submission_intent", forbidden)
+    result = await bridge.publish_capture_inspect_local_portfolio_v5(
+        *roots, object(), **_invoke_kwargs(roots, ledger, scope)
+    )
+    record = decode(result.receipt_json)
+    assert calls == ["new_v4", "local_read", "local_read"]
+    assert record["code"] == "public_economics_quote_stale_at_local_readback"
+    assert record["v4_receipt_sha256"] == v4.receipt_sha256
+    assert (roots[5] / "receipt.json").read_bytes() == v4.receipt_json
+    assert all(record[field] is False for field in bridge._FALSE_FIELDS)
+    assert result.admission == "DENY"
 
 
 @pytest.mark.asyncio
