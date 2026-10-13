@@ -1050,9 +1050,17 @@ def _account_metadata(records, packet, inputs, gaps):
     }
     if not requested <= set(captured) or not exposed <= requested:
         gaps.add("account_metadata_instrument_coverage_incomplete")
+    supplied_ids = set()
     for evidence in inputs.instruments:
         supplied = _raw(evidence)
-        current = captured.get(supplied.get("instId"))
+        supplied_id = supplied.get("instId")
+        if (
+            type(supplied_id) is not str
+            or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,95}", supplied_id) is None
+        ):
+            _fail("instrument_identity_invalid")
+        supplied_ids.add(supplied_id)
+        current = captured.get(supplied_id)
         if current is None:
             gaps.add("account_instrument_source_missing")
             continue
@@ -1064,6 +1072,11 @@ def _account_metadata(records, packet, inputs, gaps):
             for key in ("ctVal", "ctMult", "lotSz", "minSz", "maxLmtSz", "lever")
         ):
             gaps.add("account_instrument_source_conflict")
+    # A flat account has no position/order row to force a missing specification
+    # through exposure mapping. Require every instrument in the pinned leverage
+    # universe to have its own supplied and checked specification anyway.
+    if not requested <= supplied_ids:
+        gaps.add("account_instrument_source_missing")
     mode = records["config_before"][0][1]["posMode"]
     sides = {"net"} if mode == "net_mode" else {"long", "short"}
     expected = {(name, side) for name in requested for side in sides}

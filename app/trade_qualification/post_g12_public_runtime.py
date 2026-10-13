@@ -783,7 +783,7 @@ async def publish_capture_public_v2(
             if economics is None or not economics.projected_math_passed
             else "public_v2_base_projected_economics_passed_account_required",
             report,
-            utc_from_ns(last["utc_ns"]),
+            finished_at,
             journal,
             evidence,
             packet,

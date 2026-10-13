@@ -1102,6 +1102,7 @@ async def test_actual_v2_publisher_flow_precedes_all_new_requests(
     assert result.current_g1 is not None and result.current_g1.passed
     assert result.final_g1 is not None and result.final_g1.passed
     assert result.final_g1.evaluated_at == result.projected_economics.observed_at
+    assert result.observed_at == result.final_g1.evaluated_at
     assert result.code == "public_v2_base_projected_economics_passed_account_required"
     assert result.current_g1.public_bundle_sha256 == result.packet.bundle_sha256
     assert result.current_g1.report_id == result.evidence.result.report_id
@@ -1212,6 +1213,7 @@ async def test_current_g1_rejects_new_wide_spread_without_changing_original(
     assert len(publications) == 1
     assert result.evidence is not None and result.evidence.result.evidence_complete
     assert result.current_g1 is not None and not result.current_g1.passed
+    assert result.observed_at > result.current_g1.evaluated_at
     assert result.current_conditions is None
     assert result.original_event_zone is None
     assert result.projected_economics is None

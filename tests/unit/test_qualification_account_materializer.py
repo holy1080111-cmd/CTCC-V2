@@ -1394,6 +1394,34 @@ def test_missing_account_metadata_cannot_materialize_a_snapshot(stream):
     assert expected in result.incomplete_reasons
 
 
+def test_flat_account_still_requires_pinned_spec_for_each_requested_instrument():
+    def flat(pages):
+        pages["account_position_risk"][0][0]["posData"] = []
+        pages["positions"] = [[]]
+        pages["algo_conditional"] = [[]]
+
+    source = packet(pending=False, changes=flat)
+    baseline = materialize(source=source, supplied=inputs())
+    assert "account_instrument_source_missing" not in baseline.incomplete_reasons
+
+    missing = materialize(source=source, supplied=inputs(instruments=()))
+    assert "account_instrument_source_missing" in missing.incomplete_reasons
+    assert missing.instruments == ()
+    assert missing.positions == missing.pending_reservations == ()
+    assert missing.snapshot is None
+    assert missing.account_complete is False
+    assert missing.execution_authority is False
+
+
+@pytest.mark.parametrize("bad_id", [[], {"id": INSTRUMENT}, None])
+def test_malformed_supplemental_instrument_id_fails_before_coverage_set(bad_id):
+    malformed = instrument(raw_instrument(instId=bad_id))
+    with pytest.raises(
+        module.AccountMaterializationError, match="^instrument_identity_invalid$"
+    ):
+        materialize(supplied=inputs(instruments=(malformed,)))
+
+
 def test_external_instrument_spec_cannot_override_new_account_capture():
     def change(pages):
         pages["account_instruments"] = [[row("account_instruments", ctVal="1")]]

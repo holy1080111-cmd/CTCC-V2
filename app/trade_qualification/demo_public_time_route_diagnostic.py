@@ -8,6 +8,7 @@ registration site of an account and cannot issue a trading capability.
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import ssl
 from dataclasses import dataclass, field
@@ -24,7 +25,7 @@ from app.domain.native_clock import (
     validate_os_clock,
 )
 from app.domain.source_primitives import canonical, decode, sha, validate_stamps
-from app.public_market_source.public_receipt_storage import _root_context
+from app.trade_evidence.storage import _posix_root, _root_path, _windows_root
 from app.trade_qualification.demo_public_origin import (
     build_demo_public_time_request_v3,
     reviewed_demo_public_route,
@@ -55,6 +56,13 @@ class DemoPublicTimeRouteDiagnostic:
     registration_region_authenticated: Literal[False] = field(default=False, init=False)
     source_authenticity_verified: Literal[False] = field(default=False, init=False)
     execution_authority: Literal[False] = field(default=False, init=False)
+
+
+def _root_context(root: Path):
+    """Pin this diagnostic's local output without importing a market source."""
+    if type(root) is not type(Path()):
+        raise DemoPublicTimeDiagnosticError("demo_time_root_invalid")
+    return (_windows_root if os.name == "nt" else _posix_root)(_root_path(root))
 
 
 def _publish(directory, name: str, payload: bytes) -> None:

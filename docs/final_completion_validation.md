@@ -5487,3 +5487,31 @@ one explicit Windows symlink-privilege skip (JUnit SHA256
 The Linux symlink case and the exact-source complete CI still need to execute
 for this follow-up. This closes an ambiguity in local evidence parsing, not
 historical point-in-time availability or OOS eligibility.
+
+## 2026-10-14 source-boundary and account follow-up
+
+The exact `789e78aeeb6c8da101c2edc5ca89e6233ac1b5ef` [CI run
+38431507873](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/38431507873)
+found two Linux shard-1 failures in the source-consumer boundary tests. The
+Demo public-time diagnostic imported a private root helper from the trusted
+public-market source. Both failures stemmed from that unreviewed import, so
+the diagnostic now uses the existing shared no-clobber evidence storage
+primitives directly. The public-source consumer allowlist remains unchanged.
+The boundary and diagnostic modules passed 26 focused tests (JUnit SHA256
+`4c492f44fa57f267d490d7b951b07230760dbaf6518ec15831becd73fe630949`),
+and Ruff, format and diff checks passed. The failing CI run cannot be
+reclassified as green; a complete run on the corrected source is still needed.
+
+An independently reviewed flat-account edge case showed that captured
+instrument metadata could be present while the locally pinned supplemental
+specification for a requested instrument was absent. Materialization now
+requires every requested leverage instrument to have a matching supplied raw
+specification, even with no position or pending order, and rejects malformed
+supplemental instrument IDs before set membership. The complete account
+materializer unit module passed 190 cases (JUnit SHA256
+`0f12274bf56c4e106f015e29c5296d331725a8236a885b4df514232b92823be4`).
+The G12-following public diagnostic now stamps its result with the final G1
+evaluation time; two direct and ten adjacent G12/R7 cases passed. These are
+offline fail-closed corrections. The trusted Demo account, production
+`publish_and_recheck`, reservation/intent/submit, historical Gate 3/OOS,
+Demo/Live acceptance and final release remain unaccepted.
