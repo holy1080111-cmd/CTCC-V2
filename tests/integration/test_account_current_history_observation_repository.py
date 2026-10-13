@@ -2,7 +2,6 @@
 
 import asyncio
 import json
-from dataclasses import replace
 from datetime import datetime, timedelta
 
 import pytest
@@ -19,6 +18,7 @@ from app.database.repositories.account_observation_index import (
 )
 from app.database.repositories.qualification_ledger import QualificationLedgerRepository
 from app.trade_qualification import account_observation_index as observed
+from app.trade_qualification.reservations import LedgerScope
 from tests.integration.test_account_locked_current_history_join_v7_repository import (
     _captured_v7_pair,
     _now,
@@ -124,7 +124,11 @@ async def test_b3_and_db0038_join_rejects_wrong_head_and_crossed_scope(
         )
     with pytest.raises(CurrentHistoryObservationError):
         await repo.read_joined(
-            replace(scope, account_id="987654321012345678901"),
+            LedgerScope(
+                environment=scope.environment,
+                account_id="987654321012345678901",
+                settlement_currency=scope.settlement_currency,
+            ),
             history_sequence=history.sequence,
             history_sha256=history.event_sha256,
             current_sequence=current.sequence,

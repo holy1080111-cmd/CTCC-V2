@@ -4707,13 +4707,17 @@ source and artifacts remain preserved, and the superseded run was cancelled.
 The rename-only repair `5fead713fcb34affd3664616f2ef61b94f2e8f88`
 gave the unit file a distinct name and refreshed the manifest. Full local
 unit-plus-integration collection then exited zero and 26 focused tests passed.
-Matching run `38155621324` was active when recorded; its result, especially
-the isolated PostgreSQL join cases, remains pending. The exact `5fead71`
+Matching run `38155621324` later passed Windows and all eight Linux shards,
+but failed its isolated PostgreSQL job in the crossed-scope integration test:
+the test used `dataclasses.replace()` on a Pydantic `LedgerScope`. This was
+a fixture error before the intended guard assertion, so the guard remained
+unverified by that test. The exact `5fead71`
 source checkpoint is in `../../validation-results/checkpoint-5fead71-20261012/`.
 
 ## 2026-10-12 native DB-clock recency diagnostic (pending exact-source CI)
 
-A separate v2 companion under review adds a schema-qualified native PostgreSQL clock sample
+A separate v2 companion committed as
+`a5e71310e6ca757097904e96e05afc6ee8bb3e82` adds a schema-qualified native PostgreSQL clock sample
 after an exact-UID locked reread and replay of the original current B1 chain.
 It reports whether the recorded timestamp of the earliest replay-verified
 body EOF is within the existing 30-second bound of that DB sample; future,
@@ -4724,6 +4728,12 @@ exchange clock, actual page freshness, current exchange finality, original regis
 funding, portfolio risk or execution authority. Its admission is always
 `DENY`; no private API or order write is used. Nine pure cases passed locally;
 four new PostgreSQL cases skipped locally because no isolated `DATABASE_URL`
-was supplied. The strict dedicated PostgreSQL job is now classified to run
-all 48 reviewed PostgreSQL modules, including these four tests, after this
-source slice is committed.
+was supplied. The strict dedicated PostgreSQL job classifies all 48 reviewed
+PostgreSQL modules, including these four tests. Exact run `38156607519`
+passed Windows and all eight Linux shards, but failed the same crossed-scope
+fixture as `5fead71`: PostgreSQL reported 349 passed and one failed, making
+the overall run FAIL. Its source checkpoint is in
+`../../validation-results/checkpoint-a5e7131-20261012/`. A following source
+change replaces the invalid dataclass operation with a validated
+`LedgerScope` construction. The complete PostgreSQL suite still requires a
+new exact-source run before PASS.
