@@ -58,6 +58,14 @@ immutable ledger 無法靠一般 UPDATE／DELETE 清除 blocker。必須另外�
 exchange response 不能靠一頁空資料或逾時自動解除。現有 Demo/Live
 送單硬閘保持拒絕；0027 不授予交易權限或宣稱 Demo 驗收通過。
 
+初次送單回應的 `acknowledged` 只證明已觀察到符合 client order ID 的
+交易所受理回應，`rejected` 只證明該次回應被拒；兩者都不是成交、保護或
+最終空倉的結案證據。原子 ledger 會先重播其 intent／capture／outcome／
+report chain 供稽核，但只要原預留仍為 `consumed`，新的同帳戶 event
+就不能 reserve 或 consume。此保守限制會持續到另行驗證的送單後結案
+與對帳轉移實作並通過驗收；目前沒有正向結案 issuer，不能用初始回應
+解除持久風險預留。
+
 ## 尚缺與驗收
 
 這一步補的是持久化與一次性消耗，不是完整 execution runtime。可信全帳戶與

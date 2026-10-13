@@ -1,14 +1,21 @@
 """Synthetic legacy V2 lineage through DB0018; no exchange IO."""
 
+import hashlib
 import json
 from datetime import timedelta
 
 import pytest
 
 from app.database.repositories.submission_reporting import outcome_document
+from app.exchange.okx.transport_observation import (
+    ObservedOrderResult,
+    OrderTransportObservation,
+)
+from app.trade_evidence.observed_order_capture import capture_unverified_order_response
 from app.trade_evidence.submission_reporting import (
     CapturedSubmission,
     SubmissionReportingError,
+    classify,
     prepare_submission,
 )
 from app.trade_qualification import control_bound_ledger as bound
@@ -78,6 +85,39 @@ def test_v2_request_replays_full_submission_report(monkeypatch):
         ],
     }
     completed = fixture.now + timedelta(milliseconds=1)
+    request_body = json.dumps(
+        body["exchange_request"]["body"],
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode()
+    raw_response = json.dumps(response).encode()
+    observed = ObservedOrderResult(
+        OrderTransportObservation(
+            request_body_sha256=hashlib.sha256(request_body).hexdigest(),
+            send_invoked_at=fixture.now,
+            response_returned_at=completed,
+            body_observed_at=completed,
+            http_status=200,
+            raw_body=raw_response,
+            transport_complete=True,
+        ),
+        hashlib.sha256(raw_response).hexdigest(),
+    )
+    retained = capture_unverified_order_response(
+        request, intent.canonical_json, intent_sha256=intent.sha256, observed=observed
+    )
+    assert retained.raw_body == raw_response and not retained.transport_complete
+    assert (
+        prepare_submission(
+            request,
+            intent.canonical_json,
+            intent_sha256=intent.sha256,
+            capture=retained,
+        ).status
+        == "uncertain"
+    )
     capture = CapturedSubmission(
         exchange_request_sha256=body["exchange_request_sha256"],
         request_started_at=fixture.now,
@@ -168,6 +208,42 @@ def test_v3_report_retains_outer_control_and_inner_exact_request(monkeypatch):
         ],
     }
     completed = fixture.now + timedelta(milliseconds=1)
+    outer_order_bytes = json.dumps(
+        inner_body["exchange_request"]["body"],
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode()
+    outer_raw_response = json.dumps(response).encode()
+    outer_observed = ObservedOrderResult(
+        OrderTransportObservation(
+            request_body_sha256=hashlib.sha256(outer_order_bytes).hexdigest(),
+            send_invoked_at=fixture.now,
+            response_returned_at=completed,
+            body_observed_at=completed,
+            http_status=200,
+            raw_body=outer_raw_response,
+            transport_complete=True,
+        ),
+        hashlib.sha256(outer_raw_response).hexdigest(),
+    )
+    outer_retained = capture_unverified_order_response(
+        request,
+        outer.canonical_json,
+        intent_sha256=outer.sha256,
+        observed=outer_observed,
+    )
+    assert (
+        outer_retained.exchange_request_sha256 == inner_body["exchange_request_sha256"]
+    )
+    assert outer_retained.raw_body == outer_raw_response
+    assert (
+        classify(
+            outer_retained, inner_body["client_order_id"], request.origin.deadline
+        )[0]
+        == "uncertain"
+    )
     capture = CapturedSubmission(
         exchange_request_sha256=inner_body["exchange_request_sha256"],
         request_started_at=fixture.now,

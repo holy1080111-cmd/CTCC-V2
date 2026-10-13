@@ -16,6 +16,9 @@ from app.database.models.submission_reporting import (
 from app.database.repositories.demo_control import DemoControlRepository
 from app.database.repositories.qualification_ledger import QualificationLedgerRepository
 from app.trade_evidence import outbox, post_submit
+from app.trade_evidence.observed_order_capture import (
+    capture_unverified_order_response,
+)
 from app.trade_evidence.submission_reporting import (
     SubmissionReportingError,
     checked_capture,
@@ -95,6 +98,63 @@ def spool_identity(outcome_id, report_sha256, policy_sha256, namespace):
 
 
 class SubmissionReportingRepository(QualificationLedgerRepository):
+    async def record_unverified_transport_result(
+        self,
+        scope,
+        event_key,
+        *,
+        expected_revision,
+        intent_sha256,
+        observed,
+        queue_namespace,
+        outbox_policy,
+    ):
+        """Retain a response as uncertain using the persisted consumed intent.
+
+        This read supplies only a candidate capture. ``record_observation``
+        locks and replays the same persisted lineage in its own transaction,
+        commits the outcome/spool, and requires a separate-session readback.
+        Neither method submits, retries, or confers acknowledgement authority.
+        """
+        scope = reservations.checked(scope, reservations.LedgerScope)
+        rid = reservations.reservation_id(scope, event_key)
+        async with self.session_factory() as session:
+            record = await session.get(QualificationReservation, rid)
+            if record is None or record.state == "reserved":
+                raise SubmissionReportingError(
+                    "submission_consumed_reservation_missing"
+                )
+            entries = (
+                await session.scalars(
+                    select(QualificationReservationTransition)
+                    .filter_by(reservation_id=rid, to_state="consumed")
+                    .limit(2)
+                )
+            ).all()
+            if len(entries) != 1 or entries[0].evidence_json is None:
+                raise SubmissionReportingError("submission_intent_transition_missing")
+            request = reservations.decode_reservation_request(record.request_json)
+            if (
+                reservations.digest(request) != record.request_sha256
+                or request.scope != scope
+            ):
+                raise SubmissionReportingError("submission_reservation_digest_mismatch")
+            capture = capture_unverified_order_response(
+                request,
+                entries[0].evidence_json,
+                intent_sha256=intent_sha256,
+                observed=observed,
+            )
+        return await self.record_observation(
+            scope,
+            event_key,
+            expected_revision=expected_revision,
+            intent_sha256=intent_sha256,
+            capture=capture,
+            queue_namespace=queue_namespace,
+            outbox_policy=outbox_policy,
+        )
+
     async def _lineage(self, session, rid, *, intent_sha256, capture):
         record = await session.get(QualificationReservation, pin(rid))
         if record is None or record.state == "reserved":

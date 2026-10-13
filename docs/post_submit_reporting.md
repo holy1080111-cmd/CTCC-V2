@@ -29,6 +29,23 @@ claim a real order, fill, protection, authenticated account, Notion delivery, or
 forensic outcome. Its focused HTTP test uses only `MockTransport` and temporary
 test-local guard stubs; the normal guarded test confirms zero HTTP sends.
 
+`capture_unverified_order_response()` is a pure handoff to the existing private
+`CapturedSubmission` shape. It replays the exact V2 intent, or the persisted V3
+outer control-bound intent together with its V2 inner intent, checks the
+canonical prepared body hash and retained response-body digest, and preserves
+bounded raw bytes for `record_observation()` to store under the consumed
+reservation. The sidecar cannot prove socket dispatch or header receipt, so the
+converted capture leaves those times unknown and sets `transport_complete=False`.
+Even an OKX-shaped success body is classified `uncertain`, kept out of the
+Notion delivery queue, and requires reconciliation. The optional
+`record_unverified_transport_result()` repository entry reads the persisted
+reservation and consumed intent, then passes this capture to the existing
+account-scoped transaction and separate-session readback. Only a returned
+response can use this path. A timeout or cancellation with no response retains
+the unresolved intent and requires independent reconciliation; no empty or
+fabricated response is created. There is still no production order caller or
+real accepted durable observation, and neither helper submits or retries.
+
 ## Current production integration boundary (2026-10-08)
 
 The durable components exist, but the trade-to-outbox path is **not yet

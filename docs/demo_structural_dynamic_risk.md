@@ -156,6 +156,8 @@ not margin.
 
 The mathematical core remains downward-only: it can retain, reduce, or block
 the effective score, but cannot increase the raw strategy score.
+The standalone 20x quality check rejects a supplied risk score above the
+candidate's raw score, so a malformed upward score grants no leverage.
 
 Confirmed swing prices are deterministic protection geometry, not predictive
 evidence. They can make a stop/target pair tighter, wider, or ineligible and

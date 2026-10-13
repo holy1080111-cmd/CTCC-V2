@@ -98,6 +98,55 @@ async def test_initialized_flat_uid_can_arm_across_expected_sync_time_update() -
 
 
 @pytest.mark.asyncio
+async def test_prior_valid_credential_session_is_replaced_by_pinned_reconcile() -> None:
+    demo = FakeDemo()
+    repository = ScenarioLocalCheckpointRepository(
+        {
+            1: lambda view: view["legacy"]["sync_checkpoint"].__setitem__(
+                "credential_session_binding_id", "b" * 64
+            )
+        }
+    )
+    service = _service(demo, repository)
+    await service.recover()
+
+    result = await service.arm()
+
+    assert result.armed is True
+    assert demo.reconcile_calls == 1
+    assert len(repository.scopes) == 2
+    assert demo.place_calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid_binding", (None, "", "A" * 64, "a" * 63, "missing"))
+async def test_unbound_local_credential_session_blocks_before_reconcile(
+    invalid_binding: str | None,
+) -> None:
+    demo = FakeDemo()
+
+    def corrupt(view):
+        sync = view["legacy"]["sync_checkpoint"]
+        if invalid_binding == "missing":
+            sync.pop("credential_session_binding_id")
+        else:
+            sync["credential_session_binding_id"] = invalid_binding
+
+    repository = ScenarioLocalCheckpointRepository({1: corrupt})
+    service = _service(demo, repository)
+    await service.recover()
+
+    with pytest.raises(
+        DemoAutomationSafetyError, match="structural_rollout_local_flat_unconfirmed"
+    ):
+        await service.arm()
+
+    assert demo.reconcile_calls == 0
+    assert len(repository.scopes) == 1
+    assert (await service.status()).armed is False
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("uid", ("", "not-a-uid"))
 async def test_missing_or_invalid_exact_uid_blocks_before_reconcile(uid: str) -> None:
     demo = FakeDemo()

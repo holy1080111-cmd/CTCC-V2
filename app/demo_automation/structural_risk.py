@@ -100,6 +100,8 @@ def _twenty_x_reasons(candidate: TradeCandidate, settings: Settings) -> list[str
     reasons: list[str] = []
     # Zero is an explicit downward risk score, not missing evidence. Do not
     # replace it with a high raw score and reopen the legacy extreme tier.
+    if candidate.risk_score is not None and candidate.risk_score > candidate.score:
+        raise ValueError("structural_risk_score_exceeds_raw_score")
     effective_score = (
         candidate.score if candidate.risk_score is None else candidate.risk_score
     )

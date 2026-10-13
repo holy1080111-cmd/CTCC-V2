@@ -29,8 +29,10 @@ def evaluate_risk(
     cost_distance = candidate.entry * candidate.estimated_round_trip_cost_pct
     effective_risk_distance = stop_distance + cost_distance
     effective_score = (
-        candidate.risk_score if candidate.risk_score is not None else candidate.score
+        candidate.score if candidate.risk_score is None else candidate.risk_score
     )
+    if candidate.risk_score is not None and candidate.risk_score > candidate.score:
+        reasons.append("risk_score_exceeds_raw_score")
 
     if candidate.expires_at <= now:
         reasons.append("candidate_expired")

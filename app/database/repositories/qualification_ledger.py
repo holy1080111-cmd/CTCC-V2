@@ -166,6 +166,18 @@ def _portfolio_checkpoint_wire(value, depth=0):
     raise QualificationLedgerError("portfolio_checkpoint_scalar_invalid")
 
 
+def _checkpoint_credential_session_binding(details):
+    """Retain the original mirror value while denying an absent/invalid pin."""
+    value = (
+        details.get("credential_session_binding_id") if type(details) is dict else None
+    )
+    return value, (
+        type(value) is str
+        and len(value) == 64
+        and all(char in "0123456789abcdef" for char in value)
+    )
+
+
 async def _require_event_journal_session(session):
     state = (
         await session.execute(
@@ -1276,13 +1288,14 @@ class QualificationLedgerRepository:
                     == hashlib.sha256(scope.account_id.encode("ascii")).hexdigest()
                 )
                 legacy["sync_checkpoint"]["exact_uid_bound"] = uid_bound
-                legacy["sync_checkpoint"]["credential_session_binding_id"] = (
-                    row.details.get("credential_session_binding_id")
-                    if type(row.details) is dict
-                    else None
+                binding_id, binding_shape_valid = (
+                    _checkpoint_credential_session_binding(row.details)
                 )
+                legacy["sync_checkpoint"]["credential_session_binding_id"] = binding_id
                 if not uid_bound:
                     blocked.add("legacy_reconciliation_uid_unbound")
+                if not binding_shape_valid:
+                    blocked.add("legacy_reconciliation_credential_session_unbound")
                 if (
                     row.status != "reconciled"
                     or row.reconciled_at is None
@@ -2070,9 +2083,10 @@ class QualificationLedgerRepository:
             )
         ).all()
         observed = {item.reservation_id for item in outcomes}
-        # An initial row alone is not a resolved exchange response. Its
-        # immutable intent/capture/outcome/report chain must all read back
-        # consistently before it can stop inhibiting another event.
+        # An initial row alone is not a resolved exchange response. Verify its
+        # immutable intent/capture/outcome/report chain for the audit, but even
+        # an exact acknowledgement or rejection is not a durable fill,
+        # protection, or flat-closure witness for a consumed intent.
         if observed != consumed or len(outcomes) != len(consumed):
             raise QualificationLedgerError(
                 "ledger_unresolved_submission_inhibits_entry"
@@ -2109,6 +2123,10 @@ class QualificationLedgerRepository:
             raise QualificationLedgerError(
                 "ledger_unresolved_submission_inhibits_entry"
             ) from None
+        # No positive post-submit closure issuer exists yet. The consumed hold
+        # remains active across restart and must inhibit another event until a
+        # separate verified reconciliation explicitly retires it.
+        raise QualificationLedgerError("ledger_consumed_exposure_unresolved")
 
     @staticmethod
     async def _require_compatible_currency(session, scope):

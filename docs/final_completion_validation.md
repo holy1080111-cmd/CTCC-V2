@@ -5234,3 +5234,78 @@ The existing Windows outbox fault suite passed 9/9 on this checkpoint: late
 sharing failure leaves an already durable journal intact and stops dispatch.
 That local result does not replace the exact-head Windows CI job. No Demo or
 Live order, Notion write, full OOS evaluation, or Micro Live Arm occurred.
+
+## 2026-10-13 03133c2 checkpoint and bounded follow-up
+
+Committed source `03133c2afe9ed3b846096bdaf36635736fa94aa4` has tree
+`a95b61b62d391010bda28c0b1271eaf31ec11b5c`, migration head `0040`,
+and manifest SHA256
+`03e9fd01410463e23f24c8dd8f5aaa796dd6f14eed5ef84163ea83c4e3b2927b`.
+The exact archive and Git bundle are retained in
+`../../validation-results/checkpoint-03133c2-20261013/`; their SHA256 values
+are `c99714f3b8ad1c325f4dd40a69ce625fd3bc32dd38542f44bee9f19a6766640d`
+and `293280a4ac6777fc347b6e4247b27d13d80d235fef3bab6f15741767afc4c1be`.
+The bundle verified and all 1,150 manifest members passed readback. A bounded
+scan of 1,151 archive members and 398 new Git blobs since the prior full scan
+found zero high-confidence credential-pattern matches; the nonsecret readback
+SHA256 is `0ee6763c2a9777e731c129a84af0f5ab8a72a52470ddc3af799d5d1fceec2872`.
+This does not cover private runtime settings, logs or a future release bundle.
+
+The installer verifier now rejects unlisted files and directories; 11 focused
+native tests passed. The retained reviewed installer folder itself contains an
+unlisted `__pycache__`, so it correctly fails that strict check. Two dry-run
+checks of an exact clean copy passed. The V7 account diagnostic replays the
+original page chain and denies rows whose retained source time is later than
+the same response's OKX gateway `outTime`; seven new-and-adjacent tests and
+four independent review tests passed. Missing or unauthenticated gateway time
+remains unknown. Neither slice grants install or account authority.
+
+The matching [GitHub CI run 38414923900](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/38414923900)
+started for this exact SHA. Its Windows, Linux and PostgreSQL jobs were still
+in progress at this checkpoint read; success is not inferred. Later local
+changes to credential-session binding, risk-score monotonicity and response
+capture require a new exact-source run after commit. Source authenticity,
+complete account and portfolio inputs, integrated submission authority, true
+point-in-time OOS, Demo and Micro Live acceptance remain unproven.
+
+After `03133c2`, a local portfolio checkpoint was found to accept an old
+reconciliation row with no valid credential-session binding as `known_flat`.
+The repository and Demo Arm preflight now deny absent or malformed binding IDs.
+An earlier well-formed session can exist at the first local read, but the new
+reconciliation must match the freshly pinned session and the later persisted
+readback. Focused unit and adjacent component groups passed 84 local tests;
+the PostgreSQL integration cases collected but were skipped for lack of an
+isolated local test database. An independent read-only review found no new
+execution authority. This is still a sampled flatness prerequisite, not a
+complete PortfolioRiskSnapshot.
+
+Risk-score monotonicity was tightened in the structural leverage selector and
+generic risk engine. An explicit zero risk score remains zero; an upward score
+above the original strategy score now rejects leverage or quantity instead of
+promoting the candidate. The 3/5/8/10/20x ladder and conservative caps remain
+unchanged. Thirty-eight focused local tests plus Ruff and formatting passed.
+The Demo structural rollout Arm still denies production use until atomic
+flat-start and trusted account inputs are available.
+
+A dormant private response handoff now replays a persisted V2 intent or V3
+outer-control/V2 inner intent, checks the exact prepared order body and raw
+response hashes, and passes only an **uncertain** capture to the existing
+account-scoped observation transaction and separate-session readback. It never
+sends, retries or grants an acknowledgement; absent response/timeout leaves the
+original consumed intent unresolved. Six lightweight synthetic unit tests
+passed. Real V2 and V3 replay assertions were added to the existing lineage
+tests, but that local suite was interrupted for host thermal safety and is
+**not** counted as passing until exact-source CI runs it. No real transport,
+fill, protection or Notion delivery is accepted by this handoff.
+
+A ledger audit found that an active `consumed` reservation could allow a second
+event after only an initial `acknowledged` or `rejected` response. The chain is
+still replayed for audit, but any active consumed hold now denies new same-
+account reserve/consume until a separately verified post-submit closure and
+reconciliation transition exists. Six PostgreSQL test variants cover both
+response types and both attempted operations, and assert no ledger mutation.
+They collected locally but were skipped without an isolated database; CI must
+execute them. One classification unit test and static checks passed. An
+independent review found no bypass. There is no positive closure issuer yet,
+so this correctly leaves subsequent events blocked rather than claiming Demo
+continuous-execution acceptance.

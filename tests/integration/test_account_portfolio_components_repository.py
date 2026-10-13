@@ -424,6 +424,21 @@ async def test_unknown_legacy_initialization_and_persisted_latch_never_become_em
                 updated_at=now(),
             )
         )
+    missing_binding = await repo.read_portfolio_checkpoint(scope)
+    assert not missing_binding.known_flat
+    assert (
+        "legacy_reconciliation_credential_session_unbound"
+        in json.loads(missing_binding.document_json)["blocking_reasons"]
+    )
+    async with database[1]() as session, session.begin():
+        checkpoint = await session.get(OkxDemoSyncCheckpoint, 1)
+        assert checkpoint is not None
+        checkpoint.details = {
+            "account_uid_sha256": hashlib.sha256(
+                scope.account_id.encode("ascii")
+            ).hexdigest(),
+            "credential_session_binding_id": "a" * 64,
+        }
     verified = await repo.read_portfolio_checkpoint(scope)
     assert verified.known_flat
     initial = json.loads(verified.document_json)
@@ -434,7 +449,10 @@ async def test_unknown_legacy_initialization_and_persisted_latch_never_become_em
     async with database[1]() as session, session.begin():
         checkpoint = await session.get(OkxDemoSyncCheckpoint, 1)
         assert checkpoint is not None
-        checkpoint.details = {"account_uid_sha256": "0" * 64}
+        checkpoint.details = {
+            "account_uid_sha256": "0" * 64,
+            "credential_session_binding_id": "a" * 64,
+        }
     wrong_uid_mirror = await repo.read_portfolio_checkpoint(scope)
     assert not wrong_uid_mirror.known_flat
     assert (
@@ -447,7 +465,33 @@ async def test_unknown_legacy_initialization_and_persisted_latch_never_become_em
         checkpoint.details = {
             "account_uid_sha256": hashlib.sha256(
                 scope.account_id.encode("ascii")
-            ).hexdigest()
+            ).hexdigest(),
+            "credential_session_binding_id": "a" * 64,
+        }
+    for invalid_binding in (None, "", "A" * 64, "b" * 63):
+        async with database[1]() as session, session.begin():
+            checkpoint = await session.get(OkxDemoSyncCheckpoint, 1)
+            assert checkpoint is not None
+            checkpoint.details = {
+                "account_uid_sha256": hashlib.sha256(
+                    scope.account_id.encode("ascii")
+                ).hexdigest(),
+                "credential_session_binding_id": invalid_binding,
+            }
+        malformed = await repo.read_portfolio_checkpoint(scope)
+        assert not malformed.known_flat
+        assert (
+            "legacy_reconciliation_credential_session_unbound"
+            in json.loads(malformed.document_json)["blocking_reasons"]
+        )
+    async with database[1]() as session, session.begin():
+        checkpoint = await session.get(OkxDemoSyncCheckpoint, 1)
+        assert checkpoint is not None
+        checkpoint.details = {
+            "account_uid_sha256": hashlib.sha256(
+                scope.account_id.encode("ascii")
+            ).hexdigest(),
+            "credential_session_binding_id": "a" * 64,
         }
     cases = (
         {"active_trades": {"synthetic": {"outcome": "unknown"}}},

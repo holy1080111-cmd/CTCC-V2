@@ -668,6 +668,12 @@ class SafeDemoAutomation:
                 or type(sync) is not dict
                 or sync.get("status") != "reconciled"
                 or sync.get("exact_uid_bound") is not True
+                or type(sync.get("credential_session_binding_id")) is not str
+                or len(sync["credential_session_binding_id"]) != 64
+                or any(
+                    char not in "0123456789abcdef"
+                    for char in sync["credential_session_binding_id"]
+                )
                 or any(
                     type(sync.get(name)) is not int or sync[name] != 0
                     for name in ("order_count", "position_count", "algo_order_count")

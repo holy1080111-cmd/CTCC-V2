@@ -98,6 +98,16 @@ Armed, locked, error, unfinished run or tracked exposure state blocks the flat
 component. EStop is preserved as recorded and is not cleared by an empty
 inventory result.
 
+The legacy reconciliation checkpoint must contain an exact lowercase 64-hex
+credential-session binding ID as well as the exact-UID hash. A missing or
+malformed binding is `legacy_reconciliation_credential_session_unbound`, so
+the local checkpoint cannot report `known_flat`. The controlled Arm preflight
+also validates this field before asking the exchange to reconcile. A previous
+valid session can remain in the first local read; the fresh pinned read session
+must match the exchange reconciliation result and the second persisted local
+read exactly. This is only a sampled local flatness prerequisite, not account
+completeness or execution authority.
+
 Short SHARE locks give a consistent individual legacy-table read. Matching
 before/after checkpoints detect observed changes. They do not prove future
 writer exclusion or an atomic exchange revision. The final execution boundary

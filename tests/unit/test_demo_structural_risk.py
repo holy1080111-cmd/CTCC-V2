@@ -259,6 +259,21 @@ def test_downward_risk_score_never_falls_back_to_raw_99(risk_score) -> None:
     assert "effective_score_below_20x_threshold" in selection.cap_reasons
 
 
+def test_upward_risk_score_cannot_promote_raw_score_to_20x() -> None:
+    settings = structural_settings()
+    candidate = TradeCandidate.model_validate(
+        finalized_candidate().model_dump() | {"score": 75, "risk_score": 99}
+    )
+    with pytest.raises(ValueError, match="structural_risk_score_exceeds_raw_score"):
+        select_structural_leverage(
+            candidate,
+            score_risk_tier(99, settings),
+            settings,
+            account_equity=D("150"),
+            position_margin_cap=D("12.5"),
+        )
+
+
 def test_only_absent_risk_score_preserves_legacy_raw_score_fallback() -> None:
     settings = structural_settings()
     candidate = TradeCandidate.model_validate(

@@ -806,18 +806,71 @@ async def test_orphan_initial_outcome_cannot_release_consumed_event_hold(
     assert state.ledger_revision == 3 and len(state.active) == 1
 
 
-async def test_valid_initial_outcome_and_spool_pass_existing_chain_guard(
-    database, fixture
+@pytest.mark.parametrize("status", ("acknowledged", "rejected"))
+async def test_valid_initial_outcome_and_spool_remain_auditable_but_not_closure(
+    database, fixture, status
 ):
-    ledger, reporter, _, hold, args = await setup(database, fixture)
+    ledger, reporter, _, hold, args = await setup(database, fixture, status=status)
     observed = await reporter.record_observation(
         hold.scope, hold.original_event_key, **args
     )
-    assert observed.status == "acknowledged"
+    assert observed.status == status
     async with database[1]() as session, session.begin():
         row = await ledger._locked(session, hold.scope)
         active = await ledger._active(session, hold.scope, row)
-        await ledger._require_resolved_submissions(session, active)
+        spool = await session.scalar(
+            select(QualificationReportSpool).filter_by(outcome_id=observed.outcome_id)
+        )
+        assert spool is not None
+        outcome, _, _ = await reporter._verify_spool(session, spool)
+        assert outcome.status == status
+        with pytest.raises(
+            reservations.QualificationLedgerError,
+            match="ledger_consumed_exposure_unresolved",
+        ):
+            await ledger._require_resolved_submissions(session, active)
+
+
+@pytest.mark.parametrize("status", ("acknowledged", "rejected"))
+@pytest.mark.parametrize("operation", ("reserve", "consume"))
+async def test_initial_response_without_closure_inhibits_other_event(
+    database, fixture, other, status, operation
+):
+    ledger, reporter, _, hold, args = await setup(
+        database,
+        fixture,
+        status=status,
+        pre_reserve_request=other.request if operation == "consume" else None,
+    )
+    observed = await reporter.record_observation(
+        hold.scope, hold.original_event_key, **args
+    )
+    assert observed.status == status
+    before = await ledger.read_scope(hold.scope)
+    assert any(
+        item.reservation_id == hold.reservation_id and item.state == "consumed"
+        for item in before.active
+    )
+    if operation == "reserve":
+        attempted = ledger.reserve(
+            other.request.model_copy(
+                update={"expected_ledger_revision": before.ledger_revision}
+            )
+        )
+    else:
+        attempted = ledger.consume_once(
+            hold.scope,
+            other.request.origin.original_event_key,
+            expected_revision=before.ledger_revision,
+        )
+    with pytest.raises(
+        reservations.QualificationLedgerError,
+        match="ledger_consumed_exposure_unresolved",
+    ):
+        await attempted
+    after = await ledger.read_scope(hold.scope)
+    assert after.ledger_revision == before.ledger_revision
+    assert after.active == before.active
 
 
 async def test_legacy_consumed_without_intent_also_inhibits_new_entry(

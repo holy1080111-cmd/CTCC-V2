@@ -110,6 +110,18 @@ def test_zero_risk_score_does_not_fall_back_to_high_raw_score():
     assert result.approved_quantity == 0
 
 
+def test_upward_risk_score_does_not_promote_low_raw_score():
+    result = evaluate_risk(
+        candidate(score=70, risk_score=99),
+        AccountRiskState(equity=Decimal(10000)),
+        RiskLimits(minimum_score=72),
+    )
+
+    assert result.decision == "rejected"
+    assert "risk_score_exceeds_raw_score" in result.reason_codes
+    assert result.approved_quantity == 0
+
+
 def test_risk_sizing_includes_round_trip_execution_costs() -> None:
     result = evaluate_risk(
         candidate(
