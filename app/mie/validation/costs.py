@@ -8,7 +8,17 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from decimal import ROUND_CEILING, Decimal, localcontext
+from decimal import (
+    ROUND_CEILING,
+    ROUND_HALF_EVEN,
+    Context,
+    Decimal,
+    DivisionByZero,
+    InvalidOperation,
+    Overflow,
+    Underflow,
+    localcontext,
+)
 from typing import Literal
 
 from app.mie.validation.contracts import CostModel
@@ -173,8 +183,19 @@ def evaluate_costed_return_path(
 
     observations: list[CostedObservation] = []
     previous_exposure = D("0")
-    with localcontext() as context:
-        context.prec = DECIMAL_PRECISION
+    # Pin every field so caller rounding, exponent bounds, or traps cannot
+    # change a costed path or its risk ratios for identical declared inputs.
+    arithmetic = Context(
+        prec=DECIMAL_PRECISION,
+        rounding=ROUND_HALF_EVEN,
+        Emin=-999999,
+        Emax=999999,
+        capitals=1,
+        clamp=0,
+        flags=[],
+        traps=[InvalidOperation, DivisionByZero, Overflow, Underflow],
+    )
+    with localcontext(arithmetic):
         for index, (asset_return, exposure) in enumerate(
             zip(returns, shadow_exposures, strict=True)
         ):

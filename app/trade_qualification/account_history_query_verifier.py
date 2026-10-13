@@ -59,6 +59,18 @@ _SOURCE_TS_DOMAINS = {
     "fills": "fill_record_generated_at",
     "bills": "balance_update_completed_at",
 }
+V2_COMPARISON_POLICY_BYTES = journal.canonical(
+    {
+        "version": "ctcc.observed_history_query_comparison.v3",
+        "source_query_policy_sha256": V2_POLICY_SHA256,
+        "source_time_domains": _SOURCE_TS_DOMAINS,
+        "source": "two_exact_original_B1_page_chains",
+        "v1_comparison_not_upgraded": True,
+        "account_complete": False,
+        "execution_authority": False,
+    }
+)
+V2_COMPARISON_POLICY_SHA256 = journal.digest(V2_COMPARISON_POLICY_BYTES)
 _PAGE_KINDS = frozenset(
     {
         "request_start",
@@ -710,6 +722,45 @@ def compare_history_query_chains(
     Pins are exact verifier keyword dictionaries, never coverage/authority flags.
     This comparison neither rewrites nor upgrades either immutable observation.
     """
+    return _compare_history_query_chains(
+        previous_chain=previous_chain,
+        previous_pins=previous_pins,
+        current_chain=current_chain,
+        current_pins=current_pins,
+        typed=False,
+    )
+
+
+def compare_history_query_chains_v2(
+    *,
+    previous_chain,
+    previous_pins,
+    current_chain,
+    current_pins,
+    expected_policy_sha256=V2_COMPARISON_POLICY_SHA256,
+):
+    """Compare two original B1 chains under family-typed source-ts semantics.
+
+    This is a new DENY-only receipt; old V1 comparison bytes keep their meaning.
+    It never accepts a caller-supplied query receipt or a V1 source policy pin.
+    """
+    if (
+        type(expected_policy_sha256) is not str
+        or expected_policy_sha256 != V2_COMPARISON_POLICY_SHA256
+    ):
+        _deny("history_query_comparison_policy_mismatch")
+    return _compare_history_query_chains(
+        previous_chain=previous_chain,
+        previous_pins=previous_pins,
+        current_chain=current_chain,
+        current_pins=current_pins,
+        typed=True,
+    )
+
+
+def _compare_history_query_chains(
+    *, previous_chain, previous_pins, current_chain, current_pins, typed
+):
     try:
         if any(
             type(pins) is not dict
@@ -720,17 +771,30 @@ def compare_history_query_chains(
             for pins in (previous_pins, current_pins)
         ):
             _deny("history_query_comparison_invalid")
-        old = json.loads(
-            verify_history_query_chain(previous_chain, **previous_pins).receipt_json
-        )
-        new = json.loads(
-            verify_history_query_chain(current_chain, **current_pins).receipt_json
-        )
+        verify = verify_history_query_chain_v2 if typed else verify_history_query_chain
+        old_receipt = verify(previous_chain, **previous_pins)
+        new_receipt = verify(current_chain, **current_pins)
+        old = json.loads(old_receipt.receipt_json)
+        new = json.loads(new_receipt.receipt_json)
         if (
             old["scope_sha256"] != new["scope_sha256"]
             or old["policy_sha256"] != new["policy_sha256"]
         ):
             _deny("history_query_comparison_scope_mismatch")
+        if typed and (
+            old["policy_sha256"] != V2_POLICY_SHA256
+            or any(
+                item["time_domain"] != _SOURCE_TS_DOMAINS[item["family"]]
+                for receipt in (old, new)
+                for item in receipt["coverage"]
+            )
+            or any(
+                item["source_ts_semantics"] != _SOURCE_TS_DOMAINS[item["family"]]
+                for receipt in (old, new)
+                for item in receipt["rows"]
+            )
+        ):
+            _deny("history_query_comparison_time_domain_mismatch")
         if _time(new["observed_completed_at"]) < _time(old["observed_completed_at"]):
             _deny("history_query_comparison_clock_reversed")
         prior = {row["identity_sha256"]: row for row in old["rows"]}
@@ -786,7 +850,7 @@ def compare_history_query_chains(
                     else "conflicting_overlap"
                 )
             else:
-                at = _time(row["generation_at"])
+                at = _time(row["source_ts_at" if typed else "generation_at"])
                 covered_before = any(
                     query["family"] == row["family"]
                     and query["product"] in {"*", row["product"]}
@@ -812,7 +876,7 @@ def compare_history_query_chains(
         for key, row in prior.items():
             if key in current:
                 continue
-            at = _time(row["generation_at"])
+            at = _time(row["source_ts_at" if typed else "generation_at"])
             if any(
                 query["family"] == row["family"]
                 and query["product"] in {"*", row["product"]}
@@ -829,30 +893,43 @@ def compare_history_query_chains(
                         "current_locators": [],
                     }
                 )
-        return journal.canonical(
-            {
-                "schema_version": "ctcc.observed_history_query_comparison.v2",
-                "previous_head_sha256": old["journal_head_sha256"],
-                "current_head_sha256": new["journal_head_sha256"],
-                "findings": findings,
-                "uncompared_query_domains": uncompared,
-                "uncompared_generation_intervals": measured_intervals_uncompared,
-                "dependent_current_claims_require_reconciliation": bool(uncompared)
-                or bool(measured_intervals_uncompared)
-                or any(
-                    item["kind"]
-                    in {
-                        "conflicting_overlap",
-                        "late_observation_in_prior_query",
-                        "previous_row_missing_in_current_query",
-                    }
-                    for item in findings
-                ),
-                "account_complete": False,
-                "execution_authority": False,
-                "admission": "DENY",
-            }
-        )
+        value = {
+            "schema_version": "ctcc.observed_history_query_comparison.v3"
+            if typed
+            else "ctcc.observed_history_query_comparison.v2",
+            "previous_head_sha256": old["journal_head_sha256"],
+            "current_head_sha256": new["journal_head_sha256"],
+            "findings": findings,
+            "uncompared_query_domains": uncompared,
+            "dependent_current_claims_require_reconciliation": bool(uncompared)
+            or bool(measured_intervals_uncompared)
+            or any(
+                item["kind"]
+                in {
+                    "conflicting_overlap",
+                    "late_observation_in_prior_query",
+                    "previous_row_missing_in_current_query",
+                }
+                for item in findings
+            ),
+            "account_complete": False,
+            "execution_authority": False,
+            "admission": "DENY",
+        }
+        if typed:
+            value.update(
+                {
+                    "policy_sha256": V2_COMPARISON_POLICY_SHA256,
+                    "source_query_policy_sha256": V2_POLICY_SHA256,
+                    "previous_query_receipt_sha256": old_receipt.receipt_sha256,
+                    "current_query_receipt_sha256": new_receipt.receipt_sha256,
+                    "source_time_domains": _SOURCE_TS_DOMAINS,
+                    "uncompared_source_ts_intervals": measured_intervals_uncompared,
+                }
+            )
+        else:
+            value["uncompared_generation_intervals"] = measured_intervals_uncompared
+        return journal.canonical(value)
     except HistoryQueryVerificationError:
         raise
     except Exception:  # noqa: BLE001, S110 -- no private audit exception logging

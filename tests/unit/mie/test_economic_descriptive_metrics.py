@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
+from decimal import ROUND_DOWN, ROUND_UP, Context, Decimal, Inexact, localcontext
 
 import pytest
 
@@ -87,6 +87,34 @@ def test_closed_trade_metrics_are_exact_deterministic_and_broken_down() -> None:
     assert result.predictive_oos_eligible is False
     assert result.runtime_consumers == 0
     assert result.execution_authority is False
+
+
+def test_closed_trade_metrics_ignore_caller_decimal_context() -> None:
+    rows = (
+        closed_trade(
+            1, D("1"), direction="long", symbol="BTC-USDT-SWAP", regime="bull"
+        ),
+        closed_trade(
+            2, D("0"), direction="long", symbol="BTC-USDT-SWAP", regime="bull"
+        ),
+        closed_trade(
+            3, D("0"), direction="long", symbol="BTC-USDT-SWAP", regime="bull"
+        ),
+    )
+    as_of = T0 + timedelta(hours=4)
+    with localcontext(Context(prec=4, rounding=ROUND_DOWN)):
+        rounded_down = summarize_closed_trade_outcomes(rows, as_of=as_of)
+    with localcontext(Context(prec=4, rounding=ROUND_UP)):
+        rounded_up = summarize_closed_trade_outcomes(rows, as_of=as_of)
+    with localcontext(Context(prec=4, rounding=ROUND_DOWN, traps=[Inexact])):
+        caller_trap = summarize_closed_trade_outcomes(rows, as_of=as_of)
+    assert rounded_down == rounded_up
+    assert rounded_down == caller_trap
+    assert rounded_down.all_trades.net_expectancy_per_trade == D(
+        "0.33333333333333333333333333333333333333333333333333"
+    )
+    assert rounded_down.predictive_oos_eligible is False
+    assert rounded_down.execution_authority is False
 
 
 def test_zero_loss_and_zero_wins_do_not_invent_profit_factor_or_average() -> None:

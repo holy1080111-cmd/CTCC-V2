@@ -94,6 +94,116 @@ async def test_v7_four_chains_replay_both_eight_algo_currents_and_still_deny(
 
 
 @pytest.mark.asyncio
+async def test_v7_typed_tail_is_new_receipt_and_old_tail_replays_unchanged(
+    monkeypatch,
+):
+    chains = await four_v7_chains(
+        monkeypatch, first=[row("fills_history")], later=[row("fills_history")]
+    )
+    arguments = inputs(chains)
+    old = tail_v7.verify_v7_history_tail_diagnostic(**arguments)
+    typed = tail_v7.verify_v7_history_tail_diagnostic_v2(**arguments)
+    old_value, value = json.loads(old.receipt_json), json.loads(typed.receipt_json)
+    assert value["schema_version"] == tail_v7.TYPED_SCHEMA_VERSION
+    assert value["policy_sha256"] == tail_v7.TYPED_POLICY_SHA256
+    assert value["history_query_policy_sha256"] == tail_v7.history.V2_POLICY_SHA256
+    assert (
+        value["history_comparison_policy_sha256"]
+        == tail_v7.history.V2_COMPARISON_POLICY_SHA256
+    )
+    assert value["source_time_domains"] == {
+        "fills": "fill_record_generated_at",
+        "bills": "balance_update_completed_at",
+    }
+    assert (
+        value["history_to_current_join_receipt_sha256"]
+        != old_value["history_to_current_join_receipt_sha256"]
+    )
+    assert value["history_comparison_sha256"] != old_value["history_comparison_sha256"]
+    assert old_value["schema_version"] == tail_v7.SCHEMA_VERSION
+    assert old_value["policy_sha256"] == tail_v7.POLICY_SHA256
+    assert tail_v7.verify_v7_history_tail_receipt(old, **arguments) == old
+    assert tail_v7.verify_v7_history_tail_receipt_v2(typed, **arguments) == typed
+    assert value["history_tail_closed"] is value["account_complete"] is False
+    assert value["execution_authority"] is value["flat_start_permission"] is False
+    assert value["snapshot"] is None and value["admission"] == "DENY"
+    with pytest.raises(tail_v7.V7HistoryTailError):
+        tail_v7.verify_v7_history_tail_receipt_v2(old, **arguments)
+    with pytest.raises(tail_v7.V7HistoryTailError):
+        tail_v7.verify_v7_history_tail_receipt(typed, **arguments)
+
+
+@pytest.mark.asyncio
+async def test_v7_typed_tail_detects_late_history_and_rejects_legacy_comparison(
+    monkeypatch,
+):
+    chains = await four_v7_chains(monkeypatch, later=[row("fills_history")])
+    arguments = inputs(chains)
+    typed = tail_v7.verify_v7_history_tail_diagnostic_v2(**arguments)
+    value = json.loads(typed.receipt_json)
+    comparison = json.loads(
+        tail_v7.history.compare_history_query_chains_v2(
+            previous_chain=chains[0],
+            previous_pins=observed._pins(observed.source_reference(chains[0]), SCOPE),
+            current_chain=chains[2],
+            current_pins=observed._pins(observed.source_reference(chains[2]), SCOPE),
+        )
+    )
+    assert value["history_comparison_sha256"] == journal.digest(
+        journal.canonical(comparison)
+    )
+    assert "late_observation_in_prior_query" in {
+        finding["kind"] for finding in value["history_comparison_findings"]
+    }
+    assert (
+        "history_overlap_discovery_requires_reconciliation" in value["blocking_reasons"]
+    )
+    assert value["history_tail_closed"] is value["account_complete"] is False
+    with pytest.raises(tail_v7.V7HistoryTailError):
+        tail_v7.verify_v7_history_tail_diagnostic_v2(
+            **inputs(chains, expected_policy_sha256=tail_v7.POLICY_SHA256)
+        )
+    monkeypatch.setattr(
+        tail_v7.history,
+        "compare_history_query_chains_v2",
+        lambda **_: tail_v7.history.compare_history_query_chains(
+            previous_chain=chains[0],
+            previous_pins=observed._pins(observed.source_reference(chains[0]), SCOPE),
+            current_chain=chains[2],
+            current_pins=observed._pins(observed.source_reference(chains[2]), SCOPE),
+        ),
+    )
+    with pytest.raises(
+        tail_v7.V7HistoryTailError,
+        match="v7_history_tail_comparison_schema_invalid",
+    ):
+        tail_v7.verify_v7_history_tail_diagnostic_v2(**arguments)
+
+
+@pytest.mark.asyncio
+async def test_v7_typed_tail_rejects_forged_receipt_and_missing_original_terminal(
+    monkeypatch,
+):
+    chains = await four_v7_chains(monkeypatch)
+    arguments = inputs(chains)
+    typed = tail_v7.verify_v7_history_tail_diagnostic_v2(**arguments)
+    forged = json.loads(typed.receipt_json)
+    forged["account_complete"] = True
+    with pytest.raises(tail_v7.V7HistoryTailError, match="receipt_invalid"):
+        tail_v7.TypedV7HistoryTailDiagnostic(journal.canonical(forged))
+    forged = json.loads(typed.receipt_json)
+    forged["history_comparison_sha256"] = "0" * 64
+    changed = tail_v7.TypedV7HistoryTailDiagnostic(journal.canonical(forged))
+    with pytest.raises(tail_v7.V7HistoryTailError, match="typed_receipt_changed"):
+        tail_v7.verify_v7_history_tail_receipt_v2(changed, **arguments)
+    truncated = inputs(chains)
+    truncated["continuation_chain"] = chains[2][:-1]
+    truncated["continuation_reference"] = observed.source_reference(chains[2][:-1])
+    with pytest.raises(tail_v7.V7HistoryTailError):
+        tail_v7.verify_v7_history_tail_diagnostic_v2(**truncated)
+
+
+@pytest.mark.asyncio
 async def test_v7_late_history_row_requires_reconciliation(monkeypatch):
     chains = await four_v7_chains(monkeypatch, later=[row("fills_history")])
     value = json.loads(

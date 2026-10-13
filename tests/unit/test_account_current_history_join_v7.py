@@ -8,6 +8,7 @@ import pytest
 from app.trade_qualification import account_capture_journal as journal
 from app.trade_qualification import account_current_history_join as joined
 from app.trade_qualification import account_current_source_verifier as current
+from app.trade_qualification import account_history_query_verifier as history
 from app.trade_qualification import account_observation_index as observed
 from tests.unit.test_account_current_source_v7 import recorded_v7
 from tests.unit.test_account_current_source_verifier import SCOPE, recorded
@@ -177,4 +178,69 @@ async def test_v7_ordered_join_requires_history_terminal_db_time_before_current_
             scope=SCOPE,
             validated_at=NOW + timedelta(seconds=4),
             expected_policy_sha256=joined.V7_ORDERED_POLICY_SHA256,
+        )
+    with pytest.raises(
+        joined.AccountSourceJoinError,
+        match="account_join_history_terminal_db_timestamp_not_before_current",
+    ):
+        joined.join_recorded_account_sources_v2(
+            history_chain=delayed,
+            history_reference=observed.source_reference(delayed),
+            current_chain=fresh,
+            current_reference=observed.source_reference(fresh),
+            scope=SCOPE,
+            validated_at=NOW + timedelta(seconds=4),
+        )
+
+
+@pytest.mark.asyncio
+async def test_v7_typed_join_is_separate_and_binds_v2_original_history(monkeypatch):
+    historical = await recorded(monkeypatch)
+    fresh, _ = await recorded_v7(monkeypatch)
+    arguments = {
+        "history_chain": historical,
+        "history_reference": observed.source_reference(historical),
+        "current_chain": fresh,
+        "current_reference": observed.source_reference(fresh),
+        "scope": SCOPE,
+        "validated_at": NOW + timedelta(seconds=4),
+    }
+    old = joined.join_recorded_account_sources(
+        **arguments, expected_policy_sha256=joined.V7_ORDERED_POLICY_SHA256
+    )
+    typed = joined.join_recorded_account_sources_v2(**arguments)
+    old_value, value = json.loads(old.receipt_json), json.loads(typed.receipt_json)
+    expected_history = history.verify_history_query_chain_v2(
+        historical,
+        **observed._pins(observed.source_reference(historical), SCOPE),
+    )
+    assert value["schema_version"] == "ctcc.recorded_account_current_history_join.v4"
+    assert value["policy_sha256"] == joined.V7_ORDERED_TYPED_POLICY_SHA256
+    assert value["history_query_policy_sha256"] == history.V2_POLICY_SHA256
+    assert value["history_query_receipt_sha256"] == expected_history.receipt_sha256
+    assert (
+        value["history_requested_source_ts_coverage"]
+        == json.loads(expected_history.receipt_json)["coverage"]
+    )
+    assert "history_requested_generation_coverage" not in value
+    assert (
+        old_value["schema_version"] == "ctcc.recorded_account_current_history_join.v3"
+    )
+    assert "history_requested_source_ts_coverage" not in old_value
+    assert (
+        joined.join_recorded_account_sources(
+            **arguments, expected_policy_sha256=joined.V7_ORDERED_POLICY_SHA256
+        ).receipt_json
+        == old.receipt_json
+    )
+    assert value["history_commit_before_current_request"] is False
+    assert value["account_complete"] is value["execution_authority"] is False
+    assert value["admission"] == "DENY"
+    with pytest.raises(joined.AccountSourceJoinError, match="policy_mismatch"):
+        joined.join_recorded_account_sources_v2(
+            **arguments, expected_policy_sha256=joined.V7_ORDERED_POLICY_SHA256
+        )
+    with pytest.raises(joined.AccountSourceJoinError, match="policy_mismatch"):
+        joined.join_recorded_account_sources(
+            **arguments, expected_policy_sha256=joined.V7_ORDERED_TYPED_POLICY_SHA256
         )

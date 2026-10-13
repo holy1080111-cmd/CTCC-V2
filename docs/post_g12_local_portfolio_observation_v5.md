@@ -16,9 +16,15 @@ scope, clock conflict, failed read, corrupt V4 evidence, cancellation or late
 V5 publication failure cannot create an authority claim. Already-published V4
 and V5 bytes are never removed to make a later step pass.
 
-Even an empty local blocking-reason list is only `local_flat_at_reads=true` in
-this sampled diagnostic. Matching hashes do not exclude an intervening write
-that was reverted between reads. They do not prove exchange-wide flatness,
+The reader validates the nested all-currency ledger, unresolved intents, and
+legacy state shape and requires a bound 64-hex credential-session ID when a
+legacy reconciliation checkpoint exists. Missing fields or an active exposure
+omitted from the blocking reasons reject the checkpoint. An empty
+blocking-reason list can produce `local_flat_at_reads=true` only for the two
+sampled, internally
+consistent local checkpoint reads. Matching hashes do not exclude an
+intervening write that was reverted between reads. They do not prove
+exchange-wide flatness,
 future writer exclusion, historical completeness, authenticated original G1–G11,
 complete post-G12 execution recheck, reservation, intent or submission
 eligibility. All those flags remain false. Source-owned original qualification

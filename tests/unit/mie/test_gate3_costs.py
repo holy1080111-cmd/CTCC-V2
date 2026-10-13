@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from decimal import Decimal, localcontext
+from decimal import ROUND_DOWN, ROUND_UP, Context, Decimal, Inexact, localcontext
 
 import pytest
 
@@ -209,7 +209,12 @@ def test_annualized_period_ratios_ignore_callers_decimal_context() -> None:
         "observation_interval_seconds": 900,
     }
     baseline = evaluate_costed_return_path(**parameters)
-    with localcontext() as caller_context:
-        caller_context.prec = 8
-        replay = evaluate_costed_return_path(**parameters)
-    assert replay == baseline
+    for rounding in (ROUND_DOWN, ROUND_UP):
+        with localcontext(Context(prec=8, rounding=rounding)):
+            replay = evaluate_costed_return_path(**parameters)
+        assert replay == baseline
+    with localcontext(Context(prec=8, rounding=ROUND_DOWN, traps=[Inexact])):
+        trapped_replay = evaluate_costed_return_path(**parameters)
+    assert trapped_replay == baseline
+    assert baseline.authority == "offline_descriptive_only"
+    assert baseline.execution_authority is False

@@ -25,7 +25,12 @@ from app.trade_qualification.event_observation import (
     MAX_OBSERVATION_BYTES,
     LedgerEventObservation,
 )
-from app.trade_qualification.reservations import LedgerScope, checked_bootstrap
+from app.trade_qualification.reservations import (
+    LedgerScope,
+    LedgerScopeState,
+    ReservationReceipt,
+    checked_bootstrap,
+)
 
 _SCHEMA = "ctcc.post_g12_local_portfolio_observation.v5"
 _MAX_RECEIPT = 3072
@@ -297,6 +302,209 @@ def _v4_event_read_received(root, receipt, *, expected_root_identity):
         ) from None
 
 
+def _legacy_datetime(value):
+    if value is None:
+        return None
+    if type(value) is not str or len(value) > 40:
+        raise ValueError
+    instant = datetime.fromisoformat(value)
+    if instant.utcoffset() is None or instant.isoformat() != value:
+        raise ValueError
+    return instant
+
+
+def _checked_local_structure(record, scope):
+    """Reject missing or contradictory nested storage; never infer flatness."""
+    reasons = set(record["blocking_reasons"])
+    states = record["currency_states"]
+    if not 1 <= len(states) <= 128:
+        raise ValueError
+    currencies = []
+    has_active = False
+    for raw in states:
+        if type(raw) is not dict or set(raw) != set(LedgerScopeState.model_fields):
+            raise ValueError
+        state = LedgerScopeState.model_validate_json(canonical(raw), strict=True)
+        if (
+            type(raw["scope"]) is not dict
+            or set(raw["scope"]) != set(LedgerScope.model_fields)
+            or state.scope.environment != scope.environment
+            or state.scope.account_id != scope.account_id
+        ):
+            raise ValueError
+        currencies.append(state.scope.settlement_currency)
+        if any(
+            type(item) is not dict
+            or set(item) != set(ReservationReceipt.model_fields)
+            or receipt.scope != state.scope
+            or receipt.state == "reconciled_flat"
+            for item, receipt in zip(raw["active"], state.active, strict=True)
+        ):
+            raise ValueError
+        has_active |= bool(state.active)
+    if (
+        currencies != sorted(set(currencies))
+        or scope.settlement_currency not in currencies
+        or (has_active and "all_currency_local_holds_unresolved" not in reasons)
+    ):
+        raise ValueError
+    intents = record["unresolved_intents"]
+    if len(intents) > 2048 or (
+        intents and "all_currency_local_intents_unresolved" not in reasons
+    ):
+        raise ValueError
+    for item in intents:
+        if (
+            type(item) is not list
+            or len(item) != 5
+            or type(item[0]) is not str
+            or _HEX.fullmatch(item[0]) is None
+            or type(item[1]) is not str
+            or item[1] not in currencies
+            or item[2] not in ("reserved", "consumed", "uncertain")
+            or type(item[3]) is not int
+            or item[3] < 0
+            or type(item[4]) is not str
+            or _REASON.fullmatch(item[4]) is None
+        ):
+            raise ValueError
+    legacy = record["legacy"]
+    if set(legacy) != {
+        "automation",
+        "sync_checkpoint",
+        "positions",
+        "orders",
+        "algos",
+    }:
+        raise ValueError
+    for key in ("positions", "orders", "algos"):
+        identities = legacy[key]
+        if (
+            type(identities) is not list
+            or len(identities) > 2048
+            or any(type(item) is not str or not item for item in identities)
+            or identities != sorted(set(identities))
+            or (identities and "legacy_unattributed_active_" + key not in reasons)
+        ):
+            raise ValueError
+    automation = legacy["automation"]
+    if automation is None:
+        if "legacy_automation_initialization_unknown" not in reasons:
+            raise ValueError
+    else:
+        if (
+            type(automation) is not dict
+            or set(automation)
+            != {
+                "armed",
+                "emergency_stop",
+                "locked",
+                "lock_reasons",
+                "active_instrument_id",
+                "active_client_order_id",
+                "active_start_equity",
+                "active_started_at",
+                "active_trades",
+                "last_started_at",
+                "last_completed_at",
+                "last_error",
+                "updated_at",
+            }
+            or any(
+                type(automation[key]) is not bool
+                for key in ("armed", "emergency_stop", "locked")
+            )
+            or type(automation["lock_reasons"]) is not list
+            or type(automation["active_trades"]) not in (dict, list)
+            or any(
+                automation[key] is not None and type(automation[key]) is not str
+                for key in (
+                    "active_instrument_id",
+                    "active_client_order_id",
+                    "active_start_equity",
+                    "last_error",
+                )
+            )
+        ):
+            raise ValueError
+        started = _legacy_datetime(automation["last_started_at"])
+        completed = _legacy_datetime(automation["last_completed_at"])
+        _legacy_datetime(automation["active_started_at"])
+        _legacy_datetime(automation["updated_at"])
+        tracked = bool(automation["active_trades"]) or any(
+            automation[key] is not None
+            for key in (
+                "active_instrument_id",
+                "active_client_order_id",
+                "active_start_equity",
+                "active_started_at",
+            )
+        )
+        inflight = (
+            automation["armed"]
+            or automation["locked"]
+            or bool(automation["lock_reasons"])
+            or automation["last_error"] not in (None, "")
+            or (started is not None and (completed is None or started > completed))
+        )
+        if (tracked and "legacy_tracked_exposure_unattributed" not in reasons) or (
+            inflight and "legacy_inflight_or_uncertain" not in reasons
+        ):
+            raise ValueError
+    sync = legacy["sync_checkpoint"]
+    if sync is None:
+        if "legacy_reconciliation_initialization_unknown" not in reasons:
+            raise ValueError
+    else:
+        if (
+            type(sync) is not dict
+            or set(sync)
+            != {
+                "status",
+                "order_count",
+                "position_count",
+                "algo_order_count",
+                "last_error",
+                "reconciled_at",
+                "updated_at",
+                "exact_uid_bound",
+                "credential_session_binding_id",
+            }
+            or type(sync["status"]) is not str
+            or any(
+                type(sync[key]) is not int
+                for key in ("order_count", "position_count", "algo_order_count")
+            )
+            or type(sync["exact_uid_bound"]) is not bool
+            or sync["last_error"] is not None
+            and type(sync["last_error"]) is not str
+            or sync["credential_session_binding_id"] is not None
+            and type(sync["credential_session_binding_id"]) is not str
+        ):
+            raise ValueError
+        _legacy_datetime(sync["reconciled_at"])
+        _legacy_datetime(sync["updated_at"])
+        binding = sync["credential_session_binding_id"]
+        if type(binding) is not str or _HEX.fullmatch(binding) is None:
+            raise ValueError
+        if (
+            not sync["exact_uid_bound"]
+            and "legacy_reconciliation_uid_unbound" not in reasons
+        ):
+            raise ValueError
+        incomplete = (
+            sync["status"] != "reconciled"
+            or sync["reconciled_at"] is None
+            or sync["last_error"] not in (None, "")
+            or any(
+                sync[key] != 0
+                for key in ("order_count", "position_count", "algo_order_count")
+            )
+        )
+        if incomplete and "legacy_reconciliation_incomplete_or_exposed" not in reasons:
+            raise ValueError
+
+
 def _checked_checkpoint(value, scope):
     try:
         if type(value) is not PortfolioLocalCheckpoint:
@@ -338,9 +546,9 @@ def _checked_checkpoint(value, scope):
                 for reason in record["blocking_reasons"]
             )
             or record["blocking_reasons"] != sorted(set(record["blocking_reasons"]))
-            or value.known_flat is not (not record["blocking_reasons"])
         ):
             raise ValueError
+        _checked_local_structure(record, scope)
         observed, received = _utc(value.observed_at), _utc(value.received_at)
         if observed > received:
             raise ValueError

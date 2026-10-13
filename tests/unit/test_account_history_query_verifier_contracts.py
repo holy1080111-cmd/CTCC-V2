@@ -402,10 +402,11 @@ async def test_old_recorded_wire_bytes_unchanged_by_new_path(monkeypatch):
     )
 
 
-async def captured_history(monkeypatch, rows, *, tick=0):
+async def captured_history(monkeypatch, rows, *, tick=0, bills=()):
     session, harness, _, args, events = setup(monkeypatch)
     pages = source_pages()
     pages["fills_history"] = [rows, []] if rows else [[]]
+    pages["bills_archive"] = [list(bills), []] if bills else [[]]
     harness.script = script(pages=pages)
     harness.clock.calls = tick
     await bootstrap.collect_bootstrap_recorded(session, **args)
@@ -450,6 +451,130 @@ async def test_cross_capture_late_conflicting_missing_rows_preserve_both_sources
     assert [item.event for item in before] == before_bytes
     assert [item.event for item in after] == after_bytes
     assert not result["account_complete"] and result["admission"] == "DENY"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "change,expected",
+    [
+        ("late", "late_observation_in_prior_query"),
+        ("conflict", "conflicting_overlap"),
+        ("missing", "previous_row_missing_in_current_query"),
+    ],
+)
+async def test_v2_comparison_replays_original_b1_under_typed_source_ts(
+    monkeypatch, change, expected
+):
+    sample = row("fills_history", fillTime=ms(NOW - timedelta(days=8)))
+    before = await captured_history(monkeypatch, [] if change == "late" else [sample])
+    after = await captured_history(
+        monkeypatch,
+        []
+        if change == "missing"
+        else [{**sample, "fee": "-0.002"}]
+        if change == "conflict"
+        else [sample],
+        tick=5000,
+    )
+    original_events = ([item.event for item in before], [item.event for item in after])
+    output = json.loads(
+        verifier.compare_history_query_chains_v2(
+            previous_chain=before,
+            previous_pins=pins(before),
+            current_chain=after,
+            current_pins=pins(after),
+        )
+    )
+    assert output["schema_version"] == "ctcc.observed_history_query_comparison.v3"
+    assert output["policy_sha256"] == verifier.V2_COMPARISON_POLICY_SHA256
+    assert output["source_query_policy_sha256"] == verifier.V2_POLICY_SHA256
+    assert output["source_time_domains"] == {
+        "fills": "fill_record_generated_at",
+        "bills": "balance_update_completed_at",
+    }
+    assert (
+        output["previous_query_receipt_sha256"]
+        == verifier.verify_history_query_chain_v2(before, **pins(before)).receipt_sha256
+    )
+    assert (
+        output["current_query_receipt_sha256"]
+        == verifier.verify_history_query_chain_v2(after, **pins(after)).receipt_sha256
+    )
+    assert expected in {item["kind"] for item in output["findings"]}
+    if change == "late":
+        observed = json.loads(
+            verifier.verify_history_query_chain_v2(after, **pins(after)).receipt_json
+        )
+        fill = next(item for item in observed["rows"] if item["family"] == "fills")
+        assert fill["fill_at"] < observed["requested_start"]
+        assert fill["source_ts_at"] >= observed["requested_start"]
+    assert output["dependent_current_claims_require_reconciliation"] is True
+    assert [item.event for item in before] == original_events[0]
+    assert [item.event for item in after] == original_events[1]
+    assert output["account_complete"] is output["execution_authority"] is False
+    assert output["admission"] == "DENY"
+
+
+@pytest.mark.asyncio
+async def test_v2_comparison_uses_bill_balance_update_domain(monkeypatch):
+    before = await captured_history(monkeypatch, [], bills=[])
+    after = await captured_history(
+        monkeypatch, [], tick=5000, bills=[row("bills_archive", "902")]
+    )
+    query = json.loads(
+        verifier.verify_history_query_chain_v2(after, **pins(after)).receipt_json
+    )
+    bill = next(item for item in query["rows"] if item["family"] == "bills")
+    assert bill["source_ts_semantics"] == "balance_update_completed_at"
+    assert bill["fill_at"] is None
+    output = json.loads(
+        verifier.compare_history_query_chains_v2(
+            previous_chain=before,
+            previous_pins=pins(before),
+            current_chain=after,
+            current_pins=pins(after),
+        )
+    )
+    assert {item["kind"] for item in output["findings"]} == {
+        "late_observation_in_prior_query"
+    }
+    assert output["dependent_current_claims_require_reconciliation"] is True
+    assert output["account_complete"] is output["execution_authority"] is False
+
+
+@pytest.mark.asyncio
+async def test_v2_comparison_rejects_v1_pin_and_missing_b1_terminal(monkeypatch):
+    events = await captured_history(monkeypatch, [])
+    arguments = {
+        "previous_chain": events,
+        "previous_pins": pins(events),
+        "current_chain": events,
+        "current_pins": pins(events),
+    }
+    with pytest.raises(
+        verifier.HistoryQueryVerificationError, match="comparison_policy_mismatch"
+    ):
+        verifier.compare_history_query_chains_v2(
+            **arguments, expected_policy_sha256=verifier.POLICY_SHA256
+        )
+    with pytest.raises(
+        verifier.HistoryQueryVerificationError, match="history_query_policy_mismatch"
+    ):
+        verifier.compare_history_query_chains_v2(
+            **(
+                arguments
+                | {
+                    "previous_pins": pins(events)
+                    | {
+                        "expected_policy_sha256": verifier.POLICY_SHA256,
+                    }
+                }
+            )
+        )
+    with pytest.raises(verifier.HistoryQueryVerificationError):
+        verifier.compare_history_query_chains_v2(
+            **(arguments | {"current_chain": events[:-1]})
+        )
 
 
 @pytest.mark.asyncio
@@ -522,6 +647,22 @@ async def test_empty_same_product_domains_require_measured_generation_overlap(
     assert comparison["account_complete"] is False
     assert comparison["execution_authority"] is False
     assert comparison["admission"] == "DENY"
+
+    typed = json.loads(
+        verifier.compare_history_query_chains_v2(
+            previous_chain=previous,
+            previous_pins=pins(previous),
+            current_chain=current,
+            current_pins=pins(current),
+        )
+    )
+    assert typed["schema_version"] == "ctcc.observed_history_query_comparison.v3"
+    assert bool(typed["uncompared_source_ts_intervals"]) is requires_reconciliation
+    assert typed["dependent_current_claims_require_reconciliation"] is (
+        requires_reconciliation
+    )
+    assert typed["account_complete"] is typed["execution_authority"] is False
+    assert typed["admission"] == "DENY"
 
 
 @pytest.mark.asyncio

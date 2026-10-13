@@ -11,7 +11,16 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from decimal import Decimal, localcontext
+from decimal import (
+    ROUND_HALF_EVEN,
+    Context,
+    Decimal,
+    DivisionByZero,
+    InvalidOperation,
+    Overflow,
+    Underflow,
+    localcontext,
+)
 from typing import Literal
 
 D = Decimal
@@ -72,8 +81,19 @@ def _label(value: str, name: str) -> None:
 
 
 def _summary(rows: Sequence[ClosedTradeOutcome]) -> TradeProfitSummary:
-    with localcontext() as context:
-        context.prec = DECIMAL_PRECISION
+    # Pin every field: localcontext() otherwise inherits caller rounding, exponent
+    # bounds, and traps, so identical closed trades can yield different metrics.
+    arithmetic = Context(
+        prec=DECIMAL_PRECISION,
+        rounding=ROUND_HALF_EVEN,
+        Emin=-999999,
+        Emax=999999,
+        capitals=1,
+        clamp=0,
+        flags=[],
+        traps=[InvalidOperation, DivisionByZero, Overflow, Underflow],
+    )
+    with localcontext(arithmetic):
         wins = tuple(row.net_pnl for row in rows if row.net_pnl > 0)
         losses = tuple(-row.net_pnl for row in rows if row.net_pnl < 0)
         gross_profit = sum(wins, D(0))

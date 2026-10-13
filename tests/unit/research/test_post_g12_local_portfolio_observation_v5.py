@@ -13,7 +13,11 @@ from app.domain.source_primitives import canonical, decode, sha
 from app.trade_qualification import post_g12_account_event_observation_v4 as prior
 from app.trade_qualification import post_g12_local_portfolio_observation_v5 as bridge
 from app.trade_qualification.event_observation import VERSION, LedgerEventObservation
-from app.trade_qualification.reservations import LedgerScope, reservation_id
+from app.trade_qualification.reservations import (
+    LedgerScope,
+    LedgerScopeState,
+    reservation_id,
+)
 from tests.unit.research.test_post_g12_account_event_observation_v4 import _matched
 
 
@@ -28,15 +32,53 @@ def _roots(tmp_path):
 
 
 def _checkpoint(scope, at, *, reasons=(), account_id=None):
+    fixed = datetime(2026, 1, 1, tzinfo=UTC).isoformat()
+    state = LedgerScopeState(
+        scope=scope,
+        account_revision=0,
+        ledger_revision=0,
+        claims_sha256=None,
+        active=(),
+    )
     raw = canonical(
         {
             "schema_version": "ctcc.portfolio_local_checkpoint.v2",
             "environment": scope.environment,
             "account_id": scope.account_id if account_id is None else account_id,
             "requested_settlement_currency": scope.settlement_currency,
-            "currency_states": [{"settlement_currency": scope.settlement_currency}],
+            "currency_states": [state.model_dump(mode="json")],
             "unresolved_intents": [],
-            "legacy": {},
+            "legacy": {
+                "automation": {
+                    "armed": False,
+                    "emergency_stop": False,
+                    "locked": False,
+                    "lock_reasons": [],
+                    "active_instrument_id": None,
+                    "active_client_order_id": None,
+                    "active_start_equity": None,
+                    "active_started_at": None,
+                    "active_trades": {},
+                    "last_started_at": None,
+                    "last_completed_at": None,
+                    "last_error": None,
+                    "updated_at": fixed,
+                },
+                "sync_checkpoint": {
+                    "status": "reconciled",
+                    "order_count": 0,
+                    "position_count": 0,
+                    "algo_order_count": 0,
+                    "last_error": None,
+                    "reconciled_at": fixed,
+                    "updated_at": fixed,
+                    "exact_uid_bound": True,
+                    "credential_session_binding_id": "c" * 64,
+                },
+                "positions": [],
+                "orders": [],
+                "algos": [],
+            },
             "blocking_reasons": list(reasons),
             "future_writer_exclusion": False,
             "execution_authority": False,
@@ -277,7 +319,63 @@ async def test_v5_local_flat_cannot_requalify_recorded_original_event(
     assert record["code"] == "original_event_already_recorded"
     assert record["v4_receipt_sha256"] == v4.receipt_sha256
     assert record["local_flat_at_reads"] is True
+    assert record["local_blocking_reasons"] == []
     assert result.execution_authority is False
+
+
+@pytest.mark.parametrize(
+    "fault",
+    (
+        "active_without_reason",
+        "intent_without_reason",
+        "legacy_missing",
+        "legacy_exposure_without_reason",
+        "legacy_inflight_chronology_without_reason",
+        "binding_missing_without_reason",
+        "binding_malformed_without_reason",
+        "currency_fields_missing",
+    ),
+)
+def test_v5_rejects_nested_checkpoint_contradiction_or_omission(fault):
+    scope = LedgerScope(account_id="123456789012345678901", settlement_currency="USDT")
+    original = _checkpoint(scope, datetime.now(UTC))
+    record = decode(original.document_json)
+    if fault == "active_without_reason":
+        receipt = _matched(
+            scope,
+            "a" * 64,
+            {"deadline": datetime(2026, 1, 1, tzinfo=UTC) + timedelta(seconds=30)},
+        )
+        record["currency_states"][0]["active"] = [receipt.model_dump(mode="json")]
+        record["currency_states"][0]["account_revision"] = 1
+        record["currency_states"][0]["ledger_revision"] = 2
+    elif fault == "intent_without_reason":
+        record["unresolved_intents"] = [["b" * 64, "USDT", "consumed", 2, "submitted"]]
+    elif fault == "legacy_missing":
+        record["legacy"] = {}
+    elif fault == "legacy_exposure_without_reason":
+        record["legacy"]["positions"] = ["position-1"]
+    elif fault == "legacy_inflight_chronology_without_reason":
+        record["legacy"]["automation"]["last_started_at"] = "2026-01-01T00:00:02+00:00"
+        record["legacy"]["automation"]["last_completed_at"] = (
+            "2026-01-01T00:00:01+00:00"
+        )
+    elif fault == "binding_missing_without_reason":
+        record["legacy"]["sync_checkpoint"]["credential_session_binding_id"] = None
+    elif fault == "binding_malformed_without_reason":
+        record["legacy"]["sync_checkpoint"]["credential_session_binding_id"] = (
+            "not-a-binding"
+        )
+    else:
+        record["currency_states"] = [{"scope": scope.model_dump(mode="json")}]
+    forged = PortfolioLocalCheckpoint(
+        canonical(record), original.observed_at, original.received_at
+    )
+    with pytest.raises(
+        bridge.PostG12LocalPortfolioObservationError,
+        match="v5_local_checkpoint_invalid",
+    ):
+        bridge._checked_checkpoint(forged, scope)
 
 
 @pytest.mark.asyncio

@@ -96,17 +96,28 @@ not by itself add that blocker. Earlier V1 receipts remain historical DENY
 observations and cannot be silently reinterpreted as V2 comparison evidence.
 The comparison remains a V1 contract with its historical `generation_at`
 field name for bills; it is not a V2 typed-time comparison.
-`account_current_history_join`, `account_native_proof`,
+The older `account_current_history_join` entrypoints, `account_native_proof`,
 `account_funding_bill_audit`, the observation index, and the lifecycle/tail
 paths still replay V1. Their saved receipts and database projections are not
 upgraded by the owned bootstrap V2 receipt. In particular, this change does
 not establish account completeness, a typed-time forensics chain, or a valid
 funding-accrual clock for any of those consumers.
-The three-chain prerequisite and V7 four-chain tail policies now explicitly
-pin this V2 comparison schema; the V6 follow-up-current policy inherits the
-three-chain policy hash. Saved receipts from the prior policy epoch remain
-historical DENY artifacts and fail current policy validation, even when the
-same original chains can be replayed under the new policy.
+The separate `compare_history_query_chains_v2` replays both exact original B1
+chains through the V2 source verifier and issues a new, pinned
+`ctcc.observed_history_query_comparison.v3` receipt. It compares each row's
+`source_ts_at` only inside the matching family/product's measured interval:
+fills use fill-record generation time, and bills use balance-update completion
+time. The receipt binds both V2 query receipt hashes, the comparison policy,
+and the family time domains. Late, missing, conflicting, and disjoint empty
+query observations still require reconciliation; it never treats `fillTime` as
+the filtered source `ts`. The V1 comparison remains byte-for-byte replayable
+with its prior semantics. The separate `join_recorded_account_sources_v2` and
+`verify_v7_history_tail_diagnostic_v2` replay original B1 chains under the V2
+source-time policy and issue new DENY-only receipts. The original V7 tail,
+three-chain prerequisite, and V6 follow-up-current policy still pin the older
+V1 query/comparison semantics. Their saved receipts remain historical DENY
+artifacts and cannot be silently upgraded by the typed-time paths. Neither
+version establishes account completeness or trading authority.
 Derived interval union merges only overlapping/touching measured intervals;
 fractional retention boundaries cannot bridge an uncovered millisecond. Reading
 the same capture twice is an audit comparison, not a fresh observation.

@@ -70,6 +70,24 @@ V7_ORDERED_POLICY_BYTES = journal.canonical(
     }
 )
 V7_ORDERED_POLICY_SHA256 = journal.digest(V7_ORDERED_POLICY_BYTES)
+V7_ORDERED_TYPED_POLICY_BYTES = journal.canonical(
+    {
+        "version": "ctcc.recorded_account_current_history_join.v4",
+        "prior_ordered_policy_sha256": V7_ORDERED_POLICY_SHA256,
+        "current_policy_sha256": current.V7_POLICY_SHA256,
+        "history_policy_sha256": history.V2_POLICY_SHA256,
+        "history_capture_plan": "ctcc.demo_account_plan.v5",
+        "current_capture_plan": "ctcc.demo_current_account_plan.v7",
+        "history_terminal_db_timestamp_before_current_request": True,
+        "history_commit_before_current_request": False,
+        "same_recorded_local_checkpoint_required": True,
+        "complete_history_tail": False,
+        "flat_start_permission": False,
+        "account_complete": False,
+        "execution_authority": False,
+    }
+)
+V7_ORDERED_TYPED_POLICY_SHA256 = journal.digest(V7_ORDERED_TYPED_POLICY_BYTES)
 
 
 class AccountSourceJoinError(ValueError):
@@ -171,6 +189,12 @@ def join_recorded_account_sources(
     coordinator must bind the resulting checkpoint hash to a fresh DB readback
     under the account lock and prove history/funding/HWM before risk admission.
     """
+    if type(expected_policy_sha256) is not str or expected_policy_sha256 not in {
+        POLICY_SHA256,
+        V7_POLICY_SHA256,
+        V7_ORDERED_POLICY_SHA256,
+    }:
+        _deny("account_join_policy_mismatch")
     try:
         return _join(
             history_chain,
@@ -187,6 +211,38 @@ def join_recorded_account_sources(
         raise AccountSourceJoinError("account_source_join_invalid") from None
 
 
+def join_recorded_account_sources_v2(
+    *,
+    history_chain,
+    history_reference,
+    current_chain,
+    current_reference,
+    scope,
+    validated_at,
+    expected_policy_sha256=V7_ORDERED_TYPED_POLICY_SHA256,
+):
+    """Issue a separate DENY-only V7 join under typed history source-ts."""
+    if (
+        type(expected_policy_sha256) is not str
+        or expected_policy_sha256 != V7_ORDERED_TYPED_POLICY_SHA256
+    ):
+        _deny("account_join_policy_mismatch")
+    try:
+        return _join(
+            history_chain,
+            history_reference,
+            current_chain,
+            current_reference,
+            scope,
+            validated_at,
+            expected_policy_sha256,
+        )
+    except AccountSourceJoinError:
+        raise
+    except Exception:  # noqa: BLE001 -- redact private source/parser details
+        raise AccountSourceJoinError("account_source_join_invalid") from None
+
+
 def _join(
     history_chain,
     history_reference,
@@ -199,7 +255,13 @@ def _join(
     checked_bootstrap(scope, LedgerScope)
     if (
         type(policy_pin) is not str
-        or policy_pin not in {POLICY_SHA256, V7_POLICY_SHA256, V7_ORDERED_POLICY_SHA256}
+        or policy_pin
+        not in {
+            POLICY_SHA256,
+            V7_POLICY_SHA256,
+            V7_ORDERED_POLICY_SHA256,
+            V7_ORDERED_TYPED_POLICY_SHA256,
+        }
         or type(validated_at) is not datetime
         or type(history_chain) is not tuple
         or type(current_chain) is not tuple
@@ -217,15 +279,28 @@ def _join(
         or history_reference.capture_id == current_reference.capture_id
     ):
         _deny("account_join_source_reference_mismatch")
-    ordered_v7 = policy_pin == V7_ORDERED_POLICY_SHA256
-    v7 = policy_pin in {V7_POLICY_SHA256, V7_ORDERED_POLICY_SHA256}
+    typed_v7 = policy_pin == V7_ORDERED_TYPED_POLICY_SHA256
+    ordered_v7 = policy_pin in {
+        V7_ORDERED_POLICY_SHA256,
+        V7_ORDERED_TYPED_POLICY_SHA256,
+    }
+    v7 = policy_pin in {
+        V7_POLICY_SHA256,
+        V7_ORDERED_POLICY_SHA256,
+        V7_ORDERED_TYPED_POLICY_SHA256,
+    }
     current_policy = current.V7_POLICY_SHA256 if v7 else current.V6_POLICY_SHA256
     current_plan = (
         capture.CurrentDemoAccountCapturePlanV7
         if v7
         else capture.CurrentDemoAccountCapturePlanV6
     )
-    history_proof = history.verify_history_query_chain(
+    verify_history = (
+        history.verify_history_query_chain_v2
+        if typed_v7
+        else history.verify_history_query_chain
+    )
+    history_proof = verify_history(
         history_chain, **observed._pins(history_reference, scope)
     )
     current_proof = current.verify_current_account_sources(
@@ -298,11 +373,17 @@ def _join(
     blockers = set(current_data["blocking_reasons"])
     if tail_gap > timedelta(seconds=120):
         blockers.add("history_requested_tail_gap_exceeds_policy")
-    if any(
-        item["requested_generation_window_covered"] is not True
-        for item in history_data["coverage"]
-    ):
-        blockers.add("history_requested_generation_coverage_incomplete")
+    coverage_key = (
+        "requested_source_ts_window_covered"
+        if typed_v7
+        else "requested_generation_window_covered"
+    )
+    if any(item[coverage_key] is not True for item in history_data["coverage"]):
+        blockers.add(
+            "history_requested_source_ts_coverage_incomplete"
+            if typed_v7
+            else "history_requested_generation_coverage_incomplete"
+        )
     blockers.update(
         {
             "history_tail_not_atomically_closed",
@@ -317,7 +398,9 @@ def _join(
     )
     output = {
         "schema_version": (
-            "ctcc.recorded_account_current_history_join.v3"
+            "ctcc.recorded_account_current_history_join.v4"
+            if typed_v7
+            else "ctcc.recorded_account_current_history_join.v3"
             if ordered_v7
             else "ctcc.recorded_account_current_history_join.v2"
             if v7
@@ -343,7 +426,6 @@ def _join(
         "current_capture_completed_at": current_packet.completed_at.isoformat(),
         "validated_at": at.isoformat(),
         "history_tail_gap_seconds": str(tail_gap.total_seconds()),
-        "history_requested_generation_coverage": history_data["coverage"],
         "current_observed_flat": current_data["observed_flat"],
         "blocking_reasons": sorted(blockers),
         "snapshot": None,
@@ -356,6 +438,11 @@ def _join(
     if v7:
         output["current_source_policy_sha256"] = current_policy
         output["flat_start_permission"] = False
+    if typed_v7:
+        output["history_query_policy_sha256"] = history.V2_POLICY_SHA256
+        output["history_requested_source_ts_coverage"] = history_data["coverage"]
+    else:
+        output["history_requested_generation_coverage"] = history_data["coverage"]
     if ordered_v7:
         output["history_journal_terminal_db_recorded_at"] = capture._utc(
             history_chain[-1].db_recorded_at
