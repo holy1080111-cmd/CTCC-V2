@@ -13,8 +13,10 @@ from app.domain.market import (
     DataQualityReport,
     MarketSnapshot,
     OrderBook,
+    SwapTickerV2,
     Ticker,
 )
+from app.indicators import vwap
 from app.market.quality.candles import BAR_SECONDS
 from tests.unit.test_explicit_candle_quality import FoldOffset
 
@@ -282,3 +284,99 @@ def test_legacy_snapshot_wrapper_still_uses_injected_quality_settings_and_clock(
     assert legacy.version == "legacy-config" and legacy.generated_at == NOW
     assert all(not view.data_quality_ok for view in legacy.timeframe_analyses.values())
     assert not legacy.trade_ready
+
+
+def test_swap_vwap_v2_is_versioned_in_both_analysis_apis_and_legacy_is_unchanged(
+    monkeypatch,
+):
+    legacy = snapshot()
+    for rows in legacy.candles.values():
+        for index, row in enumerate(rows):
+            base = D(1 + index % 2)
+            row.volume_contracts = base
+            row.volume_currency = base
+            row.volume_quote = base * row.close
+    old = analyze(legacy)
+    assert old.version == VERSION
+    with pytest.raises(ValueError, match="requires SwapTickerV2"):
+        analyze(legacy, version=VERSION + "+swap-vwap-v2")
+    assert old.timeframe_analyses["5m"].indicators.vwap == vwap(
+        legacy.candles["5m"], 20
+    ).quantize(D("0.00000001"))
+
+    current = legacy.model_copy(deep=True)
+    fields = current.ticker.model_dump()
+    contracts = fields.pop("volume_24h")
+    fields.pop("volume_quote_24h")
+    current.ticker = SwapTickerV2(
+        **fields,
+        schema_version="okx-swap-ticker-v2",
+        volume_contracts_24h=contracts,
+        volume_currency_24h=D(1),
+    )
+    explicit = analyze(current)
+    assert explicit.version == VERSION + "+swap-vwap-v2"
+    assert analyze(current, version=explicit.version) == explicit
+    rows = current.candles["5m"][-20:]
+    expected = (
+        sum((row.volume_quote for row in rows), D(0))
+        / sum((row.volume_currency for row in rows), D(0))
+    ).quantize(D("0.00000001"))
+    assert explicit.timeframe_analyses["5m"].indicators.vwap == expected
+    assert old.timeframe_analyses["5m"].indicators.vwap != expected
+
+    current.quality = {
+        bar: DataQualityReport(
+            ok=True,
+            candle_count=90,
+            confirmed_count=90,
+            expected_interval_seconds=seconds,
+        )
+        for bar, seconds in BAR_SECONDS.items()
+    }
+    monkeypatch.setattr(
+        service, "get_settings", lambda: SimpleNamespace(app_version=VERSION)
+    )
+    monkeypatch.setattr(service, "datetime", SimpleNamespace(now=lambda zone: NOW))
+    wrapper = AnalysisService(market_service=object()).analyze_snapshot(current)
+    assert wrapper.version == explicit.version
+    assert wrapper.timeframe_analyses["5m"].indicators.vwap == expected
+    with localcontext(Context(prec=6, rounding=ROUND_UP)) as context:
+        context.traps[Inexact] = True
+        assert analyze(current) == explicit
+        assert (
+            AnalysisService(market_service=object()).analyze_snapshot(current)
+            == wrapper
+        )
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"volume_currency": D(0)},
+        {"volume_quote": D(0)},
+        {"volume_currency": None},
+        {"volume_quote": D("NaN")},
+        {"volume_quote": D(1000000)},
+    ],
+)
+def test_swap_vwap_v2_malformed_bar_cannot_skip_signal(changes):
+    current = snapshot()
+    for rows in current.candles.values():
+        for row in rows:
+            row.volume_quote = row.volume_currency * row.close
+    fields = current.ticker.model_dump()
+    contracts = fields.pop("volume_24h")
+    fields.pop("volume_quote_24h")
+    current.ticker = SwapTickerV2(
+        **fields,
+        schema_version="okx-swap-ticker-v2",
+        volume_contracts_24h=contracts,
+        volume_currency_24h=D(1),
+    )
+    current.candles["5m"][-1] = current.candles["5m"][-1].model_copy(update=changes)
+    with pytest.raises(
+        ValueError,
+        match="swap_vwap_v2_volume_|NONFINITE_CANDLE_VALUE|swap_vwap_v2_turnover_price_outside_ohlc",
+    ):
+        analyze(current)

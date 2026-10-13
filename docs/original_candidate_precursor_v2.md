@@ -26,7 +26,9 @@ a new original candidate.
 The adapter runs `data_v2.evaluate_public_market_data_v2` and its independent
 verifier on the complete retained raw source. It then rebuilds market and
 analysis from the verified G1 source bytes. G1 uses the existing shared data
-math. There is no V1 executable quote or fabricated funding generation time.
+math. The source analysis version must equal the effective version for its
+ticker schema before routing or conditions; history metadata uses that same
+effective version. There is no V1 executable quote or fabricated funding generation time.
 The actual rate/upcoming `fundingTime` pair and its raw/profile/transport hashes
 are retained; the following forecast is distinct. Generation time and past
 first availability remain unknown.
@@ -58,7 +60,7 @@ An off-tick or out-of-zone entry cancels. No SL, TP or new trigger repairs it.
 | structure_reversal | Existing regime-admission evaluator and verifier, reversal permission, opposed-trend history |
 | volatility_expansion | Existing regime-admission evaluator and verifier, expansion HTF permission and compression history |
 | range_reversal | Existing neutral-range permission/replay and original range anchor zone |
-| liquidity_sweep_reversal | Existing sweep-history evaluator and verifier; actual Unknown/range-transition history retained |
+| liquidity_sweep_reversal | V1 sweep-history evaluator and verifier; current `SwapTickerV2` input is rejected pending a reviewed V2 policy/contract upgrade |
 
 Base predicate contexts retain score 85 and RR operand 2; history predicate
 contexts retain score 85 and RR operand 1. These are existing condition-context
@@ -67,10 +69,12 @@ portfolio risk and ledger revision remain unknown. Original required/veto
 failures, history codes and route diagnostics are preserved. There is no score
 adjustment or Unknown-to-Trend conversion.
 
-Sweep history evidence does not open V6 Stage C. An admitted history record can
-produce only an incomplete diagnostic original intent with
-`WAIT/sweep_stage_C_closed`. The co-confirmed event and unknown intrabar ordering
-remain visible. Full sweep qualification and protection selection do not run.
+The V1 sweep history evaluator remains a history-only diagnostic and does not
+open V6 Stage C. This precursor still pins its V1 policy, so a current
+`SwapTickerV2` source cannot inherit V1 admission or produce a sweep intent.
+The former V1 history result and its source-replay tests remain preserved;
+V2 precursor/contract integration needs separate review. Full sweep
+qualification and protection selection do not run.
 
 ## Receipt replay and bounded input handling
 

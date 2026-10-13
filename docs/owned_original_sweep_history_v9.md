@@ -6,6 +6,14 @@ and expiry. It deliberately returns `WAIT`/`DENY` because the sweep Stage C
 native qualification and later safety gates are not owned there. The older V1
 precursor and its `sweep_htf_policy_unspecified` result remain unchanged.
 
+The `SwapTickerV2` source now uses a distinct SWAP-VWAP-V2 sweep policy and
+receipt. This V9 owner and its precursor still pin V1, so a current V2 public
+SWAP capture is rejected before V9 inspection or intent derivation. A reviewed
+V2 precursor, admission contract, and owned V9 policy upgrade are pending;
+no V2 sweep acceptance is claimed. V1 readback consistency and stale-session
+rejection remain covered by separate source-independent tests, while the V1
+history evaluator keeps its original raw-source positive tests.
+
 `preflight_owned_sweep_history_v9` adds a distinct, read-only native inspection.
 It accepts source roots, instrument, policy and a controlled account session;
 there are no caller event, candidate, score, G12 receipt or PASS parameters.

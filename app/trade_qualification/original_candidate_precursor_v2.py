@@ -14,6 +14,7 @@ from fractions import Fraction
 from gc import get_referents
 from types import MappingProxyType
 
+from app.analysis.service import _version_for_ticker
 from app.domain.analysis import MultiTimeframeAnalysis
 from app.domain.market import MarketSnapshot
 from app.domain.source_primitives import decode
@@ -591,6 +592,11 @@ def _derive(
     analysis = MultiTimeframeAnalysis.model_validate_json(
         json.dumps(source["analysis"]), strict=True
     )
+    effective_analysis_version = _version_for_ticker(
+        policy.analysis_version, market.ticker
+    )
+    if analysis.version != effective_analysis_version:
+        _deny("precursor_v2_analysis_version_mismatch")
     with localcontext(Context(prec=100)):
         route = route_regime(analysis)
         value["route"] = {
@@ -630,7 +636,7 @@ def _derive(
                 "strategy": strategy,
                 "direction": direction,
                 "observed_at": created,
-                "analysis_version": policy.analysis_version,
+                "analysis_version": effective_analysis_version,
             }
             history = evaluate_regime_admission(market, **inputs)
             history = verify_regime_admission(history, market, **inputs)
@@ -648,7 +654,7 @@ def _derive(
                 "report_id": document["report_id"],
                 "direction": direction,
                 "observed_at": created,
-                "analysis_version": policy.analysis_version,
+                "analysis_version": effective_analysis_version,
             }
             sweep = evaluate_sweep_history_permission(market, **inputs)
             sweep = verify_sweep_history_permission(sweep, market, **inputs)

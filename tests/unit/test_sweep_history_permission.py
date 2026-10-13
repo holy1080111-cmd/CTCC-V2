@@ -6,9 +6,11 @@ from decimal import Decimal
 
 import pytest
 
+from app.domain.market import SwapTickerV2
 from app.trade_qualification import account_capture_journal as journal
 from app.trade_qualification import sweep_history_permission as module
 from app.trade_qualification.regime_admission import evaluate_regime_admission
+from app.trade_qualification.sweep_contract import derive_sweep_admission
 from tests.unit.test_qualification_regime_admission import OBSERVED, fixture
 
 D = Decimal
@@ -152,6 +154,49 @@ def test_actual_ohlc_proves_opposed_15m_and_neutral_htf_intersection(direction):
         )
     )
     assert not result.execution_authority and not result.source_authenticity_verified
+
+
+def test_swap_range_prefix_marks_v2_volume_policy_without_changing_legacy_context():
+    market = sweep_market()
+    baseline = module.evaluate_sweep_history_permission(market, **inputs())
+    old_value = json.loads(baseline.receipt_json)
+    old_context = old_value["range_context"]
+    assert baseline.evaluation_sha256 == (
+        "195b33742cc3af09f89c04349e31f41230734937e18d547879432ebee6f4bf1a"
+    )
+    assert module.POLICY_SHA256 == (
+        "abb0b422c2e5e0fa4c61596ebf9fb43aca57c2f13176f7ecc29770c4888f90ab"
+    )
+    assert old_value["schema_version"] == "ctcc.sweep_history_permission.v1"
+    assert old_value["analysis_version"] == inputs()["analysis_version"]
+    assert "vwap_policy" not in old_context
+    fields = market.ticker.model_dump()
+    contracts = fields.pop("volume_24h")
+    fields.pop("volume_quote_24h")
+    market.ticker = SwapTickerV2(
+        **fields,
+        schema_version="okx-swap-ticker-v2",
+        volume_contracts_24h=contracts,
+        volume_currency_24h=D(1),
+    )
+    for rows in market.candles.values():
+        for row in rows:
+            row.volume_quote = row.volume_currency * row.close
+    with pytest.raises(module.SweepHistoryPermissionError, match="inputs_invalid"):
+        module.evaluate_sweep_history_permission(market, **inputs())
+    with pytest.raises(module.SweepHistoryPermissionError, match="inputs_invalid"):
+        derive_sweep_admission(market, **inputs())
+    pinned = inputs(expected_policy_sha256=module.SWAP_V2_POLICY_SHA256)
+    changed = module.evaluate_sweep_history_permission(market, **pinned)
+    value = json.loads(changed.receipt_json)
+    context = value["range_context"]
+    assert value["schema_version"] == "ctcc.sweep_history_permission.v2"
+    assert value["policy_id"] == module.SWAP_V2_POLICY_ID
+    assert value["policy_sha256"] == module.SWAP_V2_POLICY_SHA256
+    assert value["policy_sha256"] != old_value["policy_sha256"]
+    assert value["analysis_version"] == (inputs()["analysis_version"] + "+swap-vwap-v2")
+    assert context["vwap_policy"] == "okx_swap_quote_over_base_v2"
+    assert module.verify_sweep_history_permission(changed, market, **pinned) == changed
 
 
 @pytest.mark.parametrize("direction", ("long", "short"))
@@ -319,6 +364,7 @@ def test_original_cutoff_cannot_renew_expired_or_missing_tail_event():
         {"direction": "neutral"},
         {"report_id": "bad report"},
         {"analysis_version": " wrong "},
+        {"analysis_version": "synthetic-sweep-permission-v1+swap-vwap-v2"},
         {"expected_policy_sha256": "0" * 64},
         {"expected_policy_sha256": True},
     ),

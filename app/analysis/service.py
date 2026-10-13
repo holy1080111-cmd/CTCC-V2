@@ -20,7 +20,7 @@ from app.domain.analysis import (
     MultiTimeframeAnalysis,
     TimeframeAnalysis,
 )
-from app.domain.market import Candle, MarketSnapshot
+from app.domain.market import Candle, MarketSnapshot, SwapTickerV2
 from app.indicators import (
     adx,
     atr,
@@ -30,6 +30,7 @@ from app.indicators import (
     ema,
     macd,
     rsi,
+    swap_vwap_v2,
     volume_ratio,
     vwap,
 )
@@ -44,6 +45,19 @@ from app.regime import classify_regime
 from app.structure import analyze_structure
 
 D = Decimal
+SWAP_VWAP_VERSION_SUFFIX = "+swap-vwap-v2"
+
+
+def _version_for_ticker(version: str, ticker) -> str:
+    if type(ticker) is not SwapTickerV2:
+        if version.endswith(SWAP_VWAP_VERSION_SUFFIX):
+            raise ValueError("swap VWAP version requires SwapTickerV2")
+        return version
+    if version.endswith(SWAP_VWAP_VERSION_SUFFIX):
+        return version
+    if len(version) + len(SWAP_VWAP_VERSION_SUFFIX) > 64:
+        raise ValueError("swap VWAP version exceeds analysis version limit")
+    return version + SWAP_VWAP_VERSION_SUFFIX
 
 
 def _q(value: Decimal | None, places: str = "0.00000001") -> Decimal | None:
@@ -63,7 +77,11 @@ def _volatility(atr_pct: Decimal | None) -> str:
 
 
 def analyze_timeframe(
-    timeframe: str, candles: list[Candle], quality
+    timeframe: str,
+    candles: list[Candle],
+    quality,
+    *,
+    swap_vwap_v2_enabled: bool = False,
 ) -> TimeframeAnalysis:
     confirmed = [c for c in candles if c.confirmed]
     if len(confirmed) < 30:
@@ -80,6 +98,11 @@ def analyze_timeframe(
     trend = causal_log_trend(closes)
     state = causal_state_estimate(closes)
     return_interval = causal_return_interval(closes)
+    computed_vwap = (
+        swap_vwap_v2(confirmed, 20) if swap_vwap_v2_enabled else vwap(confirmed, 20)
+    )
+    if swap_vwap_v2_enabled and computed_vwap is None:
+        raise ValueError("swap_vwap_v2_history_incomplete")
     indicators = IndicatorSnapshot(
         ema20=_q(e20),
         ema50=_q(e50),
@@ -91,7 +114,7 @@ def analyze_timeframe(
         macd_signal=_q(macd_signal),
         macd_histogram=_q(macd_hist),
         adx14=_q(adx(confirmed, 14)),
-        vwap=_q(vwap(confirmed, 20)),
+        vwap=_q(computed_vwap),
         volume_ratio20=_q(volume_ratio(confirmed, 20)),
         causal_trend=(
             CausalTrendSnapshot(
@@ -254,17 +277,38 @@ class AnalysisService:
         return self.analyze_snapshot(snapshot)
 
     def analyze_snapshot(self, snapshot: MarketSnapshot) -> MultiTimeframeAnalysis:
-        views = {
-            bar: analyze_timeframe(bar, snapshot.candles[bar], snapshot.quality[bar])
-            for bar in snapshot.candles
-        }
-        return _combine_analysis(
-            snapshot,
-            views,
-            snapshot.quality,
-            evaluated_at=datetime.now(UTC),
-            version=get_settings().app_version,
-        )
+        swap_volume = type(snapshot.ticker) is SwapTickerV2
+
+        def calculate():
+            views = {
+                bar: analyze_timeframe(
+                    bar,
+                    snapshot.candles[bar],
+                    snapshot.quality[bar],
+                    swap_vwap_v2_enabled=swap_volume,
+                )
+                for bar in snapshot.candles
+            }
+            return _combine_analysis(
+                snapshot,
+                views,
+                snapshot.quality,
+                evaluated_at=datetime.now(UTC),
+                version=_version_for_ticker(
+                    get_settings().app_version, snapshot.ticker
+                ),
+            )
+
+        if swap_volume:
+            with localcontext(
+                Context(
+                    prec=100,
+                    rounding=ROUND_HALF_EVEN,
+                    traps=[InvalidOperation, DivisionByZero, Overflow],
+                )
+            ):
+                return calculate()
+        return calculate()
 
 
 def _combine_analysis(snapshot, views, quality, *, evaluated_at, version):
@@ -345,6 +389,7 @@ def analyze_snapshot_at(
         traps=[InvalidOperation, DivisionByZero, Overflow],
     )
     with localcontext(context):
+        swap_volume = type(snapshot.ticker) is SwapTickerV2
         for bar in ("4H", "1H", "15m", "5m"):
             rows = snapshot.candles[bar]
             report = inspect_candles_at(rows, bar, current_time=evaluated)
@@ -362,11 +407,13 @@ def analyze_snapshot_at(
                     raise ValueError(f"{bar}: confirmed candle closed after capture")
                 normalized.append(copied)
             quality[bar] = report
-            views[bar] = analyze_timeframe(bar, normalized, report)
+            views[bar] = analyze_timeframe(
+                bar, normalized, report, swap_vwap_v2_enabled=swap_volume
+            )
         return _combine_analysis(
             snapshot,
             views,
             quality,
             evaluated_at=evaluated,
-            version=version,
+            version=_version_for_ticker(version, snapshot.ticker),
         )

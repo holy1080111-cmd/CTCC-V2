@@ -230,6 +230,9 @@ def test_nested_unexpected_serializer_rejected_before_callback():
 
 def v2_engine_source(direction):
     source = engine_source(direction)
+    for rows in source.market.candles.values():
+        for candle in rows:
+            candle.volume_quote = candle.volume_currency * candle.close
     values = source.market.ticker.model_dump()
     contracts = values.pop("volume_24h")
     values.pop("volume_quote_24h")

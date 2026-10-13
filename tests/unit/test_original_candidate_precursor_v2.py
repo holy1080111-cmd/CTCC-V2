@@ -61,6 +61,11 @@ HISTORY_CASES = tuple(
 
 
 def v2_market(market):
+    # This synthetic source is declared before raw capture. Its reported SWAP
+    # quote turnover must imply a trade price inside each candle's OHLC.
+    for rows in market.candles.values():
+        for row in rows:
+            row.volume_quote = row.volume_currency * row.close
     values = market.ticker.model_dump()
     if type(market.ticker) is not SwapTickerV2:
         contracts = values.pop("volume_24h")
@@ -322,6 +327,23 @@ def test_preregistered_bytes_and_closed_explicit_api():
         )
 
 
+def test_g1_analysis_version_mismatch_stops_before_route(captured, monkeypatch):
+    _, diagnostic, packet = captured
+    monkeypatch.setattr(
+        module, "_version_for_ticker", lambda *_args: "forged-analysis-version"
+    )
+
+    def route_forbidden(*_args):
+        pytest.fail("mismatched G1 analysis cannot reach route or conditions")
+
+    monkeypatch.setattr(module, "route_regime", route_forbidden)
+    with pytest.raises(
+        module.OriginalCandidatePrecursorV2Error,
+        match="precursor_v2_analysis_version_mismatch",
+    ):
+        derive(diagnostic, packet)
+
+
 def test_real_raw_g1_fixes_original_intent_and_retains_actual_funding_pair(
     captured, passing
 ):
@@ -493,6 +515,15 @@ def test_fixed_catalog_dispatch_keeps_actual_source_failures(captured, strategy)
 
 def test_actual_history_routes_keep_detection_and_stage_c_closed(history_captured):
     strategy, direction, diagnostic, packet = history_captured
+    if strategy == "liquidity_sweep_reversal":
+        # This V2 owner still pins the V1 sweep policy. A SWAP-VWAP-V2 source
+        # cannot inherit the old admission contract or reach Stage C.
+        with pytest.raises(
+            module.OriginalCandidatePrecursorV2Error,
+            match="precursor_v2_source_invalid",
+        ):
+            derive(diagnostic, packet, strategy=strategy)
+        return
     result = derive(diagnostic, packet, strategy=strategy)
     value = assert_closed_diagnostic(result)
     assert result.intent is not None, value["code"]
@@ -500,15 +531,7 @@ def test_actual_history_routes_keep_detection_and_stage_c_closed(history_capture
     assert value["event_prefix_witness"] and value["timeline"]
     assert value["detection"]["source_sha256"] == value["g1"]["source_sha256"]
     assert verify(result, diagnostic, packet, strategy=strategy) == result
-    if strategy == "liquidity_sweep_reversal":
-        assert value["code"] == "sweep_stage_C_closed"
-        assert value["route"]["regime"] == "Unknown"
-        assert value["route"]["fail_codes"] == ["range_transition_history_missing"]
-        assert value["history_admission"]["permission_scope"] == "history_evidence_only"
-        assert value["history_admission"]["complete_path_verified"] is False
-        assert value["history_admission"]["admitted"] is True
-        assert dict(value["detection"]["setup_basis"])["intrabar_sequence"] == "unknown"
-    elif strategy == "range_reversal":
+    if strategy == "range_reversal":
         assert value["range_permission_replay_sha256"] is not None
         assert value["history_admission"] is None
     else:
@@ -517,24 +540,23 @@ def test_actual_history_routes_keep_detection_and_stage_c_closed(history_capture
 
 
 @pytest.mark.parametrize("direction", ["long", "short"])
-def test_original_sweep_outside_quote_cancels_without_repair(direction, tmp_path):
+def test_original_sweep_v2_rejects_legacy_policy_before_outside_quote(
+    direction, tmp_path
+):
     source = history_raw_source(
         "liquidity_sweep_reversal", direction, sweep_scenario="original_outside"
     )
     declared_funding = declared_history_funding_row(source)
     diagnostic = capture_raw_source(source, tmp_path, declared_funding=declared_funding)
-    result = derive(
-        diagnostic, base_fixture.account_source(), strategy="liquidity_sweep_reversal"
-    )
-    value = assert_closed_diagnostic(result)
-    assert value["code"] == "fixed_initial_entry_outside_original_zone"
-    assert value["action"] == "CANCEL" and result.intent is None
-    assert value["history_admission"]["admitted"] is True
-    assert value["route"]["regime"] == "Unknown"
-    assert Decimal(value["initial_entry"]) == getattr(
-        diagnostic.context.quote.ticker, "ask" if direction == "long" else "bid"
-    )
-    assert value["zone"] is not None and value["event_key"] is not None
+    with pytest.raises(
+        module.OriginalCandidatePrecursorV2Error,
+        match="precursor_v2_source_invalid",
+    ):
+        derive(
+            diagnostic,
+            base_fixture.account_source(),
+            strategy="liquidity_sweep_reversal",
+        )
 
 
 def test_actual_neutral_raw_history_cannot_be_relabelled_as_trend(tmp_path):
@@ -550,6 +572,7 @@ def test_actual_neutral_raw_history_cannot_be_relabelled_as_trend(tmp_path):
                     "high": D("100.1"),
                     "low": D("99.9"),
                     "close": D(100),
+                    "volume_quote": row.volume_currency * D(100),
                 }
             )
             for row in rows

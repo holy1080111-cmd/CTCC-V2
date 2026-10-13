@@ -1,5 +1,13 @@
 from collections.abc import Sequence
-from decimal import Decimal
+from decimal import (
+    ROUND_HALF_EVEN,
+    Context,
+    Decimal,
+    DivisionByZero,
+    InvalidOperation,
+    Overflow,
+    localcontext,
+)
 from itertools import pairwise
 
 from app.domain.market import Candle
@@ -136,6 +144,7 @@ def adx(candles: Sequence[Candle], period: int = 14) -> Decimal | None:
 
 
 def vwap(candles: Sequence[Candle], period: int = 20) -> Decimal | None:
+    """Historical V1 indicator; its stored signal/replay semantics are frozen."""
     if len(candles) < period:
         return None
     subset = candles[-period:]
@@ -152,6 +161,53 @@ def vwap(candles: Sequence[Candle], period: int = 20) -> Decimal | None:
         D("0"),
     )
     return weighted / total_volume
+
+
+def swap_vwap_v2(candles: Sequence[Candle], period: int = 20) -> Decimal | None:
+    """OKX SWAP VWAP from reported quote turnover divided by base quantity.
+
+    A zero/zero/zero bar contains no trades. Missing or contradictory volume
+    cannot be replaced with a contract-weighted or typical-price estimate.
+    """
+    if period <= 0 or len(candles) < period:
+        return None
+    with localcontext(
+        Context(
+            prec=100,
+            rounding=ROUND_HALF_EVEN,
+            traps=[InvalidOperation, DivisionByZero, Overflow],
+        )
+    ):
+        base_total = D("0")
+        quote_total = D("0")
+        for candle in candles[-period:]:
+            contracts = candle.volume_contracts
+            base = candle.volume_currency
+            quote = candle.volume_quote
+            if any(
+                type(value) is not Decimal or not value.is_finite() or value < 0
+                for value in (contracts, base, quote)
+            ):
+                raise ValueError("swap_vwap_v2_volume_invalid")
+            if (contracts == 0) != (base == 0) or (base == 0) != (quote == 0):
+                raise ValueError("swap_vwap_v2_volume_inconsistent")
+            prices = (candle.open, candle.high, candle.low, candle.close)
+            if (
+                any(
+                    type(price) is not Decimal or not price.is_finite() or price <= 0
+                    for price in prices
+                )
+                or candle.high < max(candle.open, candle.close)
+                or candle.low > min(candle.open, candle.close)
+            ):
+                raise ValueError("swap_vwap_v2_ohlc_invalid")
+            if base > 0 and not candle.low <= quote / base <= candle.high:
+                raise ValueError("swap_vwap_v2_turnover_price_outside_ohlc")
+            base_total += base
+            quote_total += quote
+        if base_total <= 0:
+            raise ValueError("swap_vwap_v2_total_base_missing")
+        return quote_total / base_total
 
 
 def volume_ratio(candles: Sequence[Candle], period: int = 20) -> Decimal | None:

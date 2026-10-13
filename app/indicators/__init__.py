@@ -8,7 +8,17 @@ from app.indicators.conformal_return import (
     CausalReturnIntervalEstimate,
     causal_return_interval,
 )
-from app.indicators.core import adx, atr, ema, macd, rsi, sma, volume_ratio, vwap
+from app.indicators.core import (
+    adx,
+    atr,
+    ema,
+    macd,
+    rsi,
+    sma,
+    swap_vwap_v2,
+    volume_ratio,
+    vwap,
+)
 
 __all__ = [
     "CausalReturnIntervalEstimate",
@@ -24,6 +34,7 @@ __all__ = [
     "macd",
     "rsi",
     "sma",
+    "swap_vwap_v2",
     "volume_ratio",
     "vwap",
 ]

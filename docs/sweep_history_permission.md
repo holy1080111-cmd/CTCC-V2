@@ -14,6 +14,24 @@ Preregistered policy SHA256:
 This was computed from static source literals without importing runtime code;
 the runtime canonical digest must match during root validation.
 
+An explicit `SwapTickerV2` uses a separate
+`ctcc-sweep-history-protection-swap-vwap-v2` policy and
+`ctcc.sweep_history_permission.v2` receipt. Its policy pins exchange-reported
+20-bar quote-turnover/base-quantity VWAP, rejects each nonzero candle whose
+implied trade price is outside its source low/high, and records the effective
+`+swap-vwap-v2` analysis version. Its SHA256 must be passed as the expected
+policy pin; the V1 default cannot silently select it. The historical V1 policy
+bytes, receipt schema, analysis version, and replay hash remain unchanged for
+the legacy `Ticker`; a V1 caller cannot claim the V2 analysis-version suffix.
+The existing downstream `SweepHistoryAdmissionRecord` V1
+contract accepts only the V1 policy and schema, so it rejects V2 SWAP history
+until a separately reviewed V2 admission contract and its owner are upgraded.
+The current V2 original-candidate precursor and owned V9 sweep boundary still
+pin the V1 sweep policy. They therefore reject the V2 SWAP strategy before
+creating an intent. A future reviewed V2 precursor/admission contract is
+required before this strategy can be accepted from the V2 public source.
+Neither receipt has order authority.
+
 P is the original 15m setup open (the previous 15m close), S its close, T the
 original 5m trigger close, and C the current declared decision cutoff. Four valid
 closed histories must reach each applicable cutoff with at least 200 rows.

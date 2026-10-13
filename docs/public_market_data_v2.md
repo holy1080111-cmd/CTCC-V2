@@ -22,6 +22,17 @@ insufficient for V2 source admission. The legacy funding tuple now pairs
 currency; ticker `vol24h` is contracts, `volCcy24h` is base currency, and ticker
 quote turnover remains unknown. These units follow the
 [OKX market-data definitions](https://app.okx.com/docs-v5/en/#order-book-trading-market-data-get-candlesticks).
+Analysis over an explicit `SwapTickerV2` computes 20-bar SWAP VWAP as
+`sum(volCcyQuote) / sum(volCcy)` and marks its output version with
+`+swap-vwap-v2`. A zero-volume bar is allowed only when contracts, base, and
+quote volumes are all zero; incomplete, contradictory, nonfinite, or all-zero
+window volumes reject analysis. Each nonzero candle's reported quote/base
+price must also lie within that same candle's finite, valid low/high without
+an inferred rounding allowance or substitute price. The historical unversioned
+`Ticker` VWAP and
+its replay hashes remain unchanged. This indicator correction does not grant
+source authenticity, G1 completion, or order authority; any sealed candidate
+using the old formula needs a new candidate version and validation.
 The older client still retries transient/API failures, sorts candles, and has
 unrelated optional-field zero defaults. It retains no raw-byte, causal clock,
 freshness or exact Demo-origin proof. It cannot supply R5 trusted-source or

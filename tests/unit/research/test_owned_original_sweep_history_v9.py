@@ -9,6 +9,9 @@ from app.domain.source_primitives import canonical, decode, sha
 from app.trade_qualification import account_native_runtime as account_native
 from app.trade_qualification import original_source_coordinator_v2 as original
 from app.trade_qualification import owned_original_sweep_history_v9 as boundary
+from app.trade_qualification.original_candidate_precursor_v2 import (
+    OriginalCandidatePrecursorV2Error,
+)
 from app.trade_qualification.sweep_history_permission import POLICY_SHA256
 from tests.unit import test_original_candidate_policy as base_fixture
 from tests.unit.research.test_owned_original_candidate_boundary_v5 import (
@@ -34,9 +37,7 @@ def captured(request, tmp_path_factory):
         declared_funding=declared_history_funding_row(source),
     )
     packet = base_fixture.account_source()
-    derived = derive(diagnostic, packet, strategy="liquidity_sweep_reversal")
-    assert derived.intent is not None
-    return diagnostic, packet, derived
+    return diagnostic, packet
 
 
 def _inspect(diagnostic, packet, derived, **changes):
@@ -83,51 +84,84 @@ def _handoff(diagnostic, packet, derived, inner):
     )
 
 
-def test_owned_replay_pins_v6_permission_original_event_and_unknown_pit(captured):
-    diagnostic, packet, derived = captured
-    first = _inspect(diagnostic, packet, derived)
-    assert first == _inspect(diagnostic, packet, derived)
-    inner = decode(first)
-    source = json.loads(derived.receipt_json)
-    assert inner["sweep_policy_sha256"] == POLICY_SHA256
-    assert inner["sweep_permission_sha256"] == sha(
-        canonical(source["history_admission"])
-    )
-    assert inner["event_key_sha256"] == source["event_key"]
-    assert inner["intent_sha256"] == sha(canonical(source["intent"]))
-    assert inner["sweep_admitted"] is True
-    assert inner["historical_first_availability_verified"] is False
-    assert inner["admission"] == "DENY"
-    assert inner["execution_authority"] is False
-    handoff, controlled = _handoff(diagnostic, packet, derived, first)
-    result = boundary._readback_owned_sweep_handoff_v9(handoff, controlled)
-    outer = decode(result.receipt_json)
-    assert outer["code"] == "sweep_history_observed_wait_pit"
-    assert outer["sweep_inspection_sha256"] == sha(first)
-    assert outer["intent_sha256"] == inner["intent_sha256"]
-    assert outer["historical_first_availability_verified"] is False
-    assert result.admission == "DENY" and result.execution_authority is False
+def _synthetic_v1_consistency_handoff():
+    # Direct V9 readback test only: these fixed hashes are not raw-source proof.
+    pin = "a" * 64
+    outer = decode(_inspected_precursor_receipt(pin).receipt_json)
+    outer["precursor_code"] = "sweep_stage_C_closed"
+    original_receipt = original.InitialOwnedPrecursorDiagnosticV4(canonical(outer))
+    inner = {
+        "schema_version": "ctcc.owned_original_sweep_history_inspection.v9",
+        "precursor_receipt_sha256": outer["precursor_receipt_sha256"],
+        "public_packet_sha256": outer["public_packet_sha256"],
+        "account_packet_sha256": outer["account_packet_sha256"],
+        "account_plan_sha256": pin,
+        "g1_evaluation_sha256": outer["g1_result_sha256"],
+        "g1_source_sha256": outer["g1_source_sha256"],
+        "sweep_policy_sha256": POLICY_SHA256,
+        "sweep_permission_sha256": "4" * 64,
+        "sweep_code": "passed",
+        "sweep_admitted": True,
+        "event_key_sha256": "5" * 64,
+        "intent_sha256": outer["precursor_intent_sha256"],
+        "event_expires_at": "2026-09-12T10:01:00+00:00",
+        "event_prefix_witness_sha256": "6" * 64,
+        "admission": "DENY",
+        **{name: False for name in boundary._FALSE_FIELDS},
+    }
+    handoff = original._OwnedSweepHistoryHandoffV9(original_receipt, canonical(inner))
+    return handoff, SimpleNamespace(_used=True, _pin=pin)
 
 
-def test_changed_source_pin_and_late_forged_permission_fail_closed(captured):
-    diagnostic, packet, derived = captured
-    with pytest.raises(original.OriginalSourceCoordinatorError):
-        _inspect(diagnostic, packet, derived, public_pin="0" * 64)
-    first = _inspect(diagnostic, packet, derived)
-    handoff, controlled = _handoff(diagnostic, packet, derived, first)
-    changed = dict(decode(first), execution_authority=True)
+def test_v1_owned_readback_consistency_rejects_forgery_and_stale_session():
+    handoff, controlled = _synthetic_v1_consistency_handoff()
+    checked = boundary._readback_owned_sweep_handoff_v9(handoff, controlled)
+    assert checked.admission == "DENY" and checked.execution_authority is False
+    assert decode(checked.receipt_json)["sweep_policy_sha256"] == POLICY_SHA256
+    forged = dict(decode(handoff.sweep_receipt_json), execution_authority=True)
     with pytest.raises(boundary.OwnedOriginalSweepHistoryError):
         boundary._readback_owned_sweep_handoff_v9(
-            original._OwnedSweepHistoryHandoffV9(handoff.original, canonical(changed)),
+            original._OwnedSweepHistoryHandoffV9(handoff.original, canonical(forged)),
             controlled,
         )
     controlled._used = False
-    with pytest.raises(boundary.OwnedOriginalSweepHistoryError):
+    with pytest.raises(
+        boundary.OwnedOriginalSweepHistoryError, match="session_mismatch"
+    ):
+        boundary._readback_owned_sweep_handoff_v9(handoff, controlled)
+    controlled._used = True
+    controlled._pin = "0" * 64
+    with pytest.raises(
+        boundary.OwnedOriginalSweepHistoryError, match="session_mismatch"
+    ):
         boundary._readback_owned_sweep_handoff_v9(handoff, controlled)
 
 
+def test_owned_v9_cannot_inherit_v1_permission_for_swap_vwap_v2(captured):
+    diagnostic, packet = captured
+    with pytest.raises(
+        OriginalCandidatePrecursorV2Error, match="precursor_v2_source_invalid"
+    ):
+        derive(diagnostic, packet, strategy="liquidity_sweep_reversal")
+
+
+def test_changed_source_pin_cannot_rescue_v1_owned_sweep(captured):
+    diagnostic, packet = captured
+    with pytest.raises(OriginalCandidatePrecursorV2Error):
+        derive(
+            diagnostic,
+            packet,
+            strategy="liquidity_sweep_reversal",
+            expected_public_bundle_sha256="0" * 64,
+        )
+    with pytest.raises(
+        OriginalCandidatePrecursorV2Error, match="precursor_v2_source_invalid"
+    ):
+        derive(diagnostic, packet, strategy="liquidity_sweep_reversal")
+
+
 @pytest.mark.parametrize("direction", ("long", "short"))
-def test_real_history_cannot_rescue_outside_original_entry_zone(direction, tmp_path):
+def test_swap_v2_owned_sweep_rejects_before_outside_entry_zone(direction, tmp_path):
     source = history_raw_source(
         "liquidity_sweep_reversal", direction, sweep_scenario="original_outside"
     )
@@ -137,19 +171,10 @@ def test_real_history_cannot_rescue_outside_original_entry_zone(direction, tmp_p
         declared_funding=declared_history_funding_row(source),
     )
     packet = base_fixture.account_source()
-    derived = derive(diagnostic, packet, strategy="liquidity_sweep_reversal")
-    precursor = json.loads(derived.receipt_json)
-    assert precursor["action"] == "CANCEL"
-    assert precursor["code"] == "fixed_initial_entry_outside_original_zone"
-    inner = _inspect(diagnostic, packet, derived)
-    assert decode(inner)["sweep_admitted"] is True
-    assert decode(inner)["intent_sha256"] is None
-    handoff, controlled = _handoff(diagnostic, packet, derived, inner)
-    result = boundary._readback_owned_sweep_handoff_v9(handoff, controlled)
-    record = decode(result.receipt_json)
-    assert record["code"] == "sweep_history_observed_no_intent"
-    assert record["intent_sha256"] is None
-    assert result.admission == "DENY" and result.execution_authority is False
+    with pytest.raises(
+        OriginalCandidatePrecursorV2Error, match="precursor_v2_source_invalid"
+    ):
+        derive(diagnostic, packet, strategy="liquidity_sweep_reversal")
 
 
 @pytest.mark.asyncio

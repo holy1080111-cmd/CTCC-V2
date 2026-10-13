@@ -7,7 +7,13 @@ from datetime import UTC, datetime, timedelta
 from decimal import Context, Decimal, localcontext
 
 from app.analysis.mathematical_core import mathematical_core_snapshot
-from app.analysis.service import analyze_snapshot_at, analyze_timeframe
+from app.analysis.service import (
+    SWAP_VWAP_VERSION_SUFFIX,
+    _version_for_ticker,
+    analyze_snapshot_at,
+    analyze_timeframe,
+)
+from app.domain.market import MarketSnapshot, SwapTickerV2
 from app.exchange.okx.symbols import to_canonical_symbol
 from app.market.quality.candles import (
     BAR_SECONDS,
@@ -57,6 +63,17 @@ POLICY_BYTES = journal.canonical(
     }
 )
 POLICY_SHA256 = journal.digest(POLICY_BYTES)
+SWAP_V2_POLICY_ID = "ctcc-sweep-history-protection-swap-vwap-v2"
+SWAP_V2_POLICY_BYTES = journal.canonical(
+    {
+        **json.loads(POLICY_BYTES),
+        "policy_id": SWAP_V2_POLICY_ID,
+        "vwap_source_units": "OKX_SWAP_volCcyQuote_over_volCcy",
+        "nonzero_turnover_price": "strictly_within_source_candle_low_high",
+        "analysis_version_suffix": SWAP_VWAP_VERSION_SUFFIX,
+    }
+)
+SWAP_V2_POLICY_SHA256 = journal.digest(SWAP_V2_POLICY_BYTES)
 _MAX_RECEIPT = 4 * 1024 * 1024
 _FRAMES = ("4H", "1H", "15m", "5m")
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
@@ -166,9 +183,13 @@ def _range_context(market, setup_open):
         )
     if not _frames_complete(frames, setup_open):
         return "prior_range_prefix_incomplete", {"lineage": lineage}
+    swap_volume = type(market.ticker) is SwapTickerV2
     views = {
         tf: analyze_timeframe(
-            tf, frames[tf], inspect_candles_at(frames[tf], tf, current_time=setup_open)
+            tf,
+            frames[tf],
+            inspect_candles_at(frames[tf], tf, current_time=setup_open),
+            swap_vwap_v2_enabled=swap_volume,
         )
         for tf in _FRAMES
     }
@@ -177,6 +198,7 @@ def _range_context(market, setup_open):
     bounds = _range_bounds(views["15m"])
     context = {
         "record_kind": "candle_prefix_range_context_not_captured_market_snapshot",
+        **({"vwap_policy": "okx_swap_quote_over_base_v2"} if swap_volume else {}),
         "cutoff": setup_open.isoformat(),
         "actual_current_source_received_at": market.received_at.isoformat(),
         "past_first_available_at": None,
@@ -271,22 +293,40 @@ def evaluate_sweep_history_permission(
         or not 1 <= len(analysis_version) <= 64
         or analysis_version.strip() != analysis_version
         or type(expected_policy_sha256) is not str
-        or expected_policy_sha256 != POLICY_SHA256
     ):
         raise SweepHistoryPermissionError("sweep_policy_inputs_invalid")
+    fields = (
+        object.__getattribute__(market, "__dict__")
+        if type(market) is MarketSnapshot
+        else None
+    )
+    ticker = fields.get("ticker") if type(fields) is dict else None
+    swap_volume = type(ticker) is SwapTickerV2
+    policy_id = SWAP_V2_POLICY_ID if swap_volume else POLICY_ID
+    policy_sha256 = SWAP_V2_POLICY_SHA256 if swap_volume else POLICY_SHA256
+    if expected_policy_sha256 != policy_sha256:
+        raise SweepHistoryPermissionError("sweep_policy_inputs_invalid")
+    try:
+        effective_analysis_version = _version_for_ticker(analysis_version, ticker)
+    except ValueError:
+        raise SweepHistoryPermissionError("sweep_policy_inputs_invalid") from None
     try:
         now = _utc(observed_at).astimezone(UTC)
     except (ValueError, TypeError, OverflowError):
         raise SweepHistoryPermissionError("sweep_policy_clock_invalid") from None
     value = {
-        "schema_version": "ctcc.sweep_history_permission.v1",
-        "policy_id": POLICY_ID,
-        "policy_sha256": POLICY_SHA256,
+        "schema_version": (
+            "ctcc.sweep_history_permission.v2"
+            if swap_volume
+            else "ctcc.sweep_history_permission.v1"
+        ),
+        "policy_id": policy_id,
+        "policy_sha256": policy_sha256,
         "report_id": report_id,
         "strategy": STRATEGY,
         "direction": direction,
         "observed_at": now.isoformat(),
-        "analysis_version": analysis_version,
+        "analysis_version": effective_analysis_version,
         "instrument_id": None,
         "source_sha256": None,
         "source_received_at": None,
@@ -331,6 +371,8 @@ def evaluate_sweep_history_permission(
             analysis = analyze_snapshot_at(
                 checked, evaluated_at=now, version=analysis_version
             )
+            if swap_volume and analysis.version != effective_analysis_version:
+                return finish("analysis_version_mismatch")
             _, _, _, source_sha = _copy_source(checked, analysis, now)
             route = route_regime(analysis)
             value.update(

@@ -5515,3 +5515,34 @@ evaluation time; two direct and ten adjacent G12/R7 cases passed. These are
 offline fail-closed corrections. The trusted Demo account, production
 `publish_and_recheck`, reservation/intent/submit, historical Gate 3/OOS,
 Demo/Live acceptance and final release remain unaccepted.
+
+## 2026-10-14 versioned SWAP VWAP correction pending exact-source validation
+
+An independent unit audit found that the historical indicator weighted each
+candle's typical price by quote turnover, which is not the exchange-reported
+SWAP volume-weighted price. The explicit `SwapTickerV2` analysis path now uses
+the fixed-context ratio `sum(volCcyQuote) / sum(volCcy)` over the same 20-bar
+window; the unversioned `Ticker` path and its old `vwap()` replay semantics are
+unchanged. Missing, contradictory, negative, nonfinite or all-zero-window
+amounts reject the V2 analysis rather than falling back to contracts. A
+nonzero candle whose quote/base implied price falls outside its recorded
+low--high also rejects analysis. The analysis version suffix and separate
+SWAP sweep policy ID/hash distinguish this interpretation from old evidence;
+the old V1 policy and fixed receipt bytes remain unchanged. The V1 precursor
+and V9 handoff reject V2 sweep, pending an independently reviewed V2 contract.
+The original-candidate precursor checks the exact G1 analysis version before
+strategy routing. This changes a descriptive signal, so any future sealed
+candidate must be evaluated under the new version; an old seal is not upgraded
+by this correction.
+
+The three principal test modules passed **77/77** locally with no skip,
+failure or error; the retained JUnit is
+`../../validation-results/swap-vwap-v2-final-focus-20261014.xml` (SHA256
+`974b14eacc1fce2fce3830e4259fa478e3dd436a3f2fcc2cffe3139a20da2c36`).
+Focused precursor, V9 handoff and bridge tests passed separately; they are
+not a complete local regression. A broader local run was stopped to avoid
+repeating the host's earlier thermal shutdown and is not counted as PASS.
+Ruff check, format and diff checks passed. The exact-source full CI for this
+follow-up is still required; the older `e66e34a` run does not validate these
+new files. Trusted R5 source, production G1--G12/R7/R6, Demo/Live, OOS and
+release acceptance remain **DENY/FAIL**.
