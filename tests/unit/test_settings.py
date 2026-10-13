@@ -307,6 +307,26 @@ def test_rejects_auto_trade() -> None:
         Settings(_env_file=None, auto_trade=True)
 
 
+def test_legacy_high_vol_overlay_defaults_off(monkeypatch) -> None:
+    monkeypatch.delenv("CTCC_DEMO_HIGH_VOL_MOMENTUM_V2", raising=False)
+    assert Settings(_env_file=None).ctcc_demo_high_vol_momentum_v2 is False
+
+
+def test_legacy_high_vol_overlay_rejected_when_enabled() -> None:
+    with pytest.raises(
+        ValidationError, match="CANONICAL_V2_DISPATCH_INTEGRATION_REQUIRED"
+    ):
+        Settings(_env_file=None, ctcc_demo_high_vol_momentum_v2=True)
+
+
+def test_legacy_high_vol_overlay_environment_rejected(monkeypatch) -> None:
+    monkeypatch.setenv("CTCC_DEMO_HIGH_VOL_MOMENTUM_V2", "true")
+    with pytest.raises(
+        ValidationError, match="CANONICAL_V2_DISPATCH_INTEGRATION_REQUIRED"
+    ):
+        Settings(_env_file=None)
+
+
 def test_rejects_live_mode() -> None:
     with pytest.raises(ValidationError):
         Settings(_env_file=None, trading_mode="live")

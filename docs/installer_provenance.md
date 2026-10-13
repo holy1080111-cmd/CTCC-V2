@@ -35,6 +35,11 @@ older image. Its strategy/protection changes require integration with the
 canonical qualification, post-publication recheck, reservation, and intent chain.
 The accepted final deployment must start disarmed and require fresh reconciliation.
 Until that work passes, install/upgrade/rollback acceptance remains unproven.
+The canonical settings model explicitly recognizes the older overlay variable
+`CTCC_DEMO_HIGH_VOL_MOMENTUM_V2`, defaults it to false, and rejects true with
+`CANONICAL_V2_DISPATCH_INTEGRATION_REQUIRED`. This prevents a carried-over
+installer flag from being silently ignored at canonical startup. It neither
+enables HighVol trading nor accepts the reviewed installer for deployment.
 
 The separate, default-off [HighVol failed-G2 diagnostic](high_vol_g2_sidecar.md)
 replays G1 source and an original event/timing pin without changing G2 or granting

@@ -222,6 +222,10 @@ class Settings(BaseSettings):
 
     # Explicitly armed OKX Demo automation. Never used for real trading.
     okx_demo_auto_execution: bool = False
+    # The September installer used this overlay flag for an older image. The
+    # canonical runtime has no qualified HighVol dispatch path; reject an
+    # attempted carry-over instead of silently ignoring the legacy flag.
+    ctcc_demo_high_vol_momentum_v2: bool = False
     okx_demo_scan_symbols: str = _REVIEWED_DEMO_SYMBOLS_CSV
     okx_demo_scan_interval_seconds: int = Field(default=300, ge=60, le=86_400)
     okx_demo_scan_initial_delay_seconds: int = Field(default=10, ge=0, le=600)
@@ -466,6 +470,8 @@ class Settings(BaseSettings):
                 "AUTO_TRADE is a legacy unsafe switch and must remain false; "
                 "use explicitly armed OKX_LIVE_AUTO_EXECUTION"
             )
+        if self.ctcc_demo_high_vol_momentum_v2:
+            raise ValueError("CANONICAL_V2_DISPATCH_INTEGRATION_REQUIRED")
 
         _validate_symbol_scope(
             "OKX_WS_SYMBOLS",
