@@ -5442,3 +5442,35 @@ closure authority. Its three PostgreSQL integration variants collected but
 were **skipped locally** without an isolated database; only a matching CI
 execution can validate them. None of these follow-up changes belongs to the
 `ba7d38c` archive or CI run until separately committed and checked.
+
+## 2026-10-14 6e3e8d3 source and Gate 3 receipt follow-up
+
+The previous follow-up is committed as `6e3e8d3d9e1222ab10b2ebe986077c1fc400db68`
+(tree `204899ec73a500bb0c72dbfdb77829c931d24bda`). Its exact source ZIP,
+complete-history Git bundle and independent manifest readback are retained in
+`../../validation-results/checkpoint-6e3e8d3-20261013/`; the 1,159 source
+manifest members matched. A matching 220-case local selection passed 217 and
+skipped three isolated-PostgreSQL variants because no local `DATABASE_URL` was
+available (JUnit SHA256
+`dade01b02e898e4021e3b67194dfac5afa2b79e83bcd9186cfeec5817c2b1279`).
+The exact-source [GitHub CI run 38427355946](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/38427355946)
+was still running at this review; no job result is borrowed as a final-source
+acceptance. The current tree has no Docker image digest, release or order write.
+
+The next local Gate 3 change rejects duplicate JSON object member names at any
+depth and nonstandard `NaN`/`Infinity` in the bounded, original acquisition
+receipt before model validation. It retains the exact original bytes for hashing.
+Its 13 focused cases passed (JUnit SHA256
+`20329343aa72c064e80209f3a57dbaf4afebf0556bf2f05e36c834814db8110d`).
+This is an integrity correction only: the historical archives were retrieved too
+late to establish point-in-time availability, and sealed OOS remains unaccepted.
+
+Read-only audits found no new authorization in the Demo account pagination,
+portfolio, leverage, or submit boundaries. Missing account history still denies
+portfolio authority; current Demo/Live private writes still deny at the final
+transport. The selected structural risk profile has a 300 USDT margin bucket,
+60% aggregate margin hard gate, 0.5% per-trade and 1% portfolio stop-risk caps,
+and 3/5/8/10/20x leverage ceilings. These are scoped offline findings, not
+Demo or Live acceptance. The original Notion specification's four real evidence
+examples remain 0/4; no synthetic example is counted. No group message or
+order was sent.

@@ -462,3 +462,24 @@ def test_original_receipt_hash_uses_the_same_single_parse_read(
     assert retained_bytes == original_bytes
     assert sha(retained_bytes) == sha(original_bytes)
     assert sha(retained_bytes) != sha((receipt.model_dump_json() + "\n").encode())
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b'{"request_id":"first","request_id":"second"}',
+        b'{"nested":{"status":"first","status":"second"}}',
+    ],
+)
+def test_original_receipt_rejects_duplicate_json_keys(
+    tmp_path: Path, payload: bytes
+) -> None:
+    (tmp_path / "receipt.json").write_bytes(payload)
+    with pytest.raises(ValueError, match="repeats a JSON key"):
+        read_acquisition_receipt_bytes(tmp_path, "receipt.json")
+
+
+def test_original_receipt_rejects_non_json_number(tmp_path: Path) -> None:
+    (tmp_path / "receipt.json").write_bytes(b'{"request_id":NaN}')
+    with pytest.raises(ValueError, match="non-JSON number"):
+        read_acquisition_receipt_bytes(tmp_path, "receipt.json")

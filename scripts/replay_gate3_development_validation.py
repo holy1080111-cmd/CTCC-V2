@@ -58,6 +58,19 @@ def digest(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def _unique_receipt_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    value: dict[str, object] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("acquisition receipt repeats a JSON key")
+        value[key] = item
+    return value
+
+
+def _reject_nonfinite_receipt_number(token: str) -> None:
+    raise ValueError(f"acquisition receipt contains non-JSON number {token}")
+
+
 def publish(root: Path, name: str, data: bytes) -> str:
     target = evidence_path(root, name)
     with target.open("xb") as stream:
@@ -83,7 +96,12 @@ def read_acquisition_receipt_bytes(
         payload = stream.read(MAX_EVIDENCE_BYTES + 1)
     if len(payload) != size or path.stat().st_size != size:
         raise ValueError("acquisition receipt changed during bounded read")
-    return ExternalArtifactAcquisitionReceipt.model_validate_json(payload), payload
+    decoded = json.loads(
+        payload,
+        object_pairs_hook=_unique_receipt_object,
+        parse_constant=_reject_nonfinite_receipt_number,
+    )
+    return ExternalArtifactAcquisitionReceipt.model_validate(decoded), payload
 
 
 def new_plan(public_plan: BinanceBatchPlan) -> ArchiveBatchPlan:
