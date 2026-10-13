@@ -15,6 +15,7 @@ from app.database.repositories.account_observation_index_typed import (
 from app.trade_qualification import account_capture_journal as journal
 from app.trade_qualification import account_history_query_verifier as query
 from app.trade_qualification import account_observation_index as observed
+from tests.durable_migration_fixtures import load_migration
 from tests.integration.test_account_observation_index_repository import (
     additional_capture,
     now,
@@ -29,6 +30,23 @@ from tests.integration.test_qualification_ledger_repository import (
 )
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
+
+
+async def test_db0040_rendered_batch_guard_compiles_in_postgresql(sandbox):
+    engine, _ = sandbox
+    guard = load_migration("0040")._batch_guard()
+    production = "public.account_observation_typed_batch_guard()"
+    probe = "public.account_observation_typed_batch_guard_syntax_probe()"
+    assert guard.count(production) == 1
+    async with engine.begin() as connection:
+        await connection.exec_driver_sql(guard.replace(production, probe, 1))
+        assert (
+            await connection.scalar(
+                text("SELECT to_regprocedure(:probe)").bindparams(probe=probe)
+            )
+            is not None
+        )
+        await connection.exec_driver_sql(f"DROP FUNCTION {probe}")
 
 
 async def test_old_b3_and_typed_b3_coexist_with_exact_original_source(

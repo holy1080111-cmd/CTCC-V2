@@ -1,6 +1,7 @@
 """DB0040 protects a separate typed B3 epoch without rewriting old evidence."""
 
 import importlib.util
+import re
 from pathlib import Path
 
 from app.database.repositories import account_observation_index_typed as persisted
@@ -69,6 +70,16 @@ def test_typed_migration_pins_separate_policies_and_source_time_domains():
     assert "j->>'fill_at'" in member
     assert "NEW.family='bills' AND NEW.fill_at IS NOT NULL" in member
     assert "'time_domain',NEW.time_domain" in member
+
+
+def test_typed_batch_guard_renders_nullable_predecessor_as_one_sql_operand():
+    guard = _migration()._batch_guard()
+    assert re.search(
+        r"a->>'previous_anchor_sha256' IS DISTINCT FROM\s+"
+        r"\(CASE WHEN prior\.sequence IS NULL THEN NULL\s+"
+        r"ELSE prior\.document_json::jsonb->>'anchor_sha256' END\)",
+        guard,
+    )
 
 
 def test_typed_migration_requires_contiguous_complete_members_and_is_append_only():

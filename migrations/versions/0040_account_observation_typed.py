@@ -113,8 +113,8 @@ def _batch_guard() -> str:
           OR a->>'current_source_membership_sha256' IS DISTINCT FROM j->>'source_membership_sha256'
           OR a->>'current_coverage_membership_sha256' IS DISTINCT FROM j->>'coverage_membership_sha256'
           OR a->>'previous_anchor_sha256' IS DISTINCT FROM
-             CASE WHEN prior.sequence IS NULL THEN NULL
-                  ELSE prior.document_json::jsonb->>'anchor_sha256' END
+             (CASE WHEN prior.sequence IS NULL THEN NULL
+                   ELSE prior.document_json::jsonb->>'anchor_sha256' END)
           OR (prior.sequence IS NOT NULL AND
               (prior.document_json::jsonb->>'policy_sha256' IS DISTINCT FROM '__PERSISTENCE_POLICY_SHA__'
                OR prior.document_json::jsonb->>'typed_policy_sha256' IS DISTINCT FROM '__TYPED_POLICY_SHA__'))
