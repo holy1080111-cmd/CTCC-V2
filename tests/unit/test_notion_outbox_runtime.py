@@ -168,6 +168,51 @@ async def test_native_crashed_dispatch_recovers_uncertain_without_post(tmp_path)
 
 
 @pytest.mark.asyncio
+async def test_page_created_before_finish_journal_failure_is_not_created_again(
+    tmp_path, monkeypatch
+):
+    clock = Clock()
+    outbox.enqueue(tmp_path, payload(), clock=clock)
+    handler, calls, created = recorder(tmp_path, clock)
+    directory = (
+        storage._WindowsDirectory if os.name == "nt" else storage._PosixDirectory
+    )
+    original_publish = directory.publish
+
+    def fail_finish(self, name, raw):
+        if self.path == tmp_path / f"{REPORT}.state" and name == "00000004.json":
+            raise PermissionError("synthetic finish journal refusal")
+        return original_publish(self, name, raw)
+
+    monkeypatch.setattr(directory, "publish", fail_finish)
+    worker = service(tmp_path, handler, clock)
+    assert await worker.tick() is None
+    assert worker.status == "paused"
+    assert worker.last_code == "notion_outbox_reconciliation_required"
+    assert REPORT in created
+    assert sum(request.url.path == "/v1/pages" for request in calls) == 1
+    assert calls[-1].url.path.endswith("/query")  # Created page was read back.
+    view = outbox.read_job(tmp_path, REPORT, clock=clock)
+    assert view.status == "dispatching" and len(view.events) == 3
+    journal = tmp_path / f"{REPORT}.state"
+    saved = {path.name: path.read_bytes() for path in journal.iterdir()}
+    assert set(saved) == {"00000001.json", "00000002.json", "00000003.json"}
+
+    monkeypatch.setattr(directory, "publish", original_publish)
+    clock.advance(61)
+    request_count = len(calls)
+    restarted = service(tmp_path, handler, clock)
+    assert await restarted.tick() is None
+    assert restarted.status == "paused"
+    assert restarted.last_code == "notion_outbox_reconciliation_required"
+    assert len(calls) == request_count
+    recovered = outbox.read_job(tmp_path, REPORT, clock=clock)
+    assert recovered.status == "uncertain"
+    assert recovered.head.action == "recover" and len(recovered.events) == 4
+    assert all((journal / name).read_bytes() == raw for name, raw in saved.items())
+
+
+@pytest.mark.asyncio
 async def test_native_precreate_failure_retry_is_due_then_delivered(tmp_path):
     clock = Clock()
     outbox.enqueue(tmp_path, payload(), clock=clock)

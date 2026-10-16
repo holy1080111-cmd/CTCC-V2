@@ -311,6 +311,76 @@ async def test_observation_soak_completes_without_execute() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("environment", ("test", "production"))
+async def test_execute_soak_public_service_entry_denies_before_preflight(
+    environment: str,
+) -> None:
+    automation = FakeAutomation(armed=True)
+    service = DemoObservabilityService(
+        automation=automation,
+        settings=execute_settings(environment=environment),
+        repository=None,
+        realtime_client=FakeRealtime(),
+        demo_service=FakeDemoService(exchange_snapshot()),
+    )
+    with pytest.raises(
+        DemoObservabilityError,
+        match="^demo_qualified_dispatch_coordinator_unavailable$",
+    ):
+        await service.start_soak(
+            DemoSoakStartRequest(
+                execute=True,
+                duration_minutes=1,
+                interval_seconds=60,
+                max_runs=1,
+                confirmation="START_DEMO_SOAK_EXECUTE",
+            )
+        )
+    assert service.soak_running is False
+    assert automation.status_calls == 0
+    assert automation.runs == []
+
+
+@pytest.mark.asyncio
+async def test_synthetic_soak_helper_denies_outside_test_environment() -> None:
+    service = DemoObservabilityService(
+        automation=FakeAutomation(armed=True),
+        settings=execute_settings(environment="production"),
+        repository=None,
+        realtime_client=FakeRealtime(),
+        demo_service=FakeDemoService(exchange_snapshot()),
+    )
+    with pytest.raises(
+        DemoObservabilityError,
+        match="^demo_qualified_dispatch_coordinator_unavailable$",
+    ):
+        await service._start_soak_synthetic_session(
+            DemoSoakStartRequest(
+                execute=True,
+                duration_minutes=1,
+                interval_seconds=60,
+                max_runs=1,
+                confirmation="START_DEMO_SOAK_EXECUTE",
+            )
+        )
+    assert service.soak_running is False
+
+
+@pytest.mark.asyncio
+async def test_runtime_execute_preflight_reports_qualification_unavailable() -> None:
+    service = DemoObservabilityService(
+        automation=FakeAutomation(armed=True),
+        settings=execute_settings(environment="production"),
+        repository=None,
+        realtime_client=FakeRealtime(),
+        demo_service=FakeDemoService(exchange_snapshot()),
+    )
+    preflight = await service.execute_preflight()
+    assert preflight.ready is False
+    assert "demo_qualified_dispatch_coordinator_unavailable" in preflight.blockers
+
+
+@pytest.mark.asyncio
 async def test_execute_soak_requires_explicit_setting() -> None:
     service = DemoObservabilityService(
         automation=FakeAutomation(armed=True),
@@ -321,7 +391,7 @@ async def test_execute_soak_requires_explicit_setting() -> None:
     )
     await service.recover()
     with pytest.raises(DemoObservabilityError, match="execute_soak_preflight_failed"):
-        await service.start_soak(
+        await service._start_soak_synthetic_session(
             DemoSoakStartRequest(
                 execute=True,
                 duration_minutes=1,
@@ -403,7 +473,7 @@ async def test_execute_soak_auto_disarms_after_clean_run() -> None:
         demo_service=FakeDemoService(exchange_snapshot()),
     )
     await service.recover()
-    await service.start_soak(
+    await service._start_soak_synthetic_session(
         DemoSoakStartRequest(
             execute=True,
             duration_minutes=1,
@@ -436,7 +506,7 @@ async def test_zero_fill_attempt_consumes_execute_soak_submission_limit() -> Non
         demo_service=FakeDemoService(exchange_snapshot()),
     )
     await service.recover()
-    await service.start_soak(
+    await service._start_soak_synthetic_session(
         DemoSoakStartRequest(
             execute=True,
             duration_minutes=1,
@@ -471,7 +541,7 @@ async def test_unprotected_position_safety_stops_and_engages_emergency_stop() ->
         ),
     )
     await service.recover()
-    await service.start_soak(
+    await service._start_soak_synthetic_session(
         DemoSoakStartRequest(
             execute=True,
             duration_minutes=1,
@@ -504,7 +574,7 @@ async def test_protected_position_is_not_safety_stopped() -> None:
         ),
     )
     await service.recover()
-    await service.start_soak(
+    await service._start_soak_synthetic_session(
         DemoSoakStartRequest(
             execute=True,
             duration_minutes=1,
@@ -537,7 +607,7 @@ async def test_execute_soak_defensively_stops_over_limit_automation_result() -> 
         demo_service=FakeDemoService(exchange_snapshot(), exchange_snapshot()),
     )
     await service.recover()
-    await service.start_soak(
+    await service._start_soak_synthetic_session(
         DemoSoakStartRequest(
             execute=True,
             duration_minutes=1,
@@ -570,7 +640,7 @@ async def test_execute_soak_loss_limit_safety_stops() -> None:
         ),
     )
     await service.recover()
-    await service.start_soak(
+    await service._start_soak_synthetic_session(
         DemoSoakStartRequest(
             execute=True,
             duration_minutes=1,
@@ -604,7 +674,7 @@ async def test_execute_soak_stops_if_equity_basis_changes() -> None:
         ),
     )
     await service.recover()
-    await service.start_soak(
+    await service._start_soak_synthetic_session(
         DemoSoakStartRequest(
             execute=True,
             duration_minutes=1,

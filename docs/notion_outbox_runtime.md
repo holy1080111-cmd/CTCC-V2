@@ -167,3 +167,8 @@ create, retry timing, fair scheduling, preserved orphan journals, exact schema
 binding, private-file permissions and API lifecycle isolation. They do not claim
 real Notion delivery. A real token, verified production schema and real accepted
 trade payload are still required for actual delivery acceptance.
+The cross-layer runtime regression additionally simulates a successful page
+create and readback followed by refusal to publish the final local journal. It
+checks that the earlier journal bytes survive and that a restarted worker moves
+to uncertain reconciliation without another page-create request. This is a
+synthetic failure test, not a real Notion delivery receipt.

@@ -72,6 +72,10 @@ async def soak_start(
     _: None = Depends(require_ctcc_token),
 ) -> DemoSoakSessionView:
     try:
+        if request.execute:
+            raise DemoObservabilityError(
+                "demo_qualified_dispatch_coordinator_unavailable"
+            )
         return await demo_observability.start_soak(request)
     except Exception as exc:
         raise _http_error(exc) from exc

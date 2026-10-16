@@ -168,6 +168,10 @@ class DemoObservabilityService:
         blockers: list[str] = []
         snapshot = None
 
+        if self.settings.environment != "test" or isinstance(
+            self.automation, SafeDemoAutomation
+        ):
+            blockers.append("demo_qualified_dispatch_coordinator_unavailable")
         if not self.settings.okx_demo_soak_enabled:
             blockers.append("demo_soak_disabled")
         if not self.settings.okx_demo_soak_allow_execute:
@@ -247,6 +251,23 @@ class DemoObservabilityService:
         )
 
     async def start_soak(self, request: DemoSoakStartRequest) -> DemoSoakSessionView:
+        if request.execute:
+            raise DemoObservabilityError(
+                "demo_qualified_dispatch_coordinator_unavailable"
+            )
+        return await self._start_soak_synthetic_session(request)
+
+    async def _start_soak_synthetic_session(
+        self, request: DemoSoakStartRequest
+    ) -> DemoSoakSessionView:
+        """Retain fake-automation soak safety tests without runtime write authority."""
+        if request.execute and (
+            self.settings.environment != "test"
+            or isinstance(self.automation, SafeDemoAutomation)
+        ):
+            raise DemoObservabilityError(
+                "demo_qualified_dispatch_coordinator_unavailable"
+            )
         async with self._lock:
             if not self.settings.okx_demo_soak_enabled:
                 raise DemoObservabilityError("demo_soak_disabled")

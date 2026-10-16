@@ -41,6 +41,16 @@ The boundary does not enable or validate Live execution. Existing synthetic
 service tests that inject a fake private client exercise their stated local
 logic; they cannot prove the real Demo transport can submit an order.
 
+The Demo observability soak entry is closed at both its registered API route
+and public service method whenever `execute=true`. Its execute preflight also
+reports `demo_qualified_dispatch_coordinator_unavailable` for the real
+automation runtime, so an operator is not shown a misleading ready state.
+Observation-only soak remains available. Legacy execute-soak safety tests use a
+private synthetic helper restricted to the test environment and a fake
+automation adapter; the application does not call that helper for execution.
+This extra entry guard does not replace the final transport denial or constitute
+a qualified dispatch coordinator.
+
 Migration 0034 hardens the legacy `SafeDemoAutomation` control singleton with a
 database revision, an Arm/EStop exclusion constraint and a sticky restart latch.
 Every full-state write uses compare-and-swap. An explicit EStop locks the latest
