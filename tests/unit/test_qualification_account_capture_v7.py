@@ -136,6 +136,7 @@ def test_v7_packet_freezes_and_replays_without_granting_account_authority():
     assert packet.execution_authority is False
     assert packet.source_authenticity_verified is False
     assert "separate_history_source_join_required" in packet.incomplete_reasons
+    assert "algo_partial_state_unresolved" not in packet.incomplete_reasons
     frozen = capture.freeze_demo_account_packet(
         packet, expected_plan_sha256=capture.plan_sha256(selected)
     )
@@ -239,6 +240,58 @@ def test_v7_short_algo_page_is_not_terminal_and_uses_exact_algo_cursor():
             plan=selected,
             expected_plan_sha256=capture.plan_sha256(selected),
             barrier_completed_at=BARRIER,
+        )
+
+
+@pytest.mark.parametrize("state", ["partially_effective", "partially_failed"])
+def test_v7_partial_algo_state_is_retained_but_never_closes_account(state):
+    selected = v7_plan()
+    raw = row(
+        "algo_conditional",
+        "987",
+        state=state,
+        reduceOnly="true",
+        closeFraction="1",
+        actualSz="1",
+        ordIdList=["981"],
+    )
+    observations = v7_observations(selected, pages={"algo_conditional": [[raw], []]})
+    packet = capture.verify_demo_account_records(
+        observations,
+        plan=selected,
+        expected_plan_sha256=capture.plan_sha256(selected),
+        barrier_completed_at=BARRIER,
+    )
+    recorded = next(
+        item.rows[0]
+        for item in packet.observations
+        if item.request.stream == "algo_conditional" and item.rows
+    )
+    assert recorded.row_id == "987"
+    assert f'"state":"{state}"' in recorded.canonical_json
+    assert '"closeFraction":"1"' in recorded.canonical_json
+    assert "algo_partial_state_unresolved" in packet.incomplete_reasons
+    assert packet.account_complete is False
+    assert packet.execution_authority is False
+    assert packet.source_authenticity_verified is False
+    frozen = capture.freeze_demo_account_packet(
+        packet, expected_plan_sha256=capture.plan_sha256(selected)
+    )
+    assert (
+        capture.verify_demo_account_packet(
+            frozen.payload,
+            expected_sha256=frozen.sha256,
+            expected_plan_sha256=capture.plan_sha256(selected),
+        )
+        == packet
+    )
+
+
+def test_v7_unknown_algo_state_remains_rejected():
+    with pytest.raises(capture.AccountCaptureError, match="algo_state_invalid"):
+        v7_observations(
+            v7_plan(),
+            pages={"algo_conditional": [[row("algo_conditional", state="done")], []]},
         )
 
 

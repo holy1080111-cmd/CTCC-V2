@@ -20,6 +20,15 @@ verified before treating V7 as accepted for that account. An unsupported type
 or inconsistent response makes the current inventory incomplete; the collector
 must not silently drop that query or fall back to four types.
 
+The pending-algo response can contain `partially_effective` or
+`partially_failed`, in addition to `live` and `pause`. V7 retains each exact
+row and page hash for those states, but marks `algo_partial_state_unresolved`:
+the parent state alone cannot prove residual exposure or active child
+protection. Unknown states still fail parsing. `closeFraction="1"` is retained
+as wire evidence of a full-close instruction, not proof of the currently
+covered position size. These distinctions leave account completeness and all
+execution authority false.
+
 `CurrentDemoAccountCapturePlanV7` pins the Demo environment, exact UID and
 main UID, controlled credential session, registration region and its matching
 HTTPS origin, a registration-evidence hash, and the eight-query scope. The

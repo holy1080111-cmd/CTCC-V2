@@ -1294,7 +1294,12 @@ def _row_record(row, stream, plan, received):
                 _fail("algo_query_scope_mismatch")
             if _required_text(row, "side") not in {"buy", "sell"}:
                 _fail("order_side_invalid")
-            if _required_text(row, "state") not in {"live", "pause"}:
+            if _required_text(row, "state") not in {
+                "live",
+                "pause",
+                "partially_effective",
+                "partially_failed",
+            }:
                 _fail("algo_state_invalid")
             required_numbers = {"sz"}
             if stream in {
@@ -1706,6 +1711,17 @@ def verify_demo_account_records(
     if is_all_product_plan(plan):
         gaps.remove("non_swap_history_not_requested")
         gaps.add("all_product_metadata_coverage_unverified")
+    if any(
+        json.loads(row.canonical_json).get("state")
+        in {"partially_effective", "partially_failed"}
+        for item in verified
+        if item.request.stream.startswith("algo_")
+        for row in item.rows
+    ):
+        # An algo returned by the pending endpoint can have partially executed
+        # or failed children. Preserve its exact row, but do not infer residual
+        # exposure or active protection from the parent algo state.
+        gaps.add("algo_partial_state_unresolved")
     if type(plan) is AllProductDemoAccountCapturePlanV6:
         # The API exposes only three history state filters although its row
         # schema also permits partially_failed. A bounded response cannot

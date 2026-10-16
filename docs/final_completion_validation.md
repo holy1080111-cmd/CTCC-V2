@@ -6118,3 +6118,35 @@ environment's 40th item was local `ctcc_v2.egg-info` source metadata, not
 evidence of third-party package version drift. The current source has a
 different `pyproject.toml` and 42-package lock; its full-validation dependency
 baseline is still unaccepted. No release check is bypassed.
+
+## 2026-10-16 pending-algo wire semantics and account-revision boundary
+
+The later committed checkpoint `141d567e78c3c791de2f47779ec61c733b12eadc`
+(tree `95c3d10db2b2cbe086ef98b626b0a47aac258181`) has an independently
+read-back exact archive and Git bundle under
+`../../validation-results/checkpoint-141d567-20261016/`. Its matching
+[CI run 38891974445](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/38891974445)
+cannot validate any changes made after that commit.
+
+The subsequent working source retains the official pending-algo
+`partially_effective`/`partially_failed` rows but marks their residual exposure
+and child protection unresolved. It recognizes only the documented exact
+`"true"`/`"false"` `reduceOnly` strings in ordinary pending-order diagnostic
+mapping; an algo carrying `"true"` or `closeFraction="1"` is not projected as
+verified current protection. Unknown wire values remain unsupported. The V7
+packet schema and older replay bytes are unchanged, and account completeness,
+source authenticity and execution authority remain false. The two focused
+modules passed 228 synthetic tests locally; their matching full-source CI
+must be run after commit.
+
+DB0017 `reconcile_scope()` still accepts caller-built account claims without
+a collector-owned source witness. DB0020/0038/0040 diagnostic records do not
+form one authenticated, complete account revision, and V2/V3 reservation
+continues to deny that revision unconditionally. A new table alone would not
+fix this source gap; no positive account or order authority is claimed.
+
+The Windows outbox late-failure path was independently rechecked on this
+source: the focused Windows test and related modules reported 334 passing and
+7 platform-limited skips. An injected sharing failure retained the durable
+journal without an envelope/dispatch. This is a local targeted result, not
+final exact-source Windows or Notion-delivery acceptance.

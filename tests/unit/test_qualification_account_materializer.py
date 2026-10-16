@@ -320,6 +320,95 @@ def test_empty_pending_does_not_turn_protective_algo_into_opening_exposure():
     assert result.snapshot is None
 
 
+def test_documented_reduce_only_wire_strings_preserve_diagnostic_not_authority():
+    def change(pages):
+        pages["algo_conditional"][0][0]["reduceOnly"] = "true"
+        pages["orders_pending"][0][0]["reduceOnly"] = "false"
+
+    result = materialize(source=packet(changes=change))
+    assert result.positions == ()
+    assert len(result.pending_reservations) == 1
+    algo = projection(result, "algo_conditional")
+    assert algo.kind == "unsupported_algo"
+    assert "algo_protection_readback_unverified" in algo.reasons
+    assert projection(result, "orders_pending").kind == "opening_order"
+    assert result.snapshot is None
+    assert result.account_complete is False
+    assert result.execution_authority is False
+
+
+def test_documented_reducing_pending_string_is_visible_but_not_flat():
+    def change(pages):
+        pages["orders_pending"][0][0].update(reduceOnly="true", side="sell")
+
+    result = materialize(source=packet(changes=change))
+    pending = projection(result, "orders_pending")
+    assert pending.kind == "reducing_order"
+    assert pending.contracts == D("1")
+    assert result.pending_reservations == ()
+    assert len(result.positions) == 1
+    assert result.snapshot is None
+    assert result.execution_authority is False
+
+
+@pytest.mark.parametrize("wire_value", ["false", "TRUE", "1", None])
+def test_non_true_pending_wire_value_cannot_become_reducing(wire_value):
+    def change(pages):
+        pages["orders_pending"][0][0].update(reduceOnly=wire_value, side="sell")
+
+    result = materialize(source=packet(changes=change))
+    pending = projection(result, "orders_pending")
+    assert pending.kind != "reducing_order"
+    assert pending.kind != "zero_position"
+    assert result.snapshot is None
+    assert result.execution_authority is False
+
+
+@pytest.mark.parametrize("wire_value", ["TRUE", "1", None])
+def test_unknown_reduce_only_wire_value_cannot_prove_protection(wire_value):
+    def change(pages):
+        pages["algo_conditional"][0][0]["reduceOnly"] = wire_value
+
+    result = materialize(source=packet(changes=change))
+    assert result.positions == ()
+    assert projection(result, "positions").risk_amount is None
+    assert projection(result, "algo_conditional").kind == "unsupported_algo"
+    assert result.snapshot is None
+    assert result.execution_authority is False
+
+
+def test_numeric_reduce_only_wire_value_is_rejected_before_materialization():
+    def change(pages):
+        pages["algo_conditional"][0][0]["reduceOnly"] = 1
+
+    with pytest.raises(capture.AccountCaptureError, match="json_number_invalid"):
+        packet(changes=change)
+
+
+@pytest.mark.parametrize(
+    "algo_change,expected_reason",
+    [
+        ({"state": "partially_effective"}, "algo_partial_state_unresolved"),
+        ({"state": "partially_failed"}, "algo_partial_state_unresolved"),
+        ({"closeFraction": "1"}, "close_fraction_protection_unverified"),
+    ],
+)
+def test_partial_or_full_close_algo_remains_unresolved(algo_change, expected_reason):
+    def change(pages):
+        pages["algo_conditional"][0][0].update(reduceOnly="true", **algo_change)
+
+    result = materialize(source=packet(pending=False, changes=change))
+    algo = projection(result, "algo_conditional")
+    assert algo.kind == "unsupported_algo"
+    assert expected_reason in algo.reasons
+    assert expected_reason in result.incomplete_reasons
+    assert result.positions == ()
+    assert projection(result, "positions").risk_amount is None
+    assert result.snapshot is None
+    assert result.account_complete is False
+    assert result.execution_authority is False
+
+
 def test_valid_reducing_pending_remains_visible_without_opening_risk():
     def alter(pages):
         pages["orders_pending"][0][0].update(reduceOnly=True, side="sell")

@@ -561,12 +561,26 @@ def _direction(row, mode, quantity):
     return None
 
 
+def _reduce_only_value(value):
+    # OKX GET rows encode this boolean as the exact strings "true"/"false".
+    # Retain the older boolean diagnostic fixtures without accepting arbitrary
+    # truthy values. Neither representation can grant account authority here.
+    if type(value) is bool:
+        return value
+    if type(value) is str and value in {"true", "false"}:
+        return value == "true"
+    return None
+
+
 def _stop(row, reference, direction):
     stop = _fraction(row.get("slTriggerPx"), positive=True)
     if (
         stop is None
         or row.get("slOrdPx") != "-1"
         or row.get("slTriggerPxType") != "mark"
+        # closeFraction="1" describes a full-close algo, but this legacy
+        # projection lacks an independent residual-size readback. Keep it
+        # unresolved rather than deriving covered size from the position.
         or row.get("closeFraction") not in (None, "")
         or row.get("amendPxOnTriggerType") not in (None, "", "0")
         or direction == "long"
@@ -621,6 +635,9 @@ def _positions_and_orders(
                 or mark is None
                 or algo.get("instType") != "SWAP"
                 or position.get("instType") != "SWAP"
+                # Historical boolean packets retain their diagnostic geometry.
+                # The documented GET string is only reducing intent here; this
+                # mapper cannot prove current active coverage from that alone.
                 or type(algo.get("reduceOnly")) is not bool
                 or not algo["reduceOnly"]
                 or algo.get("state") != "live"
@@ -770,7 +787,8 @@ def _positions_and_orders(
             and (quantity / Fraction(spec.lot_size)).denominator != 1
             for quantity in (size, filled, remaining)
         )
-        if row.get("reduceOnly") is True:
+        reduce_only = _reduce_only_value(row.get("reduceOnly"))
+        if reduce_only is True:
             reducing_reasons = set()
             if spec is None:
                 reducing_reasons.add("instrument_mapping_missing")
@@ -805,7 +823,7 @@ def _positions_and_orders(
         side = row.get("side")
         direction = "long" if side == "buy" else "short" if side == "sell" else None
         if (
-            type(row.get("reduceOnly")) is not bool
+            reduce_only is not False
             or row.get("instType") != "SWAP"
             or row.get("ordType") != "limit"
             or row.get("tdMode") not in {"cross", "isolated"}
@@ -892,10 +910,22 @@ def _positions_and_orders(
                 )
             )
     for record, row, observed in all_algos:
-        if record.row_id in used_algos:
+        unresolved = set()
+        if row.get("reduceOnly") == "true":
+            unresolved.add("algo_protection_readback_unverified")
+        if row.get("state") in {"partially_effective", "partially_failed"}:
+            unresolved.add("algo_partial_state_unresolved")
+        if row.get("closeFraction") == "1":
+            unresolved.add("close_fraction_protection_unverified")
+        elif row.get("closeFraction") not in (None, ""):
+            unresolved.add("algo_close_fraction_unsupported")
+        if record.row_id in used_algos and not unresolved:
             kind, reasons = "protection", ()
         else:
-            kind, reasons = "unsupported_algo", ("outstanding_algo_unclassified",)
+            kind, reasons = (
+                "unsupported_algo",
+                tuple(sorted({"outstanding_algo_unclassified", *unresolved})),
+            )
             gaps.update(reasons)
         projections.append(
             ExposureProjection(
