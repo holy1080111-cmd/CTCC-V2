@@ -131,9 +131,22 @@ async def assert_private_only(repository, result, root, *, namespace=QUEUE):
 
 
 def allow_synthetic_range_replay_for_repository_mechanism(monkeypatch):
-    """Exercise downstream DB journals; never assert R7 runtime admission here."""
+    """Create disposable synthetic SQL rows, never runtime R7 authority."""
     monkeypatch.setattr(
         reservations, "_require_owned_recheck_for_reservation", lambda _request: None
+    )
+
+    # These disposable tests need a committed synthetic V2/V3 hold. Real
+    # account revisions still lack a collector-owned source witness.
+    def allow_synthetic_account_claims(claims):
+        checked = reservations.checked(claims, reservations.AccountLedgerClaims)
+        assert checked.source_authenticity_verified is False
+        assert checked.execution_authority is False
+
+    monkeypatch.setattr(
+        QualificationLedgerRepository,
+        "_require_owned_account_revision",
+        staticmethod(allow_synthetic_account_claims),
     )
 
 
@@ -185,6 +198,21 @@ async def test_synthetic_range_v5_submission_lineage_v2_and_unbound_v3(
         await ledger.reserve(fixture.request)
     denied = await ledger.read_scope(fixture.request.scope)
     assert denied.ledger_revision == 1 and not denied.active
+
+    with monkeypatch.context() as recheck_only:
+        recheck_only.setattr(
+            reservations,
+            "_require_owned_recheck_for_reservation",
+            lambda _request: None,
+        )
+        with pytest.raises(
+            reservations.QualificationLedgerError,
+            match="ledger_owned_account_revision_missing",
+        ):
+            await ledger.reserve(fixture.request)
+    denied = await ledger.read_scope(fixture.request.scope)
+    assert denied.ledger_revision == 1 and not denied.active
+
     allow_synthetic_range_replay_for_repository_mechanism(monkeypatch)
     hold = await ledger.reserve(fixture.request)
     intent = await ledger.consume_with_submission_intent(
@@ -288,6 +316,21 @@ async def test_synthetic_control_bound_v3_observation_replays_both_intents(
         await setup.reserve()
     denied = await setup.ledger.read_scope(fixture.request.scope)
     assert denied.ledger_revision == 1 and not denied.active
+
+    with monkeypatch.context() as recheck_only:
+        recheck_only.setattr(
+            reservations,
+            "_require_owned_recheck_for_reservation",
+            lambda _request: None,
+        )
+        with pytest.raises(
+            reservations.QualificationLedgerError,
+            match="ledger_owned_account_revision_missing",
+        ):
+            await setup.reserve()
+    denied = await setup.ledger.read_scope(fixture.request.scope)
+    assert denied.ledger_revision == 1 and not denied.active
+
     allow_synthetic_range_replay_for_repository_mechanism(monkeypatch)
     hold = await setup.reserve()
     outer = await setup.consume()

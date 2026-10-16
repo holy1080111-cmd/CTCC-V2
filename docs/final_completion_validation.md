@@ -6150,3 +6150,15 @@ source: the focused Windows test and related modules reported 334 passing and
 7 platform-limited skips. An injected sharing failure retained the durable
 journal without an envelope/dispatch. This is a local targeted result, not
 final exact-source Windows or Notion-delivery acceptance.
+
+The committed pending-algo source is `7b0f5e7d10689b3b791eb381c36c9a06ce4fa20d`.
+The preceding exact-source run [38891974445](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/38891974445)
+finished with 16 Windows/Linux shard jobs green, but PostgreSQL reported four
+synthetic integration fixture failures, so Docker hermetic validation did not
+pass. Those fixtures bypassed the R7 guard to exercise downstream SQL lineage
+but still encountered the independent, intentionally closed account-revision
+guard. The fixture now asserts both production denials before constructing
+disposable synthetic rows for SQL-only tests. Production reservation and
+account guards are unchanged. PostgreSQL runtime and the full exact-source CI
+remain unverified for this fix until its new commit runs; no prior green shard
+may be borrowed for a new source identity.
