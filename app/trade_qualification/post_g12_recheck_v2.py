@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Literal
 
 from app.domain.source_primitives import canonical, decode, sha
@@ -175,7 +175,14 @@ class PostG12PublicRecheckReceiptV2:
             ):
                 if type(raw[name]) is not str or not Decimal(raw[name]).is_finite():
                     raise ValueError
-        except (ValueError, TypeError, KeyError, OverflowError, RecursionError):
+        except (
+            ValueError,
+            TypeError,
+            KeyError,
+            OverflowError,
+            RecursionError,
+            InvalidOperation,
+        ):
             _deny("public_recheck_v2_receipt_invalid")
 
     @property

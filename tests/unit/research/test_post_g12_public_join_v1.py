@@ -10,6 +10,7 @@ import pytest
 from app.public_market_source.public_market_receipts import canonical, decode, sha
 from app.trade_qualification import demo_public_origin
 from app.trade_qualification import post_g12_public_runtime as coordinator
+from app.trade_qualification import post_g12_recheck_v2 as recheck_v2
 from app.trade_qualification import public_source_runtime as runtime
 from app.trade_qualification.post_g12_public_join_v1 import (
     PostG12PublicJoinError,
@@ -32,6 +33,49 @@ from tests.unit.research.test_owned_public_runtime_v2 import (
 )
 from tests.unit.research.test_public_journal_contracts import MemoryDirectory
 from tests.unit.test_qualification_one_shot import inputs as inputs  # noqa: PLC0414
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        "original_entry",
+        "original_stop_loss",
+        "original_take_profit",
+        "executable_reference",
+    ),
+)
+def test_public_recheck_malformed_numeric_receipt_has_fixed_denial(field):
+    record = {name: None for name in recheck_v2._FIELDS}
+    record.update(
+        schema_version=recheck_v2._SCHEMA,
+        code="current_g1_rejected",
+        admission="DENY",
+        direction="long",
+        report_id="synthetic-no-io",
+        instrument_id="BTC-USDT-SWAP",
+        observed_at="2026-10-16T00:00:00+00:00",
+        g1={},
+        original_entry="1",
+        original_stop_loss="1",
+        original_take_profit="2",
+        executable_reference="1",
+    )
+    for name in recheck_v2._FALSE_FIELDS:
+        record[name] = False
+    for name in (
+        "public_join_sha256",
+        "public_packet_sha256",
+        "origin_sha256",
+        "candidate_sha256",
+        "original_event_key",
+        "quote_v2_packet_sha256",
+    ):
+        record[name] = "a" * 64
+    record[field] = "malformed"
+    with pytest.raises(
+        PostG12RecheckV2Error, match="^public_recheck_v2_receipt_invalid$"
+    ):
+        PostG12PublicRecheckReceiptV2(canonical(record))
 
 
 @pytest.mark.asyncio
