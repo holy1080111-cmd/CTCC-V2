@@ -52,6 +52,22 @@ classified `synthetic_transport`; serialized packet replay cannot create this
 owned acquisition result. This local provenance is not a portable cryptographic
 attestation, exchange account completeness or evidence of key permissions.
 
+An opt-in diagnostic constructor,
+`ControlledDemoAccountSession.from_pinned_read_session(...)`, now derives its
+copied Demo credentials and plan binding ID from an **active runtime-issued**
+`OkxDemoPrivateRestClient.pinned_read_session()` lease. The selected plan must
+pin that ID and the lease's exact private origin. For this path, the owned
+collector checks the same live lease and exact signing credentials before and
+after each signed GET, including awaited journal/response boundaries and client
+cleanup. Closing the lease, rotating a credential, changing the origin or
+substituting a copied handle rejects the attempt; it cannot fall back to the
+legacy caller-supplied session label. Legacy capture remains a separate
+DENY-only diagnostic path. The new path still uses the collector's isolated
+HTTP transport, and the lease check does not authenticate registration,
+complete missing history, publish an account revision or grant any order
+authority. All existing account-complete/source-authenticity/execution flags
+remain false. Synthetic `MockTransport` tests do not count as Demo acceptance.
+
 `QualificationLedgerRepository.read_capture_checkpoint` reads persisted claims,
 their hash/scope, revisions and active holds under the existing account row lock.
 Runtime reads checkpoints before and after capture. Both state hashes must match;

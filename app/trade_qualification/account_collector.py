@@ -56,6 +56,7 @@ _ERROR_CODES = frozenset(
         "demo_credentials_required",
         "credential_session_invalid",
         "credential_session_mismatch",
+        "pinned_read_session_invalid",
         "client_invalid",
         "client_not_isolated",
         "transport_not_isolated",
@@ -320,6 +321,48 @@ def _credential_content_pin(value):
     ).hexdigest()
 
 
+def _check_pinned_read_session(read_session, credentials, *, origin):
+    """Bind a diagnostic GET to the active runtime-issued Demo read lease.
+
+    Legacy callers pass None and retain their existing DENY-only semantics.
+    A portable plan label or copied credential tuple cannot issue this lease.
+    """
+    if read_session is None:
+        return
+    try:
+        from app.exchange.okx.private_rest import (
+            DemoPinnedReadSession,
+            OkxDemoPrivateRestClient,
+        )
+
+        if (
+            type(read_session) is not DemoPinnedReadSession
+            or type(read_session._owner) is not OkxDemoPrivateRestClient
+            or type(origin) is not str
+        ):
+            raise ValueError
+        read_session.verify_current()
+        key, secret, passphrase, binding_id, environment = _credential_values(
+            credentials
+        )
+        if (
+            environment != "demo"
+            or binding_id != read_session.binding_id
+            or origin != read_session._origin
+            or not all(
+                hmac.compare_digest(actual, expected)
+                for actual, expected in zip(
+                    (key, secret, passphrase),
+                    read_session._credentials,
+                    strict=True,
+                )
+            )
+        ):
+            raise ValueError
+    except Exception:  # noqa: BLE001 -- never expose credentials or HTTP exceptions
+        raise AccountCollectionError("pinned_read_session_invalid") from None
+
+
 def _new_client():
     """Private test seam; external/shared clients or transports are not API inputs."""
     return httpx.AsyncClient(
@@ -501,9 +544,15 @@ async def _page(
     _journal=None,
     _native_observer=None,
     _request_index=None,
+    _read_session=None,
 ):
     _client_guard(client)
     spec = capture.account_request(plan, stream, after)
+
+    def check_session():
+        _check_pinned_read_session(_read_session, credentials, origin=spec.origin)
+
+    check_session()
     loop = asyncio.get_running_loop()
     request_wall_deadline = loop.time() + plan.max_request_seconds
     started = _phase_clock(
@@ -531,6 +580,7 @@ async def _page(
             spec=spec,
             started=started,
         )
+        check_session()
     maximum = min(plan.max_response_bytes, remaining_bytes)
     body = bytearray()
     async with asyncio.timeout_at(min(wall_deadline, request_wall_deadline)):
@@ -549,6 +599,7 @@ async def _page(
                 stream=stream,
                 page_index=page_index,
             )
+        check_session()
         response = await client.send(
             request, auth=None, follow_redirects=False, stream=True
         )
@@ -563,12 +614,14 @@ async def _page(
                     stream=stream,
                     page_index=page_index,
                 )
+                check_session()
             except Exception:
                 if _journal is not None and type(response) is httpx.Response:
                     await _journal.headers(None, response.status_code)
                 raise
             if _journal is not None and type(response) is httpx.Response:
                 await _journal.headers(received, response.status_code)
+                check_session()
             if received < started:
                 raise AccountCollectionError("request_clock_reversed")
             if (
@@ -630,6 +683,7 @@ async def _page(
                 raise AccountCollectionError("response_bytes_limit")
             # Direct stream reading avoids HTTPX's automatic EOF close race.
             async for chunk in response.stream:
+                check_session()
                 if _journal is not None:
                     try:
                         chunk_received = _read_clock(clock)
@@ -637,6 +691,7 @@ async def _page(
                         await _journal.chunk(chunk, None)
                         raise
                     await _journal.chunk(chunk, chunk_received)
+                    check_session()
                 if type(chunk) is not bytes or len(body) + len(chunk) > maximum:
                     raise AccountCollectionError("response_bytes_limit")
                 body.extend(chunk)
@@ -654,11 +709,13 @@ async def _page(
                     await _journal.body_complete(None)
                     raise
                 await _journal.body_complete(body_exhausted)
+                check_session()
         except asyncio.CancelledError:
             pending_cancel = True
             raise
         finally:
             await _close(response, pending_cancel=pending_cancel)
+    check_session()
     if client.cookies:
         raise AccountCollectionError("http_response_rejected")
     completed = _phase_clock(
@@ -703,6 +760,7 @@ async def _page(
     _no_secret_json(observation.canonical_json, secret_tokens)
     if _journal is not None:
         await _journal.validated(observation)
+    check_session()
     return observation
 
 
@@ -760,6 +818,7 @@ async def _collect_owned_demo_account_records(
     barrier_completed_at: datetime,
     _journal=None,
     _native_observer=None,
+    _read_session=None,
 ) -> _OwnedAccountCapture:
     """One owned client, fixed GET inventory, full replay, no partial packet.
 
@@ -784,15 +843,25 @@ async def _collect_owned_demo_account_records(
         }:
             raise AccountCollectionError("account_plan_version_retired")
         selected = capture._checked_plan(plan, expected_plan_sha256)
+        source_origin = getattr(selected, "origin", BASE_URL)
         values = _credential_values(credentials)
         credentials = DemoAccountCredentials(*values)  # private immutable snapshot
         if credentials.session_binding_id != selected.session_binding_id:
             raise AccountCollectionError("credential_session_mismatch")
+        _check_pinned_read_session(_read_session, credentials, origin=source_origin)
         secret_tokens = [
             credentials.api_key,
             credentials.api_secret,
             credentials.passphrase,
         ]
+        # The plan intentionally names the lease. Reject that ID in received
+        # bodies, but do not reject the separately pinned plan itself.
+        _no_secret_json(
+            capture._canonical(capture._json_value(selected)),
+            secret_tokens,
+        )
+        if _read_session is not None:
+            secret_tokens.append(_read_session.binding_id)
         if _journal is not None:
             from app.trade_qualification.account_capture_journal import (
                 _OwnedAccountJournal,
@@ -810,10 +879,6 @@ async def _collect_owned_demo_account_records(
             _bind_collector(
                 _native_observer, clock, expected_plan_sha256, active_journal
             )
-        _no_secret_json(
-            capture._canonical(capture._json_value(selected)),
-            secret_tokens,
-        )
         barrier = capture._utc(barrier_completed_at)
         if not callable(clock):
             raise AccountCollectionError("clock_invalid")
@@ -880,6 +945,7 @@ async def _collect_owned_demo_account_records(
                             wall_deadline=wall_started + selected.max_batch_seconds,
                             capture_proofs=capture_proofs,
                             _journal=active_journal,
+                            _read_session=_read_session,
                             **(
                                 {}
                                 if _native_observer is None
@@ -888,6 +954,9 @@ async def _collect_owned_demo_account_records(
                                     "_request_index": len(observations),
                                 }
                             ),
+                        )
+                        _check_pinned_read_session(
+                            _read_session, credentials, origin=source_origin
                         )
                         if type(item) is AccountCollectionDiagnostic:
                             diagnostic = item
@@ -955,6 +1024,7 @@ async def _collect_owned_demo_account_records(
             raise
         finally:
             await _close(client, pending_cancel=cancelled)
+        _check_pinned_read_session(_read_session, credentials, origin=source_origin)
         finished = _phase_clock(
             clock,
             _native_observer,
@@ -1017,6 +1087,7 @@ async def _collect_owned_demo_account_records(
     if interrupted:
         raise asyncio.CancelledError
     if owned_result is not None:
+        _check_pinned_read_session(_read_session, credentials, origin=source_origin)
         return owned_result
     raise AccountCollectionError(
         error, diagnostic=diagnostic if error == "account_records_invalid" else None

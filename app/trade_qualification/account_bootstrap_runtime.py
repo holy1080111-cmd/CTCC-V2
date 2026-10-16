@@ -103,6 +103,7 @@ async def _collect(
     if type(repository) is not QualificationLedgerRepository:
         raise runtime.AccountRuntimeError("owned_qualification_repository_required")
     selected = capture._checked_plan(session._plan, session._pin)
+    read_session = session._checked_read_session(selected)
     barrier = capture._utc(barrier_completed_at)
     start = collector._read_clock(clock)
     if start <= barrier or start < selected.created_at:
@@ -136,6 +137,7 @@ async def _collect(
         "plan": selected,
         "expected_plan_sha256": session._pin,
         "barrier_completed_at": barrier,
+        "_read_session": read_session,
     }
     if journal is not None:
         arguments["_journal"] = journal
@@ -195,6 +197,7 @@ async def _collect(
     if transport == "synthetic_transport":
         gaps.add("synthetic_transport_not_authenticated")
     finished = collector._read_clock(clock)
+    session._checked_read_session(selected)
     collector._check_batch(
         finished, start, after.received_at, selected.max_batch_seconds
     )

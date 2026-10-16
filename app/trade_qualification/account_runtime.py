@@ -14,6 +14,7 @@ import hashlib
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
+from weakref import WeakKeyDictionary
 
 from pydantic import ConfigDict, Field, field_validator, model_validator
 
@@ -51,6 +52,7 @@ BootstrapKind = Literal[
     "instrument_coverage",
 ]
 MAX_BOOTSTRAP_BYTES = 4 * 1024 * 1024
+_PINNED_READ_SESSIONS = WeakKeyDictionary()
 _ERRORS = frozenset(
     {
         "account_runtime_invalid",
@@ -268,6 +270,8 @@ class ControlledDemoAccountSession:
         "_credentials",
         "_pin",
         "_plan",
+        "_read_session",
+        "_read_session_required",
         "_used",
     )
 
@@ -293,6 +297,8 @@ class ControlledDemoAccountSession:
             self._credential_pin = collector._credential_content_pin(owned)
             self._plan = selected
             self._pin = expected_plan_sha256
+            self._read_session = None
+            self._read_session_required = False
             self._used = False
             from app.trade_qualification.account_native_clock import (
                 _register_credential_pin,
@@ -306,6 +312,69 @@ class ControlledDemoAccountSession:
 
     def __repr__(self):
         return "<ControlledDemoAccountSession redacted>"
+
+    @classmethod
+    def from_pinned_read_session(cls, *, read_session, plan, expected_plan_sha256):
+        """Opt-in, DENY-only diagnostic; derive credentials from an active lease.
+
+        The plan must have been pinned while this runtime-issued lease was open.
+        No caller credential string or replayed binding label is accepted here.
+        """
+        try:
+            from app.exchange.okx.private_rest import (
+                DemoPinnedReadSession,
+                OkxDemoPrivateRestClient,
+            )
+
+            if (
+                cls is not ControlledDemoAccountSession
+                or type(read_session) is not DemoPinnedReadSession
+                or type(read_session._owner) is not OkxDemoPrivateRestClient
+            ):
+                raise ValueError
+            read_session.verify_current()
+            selected = capture._checked_plan(plan, expected_plan_sha256)
+            if (
+                type(selected) is capture.DemoAccountCapturePlan
+                or selected.origin != read_session._origin
+                or selected.session_binding_id != read_session.binding_id
+            ):
+                raise ValueError
+            credentials = collector.DemoAccountCredentials(
+                *read_session._credentials, read_session.binding_id
+            )
+            collector._check_pinned_read_session(
+                read_session, credentials, origin=selected.origin
+            )
+            result = cls(
+                credentials=credentials,
+                plan=selected,
+                expected_plan_sha256=expected_plan_sha256,
+            )
+            result._read_session = read_session
+            result._read_session_required = True
+            _PINNED_READ_SESSIONS[result] = read_session
+            return result
+        except Exception:  # noqa: BLE001 -- never expose private settings or keys
+            raise AccountRuntimeError("account_runtime_invalid") from None
+
+    def _checked_read_session(self, plan):
+        try:
+            required = object.__getattribute__(self, "_read_session_required")
+            current = object.__getattribute__(self, "_read_session")
+            registered = _PINNED_READ_SESSIONS.get(self)
+            if required is False and current is None and registered is None:
+                return None
+            if required is not True or current is None or current is not registered:
+                raise ValueError
+            collector._check_pinned_read_session(
+                current,
+                object.__getattribute__(self, "_credentials"),
+                origin=plan.origin,
+            )
+            return current
+        except Exception:  # noqa: BLE001 -- no private source value in failure
+            raise AccountRuntimeError("account_runtime_invalid") from None
 
     async def collect_bootstrap(self, *, repository, clock, barrier_completed_at):
         """Acquire authenticatable raw evidence before any complete claims exist.
@@ -384,6 +453,7 @@ class ControlledDemoAccountSession:
         if type(repository) is not QualificationLedgerRepository:
             raise AccountRuntimeError("owned_qualification_repository_required")
         selected = capture._checked_plan(self._plan, self._pin)
+        read_session = self._checked_read_session(selected)
         if type(selected) is capture.AllProductDemoAccountCapturePlanV6:
             # This version is a bounded GET/B1 diagnostic only. The legacy
             # materializer cannot reinterpret its new history inventory as a
@@ -428,6 +498,7 @@ class ControlledDemoAccountSession:
             plan=selected,
             expected_plan_sha256=self._pin,
             barrier_completed_at=barrier,
+            _read_session=read_session,
         )
         if type(owned) is not collector._OwnedAccountCapture:
             raise AccountRuntimeError("owned_capture_required")
@@ -513,6 +584,7 @@ class ControlledDemoAccountSession:
             )
             gaps.add("bootstrap_source_provenance_unverified")
         finished = collector._read_clock(clock)
+        self._checked_read_session(selected)
         if finished < after.received_at:
             raise AccountRuntimeError("runtime_clock_invalid")
         collector._check_batch(
