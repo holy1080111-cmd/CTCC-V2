@@ -368,6 +368,24 @@ def _reconstruct(
         if attribution["purpose"] == "observed"
         else {}
     )
+    history_fills = {
+        record.row_id: record.canonical_json
+        for observation in account.observations
+        if account_capture.stream_family(observation.request.stream) == "fills_history"
+        for record in observation.rows
+    }
+    for observation in account.observations:
+        if account_capture.stream_family(observation.request.stream) != "fills_recent":
+            continue
+        for record in observation.rows:
+            row = json.loads(record.canonical_json)
+            if (
+                row["instId"] == candidate.instrument_id
+                and history_fills.get(record.row_id) != record.canonical_json
+            ):
+                # Recent rows are not mapped below. Neither attributed nor
+                # unattributed same-instrument fills may silently disappear.
+                raise ValueError("candidate_recent_fill_missing_from_history")
     fills, flows, source_links, unbound_fills, bills, trades = [], [], [], [], {}, set()
     for observation in account.observations:
         stream = account_capture.stream_family(observation.request.stream)

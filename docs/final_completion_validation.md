@@ -6077,3 +6077,44 @@ unit cases and two existing R7 denial cases passed. A new adversarial
 PostgreSQL case remains unexecuted locally without an isolated database; it
 must pass in matching exact-source CI. These guards remain **DENY**, do not
 materialize a complete `PortfolioRiskSnapshot`, and do not authorize an order.
+
+## 2026-10-16 exact-source checkpoint and subsequent working-source guards
+
+The last committed/pushed checkpoint before this section's working-source
+changes is `cdc633e6a9270525d400b9362a06c67b2ea37e77` (tree
+`9e450d9d499978162a78c4345015cb7f381f75b2`). Its manifest hash is
+`a482fa5eccd5b0eb6667688a9c89cb72df46f9dc80ce5ea5da81f26db3ba8122`.
+The exact source archive, Git bundle, manifest and preserved dangling refs were
+read back under `../../validation-results/checkpoint-cdc633e-20261016/`.
+The scoped exact-archive and local-Git-object scan is recorded under
+`../../validation-results/security-cdc633e-20261016/`; it is not a final
+all-artifact security acceptance. [CI run 38889877618](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/38889877618)
+is bound to that exact commit; its completed component artifacts must not be
+used as validation for any subsequent source edit, and a partial run is not a
+full Windows/Linux/PostgreSQL/Docker acceptance.
+
+The later, still unvalidated working source adds a one-use V7 pinned-read lease
+requirement to an opt-in V4 post-G12 account observation entry. The existing
+V4 diagnostic remains DENY; the new wrapper rejects copied/closed/rotated
+sessions before and after delegation, without claiming a source-owned durable
+account revision. Ten synthetic wrapper cases passed locally. The raw-trade
+forensics replay now rejects a candidate-instrument recent fill absent from
+the historical chain, including unattributed fills; its 132 synthetic module
+cases passed locally. A separate read-only Notion outbox diagnostic compares
+one exact local pair with committed spool lineage and any projection receipt;
+every result still has `delivery_authority=false`. Its new and related
+submission-reporting unit cases passed locally (35). None of these changes
+enables private order writes or Notion delivery, and none establishes a real
+Demo sample, complete account history, verified funding accrual or final
+forensics. Matching exact-source CI and external evidence remain required.
+
+The retained 9/15–9/16 candidate source is the extracted
+`AppData/Local/CTCC/Demo-Integrated/907285d56e2045759c9219b300b52b6a/source`,
+with 582 source files matched to its release contract; it is not an exact
+reachable Git tree, and the original candidate ZIP/console output is absent.
+The contract and retained full-validation receipt have the same 39 ordered
+dependency name/version entries and Python 3.12.14. The historical normal
+environment's 40th item was local `ctcc_v2.egg-info` source metadata, not
+evidence of third-party package version drift. The current source has a
+different `pyproject.toml` and 42-package lock; its full-validation dependency
+baseline is still unaccepted. No release check is bypassed.

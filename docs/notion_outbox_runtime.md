@@ -13,6 +13,22 @@ legacy eligible rows must remain quarantined. The existing synthetic worker
 tests exercise downstream recovery behavior only and are not delivery
 acceptance evidence.
 
+`SubmissionReportingRepository.inspect_notion_delivery_source(...)` provides a
+read-only diagnostic for one exact report ID and envelope hash. It verifies the
+local outbox pair, replays the committed private submission/spool lineage, and
+compares any database projection receipt to the same queue, report and envelope.
+Every result has `delivery_authority=false` and `execution_authority=false`.
+The current outcome records transport authenticity as unverified, and database
+constraints prohibit eligible spools and projection receipts; therefore even a
+matching diagnostic cannot authorize a Notion page. The diagnostic does not
+run in the delivery worker, perform HTTP, repair files, or replace the final
+hard DENY. Before any future delivery activation, an independently owned
+transport issuer and immutable eligibility record must exist, and the worker
+and final outbound boundary must both require a fresh, exact database join.
+The diagnostic's file/DB observations are separate reads, not one atomic
+snapshot across concurrent publishers; its only safe current use is to locate
+missing evidence.
+
 `app.main` owns the default-off `NotionOutboxRuntime` lifecycle. The runtime has
 its own thread and event loop. Durable filesystem checks, local token permission
 checks, and HTTP do not execute on the API/trading event loop. Reporter startup,

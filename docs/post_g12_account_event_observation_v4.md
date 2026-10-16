@@ -107,3 +107,14 @@ B1 readback. A separate isolated test uses real V5 and V7 B1 database chains
 at the V4 account readback helper, with synthetic HTTP and V3 timing inputs.
 Neither test proves a complete source-owned invocation; matching CI must run
 both before their database behavior can be credited.
+
+An opt-in `publish_capture_inspect_history_event_v4_pinned` entry now requires
+the exact V7 `ControlledDemoAccountSession` built from an active runtime-issued
+Demo pinned-read lease. It checks the live lease, plan, origin, credential
+binding and unused session before calling this same V4 flow, then checks the
+lease and consumed session again before returning. A copied binding label,
+legacy caller-credential session, closed lease or late credential/origin change
+is rejected. The legacy V4 diagnostic entry remains available but is not
+promoted by this wrapper. Both entries retain `source_authenticity_verified=false`,
+`account_complete=false`, and `execution_authority=false`; the wrapper does
+not create a durable source witness or validate a real OKX Demo account.

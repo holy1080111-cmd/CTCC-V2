@@ -43,6 +43,7 @@ def fixtures(
     fill_changes=None,
     funding_changes=None,
     extra_fills=(),
+    recent_fills=(),
     empty=False,
     all_products=False,
     exit_order_changes=None,
@@ -122,6 +123,8 @@ def fixtures(
     )
     pages = {stream: [[]] for stream in CURSORS}
     pages["positions"] = [[]]
+    if recent_fills:
+        pages["fills_recent"] = [list(recent_fills), []]
     if exit_order_changes is not None:
         exit_order = row(
             "orders_history_recent",
@@ -515,6 +518,103 @@ def test_all_matching_supplied_fills_are_selected_not_a_caller_subset():
     result = run(fixtures(extra_fills=(extra,)))
     assert len(result.analysis.inputs.fills) == 4
     assert result.analysis.inputs.fills[-2].evidence_id == "fill_905"
+
+
+def test_bound_recent_fill_missing_from_history_fails_closed():
+    recent_only = row(
+        "fills_recent",
+        "905",
+        ordId=submit.EXCHANGE_ORDER_ID,
+        clOrdId=submit.CLIENT_ORDER_ID,
+        tradeId="705",
+        side="buy",
+        fillPx="102",
+        fillSz="1",
+        fee="0",
+        fillTime=ms(at(30)),
+        ts=ms(at(31)),
+        fillPnl="0",
+    )
+    with pytest.raises(
+        module.RawForensicsError, match="^raw_forensics_reconstruction_invalid$"
+    ):
+        run(fixtures(recent_fills=(recent_only,)))
+
+
+def test_unbound_same_instrument_recent_fill_missing_from_history_fails_closed():
+    recent_only = row(
+        "fills_recent",
+        "906",
+        ordId="999",
+        tradeId="706",
+        fillTime=ms(at(30)),
+        ts=ms(at(31)),
+    )
+    with pytest.raises(
+        module.RawForensicsError, match="^raw_forensics_reconstruction_invalid$"
+    ):
+        run(fixtures(recent_fills=(recent_only,)))
+
+
+def test_other_instrument_recent_fill_does_not_claim_candidate_lineage():
+    unrelated = row(
+        "fills_recent",
+        "906",
+        instId="ETH-USDT-SWAP",
+        ordId="999",
+        tradeId="706",
+        fillTime=ms(at(30)),
+        ts=ms(at(31)),
+    )
+    result = run(fixtures(recent_fills=(unrelated,)))
+    assert len(result.analysis.inputs.fills) == 3
+    assert all(item.status == "partial" for item in result.analysis.inputs.coverage)
+    assert result.analysis.pnl.value is None
+
+
+def test_identical_bound_recent_history_overlap_keeps_one_mapped_fill():
+    overlap = row(
+        "fills_recent",
+        "901",
+        ordId=submit.EXCHANGE_ORDER_ID,
+        clOrdId=submit.CLIENT_ORDER_ID,
+        tradeId="701",
+        side="buy",
+        fillPx="100",
+        fillSz="4",
+        fee="-0.01",
+        fillTime=ms(at(10)),
+        ts=ms(at(11)),
+        fillPnl="0",
+    )
+    result = run(fixtures(recent_fills=(overlap,)))
+    assert [item.evidence_id for item in result.analysis.inputs.fills] == [
+        "fill_901",
+        "fill_902",
+        "fill_903",
+    ]
+    assert all(item.status == "partial" for item in result.analysis.inputs.coverage)
+    assert result.analysis.pnl.value is None
+    assert not result.execution_authority and not result.source_authenticity_verified
+
+
+def test_conflicting_bound_recent_history_overlap_cannot_form_account_packet():
+    conflicting = row(
+        "fills_recent",
+        "901",
+        ordId=submit.EXCHANGE_ORDER_ID,
+        clOrdId=submit.CLIENT_ORDER_ID,
+        tradeId="701",
+        side="buy",
+        fillPx="100",
+        fillSz="4",
+        fee="-0.02",
+        fillTime=ms(at(10)),
+        ts=ms(at(11)),
+        fillPnl="0",
+    )
+    with pytest.raises(capture.AccountCaptureError, match="history_overlap_conflict"):
+        fixtures(recent_fills=(conflicting,))
 
 
 def test_unbound_same_instrument_fills_are_visible_not_silently_claimed():

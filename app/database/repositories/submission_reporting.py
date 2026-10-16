@@ -96,6 +96,30 @@ class SubmissionProjectionReceipt:
     policy_sha256: str
 
 
+@dataclass(frozen=True, slots=True)
+class NotionDeliverySourceDiagnostic:
+    """Read-only provenance finding; never permits a Notion or exchange write."""
+
+    report_id: str
+    envelope_sha256: str
+    reason_code: str
+    local_pair_verified: bool = False
+    committed_lineage_verified: bool = False
+    projection_receipt_verified: bool = False
+
+    @property
+    def owned_transport_issuer_verified(self) -> bool:
+        return False
+
+    @property
+    def delivery_authority(self) -> bool:
+        return False
+
+    @property
+    def execution_authority(self) -> bool:
+        return False
+
+
 def outcome_document(
     prepared, *, transition_id, sequence, previous, revision, recorded_at
 ):
@@ -851,3 +875,114 @@ class SubmissionReportingRepository(QualificationLedgerRepository):
             return SubmissionProjectionReceipt(
                 spool_id, row.envelope_sha256, row.report_sha256, row.policy_sha256
             )
+
+    async def inspect_notion_delivery_source(
+        self, report_id, *, root, queue_namespace, expected_envelope_sha256
+    ) -> NotionDeliverySourceDiagnostic:
+        """Diagnose one exact local/DB projection without authorizing delivery.
+
+        The current initial-outcome issuer records transport authenticity as
+        false, and DB constraints forbid eligible spools/projection receipts.
+        This independent readback identifies the missing join without changing
+        the unconditional final Notion delivery gate or any trading state.
+        """
+        try:
+            outbox._name(report_id)
+            expected = pin(expected_envelope_sha256)
+            namespace = queue(queue_namespace)
+        except (ValueError, TypeError):
+            raise SubmissionReportingError(
+                "notion_delivery_source_input_invalid"
+            ) from None
+
+        def denied(reason, *, local=False, lineage=False, projection=False):
+            return NotionDeliverySourceDiagnostic(
+                report_id=report_id,
+                envelope_sha256=expected,
+                reason_code=reason,
+                local_pair_verified=local,
+                committed_lineage_verified=lineage,
+                projection_receipt_verified=projection,
+            )
+
+        try:
+            view = outbox.validate_outbox_view(
+                outbox.read_job(root, report_id, clock=self.clock)
+            )
+        except Exception:  # noqa: BLE001 - No private path or disk detail escapes.
+            return denied("notion_delivery_local_pair_unavailable")
+        if view.envelope.envelope_sha256 != expected:
+            return denied("notion_delivery_envelope_identity_mismatch")
+
+        try:
+            async with self.session_factory() as session:
+                rows = (
+                    await session.scalars(
+                        select(QualificationReportSpool)
+                        .filter_by(report_id=report_id, queue_namespace=namespace)
+                        .limit(2)
+                    )
+                ).all()
+                if len(rows) != 1:
+                    return denied("notion_delivery_spool_not_unique", local=True)
+                spool = rows[0]
+                try:
+                    outcome, report, policy = await self._verify_spool(session, spool)
+                except (ValueError, TypeError, KeyError, AttributeError):
+                    return denied(
+                        "notion_delivery_committed_lineage_invalid", local=True
+                    )
+                if outcome.status != "acknowledged" or report.status != "acknowledged":
+                    return denied("notion_delivery_submission_not_accepted", local=True)
+                if (
+                    view.envelope.payload
+                    != post_submit._outbox_payload(report, spool.report_sha256)
+                    or view.envelope.policy != policy
+                ):
+                    return denied("notion_delivery_spool_pair_mismatch", local=True)
+                receipt = await session.get(
+                    QualificationReportProjectionReceipt, spool.spool_id
+                )
+                if receipt is None:
+                    return denied(
+                        "notion_delivery_projection_receipt_missing",
+                        local=True,
+                        lineage=True,
+                    )
+                if (
+                    receipt.envelope_sha256 != expected
+                    or (
+                        receipt.report_sha256,
+                        receipt.policy_sha256,
+                        receipt.queue_namespace,
+                    )
+                    != (
+                        spool.report_sha256,
+                        spool.policy_sha256,
+                        namespace,
+                    )
+                    or receipt.verified_at < spool.created_at
+                ):
+                    return denied(
+                        "notion_delivery_projection_receipt_mismatch",
+                        local=True,
+                        lineage=True,
+                    )
+                if spool.eligible is not True:
+                    return denied(
+                        "notion_delivery_source_eligibility_unverified",
+                        local=True,
+                        lineage=True,
+                        projection=True,
+                    )
+                # No owned transport issuer or current delivery-eligibility
+                # proof exists in this schema. A legacy/caller-written true
+                # flag cannot become authority even with matching local bytes.
+                return denied(
+                    "notion_delivery_owned_issuer_unavailable",
+                    local=True,
+                    lineage=True,
+                    projection=True,
+                )
+        except Exception:  # noqa: BLE001 - SQL/private response errors stay redacted.
+            return denied("notion_delivery_db_readback_unavailable", local=True)

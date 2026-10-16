@@ -84,6 +84,16 @@ Each fill retains page-body/observation pins and original trade/bill IDs. Same-
 instrument fills without an order binding remain listed as unattributed and cannot
 silently contribute to this report.
 
+For a candidate-instrument fill also present in the `fills_recent` page chain,
+the retained `fills_history` chain must contain the same row ID and exact
+canonical row. Otherwise replay fails closed, whether the order is attributed
+or still unknown. This prevents a recent-only fill from disappearing from both
+the mapped trade and the unattributed-fill list. An unrelated instrument's
+recent fill does not become part of this trade's lineage. Exact overlap is
+mapped once through history; a conflicting overlap is rejected by account
+packet verification. This consistency check does not prove either chain is
+complete.
+
 Exit reasons stay `unknown`; no stop/target label or exit reference price is
 inferred from an order ID, observed price or candidate target. `fillPnl`, order
 aggregate PnL, and mirrored trading-bill fee/PnL fields are not used to create cash
@@ -150,3 +160,9 @@ with existing forensics, post-submit reporting and account capture was 784 passe
 filesystem case on Windows. Ruff check and format check passed for the new module
 and its tests. These overlapping counts must not be summed and are not a full
 new-image/system acceptance run.
+
+2026-10-16 focused post-change local verification: the raw-forensics module's
+132 synthetic cases passed, including five new recent/history overlap and
+omission cases. The current source still has no authenticated real-trade
+forensics acceptance; complete fills, fees, funding accrual, protection and
+position reconciliation remain unverified.

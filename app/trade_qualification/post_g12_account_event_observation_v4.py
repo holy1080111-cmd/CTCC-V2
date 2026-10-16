@@ -23,7 +23,7 @@ from app.database.repositories.qualification_ledger import QualificationLedgerRe
 from app.domain.native_clock import native_stamp
 from app.domain.source_primitives import canonical, decode, sha
 from app.trade_evidence import storage as evidence_storage
-from app.trade_qualification import account_capture
+from app.trade_qualification import account_capture, account_runtime
 from app.trade_qualification import account_current_history_join as account_join
 from app.trade_qualification import account_current_source_verifier as current_source
 from app.trade_qualification import account_observation_index as observed_account
@@ -326,6 +326,11 @@ class PostG12AccountEventObservationV4:
     @property
     def receipt_sha256(self) -> str:
         return sha(self.receipt_json)
+
+    @property
+    def source_authenticity_verified(self) -> Literal[False]:
+        """The observed account join cannot authenticate a portfolio source."""
+        return False
 
 
 _RECEIPT_VALUE_FIELDS = tuple(
@@ -1340,4 +1345,48 @@ async def publish_capture_inspect_history_event_v4(
         expected_root_identity=event_root_identity,
         observation=retained_observation,
     )
+    return result
+
+
+def _require_pinned_v7_account_session(account_session, *, expected_used):
+    """Require this invocation's live Demo GET lease, never a copied label."""
+    try:
+        if (
+            type(account_session) is not account_runtime.ControlledDemoAccountSession
+            or account_session._used is not expected_used
+            or account_session._read_session_required is not True
+        ):
+            raise ValueError
+        plan = account_capture._checked_plan(
+            account_session._plan, account_session._pin
+        )
+        if type(plan) is not account_capture.CurrentDemoAccountCapturePlanV7:
+            raise ValueError
+        if account_session._checked_read_session(plan) is None:
+            raise ValueError
+    except Exception:  # noqa: BLE001 -- no credential, origin or plan detail escapes
+        raise PostG12AccountEventObservationError(
+            "v4_pinned_account_session_invalid"
+        ) from None
+
+
+async def publish_capture_inspect_history_event_v4_pinned(
+    *args, account_session, **kwargs
+) -> PostG12AccountEventObservationV4:
+    """Run the existing DENY-only V7 join under a live runtime-issued lease.
+
+    The original V4 entry remains a legacy diagnostic. This opt-in boundary
+    accepts no caller-supplied credential, session label, source receipt or
+    publication timestamp. The delegated V4 flow owns G12 and its barrier,
+    post-barrier public/account acquisition, B1 readback and event observation.
+    A lease revoked during late readback rejects the result without removing
+    evidence that the original flow already persisted.
+    """
+    _require_pinned_v7_account_session(account_session, expected_used=False)
+    result = await publish_capture_inspect_history_event_v4(
+        *args, account_session=account_session, **kwargs
+    )
+    _require_pinned_v7_account_session(account_session, expected_used=True)
+    if type(result) is not PostG12AccountEventObservationV4:
+        raise PostG12AccountEventObservationError("v4_pinned_result_invalid")
     return result
