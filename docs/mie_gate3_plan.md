@@ -64,9 +64,14 @@ exact within a bounded Decimal input span; the reported lower bound rounds
 downward and the upper bound upward, so rounding cannot move a confidence bound
 past its exact value. Values beyond the bounded span fail closed. Log loss
 rejects a clipping epsilon too small to retain a nonzero complement at its
-pinned precision, and rejects any nonfinite loss. These rules do not establish
-cross-version identity for Python's `randrange` sampler or establish a real
-Gate 3 evaluation.
+pinned precision, and rejects any nonfinite loss. Brier calculations reject
+both a nonzero per-row loss and a nonzero aggregate mean if pinned Decimal
+arithmetic underflows either to zero. A calibration bin whose rounded mean
+matches its rounded outcome frequency must also match by exact summed input;
+the final ECE rejects zero when a represented bin difference remains nonzero.
+These are false-zero guards, not a claim that every nonzero rounded metric is
+exact. They do not establish cross-version identity for Python's `randrange`
+sampler or establish a real Gate 3 evaluation.
 
 The latest known Development/Validation replay attempt retained a 120-archive,
 172,800-row manifest but stopped before aggregation under the laptop thermal

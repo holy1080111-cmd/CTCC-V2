@@ -5,6 +5,7 @@ from decimal import ROUND_DOWN, Decimal, Inexact, localcontext
 import pytest
 
 from app.mie.validation.metrics import (
+    ReliabilityBin,
     brier_loss_values,
     brier_score,
     constant_prevalence_baseline,
@@ -35,6 +36,22 @@ def test_brier_and_log_loss_match_frozen_binary_example() -> None:
         context.prec = 50
         expected_log_loss = -D("0.75").ln()
     assert log_loss(probabilities, outcomes) == expected_log_loss
+
+
+def test_brier_rejects_nonzero_loss_that_underflows_to_zero() -> None:
+    tiny_probability = D("1e-600000")
+    with pytest.raises(ValueError, match="underflow"):
+        brier_loss_values((tiny_probability,), (0,))
+
+
+def test_brier_rejects_nonzero_aggregate_that_underflows_to_zero() -> None:
+    tiny_probability = D("1e-500024")
+    assert brier_loss_values((tiny_probability, D(0)), (0, 0)) == (
+        D("1e-1000048"),
+        D(0),
+    )
+    with pytest.raises(ValueError, match="aggregate.*underflow"):
+        brier_score((tiny_probability, D(0)), (0, 0))
 
 
 def test_log_loss_has_a_finite_declared_clipping_rule() -> None:
@@ -90,6 +107,41 @@ def test_reliability_bin_never_rounds_a_probability_across_its_edge() -> None:
 
     assert bins[0].sample_count == 1
     assert bins[1].sample_count == 0
+
+
+def test_reliability_bin_rejects_hidden_exact_calibration_difference() -> None:
+    probability = D("0.5" + "0" * 69 + "1")
+    assert probability != D("0.5")
+
+    with pytest.raises(ValueError, match="calibration difference rounded to zero"):
+        reliability_bins((probability, D("0.5")), (1, 0), bin_count=2)
+
+
+def test_reliability_bin_accepts_exact_match_with_different_ratio_denominators() -> (
+    None
+):
+    probabilities = (D("0.125"),) * 8 + (D("0.1"),) * 10
+    outcomes = (1, 1) + (0,) * 16
+
+    bins = reliability_bins(probabilities, outcomes, bin_count=2)
+
+    assert bins[0].mean_prediction == bins[0].observed_frequency
+    assert bins[0].sample_count == 18
+
+
+def test_ece_rejects_weighted_aggregate_underflow_from_represented_bins(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bins = (
+        ReliabilityBin(0, D(0), D("0.5"), D("1e-1000048"), D(0), 1),
+        ReliabilityBin(1, D("0.5"), D(1), D(0), D(0), 1),
+    )
+    monkeypatch.setattr(
+        "app.mie.validation.metrics.reliability_bins", lambda *_, **__: bins
+    )
+
+    with pytest.raises(ValueError, match="aggregate calibration error underflow"):
+        expected_calibration_error((D(0), D(1)), (0, 1), bin_count=2)
 
 
 def test_log_loss_rejects_epsilon_whose_complement_rounds_to_one() -> None:

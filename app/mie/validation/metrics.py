@@ -21,6 +21,7 @@ from decimal import (
     localcontext,
 )
 from fractions import Fraction
+from math import lcm
 
 DECIMAL_PRECISION = 50
 LOG_LOSS_EPSILON = Decimal("1e-15")
@@ -101,6 +102,18 @@ def _bounded_decimal_tuple(
     return sign, digits, exponent
 
 
+def _exact_decimal_sum_equals_integer(values: Sequence[Decimal], total: int) -> bool:
+    common_denominator = 1
+    for value in values:
+        _, denominator = value.as_integer_ratio()
+        common_denominator = lcm(common_denominator, denominator)
+    scaled_sum = 0
+    for value in values:
+        numerator, denominator = value.as_integer_ratio()
+        scaled_sum += numerator * (common_denominator // denominator)
+    return scaled_sum == total * common_denominator
+
+
 def _validated_probabilities(
     probabilities: Sequence[Decimal | int],
 ) -> tuple[Decimal, ...]:
@@ -145,12 +158,16 @@ def brier_loss_values(
         probabilities, outcomes
     )
     with localcontext(_ARITHMETIC_CONTEXT):
-        return tuple(
-            (probability - Decimal(outcome)) ** 2
-            for probability, outcome in zip(
-                probability_values, outcome_values, strict=True
-            )
-        )
+        losses: list[Decimal] = []
+        for probability, outcome in zip(
+            probability_values, outcome_values, strict=True
+        ):
+            actual = Decimal(outcome)
+            loss = (probability - actual) ** 2
+            if loss.is_zero() and probability != actual:
+                raise ValueError("nonzero Brier loss underflowed to zero")
+            losses.append(loss)
+        return tuple(losses)
 
 
 def brier_score(
@@ -159,7 +176,10 @@ def brier_score(
 ) -> Decimal:
     losses = brier_loss_values(probabilities, outcomes)
     with localcontext(_ARITHMETIC_CONTEXT):
-        return sum(losses, Decimal(0)) / Decimal(len(losses))
+        score = sum(losses, Decimal(0)) / Decimal(len(losses))
+        if score.is_zero() and any(not loss.is_zero() for loss in losses):
+            raise ValueError("nonzero aggregate Brier loss underflowed to zero")
+        return score
 
 
 def log_loss_values(
@@ -253,6 +273,12 @@ def reliability_bins(
                 observed_frequency = (
                     Decimal(sum(grouped_outcomes[index])) / count_decimal
                 )
+                if mean_prediction == observed_frequency and not (
+                    _exact_decimal_sum_equals_integer(
+                        grouped_probabilities[index], sum(grouped_outcomes[index])
+                    )
+                ):
+                    raise ValueError("nonzero calibration difference rounded to zero")
             else:
                 mean_prediction = None
                 observed_frequency = None
@@ -278,7 +304,7 @@ def expected_calibration_error(
     bins = reliability_bins(probabilities, outcomes, bin_count=bin_count)
     sample_count = sum(item.sample_count for item in bins)
     with localcontext(_ARITHMETIC_CONTEXT):
-        return sum(
+        error = sum(
             (
                 (
                     Decimal(item.sample_count)
@@ -292,6 +318,15 @@ def expected_calibration_error(
             ),
             Decimal(0),
         )
+        if error.is_zero() and any(
+            item.sample_count
+            and item.mean_prediction is not None
+            and item.observed_frequency is not None
+            and item.mean_prediction != item.observed_frequency
+            for item in bins
+        ):
+            raise ValueError("nonzero aggregate calibration error underflowed to zero")
+        return error
 
 
 def probability_metrics(
