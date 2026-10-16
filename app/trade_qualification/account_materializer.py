@@ -982,6 +982,14 @@ def _local_holds(inputs, specs, records, pending, projections, completed, gaps):
                 or existing.correlation_group != hold.correlation_group
             ):
                 gaps.add("local_exchange_binding_unresolved")
+            elif any(
+                getattr(existing, field) > getattr(hold, field)
+                for field in ("notional", "margin", "risk_amount")
+            ):
+                # The observed order has escaped its durable sampled coverage.
+                # Keep both exposures visible and deny a complete mapping;
+                # taking their maximum would conceal the reservation mismatch.
+                gaps.add("local_exchange_binding_coverage_mismatch")
             else:
                 # Explicit matching IDs deduplicate recorded holds conservatively;
                 # do not subtract filled quantity from a still-uncertain local hold.
@@ -1496,6 +1504,7 @@ def materialize_demo_portfolio_snapshot(
                 "history_cashflow_inventory_unmapped",
                 "local_reservation_mapping_incomplete",
                 "local_exchange_binding_unresolved",
+                "local_exchange_binding_coverage_mismatch",
             )
         )
         and peak[1] <= balance_stamp.observed_at

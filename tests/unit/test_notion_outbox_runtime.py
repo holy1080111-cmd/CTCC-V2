@@ -290,15 +290,46 @@ async def test_incomplete_job_pauses_entire_queue_before_http(tmp_path, orphan_k
     retained.write_bytes(b"synthetic incomplete publication")
     handler, calls, created = recorder(tmp_path, clock)
     worker = service(tmp_path, handler, clock)
-    assert await worker.tick() is None
-    assert worker.status == "paused"
+    assert await worker.tick() == 30
+    assert worker.status == "pending"
     assert worker.last_code == "notion_outbox_job_pair_incomplete"
     assert calls == [] and created == {}
     assert retained.read_bytes() == b"synthetic incomplete publication"
     assert outbox.read_job(tmp_path, REPORT, clock=clock).status == "queued"
     # The incomplete on-disk evidence still blocks after a worker restart.
-    assert await service(tmp_path, handler, clock).tick() is None
+    assert await service(tmp_path, handler, clock).tick() == 30
     assert calls == [] and retained.read_bytes() == b"synthetic incomplete publication"
+
+
+@pytest.mark.asyncio
+async def test_incomplete_pair_rechecks_and_resumes_after_verified_local_recovery(
+    tmp_path,
+):
+    clock = Clock()
+    outbox.enqueue(tmp_path, payload(), clock=clock)
+    later = payload(report_id="recoverable-report")
+    rule = outbox.OutboxPolicy()
+    at = clock()
+    envelope = outbox._seal(
+        outbox.OutboxEnvelope,
+        {"payload": later, "policy": rule, "enqueued_at": at},
+        "envelope_sha256",
+    )
+    initial = outbox._event(envelope, None, "enqueue", at)
+    journal = tmp_path / "recoverable-report.state"
+    journal.mkdir()
+    first_event = journal / "00000001.json"
+    first_event.write_bytes(outbox._wire(initial))
+    saved = first_event.read_bytes()
+    handler, calls, created = recorder(tmp_path, clock)
+    worker = service(tmp_path, handler, clock)
+    assert await worker.tick() == 30
+    assert calls == [] and created == {}
+    outbox.recover_incomplete_enqueue(tmp_path, later, policy=rule, clock=clock)
+    assert first_event.read_bytes() == saved
+    assert await worker.tick() == 30
+    assert set(created) == {REPORT, "recoverable-report"}
+    assert sum(request.url.path == "/v1/pages" for request in calls) == 2
 
 
 @pytest.mark.asyncio
@@ -316,8 +347,8 @@ async def test_orphan_created_during_schema_readback_blocks_dispatch(tmp_path):
         return response
 
     worker = service(tmp_path, handler, clock)
-    assert await worker.tick() is None
-    assert worker.status == "paused"
+    assert await worker.tick() == 30
+    assert worker.status == "pending"
     assert worker.last_code == "notion_outbox_job_pair_incomplete"
     assert [request.method for request in calls] == ["GET", "GET"]
     assert created == {}
@@ -340,8 +371,8 @@ async def test_orphan_created_during_adapter_query_blocks_page_create(tmp_path):
         return response
 
     worker = service(tmp_path, handler, clock)
-    assert await worker.tick() is None
-    assert worker.status == "paused"
+    assert await worker.tick() == 30
+    assert worker.status == "pending"
     assert worker.last_code == "notion_outbox_job_pair_incomplete"
     assert not created
     assert not any(request.url.path == "/v1/pages" for request in calls)
@@ -350,7 +381,7 @@ async def test_orphan_created_during_adapter_query_blocks_page_create(tmp_path):
     assert view.head.outcome.status == "not_created_retryable"
     assert view.head.outcome.receipt_sha256 is not None
     count = len(calls)
-    assert await service(tmp_path, handler, clock).tick() is None
+    assert await service(tmp_path, handler, clock).tick() == 30
     assert len(calls) == count
     assert (journal / "00000001.json").read_bytes() == b"late partial journal"
 
@@ -373,8 +404,8 @@ async def test_pre_create_local_read_failure_is_receipted_unsent_and_pauses(
 
     monkeypatch.setattr(runtime, "discover_jobs", failed_once)
     worker = service(tmp_path, handler, clock)
-    assert await worker.tick() is None
-    assert worker.status == "paused"
+    assert await worker.tick() == 30
+    assert worker.status == "pending"
     assert worker.last_code == "notion_outbox_pre_create_check_failed"
     assert not created
     assert not any(request.url.path == "/v1/pages" for request in calls)
@@ -418,14 +449,14 @@ async def test_orphan_after_last_check_before_send_pauses_later_http(
 
     monkeypatch.setattr(notion_adapter.NotionDeliveryAdapter, "_request", raced_request)
     worker = service(tmp_path, handler, clock)
-    assert await worker.tick() is None
-    assert worker.status == "paused"
+    assert await worker.tick() == 30
+    assert worker.status == "pending"
     assert worker.last_code == "notion_outbox_job_pair_incomplete"
     assert len(created) == 1
     assert sum(request.url.path == "/v1/pages" for request in calls) == 1
     assert outbox.read_job(tmp_path, REPORT, clock=clock).status == "delivered"
     count = len(calls)
-    assert await service(tmp_path, handler, clock).tick() is None
+    assert await service(tmp_path, handler, clock).tick() == 30
     assert len(calls) == count
     assert (journal / "00000001.json").read_bytes() == b"late partial journal"
 
@@ -446,7 +477,7 @@ async def test_remote_rate_limit_is_durable_even_when_late_orphan_pauses(tmp_pat
         return normal(request)
 
     worker = service(tmp_path, handler, clock)
-    assert await worker.tick() is None
+    assert await worker.tick() == 30
     assert worker.last_code == "notion_outbox_job_pair_incomplete"
     assert (tmp_path / ".notion-runtime" / "00000001.json").is_file()
     count = len(calls)

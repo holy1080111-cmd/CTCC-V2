@@ -25,6 +25,7 @@ class SubmissionOutboxRuntime:
         self._thread = self._loop = self._task = None
         self._stop = threading.Event()
         self._after = ""
+        self._audit_after = ""
         self.status, self.last_code = "disabled", "submission_outbox_disabled"
 
     async def start(self):
@@ -85,6 +86,23 @@ class SubmissionOutboxRuntime:
             root = storage._root_path(Path(self.settings.submission_outbox_root))
             namespace = queue(self.settings.submission_outbox_queue_namespace)
             repository = SubmissionReportingRepository(self._sessions, clock=self.clock)
+            try:
+                next_audit_after = await repository.audit_projection_receipts(
+                    namespace,
+                    root=root,
+                    limit=self.settings.submission_outbox_batch_size,
+                    after=self._audit_after,
+                )
+            except Exception:  # noqa: BLE001 -- Never disclose private path/SQL state.
+                self._pending("submission_outbox_projection_audit_pending")
+                return
+            if next_audit_after:
+                self._audit_after = next_audit_after
+                self._pending("submission_outbox_projection_audit_in_progress")
+                return
+            # Only an empty tail finishes this bounded audit cycle. Do not
+            # project new jobs or claim an idle pass after checking one page.
+            self._audit_after = ""
             pending = await repository.pending_ids(
                 namespace,
                 limit=self.settings.submission_outbox_batch_size,

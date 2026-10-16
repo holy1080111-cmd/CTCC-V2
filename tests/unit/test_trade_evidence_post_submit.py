@@ -516,6 +516,38 @@ def test_outbox_publication_fault_never_claims_durable_readback_or_order_retry(
     assert (path in memory.files) == (failure != "before")
 
 
+def test_local_retry_requires_explicit_spool_recovery_without_new_submission(
+    memory, clock
+):
+    source = report()
+    marker = (source.report_id + ".json",)
+    journal = (source.report_id + ".state", "00000001.json")
+    memory.fail_publish_before.add(marker)
+    first = module.enqueue_post_submit(memory.root, source, clock=clock)
+    assert first.status == "failed" and not first.durable_outbox_readback
+    initial = memory.files[journal]
+    memory.fail_publish_before.clear()
+    clock.advance(1)
+    ordinary_retry = module.enqueue_post_submit(memory.root, source, clock=clock)
+    assert ordinary_retry.status == "failed"
+    assert memory.files == {journal: initial}
+    outbox.recover_incomplete_enqueue(
+        memory.root,
+        module._outbox_payload(
+            source, hashlib.sha256(module.freeze_submission_report(source)).hexdigest()
+        ),
+        policy=outbox.OutboxPolicy(),
+        clock=clock,
+    )
+    recovered = module.enqueue_post_submit(memory.root, source, clock=clock)
+    assert recovered.status == "enqueued" and recovered.durable_outbox_readback
+    assert memory.files[journal] == initial
+    assert (
+        outbox.read_job(memory.root, source.report_id, clock=clock).status == "queued"
+    )
+    assert not recovered.execution_authority and not recovered.order_retry_authority
+
+
 @pytest.mark.parametrize(
     "location",
     [

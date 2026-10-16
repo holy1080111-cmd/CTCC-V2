@@ -608,12 +608,17 @@ async def test_late_file_failure_preserves_journal_spool_and_trade(
     assert journal.is_file()
     saved = journal.read_bytes()
     monkeypatch.setattr(directory, "publish", original)
-    with pytest.raises(SubmissionReportingError, match="enqueue_pending"):
-        await repository.project_one(
-            result.spool_id, root=tmp_path, queue_namespace=QUEUE
-        )
+    restarted = SubmissionReportingRepository(database[1], clock=repository.clock)
+    projected = await restarted.project_one(
+        result.spool_id, root=tmp_path, queue_namespace=QUEUE
+    )
     assert journal.read_bytes() == saved
-    assert result.spool_id in await repository.pending_ids(QUEUE)
+    assert projected is not None
+    assert (
+        outbox.read_job(tmp_path, hold.report_id, clock=repository.clock).status
+        == "queued"
+    )
+    assert result.spool_id not in await restarted.pending_ids(QUEUE)
     assert (await repository.read_scope(hold.scope)).active[0].state == "consumed"
 
 
@@ -647,6 +652,61 @@ async def test_projected_envelope_survives_missing_db_receipt_then_replays(
     )
     assert projected and (tmp_path / (hold.report_id + ".json")).read_bytes() == saved
     assert len(outbox.read_job(tmp_path, hold.report_id, clock=clock).events) == 1
+
+
+async def test_committed_projection_receipt_audit_denies_missing_local_pair(
+    database, fixture, tmp_path
+):
+    _, repository, _, hold, args = await setup(database, fixture)
+    result = await repository.record_observation(
+        hold.scope, hold.original_event_key, **args
+    )
+    await repository.project_one(result.spool_id, root=tmp_path, queue_namespace=QUEUE)
+    assert (
+        await repository.audit_projection_receipts(QUEUE, root=tmp_path)
+        == result.spool_id
+    )
+    missing_root = tmp_path / "simulated-lost-outbox-root"
+    missing_root.mkdir()
+    with pytest.raises(
+        SubmissionReportingError, match="submission_projection_local_missing_or_invalid"
+    ):
+        await repository.audit_projection_receipts(QUEUE, root=missing_root)
+    assert (await repository.read_scope(hold.scope)).active[0].state == "consumed"
+
+
+async def test_committed_receipt_retry_never_republishes_lost_local_pair(
+    database, fixture, tmp_path, monkeypatch
+):
+    _, repository, _, hold, args = await setup(database, fixture)
+    result = await repository.record_observation(
+        hold.scope, hold.original_event_key, **args
+    )
+    receipt = await repository.project_one(
+        result.spool_id, root=tmp_path, queue_namespace=QUEUE
+    )
+    missing_root = tmp_path / "simulated-lost-outbox-root"
+    missing_root.mkdir()
+    import app.database.repositories.submission_reporting as module
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("committed receipt must not publish a replacement outbox job")
+
+    monkeypatch.setattr(module.post_submit, "enqueue_post_submit", forbidden)
+    monkeypatch.setattr(module.outbox, "recover_incomplete_enqueue", forbidden)
+    with pytest.raises(
+        SubmissionReportingError, match="submission_projection_local_missing_or_invalid"
+    ):
+        await repository.project_one(
+            result.spool_id, root=missing_root, queue_namespace=QUEUE
+        )
+    assert tuple(missing_root.iterdir()) == ()
+    assert (
+        await repository.read_projection(
+            result.spool_id, expected_envelope_sha256=receipt.envelope_sha256
+        )
+        == receipt
+    )
 
 
 async def test_immutable_rows_cannot_be_changed_or_deleted(database, fixture, tmp_path):

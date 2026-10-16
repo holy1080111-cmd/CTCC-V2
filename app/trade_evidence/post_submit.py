@@ -565,6 +565,21 @@ def verify_submission_report(raw: bytes, expected_sha256: str) -> DemoSubmission
         raise PostSubmitError("post_submit_record_invalid") from None
 
 
+def _outbox_payload(report: DemoSubmissionReport, report_sha256: str):
+    return outbox.OutboxPayload(
+        report_id=report.report_id,
+        instrument_id=report.candidate.instrument_id,
+        strategy=report.strategy,
+        direction=report.candidate.direction,
+        order_reference=report.client_order_id,
+        submitted_at=report.completed_at,
+        evidence_completed_at=report.evidence_completed_at,
+        source_sha256=report.candidate.original_source_sha256,
+        evidence_report_sha256=report.candidate.original_evidence_sha256,
+        submission_receipt_sha256=report_sha256,
+    )
+
+
 def enqueue_post_submit(
     root: Path,
     report: DemoSubmissionReport,
@@ -595,18 +610,7 @@ def enqueue_post_submit(
     if report.status != "acknowledged":
         return PostSubmitReportingResult(**values)
     try:
-        payload = outbox.OutboxPayload(
-            report_id=report.report_id,
-            instrument_id=report.candidate.instrument_id,
-            strategy=report.strategy,
-            direction=report.candidate.direction,
-            order_reference=report.client_order_id,
-            submitted_at=report.completed_at,
-            evidence_completed_at=report.evidence_completed_at,
-            source_sha256=report.candidate.original_source_sha256,
-            evidence_report_sha256=report.candidate.original_evidence_sha256,
-            submission_receipt_sha256=pin,
-        )
+        payload = _outbox_payload(report, pin)
         view = outbox.validate_outbox_view(
             outbox.enqueue(root, payload, policy=outbox_policy, clock=clock)
         )

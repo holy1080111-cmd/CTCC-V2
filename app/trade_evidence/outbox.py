@@ -727,6 +727,46 @@ def enqueue(
         return _view(envelope, events, clock)
 
 
+def recover_incomplete_enqueue(
+    root: Path,
+    payload: OutboxPayload,
+    *,
+    policy: OutboxPolicy,
+    clock: Callable[[], datetime] = actual_utc,
+) -> OutboxView:
+    """Complete only a missing marker from an intact initial journal.
+
+    The caller must first verify the committed submission spool that supplied
+    ``payload`` and ``policy``. Never rewrite an existing marker or journal: a
+    partial/conflicting record remains uncertain and needs manual resolution.
+    """
+    payload = _copy(payload, OutboxPayload)
+    policy = _copy(policy, OutboxPolicy)
+    report_id = payload.report_id
+    with _transaction(root, report_id) as directory:
+        names = directory.names()
+        if report_id + ".json" in names or report_id + ".state" not in names:
+            raise OutboxError("outbox_recovery_state_invalid")
+        with directory.child(report_id + ".state") as journal:
+            if journal.names() != ["00000001.json"]:
+                raise OutboxError("outbox_recovery_journal_invalid")
+            initial = _decode(
+                journal.read("00000001.json", MAX_RECORD_BYTES), OutboxEvent
+            )
+        envelope = _seal(
+            OutboxEnvelope,
+            {"payload": payload, "policy": policy, "enqueued_at": initial.at},
+            "envelope_sha256",
+        )
+        _verify(envelope, (initial,))
+        raw = _wire(envelope)
+        directory.publish(report_id + ".json", raw)
+        loaded, events = _load(directory, report_id)
+        if _wire(loaded) != raw or events != (initial,):
+            raise OutboxError("outbox_recovery_readback_mismatch")
+        return _view(loaded, events, clock)
+
+
 def read_job(root: Path, report_id: str, *, clock=actual_utc) -> OutboxView:
     with _transaction(root, report_id) as directory:
         return _view(*_load(directory, report_id), clock)

@@ -1466,6 +1466,48 @@ def test_native_windows_late_envelope_denial_retains_state_journal(
     assert initial_file.read_bytes() == original
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Native Windows recovery acceptance")
+def test_native_windows_late_winerror32_recovers_only_matching_initial_journal(
+    native_root, clock, monkeypatch
+):
+    original_publish = module.storage._WindowsDirectory.publish
+
+    def deny_envelope(directory, name, raw):
+        if name == f"{REPORT}.json":
+            raise ctypes.WinError(32)
+        return original_publish(directory, name, raw)
+
+    monkeypatch.setattr(module.storage._WindowsDirectory, "publish", deny_envelope)
+    with pytest.raises(module.OutboxError, match="^outbox_storage_permission_denied$"):
+        module.enqueue(native_root, payload(), clock=clock)
+    journal = native_root / f"{REPORT}.state" / "00000001.json"
+    saved = journal.read_bytes()
+    monkeypatch.setattr(module.storage._WindowsDirectory, "publish", original_publish)
+
+    clock.advance(1)
+    for value, rule in (
+        (payload(order_reference="changed"), policy()),
+        (payload(), policy(max_attempts=2)),
+    ):
+        with pytest.raises(module.OutboxError, match="^outbox_journal_mismatch$"):
+            module.recover_incomplete_enqueue(
+                native_root, value, policy=rule, clock=clock
+            )
+    assert journal.read_bytes() == saved
+    assert not (native_root / f"{REPORT}.json").exists()
+
+    result = module.recover_incomplete_enqueue(
+        native_root, payload(), policy=policy(), clock=clock
+    )
+    assert result.status == "queued" and len(result.events) == 1
+    assert module.read_job(native_root, REPORT, clock=clock) == result
+    assert journal.read_bytes() == saved
+    with pytest.raises(module.OutboxError, match="^outbox_recovery_state_invalid$"):
+        module.recover_incomplete_enqueue(
+            native_root, payload(), policy=policy(), clock=clock
+        )
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Required real Windows outbox acceptance")
 def test_native_windows_root_publication_delivery_and_conflict_preserve_history(
     native_root, clock
@@ -1561,6 +1603,42 @@ def test_permission_denial_after_mkdir_retains_exact_partial_and_refuses_rebuild
         module.claim_job(memory.root, REPORT, worker_id="new-worker", clock=clock)
     assert memory.files == retained
     assert memory.active_contexts == 0
+
+
+def test_spool_pinned_recovery_rejects_conflict_and_preserves_initial_journal(
+    memory, clock
+):
+    marker = (f"{REPORT}.json",)
+    memory.fail_publish_before.add(marker)
+    with pytest.raises(module.OutboxError, match="^outbox_storage_unavailable$"):
+        enqueue(memory, clock)
+    initial = memory.files[event_path(1)]
+    memory.fail_publish_before.clear()
+    clock.advance(1)
+    with pytest.raises(module.OutboxError, match="^outbox_journal_mismatch$"):
+        module.recover_incomplete_enqueue(
+            memory.root,
+            payload(order_reference="changed"),
+            policy=policy(),
+            clock=clock,
+        )
+    assert memory.files == {event_path(1): initial}
+    restored = module.recover_incomplete_enqueue(
+        memory.root, payload(), policy=policy(), clock=clock
+    )
+    assert restored.status == "queued"
+    assert memory.files[event_path(1)] == initial
+    assert module.read_job(memory.root, REPORT, clock=clock) == restored
+
+
+def test_spool_pinned_recovery_refuses_partial_initial_journal(memory, clock):
+    memory.directories.add((f"{REPORT}.state",))
+    memory.files[event_path(1)] = b"{"  # An interrupted no-clobber native write.
+    with pytest.raises(module.OutboxError, match="^outbox_disk_record_invalid$"):
+        module.recover_incomplete_enqueue(
+            memory.root, payload(), policy=policy(), clock=clock
+        )
+    assert memory.files == {event_path(1): b"{"}
 
 
 def test_root_permission_denial_before_transaction_creates_no_artifacts(

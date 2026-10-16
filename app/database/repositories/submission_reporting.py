@@ -629,6 +629,69 @@ class SubmissionReportingRepository(QualificationLedgerRepository):
             )
             return rows or tuple((await session.scalars(statement)).all())
 
+    async def audit_projection_receipts(self, namespace, *, root, limit=16, after=""):
+        """Bounded read-only DB/file comparison; never rebuild an absent job.
+
+        Windows cannot promise directory durability across sudden power loss.
+        A committed projection receipt must therefore not silently hide a lost
+        local outbox pair after restart. Missing or conflicting bytes deny this
+        audit and require external delivery reconciliation.
+        """
+        namespace = queue(namespace)
+        if (
+            type(limit) is not int
+            or not 1 <= limit <= 16
+            or (after and pin(after) != after)
+        ):
+            raise SubmissionReportingError("submission_projection_query_bound")
+        async with self.session_factory() as session:
+            statement = (
+                select(QualificationReportProjectionReceipt, QualificationReportSpool)
+                .join(
+                    QualificationReportSpool,
+                    QualificationReportSpool.spool_id
+                    == QualificationReportProjectionReceipt.spool_id,
+                )
+                .where(
+                    QualificationReportProjectionReceipt.queue_namespace == namespace
+                )
+                .order_by(QualificationReportProjectionReceipt.spool_id)
+                .limit(limit)
+            )
+            if after:
+                statement = statement.where(
+                    QualificationReportProjectionReceipt.spool_id > after
+                )
+            rows = tuple((await session.execute(statement)).all())
+            for receipt, spool in rows:
+                _, report, policy = await self._verify_spool(session, spool)
+                if (
+                    receipt.report_sha256,
+                    receipt.policy_sha256,
+                    receipt.queue_namespace,
+                ) != (spool.report_sha256, spool.policy_sha256, namespace):
+                    raise SubmissionReportingError(
+                        "submission_projection_receipt_conflict"
+                    )
+                try:
+                    view = outbox.validate_outbox_view(
+                        outbox.read_job(root, report.report_id, clock=self.clock)
+                    )
+                except Exception:  # noqa: BLE001 - Missing/altered file state is redacted.
+                    raise SubmissionReportingError(
+                        "submission_projection_local_missing_or_invalid"
+                    ) from None
+                if (
+                    view.envelope.envelope_sha256 != receipt.envelope_sha256
+                    or view.envelope.payload.submission_receipt_sha256
+                    != spool.report_sha256
+                    or view.envelope.policy != policy
+                ):
+                    raise SubmissionReportingError(
+                        "submission_projection_local_mismatch"
+                    )
+            return rows[-1][0].spool_id if rows else ""
+
     async def project_one(self, spool_id, *, root, queue_namespace):
         """Only DB→local durable outbox. No token, HTTP, order or callback."""
         namespace = queue(queue_namespace)
@@ -646,30 +709,30 @@ class SubmissionReportingRepository(QualificationLedgerRepository):
                 )
             _, report, policy = await self._verify_spool(session, spool)
             existing = await session.get(QualificationReportProjectionReceipt, spool_id)
-            result = post_submit.enqueue_post_submit(
-                root, report, outbox_policy=policy, clock=self.clock
-            )
-            if result.status != "enqueued" or not result.durable_outbox_readback:
-                raise SubmissionReportingError("submission_local_enqueue_pending")
-            view = outbox.validate_outbox_view(
-                outbox.read_job(root, report.report_id, clock=self.clock)
-            )
-            if (
-                view.envelope.envelope_sha256 != result.outbox_envelope_sha256
-                or view.envelope.payload.submission_receipt_sha256
-                != spool.report_sha256
-                or view.envelope.policy != policy
-            ):
-                raise SubmissionReportingError("submission_local_readback_mismatch")
-            envelope_sha256 = view.envelope.envelope_sha256
             if existing is not None:
+                # A committed receipt is the authority for this projection.
+                # Never publish a replacement if its local pair disappeared:
+                # the lost pair may already have reached a remote delivery.
+                try:
+                    view = outbox.validate_outbox_view(
+                        outbox.read_job(root, report.report_id, clock=self.clock)
+                    )
+                except Exception:  # noqa: BLE001 - Redact filesystem failure.
+                    raise SubmissionReportingError(
+                        "submission_projection_local_missing_or_invalid"
+                    ) from None
+                envelope_sha256 = view.envelope.envelope_sha256
                 if (
-                    existing.envelope_sha256,
+                    envelope_sha256,
+                    view.envelope.payload.submission_receipt_sha256,
+                    view.envelope.policy,
                     existing.report_sha256,
                     existing.policy_sha256,
                     existing.queue_namespace,
                 ) != (
-                    envelope_sha256,
+                    existing.envelope_sha256,
+                    spool.report_sha256,
+                    policy,
                     spool.report_sha256,
                     spool.policy_sha256,
                     namespace,
@@ -678,6 +741,48 @@ class SubmissionReportingRepository(QualificationLedgerRepository):
                         "submission_projection_receipt_conflict"
                     )
             else:
+                result = post_submit.enqueue_post_submit(
+                    root,
+                    report,
+                    outbox_policy=policy,
+                    clock=self.clock,
+                )
+                if result.status != "enqueued" or not result.durable_outbox_readback:
+                    # Only this committed, fully replayed spool may complete a
+                    # missing marker. The initial event fixes the original
+                    # timestamp and hash; no state is rewritten.
+                    try:
+                        outbox.recover_incomplete_enqueue(
+                            root,
+                            post_submit._outbox_payload(report, spool.report_sha256),
+                            policy=policy,
+                            clock=self.clock,
+                        )
+                    except outbox.OutboxError:
+                        raise SubmissionReportingError(
+                            "submission_local_enqueue_pending"
+                        ) from None
+                    result = post_submit.enqueue_post_submit(
+                        root, report, outbox_policy=policy, clock=self.clock
+                    )
+                    if (
+                        result.status != "enqueued"
+                        or not result.durable_outbox_readback
+                    ):
+                        raise SubmissionReportingError(
+                            "submission_local_enqueue_pending"
+                        )
+                view = outbox.validate_outbox_view(
+                    outbox.read_job(root, report.report_id, clock=self.clock)
+                )
+                if (
+                    view.envelope.envelope_sha256 != result.outbox_envelope_sha256
+                    or view.envelope.payload.submission_receipt_sha256
+                    != spool.report_sha256
+                    or view.envelope.policy != policy
+                ):
+                    raise SubmissionReportingError("submission_local_readback_mismatch")
+                envelope_sha256 = view.envelope.envelope_sha256
                 now = require_aware(self.clock())
                 if now < spool.created_at:
                     raise SubmissionReportingError(

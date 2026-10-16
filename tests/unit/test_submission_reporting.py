@@ -162,6 +162,9 @@ async def test_one_pending_spool_failure_does_not_block_other_reports(
         def __init__(self, *args, **kwargs):
             pass
 
+        async def audit_projection_receipts(self, *args, **kwargs):
+            return ""
+
         async def pending_ids(self, *args, **kwargs):
             return ("a" * 64, "b" * 64)
 
@@ -185,6 +188,81 @@ async def test_one_pending_spool_failure_does_not_block_other_reports(
 
 
 @pytest.mark.asyncio
+async def test_lost_projected_file_audit_denies_new_projection(tmp_path, monkeypatch):
+    import app.trade_evidence.submission_runtime as module
+
+    called = []
+
+    class Repository:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def audit_projection_receipts(self, *args, **kwargs):
+            called.append("audit")
+            raise RuntimeError("synthetic lost outbox file")
+
+        async def pending_ids(self, *args, **kwargs):
+            called.append("pending")
+            return ()
+
+    monkeypatch.setattr(module, "SubmissionReportingRepository", Repository)
+    values = Settings(
+        _env_file=None,
+        environment="test",
+        submission_outbox_enabled=True,
+        submission_outbox_root=str(tmp_path),
+    )
+    runtime = SubmissionOutboxRuntime(values, session_factory=object())
+    await runtime.tick()
+    assert called == ["audit"]
+    assert runtime.status == "pending"
+    assert runtime.last_code == "submission_outbox_projection_audit_pending"
+
+
+@pytest.mark.asyncio
+async def test_projection_waits_for_complete_bounded_receipt_audit_cycle(
+    tmp_path, monkeypatch
+):
+    import app.trade_evidence.submission_runtime as module
+
+    calls = []
+
+    class Repository:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def audit_projection_receipts(self, *args, after, **kwargs):
+            calls.append(("audit", after))
+            return {"": "a" * 64, "a" * 64: "b" * 64, "b" * 64: ""}[after]
+
+        async def pending_ids(self, *args, **kwargs):
+            calls.append(("pending", ""))
+            return ()
+
+    monkeypatch.setattr(module, "SubmissionReportingRepository", Repository)
+    values = Settings(
+        _env_file=None,
+        environment="test",
+        submission_outbox_enabled=True,
+        submission_outbox_root=str(tmp_path),
+    )
+    runtime = SubmissionOutboxRuntime(values, session_factory=object())
+    await runtime.tick()
+    assert runtime.last_code == "submission_outbox_projection_audit_in_progress"
+    assert calls == [("audit", "")]
+    await runtime.tick()
+    assert calls == [("audit", ""), ("audit", "a" * 64)]
+    await runtime.tick()
+    assert calls == [
+        ("audit", ""),
+        ("audit", "a" * 64),
+        ("audit", "b" * 64),
+        ("pending", ""),
+    ]
+    assert runtime.last_code == "submission_outbox_pass_complete"
+
+
+@pytest.mark.asyncio
 async def test_worker_pool_created_and_disposed_on_own_thread(tmp_path, monkeypatch):
     import app.trade_evidence.submission_runtime as module
 
@@ -202,6 +280,9 @@ async def test_worker_pool_created_and_disposed_on_own_thread(tmp_path, monkeypa
     class Repository:
         def __init__(self, *args, **kwargs):
             pass
+
+        async def audit_projection_receipts(self, *args, **kwargs):
+            return ""
 
         async def pending_ids(self, *args, **kwargs):
             processed.set()

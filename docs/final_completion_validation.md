@@ -5802,3 +5802,40 @@ error: a DB0040 test imported a revision-dependent fixture without supplying
 `revision`. The current working source now parametrizes that test explicitly;
 collection, Ruff and format checks passed. Its actual PostgreSQL test and the
 complete migration/restart job must rerun on the final committed source.
+
+## 2026-10-16 original Notion evidence examples and outbox recovery boundary
+
+The [original remote-control construction specification](https://app.notion.com/p/3d832165a6888173bfb1df896604fc7c)
+names four final reproducible examples: (1) complete evidence for a rejected
+legacy high-score invalid signal; (2) complete evidence for a Demo candidate
+qualified by the new pipeline; (3) a candidate cancelled by Execution Recheck
+because price moved while evidence was being generated; and (4) a `summary.png`
+that clearly marks Entry, Timing, SL, TP, liquidity and Gate results. The
+separately added classes of authentic PASS, WAIT/CANCEL/FAIL, post-G12 stale or
+changed-market rejection, and execution/reconciliation are additional
+acceptance evidence, not substitutes for these original four examples. Both
+sets remain 0/4. Synthetic tests, a public-only packet and legacy automation
+records do not count.
+
+The current source-bound outbox recovery work is limited to a DB-spooled,
+readback-verified local journal whose initial event still fixes the original
+envelope hash. An interrupted envelope publication can be completed without
+deleting or rewriting that journal. Missing or conflicting state remains
+unresolved. A committed DB projection receipt is checked against its existing
+file pair **before** any publication; a lost pair cannot be reconstructed by
+retrying `project_one`. The submission worker audits receipt/file pairs in
+bounded batches and halts new projection until one audit cycle reaches an empty
+tail. The independent Notion delivery worker does not wait for that DB audit,
+so this is eventual detection rather than a global pre-delivery barrier. Large
+receipt inventories also delay new projection by a full audit cycle. An
+incomplete file pair is rechecked with bounded delay and causes no Notion HTTP
+until repaired, without deleting the initial journal. Exact-source
+PostgreSQL/Windows/Linux CI and Windows sudden-power-loss directory durability
+have not yet been accepted, so this work does not change the overall outbox or
+final CTCC acceptance status.
+
+The account materializer now treats an exchange pending order whose observed
+notional, margin or stop-risk exceeds the matched durable local hold as a
+coverage mismatch. Both exposures remain visible, and the complete portfolio
+snapshot stays denied. This does not supply the missing native account history,
+source authenticity or G11 issuer.

@@ -952,6 +952,80 @@ def expired_hold(*, state="uncertain"):
     )
 
 
+def bound_pending_source(*, changed=None):
+    def bind(pages):
+        order = pages["orders_pending"][0][0]
+        order["clOrdId"] = "ctcc.synthetic.800"
+        if changed is not None:
+            changed(order)
+
+    return packet(changes=bind)
+
+
+def bound_ledger_inputs():
+    receipt = expired_hold()
+    ledger = ledger_evidence(active=(receipt,)).model_copy(
+        update={
+            "order_bindings": (
+                module.LedgerOrderBinding(
+                    reservation_id=receipt.reservation_id,
+                    order_id="800",
+                    client_order_id="ctcc.synthetic.800",
+                ),
+            )
+        }
+    )
+    return snapshot_inputs(ledger=ledger), receipt
+
+
+def test_matching_pending_order_stays_deduplicated_with_local_hold():
+    supplied, receipt = bound_ledger_inputs()
+    result = materialize(source=bound_pending_source(), supplied=supplied)
+    assert [item.reservation_id for item in result.pending_reservations] == [
+        "local:" + receipt.reservation_id
+    ]
+    assert "local_exchange_binding_coverage_mismatch" not in result.incomplete_reasons
+    assert "partial_fill_local_union_conservative" in result.incomplete_reasons
+    assert result.snapshot is None and result.execution_authority is False
+
+
+@pytest.mark.parametrize("exceeded", ["notional", "margin", "risk_amount"])
+def test_pending_order_outside_local_coverage_is_not_deduplicated(exceeded):
+    def change(order):
+        if exceeded == "notional":
+            order.update(px="102", lever="6")
+            order["attachAlgoOrds"][0]["slTriggerPx"] = "97"
+        elif exceeded == "margin":
+            order["lever"] = "4"
+        else:
+            order["attachAlgoOrds"][0]["slTriggerPx"] = "93"
+
+    supplied, receipt = bound_ledger_inputs()
+    result = materialize(source=bound_pending_source(changed=change), supplied=supplied)
+    assert {item.reservation_id for item in result.pending_reservations} == {
+        "order:800",
+        "local:" + receipt.reservation_id,
+    }
+    exchange = next(
+        item
+        for item in result.pending_reservations
+        if item.reservation_id == "order:800"
+    )
+    local = next(
+        item
+        for item in result.pending_reservations
+        if item.reservation_id == "local:" + receipt.reservation_id
+    )
+    assert {
+        field
+        for field in ("notional", "margin", "risk_amount")
+        if getattr(exchange, field) > getattr(local, field)
+    } == {exceeded}
+    assert "local_exchange_binding_coverage_mismatch" in result.incomplete_reasons
+    assert result.snapshot is None and result.account_complete is False
+    assert result.execution_authority is False
+
+
 def test_incomplete_packet_keeps_diagnostics_without_portfolio_snapshot(source):
     supplied = snapshot_inputs()
     result = materialize(source=source, supplied=supplied)

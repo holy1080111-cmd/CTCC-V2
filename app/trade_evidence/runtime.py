@@ -88,9 +88,9 @@ def discover_jobs(root: Path) -> tuple[str, ...]:
             # A late publisher failure may have left a durable first event
             # without its envelope. Keep that evidence and stop this queue;
             # another complete report is not permission to skip the orphan.
-            raise NotionBindingError(
-                "notion_outbox_job_pair_incomplete", retry_after_seconds=None
-            )
+            # Recheck later so source-owned spool recovery can complete it;
+            # no HTTP is possible while the pair remains incomplete.
+            raise NotionBindingError("notion_outbox_job_pair_incomplete")
         # Ordering is scheduler fairness only. The existing worker independently
         # verifies every complete journal, lease and envelope before dispatch.
         return tuple(sorted(reports))
@@ -273,10 +273,10 @@ class NotionOutboxRuntime:
                         discover_jobs(root)
                         if adapter.pre_create_check_failed:
                             self.status, self.last_code = (
-                                "paused",
+                                "pending",
                                 "notion_outbox_pre_create_check_failed",
                             )
-                            return None
+                            return self.settings.notion_outbox_poll_seconds
                         if adapter.rate_limited or any(
                             item.outbox_status in {"uncertain", "dispatching"}
                             or item.status == "failed"
