@@ -295,18 +295,33 @@ class ScheduledMinuteReceiptStore:
     def _check_due_minute(
         self, ordinal: int, receipt: ScheduledPublicMinuteReceiptV1
     ) -> None:
-        if receipt.reason_code != "source_chain_replayed_custody_unproven":
-            return
         # V1 retained only microsecond display time and cannot replay the
         # original half-open nanosecond decision. Preserve its bytes for audit,
         # but never use a V1 success to continue a sealed window.
         if type(receipt) is not ScheduledPublicMinuteReceiptV2:
-            raise ScheduledMinuteUnresolved(
-                "legacy scheduled minute lacks exact replay time"
-            )
+            if receipt.reason_code == "source_chain_replayed_custody_unproven":
+                raise ScheduledMinuteUnresolved(
+                    "legacy scheduled minute lacks exact replay time"
+                )
+            return
         due_ns = receipt.due_observed_utc_ns
         end_ns = self._schedule.plans[ordinal].end_ns
-        if due_ns is None or not end_ns <= due_ns < end_ns + MINUTE_NS:
+        reason = receipt.reason_code
+        if reason in {
+            "preflight_unavailable",
+            "preflight_mismatch",
+            "clock_unavailable",
+        }:
+            matches = due_ns is None
+        elif reason == "not_due":
+            matches = due_ns is not None and due_ns < end_ns
+        elif reason == "late":
+            matches = due_ns is not None and due_ns >= end_ns + MINUTE_NS
+        else:
+            # The source attempt, including an unresolved result, can only
+            # start after the native due check accepted this exact minute.
+            matches = due_ns is not None and end_ns <= due_ns < end_ns + MINUTE_NS
+        if not matches:
             raise ScheduledMinuteUnresolved(
                 "scheduled minute replay time differs from sealed plan"
             )

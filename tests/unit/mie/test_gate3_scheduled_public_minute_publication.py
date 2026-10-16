@@ -207,6 +207,44 @@ async def test_replay_readback_rejects_outside_half_open_due_with_matching_diges
         restarted.read_ordinal(0, expected_receipt_sha256=impossible.sha256)
 
 
+@pytest.mark.parametrize(
+    ("reason", "forged_offset_ns"),
+    [
+        ("not_due", 0),
+        ("late", MINUTE_NS - 1),
+        ("capture_or_post_read_unresolved", -1),
+        ("capture_result_mismatch", -1),
+        ("preflight_unavailable", -1),
+        ("preflight_mismatch", -1),
+        ("clock_unavailable", -1),
+    ],
+)
+async def test_v2_diagnostic_readback_rejects_rehashed_reason_time_mismatch(
+    case, tmp_path, monkeypatch, reason, forged_offset_ns
+):
+    root, pins, call, _, schedule = _inputs(case, tmp_path)
+    end_ns = schedule.plans[0].end_ns
+    monkeypatch.setattr(capture_owner, "native_stamp", lambda: {"utc_ns": end_ns - 1})
+    store = owner.ScheduledMinuteReceiptStore.initialize(root, **pins)
+    original = await store.capture_once(**call)
+    assert original.contract.reason_code == "not_due"
+
+    forged_ns = end_ns + forged_offset_ns
+    fields = original.contract.model_dump(mode="python")
+    fields["reason_code"] = reason
+    fields["due_observed_utc_ns"] = forged_ns
+    fields["due_observed_at"] = utc_from_ns(forged_ns)
+    contract = capture_owner.ScheduledPublicMinuteReceiptV2.model_validate(fields)
+    forged = _freeze(contract, contract_type=type(contract))
+    slot = root / "minute-00000000"
+    (slot / "receipt.json").write_bytes(forged.payload)
+    (slot / "receipt.sha256").write_bytes(forged.sha256.encode("ascii") + b"\n")
+
+    restarted = owner.ScheduledMinuteReceiptStore.resume(root, **pins)
+    with pytest.raises(owner.ScheduledMinuteUnresolved, match="replay time"):
+        restarted.read_ordinal(0, expected_receipt_sha256=forged.sha256)
+
+
 async def test_legacy_v1_success_keeps_exact_bytes_but_cannot_continue_window(
     case, tmp_path, monkeypatch
 ):
@@ -250,6 +288,43 @@ async def test_legacy_v1_success_keeps_exact_bytes_but_cannot_continue_window(
         owner.ScheduledMinuteUnresolved, match="legacy scheduled minute"
     ):
         restarted.read_ordinal(0, expected_receipt_sha256=legacy_artifact.sha256)
+
+
+async def test_legacy_v1_failure_remains_readable_without_granting_source_replay(
+    case, tmp_path, monkeypatch
+):
+    root, pins, call, _, schedule = _inputs(case, tmp_path)
+    monkeypatch.setattr(
+        capture_owner,
+        "native_stamp",
+        lambda: {"utc_ns": schedule.plans[0].end_ns - 1},
+    )
+    store = owner.ScheduledMinuteReceiptStore.initialize(root, **pins)
+    frozen = await store.capture_once(**call)
+    assert frozen.contract.reason_code == "not_due"
+
+    fields = frozen.contract.model_dump(mode="python")
+    fields.pop("due_observed_utc_ns")
+    fields["schema_version"] = "ctcc.mie.gate3.scheduled_public_minute.v1"
+    legacy = capture_owner.ScheduledPublicMinuteReceiptV1.model_validate(fields)
+    legacy_frozen = _freeze(legacy, contract_type=type(legacy))
+    slot = root / "minute-00000000"
+    (slot / "receipt.json").write_bytes(legacy_frozen.payload)
+    (slot / "receipt.sha256").write_bytes(legacy_frozen.sha256.encode("ascii") + b"\n")
+
+    restarted = owner.ScheduledMinuteReceiptStore.resume(root, **pins)
+    assert (
+        restarted.read_ordinal(0, expected_receipt_sha256=legacy_frozen.sha256)
+        == legacy_frozen
+    )
+    with pytest.raises(owner.ScheduledMinuteUnresolved, match="prior source"):
+        await restarted.capture_once(
+            **{
+                **call,
+                "ordinal": 1,
+                "expected_previous_receipt_sha256s": (legacy_frozen.sha256,),
+            }
+        )
 
 
 @pytest.mark.parametrize("offset,reason", [(-1, "not_due"), (60_000_000_000, "late")])
