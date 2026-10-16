@@ -245,3 +245,34 @@ This document does not read credentials, invoke OS/network probes, change DB
 settings, Arm Demo or authorize Live. Genuine native acceptance, PostgreSQL
 durability/crash cases and original B1 byte/regression checks remain separate
 required validations. New fixtures exercise mechanism/replay only.
+
+## Versioned all-product v6 algo-history diagnostic
+
+The `ctcc.demo_account_plan.v6` GET inventory has its own bounded B1/native
+proof contract, `ctcc.demo_account_algo_history_native_clock_proof.v1`. It
+replays the original finalized B1 event/raw/page chain, the complete 24
+state/type algo-history query inventory, native page-phase timestamps, two
+public-time probes, no-clobber proof files, and a separate readback. Its query
+receipt is `ctcc.observed_algo_history_query.v1`; neither this receipt nor the
+new proof changes the older v5/current-v6/current-v7 policies or hashes.
+
+The v6 diagnostic never issues an account-clock boundary, origin/raw-packet
+lease, flat-start claim, portfolio revision, or execution authority. Legacy
+`collect_and_materialize` rejects the v6 plan before network acquisition. The
+older portfolio-component and execution-window observation paths also reject
+this plan before their own acquisition or index append. The
+new query receipt retains `algo_history_terminal_partition_verified=false`,
+`algo_history_epoch_coverage_verified=false`, and
+`historical_retention_verified=false` even when every requested page has an
+explicit empty terminal. The API's returned history cannot establish what
+happened before its retention window or resolve undocumented terminal states.
+The path therefore remains `DENY` and cannot supply G6/G11.
+It retains the prior 30-second lease measured from the first current response;
+with at least 62 serialized GET queries, an actual collection may expire and
+fail closed before proof readback. No longer lease is claimed or silently
+substituted for this version.
+
+The current unit evidence uses synthetic owned-transport/B1 fixtures and
+relabelled TLS markers solely to exercise replay and tamper rejection. It is
+not a real OKX Demo read, a trusted registration-region attestation, a
+PostgreSQL durability result, or an account acceptance result.

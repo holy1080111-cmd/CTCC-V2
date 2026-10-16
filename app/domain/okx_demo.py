@@ -129,7 +129,13 @@ class OkxDemoWriteResult(BaseModel):
     order: OkxDemoOrderView | None = None
     protection_confirmed: bool | None = None
     protection_client_order_id: str | None = None
-    exchange_data: list[dict[str, Any]] = Field(default_factory=list)
+    exchange_data: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "Restricted operational projection of the OKX write response; "
+            "not original response bytes or forensic custody."
+        ),
+    )
     reconciled: bool = False
     warnings: list[str] = Field(default_factory=list)
     completed_at: datetime = Field(default_factory=lambda: datetime.now(UTC))

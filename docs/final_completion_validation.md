@@ -5839,3 +5839,94 @@ notional, margin or stop-risk exceeds the matched durable local hold as a
 coverage mismatch. Both exposures remain visible, and the complete portfolio
 snapshot stays denied. This does not supply the missing native account history,
 source authenticity or G11 issuer.
+
+## 2026-10-16 public component clock and Demo region diagnostics
+
+An anonymous, GET-only Global-public clock diagnostic captured eleven REST
+responses (server time before/after, four candle intervals, ticker, mark,
+books5, open interest and funding) and one public WebSocket ticker subscription.
+Its [redacted summary](../../validation-results/public-components-b7dc99a-20261016-0159/summary.json)
+has SHA256 `725cf7d60ab7edaf89ddbe5fd1be6b9f7a4df271562e0823681f5b3a42900960`.
+Independent readback matched all eleven raw-body and receipt hashes, the three
+WebSocket application-message hashes and receipt, and the native-clock hash.
+The [independent readback](../../validation-results/public-components-b7dc99a-20261016-0159/independent-readback.json)
+has SHA256 `12d849f2fd303f9d140d8f167fabd8bb171d43bb2fd503b42c7b7cc2959fc9a8`.
+All observed component timestamps were non-future at receipt. Candle timestamps
+are bar-open times and are not substituted for HTTP response times. The probe
+used no account credentials or order writes and explicitly reports `DENY`;
+it cannot establish this account's registration region or trusted Demo source.
+
+A separate four-host, signed **GET** `/api/v5/account/config` diagnostic used
+the existing local Demo key with the simulation header, zero retries, and no
+redirect or environment proxy. Its [redacted receipt](../../validation-results/okx-region-readonly-b7dc99a-20261016.json)
+has SHA256 `3dd03cf0d21e1b60a53b06c20109941c27ac2b5f58b574f84afb71ea265cb091`.
+Global `openapi.okx.com` and the older `www.okx.com` both returned HTTP 401 with
+OKX code `50110`; `us.okx.com` and `eea.okx.com` returned HTTP 401 with `50119`.
+Per the [official OKX error codes](https://app.okx.com/docs-v5/en/#error-code)
+and [regional FAQ](https://www.okx.com/en-gb/help/api-faq), these respectively
+indicate an IP outside the key whitelist and a key absent on that route (which
+can arise from a regional mismatch). The result suggests Global route key
+recognition but is not independent proof of the original registration site.
+The current whitelist prevents authenticated account ingestion. The receipt
+contains no key, UID, IP, private headers, or response body. Account source,
+G11, Demo acceptance and execution remain **DENY**.
+
+The shared private REST transport now classifies only bounded 401 GET codes
+`50110`/`50119` and uses fixed local error text without remote `msg` or `data`.
+For HTTP 200 envelopes with nonzero codes, read failures likewise omit remote
+text/data; any write failure remains `ambiguous_response` pending reconciliation.
+This closes an existing route by which remote error text could reach Demo status,
+API errors, durable events or logs. At the earlier `b7dc99a` source, the legacy
+*successful* Demo acknowledgement path still returned arbitrary parsed exchange
+`sMsg`/`exchange_data` without an immutable raw-response handoff. The working
+source below adds a bounded projection, while its router and final transport
+remain hard DENY. A later positive submit path must use the observed response
+and durable raw journal before projecting a safe public result; silently
+removing the only response evidence would not satisfy forensics or outbox
+acceptance.
+
+## 2026-10-16 uncommitted source safety integration (not acceptance)
+
+The working source advances to migration head `0042`, pending an exact-source
+commit and PostgreSQL CI. DB0041 keeps a Demo exact-UID event-history epoch as
+append-only, read-back, **unverified** evidence; it grants no G6 or order
+authority. DB0042 corrects the DB0018 status-only reporting rule: the current
+submission outcome records `transport_authenticity_verified=false`, so an ACK
+cannot produce an eligible spool or a projection receipt. Migration upgrade
+refuses and preserves any older eligible spool or projection receipt; downgrade
+refuses to restore the unsafe rule. The current Notion runtime, standalone
+delivery wrapper and final adapter reject a report before token/network IO
+without an issuer-backed database projection. A valid historical local file
+pair cannot bypass that barrier. No positive issuer or Notion delivery is
+claimed.
+
+Local focused verification on this uncommitted source: 43 DB0041/DB0042 and
+submission-reporting unit cases passed; 80 account algo-history/native-history
+cases passed; 144 private REST/parser cases passed; and the three Notion
+runtime/adapter/post-submit modules passed with two platform skips. The
+DB0041/DB0042 PostgreSQL cases are prepared but skipped locally because an
+isolated `DATABASE_URL` is unavailable. All these checks are scoped to their
+selected files, not a full final regression. The new account v6 algo-history
+readback and v7 history join remain diagnostic and always deny account
+completeness. The private REST success route now projects only bounded,
+route-specific validated fields; neither that projection nor the redacted
+read error is a durable original-response custody receipt.
+
+A direct V2/V3 risk-reservation attempt now rejects a recorded recheck whose
+runtime, public/account source, publication path or event-ledger authority is
+absent, before risk caps or DB insertion. The current recorded model fixes
+these authority fields false. Its offline mathematical replay remains
+testable, but cannot authorize an operational reservation. The V5 range unit
+module passed 91 cases and the submission-versioned-lineage module passed two;
+four PostgreSQL direct-repository negative cases skipped locally. This is a
+closed admission gap, **not** a complete R7 positive pipeline: source-derived
+G1--G11, complete account and protection issuers are still missing.
+
+The preceding exact `b7dc99a` CI run has eight successful Linux shards whose
+downloaded artifacts were independently read back. The
+[aggregate identity receipt](../../validation-results/ci-b7dc99a-linux-all-20261016/identity-readback.json)
+SHA256 is `08423ad84dd468ee79045fa236dfe6b4c294c0f5c95433a612e0a362559b807c`.
+Their 15,333 JUnit cases had zero failures/errors and 76 Windows-only skips.
+The separate 390-case PostgreSQL suite and Windows job were still running at
+02:44 UTC; the aggregate Docker job had not started. This CI identity is for
+the *earlier* `b7dc99a` source and cannot validate the current working changes.

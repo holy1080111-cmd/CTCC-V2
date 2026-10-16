@@ -1,7 +1,7 @@
 # CTCC V2 v1.6.9 — Durable OKX Live Recovery
 
 **V2.0 production acceptance is incomplete.** The final-completion branch is
-undergoing new source-bound validation (2026-10-11 update); [current status and boundaries](docs/final_completion_validation.md)
+undergoing new source-bound validation (2026-10-16 update); [current status and boundaries](docs/final_completion_validation.md)
 distinguish engineering checks from real Demo, OOS and Micro Live acceptance.
 Live remains default OFF and requires contemporaneous operator authorization.
 
@@ -127,13 +127,21 @@ schedule and preregistration records, and further controlled Demo journal and
 claim safeguards. Migration `0033` adds a restricted database observation of
 an already committed public capture witness. Its timestamp precedes the ACK's
 own commit; historical decision-time availability and Gate 3 remain unproven.
-The current source has not passed final PostgreSQL, Docker, Demo or Live
-acceptance.
+Migrations `0034`–`0040` add Demo control compare-and-swap, public-receipt
+post-read observation, account observation policy and typed records, and
+pre-G12 invocation custody. Migration `0041` records a claimed Demo event
+history epoch and append-only invalidations. Its first record is explicitly
+unverified; it cannot prove that older exchange history is complete or permit
+G6, risk reservation, or an order. Migration `0042` denies a status-only
+submission ACK becoming an eligible reporting spool or Notion projection;
+it refuses upgrade over unresolved legacy eligible rows or projection receipts
+without deleting their evidence, and refuses an unsafe downgrade. The current source has not passed final
+PostgreSQL, Docker, Demo or Live acceptance.
 
 Migration identities (the stopped local deployment is not silently upgraded):
 
 ```text
-Current final-completion source head: 0033
+Current final-completion source head: 0042
 Last independently restored local deployment: 0017
 ```
 
@@ -196,6 +204,11 @@ Paper, Demo, Live, or exchange writes. See
 `docs/external_benchmark_pack_v3.md`.
 
 ## Adaptive Demo portfolio (disabled by default)
+
+The percentages in this section describe a preserved legacy extension, not
+the V2.0 qualified trading profile. The V2.0 structural limits are 0.5% risk
+per trade, 1% open stop-risk, a 300-USDT position margin bucket, and at most
+60% aggregate margin. The current final transport refuses legacy order writes.
 
 The Demo automation can rank candidates by analysis score and, only when
 `OKX_DEMO_SCORE_RISK_ENABLED=true`, use score-tiered leverage, stop-risk, and

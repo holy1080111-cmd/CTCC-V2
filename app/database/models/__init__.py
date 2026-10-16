@@ -25,6 +25,7 @@ from app.database.models.demo_automation import (
     DemoAutomationState,
 )
 from app.database.models.demo_control import DemoAccountControl, DemoControlJournal
+from app.database.models.demo_event_history_epoch import DemoEventHistoryEpochEvent
 from app.database.models.g12_invocation_custody import (
     G12InvocationClaim,
     G12InvocationPublication,
@@ -131,6 +132,7 @@ __all__ = [
     "DemoAutomationState",
     "DemoControlJournal",
     "DemoDailyPerformanceReport",
+    "DemoEventHistoryEpochEvent",
     "DemoObservabilityEvent",
     "DemoPerformanceSnapshot",
     "DemoSoakSession",

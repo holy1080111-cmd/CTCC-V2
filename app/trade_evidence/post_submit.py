@@ -2,7 +2,8 @@
 
 This module has no order client, order callback, scheduler or environment lookup.
 An acknowledged Demo result can enqueue metadata using the existing durable
-outbox; a separately invoked one-pass worker uses the existing Notion adapter.
+outbox; a separately invoked one-pass worker is currently denied pending an
+issuer-backed database source/readback barrier.
 Acknowledgement means neither a fill nor confirmed protection or profitability.
 
 The original candidate and a consumed pre-submit reservation receipt are checked
@@ -37,7 +38,13 @@ from pydantic import (
 )
 
 from app.domain.okx_demo import OkxDemoOrderAcknowledgement, OkxDemoWriteResult
-from app.trade_evidence import forensics, outbox, outbox_worker, storage
+from app.trade_evidence import (
+    delivery_source_authority,
+    forensics,
+    outbox,
+    outbox_worker,
+    storage,
+)
 from app.trade_evidence.notion_adapter import NotionDeliveryAdapter
 from app.trade_qualification import reservations
 
@@ -637,15 +644,21 @@ async def run_post_submit_pass(
     policy: outbox_worker.OutboxWorkerPolicy,
     clock: Callable[[], datetime] = outbox.actual_utc,
 ) -> outbox_worker.OutboxPassResult:
-    """Explicit separate reporting pass; no order callback or credential lookup.
+    """Explicit separate reporting pass, currently source-authority denied.
 
     Construct the existing adapter with an explicitly supplied client/token and
     four destination property pins. Caller owns the HTTP client. This function
     neither enqueues nor accepts submit results and never starts a scheduler.
-    Cancel/timeout recovery and remote ambiguity retain the existing outbox rules.
+    Synthetic downstream tests separately exercise recovery mechanics.
     """
     if type(adapter) is not NotionDeliveryAdapter:
         raise PostSubmitError("post_submit_notion_adapter_required")
+    # The standalone wrapper must share the runtime's source-authority gate.
+    # Local files and a supplied adapter are not issuer-backed DB readback.
+    try:
+        delivery_source_authority.require_issuer_backed_projection()
+    except delivery_source_authority.DeliverySourceAuthorityUnavailable:
+        raise PostSubmitError("post_submit_source_authority_unavailable") from None
     return await outbox_worker.run_outbox_pass(
         root,
         report_ids=report_ids,

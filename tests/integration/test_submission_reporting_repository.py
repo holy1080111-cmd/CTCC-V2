@@ -22,7 +22,7 @@ from app.database.models.submission_reporting import (
 )
 from app.database.repositories.qualification_ledger import QualificationLedgerRepository
 from app.database.repositories.submission_reporting import SubmissionReportingRepository
-from app.trade_evidence import outbox, storage
+from app.trade_evidence import outbox
 from app.trade_evidence.submission_reporting import (
     CapturedSubmission,
     SubmissionReportingError,
@@ -121,12 +121,28 @@ async def setup(database, fixture, *, status="acknowledged", pre_reserve_request
     return ledger, repository, clock, hold, args
 
 
+async def assert_private_only(repository, result, root, *, namespace=QUEUE):
+    assert result.spool_id not in await repository.pending_ids(namespace)
+    with pytest.raises(SubmissionReportingError, match="not_eligible"):
+        await repository.project_one(
+            result.spool_id, root=root, queue_namespace=namespace
+        )
+    assert list(root.iterdir()) == []
+
+
+def allow_synthetic_range_replay_for_repository_mechanism(monkeypatch):
+    """Exercise downstream DB journals; never assert R7 runtime admission here."""
+    monkeypatch.setattr(
+        reservations, "_require_owned_recheck_for_reservation", lambda _request: None
+    )
+
+
 @pytest.mark.parametrize("version", ("v2", "v3"))
-async def test_range_v5_submission_lineage_admits_v2_and_denies_unbound_v3(
-    database, range_chain, version
+async def test_synthetic_range_v5_submission_lineage_v2_and_unbound_v3(
+    database, range_chain, version, monkeypatch
 ):
-    # Synthetic source and response only. An unbound V3 request cannot borrow
-    # the control-bound reporter merely because its inner intent is V2-shaped.
+    # Synthetic source/response cannot pass R7 admission. A local-only gate
+    # override keeps the downstream DB intent/outcome lineage under test.
     fixture, binding, _ = range_chain
     if version == "v2":
         v3 = fixture.request
@@ -162,6 +178,14 @@ async def test_range_v5_submission_lineage_admits_v2_and_denies_unbound_v3(
         )
 
     ledger, clock = await fixtures.initialize(database, fixture)
+    with pytest.raises(
+        reservations.QualificationLedgerError,
+        match="ledger_recheck_runtime_authority_missing",
+    ):
+        await ledger.reserve(fixture.request)
+    denied = await ledger.read_scope(fixture.request.scope)
+    assert denied.ledger_revision == 1 and not denied.active
+    allow_synthetic_range_replay_for_repository_mechanism(monkeypatch)
     hold = await ledger.reserve(fixture.request)
     intent = await ledger.consume_with_submission_intent(
         hold.scope,
@@ -249,14 +273,22 @@ async def test_range_v5_submission_lineage_admits_v2_and_denies_unbound_v3(
         )
         == observed
     )
-    assert observed.spool_id in await restarted.pending_ids(QUEUE)
+    assert observed.spool_id not in await restarted.pending_ids(QUEUE)
 
 
-async def test_control_bound_v3_observation_replays_both_intents_and_past_control(
-    database, range_chain, tmp_path
+async def test_synthetic_control_bound_v3_observation_replays_both_intents(
+    database, range_chain, tmp_path, monkeypatch
 ):
     fixture, _binding, _ = range_chain
     setup = await control_fixtures.setup(database, fixture)
+    with pytest.raises(
+        reservations.QualificationLedgerError,
+        match="ledger_recheck_runtime_authority_missing",
+    ):
+        await setup.reserve()
+    denied = await setup.ledger.read_scope(fixture.request.scope)
+    assert denied.ledger_revision == 1 and not denied.active
+    allow_synthetic_range_replay_for_repository_mechanism(monkeypatch)
     hold = await setup.reserve()
     outer = await setup.consume()
     outer_body = json.loads(outer.canonical_json)
@@ -335,15 +367,10 @@ async def test_control_bound_v3_observation_replays_both_intents_and_past_contro
         await restarted.record_observation(hold.scope, hold.original_event_key, **args)
         == observed
     )
-    assert observed.spool_id in await restarted.pending_ids(namespace)
-    projected = await restarted.project_one(
-        observed.spool_id, root=tmp_path, queue_namespace=namespace
-    )
-    assert projected is not None and projected.report_sha256 == observed.report_sha256
-    assert observed.spool_id not in await restarted.pending_ids(namespace)
+    await assert_private_only(restarted, observed, tmp_path, namespace=namespace)
 
 
-async def test_atomic_ack_restart_projection_and_idempotent_readback(
+async def test_atomic_unverified_ack_restart_retains_private_evidence_only(
     database, fixture, tmp_path
 ):
     ledger, _repository, clock, hold, args = await setup(database, fixture)
@@ -358,35 +385,59 @@ async def test_atomic_ack_restart_projection_and_idempotent_readback(
         await restarted.record_observation(hold.scope, hold.original_event_key, **args)
         == receipt
     )
-    assert receipt.spool_id in await restarted.pending_ids(QUEUE)
-    competing = SubmissionReportingRepository(database[1], clock=clock)
-    projections = await asyncio.gather(
-        *(
-            repo.project_one(receipt.spool_id, root=tmp_path, queue_namespace=QUEUE)
-            for repo in (restarted, competing)
-        )
-    )
-    projected = next(item for item in projections if item is not None)
-    assert all(item is None or item == projected for item in projections)
-    again = await restarted.project_one(
-        receipt.spool_id, root=tmp_path, queue_namespace=QUEUE
-    )
-    assert again == projected
-    assert receipt.spool_id not in await restarted.pending_ids(QUEUE)
-    view = outbox.read_job(tmp_path, hold.report_id, clock=clock)
-    assert view.status == "queued" and len(view.events) == 1
-    assert view.envelope.payload.order_reference.startswith("CTQ")
-    assert (
-        b"synthetic-response-must-not-reach-outbox"
-        not in (tmp_path / (hold.report_id + ".json")).read_bytes()
-    )
+    await assert_private_only(restarted, receipt, tmp_path)
     async with database[1]() as session:
         saved = await session.get(QualificationSubmissionOutcome, receipt.outcome_id)
         assert json.loads(saved.capture_json)["raw_body_sha256"]
         assert saved.intent_sha256 == args["intent_sha256"]
-        assert json.loads(saved.outcome_json)["binding"][
-            "protection_client_order_id"
-        ].startswith("CTA")
+        outcome = json.loads(saved.outcome_json)
+        assert outcome["transport_authenticity_verified"] is False
+        assert outcome["binding"]["protection_client_order_id"].startswith("CTA")
+        spool = await session.get(QualificationReportSpool, receipt.spool_id)
+        assert spool.eligible is False
+
+
+async def test_db_rejects_forged_eligible_spool_then_retains_private_capture(
+    database, fixture, tmp_path, monkeypatch
+):
+    """The DB independently refuses eligibility fabricated by application code."""
+    import app.database.repositories.submission_reporting as module
+
+    _, repository, clock, hold, args = await setup(database, fixture)
+    original = module.spool_eligible
+    monkeypatch.setattr(module, "spool_eligible", lambda _document: True)
+    try:
+        with pytest.raises(DBAPIError):
+            await repository.record_observation(
+                hold.scope, hold.original_event_key, **args
+            )
+    finally:
+        monkeypatch.setattr(module, "spool_eligible", original)
+    state = await repository.read_scope(hold.scope)
+    assert state.ledger_revision == 3 and state.active[0].state == "consumed"
+    receipt = await repository.record_observation(
+        hold.scope, hold.original_event_key, **args
+    )
+    restarted = SubmissionReportingRepository(database[1], clock=clock)
+    assert (
+        await restarted.read_observation(
+            hold.scope, hold.original_event_key, expected_outcome_id=receipt.outcome_id
+        )
+        == receipt
+    )
+    await assert_private_only(restarted, receipt, tmp_path)
+    async with database[1]() as session:
+        saved = await session.get(QualificationSubmissionOutcome, receipt.outcome_id)
+        spool = await session.get(QualificationReportSpool, receipt.spool_id)
+        assert spool.eligible is False
+        assert json.loads(saved.capture_json)["raw_body_sha256"]
+        assert (
+            json.loads(saved.outcome_json)["transport_authenticity_verified"] is False
+        )
+        assert (
+            await session.get(QualificationReportProjectionReceipt, receipt.spool_id)
+            is None
+        )
 
 
 @pytest.mark.parametrize("status", ("acknowledged", "rejected", "uncertain"))
@@ -447,8 +498,8 @@ async def test_initial_lineage_readback_uses_committed_db_bytes_without_authorit
         )
 
 
-@pytest.mark.parametrize("status", ("rejected", "uncertain"))
-async def test_rejected_unknown_retained_but_never_projected(
+@pytest.mark.parametrize("status", ("acknowledged", "rejected", "uncertain"))
+async def test_unverified_ack_rejection_or_unknown_is_never_projected(
     database, fixture, tmp_path, status
 ):
     ledger, repository, clock, hold, args = await setup(
@@ -458,12 +509,7 @@ async def test_rejected_unknown_retained_but_never_projected(
         hold.scope, hold.original_event_key, **args
     )
     assert result.status == status
-    assert result.spool_id not in await repository.pending_ids(QUEUE)
-    with pytest.raises(SubmissionReportingError, match="not_eligible"):
-        await repository.project_one(
-            result.spool_id, root=tmp_path, queue_namespace=QUEUE
-        )
-    assert list(tmp_path.iterdir()) == []
+    await assert_private_only(repository, result, tmp_path)
     state = await ledger.read_scope(hold.scope)
     assert state.active[0].state == (
         "uncertain" if status == "uncertain" else "consumed"
@@ -580,133 +626,71 @@ async def test_spool_failure_rolls_back_unknown_trade_transition_and_outcome(
         )
 
 
-async def test_late_file_failure_preserves_journal_spool_and_trade(
+async def test_unverified_ack_cannot_invoke_local_outbox_publisher(
     database, fixture, tmp_path, monkeypatch
 ):
     _, repository, _, hold, args = await setup(database, fixture)
     result = await repository.record_observation(
         hold.scope, hold.original_event_key, **args
     )
-    directory = (
-        storage._WindowsDirectory
-        if __import__("os").name == "nt"
-        else storage._PosixDirectory
-    )
-    original = directory.publish
+    import app.database.repositories.submission_reporting as module
 
-    def late(self, name, raw):
-        if name == hold.report_id + ".json":
-            raise OSError("synthetic late envelope refusal")
-        return original(self, name, raw)
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("unverified acknowledgement reached local outbox publisher")
 
-    monkeypatch.setattr(directory, "publish", late)
-    with pytest.raises(SubmissionReportingError, match="enqueue_pending"):
-        await repository.project_one(
-            result.spool_id, root=tmp_path, queue_namespace=QUEUE
-        )
-    journal = tmp_path / (hold.report_id + ".state") / "00000001.json"
-    assert journal.is_file()
-    saved = journal.read_bytes()
-    monkeypatch.setattr(directory, "publish", original)
+    monkeypatch.setattr(module.post_submit, "enqueue_post_submit", forbidden)
     restarted = SubmissionReportingRepository(database[1], clock=repository.clock)
-    projected = await restarted.project_one(
-        result.spool_id, root=tmp_path, queue_namespace=QUEUE
-    )
-    assert journal.read_bytes() == saved
-    assert projected is not None
-    assert (
-        outbox.read_job(tmp_path, hold.report_id, clock=repository.clock).status
-        == "queued"
-    )
-    assert result.spool_id not in await restarted.pending_ids(QUEUE)
+    await assert_private_only(restarted, result, tmp_path)
     assert (await repository.read_scope(hold.scope)).active[0].state == "consumed"
 
 
-async def test_projected_envelope_survives_missing_db_receipt_then_replays(
+async def test_unverified_ack_cannot_create_projection_receipt(
     database, fixture, tmp_path
 ):
     _, repository, clock, hold, args = await setup(database, fixture)
     result = await repository.record_observation(
         hold.scope, hold.original_event_key, **args
     )
-    import app.database.repositories.submission_reporting as module
-
-    original = module.QualificationReportProjectionReceipt
-    from sqlalchemy import event
-
-    def before_insert(*a):
-        raise ConnectionError("synthetic receipt commit failure")
-
-    event.listen(original, "before_insert", before_insert)
-    try:
-        with pytest.raises(ConnectionError):
-            await repository.project_one(
-                result.spool_id, root=tmp_path, queue_namespace=QUEUE
-            )
-    finally:
-        event.remove(original, "before_insert", before_insert)
-    saved = (tmp_path / (hold.report_id + ".json")).read_bytes()
     restarted = SubmissionReportingRepository(database[1], clock=clock)
-    projected = await restarted.project_one(
-        result.spool_id, root=tmp_path, queue_namespace=QUEUE
-    )
-    assert projected and (tmp_path / (hold.report_id + ".json")).read_bytes() == saved
-    assert len(outbox.read_job(tmp_path, hold.report_id, clock=clock).events) == 1
+    await assert_private_only(restarted, result, tmp_path)
+    async with database[1]() as session:
+        assert (
+            await session.get(QualificationReportProjectionReceipt, result.spool_id)
+            is None
+        )
 
 
-async def test_committed_projection_receipt_audit_denies_missing_local_pair(
+async def test_unverified_ack_projection_audit_has_no_receipt(
     database, fixture, tmp_path
 ):
     _, repository, _, hold, args = await setup(database, fixture)
     result = await repository.record_observation(
         hold.scope, hold.original_event_key, **args
     )
-    await repository.project_one(result.spool_id, root=tmp_path, queue_namespace=QUEUE)
-    assert (
-        await repository.audit_projection_receipts(QUEUE, root=tmp_path)
-        == result.spool_id
-    )
-    missing_root = tmp_path / "simulated-lost-outbox-root"
-    missing_root.mkdir()
-    with pytest.raises(
-        SubmissionReportingError, match="submission_projection_local_missing_or_invalid"
-    ):
-        await repository.audit_projection_receipts(QUEUE, root=missing_root)
+    await assert_private_only(repository, result, tmp_path)
+    assert await repository.audit_projection_receipts(QUEUE, root=tmp_path) == ""
     assert (await repository.read_scope(hold.scope)).active[0].state == "consumed"
 
 
-async def test_committed_receipt_retry_never_republishes_lost_local_pair(
+async def test_unverified_ack_projection_readback_cannot_invent_receipt(
     database, fixture, tmp_path, monkeypatch
 ):
     _, repository, _, hold, args = await setup(database, fixture)
     result = await repository.record_observation(
         hold.scope, hold.original_event_key, **args
     )
-    receipt = await repository.project_one(
-        result.spool_id, root=tmp_path, queue_namespace=QUEUE
-    )
-    missing_root = tmp_path / "simulated-lost-outbox-root"
-    missing_root.mkdir()
     import app.database.repositories.submission_reporting as module
 
     def forbidden(*_args, **_kwargs):
-        pytest.fail("committed receipt must not publish a replacement outbox job")
+        pytest.fail("unverified acknowledgement reached local outbox publisher")
 
     monkeypatch.setattr(module.post_submit, "enqueue_post_submit", forbidden)
     monkeypatch.setattr(module.outbox, "recover_incomplete_enqueue", forbidden)
-    with pytest.raises(
-        SubmissionReportingError, match="submission_projection_local_missing_or_invalid"
-    ):
-        await repository.project_one(
-            result.spool_id, root=missing_root, queue_namespace=QUEUE
-        )
-    assert tuple(missing_root.iterdir()) == ()
-    assert (
+    await assert_private_only(repository, result, tmp_path)
+    with pytest.raises(SubmissionReportingError, match="projection_readback_missing"):
         await repository.read_projection(
-            result.spool_id, expected_envelope_sha256=receipt.envelope_sha256
+            result.spool_id, expected_envelope_sha256="e" * 64
         )
-        == receipt
-    )
 
 
 async def test_immutable_rows_cannot_be_changed_or_deleted(database, fixture, tmp_path):
@@ -714,7 +698,7 @@ async def test_immutable_rows_cannot_be_changed_or_deleted(database, fixture, tm
     result = await repository.record_observation(
         hold.scope, hold.original_event_key, **args
     )
-    await repository.project_one(result.spool_id, root=tmp_path, queue_namespace=QUEUE)
+    await assert_private_only(repository, result, tmp_path)
     cases = (
         (
             QualificationSubmissionOutcome,
@@ -723,14 +707,7 @@ async def test_immutable_rows_cannot_be_changed_or_deleted(database, fixture, tm
             "status",
             "uncertain",
         ),
-        (QualificationReportSpool, "spool_id", result.spool_id, "eligible", False),
-        (
-            QualificationReportProjectionReceipt,
-            "spool_id",
-            result.spool_id,
-            "envelope_sha256",
-            "f" * 64,
-        ),
+        (QualificationReportSpool, "spool_id", result.spool_id, "eligible", True),
     )
     for model, key, identity, column, value in cases:
         for statement in (
@@ -745,7 +722,7 @@ async def test_immutable_rows_cannot_be_changed_or_deleted(database, fixture, tm
                 await session.rollback()
 
 
-async def test_actual_process_crashes_replay_only_local_durable_work(
+async def test_actual_process_crash_retains_private_outcome_without_projection(
     database, fixture, tmp_path
 ):
     import os
@@ -791,21 +768,7 @@ async def test_actual_process_crashes_replay_only_local_durable_work(
         result.status == "acknowledged"
         and (await repository.read_scope(hold.scope)).ledger_revision == 4
     )
-    second = await crash(
-        {
-            "mode": "after_enqueue_before_receipt",
-            "at": clock.value.isoformat(),
-            "spool_id": result.spool_id,
-            "namespace": QUEUE,
-            "root": str(tmp_path),
-        }
-    )
-    assert second.returncode == 74
-    saved = (tmp_path / (hold.report_id + ".json")).read_bytes()
-    assert result.spool_id in await repository.pending_ids(QUEUE)
-    await repository.project_one(result.spool_id, root=tmp_path, queue_namespace=QUEUE)
-    assert (tmp_path / (hold.report_id + ".json")).read_bytes() == saved
-    assert len(outbox.read_job(tmp_path, hold.report_id, clock=clock).events) == 1
+    await assert_private_only(repository, result, tmp_path)
 
 
 @pytest.mark.parametrize("operation", ("reserve", "consume"))

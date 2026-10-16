@@ -1,5 +1,18 @@
 # Independent Notion outbox runtime
 
+**Current delivery admission: DENY.** Even with `NOTION_OUTBOX_ENABLED=true`,
+`NotionOutboxRuntime.tick()` pauses with
+`notion_outbox_submission_source_authority_unavailable` before loading the
+token, reading a queue, or sending any Notion request. A hash-valid local
+`.json`/`.state` pair and a historical projection receipt do not establish an
+issuer-backed exchange response or an eligible submission. The worker must
+remain OFF in deployments. Restoring delivery requires a reviewed database
+readback that joins the exact immutable submission outcome, transport issuer,
+projection receipt, envelope digest and current eligibility before dispatch;
+legacy eligible rows must remain quarantined. The existing synthetic worker
+tests exercise downstream recovery behavior only and are not delivery
+acceptance evidence.
+
 `app.main` owns the default-off `NotionOutboxRuntime` lifecycle. The runtime has
 its own thread and event loop. Durable filesystem checks, local token permission
 checks, and HTTP do not execute on the API/trading event loop. Reporter startup,
@@ -137,7 +150,7 @@ Successful setup prints only nonsecret paths and the destination-file SHA256:
 
 | Runtime setting | Meaning |
 | --- | --- |
-| `NOTION_OUTBOX_ENABLED` | Defaults to `false`; enable only after binding review |
+| `NOTION_OUTBOX_ENABLED` | Defaults to `false`; current source-authority guard still pauses delivery if set true |
 | `NOTION_OUTBOX_ROOT` | Absolute, existing persistent producer queue |
 | `NOTION_OUTBOX_TOKEN_FILE` | Private external token file |
 | `NOTION_OUTBOX_DESTINATION_FILE` | Four actual property pins from setup |

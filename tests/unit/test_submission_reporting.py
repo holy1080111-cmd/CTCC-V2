@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from app.config.settings import Settings
+from app.database.repositories.submission_reporting import spool_eligible
 from app.trade_evidence.submission_reporting import (
     CapturedSubmission,
     SubmissionReportingError,
@@ -136,6 +137,22 @@ def test_ack_rejection_and_unknown_have_distinct_status():
     ):
         assert classify(value, CLIENT, NOW + timedelta(seconds=1))[0] == "uncertain"
     assert classify(capture(), CLIENT, NOW)[0] == "uncertain"
+
+
+def test_caller_supplied_complete_ack_is_not_outbox_eligible_without_issuer():
+    outcome = {
+        "status": "acknowledged",
+        "transport_authenticity_verified": False,
+    }
+    assert not spool_eligible(json.dumps(outcome))
+    for unsafe in (
+        {"status": "acknowledged"},
+        {"status": "acknowledged", "transport_authenticity_verified": True},
+    ):
+        with pytest.raises(
+            SubmissionReportingError, match="submission_outcome_eligibility_invalid"
+        ):
+            spool_eligible(json.dumps(unsafe))
 
 
 @pytest.mark.asyncio

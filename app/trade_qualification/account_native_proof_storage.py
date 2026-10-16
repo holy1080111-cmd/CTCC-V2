@@ -28,6 +28,7 @@ READBACK_SCHEMA = "ctcc.demo_account_native_clock_readback.v2"
 V3_READBACK_SCHEMA = "ctcc.demo_account_native_clock_readback.v3"
 EXPOSED_V4_READBACK_SCHEMA = "ctcc.demo_account_exposed_native_clock_readback.v4"
 V7_FLAT_READBACK_SCHEMA = "ctcc.demo_account_native_clock_readback.v5"
+ALGO_V6_READBACK_SCHEMA = "ctcc.demo_account_algo_history_native_clock_readback.v1"
 MAX_PART = 512 * 1024
 
 
@@ -43,6 +44,8 @@ def _readback_schema(document):
         return EXPOSED_V4_READBACK_SCHEMA
     if schema == proof.V7_FLAT_SCHEMA:
         return V7_FLAT_READBACK_SCHEMA
+    if schema == proof.ALGO_V6_SCHEMA:
+        return ALGO_V6_READBACK_SCHEMA
     raise proof.NativeAccountProofError("native_account_proof_contract_invalid")
 
 

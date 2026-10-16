@@ -5,11 +5,15 @@ import json
 from datetime import timedelta
 
 from app.trade_qualification import account_capture as accounts
+from app.trade_qualification.current_risk import evaluate_current_risk
 from app.trade_qualification.recheck import evaluate_recorded_recheck
 from app.trade_qualification.reservations import (
     ReservationReceipt,
+    RiskCoverage,
+    ScenarioOperands,
     digest,
-    prepare_reservation,
+    exact_coverage,
+    replay_range_reservation,
     reservation_id,
 )
 from app.trade_qualification.submission_intent import SubmissionExecutionBinding
@@ -25,9 +29,34 @@ def document(value):
 
 
 def consumed_receipt(fixture):
+    """Synthetic downstream intent fixture; no reservation admission occurs."""
     request = fixture.request
-    coverage, _ = prepare_reservation(
-        request, fixture.claims, (), observed_at=fixture.now
+    replay = replay_range_reservation(request, observed_at=fixture.now)
+    assert replay.computational_checks_passed
+    risk = evaluate_current_risk(
+        request.origin,
+        quote=request.quote,
+        current_risk_inputs=request.risk_inputs,
+        observed_at=fixture.now,
+    )
+    assert risk.passed
+
+    def operands(scenario):
+        return ScenarioOperands(
+            entry=scenario.candidate_entry,
+            stop_loss=risk.original_stop_loss,
+            cost_per_base=scenario.cost_per_base,
+            contracts=request.risk_inputs.requested_contracts,
+            contract_value=request.risk_inputs.instrument.contract_value,
+            leverage=request.risk_inputs.requested_leverage,
+        )
+
+    candidate = operands(risk.economics.candidate_result)
+    execution = operands(risk.economics.execution_result)
+    coverage = RiskCoverage(
+        candidate=candidate,
+        execution=execution,
+        **exact_coverage(candidate, execution),
     )
     return ReservationReceipt(
         scope=request.scope,

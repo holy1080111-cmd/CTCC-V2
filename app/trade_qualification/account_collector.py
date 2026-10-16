@@ -778,6 +778,7 @@ async def _collect_owned_demo_account_records(
             capture.DemoAccountCapturePlan,
             capture.RegionalDemoAccountCapturePlan,
             capture.AllProductDemoAccountCapturePlan,
+            capture.AllProductDemoAccountCapturePlanV6,
             capture.CurrentDemoAccountCapturePlanV6,
             capture.CurrentDemoAccountCapturePlanV7,
         }:
@@ -835,11 +836,12 @@ async def _collect_owned_demo_account_records(
         try:
             _client_guard(client)
             # Legacy plan contracts remain replayable in synthetic fixtures.
-            # Only the reviewed v5/v6/v7 inventories reach owned HTTPS transport.
+            # Only reviewed versioned inventories reach owned HTTPS transport.
             if (
                 type(selected)
                 not in {
                     capture.AllProductDemoAccountCapturePlan,
+                    capture.AllProductDemoAccountCapturePlanV6,
                     capture.CurrentDemoAccountCapturePlanV6,
                     capture.CurrentDemoAccountCapturePlanV7,
                 }

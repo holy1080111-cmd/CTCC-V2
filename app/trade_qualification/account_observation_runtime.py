@@ -39,6 +39,7 @@ async def collect_observed_execution_window(
     try:
         if (
             type(session) is not ControlledDemoAccountSession
+            or type(session._plan) is capture.AllProductDemoAccountCapturePlanV6
             or type(observation_repository) is not AccountObservationIndexRepository
             or observation_repository.session_factory
             is not journal_repository.session_factory

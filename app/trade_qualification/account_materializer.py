@@ -1385,6 +1385,10 @@ def materialize_demo_portfolio_snapshot(
         expected_sha256=expected_packet_sha256,
         expected_plan_sha256=expected_plan_sha256,
     )
+    if type(packet.plan) is capture.AllProductDemoAccountCapturePlanV6:
+        # A bounded algo-history readback is diagnostic only. It cannot be
+        # turned into a portfolio snapshot by calling the mapper directly.
+        _fail("algo_history_v6_portfolio_materialization_forbidden")
     _scope(packet.plan.expected_uid, packet.plan.settlement_currency, inputs)
     records = _records(packet)
     gaps = set(packet.incomplete_reasons)

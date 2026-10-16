@@ -1,0 +1,9 @@
+# Demo event-history epoch: denial-only prerequisite (DB0041)
+
+DB0041 records a versioned local observation for one Demo environment, **exact account UID**, credential-session binding digest, claimed source digest, and policy digest. It shares the qualification ledger's account-UID transaction lock. The first row is always `anchor_unverified`; all later rows are append-only `invalidated` findings. PostgreSQL guards hash and link the rows, prohibit update/delete/truncate, and refuse a downgrade while any row exists. The repository checks the committed chain in a second transaction after each append.
+
+Every stored row and readback fixes `history_complete=false`, `source_authenticity_verified=false`, `admission=DENY`, and `execution_authority=false`. An empty result means **unknown**, and an intact anchor does not establish a complete exchange history. No G6 input or reservation/submit route consumes this scaffold as permission. The `claimed_source_sha256` field records the caller's digest; it is not an authentication of OKX data.
+
+A future positive history epoch would need an independently verified, account-bound start boundary, complete ordinary/algo/fill/archive coverage under the exchange's actual retention rules, a protected list of all legacy and new submit routes, and a continuous invalidation/reconciliation procedure. A deleted local row, an older unobserved order, or a source-history gap cannot be repaired by creating a new anchor. DB0041 intentionally has no transition to `complete`.
+
+The isolated PostgreSQL tests cover concurrent duplicate anchors, serialized invalidations, rejected positive/broken-link inserts, immutable rows, disabled-trigger readback denial, empty downgrade/re-upgrade, and nonempty downgrade refusal. They require the repository's hermetic `DATABASE_URL`; a local skip is not PostgreSQL acceptance.

@@ -150,3 +150,38 @@ actual account history, host clock admission, PostgreSQL runtime/schema/trigger
 acceptance and real process-loss recovery remain separate required validations.
 Opening/retention/funding/peak completeness and a trusted account revision issuer
 remain unimplemented by B1; the journal supplies no complete-history watermark.
+
+## Versioned algo-history GET inventory
+
+The separate `ctcc.demo_account_plan.v6` all-product collector inventory adds
+eight current algo types and 24 history queries: each `ordType` enumerated by
+the current regional API guide is requested once for each `effective`, `canceled`, and
+`order_failed` state. OKX requires either `state` or `algoId` on
+`GET /api/v5/trade/orders-algo-history`; the inventory uses `state`, preserves
+the exact `algoId` cursor with exclusive `after`, and requires an explicit empty
+terminal page for every query. This endpoint has no documented `begin`/`end`
+filter, so the plan does not invent one or claim the selected history window
+was covered by the response. A repeated algo ID across current/history or
+state queries, a wrong state/type, changed page chain, missing terminal, or
+exceeded bound rejects the packet. Original v5 and current v6/v7 plan hashes and
+replay contracts are unchanged.
+
+The history response schema also lists `partially_failed`; the separate pending
+algo response lists `partially_effective`. The history request documents only
+the three state filters above, so `partially_failed` partition membership is
+not established, and exact registered-site type support is still unresolved.
+This collector rejects unexpected row states and
+always retains `algo_history_terminal_partition_unverified` and
+`algo_history_epoch_coverage_unverified`. It cannot infer an event-consumption
+epoch from empty history responses.
+
+This v6 inventory is available through the owned GET collector and a separately
+versioned original B1 recorded-history verifier, native clock proof, and
+readback. These issue only a bounded-history `DENY` diagnostic: no current
+account source, portfolio revision, G6/G11, flat-start, or execution authority.
+Even a successful v6 collector packet remains
+`account_complete=false`, `source_authenticity_verified=false`, and
+`execution_authority=false`; the API's three-month history limit cannot prove
+older event absence. Endpoint and cursor/state semantics were checked against
+the [OKX global API guide](https://www.okx.com/docs-v5/en/) and
+[regional API guide](https://my.okx.com/docs-v5/en/) on 2026-10-16.

@@ -9,8 +9,8 @@ import httpx
 import pytest
 from pydantic import SecretStr, create_model
 
+from app.trade_evidence import delivery_source_authority, outbox
 from app.trade_evidence import notion_adapter as module
-from app.trade_evidence import outbox
 from app.trade_evidence.outbox_worker import OutboxWorkerPolicy, run_outbox_pass
 from tests.unit.test_trade_evidence_outbox import (
     NOW,
@@ -24,6 +24,21 @@ DB = "1" * 32
 SOURCE = "2" * 32
 PAGE = "3" * 32
 TOKEN = SecretStr("synthetic_notion_token_not_a_real_credential")
+
+
+@pytest.fixture(autouse=True)
+def _simulate_adapter_mechanics_only(monkeypatch, request):
+    # All prior cases in this file use synthetic HTTP to exercise the adapter
+    # after admission. The unpatched test below owns production source denial.
+    if request.node.originalname not in {
+        "test_unverified_direct_adapter_denies_before_http",
+        "test_unverified_generic_worker_preserves_journal_without_notion_io",
+    }:
+        monkeypatch.setattr(
+            delivery_source_authority,
+            "require_issuer_backed_projection",
+            lambda: None,
+        )
 
 
 @pytest.fixture
@@ -153,6 +168,38 @@ def adapter(client, **changes):
             **changes,
         }
     )
+
+
+@pytest.mark.asyncio
+async def test_unverified_direct_adapter_denies_before_http():
+    client, calls = client_for([schema(), listing(), page(), listing(page())])
+    async with client:
+        with pytest.raises(
+            delivery_source_authority.DeliverySourceAuthorityUnavailable,
+            match="notion_outbox_submission_source_authority_unavailable",
+        ):
+            await adapter(client)(payload(), claim())
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_unverified_generic_worker_preserves_journal_without_notion_io(memory):
+    clock = Clock()
+    outbox.enqueue(memory.root, payload(), clock=clock)
+    client, calls = client_for([schema(), listing(), page(), listing(page())])
+    async with client:
+        result = await run_outbox_pass(
+            memory.root,
+            report_ids=(REPORT,),
+            worker_id="synthetic-worker",
+            adapter=adapter(client, clock=clock),
+            policy=OutboxWorkerPolicy(),
+            clock=clock,
+        )
+    assert calls == []
+    assert result.items[0].outbox_status == "uncertain"
+    assert outbox.read_job(memory.root, REPORT, clock=clock).status == "uncertain"
+    assert any(path and path[0] == REPORT + ".state" for path in memory.files)
 
 
 @pytest.mark.asyncio

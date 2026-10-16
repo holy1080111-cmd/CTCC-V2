@@ -12,7 +12,13 @@ import httpx
 import pytest
 
 from app.config.settings import Settings
-from app.trade_evidence import notion_adapter, outbox, runtime, storage
+from app.trade_evidence import (
+    delivery_source_authority,
+    notion_adapter,
+    outbox,
+    runtime,
+    storage,
+)
 from app.trade_evidence import notion_binding as binding
 from app.trade_evidence.runtime import NotionOutboxRuntime, discover_jobs
 from scripts.setup_notion_outbox import discover_destination
@@ -54,6 +60,45 @@ def service(root, handler, clock, *, batch=16):
     return worker
 
 
+_SYNTHETIC_DOWNSTREAM_RUNTIME_TESTS = frozenset(
+    {
+        "test_enabled_missing_configuration_is_pending_with_bounded_retry",
+        "test_thread_starts_without_blocking_api_and_stops_idempotently",
+        "test_native_delivery_readback_and_restart_never_recreate_page",
+        "test_native_crashed_dispatch_recovers_uncertain_without_post",
+        "test_page_created_before_finish_journal_failure_is_not_created_again",
+        "test_native_precreate_failure_retry_is_due_then_delivered",
+        "test_cancel_dedicated_thread_during_create_retains_uncertainty",
+        "test_fair_batch_does_not_starve_later_jobs_behind_terminal",
+        "test_incomplete_job_pauses_entire_queue_before_http",
+        "test_incomplete_pair_rechecks_and_resumes_after_verified_local_recovery",
+        "test_orphan_created_during_schema_readback_blocks_dispatch",
+        "test_orphan_created_during_adapter_query_blocks_page_create",
+        "test_pre_create_local_read_failure_is_receipted_unsent_and_pauses",
+        "test_orphan_after_last_check_before_send_pauses_later_http",
+        "test_remote_rate_limit_is_durable_even_when_late_orphan_pauses",
+        "test_schema_pin_failure_never_claims_queued_report",
+        "test_rate_limit_is_respected_or_paused_without_claim",
+        "test_delivery_429_stops_all_later_jobs_and_survives_restart",
+        "test_prebinding_cooldown_persists_and_only_retries_after_deadline",
+        "test_reporting_lease_prevents_parallel_runtime_http",
+        "test_static_error_allowlist_never_logs_injected_exception_code",
+    }
+)
+
+
+@pytest.fixture(autouse=True)
+def _simulate_downstream_mechanics_only(monkeypatch, request):
+    # These named MockTransport cases exercise only recovery/adapter mechanics.
+    # The separate unpatched test below is the production admission contract.
+    if request.node.originalname in _SYNTHETIC_DOWNSTREAM_RUNTIME_TESTS:
+        monkeypatch.setattr(
+            delivery_source_authority,
+            "require_issuer_backed_projection",
+            lambda: None,
+        )
+
+
 def recorder(root, clock):
     calls, created = [], {}
 
@@ -90,6 +135,37 @@ async def test_default_off_never_reads_files_or_starts_http_or_thread():
     await worker.start()
     await worker.tick()
     assert worker._thread is None and worker.status == "disabled"
+
+
+@pytest.mark.asyncio
+async def test_enabled_valid_legacy_job_pair_cannot_authorize_notion_io(
+    tmp_path, monkeypatch
+):
+    clock = Clock()
+    outbox.enqueue(tmp_path, payload(), clock=clock)
+    before = outbox.read_job(tmp_path, REPORT, clock=clock)
+    envelope_bytes = (tmp_path / (REPORT + ".json")).read_bytes()
+    journal_bytes = (tmp_path / (REPORT + ".state") / "00000001.json").read_bytes()
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("local report files reached token, root, or Notion IO")
+
+    worker = NotionOutboxRuntime(
+        settings(notion_outbox_enabled=True), client_factory=forbidden, clock=clock
+    )
+    worker._configuration = forbidden
+    monkeypatch.setattr(runtime, "discover_jobs", forbidden)
+    assert await worker.tick() is None
+    assert (worker.status, worker.last_code) == (
+        "paused",
+        "notion_outbox_submission_source_authority_unavailable",
+    )
+    assert worker.last_result is None
+    assert outbox.read_job(tmp_path, REPORT, clock=clock) == before
+    assert (tmp_path / (REPORT + ".json")).read_bytes() == envelope_bytes
+    assert (
+        tmp_path / (REPORT + ".state") / "00000001.json"
+    ).read_bytes() == journal_bytes
 
 
 @pytest.mark.asyncio

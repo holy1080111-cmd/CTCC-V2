@@ -3,6 +3,9 @@
 The repository serializes these *claims* under a Demo account lock. It cannot
 authenticate account IO, replay an actual publication or establish a fill price.
 Expiry never releases a hold. Only explicit newer confirmed-flat claims do.
+The legacy unbound ledger is an offline mechanism; its rows do not make an
+operational reservation or permit an order. Versioned recorded rechecks are
+rejected at reservation admission until a native R7 issuer exists.
 """
 
 import hashlib
@@ -718,6 +721,37 @@ def replay_range_reservation(request, *, observed_at):
         raise QualificationLedgerError("ledger_range_replay_denied") from None
 
 
+def _require_owned_recheck_for_reservation(request):
+    """A computational replay cannot reserve risk as an operational R7 run.
+
+    Keep ``replay_range_reservation`` available for offline math and fixture
+    checks. This separate admission check runs before it, while the account
+    lock is held by the repository. The present recorded schema fixes every
+    runtime/authenticity flag to false, so no caller JSON can satisfy it.
+    """
+    from app.trade_qualification.recheck import RecordedRecheckAssessment
+    from app.trade_qualification.submission_intent import _document
+
+    try:
+        recorded = _document(
+            request.replay_binding.recheck_json, RecordedRecheckAssessment
+        )
+    except (ValueError, TypeError, KeyError, RecursionError):
+        raise QualificationLedgerError("ledger_range_replay_denied") from None
+    if not all(
+        (
+            recorded.runtime_admissible,
+            recorded.source_authenticity_verified,
+            recorded.account_evidence_authenticated,
+            recorded.publication_observed_here,
+            recorded.complete_path_verified,
+            recorded.execution_recheck_performed,
+            recorded.consumed_event_ledger_authenticated,
+        )
+    ):
+        raise QualificationLedgerError("ledger_recheck_runtime_authority_missing")
+
+
 def prepare_reservation(request, claims, active, *, observed_at):
     """Called again under the account lock, not a caller-written PASS input."""
     request = checked_reservation_request(request)
@@ -739,6 +773,8 @@ def prepare_reservation(request, claims, active, *, observed_at):
             observed_at=observed_at,
         )
     if type(request.origin.evidence.pre_evidence) is HistoryPreEvidenceRunV5:
+        if type(request) in (ReservationRequestV2, ReservationRequestV3):
+            _require_owned_recheck_for_reservation(request)
         replay_range_reservation(request, observed_at=observed_at)
     if type(active) is not tuple or len(active) > 2048:
         raise QualificationLedgerError("bounded_ledger_holds_required")

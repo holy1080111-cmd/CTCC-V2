@@ -17,7 +17,7 @@ import pytest
 from pydantic import ValidationError, create_model
 
 from app.domain.okx_demo import OkxDemoOrderAcknowledgement, OkxDemoWriteResult
-from app.trade_evidence import outbox
+from app.trade_evidence import delivery_source_authority, outbox
 from app.trade_evidence import post_submit as module
 from app.trade_evidence.forensics import candidate_sha256
 from app.trade_evidence.notion_adapter import NotionDeliveryAdapter
@@ -56,6 +56,17 @@ def memory(monkeypatch):
     backend = MemoryBackend()
     monkeypatch.setattr(outbox, "_root_context", backend.context)
     return backend
+
+
+@pytest.fixture
+def synthetic_downstream_source(monkeypatch):
+    # Only the explicitly marked MockTransport tests bypass the new DENY-only
+    # issuer gate to keep testing downstream recovery mechanics.
+    monkeypatch.setattr(
+        delivery_source_authority,
+        "require_issuer_backed_projection",
+        lambda: None,
+    )
 
 
 @pytest.fixture
@@ -867,6 +878,7 @@ def notion_client_for_root(root, clock, *, failure=None):
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("synthetic_downstream_source")
 async def test_real_memory_post_submit_worker_and_notion_adapter_are_separate_from_enqueue(
     memory, clock
 ):
@@ -896,6 +908,7 @@ async def test_real_memory_post_submit_worker_and_notion_adapter_are_separate_fr
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("synthetic_downstream_source")
 async def test_notion_create_timeout_is_uncertain_without_reenqueue_or_order_retry(
     memory, clock
 ):
@@ -943,6 +956,7 @@ class WaitingStream(httpx.AsyncByteStream):
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("synthetic_downstream_source")
 @pytest.mark.parametrize("cancel", [True, False])
 async def test_real_notion_wait_cancel_or_worker_timeout_preserves_unknown_submission_reporting(
     memory, clock, cancel
@@ -1014,6 +1028,35 @@ async def test_reporting_pass_never_accepts_arbitrary_callback_as_an_order_or_no
 
 
 @pytest.mark.asyncio
+async def test_unverified_direct_pass_keeps_queued_journal_and_never_calls_notion(
+    memory, clock
+):
+    source = report()
+    queued = module.enqueue_post_submit(memory.root, source, clock=clock)
+    before = dict(memory.files)
+    client, calls = notion_client_for_root(memory.root, clock)
+    async with client:
+        with pytest.raises(
+            module.PostSubmitError, match="post_submit_source_authority_unavailable"
+        ):
+            await module.run_post_submit_pass(
+                memory.root,
+                report_ids=(source.report_id,),
+                worker_id="reporter",
+                adapter=notion_adapter(client, clock=clock),
+                policy=OutboxWorkerPolicy(),
+                clock=clock,
+            )
+    assert queued.status == "enqueued"
+    assert memory.files == before
+    assert (
+        outbox.read_job(memory.root, source.report_id, clock=clock).status == "queued"
+    )
+    assert calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("synthetic_downstream_source")
 @pytest.mark.skipif(
     os.name == "nt",
     reason="Genuine POSIX post-submit journal + Mock Notion proof; not Windows publication evidence",

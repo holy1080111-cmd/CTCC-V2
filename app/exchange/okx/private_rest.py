@@ -13,6 +13,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import httpx
@@ -51,6 +52,283 @@ _ALGO_ORDER_TYPES = (
 _PRIVATE_PAGE_SIZE = 100
 _PRIVATE_MAX_PAGES = 16
 _CANCEL_ALL_AFTER_PATH = "/api/v5/trade/cancel-all-after"
+_READ_ONLY_HTTP_AUTH_CODES = frozenset({"50110", "50119"})
+_MAX_HTTP_AUTH_ERROR_BYTES = 4096
+_SAFE_EXCHANGE_ERROR_CODE = re.compile(r"[0-9]{5}(?:_[0-9]{4})?\Z")
+_SAFE_ORDER_ID = re.compile(r"[1-9][0-9]{0,39}\Z")
+_SAFE_CLIENT_ORDER_ID = re.compile(r"[A-Za-z0-9]{1,32}\Z")
+_SAFE_INSTRUMENT_ID = re.compile(r"[A-Z0-9-]{1,64}\Z")
+_SAFE_LEVERAGE = re.compile(r"[0-9]{1,3}(?:\.[0-9]{1,8})?\Z")
+_SAFE_PRECHECK_DECIMAL = re.compile(r"-?[0-9]{1,24}(?:\.[0-9]{1,36})?\Z")
+_SAFE_PRECHECK_SIZE = re.compile(r"[0-9]{1,24}(?:\.[0-9]{1,36})?\Z")
+_SAFE_ORDER_TYPE = re.compile(r"[a-z_]{2,32}\Z")
+_SAFE_CAA_TIMESTAMP = re.compile(r"[1-9][0-9]{9,15}\Z")
+_SAFE_ORDER_TAG = re.compile(r"[A-Za-z0-9]{0,16}\Z")
+_PRECHECK_REQUIRED_FIELDS = (
+    "adjEq",
+    "adjEqChg",
+    "imr",
+    "imrChg",
+    "mmr",
+    "mmrChg",
+    "mgnRatio",
+    "mgnRatioChg",
+)
+_WRITE_RESPONSE_PATHS = frozenset(
+    {
+        "/api/v5/trade/order-precheck",
+        "/api/v5/trade/order",
+        "/api/v5/trade/cancel-order",
+        "/api/v5/trade/close-position",
+        "/api/v5/account/set-leverage",
+        _CANCEL_ALL_AFTER_PATH,
+    }
+)
+
+
+def _ambiguous_write_response() -> OkxPrivateApiError:
+    # Never put a remote value, including a syntactically invalid identifier,
+    # in this exception. A write may already have changed exchange state.
+    return OkxPrivateApiError(
+        "OKX private write response requires reconciliation",
+        code="ambiguous_response",
+    )
+
+
+def _project_successful_write_data(
+    *, path: str, signed_body_text: str, data: list[dict[str, Any]]
+) -> list[dict[str, str]]:
+    """Return only checked, operational fields from one successful write row.
+
+    This is a non-secret API/status projection, not a raw response receipt, an
+    exchange-state attestation, or forensic custody. A future qualified writer
+    must retain the original response privately before interpreting it. Unknown
+    routes and ambiguous identifiers fail closed; arbitrary remote text and
+    nested fields never cross into legacy ``exchange_data`` or logs.
+    """
+    if path not in _WRITE_RESPONSE_PATHS or len(data) != 1:
+        raise _ambiguous_write_response()
+    try:
+        signed_body = json.loads(signed_body_text)
+    except (TypeError, ValueError):
+        raise _ambiguous_write_response() from None
+    if type(signed_body) is not dict:
+        raise _ambiguous_write_response()
+
+    row = data[0]
+    projected: dict[str, str] = {}
+    if "sCode" in row:
+        if row["sCode"] != "0" or type(row["sCode"]) is not str:
+            raise _ambiguous_write_response()
+        projected["sCode"] = "0"
+
+    if path in {"/api/v5/trade/order", "/api/v5/trade/cancel-order"}:
+        if "sCode" not in projected:
+            raise _ambiguous_write_response()
+        order_id = row.get("ordId")
+        if order_id not in (None, ""):
+            if type(order_id) is not str or not _SAFE_ORDER_ID.fullmatch(order_id):
+                raise _ambiguous_write_response()
+            requested_order_id = signed_body.get("ordId")
+            if requested_order_id is not None and order_id != requested_order_id:
+                raise _ambiguous_write_response()
+            projected["ordId"] = order_id
+        client_order_id = row.get("clOrdId")
+        requested_client_order_id = signed_body.get("clOrdId")
+        # A cancel-by-ordId response may include an unrelated client ID that
+        # was not in the signed request. Drop it rather than exposing it.
+        if client_order_id not in (None, "") and requested_client_order_id is not None:
+            if (
+                type(client_order_id) is not str
+                or not _SAFE_CLIENT_ORDER_ID.fullmatch(client_order_id)
+                or client_order_id != requested_client_order_id
+            ):
+                raise _ambiguous_write_response()
+            projected["clOrdId"] = client_order_id
+        if path == "/api/v5/trade/order":
+            if (
+                "ordId" not in projected
+                or type(requested_client_order_id) is not str
+                or not _SAFE_CLIENT_ORDER_ID.fullmatch(requested_client_order_id)
+                or projected.get("clOrdId") != requested_client_order_id
+            ):
+                raise _ambiguous_write_response()
+        elif not projected.get("ordId") and not projected.get("clOrdId"):
+            raise _ambiguous_write_response()
+
+    if path == "/api/v5/account/set-leverage":
+        instrument = row.get("instId")
+        margin_mode = row.get("mgnMode")
+        position_side = row.get("posSide", "")
+        leverage = row.get("lever")
+        if type(position_side) is not str:
+            raise _ambiguous_write_response()
+        expected_position_side = signed_body.get("posSide")
+        position_side_matches = (
+            position_side in {"", "net"}
+            if expected_position_side is None
+            else position_side == expected_position_side
+        )
+        if (
+            type(instrument) is not str
+            or not _SAFE_INSTRUMENT_ID.fullmatch(instrument)
+            or instrument != signed_body.get("instId")
+            or type(margin_mode) is not str
+            or margin_mode not in {"cross", "isolated"}
+            or margin_mode != signed_body.get("mgnMode")
+            or position_side not in {"", "net", "long", "short"}
+            or not position_side_matches
+            or type(leverage) is not str
+            or not _SAFE_LEVERAGE.fullmatch(leverage)
+        ):
+            raise _ambiguous_write_response()
+        try:
+            matches_leverage = Decimal(leverage) == Decimal(
+                str(signed_body.get("lever"))
+            )
+        except (InvalidOperation, TypeError):
+            raise _ambiguous_write_response() from None
+        if not matches_leverage:
+            raise _ambiguous_write_response()
+        projected.update(
+            {
+                "instId": instrument,
+                "mgnMode": margin_mode,
+                "posSide": position_side,
+                "lever": leverage,
+            }
+        )
+
+    if path == "/api/v5/trade/close-position":
+        # OKX's documented row contains these four keys. An arbitrary object
+        # must not become an acknowledged close, and the echoed identity must
+        # agree with the signed request. The close still needs reconciliation.
+        instrument = row.get("instId")
+        position_side = row.get("posSide")
+        client_order_id = row.get("clOrdId")
+        tag = row.get("tag")
+        if (
+            type(instrument) is not str
+            or not _SAFE_INSTRUMENT_ID.fullmatch(instrument)
+            or instrument != signed_body.get("instId")
+            or type(signed_body.get("mgnMode")) is not str
+            or signed_body.get("mgnMode") not in {"cross", "isolated"}
+            or type(position_side) is not str
+            or position_side not in {"net", "long", "short"}
+            or position_side != signed_body.get("posSide", "net")
+            or type(client_order_id) is not str
+            or (
+                client_order_id != ""
+                and not _SAFE_CLIENT_ORDER_ID.fullmatch(client_order_id)
+            )
+            or client_order_id != signed_body.get("clOrdId", "")
+            or type(tag) is not str
+            or not _SAFE_ORDER_TAG.fullmatch(tag)
+            or tag != signed_body.get("tag", "")
+            or ("mgnMode" in row and row["mgnMode"] != signed_body["mgnMode"])
+        ):
+            raise _ambiguous_write_response()
+        projected.update({"instId": instrument, "posSide": position_side})
+
+    if path == "/api/v5/trade/order-precheck":
+        # The documented row has margin measurements, but no order identifier
+        # to read back. Validate its recognizable schema; this is not proof of
+        # the hypothetical trade economics or permission to submit an order.
+        if (
+            type(signed_body.get("instId")) is not str
+            or not _SAFE_INSTRUMENT_ID.fullmatch(signed_body["instId"])
+            or type(signed_body.get("tdMode")) is not str
+            or signed_body.get("tdMode") not in {"cash", "cross", "isolated"}
+            or type(signed_body.get("side")) is not str
+            or signed_body.get("side") not in {"buy", "sell"}
+            or type(signed_body.get("ordType")) is not str
+            or not _SAFE_ORDER_TYPE.fullmatch(signed_body["ordType"])
+            or type(signed_body.get("sz")) is not str
+            or not _SAFE_PRECHECK_SIZE.fullmatch(signed_body["sz"])
+            or Decimal(signed_body["sz"]) <= 0
+            or ("instId" in row and row["instId"] != signed_body["instId"])
+        ):
+            raise _ambiguous_write_response()
+        for name in _PRECHECK_REQUIRED_FIELDS:
+            value = row.get(name)
+            if type(value) is not str or not _SAFE_PRECHECK_DECIMAL.fullmatch(value):
+                raise _ambiguous_write_response()
+        projected.update({name: row[name] for name in ("adjEqChg", "imrChg", "mmrChg")})
+
+    if path == _CANCEL_ALL_AFTER_PATH:
+        # OKX documents triggerTime, ts and tag. Their ordered timestamps and
+        # the exact echoed tag identify a timer response, but cannot attest
+        # that the timer is still armed when a later order is submitted.
+        trigger_time = row.get("triggerTime")
+        request_time = row.get("ts")
+        tag = row.get("tag")
+        requested_timeout = signed_body.get("timeOut")
+        if (
+            type(trigger_time) is not str
+            or not _SAFE_CAA_TIMESTAMP.fullmatch(trigger_time)
+            or type(request_time) is not str
+            or not _SAFE_CAA_TIMESTAMP.fullmatch(request_time)
+            or len(trigger_time) != len(request_time)
+            or int(trigger_time) <= int(request_time)
+            or type(tag) is not str
+            or not _SAFE_ORDER_TAG.fullmatch(tag)
+            or tag != signed_body.get("tag", "")
+            or type(requested_timeout) is not str
+            or re.fullmatch(r"[1-9][0-9]{1,2}", requested_timeout) is None
+            or not 10 <= int(requested_timeout) <= 120
+            or len(request_time) not in {10, 13}
+            or int(trigger_time) - int(request_time)
+            != int(requested_timeout) * (1 if len(request_time) == 10 else 1000)
+        ):
+            raise _ambiguous_write_response()
+        projected.update({"triggerTime": trigger_time, "ts": request_time, "tag": tag})
+
+    return [projected]
+
+
+def _private_response_rejection(code: Any, *, write: bool) -> OkxPrivateApiError:
+    """Keep exchange rejection text/data out of API, status, journal and logs.
+
+    A nonzero write response is not proof that the exchange made no change.
+    Until a separately retained raw observation resolves it, callers must keep
+    the submission intent and exposure uncertain rather than mark a rejection.
+    """
+    if write:
+        return OkxPrivateApiError(
+            "OKX private write response requires reconciliation",
+            code="ambiguous_response",
+        )
+    safe_code = (
+        code
+        if type(code) is str and _SAFE_EXCHANGE_ERROR_CODE.fullmatch(code)
+        else "private_response_rejected"
+    )
+    return OkxPrivateApiError("OKX private read rejected", code=safe_code)
+
+
+def _read_only_http_auth_code(response: httpx.Response) -> str | None:
+    """Recognize a bounded OKX auth code without retaining remote error text.
+
+    A non-2xx body is untrusted. Only two documented 401 codes are useful for
+    diagnosing a failed read; all other response bodies retain the old generic
+    transport failure. In particular, never forward ``msg`` or ``data`` because
+    the IP-whitelist message may contain the caller's public address.
+    """
+    if (
+        response.status_code != 401
+        or len(response.content) > _MAX_HTTP_AUTH_ERROR_BYTES
+        or response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        != "application/json"
+    ):
+        return None
+    try:
+        payload = json.loads(response.content)
+    except (TypeError, ValueError):
+        return None
+    if type(payload) is not dict:
+        return None
+    code = payload.get("code")
+    return code if type(code) is str and code in _READ_ONLY_HTTP_AUTH_CODES else None
 
 
 @dataclass(slots=True, repr=False)
@@ -473,6 +751,13 @@ class _OkxPrivateRestClientBase:
                             follow_redirects=False,
                         )
                     self._after_response_check(method=method, path=path)
+                    if method.upper() == "GET" and not write:
+                        auth_code = _read_only_http_auth_code(response)
+                        if auth_code is not None:
+                            raise OkxPrivateApiError(
+                                "OKX private read authentication rejected",
+                                code=auth_code,
+                            )
                     response.raise_for_status()
                     payload = response.json()
                     response_shape_code = "ambiguous_response" if write else None
@@ -481,12 +766,9 @@ class _OkxPrivateRestClientBase:
                             "OKX private API returned a non-object response",
                             code=response_shape_code,
                         )
-                    code = str(payload.get("code", ""))
-                    if code != "0":
-                        raise OkxPrivateApiError(
-                            payload.get("msg") or "OKX private API rejected request",
-                            code=code or None,
-                            data=payload.get("data"),
+                    if payload.get("code") != "0":
+                        raise _private_response_rejection(
+                            payload.get("code"), write=write
                         )
                     data = payload.get("data")
                     if not isinstance(data, list):
@@ -507,13 +789,14 @@ class _OkxPrivateRestClientBase:
                                 code="ambiguous_response",
                             )
                         for item in typed_data:
-                            item_code = str(item.get("sCode", "0") or "0")
+                            item_code = item.get("sCode", "0")
                             if item_code != "0":
-                                raise OkxPrivateApiError(
-                                    item.get("sMsg") or "OKX rejected write operation",
-                                    code=item_code,
-                                    data=typed_data,
-                                )
+                                raise _private_response_rejection(item_code, write=True)
+                        return _project_successful_write_data(
+                            path=path,
+                            signed_body_text=body_text,
+                            data=typed_data,
+                        )
                     return typed_data
                 except OkxPrivateApiError:
                     raise

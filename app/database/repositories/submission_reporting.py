@@ -1,5 +1,6 @@
 """Atomic private submission observations; separate, order-free file projection."""
 
+import json
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -121,6 +122,29 @@ def outcome_document(
             "protection_verified": False,
         }
     )
+
+
+def spool_eligible(outcome_json):
+    """Keep initial observations private until a trusted issuer exists.
+
+    An exact-looking HTTP body and caller-supplied transport timestamps are
+    observations, not proof of the exchange response's authenticity. The
+    current initial-outcome issuer records that proof as absent. A forged true
+    flag is rejected rather than becoming delivery authority.
+    """
+    try:
+        outcome = json.loads(outcome_json)
+        if (
+            type(outcome) is not dict
+            or outcome.get("status") not in {"acknowledged", "rejected", "uncertain"}
+            or outcome.get("transport_authenticity_verified") is not False
+        ):
+            raise ValueError("invalid_outcome_eligibility")
+        return False
+    except (TypeError, ValueError):
+        raise SubmissionReportingError(
+            "submission_outcome_eligibility_invalid"
+        ) from None
 
 
 def spool_identity(outcome_id, report_sha256, policy_sha256, namespace):
@@ -419,7 +443,7 @@ class SubmissionReportingRepository(QualificationLedgerRepository):
                         policy_json=policy_json,
                         policy_sha256=policy_sha256,
                         queue_namespace=namespace,
-                        eligible=prepared.status == "acknowledged",
+                        eligible=spool_eligible(document),
                         created_at=now,
                     )
                 )
@@ -488,7 +512,7 @@ class SubmissionReportingRepository(QualificationLedgerRepository):
             )
             or spool.report_id != report.report_id
             or spool.created_at != outcome.recorded_at
-            or spool.eligible != (prepared.status == "acknowledged")
+            or spool.eligible != spool_eligible(rebuilt)
         ):
             raise SubmissionReportingError("submission_spool_integrity_mismatch")
         return outcome, report, policy
@@ -665,6 +689,10 @@ class SubmissionReportingRepository(QualificationLedgerRepository):
             rows = tuple((await session.execute(statement)).all())
             for receipt, spool in rows:
                 _, report, policy = await self._verify_spool(session, spool)
+                if not spool.eligible:
+                    raise SubmissionReportingError(
+                        "submission_projection_receipt_not_eligible"
+                    )
                 if (
                     receipt.report_sha256,
                     receipt.policy_sha256,
@@ -810,12 +838,16 @@ class SubmissionReportingRepository(QualificationLedgerRepository):
             if (
                 row is None
                 or spool is None
+                or not spool.eligible
                 or row.envelope_sha256 != pin(expected_envelope_sha256)
                 or (row.report_sha256, row.policy_sha256, row.queue_namespace)
                 != (spool.report_sha256, spool.policy_sha256, spool.queue_namespace)
                 or row.verified_at < spool.created_at
             ):
                 raise SubmissionReportingError("submission_projection_readback_missing")
+            # A legacy receipt must not confer delivery authority when its
+            # spool predates the authenticity gate or was otherwise corrupted.
+            await self._verify_spool(session, spool)
             return SubmissionProjectionReceipt(
                 spool_id, row.envelope_sha256, row.report_sha256, row.policy_sha256
             )

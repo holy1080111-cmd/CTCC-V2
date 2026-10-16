@@ -48,10 +48,11 @@ def test_v2_request_replays_full_submission_report(monkeypatch):
         replay_binding=replay,
     )
     request = reservations.decode_reservation_request(reservations.canonical(request))
-    coverage, result = reservations.prepare_reservation(
-        request, fixture.claims, (), observed_at=fixture.now
-    )
-    assert result.passed
+    # Offline DB0018 lineage fixture: replay the mathematics without crossing
+    # the now-denied operational reservation admission boundary.
+    replay = reservations.replay_range_reservation(request, observed_at=fixture.now)
+    assert replay.computational_checks_passed
+    coverage = consumed_receipt(fixture).coverage
     consumed = reservations.ReservationReceipt(
         scope=request.scope,
         reservation_id=reservations.reservation_id(

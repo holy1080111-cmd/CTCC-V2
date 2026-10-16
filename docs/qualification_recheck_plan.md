@@ -248,3 +248,21 @@ Live flags 和現有部署不屬本計劃的變更範圍。
 G12、公開 capture、雙情境成本、portfolio 各自 PASS **不等於** 已完成 R7 整鏈。
 整體 runtime 驗收、來源認證、atomic ledger、未校準策略路由及真新管線樣本，
 不能因這份計劃存在就從未完成項勾除。
+
+### 2026-10-16 reservation admission boundary
+
+現有 V3/V4/V5 診斷路徑在同一 invocation 內要求新 G12／DB0039 readback，
+並以 G12 publication barrier 嚴格驗證公開與帳戶 request start。原 candidate、
+event、zone、entry、SL、TP、policy 與最早 expiry 仍由原 G12/重算資料固定；
+公開重查與本地風險讀回皆維持 `DENY`。這不是可送單的完整 R7：原始
+source-derived G1–G11 issuer、完整帳戶／保護狀態 issuer 與真正 execution
+recheck issuer 都還缺失，Demo 公開來源註冊站點也未獲獨立認證。
+
+`RecordedRecheckAssessment` 的 `computational_checks_passed=true` 只代表
+提供的 bytes 在離線模型中一致，其 `runtime_admissible`、來源、帳戶、publication、
+完整事件路徑與本次執行重查 flags 均固定為 false。V2/V3 reservation admission
+現在於受帳戶鎖保護的準備階段拒絕這些紀錄；`{"passed":true}` 也無法替代
+typed receipt。`replay_range_reservation` 保留供離線計算測試，legacy
+`ReservationRequest`／`reserve()` 保留為不可送單的 durable ledger 機制測試。
+所有 OKX entry POST 在最終 transport 邊界仍為硬拒絕。只有新的來源擁有者在
+本次 G12 後發出可重播且不可由 caller 建構的 R7 憑證，才可設計正向保留路徑。

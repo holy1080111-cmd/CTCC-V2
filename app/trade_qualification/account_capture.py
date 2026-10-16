@@ -7,8 +7,10 @@ Current v5 exposure queries are unfiltered. Historical v2/v3 packets retain
 their original stream contract; immutable v4 packets retain the eight formerly
 requested algo filters for replay only. Sealed v5 uses four pinned algo types;
 they no longer establish complete current algo coverage. Its six standard-product
-history chains remain replayable. Recent fills are
-unfiltered. Instrument/leverage metadata remains scoped to SWAP.
+history chains remain replayable. The separate v6 all-product inventory adds
+eight current algo types and state-partitioned algo-history GET chains, with
+explicit incomplete epoch coverage. Recent fills are unfiltered.
+Instrument/leverage metadata remains scoped to SWAP.
 An empty terminal page proves only the supplied query chain,
 not exchange retention, ingestion completeness, atomicity or account-wide risk.
 Source update/event times are preserved, never replaced by receipt time.
@@ -93,6 +95,30 @@ Stream = Literal[
     "orders_history_archive_futures",
     "orders_history_archive_option",
     "orders_history_archive_events",
+    "algo_history_conditional_effective",
+    "algo_history_conditional_canceled",
+    "algo_history_conditional_order_failed",
+    "algo_history_oco_effective",
+    "algo_history_oco_canceled",
+    "algo_history_oco_order_failed",
+    "algo_history_chase_effective",
+    "algo_history_chase_canceled",
+    "algo_history_chase_order_failed",
+    "algo_history_trigger_effective",
+    "algo_history_trigger_canceled",
+    "algo_history_trigger_order_failed",
+    "algo_history_move_order_stop_effective",
+    "algo_history_move_order_stop_canceled",
+    "algo_history_move_order_stop_order_failed",
+    "algo_history_iceberg_effective",
+    "algo_history_iceberg_canceled",
+    "algo_history_iceberg_order_failed",
+    "algo_history_twap_effective",
+    "algo_history_twap_canceled",
+    "algo_history_twap_order_failed",
+    "algo_history_smart_iceberg_effective",
+    "algo_history_smart_iceberg_canceled",
+    "algo_history_smart_iceberg_order_failed",
     "config_before",
     "account_position_risk",
     "balance",
@@ -210,6 +236,22 @@ CURRENT_ALGO_ORDER_TYPES_V7 = (
     "twap",
     "smart_iceberg",
 )
+ALGO_HISTORY_STATES = ("effective", "canceled", "order_failed")
+_ALGO_HISTORY_QUERIES = {
+    f"algo_history_{kind}_{state}": (kind, state)
+    for kind in CURRENT_ALGO_ORDER_TYPES_V7
+    for state in ALGO_HISTORY_STATES
+}
+V6_ALL_PRODUCT_STREAMS = (
+    *(stream for stream in V5_STREAMS if stream != "config_after"),
+    *(
+        f"algo_{kind}"
+        for kind in CURRENT_ALGO_ORDER_TYPES_V7
+        if kind not in ALGO_ORDER_TYPES
+    ),
+    *_ALGO_HISTORY_QUERIES,
+    "config_after",
+)
 V7_CURRENT_STREAMS = (
     "config_before",
     "account_position_risk",
@@ -222,13 +264,19 @@ V7_CURRENT_STREAMS = (
     "leverage_isolated",
     "config_after",
 )
-ALL_STREAMS = frozenset(STREAMS) | frozenset(V4_STREAMS) | frozenset(V5_STREAMS)
+ALL_STREAMS = (
+    frozenset(STREAMS) | frozenset(V4_STREAMS) | frozenset(V6_ALL_PRODUCT_STREAMS)
+)
 _ENDPOINTS.update(
     {name: _ENDPOINTS[family] for name, (family, _) in _HISTORY_VARIANTS.items()}
+)
+_ENDPOINTS.update(
+    {name: "/api/v5/trade/orders-algo-history" for name in _ALGO_HISTORY_QUERIES}
 )
 _CURSOR_FIELDS.update(
     {name: _CURSOR_FIELDS[family] for name, (family, _) in _HISTORY_VARIANTS.items()}
 )
+_CURSOR_FIELDS.update({name: "algoId" for name in _ALGO_HISTORY_QUERIES})
 _FILL_STREAMS |= frozenset(
     name for name, (family, _) in _HISTORY_VARIANTS.items() if family == "fills_history"
 )
@@ -413,6 +461,21 @@ class AllProductDemoAccountCapturePlan(RegionalDemoAccountCapturePlan):
         return self
 
 
+class AllProductDemoAccountCapturePlanV6(RegionalDemoAccountCapturePlan):
+    """Versioned GET inventory with state-partitioned algo order history."""
+
+    contract_version: Literal["ctcc.demo_account_plan.v6"]
+    capture_scope: Literal["all_standard_products_v6_algo_history"] = (
+        "all_standard_products_v6_algo_history"
+    )
+
+    @model_validator(mode="after")
+    def inventory_budget(self):
+        if self.max_total_pages < len(V6_ALL_PRODUCT_STREAMS):
+            _fail("plan_inventory_budget_invalid")
+        return self
+
+
 class CurrentDemoAccountCapturePlanV6(RegionalDemoAccountCapturePlan):
     """Fresh current inventory only; historical cashflows need a separate join."""
 
@@ -465,6 +528,8 @@ class HistoricalAllProductDemoAccountCapturePlanV4(RegionalDemoAccountCapturePla
 
 
 def streams_for_plan(plan):
+    if type(plan) is AllProductDemoAccountCapturePlanV6:
+        return V6_ALL_PRODUCT_STREAMS
     if type(plan) is CurrentDemoAccountCapturePlanV7:
         return V7_CURRENT_STREAMS
     if type(plan) is CurrentDemoAccountCapturePlanV6:
@@ -478,6 +543,7 @@ def streams_for_plan(plan):
 
 def is_all_product_plan(plan):
     return type(plan) in {
+        AllProductDemoAccountCapturePlanV6,
         CurrentDemoAccountCapturePlanV7,
         CurrentDemoAccountCapturePlanV6,
         AllProductDemoAccountCapturePlan,
@@ -567,11 +633,13 @@ class DemoAccountPacket(_Record):
         "ctcc.demo_account_capture.v3",
         "ctcc.demo_account_capture.v4",
         "ctcc.demo_account_capture.v5",
+        "ctcc.demo_account_capture.v6",
         "ctcc.demo_current_account_capture.v6",
         "ctcc.demo_current_account_capture.v7",
     ] = "ctcc.demo_account_capture.v2"
     plan: (
-        CurrentDemoAccountCapturePlanV7
+        AllProductDemoAccountCapturePlanV6
+        | CurrentDemoAccountCapturePlanV7
         | CurrentDemoAccountCapturePlanV6
         | AllProductDemoAccountCapturePlan
         | HistoricalAllProductDemoAccountCapturePlanV4
@@ -621,6 +689,7 @@ _MODELS = {
     CurrentDemoAccountCapturePlanV6,
     CurrentDemoAccountCapturePlanV7,
     AllProductDemoAccountCapturePlan,
+    AllProductDemoAccountCapturePlanV6,
     HistoricalAllProductDemoAccountCapturePlanV4,
     AccountRequest,
     AccountNumber,
@@ -735,6 +804,8 @@ def plan_sha256(plan: DemoAccountCapturePlan) -> str:
 
 
 def _copy_plan(plan):
+    if type(plan) is AllProductDemoAccountCapturePlanV6:
+        return _copy(plan, AllProductDemoAccountCapturePlanV6)
     if type(plan) is CurrentDemoAccountCapturePlanV7:
         return _copy(plan, CurrentDemoAccountCapturePlanV7)
     if type(plan) is CurrentDemoAccountCapturePlanV6:
@@ -778,7 +849,9 @@ def account_request(
         parameters["limit"] = str(plan.page_size)
         if after is not None:
             parameters["after"] = after
-    if stream.startswith("algo_"):
+    if stream in _ALGO_HISTORY_QUERIES:
+        parameters["ordType"], parameters["state"] = _ALGO_HISTORY_QUERIES[stream]
+    elif stream.startswith("algo_"):
         parameters["ordType"] = stream.removeprefix("algo_")
     if stream in _HISTORY_VARIANTS:
         parameters["instType"] = _HISTORY_VARIANTS[stream][1]
@@ -802,6 +875,7 @@ def account_request(
                 CurrentDemoAccountCapturePlanV6,
                 RegionalDemoAccountCapturePlan,
                 AllProductDemoAccountCapturePlan,
+                AllProductDemoAccountCapturePlanV6,
                 HistoricalAllProductDemoAccountCapturePlanV4,
             }
             else "https://www.okx.com"
@@ -1156,7 +1230,9 @@ def _row_record(row, stream, plan, received):
                     _fail("source_instrument_type_invalid")
                 if stream == "positions" and kind == "SPOT":
                     _fail("source_instrument_type_invalid")
-                if stream == "algo_chase" and kind not in {"SWAP", "FUTURES"}:
+                if (
+                    stream == "algo_chase" or stream.startswith("algo_history_chase_")
+                ) and kind not in {"SWAP", "FUTURES"}:
                     _fail("source_instrument_type_invalid")
                 if stream.startswith("algo_") and kind not in {
                     "SPOT",
@@ -1202,6 +1278,16 @@ def _row_record(row, stream, plan, received):
             if state not in allowed:
                 _fail("order_state_invalid")
             required_numbers = {"sz", "accFillSz"}
+            required_clocks = {"cTime", "uTime"}
+        elif stream in _ALGO_HISTORY_QUERIES:
+            expected_type, expected_state = _ALGO_HISTORY_QUERIES[stream]
+            if _required_text(row, "ordType") != expected_type:
+                _fail("algo_query_scope_mismatch")
+            if _required_text(row, "state") != expected_state:
+                _fail("algo_history_state_mismatch")
+            if _required_text(row, "side") not in {"buy", "sell"}:
+                _fail("order_side_invalid")
+            required_numbers = {"sz"}
             required_clocks = {"cTime", "uTime"}
         elif stream.startswith("algo_"):
             if _required_text(row, "ordType") != stream.removeprefix("algo_"):
@@ -1620,6 +1706,17 @@ def verify_demo_account_records(
     if is_all_product_plan(plan):
         gaps.remove("non_swap_history_not_requested")
         gaps.add("all_product_metadata_coverage_unverified")
+    if type(plan) is AllProductDemoAccountCapturePlanV6:
+        # The API exposes only three history state filters although its row
+        # schema also permits partially_failed. A bounded response cannot
+        # certify how that state is partitioned or whether an earlier epoch
+        # predates the endpoint's retention.
+        gaps.update(
+            {
+                "algo_history_terminal_partition_unverified",
+                "algo_history_epoch_coverage_unverified",
+            }
+        )
     if type(plan) in {CurrentDemoAccountCapturePlanV6, CurrentDemoAccountCapturePlanV7}:
         gaps.add("separate_history_source_join_required")
     account_level = before["acctLv"]
@@ -1678,6 +1775,8 @@ def verify_demo_account_records(
             if type(plan) is CurrentDemoAccountCapturePlanV7
             else "ctcc.demo_current_account_capture.v6"
             if type(plan) is CurrentDemoAccountCapturePlanV6
+            else "ctcc.demo_account_capture.v6"
+            if type(plan) is AllProductDemoAccountCapturePlanV6
             else "ctcc.demo_account_capture.v5"
             if type(plan) is AllProductDemoAccountCapturePlan
             else "ctcc.demo_account_capture.v4"

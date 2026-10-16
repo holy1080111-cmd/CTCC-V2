@@ -1,15 +1,22 @@
+import logging
 from datetime import UTC, datetime
 
 import httpx
 import pytest
 
 from app.config.settings import Settings
+from app.exchange.okx import private_rest
 from app.exchange.okx.errors import OkxPrivateApiError
 from app.exchange.okx.private_rest import (
     OkxDemoPrivateRestClient,
+    OkxLivePrivateRestClient,
+    _OkxPrivateRestClientBase,
+    _private_response_rejection,
+    _project_successful_write_data,
     build_signature,
     utc_iso_timestamp,
 )
+from app.okx_demo.service import OkxDemoService
 
 
 def demo_settings(**updates) -> Settings:
@@ -44,6 +51,423 @@ def test_utc_timestamp_is_millisecond_iso8601() -> None:
     assert value == "2026-08-04T13:01:02.345Z"
 
 
+class _SyntheticWriteClient(_OkxPrivateRestClientBase):
+    """Network-free transport fixture; production authority remains unchanged."""
+
+    def _credentials(self) -> tuple[str, str, str]:
+        return "fixture-key", "fixture-secret", "fixture-passphrase"
+
+    def _rest_base_url(self) -> str:
+        return "https://www.okx.com"
+
+    def _timeout_seconds(self) -> float:
+        return 1.0
+
+    def _read_max_retries(self) -> int:
+        return 0
+
+
+@pytest.mark.asyncio
+async def test_successful_write_exposes_only_validated_projection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    marker = "sensitive-remote-payload-must-never-leak"
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "code": "0",
+                "msg": marker,
+                "data": [
+                    {
+                        "sCode": "0",
+                        "sMsg": marker,
+                        "ordId": "12345",
+                        "clOrdId": "CTCCsynthetic1",
+                        "uid": marker,
+                        "exchange_data": {"secret": marker},
+                    }
+                ],
+            },
+        )
+
+    # Exercise the successful response path with a MockTransport. This fixture
+    # is never an execution authority and cannot reach an exchange.
+    monkeypatch.setattr(
+        private_rest,
+        "require_owned_private_write_authority",
+        lambda *args, **kwargs: None,
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        result = await _SyntheticWriteClient(http, settings=demo_settings())._request(
+            "POST",
+            "/api/v5/trade/order",
+            body={"clOrdId": "CTCCsynthetic1", "instId": "BTC-USDT-SWAP"},
+            write=True,
+        )
+
+    assert len(calls) == 1
+    assert result == [{"sCode": "0", "ordId": "12345", "clOrdId": "CTCCsynthetic1"}]
+    assert OkxDemoService._ack(result).exchange_message == ""
+    assert marker not in repr(result)
+
+
+@pytest.mark.asyncio
+async def test_malformed_successful_write_is_ambiguous_and_never_retried(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    marker = "private-token-marker"
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(
+            200,
+            json={
+                "code": "0",
+                "msg": marker,
+                "data": [
+                    {
+                        "sCode": "0",
+                        "sMsg": marker,
+                        "ordId": marker,
+                        "clOrdId": "CTCCsynthetic1",
+                    }
+                ],
+            },
+        )
+
+    monkeypatch.setattr(
+        private_rest,
+        "require_owned_private_write_authority",
+        lambda *args, **kwargs: None,
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        with pytest.raises(OkxPrivateApiError) as error:
+            await _SyntheticWriteClient(http, settings=demo_settings())._request(
+                "POST",
+                "/api/v5/trade/order",
+                body={"clOrdId": "CTCCsynthetic1", "instId": "BTC-USDT-SWAP"},
+                write=True,
+            )
+
+    assert calls == 1
+    assert error.value.code == "ambiguous_response"
+    assert error.value.data is None
+    assert marker not in repr(error.value)
+
+
+def test_demo_ack_never_exposes_untrusted_response_message() -> None:
+    acknowledgement = OkxDemoService._ack(
+        [
+            {
+                "ordId": "123",
+                "clOrdId": "CTCCsynthetic1",
+                "sCode": "0",
+                "sMsg": "private-token-marker",
+            }
+        ]
+    )
+    assert acknowledgement.exchange_message == ""
+    assert "private-token-marker" not in acknowledgement.model_dump_json()
+
+
+@pytest.mark.parametrize(
+    "path,body,row,expected",
+    [
+        (
+            "/api/v5/trade/order",
+            '{"clOrdId":"CTCCsynthetic1"}',
+            {
+                "sCode": "0",
+                "sMsg": "private-marker",
+                "ordId": "1",
+                "clOrdId": "CTCCsynthetic1",
+                "uid": "private-marker",
+            },
+            [{"sCode": "0", "ordId": "1", "clOrdId": "CTCCsynthetic1"}],
+        ),
+        (
+            "/api/v5/trade/cancel-order",
+            '{"ordId":"1"}',
+            {
+                "sCode": "0",
+                "ordId": "1",
+                "sMsg": "private-marker",
+                "uid": "private-marker",
+                "clOrdId": "private-marker",
+            },
+            [{"sCode": "0", "ordId": "1"}],
+        ),
+        (
+            "/api/v5/account/set-leverage",
+            '{"instId":"BTC-USDT-SWAP","mgnMode":"isolated","lever":"5"}',
+            {
+                "sCode": "0",
+                "instId": "BTC-USDT-SWAP",
+                "mgnMode": "isolated",
+                "posSide": "net",
+                "lever": "5.0",
+                "sMsg": "private-marker",
+            },
+            [
+                {
+                    "sCode": "0",
+                    "instId": "BTC-USDT-SWAP",
+                    "mgnMode": "isolated",
+                    "posSide": "net",
+                    "lever": "5.0",
+                }
+            ],
+        ),
+        (
+            "/api/v5/trade/close-position",
+            '{"instId":"BTC-USDT-SWAP","mgnMode":"cross","posSide":"long"}',
+            {
+                "instId": "BTC-USDT-SWAP",
+                "posSide": "long",
+                "clOrdId": "",
+                "tag": "",
+                "sMsg": "private-marker",
+                "uid": "private-marker",
+            },
+            [{"instId": "BTC-USDT-SWAP", "posSide": "long"}],
+        ),
+        (
+            "/api/v5/trade/order-precheck",
+            '{"instId":"BTC-USDT-SWAP","tdMode":"cross","side":"buy","ordType":"limit","sz":"1"}',
+            {
+                "adjEq": "41.94347460746277",
+                "adjEqChg": "-226.05616481626",
+                "imr": "0",
+                "imrChg": "57.74709688430927",
+                "mmr": "0",
+                "mmrChg": "0",
+                "mgnRatio": "0",
+                "mgnRatioChg": "0",
+                "sMsg": "private-marker",
+                "uid": "private-marker",
+            },
+            [
+                {
+                    "adjEqChg": "-226.05616481626",
+                    "imrChg": "57.74709688430927",
+                    "mmrChg": "0",
+                }
+            ],
+        ),
+        (
+            "/api/v5/trade/cancel-all-after",
+            '{"timeOut":"30","tag":"CTCCV11"}',
+            {
+                "triggerTime": "1587971430",
+                "tag": "CTCCV11",
+                "ts": "1587971400",
+                "sMsg": "private-marker",
+                "uid": "private-marker",
+            },
+            [{"triggerTime": "1587971430", "ts": "1587971400", "tag": "CTCCV11"}],
+        ),
+    ],
+)
+def test_write_route_projections_drop_untrusted_exchange_text(
+    path: str, body: str, row: dict[str, object], expected: list[dict[str, str]]
+) -> None:
+    projected = _project_successful_write_data(
+        path=path, signed_body_text=body, data=[row]
+    )
+    assert projected == expected
+    assert "private-marker" not in repr(projected)
+
+
+@pytest.mark.parametrize(
+    "path,body,row",
+    [
+        (
+            "/api/v5/trade/order",
+            '{"clOrdId":"CTCCsynthetic1"}',
+            {"sCode": "0", "ordId": "secret\nmarker", "clOrdId": "CTCCsynthetic1"},
+        ),
+        (
+            "/api/v5/trade/order",
+            '{"clOrdId":"CTCCsynthetic1"}',
+            {"sCode": "0", "ordId": "1", "clOrdId": "secret-marker"},
+        ),
+        (
+            "/api/v5/trade/cancel-order",
+            '{"ordId":"1"}',
+            {"sCode": "0", "ordId": "2"},
+        ),
+        (
+            "/api/v5/trade/cancel-order",
+            '{"clOrdId":"CTCCsynthetic1"}',
+            {"sCode": "0", "ordId": "1", "clOrdId": "secret-marker"},
+        ),
+        (
+            "/api/v5/account/set-leverage",
+            '{"instId":"BTC-USDT-SWAP","mgnMode":"isolated","lever":"5"}',
+            {
+                "sCode": "0",
+                "instId": "secret-marker",
+                "mgnMode": "isolated",
+                "lever": "5",
+                "posSide": "net",
+            },
+        ),
+        (
+            "/api/v5/trade/close-position",
+            '{"instId":"BTC-USDT-SWAP","mgnMode":"cross","posSide":"net"}',
+            {"sCode": "0", "instId": "ETH-USDT-SWAP"},
+        ),
+    ],
+)
+def test_invalid_successful_write_field_is_ambiguous_without_remote_text(
+    path: str, body: str, row: dict[str, object]
+) -> None:
+    with pytest.raises(OkxPrivateApiError) as error:
+        _project_successful_write_data(path=path, signed_body_text=body, data=[row])
+    assert error.value.code == "ambiguous_response"
+    assert "secret" not in repr(error.value)
+
+
+@pytest.mark.parametrize(
+    "path,body,row",
+    [
+        (
+            "/api/v5/trade/order-precheck",
+            '{"instId":"BTC-USDT-SWAP","tdMode":"cross","side":"buy","ordType":"limit","sz":"1"}',
+            {"sCode": "0", "junk": "private-marker"},
+        ),
+        (
+            "/api/v5/trade/order-precheck",
+            '{"instId":"BTC-USDT-SWAP","tdMode":"cross","side":"buy","ordType":"limit","sz":"1"}',
+            {"adjEq": "0", "imr": "0", "junk": "private-marker"},
+        ),
+        (
+            "/api/v5/trade/close-position",
+            '{"instId":"BTC-USDT-SWAP","mgnMode":"cross","posSide":"long"}',
+            {"sCode": "0", "junk": "private-marker"},
+        ),
+        (
+            "/api/v5/trade/close-position",
+            '{"instId":"BTC-USDT-SWAP","mgnMode":"cross","posSide":"long"}',
+            {"instId": "BTC-USDT-SWAP", "posSide": "short", "clOrdId": "", "tag": ""},
+        ),
+        (
+            "/api/v5/trade/cancel-all-after",
+            '{"timeOut":"30","tag":"CTCCV11"}',
+            {"sCode": "0", "junk": "private-marker"},
+        ),
+        (
+            "/api/v5/trade/cancel-all-after",
+            '{"timeOut":"30","tag":"CTCCV11"}',
+            {"triggerTime": "1587971400", "ts": "1587971400", "tag": "CTCCV11"},
+        ),
+        (
+            "/api/v5/trade/cancel-all-after",
+            '{"timeOut":"30","tag":"CTCCV11"}',
+            {"triggerTime": "1587971440", "ts": "1587971400", "tag": "CTCCV11"},
+        ),
+        (
+            "/api/v5/trade/cancel-all-after",
+            '{"timeOut":"30","tag":"CTCCV11"}',
+            {"triggerTime": "1587971430", "ts": "1587971400", "tag": "WRONG"},
+        ),
+    ],
+)
+def test_documented_non_order_write_shape_and_echo_fail_closed(
+    path: str, body: str, row: dict[str, object]
+) -> None:
+    with pytest.raises(OkxPrivateApiError) as error:
+        _project_successful_write_data(path=path, signed_body_text=body, data=[row])
+    assert error.value.code == "ambiguous_response"
+    assert "private-marker" not in repr(error.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "path,body",
+    [
+        (
+            "/api/v5/trade/order-precheck",
+            {
+                "instId": "BTC-USDT-SWAP",
+                "tdMode": "cross",
+                "side": "buy",
+                "ordType": "limit",
+                "sz": "1",
+            },
+        ),
+        (
+            "/api/v5/trade/close-position",
+            {"instId": "BTC-USDT-SWAP", "mgnMode": "cross", "posSide": "long"},
+        ),
+        (
+            "/api/v5/trade/cancel-all-after",
+            {"timeOut": "30", "tag": "CTCCV11"},
+        ),
+    ],
+)
+async def test_junk_only_successful_non_order_write_is_ambiguous_without_retry(
+    path: str, body: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    marker = "private-response-marker"
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(
+            200, json={"code": "0", "msg": marker, "data": [{"junk": marker}]}
+        )
+
+    monkeypatch.setattr(
+        private_rest,
+        "require_owned_private_write_authority",
+        lambda *args, **kwargs: None,
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        with pytest.raises(OkxPrivateApiError) as error:
+            await _SyntheticWriteClient(http, settings=demo_settings())._request(
+                "POST", path, body=body, write=True
+            )
+
+    assert calls == 1
+    assert error.value.code == "ambiguous_response"
+    assert marker not in repr(error.value)
+
+
+@pytest.mark.parametrize(
+    "path,rows",
+    [
+        (
+            "/api/v5/trade/order",
+            [
+                {"sCode": "0", "ordId": "1", "clOrdId": "CTCCsynthetic1"},
+                {"sCode": "0", "ordId": "2", "clOrdId": "CTCCsynthetic1"},
+            ],
+        ),
+        (
+            "/api/v5/account/unknown-write",
+            [{"sCode": "0", "secret": "private-marker"}],
+        ),
+    ],
+)
+def test_unrecognized_or_multiple_write_results_require_reconciliation(
+    path: str, rows: list[dict[str, object]]
+) -> None:
+    with pytest.raises(OkxPrivateApiError) as error:
+        _project_successful_write_data(
+            path=path, signed_body_text='{"clOrdId":"CTCCsynthetic1"}', data=rows
+        )
+    assert error.value.code == "ambiguous_response"
+    assert "private-marker" not in repr(error.value)
+
+
 @pytest.mark.asyncio
 async def test_authenticated_get_includes_simulated_header_and_signed_query() -> None:
     settings = demo_settings()
@@ -72,6 +496,238 @@ async def test_authenticated_get_includes_simulated_header_and_signed_query() ->
             client, settings=settings, clock=lambda: fixed
         ).positions("BTC-USDT-SWAP")
     assert result == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("code", ["50110", "50119"])
+@pytest.mark.parametrize("environment", ["demo", "live"])
+async def test_private_get_classifies_only_bounded_401_auth_code_without_remote_text(
+    code: str, environment: str
+) -> None:
+    calls: list[httpx.Request] = []
+    remote_text = "confidential-remote-error-marker"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        assert request.method == "GET"
+        assert request.url.path == "/api/v5/account/config"
+        assert (request.headers.get("x-simulated-trading") == "1") is (
+            environment == "demo"
+        )
+        return httpx.Response(
+            401,
+            json={"code": code, "msg": remote_text, "data": [remote_text]},
+        )
+
+    settings = (
+        demo_settings(okx_demo_allow_order_writes=False, okx_demo_read_max_retries=2)
+        if environment == "demo"
+        else Settings(
+            _env_file=None,
+            okx_live_api_key="synthetic-live-key",
+            okx_live_api_secret="synthetic-live-secret",
+            okx_live_api_passphrase="synthetic-live-passphrase",
+            okx_live_read_max_retries=2,
+        )
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = (
+            OkxDemoPrivateRestClient(http, settings=settings)
+            if environment == "demo"
+            else OkxLivePrivateRestClient(http, settings=settings)
+        )
+        with pytest.raises(OkxPrivateApiError) as error:
+            await client.account_config()
+
+    assert error.value.code == code
+    assert error.value.data is None
+    assert str(error.value) == "OKX private read authentication rejected"
+    assert remote_text not in repr(error.value)
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "response",
+    [
+        httpx.Response(
+            401, content=b"not-json", headers={"content-type": "application/json"}
+        ),
+        httpx.Response(
+            401, json={"code": "50113", "msg": "confidential-remote-error-marker"}
+        ),
+        httpx.Response(
+            401, json={"code": 50110, "msg": "confidential-remote-error-marker"}
+        ),
+        httpx.Response(
+            401,
+            content=b'{"code":"50110"}',
+            headers={"content-type": "text/plain"},
+        ),
+        httpx.Response(
+            400, json={"code": "50110", "msg": "confidential-remote-error-marker"}
+        ),
+        httpx.Response(
+            401,
+            json={"code": "50110", "msg": "confidential-remote-error-marker" * 200},
+        ),
+    ],
+    ids=[
+        "malformed",
+        "unknown",
+        "integer",
+        "wrong-media-type",
+        "wrong-status",
+        "oversized",
+    ],
+)
+async def test_private_get_other_http_errors_remain_generic_and_redacted(
+    response: httpx.Response,
+) -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        assert request.method == "GET"
+        return response
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        with pytest.raises(OkxPrivateApiError) as error:
+            await OkxDemoPrivateRestClient(
+                http,
+                settings=demo_settings(
+                    okx_demo_allow_order_writes=False, okx_demo_read_max_retries=0
+                ),
+            ).account_config()
+
+    assert calls == 1
+    assert error.value.code == "transport_error"
+    assert error.value.data is None
+    assert "confidential-remote-error-marker" not in str(error.value)
+    assert "confidential-remote-error-marker" not in repr(error.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("remote_code", "expected_code"),
+    [("50110", "50110"), ("50110:private-token", "private_response_rejected")],
+)
+async def test_200_read_error_cannot_leak_remote_values_to_demo_status_api_or_log(
+    remote_code: str, expected_code: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    from app.api.routers.okx_demo import _http_error
+    from app.exchange.okx.public_rest import OkxPublicRestClient
+    from app.okx_demo.service import OkxDemoService
+
+    marker = "private-ip-uid-token-marker"
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        assert request.method == "GET"
+        assert request.url.path == "/api/v5/account/config"
+        return httpx.Response(
+            200,
+            json={
+                "code": remote_code,
+                "msg": marker,
+                "data": [{"uid": marker, "ip": marker, "token": marker}],
+            },
+        )
+
+    settings = demo_settings(
+        okx_demo_allow_order_writes=False, okx_demo_read_max_retries=0
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        service = OkxDemoService(
+            OkxDemoPrivateRestClient(http, settings=settings),
+            OkxPublicRestClient(),
+            None,
+            settings=settings,
+        )
+        with pytest.raises(OkxPrivateApiError) as error:
+            await service.connectivity_check()
+        status = await service.status()
+
+    assert calls == 1
+    assert error.value.code == expected_code
+    assert error.value.data is None
+    assert str(error.value) == "OKX private read rejected"
+    assert marker not in str(error.value)
+    assert marker not in str(status.last_error)
+    assert marker not in repr(_http_error(error.value).detail)
+    with caplog.at_level(logging.ERROR):
+        try:
+            raise error.value
+        except OkxPrivateApiError:
+            logging.getLogger("app.demo_automation.service").exception(
+                "demo_automation_symbol_failed"
+            )
+    assert marker not in caplog.text
+
+
+@pytest.mark.parametrize("remote_code", ["51000", "51000:private-token", 51000])
+def test_write_response_error_is_redacted_and_always_ambiguous(
+    remote_code: object,
+) -> None:
+    error = _private_response_rejection(remote_code, write=True)
+    assert error.code == "ambiguous_response"
+    assert error.data is None
+    assert str(error) == "OKX private write response requires reconciliation"
+    assert "private-token" not in repr(error)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_location", ["top-level", "per-item"])
+async def test_synthetic_write_error_cannot_expose_remote_message_or_data(
+    failure_location: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The production write authorities are only bypassed inside this exact
+    # MockTransport test adapter to exercise the otherwise unreachable parser.
+    monkeypatch.setattr(
+        private_rest, "enforce_demo_submission_boundary", lambda *_: None
+    )
+    monkeypatch.setattr(private_rest, "enforce_demo_final_dispatch", lambda *_: None)
+    monkeypatch.setattr(
+        private_rest, "require_owned_private_write_authority", lambda *_, **__: None
+    )
+    marker = "private-ip-uid-token-marker"
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        assert request.method == "POST"
+        assert request.url.path == "/api/v5/trade/order"
+        assert request.headers["x-simulated-trading"] == "1"
+        return httpx.Response(
+            200,
+            json=(
+                {"code": "51000", "msg": marker, "data": [{"uid": marker}]}
+                if failure_location == "top-level"
+                else {
+                    "code": "0",
+                    "data": [{"sCode": "51000", "sMsg": marker, "uid": marker}],
+                }
+            ),
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        with pytest.raises(OkxPrivateApiError) as error:
+            await OkxDemoPrivateRestClient(
+                http,
+                settings=demo_settings(
+                    okx_demo_allow_order_writes=False, okx_demo_read_max_retries=2
+                ),
+            )._request("POST", "/api/v5/trade/order", body={"instId": "BTC-USDT-SWAP"})
+
+    assert calls == 1
+    assert error.value.code == "ambiguous_response"
+    assert error.value.data is None
+    assert str(error.value) == "OKX private write response requires reconciliation"
+    assert marker not in repr(error.value)
 
 
 @pytest.mark.asyncio

@@ -1170,6 +1170,38 @@ async def _capture_initial_current(
         _secret_checked(diagnostic.receipt_json, owner.tokens)
         _exposure_sink.append(diagnostic)
         return diagnostic
+    if proof_schema == proof.ALGO_V6_SCHEMA:
+        if type(replay) is not proof.NativeAlgoHistoryV6ProofReplay:
+            raise proof.NativeAccountProofError(
+                "native_account_algo_history_proof_invalid"
+            )
+        # No account-clock boundary, raw packet lease, origin lease, flat
+        # precursor, or owner is issued by the new bounded-history path.
+        receipt = canonical(
+            {
+                "schema_version": "ctcc.initial_native_algo_history_diagnostic.v1",
+                "policy_sha256": proof.ALGO_V6_POLICY_SHA256,
+                "source_reference": observed.reference_document(reference),
+                "proof_sha256": sha(raw),
+                "proof_readback_sha256": readback_pin,
+                "history_query_receipt_sha256": sha(replay.history_query_receipt_json),
+                "bounded_algo_history_chain_observed": True,
+                "algo_history_terminal_partition_verified": False,
+                "algo_history_epoch_coverage_verified": False,
+                "native_sampled_hwm_verified": False,
+                "observed_at": utc_from_ns(issue["utc_ns"]).isoformat(),
+                "expires_at": expires.isoformat(),
+                "snapshot": None,
+                "account_complete": False,
+                "account_revision_published": False,
+                "flat_start_permission": False,
+                "source_authenticity_verified": False,
+                "execution_authority": False,
+                "admission": "DENY",
+            }
+        )
+        _secret_checked(receipt, owner.tokens)
+        return InitialNativeAccountDiagnostic(receipt)
     receipt = canonical(
         {
             "schema_version": (
@@ -1309,6 +1341,7 @@ async def capture_initial_native_account(session, *, session_factory, proof_root
         not in {
             capture.RegionalDemoAccountCapturePlan,
             capture.AllProductDemoAccountCapturePlan,
+            capture.AllProductDemoAccountCapturePlanV6,
             capture.CurrentDemoAccountCapturePlanV6,
             capture.CurrentDemoAccountCapturePlanV7,
         }
@@ -1331,9 +1364,40 @@ async def capture_initial_native_account(session, *, session_factory, proof_root
             ) as stage,
         ):
             state = native._state(stage)
-            carrier = await _capture_initial_current(
+            result = await _capture_initial_current(
                 stage, session, session_factory, proof_root
             )
+            if type(result) is InitialNativeAccountDiagnostic:
+                value = proof._canonical_document(result.receipt_json)
+                if (
+                    type(selected) is not capture.AllProductDemoAccountCapturePlanV6
+                    or result._origin_lease is not None
+                    or result._raw_packet_lease is not None
+                    or value.get("schema_version")
+                    != "ctcc.initial_native_algo_history_diagnostic.v1"
+                    or value.get("policy_sha256") != proof.ALGO_V6_POLICY_SHA256
+                    or value.get("bounded_algo_history_chain_observed") is not True
+                    or any(
+                        value.get(name) is not False
+                        for name in (
+                            "algo_history_terminal_partition_verified",
+                            "algo_history_epoch_coverage_verified",
+                            "native_sampled_hwm_verified",
+                            "account_complete",
+                            "account_revision_published",
+                            "flat_start_permission",
+                            "source_authenticity_verified",
+                            "execution_authority",
+                        )
+                    )
+                    or value.get("snapshot") is not None
+                    or value.get("admission") != "DENY"
+                ):
+                    raise proof.NativeAccountProofError(
+                        "native_account_initial_diagnostic_scope_invalid"
+                    )
+                return result
+            carrier = result
             pin = sha(_CAPTURES[carrier].receipt_json)
             handoff = _consume_current_native_capture(
                 carrier, invocation=state["invocation"], expected_receipt_sha256=pin
@@ -1349,22 +1413,36 @@ async def capture_initial_native_account(session, *, session_factory, proof_root
         task = asyncio.current_task()
         if task is not None and task.cancelling():
             raise asyncio.CancelledError from None
-        if type(selected) is capture.CurrentDemoAccountCapturePlanV7:
+        if type(selected) is capture.AllProductDemoAccountCapturePlanV6:
+            failure_schema = "ctcc.initial_native_algo_history_diagnostic.v1"
+            failure_policy = proof.ALGO_V6_POLICY_SHA256
+            failure_observation = {
+                "bounded_algo_history_chain_observed": False,
+                "algo_history_terminal_partition_verified": False,
+                "algo_history_epoch_coverage_verified": False,
+                "account_revision_published": False,
+                "flat_start_permission": False,
+                "source_authenticity_verified": False,
+            }
+        elif type(selected) is capture.CurrentDemoAccountCapturePlanV7:
             failure_schema = "ctcc.initial_native_account_diagnostic.v3"
             failure_policy = proof.V7_FLAT_POLICY_SHA256
+            failure_observation = {"current_native_source_observed": False}
         elif type(selected) is capture.CurrentDemoAccountCapturePlanV6:
             failure_schema = "ctcc.initial_native_account_diagnostic.v2"
             failure_policy = proof.V3_POLICY_SHA256
+            failure_observation = {"current_native_source_observed": False}
         else:
             failure_schema = "ctcc.initial_native_account_diagnostic.v1"
             failure_policy = proof.POLICY_SHA256
+            failure_observation = {"current_native_source_observed": False}
         return InitialNativeAccountDiagnostic(
             canonical(
                 {
                     "schema_version": failure_schema,
                     "policy_sha256": failure_policy,
                     "code": "native_account_initial_denied",
-                    "current_native_source_observed": False,
+                    **failure_observation,
                     "native_sampled_hwm_verified": False,
                     "snapshot": None,
                     "account_complete": False,

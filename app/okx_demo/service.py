@@ -947,7 +947,9 @@ class OkxDemoService:
             order_id=str(row.get("ordId") or ""),
             client_order_id=str(row.get("clOrdId") or "") or None,
             exchange_code=str(row.get("sCode") or "0"),
-            exchange_message=str(row.get("sMsg") or ""),
+            # Remote free-form text is not an API/status field. The private
+            # transport projects it away; keep the legacy adapter safe too.
+            exchange_message="",
         )
 
     @staticmethod

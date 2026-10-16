@@ -43,6 +43,12 @@ from tests.unit.test_account_current_source_v7 import current_plan_v7
 from tests.unit.test_account_current_source_verifier import flat_pages
 from tests.unit.test_account_ingestion_journal_contracts import setup
 from tests.unit.test_account_native_clock import Samples
+from tests.unit.test_qualification_account_algo_history_v6 import (
+    plan as algo_history_v6_plan,
+)
+from tests.unit.test_qualification_account_algo_history_v6 import (
+    scripted_pages as algo_history_v6_pages,
+)
 from tests.unit.test_qualification_account_capture import NOW, UID, ms, wire
 from tests.unit.test_qualification_account_collector import SECRETS, Stream, credentials
 from tests.unit.test_qualification_account_materializer import source_pages
@@ -196,6 +202,7 @@ async def companion_fixture(
     source_case="fresh_flat",
     current_only=False,
     current_v7=True,
+    algo_v6=False,
     verify_baseline=True,
     gateway_case=None,
 ):
@@ -240,10 +247,23 @@ async def companion_fixture(
             plan=selected,
             expected_plan_sha256=capture.plan_sha256(selected),
         )
+    if algo_v6:
+        if current_only or current_v7 or source_case != "fresh_flat":
+            raise ValueError("unsupported_synthetic_algo_native_scenario")
+        selected = algo_history_v6_plan()
+        session = ControlledDemoAccountSession(
+            credentials=credentials(session_binding_id=selected.session_binding_id),
+            plan=selected,
+            expected_plan_sha256=capture.plan_sha256(selected),
+        )
     proof_schema, proof_policy_sha256 = proof.contract_for_plan(session._plan)
-    declared, expected_bodies, _ = declared_native_source(
-        source_case, current_only=current_only, current_v7=current_v7
-    )
+    if algo_v6:
+        declared = algo_history_v6_pages()
+        expected_bodies = tuple(wire(data) for _, data in declared)
+    else:
+        declared, expected_bodies, _ = declared_native_source(
+            source_case, current_only=current_only, current_v7=current_v7
+        )
     harness.script = declared
     samples = Samples()
     monkeypatch.setattr(native.clock, "native_stamp", samples)

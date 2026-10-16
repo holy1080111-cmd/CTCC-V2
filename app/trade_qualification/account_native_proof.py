@@ -31,6 +31,7 @@ SCHEMA = "ctcc.demo_account_native_clock_proof.v2"
 V3_SCHEMA = "ctcc.demo_account_native_clock_proof.v3"
 EXPOSED_V4_SCHEMA = "ctcc.demo_account_exposed_native_clock_proof.v4"
 V7_FLAT_SCHEMA = "ctcc.demo_account_native_clock_proof.v5"
+ALGO_V6_SCHEMA = "ctcc.demo_account_algo_history_native_clock_proof.v1"
 MAX_PROOF = 2 * 1024 * 1024
 FILES = (
     "host-before.json",
@@ -136,12 +137,38 @@ V7_FLAT_POLICY_BYTES = canonical(
     }
 )
 V7_FLAT_POLICY_SHA256 = sha(V7_FLAT_POLICY_BYTES)
+ALGO_V6_POLICY_BYTES = canonical(
+    {
+        "schema_version": "ctcc.demo_account_algo_history_native_clock_policy.v1",
+        "prior_native_policy_sha256": POLICY_SHA256,
+        "stage": "initial_account_only",
+        "clock_profile": public_clock.PROFILE_ID,
+        "clock_resources": list(public_clock.RESOURCE_IDS),
+        "utc_conversion": "reviewed_integer_ns_round_up_to_microsecond",
+        "maximum_current_age_ns": 30_000_000_000,
+        "source_phases": [*native.PAGE_PHASES, "source_closed"],
+        "exchange_origin": "https://openapi.okx.com",
+        "exchange_endpoint": "/api/v5/public/time",
+        "capture_plan_contract": "ctcc.demo_account_plan.v6",
+        "capture_streams": list(capture.V6_ALL_PRODUCT_STREAMS),
+        "history_query_policy_sha256": history.ALGO_V6_POLICY_SHA256,
+        "algo_history_terminal_partition_verified": False,
+        "algo_history_epoch_coverage_verified": False,
+        "flat_start_permission": False,
+        "source_authenticity_verified": False,
+        "account_complete": False,
+        "execution_authority": False,
+    }
+)
+ALGO_V6_POLICY_SHA256 = sha(ALGO_V6_POLICY_BYTES)
 
 
 def contract_for_plan(plan):
     """Select an immutable historical replay contract, never an old relabel."""
     if type(plan) is capture.AllProductDemoAccountCapturePlan:
         return SCHEMA, POLICY_SHA256
+    if type(plan) is capture.AllProductDemoAccountCapturePlanV6:
+        return ALGO_V6_SCHEMA, ALGO_V6_POLICY_SHA256
     if type(plan) is capture.CurrentDemoAccountCapturePlanV6:
         return V3_SCHEMA, V3_POLICY_SHA256
     if type(plan) is capture.CurrentDemoAccountCapturePlanV7:
@@ -183,6 +210,45 @@ class NativeAccountProofReplay:
     @property
     def account_complete(self):
         return False
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class NativeAlgoHistoryV6ProofReplay:
+    """A verified bounded B1/native source with no account or epoch authority."""
+
+    proof_sha256: str
+    packet: object
+    history_query_receipt_json: bytes
+    expires_at: datetime
+    monotonic_deadline_ns: int
+
+    @property
+    def execution_authority(self):
+        return False
+
+    @property
+    def account_complete(self):
+        return False
+
+    @property
+    def flat_start_permission(self):
+        return False
+
+    @property
+    def source_authenticity_verified(self):
+        return False
+
+    @property
+    def snapshot(self):
+        return None
+
+    @property
+    def owner(self):
+        return None
+
+    @property
+    def admission(self):
+        return "DENY"
 
 
 def _canonical_document(raw, maximum=MAX_PROOF):
@@ -250,6 +316,12 @@ def _source(chain, scope, *, proof_schema=SCHEMA):
     if proof_schema == SCHEMA:
         history.verify_history_query_chain(chain, **observed._pins(reference, scope))
         expected_plan = capture.AllProductDemoAccountCapturePlan
+    elif proof_schema == ALGO_V6_SCHEMA:
+        history.verify_algo_history_query_chain_v6(
+            chain,
+            **observed._pins(reference, scope),
+        )
+        expected_plan = capture.AllProductDemoAccountCapturePlanV6
     elif proof_schema in {V3_SCHEMA, EXPOSED_V4_SCHEMA, V7_FLAT_SCHEMA}:
         v7 = proof_schema == V7_FLAT_SCHEMA
         current.verify_current_account_sources(
@@ -581,13 +653,14 @@ def _replay(raw, files, chain, scope, expected):
             "admission",
         }
         or value["schema_version"]
-        not in {SCHEMA, V3_SCHEMA, EXPOSED_V4_SCHEMA, V7_FLAT_SCHEMA}
+        not in {SCHEMA, V3_SCHEMA, EXPOSED_V4_SCHEMA, V7_FLAT_SCHEMA, ALGO_V6_SCHEMA}
         or value["policy_sha256"]
         != {
             SCHEMA: POLICY_SHA256,
             V3_SCHEMA: V3_POLICY_SHA256,
             EXPOSED_V4_SCHEMA: EXPOSED_V4_POLICY_SHA256,
             V7_FLAT_SCHEMA: V7_FLAT_POLICY_SHA256,
+            ALGO_V6_SCHEMA: ALGO_V6_POLICY_SHA256,
         }[value["schema_version"]]
     ):
         raise NativeAccountProofError("native_account_proof_contract_invalid")
@@ -776,6 +849,31 @@ def _replay(raw, files, chain, scope, expected):
         or utc_from_ns(value["proof_persist_start"]["utc_ns"]) >= expiry
     ):
         raise NativeAccountProofError("native_account_original_expiry_invalid")
+    if proof_schema == ALGO_V6_SCHEMA:
+        # A bounded algo-history response has neither a certified terminal
+        # partition nor an account-wide epoch. Do not feed the older flat or
+        # current-source admission verifier with a newly labelled packet.
+        verified_history = history.verify_algo_history_query_chain_v6(
+            chain,
+            **observed._pins(reference, scope),
+        )
+        history_value = decode(verified_history.receipt_json)
+        if (
+            history_value.get("schema_version") != "ctcc.observed_algo_history_query.v1"
+            or history_value.get("policy_sha256") != history.ALGO_V6_POLICY_SHA256
+            or history_value.get("algo_history_terminal_partition_verified")
+            is not False
+            or history_value.get("algo_history_epoch_coverage_verified") is not False
+            or history_value.get("account_complete") is not False
+            or history_value.get("execution_authority") is not False
+            or history_value.get("admission") != "DENY"
+        ):
+            raise NativeAccountProofError(
+                "native_account_algo_history_contract_invalid"
+            )
+        return NativeAlgoHistoryV6ProofReplay(
+            expected, packet, verified_history.receipt_json, expiry, deadline
+        )
     verified = current.verify_current_account_sources(
         chain,
         reference=reference,

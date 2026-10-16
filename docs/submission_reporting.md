@@ -7,6 +7,16 @@ transport capture immediately after its one-shot request, before fill/protection
 polling. The legacy automation caller does not satisfy this lineage and is not
 connected to the new producer.
 
+**Current source status (DB0042): projection and Notion delivery are DENY.**
+An acknowledged status in a stored initial observation does not prove the
+response came from the owned exchange transport. The outcome explicitly records
+`transport_authenticity_verified=false`; its spool is always ineligible. DB0042
+adds database guards that refuse eligible spools and all new projection receipts.
+Upgrade refuses any pre-existing eligible spool or projection receipt, retaining
+their private evidence for forensic resolution. Downgrade refuses to restore the
+older status-only rule. The flow below describes retained storage and the
+conditional projection mechanism, not a currently usable delivery path.
+
 The caller uses `QualificationLedgerRepository.record_submission_observation`
 with the existing scope/event, expected ledger revision, independently read-back
 v2 intent hash, `CapturedSubmission`, queue namespace and exact `OutboxPolicy`.
@@ -67,11 +77,14 @@ is never classified as rejection or zero fill.
 ## Independent projection
 
 `SubmissionOutboxRuntime` owns a separate thread, event loop and database pool.
-It queries bounded pending eligible spools, uses `FOR UPDATE SKIP LOCKED` per spool,
+Its projection mechanism queries bounded pending eligible spools and uses
+`FOR UPDATE SKIP LOCKED` per spool,
 verifies the immutable lineage and exact report/policy bytes, then invokes the
 existing native file outbox. Independent native readback precedes an immutable
 database projection receipt and its separate-session readback. The process imports
 no order client, Arm operation or trading callback, and makes no HTTP requests.
+DB0042 presently admits no eligible spool or new receipt, so the mechanism
+cannot run as a positive delivery path.
 
 Configure these nonsecret fields only after provisioning a trusted native outbox
 directory:

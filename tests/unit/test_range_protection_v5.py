@@ -182,6 +182,24 @@ def test_g12_memory_readback_and_r7_wire_roundtrip_are_exact(chain):
     assert current.continuation.original_event_key == req.origin.original_event_key
 
 
+def test_computational_pass_is_not_runtime_reservation_authority(chain, monkeypatch):
+    fixture, _, _ = chain
+    assert r.replay_range_reservation(
+        fixture.request, observed_at=fixture.now
+    ).computational_checks_passed
+    monkeypatch.setattr(
+        r,
+        "evaluate_current_risk",
+        lambda *args, **kwargs: pytest.fail("caps reached without R7 issuer"),
+    )
+    with pytest.raises(
+        r.QualificationLedgerError, match="ledger_recheck_runtime_authority_missing"
+    ):
+        r.prepare_reservation(
+            fixture.request, fixture.claims, (), observed_at=fixture.now
+        )
+
+
 def test_legacy_v2_request_remains_readable_but_control_bound_reserve_denies(chain):
     fixture, _, _ = chain
     request = fixture.request
@@ -209,6 +227,10 @@ def test_legacy_v2_request_remains_readable_but_control_bound_reserve_denies(cha
         replay_binding=old_binding,
     )
     assert r.decode_reservation_request(r.canonical(old_request)) == old_request
+    with pytest.raises(
+        r.QualificationLedgerError, match="ledger_recheck_runtime_authority_missing"
+    ):
+        r.prepare_reservation(old_request, fixture.claims, (), observed_at=fixture.now)
     with pytest.raises(
         r.QualificationLedgerError,
         match="bound_control_account_session_binding_missing",
@@ -338,7 +360,7 @@ def test_boolean_or_incomplete_replay_denied_before_caps(chain, field, monkeypat
         lambda *a, **k: pytest.fail("caps reached before raw replay"),
     )
     with pytest.raises(r.QualificationLedgerError, match="ledger_range_replay_denied"):
-        r.prepare_reservation(altered, fixture.claims, (), observed_at=fixture.now)
+        r.replay_range_reservation(altered, observed_at=fixture.now)
 
 
 def test_bare_v5_request_cannot_reserve_or_create_legacy_intent(chain):
@@ -567,4 +589,4 @@ def test_full_current_replay_rejects_missing_closed_tail(chain):
         }
     )
     with pytest.raises(r.QualificationLedgerError, match="ledger_range_replay_denied"):
-        r.prepare_reservation(changed, fixture.claims, (), observed_at=fixture.now)
+        r.replay_range_reservation(changed, observed_at=fixture.now)

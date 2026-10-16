@@ -46,17 +46,19 @@ the unresolved intent and requires independent reconciliation; no empty or
 fabricated response is created. There is still no production order caller or
 real accepted durable observation, and neither helper submits or retries.
 
-## Current production integration boundary (2026-10-08)
+## Current production integration boundary (2026-10-16)
 
 The durable components exist, but the trade-to-outbox path is **not yet
 production-integrated**. `SubmissionReportingRepository.record_observation()`
 commits a submission outcome and immutable report spool in one account-scoped
 database transaction, then verifies them through a separate session. The
-default-off `SubmissionOutboxRuntime` can project an acknowledged spool to the
-local immutable outbox; the separate default-off `NotionOutboxRuntime` can deliver
-only after its destination and private-token binding pass. Rejected or uncertain
-submissions are retained in the database but are not eligible for a confirmed
-Notion delivery job.
+initial-outcome producer now pins `transport_authenticity_verified=false`, so an
+acknowledged-looking response cannot make its spool delivery-eligible. The
+separate default-off `NotionOutboxRuntime`, direct post-submit pass and final
+`NotionDeliveryAdapter` call all deny Notion delivery before network IO. A
+destination/private-token binding or hash-valid legacy outbox file is not
+source authority. Existing immutable legacy spool and journal bytes remain
+retained for audit; they are not silently repaired or delivered.
 
 No production Demo or Live order caller currently invokes
 `record_submission_observation()` or `record_observation()`. The order service
@@ -95,8 +97,9 @@ this module.
    acknowledged submission becomes the existing immutable
    `artifacts/notion_outbox/<report_id>.json` and append-only state journal.
 5. A separately invoked `run_post_submit_pass` receives explicit report IDs and an
-   explicitly constructed `NotionDeliveryAdapter`. It uses the existing worker;
-   it never initiates an order or reconstructs a submission result.
+   explicitly constructed `NotionDeliveryAdapter`. It currently raises
+   `post_submit_source_authority_unavailable` before dispatch; synthetic tests
+   exercise the downstream worker after a test-only admission stub.
 
 Notion must not be awaited before or inside the exchange submit wait path. Calling
 the separate pass in the same coroutine and awaiting it before returning the order
@@ -186,11 +189,13 @@ retention cleanup or deletion is added.
 ## Explicit one-pass entry and remaining configuration
 
 `await run_post_submit_pass(root, *, report_ids, worker_id, adapter, policy,
-clock=actual_utc)` delegates to `outbox_worker.run_outbox_pass` and returns its
-`OutboxPassResult`. It accepts the exact existing `NotionDeliveryAdapter`, not an
-arbitrary function, order callback or adapter subclass. It scans no directory,
-discovers no report IDs and never reads an environment token. The adapter owns
-responses; its explicitly supplied HTTP client remains caller-owned.
+clock=actual_utc)` accepts the exact existing `NotionDeliveryAdapter`, not an
+arbitrary function, order callback or adapter subclass. Until the owned
+transport issuer and immutable DB projection are jointly verified, it raises
+`post_submit_source_authority_unavailable` before queue or network IO. Direct
+use of the lower-level adapter also meets the same synchronous DENY gate before
+its first HTTP request. The synthetic downstream tests stub that gate only to
+test recovery mechanics; they do not establish Notion delivery acceptance.
 
 The existing adapter requires an explicitly supplied token, fixed Notion
 origin/API version and a pinned database/data-source with four necessary property

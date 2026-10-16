@@ -28,6 +28,8 @@ MIGRATIONS = {
     "0038": "0038_demo_current_observation.py",
     "0039": "0039_g12_invocation_custody.py",
     "0040": "0040_account_observation_typed.py",
+    "0041": "0041_demo_event_history_epoch_denial.py",
+    "0042": "0042_submission_transport_authenticity_denial.py",
 }
 TABLES = {
     # 0023 is constraint/trigger-only and has dedicated upgrade/downgrade
@@ -51,6 +53,7 @@ TABLES = {
         "demo_account_observation_findings",
     ),
     "0022": ("demo_account_bill_archive_claims",),
+    "0041": ("demo_event_history_epoch_events",),
 }
 DOWNGRADE_LOCKS = {
     **TABLES,

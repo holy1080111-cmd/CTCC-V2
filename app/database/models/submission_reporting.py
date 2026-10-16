@@ -94,6 +94,7 @@ class QualificationReportSpool(Base):
             "octet_length(report_bytes) BETWEEN 1 AND 32768 AND octet_length(policy_json) BETWEEN 1 AND 4096",
             name="bounds",
         ),
+        CheckConstraint("eligible=false", name="transport_unverified"),
         Index(
             "uq_submission_eligible_reservation",
             "reservation_id",
@@ -143,6 +144,7 @@ class QualificationReportProjectionReceipt(Base):
             "report_sha256 ~ '^[a-f0-9]{64}$' AND policy_sha256 ~ '^[a-f0-9]{64}$' AND envelope_sha256 ~ '^[a-f0-9]{64}$'",
             name="digests",
         ),
+        CheckConstraint("false", name="transport_unverified"),
     )
     spool_id: Mapped[str] = mapped_column(
         ForeignKey("qualification_report_spool.spool_id", ondelete="RESTRICT"),

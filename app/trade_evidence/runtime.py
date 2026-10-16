@@ -17,6 +17,7 @@ import httpx
 
 from app.config.settings import Settings
 from app.trade_evidence import (
+    delivery_source_authority,
     notion_adapter,
     outbox,
     outbox_worker,
@@ -58,6 +59,7 @@ SAFE_CODES = frozenset(
         "notion_database_sources_incomplete",
         "notion_database_sources_invalid",
         "notion_database_source_mismatch",
+        "notion_outbox_submission_source_authority_unavailable",
     }
 )
 
@@ -196,6 +198,13 @@ class NotionOutboxRuntime:
         if not self.settings.notion_outbox_enabled:
             return delay
         try:
+            try:
+                delivery_source_authority.require_issuer_backed_projection()
+            except delivery_source_authority.DeliverySourceAuthorityUnavailable:
+                raise NotionBindingError(
+                    "notion_outbox_submission_source_authority_unavailable",
+                    retry_after_seconds=None,
+                ) from None
             root, destination, token = self._configuration()
             with reporting_control.reporting_lease(root) as control:
                 cooldown = reporting_control.retry_delay(control, self._clock())

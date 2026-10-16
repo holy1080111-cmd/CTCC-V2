@@ -1,5 +1,10 @@
 """Explicit Notion delivery adapter for the existing post-submit outbox.
 
+Production delivery is currently DENY until an issuer-backed, database-bound
+projection can be verified. The final synchronous gate runs before HTTP even
+if a caller bypasses the runtime and post-submit wrappers. Synthetic tests of
+the following adapter mechanics are not delivery acceptance.
+
 No token discovery, database creation/update, scheduler or order callback exists
 here. The caller owns an isolated HTTPX client and injects a SecretStr token and
 a reviewed, fixed destination. Only GET schema, filtered POST query, and at most
@@ -42,7 +47,7 @@ from urllib.parse import unquote
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
-from app.trade_evidence import outbox, storage
+from app.trade_evidence import delivery_source_authority, outbox, storage
 from app.trade_qualification.quote_collector import _close_response, _public_client
 
 ORIGIN = "https://api.notion.com"
@@ -530,6 +535,9 @@ class NotionDeliveryAdapter:
     async def __call__(
         self, payload: outbox.OutboxPayload, claim: outbox.ClaimToken
     ) -> outbox.DeliveryOutcome:
+        # Last outbound boundary. This synchronous DENY runs before any token
+        # or HTTP operation, even when a caller bypasses the runtime wrapper.
+        delivery_source_authority.require_issuer_backed_projection()
         payload, claim = (
             outbox._copy(payload, outbox.OutboxPayload),
             outbox._copy(claim, outbox.ClaimToken),

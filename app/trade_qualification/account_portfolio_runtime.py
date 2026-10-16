@@ -203,6 +203,10 @@ async def _collect(
     ):
         components.deny("component_configuration_or_caller_evidence_invalid")
     plan = capture._checked_plan(session._plan, session._pin)
+    if type(plan) is capture.AllProductDemoAccountCapturePlanV6:
+        # This diagnostic plan has a separate bounded B1/native replay. The
+        # older B5 cashflow/index contracts cannot interpret its algo history.
+        components.deny("component_capture_scope_unsupported")
     if (profile.environment, profile.account_id, profile.settlement_currency) != (
         plan.environment,
         plan.expected_uid,

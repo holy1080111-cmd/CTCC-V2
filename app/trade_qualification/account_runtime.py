@@ -276,6 +276,7 @@ class ControlledDemoAccountSession:
             if type(plan) not in {
                 capture.RegionalDemoAccountCapturePlan,
                 capture.AllProductDemoAccountCapturePlan,
+                capture.AllProductDemoAccountCapturePlanV6,
                 capture.CurrentDemoAccountCapturePlanV6,
                 capture.CurrentDemoAccountCapturePlanV7,
             }:
@@ -383,6 +384,11 @@ class ControlledDemoAccountSession:
         if type(repository) is not QualificationLedgerRepository:
             raise AccountRuntimeError("owned_qualification_repository_required")
         selected = capture._checked_plan(self._plan, self._pin)
+        if type(selected) is capture.AllProductDemoAccountCapturePlanV6:
+            # This version is a bounded GET/B1 diagnostic only. The legacy
+            # materializer cannot reinterpret its new history inventory as a
+            # complete account or trusted portfolio revision.
+            raise AccountRuntimeError("account_runtime_invalid")
         inputs = mapping.copy_materialization_inputs(inputs)
         if (
             type(expected_inputs_sha256) is not str

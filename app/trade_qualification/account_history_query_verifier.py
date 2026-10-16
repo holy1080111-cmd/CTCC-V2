@@ -52,6 +52,23 @@ V2_POLICY_BYTES = journal.canonical(
     }
 )
 V2_POLICY_SHA256 = journal.digest(V2_POLICY_BYTES)
+ALGO_V6_POLICY_BYTES = journal.canonical(
+    {
+        "version": "ctcc.global_observed_algo_history_query_policy.v1",
+        "capture_plan_contract": "ctcc.demo_account_plan.v6",
+        "prior_typed_policy_sha256": V2_POLICY_SHA256,
+        "source": "exact_original_B1_page_chain_and_raw_packet",
+        "algo_history_queries": "eight_ordtypes_times_three_documented_state_filters",
+        "algo_cursor": "algoId_exclusive_after_with_explicit_empty_terminal",
+        "algo_history_terminal_partition_verified": False,
+        "algo_history_epoch_coverage_verified": False,
+        "historical_retention_verified": False,
+        "account_complete": False,
+        "source_authenticity_verified": False,
+        "execution_authority": False,
+    }
+)
+ALGO_V6_POLICY_SHA256 = journal.digest(ALGO_V6_POLICY_BYTES)
 _HISTORY_FAMILIES = frozenset(
     {"fills_recent", "fills_history", "bills_recent", "bills_archive"}
 )
@@ -600,6 +617,40 @@ def verify_history_query_chain_v2(
         ) from None
 
 
+def verify_algo_history_query_chain_v6(
+    chain,
+    *,
+    expected_head_sha256,
+    expected_plan_sha256,
+    expected_packet_sha256,
+    expected_account_id,
+    expected_settlement_currency,
+    expected_policy_sha256=ALGO_V6_POLICY_SHA256,
+):
+    """Replay v6's exact B1 source; a bounded query is not an epoch proof."""
+    if (
+        type(expected_policy_sha256) is not str
+        or expected_policy_sha256 != ALGO_V6_POLICY_SHA256
+    ):
+        _deny("history_query_policy_mismatch")
+    try:
+        return _verify(
+            chain,
+            expected_head_sha256,
+            expected_plan_sha256,
+            expected_packet_sha256,
+            expected_account_id,
+            expected_settlement_currency,
+            expected_policy_sha256,
+        )
+    except HistoryQueryVerificationError:
+        raise
+    except Exception:  # noqa: BLE001 -- private source text cannot escape
+        raise HistoryQueryVerificationError(
+            "history_query_verification_invalid"
+        ) from None
+
+
 def _verify(
     chain,
     head,
@@ -614,9 +665,11 @@ def _verify(
     if type(policy_pin) is not str or policy_pin not in {
         POLICY_SHA256,
         V2_POLICY_SHA256,
+        ALGO_V6_POLICY_SHA256,
     }:
         _deny("history_query_policy_mismatch")
-    source_ts_v2 = policy_pin == V2_POLICY_SHA256
+    algo_v6 = policy_pin == ALGO_V6_POLICY_SHA256
+    source_ts_v2 = policy_pin in {V2_POLICY_SHA256, ALGO_V6_POLICY_SHA256}
     if (
         type(account_id) is not str
         or capture._ID.fullmatch(account_id) is None
@@ -638,10 +691,14 @@ def _verify(
     plan = packet.plan
     if (
         type(plan)
-        not in {
-            capture.RegionalDemoAccountCapturePlan,
-            capture.AllProductDemoAccountCapturePlan,
-        }
+        not in (
+            {capture.AllProductDemoAccountCapturePlanV6}
+            if algo_v6
+            else {
+                capture.RegionalDemoAccountCapturePlan,
+                capture.AllProductDemoAccountCapturePlan,
+            }
+        )
         or plan.registration_region != "global"
         or plan.expected_uid != account_id
         or plan.settlement_currency != currency
@@ -673,7 +730,9 @@ def _verify(
         packet, raw_sequences, source_ts_v2=source_ts_v2
     )
     value = {
-        "schema_version": "ctcc.observed_account_history_query.v2"
+        "schema_version": "ctcc.observed_algo_history_query.v1"
+        if algo_v6
+        else "ctcc.observed_account_history_query.v2"
         if source_ts_v2
         else "ctcc.observed_account_history_query.v1",
         "policy_sha256": policy_pin,
@@ -687,7 +746,9 @@ def _verify(
         "requested_start": plan.history_start.isoformat(),
         "requested_end": plan.history_end.isoformat(),
         "observed_completed_at": packet.completed_at.isoformat(),
-        "state": "retained_typed_source_ts_query_verified"
+        "state": "bounded_algo_history_query_chain_verified"
+        if algo_v6
+        else "retained_typed_source_ts_query_verified"
         if source_ts_v2
         else "retained_query_chain_verified",
         "queries": queries,
@@ -708,7 +769,37 @@ def _verify(
             "current_owned_session_authority",
         ],
     }
-    if source_ts_v2:
+    if algo_v6:
+        groups = {
+            stream: [
+                page for page in packet.observations if page.request.stream == stream
+            ]
+            for stream in capture._ALGO_HISTORY_QUERIES
+        }
+        if any(not pages or not pages[-1].terminal for pages in groups.values()):
+            _deny("history_query_algo_inventory_incomplete")
+        value["algo_history_queries"] = [
+            {
+                "stream": stream,
+                "ord_type": capture._ALGO_HISTORY_QUERIES[stream][0],
+                "state_filter": capture._ALGO_HISTORY_QUERIES[stream][1],
+                "page_receipts": [page.receipt_sha256 for page in groups[stream]],
+                "terminal_receipt": groups[stream][-1].receipt_sha256,
+                "row_count": sum(len(page.rows) for page in groups[stream]),
+            }
+            for stream in capture._ALGO_HISTORY_QUERIES
+        ]
+        value["algo_history_terminal_partition_verified"] = False
+        value["algo_history_epoch_coverage_verified"] = False
+        value["historical_retention_verified"] = False
+        value["unverified"].extend(
+            [
+                "algo_history_terminal_partition",
+                "algo_history_epoch_coverage",
+                "algo_history_retention",
+            ]
+        )
+    elif source_ts_v2:
         journal._sha(predecessor_receipt_sha256)
         value["legacy_v1_receipt_sha256"] = predecessor_receipt_sha256
     return HistoryQueryVerification(journal.canonical(value))
