@@ -10,9 +10,11 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import stat
 import sys
 import xml.etree.ElementTree as ET
-from pathlib import Path
+import zipfile
+from pathlib import Path, PurePosixPath
 
 from scripts.verify_windows_regression import (
     NO_DB_INTEGRATION,
@@ -44,6 +46,45 @@ def _write_json(path: Path, value: dict) -> None:
         stream.write("\n")
     if _json(path) != value:
         raise WindowsRegressionError("windows_union_json_readback_changed")
+
+
+def _zip_members(path: Path) -> dict[str, bytes]:
+    """Read exact archived members independent of ZIP timezone metadata."""
+    if (
+        path.is_symlink()
+        or path.is_junction()
+        or not path.is_file()
+        or not 0 < path.stat().st_size <= 64 * 1024 * 1024
+    ):
+        raise WindowsRegressionError("windows_union_archive_missing_or_unsafe")
+    members: dict[str, bytes] = {}
+    total_uncompressed = 0
+    with zipfile.ZipFile(path) as zipped:
+        for info in zipped.infolist():
+            name = info.filename
+            relative = PurePosixPath(name)
+            canonical = relative.as_posix() + ("/" if info.is_dir() else "")
+            if (
+                not name
+                or name.startswith("/")
+                or "\\" in name
+                or ":" in name
+                or name != canonical
+                or any(part in {"", ".", ".."} for part in relative.parts)
+                or name in members
+                or stat.S_IFMT(info.external_attr >> 16) == stat.S_IFLNK
+            ):
+                raise WindowsRegressionError("windows_union_archive_entry_unsafe")
+            total_uncompressed += info.file_size
+            if (
+                info.file_size > 32 * 1024 * 1024
+                or total_uncompressed > 128 * 1024 * 1024
+            ):
+                raise WindowsRegressionError("windows_union_archive_too_large")
+            members[name] = zipped.read(info)
+    if not members:
+        raise WindowsRegressionError("windows_union_archive_empty")
+    return members
 
 
 def _shard_record(record: dict, *, index: int, root: Path) -> list[dict]:
@@ -129,6 +170,7 @@ def verify_union(
     artifacts: Path,
     *,
     root: Path,
+    git_archive: Path,
     commit: str,
     tree: str,
     manifest_sha256: str,
@@ -141,6 +183,7 @@ def verify_union(
         or _sha256(root / "MANIFEST.sha256") != manifest_sha256
     ):
         raise WindowsRegressionError("windows_union_git_identity_invalid")
+    git_members = _zip_members(git_archive)
     names = {f"ctcc-windows-shard-{index}-{commit}" for index in range(SHARD_COUNT)}
     if (
         artifacts.is_symlink()
@@ -170,8 +213,10 @@ def verify_union(
         ):
             raise WindowsRegressionError("windows_union_component_file_unsafe")
         archive_path = component / "source.zip"
-        if not 0 < archive_path.stat().st_size <= 64 * 1024 * 1024:
-            raise WindowsRegressionError("windows_union_archive_size_invalid")
+        if _zip_members(archive_path) != git_members:
+            raise WindowsRegressionError(
+                "windows_union_archive_members_differ_from_git"
+            )
         source = _json(component / "source-identity.json")
         dependency = _json(component / "dependency-result.json")
         archive_sha = _sha256(archive_path)
@@ -198,7 +243,6 @@ def verify_union(
                 "commit",
                 "github_sha",
                 "tree",
-                "archive_sha256",
                 "manifest_sha256",
                 "runner_label",
             )
@@ -206,8 +250,8 @@ def verify_union(
         dependency_key = json.dumps(dependency, sort_keys=True, separators=(",", ":"))
         if (
             source_key[:3] != (commit, commit, tree)
-            or source_key[3] != archive_sha
-            or source_key[4:] != (manifest_sha256, "windows-2025")
+            or source.get("archive_sha256") != archive_sha
+            or source_key[3:] != (manifest_sha256, "windows-2025")
             or dependency.get("target") != "windows"
             or dependency.get("accepted_full_validation_baseline") is not False
             or (dependency.get("installed_inventory") or {}).get("mode")
@@ -312,6 +356,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--artifacts", type=Path, required=True)
     parser.add_argument("--root", type=Path, required=True)
+    parser.add_argument("--git-archive", type=Path, required=True)
     parser.add_argument("--commit", required=True)
     parser.add_argument("--tree", required=True)
     parser.add_argument("--manifest", type=Path, required=True)
@@ -321,6 +366,7 @@ def main() -> int:
         result = verify_union(
             args.artifacts,
             root=args.root,
+            git_archive=args.git_archive,
             commit=args.commit,
             tree=args.tree,
             manifest_sha256=_sha256(args.manifest),
@@ -338,7 +384,7 @@ def main() -> int:
             )
         )
         return 0
-    except (OSError, ValueError, ET.ParseError) as exc:
+    except (OSError, ValueError, zipfile.BadZipFile, ET.ParseError) as exc:
         code = (
             str(exc) if isinstance(exc, WindowsRegressionError) else type(exc).__name__
         )

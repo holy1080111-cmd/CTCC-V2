@@ -96,6 +96,17 @@ def test_public_source_has_only_explicit_reviewed_consumers():
         APP / "mie" / "validation" / "prospective_capture_schedule.py": (
             "public_market_receipts",
         ),
+        # This finite D/V pilot plans source coordinates only. Its offline
+        # checkpoint may read the retained journal, but neither may capture.
+        APP / "mie" / "validation" / "prospective_development_validation_plan.py": (
+            "public_market_receipts",
+        ),
+        APP
+        / "mie"
+        / "validation"
+        / "prospective_development_validation_checkpoint.py": (
+            "public_receipt_storage",
+        ),
         # Post-publication availability replays retained bytes only; it cannot
         # acquire a fresh public source or gain exchange write authority.
         post_publication_consumer: (

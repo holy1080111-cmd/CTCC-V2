@@ -641,20 +641,23 @@ def v2_reporting_fixture():
 
 
 @pytest.mark.parametrize("revision", ("0024",))
-async def test_control_bound_reporting_downgrade_preserves_existing_v2_outcome(
+async def test_control_bound_reporting_downgrade_preserves_rejected_v2_outcome(
     sandbox, revision, v2_reporting_fixture
 ):
     engine, _ = sandbox
     async with engine.begin() as connection:
         await connection.run_sync(migrate, "0025", "upgrade")
     fixture = v2_reporting_fixture
+    # The current recorder keeps an unverified transport response ineligible.
+    # DB0018 instead required every acknowledged outcome's spool to be eligible.
+    # A rejected outcome exercises retained V2 bytes without forging authority.
     _ledger, reporter, _clock, hold, args = await report_fixtures.setup(
-        sandbox, fixture
+        sandbox, fixture, status="rejected"
     )
     observed = await reporter.record_observation(
         hold.scope, hold.original_event_key, **args
     )
-    assert observed.status == "acknowledged"
+    assert observed.status == "rejected"
     async with engine.begin() as connection:
         await connection.run_sync(migrate, "0025", "downgrade")
     assert (
@@ -687,19 +690,26 @@ def control_bound_range_fixture(monkeypatch):
 
 @pytest.mark.parametrize("revision", ("0024",))
 async def test_control_bound_reporting_downgrade_rejects_retained_v3_outcome(
-    sandbox, revision, control_bound_range_fixture
+    sandbox, revision, control_bound_range_fixture, monkeypatch
 ):
     engine, _ = sandbox
     async with engine.begin() as connection:
         await connection.run_sync(migrate, "0025", "upgrade")
     fixture = control_bound_range_fixture
     setup = await control_fixtures.setup(sandbox, fixture)
+    # Isolate DB0025's retained-record downgrade behavior in this disposable
+    # historical database. Synthetic V5 observations have no runtime R7 authority.
     # DB0025 predates the current retention guard. The production post-commit
     # observer must deny its readback, while the committed hold must survive.
-    with pytest.raises(
-        QualificationLedgerError, match="^ledger_reservation_commit_readback_unknown$"
-    ):
-        await setup.reserve()
+    with monkeypatch.context() as local_patch:
+        report_fixtures.allow_synthetic_range_replay_for_repository_mechanism(
+            local_patch
+        )
+        with pytest.raises(
+            QualificationLedgerError,
+            match="^ledger_reservation_commit_readback_unknown$",
+        ):
+            await setup.reserve()
     scope = fixture.request.scope
     event_key = fixture.request.origin.original_event_key
     with pytest.raises(
@@ -734,11 +744,11 @@ async def test_control_bound_reporting_downgrade_rejects_retained_v3_outcome(
         http_status=200,
         raw_body=json.dumps(
             {
-                "code": "0",
+                "code": "1",
                 "data": [
                     {
-                        "sCode": "0",
-                        "ordId": "99887766",
+                        "sCode": "51000",
+                        "ordId": "",
                         "clOrdId": body["client_order_id"],
                     }
                 ],
@@ -756,6 +766,7 @@ async def test_control_bound_reporting_downgrade_rejects_retained_v3_outcome(
         queue_namespace="ctcc-migration-v3-" + uuid4().hex[:16],
         outbox_policy=outbox.OutboxPolicy(),
     )
+    assert observed.status == "rejected"
     assert observed.intent_sha256 == outer.sha256
     before = await shape(engine)
     with pytest.raises(
@@ -914,7 +925,11 @@ async def test_nonempty_downgrade_retains_exact_durable_records(
             return await repo.read(scope)
 
     elif record_type == "outcome":
-        _, repo, _, hold, args = await report_fixtures.setup(sandbox, fixture)
+        # DB0018's status-only spool trigger cannot retain an acknowledged
+        # response that the current recorder correctly marks ineligible.
+        _, repo, _, hold, args = await report_fixtures.setup(
+            sandbox, fixture, status="rejected"
+        )
         expected = await repo.record_observation(
             hold.scope, hold.original_event_key, **args
         )

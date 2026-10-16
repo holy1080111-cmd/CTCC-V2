@@ -36,19 +36,23 @@ def test_hermetic_ci_covers_main_and_all_development_branches() -> None:
     assert "develop/v1.6.8" not in workflow
 
 
-def test_required_aggregate_rejects_failed_windows_regression() -> None:
+def test_required_aggregate_rejects_failed_windows_full_suite_union() -> None:
     jobs = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]
     aggregate = jobs["regression"]
 
     assert set(aggregate["needs"]) == {
         "linux-postgres",
         "linux-shard",
-        "windows-regression",
+        "windows-union",
     }
     assert aggregate["if"] == "always()"
+    assert aggregate["name"] == "Docker hermetic regression"
     guard = aggregate["steps"][0]["run"]
     for job in aggregate["needs"]:
         assert f"test '${{{{ needs.{job}.result }}}}' = success" in guard
+    assert jobs["windows-union"]["needs"] == ["windows-shard"]
+    assert jobs["windows-shard"]["strategy"]["matrix"]["shard"] == list(range(8))
+    assert jobs["windows-shard"]["strategy"]["fail-fast"] is False
 
 
 def test_image_includes_core_blueprint_acceptance_inputs_explicitly() -> None:

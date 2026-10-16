@@ -26,6 +26,7 @@ from app.trade_qualification.reservations import (
     QualificationLedgerError,
     ReservationReceipt,
     checked_reservation_request,
+    replay_range_reservation,
     reservation_id,
 )
 from app.trade_qualification.submission_intent import build_submission_intent
@@ -642,27 +643,31 @@ def range_chain(request, monkeypatch):
     )[:2]
 
 
-async def test_range_v5_original_current_replay_is_preserved_by_control_envelope(
+async def test_range_v5_computational_replay_cannot_reserve_without_owned_runtime(
     database, range_chain
 ):
-    fixture, binding = range_chain
+    fixture, _ = range_chain
+    replay = replay_range_reservation(fixture.request, observed_at=fixture.now)
+    assert replay.computational_checks_passed
+    assert not replay.execution_authority
     s = await setup(database, fixture)
-    receipt = await s.reserve()
-    intent = await s.ledger.consume_with_control_bound_submission_intent(
-        receipt.scope,
-        receipt.original_event_key,
-        expected_revision=2,
-        control_expectation=s.expected,
-        execution_binding=binding,
+    with pytest.raises(
+        QualificationLedgerError, match="ledger_recheck_runtime_authority_missing"
+    ):
+        await s.reserve()
+    state = await s.ledger.read_scope(fixture.request.scope)
+    assert not state.active and state.ledger_revision == 1
+    rid = reservation_id(
+        fixture.request.scope, fixture.request.origin.original_event_key
     )
-    _, consumed = bound.replay_control_bound_intent(
-        intent.canonical_json, fixture.request, expected_sha256=intent.sha256
-    )
-    inner = build_submission_intent(
-        fixture.request, consumed, execution_binding=binding
-    )
-    assert json.loads(intent.canonical_json)["intent_json"] == inner.canonical_json
-    assert intent.admission == "DENY" and not intent.execution_authority
+    async with database[1]() as session:
+        assert await session.get(QualificationReservation, rid) is None
+        assert (
+            await session.scalar(
+                select(QualificationReservationTransition).filter_by(reservation_id=rid)
+            )
+            is None
+        )
 
 
 async def test_account_packet_session_mismatch_rolls_back_intent_and_retains_hold(
@@ -763,6 +768,10 @@ async def test_range_v5_account_completed_after_recheck_cannot_create_event_hold
     )
     s.clock.value = fixture.now + timedelta(milliseconds=2)
     with pytest.raises(QualificationLedgerError, match="ledger_range_replay_denied"):
+        replay_range_reservation(request, observed_at=s.clock.value)
+    with pytest.raises(
+        QualificationLedgerError, match="ledger_recheck_runtime_authority_missing"
+    ):
         await s.ledger.reserve_control_bound(request, control_expectation=s.expected)
     state = await s.ledger.read_scope(request.scope)
     assert not state.active and state.ledger_revision == 1

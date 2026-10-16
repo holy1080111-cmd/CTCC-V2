@@ -185,7 +185,7 @@ async def _lock_and_check(session, binding):
     trigger_rows = (
         await session.execute(
             text("""
-              SELECT t.tgname,t.tgenabled,p.proname,t.tgtype,
+              SELECT t.tgname,t.tgenabled::text,p.proname,t.tgtype,
                      encode(sha256(convert_to(p.prosrc,'UTF8')),'hex')
               FROM pg_catalog.pg_trigger t
               JOIN pg_catalog.pg_proc p ON p.oid=t.tgfoid
@@ -221,7 +221,7 @@ async def _lock_and_check(session, binding):
     durable = (
         await session.scalar(
             text("""
-              SELECT relpersistence FROM pg_catalog.pg_class
+              SELECT relpersistence::text FROM pg_catalog.pg_class
               WHERE oid='public.demo_event_history_epoch_events'::regclass
             """)
         )
@@ -229,7 +229,7 @@ async def _lock_and_check(session, binding):
     constraint_rows = (
         await session.execute(
             text("""
-              SELECT c.conname,c.contype,c.convalidated,c.condeferrable,
+              SELECT c.conname,c.contype::text,c.convalidated,c.condeferrable,
                      string_agg(a.attname,',' ORDER BY ord.ordinality)
               FROM pg_catalog.pg_constraint c
               LEFT JOIN LATERAL unnest(c.conkey) WITH ORDINALITY

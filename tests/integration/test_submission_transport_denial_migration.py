@@ -83,22 +83,31 @@ async def _assert_db0042_catalog(engine):
                 "pg_catalog",
                 "pg_temp",
             )
+        # PostgreSQL stores identifiers in at most 63 bytes. The second name
+        # declared by DB0042 is 64 ASCII bytes and is truncated in pg_catalog.
         checks = {
-            name: validated
-            for name, validated in (
+            name: (validated, definition)
+            for name, validated, definition in (
                 await connection.execute(
                     text("""
-                      SELECT conname,convalidated FROM pg_catalog.pg_constraint
+                      SELECT conname,convalidated,pg_get_constraintdef(oid)
+                      FROM pg_catalog.pg_constraint
                       WHERE conname IN (
                         'ck_qualification_report_spool_transport_unverified',
-                        'ck_qualification_report_projection_receipts_transport_unverified')
+                        'ck_qualification_report_projection_receipts_transport_unverifie')
                     """)
                 )
             ).all()
         }
         assert checks == {
-            "ck_qualification_report_spool_transport_unverified": True,
-            "ck_qualification_report_projection_receipts_transport_unverified": True,
+            "ck_qualification_report_spool_transport_unverified": (
+                True,
+                "CHECK ((eligible = false))",
+            ),
+            "ck_qualification_report_projection_receipts_transport_unverifie": (
+                True,
+                "CHECK (false)",
+            ),
         }
         triggers = {
             name: enabled

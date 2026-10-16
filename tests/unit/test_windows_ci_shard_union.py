@@ -171,6 +171,7 @@ def _verify(tmp_path: Path, artifacts: Path, root: Path, manifest_hash: str):
     return verify_union(
         artifacts,
         root=root,
+        git_archive=root.parent / "source.zip",
         commit=COMMIT,
         tree=TREE,
         manifest_sha256=manifest_hash,
@@ -193,6 +194,26 @@ def test_whole_module_partition_and_exact_full_suite_union(tmp_path: Path):
     )
 
 
+def test_zip_timestamp_change_keeps_exact_source_member_identity(tmp_path: Path):
+    artifacts, root, manifest_hash, full = _fixture(tmp_path)
+    component = artifacts / f"ctcc-windows-shard-0-{COMMIT}"
+    archive = component / "source.zip"
+    original = root.parent / "source.zip"
+    with zipfile.ZipFile(original) as zipped, zipfile.ZipFile(archive, "w") as changed:
+        for name in zipped.namelist():
+            info = zipfile.ZipInfo(name, date_time=(2026, 10, 16, 12, 58, 2))
+            info.compress_type = zipfile.ZIP_DEFLATED
+            changed.writestr(info, zipped.read(name))
+    source_path = component / "source-identity.json"
+    source = json.loads(source_path.read_text())
+    source["archive_sha256"] = _sha(archive.read_bytes())
+    source_path.write_text(json.dumps(source))
+    assert source["archive_sha256"] != _sha(original.read_bytes())
+    result = _verify(tmp_path, artifacts, root, manifest_hash)
+    assert result["full_suite_union"] == "PASS"
+    assert result["selected_cases"] == len(full)
+
+
 @pytest.mark.parametrize(
     ("damage", "reason"),
     [
@@ -200,6 +221,7 @@ def test_whole_module_partition_and_exact_full_suite_union(tmp_path: Path):
         ("subset", "shard_selection_or_observation"),
         ("missing_junit_case", "junit_cases_or_outcomes_changed"),
         ("source_drift", "source_or_lock_identity_invalid"),
+        ("source_bytes_drift", "archive_members_differ_from_git"),
         ("lock_drift", "source_or_lock_drift"),
         ("inventory_drift", "source_or_lock_drift"),
         ("full_collection_drift", "full_collection_drift"),
@@ -228,6 +250,22 @@ def test_union_rejects_missing_or_changed_evidence(
         path = component / "source-identity.json"
         value = json.loads(path.read_text())
         value["tree"] = "c" * 40
+        path.write_text(json.dumps(value))
+    elif damage == "source_bytes_drift":
+        archive = component / "source.zip"
+        original = root.parent / "source.zip"
+        with (
+            zipfile.ZipFile(original) as zipped,
+            zipfile.ZipFile(archive, "w") as changed,
+        ):
+            for name in zipped.namelist():
+                changed.writestr(
+                    name,
+                    b"changed\n" if name == "pyproject.toml" else zipped.read(name),
+                )
+        path = component / "source-identity.json"
+        value = json.loads(path.read_text())
+        value["archive_sha256"] = _sha(archive.read_bytes())
         path.write_text(json.dumps(value))
     elif damage == "lock_drift":
         path = component / "dependency-result.json"
@@ -314,11 +352,15 @@ def test_pytest_hook_records_full_collection_before_module_deselection(
         for case in full
     ]
     session = SimpleNamespace(config=config, items=items, exitstatus=0)
-    shard_plugin.pytest_collection_modifyitems(session, config, items)
-    shard_plugin.pytest_collection_finish(session)
-    for item in items:
-        shard_plugin.pytest_runtest_logreport(SimpleNamespace(nodeid=item.nodeid))
-    shard_plugin.pytest_sessionfinish(session, 0)
+    # Directly exercising the hook must not clear the owning pytest run's
+    # observed cases when this test itself runs inside a real CI shard.
+    with monkeypatch.context() as isolated:
+        isolated.setattr(shard_plugin, "_OBSERVED", set())
+        shard_plugin.pytest_collection_modifyitems(session, config, items)
+        shard_plugin.pytest_collection_finish(session)
+        for item in items:
+            shard_plugin.pytest_runtest_logreport(SimpleNamespace(nodeid=item.nodeid))
+        shard_plugin.pytest_sessionfinish(session, 0)
     record = json.loads(output.read_text())
     assert [case["nodeid"] for case in record["full_cases"]] == [
         case["nodeid"] for case in full

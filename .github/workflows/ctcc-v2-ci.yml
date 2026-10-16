@@ -327,16 +327,9 @@ jobs:
           $tree = (git rev-parse 'HEAD^{tree}').Trim()
           if ($LASTEXITCODE -ne 0) { throw 'WINDOWS_UNION_TREE_UNAVAILABLE' }
           $components = Join-Path $env:RUNNER_TEMP 'ctcc-windows-components'
-          $first = Join-Path $components "ctcc-windows-shard-0-$commit"
           $archive = Join-Path $env:RUNNER_TEMP 'ctcc-windows-union-source.zip'
           git -c core.autocrlf=false -c core.eol=lf archive --format=zip --output="$archive" "$commit"
           if ($LASTEXITCODE -ne 0) { throw 'WINDOWS_UNION_SOURCE_ARCHIVE_FAILED' }
-          $firstArchive = Join-Path $first 'source.zip'
-          $unionHash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash
-          $firstHash = (Get-FileHash -LiteralPath $firstArchive -Algorithm SHA256).Hash
-          if ($unionHash -ne $firstHash) {
-            throw 'WINDOWS_UNION_SOURCE_ARCHIVE_DIFFERS_FROM_GIT'
-          }
           $sourceRoot = Join-Path $env:RUNNER_TEMP 'ctcc-windows-union-source'
           Expand-Archive -LiteralPath $archive -DestinationPath $sourceRoot
           Set-Location -LiteralPath $sourceRoot
@@ -355,7 +348,7 @@ jobs:
           & $py -B -m scripts.verify_dependency_lock --target windows
           if ($LASTEXITCODE -ne 0) { throw 'WINDOWS_UNION_DEPENDENCY_IDENTITY_FAILED' }
           & $py -B -m scripts.verify_windows_shard_union `
-            --artifacts $components --root $sourceRoot `
+            --artifacts $components --root $sourceRoot --git-archive $archive `
             --commit $commit --tree $tree --manifest (Join-Path $sourceRoot 'MANIFEST.sha256') `
             --output (Join-Path $env:RUNNER_TEMP 'ctcc-windows-union')
           if ($LASTEXITCODE -ne 0) { throw 'WINDOWS_FULL_SUITE_UNION_REJECTED' }
