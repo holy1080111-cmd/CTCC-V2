@@ -32,7 +32,7 @@ from tests.unit.qualification_execution_binding_fixtures import (
 from tests.unit.qualification_ledger_fixtures import ledger_fixture
 
 _EVENT = "c" * 64
-_TOKEN = b"T" * 32
+_TOKEN = b"ctcc_unit_test_control_token_001"
 
 
 @pytest.fixture(scope="module")

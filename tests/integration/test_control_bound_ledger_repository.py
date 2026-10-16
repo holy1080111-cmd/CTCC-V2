@@ -38,7 +38,7 @@ from tests.unit.qualification_range_v5_fixtures import range_v5_ledger_fixture
 database = fixtures.database
 fixture = fixtures.fixture
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
-TOKEN = b"T" * 32
+TOKEN = b"ctcc_unit_test_control_token_001"
 
 
 @pytest.fixture

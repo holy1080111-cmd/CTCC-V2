@@ -19,7 +19,7 @@ from tests.unit.qualification_execution_binding_fixtures import (
 )
 from tests.unit.qualification_ledger_fixtures import ledger_fixture
 
-TOKEN = b"T" * 32  # Synthetic only; no credential/session secret.
+TOKEN = b"ctcc_unit_test_control_token_001"  # Synthetic, nonrepeating sentinel.
 EVENT = "c" * 64
 
 

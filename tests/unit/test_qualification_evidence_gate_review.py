@@ -171,7 +171,7 @@ def test_real_remaining_first_failures_do_not_touch_root_clock_or_evidence(
             update={"direction": "short" if direction == "long" else "long"}
         )
     elif gate in (4, 5):
-        index, price = (-1, D("100.79")) if gate == 4 else (-2, D("100.89"))
+        index, price = (-1, D("100.69")) if gate == 4 else (-2, D("100.89"))
         if direction == "short":
             price = D(200) - price
         rows = source.market.candles["5m"]
