@@ -46,3 +46,17 @@ API compares the current memory checksum with the PostgreSQL checksum.
 
 If a state mutation succeeds in memory but PostgreSQL persistence fails, the
 service restores the pre-mutation snapshot and reports a persistence error.
+
+## Operator access
+
+Paper, recovery, orchestrator, and realtime API routes require the local
+`X-CTCC-Token`, including status reads. This prevents an unauthenticated caller
+from changing Paper fills, prices, or recovery state. These routes do not grant
+OKX order-write authority.
+
+`scripts/verify.ps1`, `scripts/verify_recovery.ps1`, and `scripts/restore.ps1`
+read the token from the current process's `CTCC_API_TOKEN` environment variable
+or ask for it securely. `CTCC_API_TOKEN` must match the server's `API_TOKEN`.
+They send it only in the request header. If no token is provided, the script
+stops before a recovery mutation. Do not put the token in the command line,
+source tree, or validation report.

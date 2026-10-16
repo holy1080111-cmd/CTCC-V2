@@ -1,5 +1,6 @@
 from fastapi.testclient import TestClient
 
+from app.api.security import require_ctcc_token
 from app.main import app
 
 
@@ -42,12 +43,37 @@ def test_lifecycle_transition_map() -> None:
 
 
 def test_recovery_status_endpoint() -> None:
+    app.dependency_overrides[require_ctcc_token] = lambda: None
+    try:
+        with TestClient(app) as client:
+            response = client.get("/api/recovery/status")
+        assert response.status_code == 200
+        body = response.json()
+        assert "memory_checksum" in body
+        assert "consistent" in body
+    finally:
+        app.dependency_overrides.pop(require_ctcc_token, None)
+
+
+def test_local_state_routes_require_ctcc_token() -> None:
+    routes = (
+        ("GET", "/api/paper/account", None),
+        ("POST", "/api/paper/reset", None),
+        ("GET", "/api/recovery/status", None),
+        ("POST", "/api/recovery/reconcile", {"action": "persist_memory"}),
+        ("GET", "/api/orchestrator/status", None),
+        ("POST", "/api/orchestrator/start", None),
+        ("GET", "/api/realtime/status", None),
+        ("POST", "/api/realtime/stop", None),
+    )
     with TestClient(app) as client:
-        response = client.get("/api/recovery/status")
-    assert response.status_code == 200
-    body = response.json()
-    assert "memory_checksum" in body
-    assert "consistent" in body
+        for method, path, payload in routes:
+            response = client.request(method, path, json=payload)
+            assert response.status_code in {401, 503}, (method, path, response.text)
+            assert response.json()["detail"] in {
+                "invalid_ctcc_api_token",
+                "api_token_not_safely_configured",
+            }
 
 
 def test_okx_demo_status_never_exposes_credentials() -> None:

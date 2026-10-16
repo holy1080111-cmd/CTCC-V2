@@ -1,7 +1,8 @@
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 
+from app.api.security import require_ctcc_token
 from app.domain.paper import (
     ManualCloseRequest,
     MarketTickRequest,
@@ -15,7 +16,11 @@ from app.domain.paper import (
 from app.paper import PaperBrokerError, PaperPersistenceError
 from app.paper.service import paper_service
 
-router = APIRouter(prefix="/api/paper", tags=["paper"])
+router = APIRouter(
+    prefix="/api/paper",
+    tags=["paper"],
+    dependencies=[Depends(require_ctcc_token)],
+)
 
 
 def _handle(exc: PaperBrokerError | PaperPersistenceError) -> HTTPException:

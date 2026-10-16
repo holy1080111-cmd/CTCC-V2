@@ -1,13 +1,26 @@
 $ErrorActionPreference = "Stop"
 
 $baseUrl = "http://127.0.0.1:8100"
+$token = [Environment]::GetEnvironmentVariable("CTCC_API_TOKEN", "Process")
+if ([string]::IsNullOrWhiteSpace($token)) {
+    $secureToken = Read-Host "Enter the local CTCC API token" -AsSecureString
+    $token = [System.Net.NetworkCredential]::new("", $secureToken).Password
+}
+if ([string]::IsNullOrWhiteSpace($token)) { throw "CTCC API token is required." }
+$headers = @{ "X-CTCC-Token" = $token }
 
 function Wait-ForRecoveryStatus {
-    param([int]$Attempts = 30)
+    param(
+        [Parameter(Mandatory = $true)][hashtable]$Headers,
+        [int]$Attempts = 30
+    )
 
     for ($i = 1; $i -le $Attempts; $i++) {
         try {
-            $status = Invoke-RestMethod "$baseUrl/api/recovery/status" -TimeoutSec 5
+            $status = Invoke-RestMethod `
+                -Uri "$baseUrl/api/recovery/status" `
+                -Headers $Headers `
+                -TimeoutSec 5
             if ($status.initialized) {
                 return $status
             }
@@ -27,6 +40,7 @@ $persistBody = @{ action = "persist_memory" } | ConvertTo-Json
 $before = Invoke-RestMethod `
     -Method Post `
     -Uri "$baseUrl/api/recovery/reconcile" `
+    -Headers $headers `
     -ContentType "application/json" `
     -Body $persistBody
 
@@ -40,7 +54,7 @@ if (-not $before.consistent) {
 $expectedChecksum = $before.database_checksum
 
 docker compose restart api
-$after = Wait-ForRecoveryStatus
+$after = Wait-ForRecoveryStatus -Headers $headers
 
 Write-Host "After restart memory checksum:    $($after.memory_checksum)"
 Write-Host "After restart database checksum:  $($after.database_checksum)"

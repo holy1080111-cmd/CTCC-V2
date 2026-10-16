@@ -1,5 +1,6 @@
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
+from app.api.security import require_ctcc_token
 from app.domain.orchestrator import (
     OrchestratorRunRequest,
     OrchestratorRunResult,
@@ -8,7 +9,11 @@ from app.domain.orchestrator import (
 from app.orchestrator import OrchestratorBusyError, OrchestratorConfigurationError
 from app.orchestrator.runtime import auto_paper_orchestrator
 
-router = APIRouter(prefix="/api/orchestrator", tags=["auto-paper-orchestrator"])
+router = APIRouter(
+    prefix="/api/orchestrator",
+    tags=["auto-paper-orchestrator"],
+    dependencies=[Depends(require_ctcc_token)],
+)
 
 
 @router.get("/status", response_model=OrchestratorStatus)

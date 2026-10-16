@@ -1,11 +1,16 @@
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
+from app.api.security import require_ctcc_token
 from app.domain.recovery import AuditEntryView, RecoveryRequest, RecoveryStatus
 from app.orchestrator.runtime import auto_paper_orchestrator
 from app.paper import PaperPersistenceError
 from app.paper.service import paper_service, persistence_repository
 
-router = APIRouter(prefix="/api/recovery", tags=["persistence-recovery"])
+router = APIRouter(
+    prefix="/api/recovery",
+    tags=["persistence-recovery"],
+    dependencies=[Depends(require_ctcc_token)],
+)
 
 
 @router.get("/status", response_model=RecoveryStatus)

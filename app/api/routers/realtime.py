@@ -1,9 +1,14 @@
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 
+from app.api.security import require_ctcc_token
 from app.domain.realtime import RealtimeSnapshot, RealtimeStatus
 from app.market.realtime_service import realtime_client, realtime_hub
 
-router = APIRouter(prefix="/api/realtime", tags=["realtime-market"])
+router = APIRouter(
+    prefix="/api/realtime",
+    tags=["realtime-market"],
+    dependencies=[Depends(require_ctcc_token)],
+)
 
 
 @router.get("/status", response_model=RealtimeStatus)
