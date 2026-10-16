@@ -9,10 +9,32 @@ from __future__ import annotations
 import random
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from decimal import Decimal, localcontext
+from decimal import (
+    ROUND_CEILING,
+    ROUND_FLOOR,
+    ROUND_HALF_EVEN,
+    Context,
+    Decimal,
+    DivisionByZero,
+    InvalidOperation,
+    Overflow,
+    localcontext,
+)
+from fractions import Fraction
 
 DECIMAL_PRECISION = 50
 LOG_LOSS_EPSILON = Decimal("1e-15")
+_MAX_EXACT_DECIMAL_DIGITS = 4_096
+_ARITHMETIC_CONTEXT = Context(
+    prec=DECIMAL_PRECISION,
+    rounding=ROUND_HALF_EVEN,
+    Emin=-999999,
+    Emax=999999,
+    capitals=1,
+    clamp=0,
+    flags=[],
+    traps=[InvalidOperation, DivisionByZero, Overflow],
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +86,21 @@ def _finite_decimal(value: Decimal | int, name: str) -> Decimal:
     return result
 
 
+def _bounded_decimal_tuple(
+    value: Decimal, name: str
+) -> tuple[int, tuple[int, ...], int]:
+    if value.is_zero():
+        return (0, (0,), 0)
+    sign, digits, exponent = value.as_tuple()
+    if (
+        not isinstance(exponent, int)
+        or len(digits) > _MAX_EXACT_DECIMAL_DIGITS
+        or abs(exponent) > _MAX_EXACT_DECIMAL_DIGITS
+    ):
+        raise ValueError(f"{name} exceeds bounded exact Decimal arithmetic")
+    return sign, digits, exponent
+
+
 def _validated_probabilities(
     probabilities: Sequence[Decimal | int],
 ) -> tuple[Decimal, ...]:
@@ -107,8 +144,7 @@ def brier_loss_values(
     probability_values, outcome_values = _validated_observations(
         probabilities, outcomes
     )
-    with localcontext() as context:
-        context.prec = DECIMAL_PRECISION
+    with localcontext(_ARITHMETIC_CONTEXT):
         return tuple(
             (probability - Decimal(outcome)) ** 2
             for probability, outcome in zip(
@@ -122,8 +158,7 @@ def brier_score(
     outcomes: Sequence[int | bool],
 ) -> Decimal:
     losses = brier_loss_values(probabilities, outcomes)
-    with localcontext() as context:
-        context.prec = DECIMAL_PRECISION
+    with localcontext(_ARITHMETIC_CONTEXT):
         return sum(losses, Decimal(0)) / Decimal(len(losses))
 
 
@@ -141,15 +176,22 @@ def log_loss_values(
     clipping = _finite_decimal(epsilon, "log-loss epsilon")
     if clipping <= 0 or clipping >= Decimal("0.5"):
         raise ValueError("log-loss epsilon must be between zero and one half")
-    with localcontext() as context:
-        context.prec = DECIMAL_PRECISION
+    with localcontext(_ARITHMETIC_CONTEXT):
+        upper_clipping = Decimal(1) - clipping
+        if upper_clipping == Decimal(1):
+            raise ValueError("log-loss epsilon is too small at the pinned precision")
         losses: list[Decimal] = []
         for probability, outcome in zip(
             probability_values, outcome_values, strict=True
         ):
-            clipped = min(max(probability, clipping), Decimal(1) - clipping)
+            clipped = min(max(probability, clipping), upper_clipping)
             assigned_probability = clipped if outcome else Decimal(1) - clipped
-            losses.append(-assigned_probability.ln())
+            if assigned_probability <= 0 or not assigned_probability.is_finite():
+                raise ValueError("log-loss epsilon cannot yield a finite loss")
+            loss = -assigned_probability.ln()
+            if not loss.is_finite():
+                raise ValueError("log-loss epsilon cannot yield a finite loss")
+            losses.append(loss)
         return tuple(losses)
 
 
@@ -160,8 +202,7 @@ def log_loss(
     epsilon: Decimal = LOG_LOSS_EPSILON,
 ) -> Decimal:
     losses = log_loss_values(probabilities, outcomes, epsilon=epsilon)
-    with localcontext() as context:
-        context.prec = DECIMAL_PRECISION
+    with localcontext(_ARITHMETIC_CONTEXT):
         return sum(losses, Decimal(0)) / Decimal(len(losses))
 
 
@@ -183,17 +224,17 @@ def reliability_bins(
 
     grouped_probabilities: list[list[Decimal]] = [[] for _ in range(bin_count)]
     grouped_outcomes: list[list[int]] = [[] for _ in range(bin_count)]
-    with localcontext() as context:
-        context.prec = DECIMAL_PRECISION
+    with localcontext(_ARITHMETIC_CONTEXT):
         for probability, outcome in zip(
             probability_values, outcome_values, strict=True
         ):
-            index = min(int(probability * bin_count), bin_count - 1)
+            _bounded_decimal_tuple(probability, "probability")
+            numerator, denominator = probability.as_integer_ratio()
+            index = min((numerator * bin_count) // denominator, bin_count - 1)
             grouped_probabilities[index].append(probability)
             grouped_outcomes[index].append(outcome)
 
-    with localcontext() as context:
-        context.prec = DECIMAL_PRECISION
+    with localcontext(_ARITHMETIC_CONTEXT):
         bins: list[ReliabilityBin] = []
         denominator = Decimal(bin_count)
         for index in range(bin_count):
@@ -236,8 +277,7 @@ def expected_calibration_error(
 ) -> Decimal:
     bins = reliability_bins(probabilities, outcomes, bin_count=bin_count)
     sample_count = sum(item.sample_count for item in bins)
-    with localcontext() as context:
-        context.prec = DECIMAL_PRECISION
+    with localcontext(_ARITHMETIC_CONTEXT):
         return sum(
             (
                 (
@@ -311,8 +351,7 @@ def constant_prevalence_baseline(
     """Fit prevalence on development labels only, then freeze it for evaluation."""
 
     outcomes = _validated_outcomes(development_outcomes)
-    with localcontext() as context:
-        context.prec = DECIMAL_PRECISION
+    with localcontext(_ARITHMETIC_CONTEXT):
         prevalence = Decimal(sum(outcomes)) / Decimal(len(outcomes))
     return constant_probability_baseline(
         prevalence,
@@ -346,17 +385,43 @@ def frozen_legacy_score_baseline(
     return values
 
 
-def _quantile(sorted_values: Sequence[Decimal], probability: Decimal) -> Decimal:
-    with localcontext() as context:
-        context.prec = DECIMAL_PRECISION
-        position = Decimal(len(sorted_values) - 1) * probability
-        lower_index = int(position)
-        upper_index = min(lower_index + 1, len(sorted_values) - 1)
-        fraction = position - Decimal(lower_index)
-        return (
-            sorted_values[lower_index] * (Decimal(1) - fraction)
-            + sorted_values[upper_index] * fraction
+def _quantile_scaled(sorted_values: Sequence[int], probability: Fraction) -> Fraction:
+    position = (len(sorted_values) - 1) * probability
+    lower_index = position.numerator // position.denominator
+    upper_index = min(lower_index + 1, len(sorted_values) - 1)
+    fraction = position - lower_index
+    return (
+        sorted_values[lower_index] * (1 - fraction)
+        + sorted_values[upper_index] * fraction
+    )
+
+
+def _fraction_decimal(value: Fraction, *, rounding: str) -> Decimal:
+    with localcontext(_ARITHMETIC_CONTEXT) as context:
+        context.rounding = rounding
+        result = Decimal(value.numerator) / Decimal(value.denominator)
+        if not result.is_finite():
+            raise ValueError("bootstrap result exceeds bounded Decimal arithmetic")
+        return result
+
+
+def _scaled_bootstrap_values(samples: Sequence[Decimal]) -> tuple[tuple[int, ...], int]:
+    parts = tuple(_bounded_decimal_tuple(value, "bootstrap value") for value in samples)
+    minimum_exponent = min(exponent for _, _, exponent in parts)
+    if (
+        max(exponent for _, _, exponent in parts) - minimum_exponent
+        > _MAX_EXACT_DECIMAL_DIGITS
+    ):
+        raise ValueError("bootstrap values exceed bounded exact Decimal arithmetic")
+    scaled: list[int] = []
+    for sign, digits, exponent in parts:
+        coefficient = 0
+        for digit in digits:
+            coefficient = coefficient * 10 + digit
+        scaled.append(
+            (-1 if sign else 1) * coefficient * 10 ** (exponent - minimum_exponent)
         )
+    return tuple(scaled), minimum_exponent
 
 
 def moving_block_bootstrap_interval(
@@ -386,27 +451,36 @@ def moving_block_bootstrap_interval(
     if confidence <= 0 or confidence >= 1:
         raise ValueError("confidence level must lie strictly between zero and one")
 
+    _bounded_decimal_tuple(confidence, "bootstrap confidence level")
+    scaled_samples, minimum_exponent = _scaled_bootstrap_values(samples)
+    sample_count = len(scaled_samples)
+    unit = (
+        Fraction(10**minimum_exponent, sample_count)
+        if minimum_exponent >= 0
+        else Fraction(1, sample_count * 10 ** (-minimum_exponent))
+    )
     generator = random.Random(seed)
-    sample_count = len(samples)
-    bootstrap_means: list[Decimal] = []
-    with localcontext() as context:
-        context.prec = DECIMAL_PRECISION
-        estimate = sum(samples, Decimal(0)) / Decimal(sample_count)
-        for _ in range(resamples):
-            resampled: list[Decimal] = []
-            while len(resampled) < sample_count:
-                start = generator.randrange(sample_count)
-                resampled.extend(
-                    samples[(start + offset) % sample_count]
-                    for offset in range(block_length)
-                )
-            bootstrap_means.append(
-                sum(resampled[:sample_count], Decimal(0)) / Decimal(sample_count)
-            )
-        bootstrap_means.sort()
-        tail = (Decimal(1) - confidence) / Decimal(2)
-        lower = _quantile(bootstrap_means, tail)
-        upper = _quantile(bootstrap_means, Decimal(1) - tail)
+    bootstrap_sums: list[int] = []
+    for _ in range(resamples):
+        resampled_count = 0
+        resampled_sum = 0
+        while resampled_count < sample_count:
+            start = generator.randrange(sample_count)
+            for offset in range(block_length):
+                if resampled_count == sample_count:
+                    break
+                resampled_sum += scaled_samples[(start + offset) % sample_count]
+                resampled_count += 1
+        bootstrap_sums.append(resampled_sum)
+    bootstrap_sums.sort()
+    tail = (1 - Fraction(confidence)) / 2
+    estimate = _fraction_decimal(sum(scaled_samples) * unit, rounding=ROUND_HALF_EVEN)
+    lower = _fraction_decimal(
+        _quantile_scaled(bootstrap_sums, tail) * unit, rounding=ROUND_FLOOR
+    )
+    upper = _fraction_decimal(
+        _quantile_scaled(bootstrap_sums, 1 - tail) * unit, rounding=ROUND_CEILING
+    )
     return BootstrapInterval(
         estimate=estimate,
         confidence_lower=lower,
@@ -449,11 +523,16 @@ def holm_bonferroni(
     adjusted_by_id: dict[str, Decimal] = {}
     running_maximum = Decimal(0)
     test_count = len(ranked)
-    with localcontext() as context:
-        context.prec = DECIMAL_PRECISION
+    with localcontext(_ARITHMETIC_CONTEXT):
         for rank, (test_id, raw_value) in enumerate(ranked):
             multiplier = Decimal(test_count - rank)
-            adjusted = min(Decimal(1), raw_value * multiplier)
+            _, digits, _ = _bounded_decimal_tuple(raw_value, "p-value")
+            with localcontext(_ARITHMETIC_CONTEXT) as exact_context:
+                exact_context.prec = max(
+                    DECIMAL_PRECISION,
+                    len(digits) + len(str(test_count - rank)),
+                )
+                adjusted = min(Decimal(1), raw_value * multiplier)
             running_maximum = max(running_maximum, adjusted)
             adjusted_by_id[test_id] = running_maximum
 

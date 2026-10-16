@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from decimal import Decimal, localcontext
+from decimal import ROUND_DOWN, Decimal, Inexact, localcontext
 
 import pytest
 
@@ -82,6 +82,21 @@ def test_reliability_bin_edges_are_deterministic() -> None:
     assert bins[3].sample_count == 1
 
 
+def test_reliability_bin_never_rounds_a_probability_across_its_edge() -> None:
+    probability = D("0.0" + "9" * 60)
+    assert probability < D("0.1")
+
+    bins = reliability_bins((probability,), (0,), bin_count=10)
+
+    assert bins[0].sample_count == 1
+    assert bins[1].sample_count == 0
+
+
+def test_log_loss_rejects_epsilon_whose_complement_rounds_to_one() -> None:
+    with pytest.raises(ValueError, match="epsilon"):
+        log_loss_values((D(1),), (0,), epsilon=D("1e-60"))
+
+
 def test_probability_metric_bundle_is_complete_and_deterministic() -> None:
     inputs = ((D("0.1"), D("0.8"), D("0.7")), (0, 1, 1))
 
@@ -93,6 +108,41 @@ def test_probability_metric_bundle_is_complete_and_deterministic() -> None:
     assert first.brier_score == brier_score(*inputs)
     assert first.log_loss == log_loss(*inputs)
     assert len(first.reliability_bins) == 5
+
+
+def test_gate3_metrics_ignore_caller_decimal_context() -> None:
+    probabilities = (D("0.123456789"), D("0.876543211"), D("0.333333333"))
+    outcomes = (0, 1, 0)
+    values = (D("0.123456789"), D("0.876543211"), D("0.333333333"))
+    bootstrap_plan = {
+        "block_length": 2,
+        "resamples": 1_000,
+        "confidence_level": D("0.95"),
+        "seed": 42,
+    }
+    expected = (
+        probability_metrics(probabilities, outcomes, bin_count=7),
+        constant_prevalence_baseline(outcomes, evaluation_observation_count=3),
+        moving_block_bootstrap_interval(values, **bootstrap_plan),
+        holm_bonferroni(
+            {"a": D("0.0123456789"), "b": D("0.123456789")}, alpha=D("0.05")
+        ),
+    )
+    with localcontext() as context:
+        context.prec = 3
+        context.rounding = ROUND_DOWN
+        context.Emin = -10
+        context.Emax = 10
+        context.traps[Inexact] = True
+        actual = (
+            probability_metrics(probabilities, outcomes, bin_count=7),
+            constant_prevalence_baseline(outcomes, evaluation_observation_count=3),
+            moving_block_bootstrap_interval(values, **bootstrap_plan),
+            holm_bonferroni(
+                {"a": D("0.0123456789"), "b": D("0.123456789")}, alpha=D("0.05")
+            ),
+        )
+    assert actual == expected
 
 
 def test_prevalence_and_no_skill_baselines_are_frozen_out_of_sample() -> None:
@@ -153,6 +203,24 @@ def test_moving_block_bootstrap_is_seeded_and_reproducible() -> None:
     assert first.seed == 20260901
 
 
+def test_bootstrap_lower_bound_never_rounds_up_past_exact_values() -> None:
+    value = D("0.0" + "4" + "9" * 58)
+    threshold = D("0.05")
+    assert value < threshold
+
+    interval = moving_block_bootstrap_interval(
+        (value, value),
+        block_length=2,
+        resamples=1_000,
+        confidence_level=D("0.95"),
+        seed=7,
+    )
+
+    assert interval.confidence_lower <= value
+    assert interval.confidence_lower < threshold
+    assert interval.confidence_upper >= value
+
+
 def test_block_bootstrap_fails_closed_on_invalid_plan_or_values() -> None:
     values = (D("0.1"), D("0.2"), D("0.3"))
     common = {
@@ -187,6 +255,17 @@ def test_holm_bonferroni_adjusts_monotonically_and_returns_canonical_order() -> 
     assert adjusted[1].adjusted_p_value == D("0.06")
     assert adjusted[2].adjusted_p_value == D("0.06")
     assert tuple(item.rejected for item in adjusted) == (True, False, False)
+
+
+def test_holm_never_rounds_a_non_significant_value_into_rejection() -> None:
+    raw_p_value = D("0.025" + "0" * 56 + "1")
+    alpha = D("0.05")
+    assert raw_p_value > D("0.025")
+
+    result = holm_bonferroni({"first": raw_p_value, "second": D(1)}, alpha=alpha)
+
+    assert result[0].adjusted_p_value > alpha
+    assert result[0].rejected is False
 
 
 def test_holm_bonferroni_rejects_invalid_registry() -> None:

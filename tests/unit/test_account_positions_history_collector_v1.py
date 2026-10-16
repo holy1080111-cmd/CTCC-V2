@@ -5,11 +5,16 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import traceback
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
+from pydantic import SecretStr
 
+from app.config.settings import Settings
+from app.exchange.okx.private_rest import OkxDemoPrivateRestClient
 from app.trade_qualification import account_collector as shared
 from app.trade_qualification import account_positions_history_collector_v1 as collector
 from app.trade_qualification import account_positions_history_v1 as history
@@ -17,23 +22,41 @@ from app.trade_qualification import account_positions_history_v1 as history
 NOW = datetime(2026, 10, 16, 0, 0, tzinfo=UTC)
 NOW_MS = history._milliseconds(NOW)
 IDENTITY = collector.DemoPositionIdentityV1("123456", "123456", "2", "net_mode", "USDC")
-SESSION = "reviewed-test-session"
 
 
-def plan() -> history.PositionHistoryPlanV1:
+@contextmanager
+def pinned_session():
+    settings = Settings(
+        _env_file=None,
+        environment="test",
+        trading_mode="okx_demo",
+        okx_demo_enabled=True,
+        okx_demo_api_key="synthetic-key-123",
+        okx_demo_api_secret="synthetic-secret-123",
+        okx_demo_api_passphrase="synthetic-pass-123",
+        okx_demo_read_max_retries=0,
+    )
+    private = OkxDemoPrivateRestClient(settings=settings)
+    with private.pinned_read_session() as session:
+        yield session, settings
+
+
+def plan(session) -> history.PositionHistoryPlanV1:
     return history.PositionHistoryPlanV1(
         registration_region="global",
         origin="https://openapi.okx.com",
         account_binding_sha256=IDENTITY.sha256,
-        session_binding_sha256=hashlib.sha256(SESSION.encode("ascii")).hexdigest(),
+        session_binding_sha256=hashlib.sha256(
+            session.binding_id.encode("ascii")
+        ).hexdigest(),
         created_at=NOW,
         cutoff_u_time_ms=NOW_MS - 10_000,
     )
 
 
-def credentials() -> shared.DemoAccountCredentials:
+def credentials(session, *, key="synthetic-key-123") -> shared.DemoAccountCredentials:
     return shared.DemoAccountCredentials(
-        "synthetic-key-123", "synthetic-secret-123", "synthetic-pass-123", SESSION
+        key, "synthetic-secret-123", "synthetic-pass-123", session.binding_id
     )
 
 
@@ -117,13 +140,16 @@ async def test_signed_get_chain_is_bound_to_config_before_and_after_and_stays_de
             follow_redirects=False,
         ),
     )
-    result = await collector.collect_demo_position_history(
-        credentials=credentials(),
-        clock=clock(),
-        plan=plan(),
-        identity=IDENTITY,
-        barrier_completed_at=NOW,
-    )
+    with pinned_session() as (session, _):
+        selected = plan(session)
+        result = await collector.collect_demo_position_history(
+            credentials=credentials(session),
+            read_session=session,
+            clock=clock(),
+            plan=selected,
+            identity=IDENTITY,
+            barrier_completed_at=NOW,
+        )
     assert len(seen) == 4
     assert result.chain.row_count == 1
     assert result.chain.cutoff_observed is False
@@ -132,15 +158,19 @@ async def test_signed_get_chain_is_bound_to_config_before_and_after_and_stays_de
     assert result.account_complete is False
     assert result.source_authenticity_verified is False
     assert result.execution_authority is False
+    assert b"synthetic-key-123" not in result.raw_archive
+    assert b"synthetic-secret-123" not in result.raw_archive
+    assert b"synthetic-pass-123" not in result.raw_archive
+    assert session.binding_id.encode("ascii") not in result.raw_archive
     replay = collector.verify_source_bound_archive(
-        plan(), IDENTITY, result.raw_archive, expected_sha256=result.archive_sha256
+        selected, IDENTITY, result.raw_archive, expected_sha256=result.archive_sha256
     )
     assert replay.chain == result.chain
     with pytest.raises(
         collector.OwnedPositionHistoryError, match="archive_pin_mismatch"
     ):
         collector.verify_source_bound_archive(
-            plan(),
+            selected,
             IDENTITY,
             result.raw_archive + b" ",
             expected_sha256=result.archive_sha256,
@@ -152,7 +182,7 @@ async def test_signed_get_chain_is_bound_to_config_before_and_after_and_stays_de
         collector.OwnedPositionHistoryError, match="archive_binding_mismatch"
     ):
         collector.verify_source_bound_archive(
-            plan(),
+            selected,
             IDENTITY,
             altered_bytes,
             expected_sha256=hashlib.sha256(altered_bytes).hexdigest(),
@@ -168,7 +198,7 @@ async def test_signed_get_chain_is_bound_to_config_before_and_after_and_stays_de
         collector.OwnedPositionHistoryError, match="account_identity_mismatch"
     ):
         collector.verify_source_bound_archive(
-            plan(),
+            selected,
             IDENTITY,
             altered_bytes,
             expected_sha256=hashlib.sha256(altered_bytes).hexdigest(),
@@ -192,13 +222,17 @@ async def test_wrong_signed_account_stops_before_history_get(monkeypatch):
             follow_redirects=False,
         ),
     )
-    with pytest.raises(
-        collector.OwnedPositionHistoryError, match="account_identity_mismatch"
+    with (
+        pinned_session() as (session, _),
+        pytest.raises(
+            collector.OwnedPositionHistoryError, match="account_identity_mismatch"
+        ),
     ):
         await collector.collect_demo_position_history(
-            credentials=credentials(),
+            credentials=credentials(session),
+            read_session=session,
             clock=clock(),
-            plan=plan(),
+            plan=plan(session),
             identity=IDENTITY,
             barrier_completed_at=NOW,
         )
@@ -228,13 +262,17 @@ async def test_account_identity_change_after_pages_rejects_archive(monkeypatch):
             follow_redirects=False,
         ),
     )
-    with pytest.raises(
-        collector.OwnedPositionHistoryError, match="account_identity_mismatch"
+    with (
+        pinned_session() as (session, _),
+        pytest.raises(
+            collector.OwnedPositionHistoryError, match="account_identity_mismatch"
+        ),
     ):
         await collector.collect_demo_position_history(
-            credentials=credentials(),
+            credentials=credentials(session),
+            read_session=session,
             clock=clock(),
-            plan=plan(),
+            plan=plan(session),
             identity=IDENTITY,
             barrier_completed_at=NOW,
         )
@@ -270,13 +308,17 @@ async def test_settlement_currency_change_after_pages_rejects_archive(monkeypatc
             follow_redirects=False,
         ),
     )
-    with pytest.raises(
-        collector.OwnedPositionHistoryError, match="account_identity_mismatch"
+    with (
+        pinned_session() as (session, _),
+        pytest.raises(
+            collector.OwnedPositionHistoryError, match="account_identity_mismatch"
+        ),
     ):
         await collector.collect_demo_position_history(
-            credentials=credentials(),
+            credentials=credentials(session),
+            read_session=session,
             clock=clock(),
-            plan=plan(),
+            plan=plan(session),
             identity=IDENTITY,
             barrier_completed_at=NOW,
         )
@@ -293,27 +335,30 @@ async def test_wrong_session_binding_causes_zero_requests(monkeypatch):
         raise AssertionError("must not open a client")
 
     monkeypatch.setattr(collector, "_new_client", factory)
-    wrong = shared.DemoAccountCredentials(
-        "synthetic-key-123",
-        "synthetic-secret-123",
-        "synthetic-pass-123",
-        "different-session",
-    )
-    with pytest.raises(
-        collector.OwnedPositionHistoryError, match="session_binding_mismatch"
-    ):
-        await collector.collect_demo_position_history(
-            credentials=wrong,
-            clock=clock(),
-            plan=plan(),
-            identity=IDENTITY,
-            barrier_completed_at=NOW,
+    with pinned_session() as (session, _):
+        wrong = shared.DemoAccountCredentials(
+            "synthetic-key-123",
+            "synthetic-secret-123",
+            "synthetic-pass-123",
+            "different-session",
         )
+        with pytest.raises(
+            collector.OwnedPositionHistoryError,
+            match="credential_session_binding_mismatch",
+        ):
+            await collector.collect_demo_position_history(
+                credentials=wrong,
+                read_session=session,
+                clock=clock(),
+                plan=plan(session),
+                identity=IDENTITY,
+                barrier_completed_at=NOW,
+            )
     assert called is False
 
 
 @pytest.mark.asyncio
-async def test_reused_session_label_with_different_key_never_grants_authority(
+async def test_reused_session_label_with_different_key_stops_before_get(
     monkeypatch,
 ):
     requests = []
@@ -333,17 +378,232 @@ async def test_reused_session_label_with_different_key_never_grants_authority(
             follow_redirects=False,
         ),
     )
-    different_key = shared.DemoAccountCredentials(
-        "synthetic-different-key", "synthetic-secret-123", "synthetic-pass-123", SESSION
+    with (
+        pinned_session() as (session, _),
+        pytest.raises(
+            collector.OwnedPositionHistoryError,
+            match="credential_session_credentials_mismatch",
+        ),
+    ):
+        await collector.collect_demo_position_history(
+            credentials=credentials(session, key="synthetic-different-key"),
+            read_session=session,
+            clock=clock(),
+            plan=plan(session),
+            identity=IDENTITY,
+            barrier_completed_at=NOW,
+        )
+    assert requests == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("changed_field", ("key", "origin"))
+async def test_changed_runtime_binding_during_read_denies_without_followup_get(
+    monkeypatch, changed_field
+):
+    requests = []
+
+    def handler(request):
+        requests.append(request.url.path)
+        return response([config()])
+
+    monkeypatch.setattr(
+        collector,
+        "_new_client",
+        lambda: httpx.AsyncClient(
+            transport=httpx.MockTransport(handler),
+            trust_env=False,
+            follow_redirects=False,
+        ),
     )
-    result = await collector.collect_demo_position_history(
-        credentials=different_key,
-        clock=clock(),
-        plan=plan(),
-        identity=IDENTITY,
-        barrier_completed_at=NOW,
+    with pinned_session() as (session, settings):
+
+        def mutate_binding():
+            if len(requests) == 1:
+                if changed_field == "key":
+                    settings.okx_demo_api_key = SecretStr("synthetic-rotated-key")
+                else:
+                    settings.okx_demo_rest_base_url = "https://us.okx.com"
+            return NOW + timedelta(milliseconds=len(requests) + 1)
+
+        with pytest.raises(
+            collector.OwnedPositionHistoryError, match="credential_session_inactive"
+        ):
+            await collector.collect_demo_position_history(
+                credentials=credentials(session),
+                read_session=session,
+                clock=mutate_binding,
+                plan=plan(session),
+                identity=IDENTITY,
+                barrier_completed_at=NOW,
+            )
+    assert requests == ["/api/v5/account/config"]
+
+
+@pytest.mark.asyncio
+async def test_unissued_witness_and_new_session_cannot_reuse_old_plan(monkeypatch):
+    called = False
+
+    def factory():
+        nonlocal called
+        called = True
+        raise AssertionError("must not open a client")
+
+    monkeypatch.setattr(collector, "_new_client", factory)
+    with pinned_session() as (first, _):
+        old_plan = plan(first)
+        old_credentials = credentials(first)
+        with pytest.raises(
+            collector.OwnedPositionHistoryError,
+            match="credential_session_witness_required",
+        ):
+            await collector.collect_demo_position_history(
+                credentials=old_credentials,
+                read_session=None,
+                clock=clock(),
+                plan=old_plan,
+                identity=IDENTITY,
+                barrier_completed_at=NOW,
+            )
+    with (
+        pinned_session() as (second, _),
+        pytest.raises(
+            collector.OwnedPositionHistoryError,
+            match="credential_session_binding_mismatch",
+        ),
+    ):
+        await collector.collect_demo_position_history(
+            credentials=credentials(second),
+            read_session=second,
+            clock=clock(),
+            plan=old_plan,
+            identity=IDENTITY,
+            barrier_completed_at=NOW,
+        )
+    assert called is False
+
+
+@pytest.mark.asyncio
+async def test_closed_runtime_session_denies_before_get(monkeypatch):
+    called = False
+
+    def factory():
+        nonlocal called
+        called = True
+        raise AssertionError("must not open a client")
+
+    monkeypatch.setattr(collector, "_new_client", factory)
+    with pinned_session() as (session, _):
+        selected = plan(session)
+        selected_credentials = credentials(session)
+    with pytest.raises(
+        collector.OwnedPositionHistoryError, match="credential_session_inactive"
+    ):
+        await collector.collect_demo_position_history(
+            credentials=selected_credentials,
+            read_session=session,
+            clock=clock(),
+            plan=selected,
+            identity=IDENTITY,
+            barrier_completed_at=NOW,
+        )
+    assert called is False
+
+
+@pytest.mark.asyncio
+async def test_response_echo_of_runtime_binding_is_rejected(monkeypatch):
+    seen = []
+
+    def handler(request):
+        seen.append(request.url.path)
+        return response([{**config(), "echo": session.binding_id}])
+
+    monkeypatch.setattr(
+        collector,
+        "_new_client",
+        lambda: httpx.AsyncClient(
+            transport=httpx.MockTransport(handler),
+            trust_env=False,
+            follow_redirects=False,
+        ),
     )
-    assert len(requests) == 4
-    assert result.admission == "DENY"
-    assert result.source_authenticity_verified is False
-    assert result.execution_authority is False
+    with (
+        pinned_session() as (session, _),
+        pytest.raises(collector.OwnedPositionHistoryError, match="source_rejected"),
+    ):
+        await collector.collect_demo_position_history(
+            credentials=credentials(session),
+            read_session=session,
+            clock=clock(),
+            plan=plan(session),
+            identity=IDENTITY,
+            barrier_completed_at=NOW,
+        )
+    assert seen == ["/api/v5/account/config"]
+
+
+@pytest.mark.asyncio
+async def test_body_completion_time_precedes_response_cleanup(monkeypatch):
+    current = [NOW]
+
+    def ticking_clock():
+        current[0] += timedelta(milliseconds=1)
+        return current[0]
+
+    original_close = shared._close
+
+    async def slow_close(resource, **kwargs):
+        if type(resource) is httpx.Response:
+            current[0] += timedelta(hours=1)
+        await original_close(resource, **kwargs)
+
+    monkeypatch.setattr(shared, "_close", slow_close)
+    with pinned_session() as (session, _):
+        selected = plan(session)
+        supplied = credentials(session)
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda _request: response([config()])),
+            trust_env=False,
+            follow_redirects=False,
+        ) as client:
+            raw = await collector._signed_get(
+                client,
+                supplied,
+                session,
+                selected.session_binding_sha256,
+                ticking_clock,
+                collector._GetSpec(selected.origin, collector.CONFIG_ENDPOINT, ()),
+                previous_completed=NOW,
+                secret_tokens=[
+                    supplied.api_key,
+                    supplied.api_secret,
+                    supplied.passphrase,
+                    session.binding_id,
+                ],
+            )
+    assert raw.started <= raw.headers <= raw.completed < NOW + timedelta(hours=1)
+
+
+@pytest.mark.asyncio
+async def test_transport_exception_context_is_hidden(monkeypatch):
+    sentinel = "private-transport-token-must-not-escape"
+
+    def failure():
+        raise RuntimeError(sentinel)
+
+    monkeypatch.setattr(collector, "_new_client", failure)
+    with (
+        pinned_session() as (session, _),
+        pytest.raises(
+            collector.OwnedPositionHistoryError, match="source_failed"
+        ) as captured,
+    ):
+        await collector.collect_demo_position_history(
+            credentials=credentials(session),
+            read_session=session,
+            clock=clock(),
+            plan=plan(session),
+            identity=IDENTITY,
+            barrier_completed_at=NOW,
+        )
+    assert sentinel not in "".join(traceback.format_exception(captured.value))

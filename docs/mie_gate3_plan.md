@@ -51,6 +51,23 @@ existence, complete fees/funding, ledger coverage, or a sealed holdout. These
 figures are descriptive tooling only; no real OOS evaluation or Gate 3
 promotion has occurred.
 
+Probability metrics, development-prevalence baselines, seeded block-bootstrap
+intervals, and Holm correction now use a fully pinned Decimal arithmetic
+context. A regression changes the caller's precision, rounding, exponent range,
+and inexact trap and requires identical outputs. This verifies computational
+repeatability only; it does not qualify the underlying observations or create
+an OOS result.
+
+Reliability-bin assignment and Holm-adjusted p-values use exact finite-Decimal
+boundary arithmetic. Bootstrap sample sums and percentile interpolation are
+exact within a bounded Decimal input span; the reported lower bound rounds
+downward and the upper bound upward, so rounding cannot move a confidence bound
+past its exact value. Values beyond the bounded span fail closed. Log loss
+rejects a clipping epsilon too small to retain a nonzero complement at its
+pinned precision, and rejects any nonfinite loss. These rules do not establish
+cross-version identity for Python's `randrange` sampler or establish a real
+Gate 3 evaluation.
+
 The latest known Development/Validation replay attempt retained a 120-archive,
 172,800-row manifest but stopped before aggregation under the laptop thermal
 precaution (`../validation-results/mie-gate3-devval-replay-20261005/STOPPED.json`,

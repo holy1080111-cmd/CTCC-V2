@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import hmac
 import json
 import re
 import ssl
@@ -19,6 +20,11 @@ from datetime import UTC, datetime
 
 import httpx
 
+from app.exchange.okx.errors import OkxPrivateApiError
+from app.exchange.okx.private_rest import (
+    DemoPinnedReadSession,
+    OkxDemoPrivateRestClient,
+)
 from app.trade_qualification import account_capture as capture
 from app.trade_qualification import account_collector as owned
 from app.trade_qualification import account_positions_history_v1 as history
@@ -38,7 +44,7 @@ class OwnedPositionHistoryError(ValueError):
 
 
 def _deny(code: str):
-    raise OwnedPositionHistoryError(code)
+    raise OwnedPositionHistoryError(code) from None
 
 
 def _hash(data: bytes) -> str:
@@ -413,15 +419,56 @@ def _unfreeze_pages(
 _new_client = owned._new_client
 
 
+def _checked_read_session(
+    session: DemoPinnedReadSession,
+    credentials: owned.DemoAccountCredentials,
+    *,
+    origin: str,
+    session_binding_sha256: str,
+) -> None:
+    """Bind each signature to the active runtime-issued Demo credential lease."""
+    if (
+        type(session) is not DemoPinnedReadSession
+        or type(session._owner) is not OkxDemoPrivateRestClient
+    ):
+        _deny("credential_session_witness_required")
+    try:
+        session.verify_current()
+    except OkxPrivateApiError:
+        _deny("credential_session_inactive")
+    key, secret, passphrase, label, _ = owned._credential_values(credentials)
+    if (
+        session._origin != origin
+        or label != session.binding_id
+        or _hash(session.binding_id.encode("ascii")) != session_binding_sha256
+    ):
+        _deny("credential_session_binding_mismatch")
+    if not all(
+        hmac.compare_digest(actual, expected)
+        for actual, expected in zip(
+            (key, secret, passphrase), session._credentials, strict=True
+        )
+    ):
+        _deny("credential_session_credentials_mismatch")
+
+
 async def _signed_get(
     client: httpx.AsyncClient,
     credentials: owned.DemoAccountCredentials,
+    read_session: DemoPinnedReadSession,
+    session_binding_sha256: str,
     clock: Callable[[], datetime],
     spec: _GetSpec,
     *,
     previous_completed: datetime,
     secret_tokens: list[str],
 ) -> _RawPage:
+    _checked_read_session(
+        read_session,
+        credentials,
+        origin=spec.origin,
+        session_binding_sha256=session_binding_sha256,
+    )
     owned._client_guard(client)
     loop = asyncio.get_running_loop()
     deadline = loop.time() + 15
@@ -439,11 +486,23 @@ async def _signed_get(
     async with asyncio.timeout_at(deadline):
         if loop.time() >= deadline:
             _deny("request_deadline_exceeded")
+        _checked_read_session(
+            read_session,
+            credentials,
+            origin=spec.origin,
+            session_binding_sha256=session_binding_sha256,
+        )
         response = await client.send(
             request, auth=None, follow_redirects=False, stream=True
         )
         try:
             headers = _utc(clock())
+            _checked_read_session(
+                read_session,
+                credentials,
+                origin=spec.origin,
+                session_binding_sha256=session_binding_sha256,
+            )
             if (
                 type(response) is not httpx.Response
                 or response.status_code != 200
@@ -494,9 +553,15 @@ async def _signed_get(
                 if type(chunk) is not bytes or len(body) + len(chunk) > maximum:
                     _deny("response_bytes_limit")
                 body.extend(chunk)
+            completed = _utc(clock())
         finally:
             await owned._close(response)
-    completed = _utc(clock())
+    _checked_read_session(
+        read_session,
+        credentials,
+        origin=spec.origin,
+        session_binding_sha256=session_binding_sha256,
+    )
     if not started <= headers <= completed or client.cookies:
         _deny("request_clock_reversed")
     if length is not None and len(body) != int(length):
@@ -514,6 +579,7 @@ async def _signed_get(
 async def collect_demo_position_history(
     *,
     credentials: owned.DemoAccountCredentials,
+    read_session: DemoPinnedReadSession,
     clock: Callable[[], datetime],
     plan: history.PositionHistoryPlanV1,
     identity: DemoPositionIdentityV1,
@@ -521,7 +587,9 @@ async def collect_demo_position_history(
 ) -> PositionHistoryOwnedArchiveV1:
     """Acquire config / uTime pages / config, then replay from retained bytes.
 
-    The only injectable I/O seam is the private factory used by synthetic tests.
+    A runtime-owned pinned Demo read session must issue the binding ID and
+    retain the exact signing credentials across every await. The only
+    injectable I/O seam is the private factory used by synthetic tests.
     The returned archive remains a DENY-only diagnostic even after a real GET.
     """
     client = None
@@ -537,11 +605,12 @@ async def collect_demo_position_history(
             _deny("binding_invalid")
         values = owned._credential_values(credentials)
         credentials = owned.DemoAccountCredentials(*values)
-        if (
-            _hash(credentials.session_binding_id.encode("ascii"))
-            != plan.session_binding_sha256
-        ):
-            _deny("session_binding_mismatch")
+        _checked_read_session(
+            read_session,
+            credentials,
+            origin=plan.origin,
+            session_binding_sha256=plan.session_binding_sha256,
+        )
         barrier = _utc(barrier_completed_at)
         if not callable(clock) or barrier < plan.created_at:
             _deny("barrier_invalid")
@@ -552,12 +621,19 @@ async def collect_demo_position_history(
         deadline = loop.time() + MAX_BATCH_SECONDS
         client = _new_client()
         owned._client_guard(client)
-        secrets = [credentials.api_key, credentials.api_secret, credentials.passphrase]
+        secrets = [
+            credentials.api_key,
+            credentials.api_secret,
+            credentials.passphrase,
+            read_session.binding_id,
+        ]
         config_spec = _GetSpec(plan.origin, CONFIG_ENDPOINT, ())
         async with asyncio.timeout_at(deadline):
             before = await _signed_get(
                 client,
                 credentials,
+                read_session,
+                plan.session_binding_sha256,
                 clock,
                 config_spec,
                 previous_completed=first_clock,
@@ -578,6 +654,8 @@ async def collect_demo_position_history(
                 raw = await _signed_get(
                     client,
                     credentials,
+                    read_session,
+                    plan.session_binding_sha256,
                     clock,
                     _GetSpec(origin, endpoint, parameters),
                     previous_completed=previous_completed,
@@ -605,6 +683,8 @@ async def collect_demo_position_history(
             after = await _signed_get(
                 client,
                 credentials,
+                read_session,
+                plan.session_binding_sha256,
                 clock,
                 config_spec,
                 previous_completed=previous_completed,
@@ -628,6 +708,12 @@ async def collect_demo_position_history(
             )
             if result.chain != chain:
                 _deny("readback_mismatch")
+            _checked_read_session(
+                read_session,
+                credentials,
+                origin=plan.origin,
+                session_binding_sha256=plan.session_binding_sha256,
+            )
         if loop.time() > deadline:
             _deny("batch_deadline_exceeded")
         return result
