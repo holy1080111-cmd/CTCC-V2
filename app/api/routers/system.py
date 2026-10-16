@@ -28,10 +28,16 @@ async def readiness() -> JSONResponse | ReadinessResponse:
     redis_ok, redis_detail = await check_redis()
 
     blockers: list[str] = []
-    if settings.readiness_require_database and not database_ok:
+    if (
+        settings.environment == "production" or settings.readiness_require_database
+    ) and not database_ok:
         blockers.append("database_unavailable")
-    if settings.readiness_require_redis and not redis_ok:
+    if (
+        settings.environment == "production" or settings.readiness_require_redis
+    ) and not redis_ok:
         blockers.append("redis_unavailable")
+    if settings.environment == "production" and not settings.api_token_is_safe:
+        blockers.append("api_token_not_safely_configured")
     if settings.auto_trade:
         blockers.append("legacy_auto_trade_forbidden")
     if settings.trading_mode == "live":
