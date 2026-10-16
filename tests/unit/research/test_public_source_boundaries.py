@@ -61,10 +61,6 @@ def test_public_source_has_only_explicit_reviewed_consumers():
         "app.public_market_source.public_market_receipts",
         "app.public_market_source.public_market_receipts.utc_from_ns",
     }
-    scheduled_minute_publication_imports = {
-        "app.public_market_source.public_market_receipts",
-        "app.public_market_source.public_market_receipts.utc_from_ns",
-    }
     post_read_batch_imports = {
         "app.public_market_source.public_receipt_storage",
         "app.public_market_source.public_receipt_storage.ControlledPublicReceiptJournal",
@@ -116,9 +112,6 @@ def test_public_source_has_only_explicit_reviewed_consumers():
         # One opt-in research minute samples the native clock and converts its
         # pinned UTC nanoseconds. It cannot import capture or storage here.
         scheduled_minute_consumer: ("public_clock", "public_market_receipts"),
-        # The one-use local publisher only converts the sealed due time. It
-        # cannot acquire a new source, access a journal, or publish source data.
-        scheduled_minute_publication_consumer: ("public_market_receipts",),
         APP / "mie" / "validation" / "public_checkpoint_service.py": (
             "public_checkpoint_hook",
             "public_market_capture",
@@ -141,7 +134,6 @@ def test_public_source_has_only_explicit_reviewed_consumers():
     observed_post_read_stitch_imports = set()
     post_read_stitch_import_count = 0
     observed_scheduled_minute_imports = set()
-    observed_scheduled_minute_publication_imports = set()
     for path in APP.rglob("*.py"):
         if path.is_relative_to(SOURCE):
             continue
@@ -194,17 +186,6 @@ def test_public_source_has_only_explicit_reviewed_consumers():
                             and node.names[0].asname is None
                         ), name
                         observed_scheduled_minute_imports.add(name)
-                    if path == scheduled_minute_publication_consumer:
-                        assert name in scheduled_minute_publication_imports, name
-                        assert (
-                            isinstance(node, ast.ImportFrom)
-                            and node.module
-                            == "app.public_market_source.public_market_receipts"
-                            and len(node.names) == 1
-                            and node.names[0].name == "utc_from_ns"
-                            and node.names[0].asname is None
-                        ), name
-                        observed_scheduled_minute_publication_imports.add(name)
                     if path.name == "blind_window_dataset.py" and name.startswith(
                         "app.public_market_source.public_market_capture"
                     ):
@@ -224,15 +205,15 @@ def test_public_source_has_only_explicit_reviewed_consumers():
                     ), name
                     observed.add(path)
     assert observed == set(allowed)
+    # The V2 one-use publisher compares native nanoseconds directly. It must
+    # remain present without gaining any public-source import capability.
+    assert scheduled_minute_publication_consumer.is_file()
+    assert scheduled_minute_publication_consumer not in observed
     assert observed_post_publication_imports == post_publication_imports
     assert observed_post_read_batch_imports == post_read_batch_imports
     assert observed_post_read_stitch_imports == post_read_batch_imports
     assert post_read_stitch_import_count == 1
     assert observed_scheduled_minute_imports == scheduled_minute_imports
-    assert (
-        observed_scheduled_minute_publication_imports
-        == scheduled_minute_publication_imports
-    )
 
 
 def test_post_publication_rejects_unreviewed_public_capture_import(monkeypatch):
@@ -283,6 +264,7 @@ def test_scheduled_minute_rejects_additional_public_source_capability(
 @pytest.mark.parametrize(
     "import_line",
     [
+        "from app.public_market_source.public_market_receipts import utc_from_ns",
         "from app.public_market_source.public_market_capture import capture_public_market",
         "from app.public_market_source.public_receipt_storage import ControlledPublicReceiptJournal",
         "from app.public_market_source.public_market_receipts import sha",
