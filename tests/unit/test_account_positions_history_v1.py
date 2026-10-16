@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -12,6 +13,50 @@ from app.trade_qualification import account_positions_history_v1 as source
 
 NOW = datetime(2026, 10, 16, 0, 0, tzinfo=UTC)
 NOW_MS = source._milliseconds(NOW)
+
+
+def test_archive_readback_replays_exact_raw_chain_and_remains_deny_only():
+    first = page([row(1, NOW_MS - 6000)])
+    terminal = page([], index=1, prior=first, after=first.next_after, elapsed_ms=4)
+    payload = source.freeze_chain(plan(), (first, terminal))
+    result = source.verify_archived_chain(
+        plan(), payload, expected_sha256=hashlib.sha256(payload).hexdigest()
+    )
+    assert result == source.verify_chain(plan(), (first, terminal))
+    assert result.admission == "DENY"
+    assert not result.source_authenticity_verified
+    assert not result.execution_authority
+    assert not result.account_complete
+    with pytest.raises(source.PositionHistoryError, match="archive_pin_mismatch"):
+        source.verify_archived_chain(
+            plan(), payload + b" ", expected_sha256=hashlib.sha256(payload).hexdigest()
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation", ["plan", "raw", "clock", "chain", "extra", "terminal"]
+)
+def test_rehashed_archive_tampering_fails_closed(mutation):
+    first = page([row(1, NOW_MS - 6000)])
+    terminal = page([], index=1, prior=first, after=first.next_after, elapsed_ms=4)
+    value = json.loads(source.freeze_chain(plan(), (first, terminal)))
+    if mutation == "plan":
+        value["plan_sha256"] = "0" * 64
+    elif mutation == "raw":
+        value["pages"][0]["raw_body_base64"] = "invalid!"
+    elif mutation == "clock":
+        value["pages"][1]["request_started_at"] = NOW.isoformat()
+    elif mutation == "chain":
+        value["chain_sha256"] = "0" * 64
+    elif mutation == "extra":
+        value["execution_authority"] = True
+    else:
+        value["pages"].pop()
+    payload = source._canonical(value)
+    with pytest.raises(source.PositionHistoryError):
+        source.verify_archived_chain(
+            plan(), payload, expected_sha256=hashlib.sha256(payload).hexdigest()
+        )
 
 
 def plan():

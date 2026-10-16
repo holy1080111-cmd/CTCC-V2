@@ -11,6 +11,7 @@ Source: https://www.okx.com/docs-v5/en/#trading-account-rest-api-get-positions-h
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import re
@@ -27,6 +28,7 @@ MAX_PAGE_ROWS = 256  # The documented equal-uTime boundary can exceed limit=100.
 MAX_PAGE_BYTES = 262144
 MAX_PAGES = 16
 MAX_CHAIN_BYTES = 4 * 1024 * 1024
+MAX_ARCHIVE_BYTES = 6 * 1024 * 1024
 _REGION_ORIGINS = {
     "global": "https://openapi.okx.com",
     "us_au": "https://us.okx.com",
@@ -435,3 +437,109 @@ def verify_chain(
             )
         ),
     )
+
+
+def freeze_chain(
+    plan: PositionHistoryPlanV1, pages: tuple[PositionHistoryPageV1, ...]
+) -> bytes:
+    """Serialize replayed raw pages for external persistence; performs no IO."""
+    chain = verify_chain(plan, pages)
+    payload = _canonical(
+        {
+            "version": VERSION,
+            "plan_sha256": plan.sha256,
+            "chain_sha256": chain.chain_sha256,
+            "pages": [
+                {
+                    "raw_body_base64": base64.b64encode(page.raw_body).decode("ascii"),
+                    "request_started_at": page.request_started_at.isoformat(),
+                    "headers_received_at": page.headers_received_at.isoformat(),
+                    "body_completed_at": page.body_completed_at.isoformat(),
+                }
+                for page in pages
+            ],
+        }
+    )
+    if len(payload) > MAX_ARCHIVE_BYTES:
+        _deny("archive_byte_limit")
+    return payload
+
+
+def verify_archived_chain(
+    plan: PositionHistoryPlanV1, payload: bytes, *, expected_sha256: str
+) -> PositionHistoryChainV1:
+    """Replay externally pinned archive bytes against an independent plan.
+
+    A matching pin proves byte integrity only, never source authentication.
+    """
+    request_for_page(plan)
+    if type(expected_sha256) is not str or _SHA.fullmatch(expected_sha256) is None:
+        _deny("archive_pin_invalid")
+    if type(payload) is not bytes or not 1 <= len(payload) <= MAX_ARCHIVE_BYTES:
+        _deny("archive_byte_limit")
+    if _hash(payload) != expected_sha256:
+        _deny("archive_pin_mismatch")
+    try:
+        value, canonical = capture._decode_json(
+            payload, limit=MAX_ARCHIVE_BYTES, wire=False
+        )
+        if canonical.encode("utf-8") != payload or type(value) is not dict:
+            _deny("archive_invalid")
+        if set(value) != {"version", "plan_sha256", "chain_sha256", "pages"}:
+            _deny("archive_invalid")
+        if value["version"] != VERSION or value["plan_sha256"] != plan.sha256:
+            _deny("archive_plan_mismatch")
+        records = value["pages"]
+        if type(records) is not list or not 1 <= len(records) <= MAX_PAGES:
+            _deny("archive_invalid")
+        pages = []
+        for index, record in enumerate(records):
+            if (
+                type(record) is not dict
+                or set(record)
+                != {
+                    "raw_body_base64",
+                    "request_started_at",
+                    "headers_received_at",
+                    "body_completed_at",
+                }
+                or any(type(item) is not str for item in record.values())
+            ):
+                _deny("archive_invalid")
+            previous = pages[-1] if pages else None
+            pages.append(
+                parse_page(
+                    plan,
+                    base64.b64decode(record["raw_body_base64"], validate=True),
+                    page_index=index,
+                    after=None if previous is None else previous.next_after,
+                    previous_page_sha256=None
+                    if previous is None
+                    else previous.page_sha256,
+                    request_started_at=datetime.fromisoformat(
+                        record["request_started_at"]
+                    ),
+                    headers_received_at=datetime.fromisoformat(
+                        record["headers_received_at"]
+                    ),
+                    body_completed_at=datetime.fromisoformat(
+                        record["body_completed_at"]
+                    ),
+                )
+            )
+        chain = verify_chain(plan, tuple(pages))
+        if chain.chain_sha256 != value["chain_sha256"]:
+            _deny("archive_chain_mismatch")
+        if freeze_chain(plan, tuple(pages)) != payload:
+            _deny("archive_invalid")
+        return chain
+    except (
+        capture.AccountCaptureError,
+        ValueError,
+        TypeError,
+        KeyError,
+        OverflowError,
+    ) as exc:
+        if type(exc) is PositionHistoryError:
+            raise
+        _deny("archive_invalid")
