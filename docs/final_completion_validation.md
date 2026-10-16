@@ -5956,3 +5956,48 @@ The developer UI's Content access tab displayed `No page access` even though
 the pinned token's database/data-source GETs succeeded; the narrow access scope
 therefore needs reconciliation before any Notion write is accepted. The worker
 and trading authority remain **DENY**.
+
+## 2026-10-16 exact-source CI failure and bounded safety repair
+
+Commit `d53cb92db42454fafc754a0774c32a6ffb17166d` was pushed to the
+feature branch and ran as [CI 38845347590](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/38845347590).
+It **failed**. The downloaded PostgreSQL artifact identifies the same
+commit/tree/manifest, records zero external order writes, and shows build,
+COPY identity, dependency lock, Ruff, format, upgrade to `0042`, and schema-drift
+checks passing before the runner demanded `alembic downgrade 0016`. DB0042
+correctly refused that unsafe downgrade with
+`submission_transport_authenticity_downgrade_denied`. The Windows job stopped
+before running tests because its strict integration classifier did not yet
+include two new PostgreSQL modules. This run is not a Windows, Linux,
+PostgreSQL, Docker, or release PASS.
+The retained [PG identity](../../validation-results/ci-d53cb92-failed-20261016/postgres/ctcc-validation/identity.json)
+has SHA256 `b59cec744ca9e1c1209f75135f8beb10362fcb4da2a5ed187d5dce85a2fe84b6`;
+its [downgrade log](../../validation-results/ci-d53cb92-failed-20261016/postgres/ctcc-validation/migration-downgrade.log)
+has SHA256 `5efee50e2af35f59c374d7e44756fcd2d42a6437905ed9effa716f7cbbda9cd0`.
+
+The subsequent source repair retains the DB0042 refusal. The hermetic runner
+tests a supported empty-DB `0001→0016→0001` roundtrip, then upgrades to `0042`,
+requires the *specific* DB0042 denial on an attempted downgrade to `0041`,
+reads back `0042`, and checks schema drift again. The Linux union verifier
+requires hash-bound logs for the roundtrip and denial. Both new PostgreSQL
+modules are in the Linux and Windows classifiers; a duplicate unit-test basename
+was renamed so full-suite Python imports remain unambiguous. Focused local
+checks passed 83 cases with two Windows-only POSIX skips; actual PostgreSQL DDL
+and the complete suite require a new exact-source CI run.
+
+A separate reservation boundary now rejects unsupported G12 pre-evidence
+versions, including V6, before account claims or risk evaluation. The existing
+submission-intent input guard already rejects V6. These are fail-closed
+regressions and do not provide a positive V6 R7 issuer, account authority,
+reservation, intent, Demo execution, or Live execution.
+
+The earlier `b7dc99a` PostgreSQL CI later reported 388 passes, one failure and
+one error. Its DB0040 catalog test lacked its `revision` parameter; the current
+source now pins that test to `0040`, keeping its guard-source and drift
+mutations. The other b7 failure was an old positive outbox projection that
+accepted an unverified ACK; the subsequent source already denies that path.
+The DB0040 correction collected as one `[0040]` case locally and skipped its
+execution because this host has no isolated `DATABASE_URL`. It requires the
+next exact-source PostgreSQL run. The V6 reservation guard passed two direct
+cases and the focused V5 range regression completed successfully; neither is
+a production execution acceptance.

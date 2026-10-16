@@ -28,6 +28,7 @@ from scripts.verify_linux_shard import POSTGRES_TEST_PATHS, SHARD_COUNT, selecte
 VALIDATION_BUDGET_SECONDS = 165 * 60
 CLEANUP_BUDGET_SECONDS = 5 * 60
 HEARTBEAT_INTERVAL_SECONDS = 60
+DOWNGRADE_DENIAL = "submission_transport_authenticity_downgrade_denied"
 # The exact 0b28282 PostgreSQL shard reached 84% before the 75-minute stage
 # deadline killed pytest without a JUnit report. Keep a bounded stage deadline
 # inside the 165-minute validation and 180-minute CI job budgets.
@@ -82,6 +83,57 @@ LEDGER_SCHEMA_PREFLIGHT_CASES = (
         "test_committed_event_journal_schema_retention_guard_accepts_current_head",
     ),
 )
+
+MIGRATION_REVISION_PROBE = """
+import asyncio, json, sys
+from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.pool import NullPool
+from app.config.settings import get_settings
+from scripts.verify_migration_identity import database_head
+
+async def read_head():
+    engine = create_async_engine(get_settings().database_url, poolclass=NullPool)
+    try:
+        async with engine.connect() as connection:
+            return await connection.run_sync(database_head)
+    finally:
+        await engine.dispose()
+
+observed = asyncio.run(read_head())
+expected = sys.argv[1]
+if observed != expected:
+    raise RuntimeError('migration_revision_readback_mismatch')
+print(json.dumps({'schema': 'ctcc.migration_revision_readback.v1',
+                  'expected': expected, 'observed': observed,
+                  'execution_authority': False}, sort_keys=True))
+"""
+
+
+def verify_downgrade_denial_log(path: Path) -> None:
+    """Accept only the DB0042 policy exception, never an arbitrary CLI failure."""
+    if path.is_symlink() or not path.is_file() or path.stat().st_size > 2 * 1024 * 1024:
+        raise ValueError("migration_downgrade_denial_log_missing_or_unsafe")
+    try:
+        output = path.read_bytes().decode("utf-8")
+    except UnicodeError as error:
+        raise ValueError("migration_downgrade_denial_log_invalid") from error
+    if (
+        "Running downgrade 0042 -> 0041" not in output
+        or "/app/migrations/versions/0042_submission_transport_authenticity_denial.py"
+        not in output
+        or len(
+            re.findall(
+                rf"(?m)^asyncpg\.exceptions\.RaiseError: {DOWNGRADE_DENIAL}\r?$",
+                output,
+            )
+        )
+        != 1
+        or not re.search(
+            rf"(?m)^sqlalchemy\.exc\.DBAPIError: .*: {DOWNGRADE_DENIAL}\r?$",
+            output,
+        )
+    ):
+        raise ValueError("migration_downgrade_policy_refusal_unverified")
 
 
 def git_object(kind: str, raw: bytes) -> bytes:
@@ -310,7 +362,9 @@ class Run:
         self.deadline = clock() + budget_seconds
         self.heartbeat_seconds = heartbeat_seconds
 
-    def command(self, name, args, *, timeout=3600, input_bytes=None):
+    def command(
+        self, name, args, *, timeout=3600, input_bytes=None, expected_refusal=None
+    ):
         start = self.clock()
         record = {"name": name, "exit_code": None}
         print(f"HERMETIC_STAGE_START={name}", flush=True)
@@ -349,6 +403,13 @@ class Run:
                     check=False,
                 )
                 record["exit_code"] = result.returncode
+                if expected_refusal is not None:
+                    if expected_refusal != DOWNGRADE_DENIAL or result.returncode == 0:
+                        raise RuntimeError(
+                            "migration_downgrade_policy_refusal_unverified"
+                        )
+                    verify_downgrade_denial_log(self.output / f"{name}.log")
+                    record["policy_refusal"] = DOWNGRADE_DENIAL
         except Exception as error:
             record["failure_type"] = type(error).__name__
             raise
@@ -364,7 +425,7 @@ class Run:
                 f"{record['exit_code'] if record['exit_code'] is not None else record.get('failure_type', 'unknown')}",
                 flush=True,
             )
-        if result.returncode:
+        if result.returncode and expected_refusal is None:
             raise RuntimeError(f"validation_step_failed:{name}")
 
     def save(self):
@@ -620,7 +681,15 @@ def main():
 
     # No exchange credential or write switch is passed. Settings defaults and the
     # hermetic pytest preflight both deny execution; the network has no egress.
-    def container(name, command, *, mounts=(), extra_environment=(), timeout=3600):
+    def container(
+        name,
+        command,
+        *,
+        mounts=(),
+        extra_environment=(),
+        timeout=3600,
+        expected_refusal=None,
+    ):
         container_name = f"ctcc-final-{suffix}-{name}"
         resources.append(("container", container_name))
         run.command(
@@ -642,6 +711,7 @@ def main():
                 *command,
             ],
             timeout=timeout,
+            expected_refusal=expected_refusal,
         )
 
     try:
@@ -751,6 +821,22 @@ def main():
             ["python", "-m", "ruff", "format", "--check", "--no-cache", "."],
         )
         container("migration-initial-supported", ["alembic", "upgrade", "0001"])
+        container("migration-upgrade-supported", ["alembic", "upgrade", "0016"])
+        container("migration-downgrade-supported", ["alembic", "downgrade", "0001"])
+        container(
+            "migration-supported-readback",
+            ["python", "-c", MIGRATION_REVISION_PROBE, "0001"],
+        )
+        identity["migration_supported_roundtrip"] = json.loads(
+            (args.output / "migration-supported-readback.log").read_text()
+        )
+        if identity["migration_supported_roundtrip"] != {
+            "schema": "ctcc.migration_revision_readback.v1",
+            "expected": "0001",
+            "observed": "0001",
+            "execution_authority": False,
+        }:
+            raise RuntimeError("migration_supported_roundtrip_readback_invalid")
         container("migration-upgrade", ["alembic", "upgrade", "head"])
         container(
             "migration-identity", ["python", "-m", "scripts.verify_migration_identity"]
@@ -758,9 +844,18 @@ def main():
         identity["migration"] = json.loads(
             (args.output / "migration-identity.log").read_text()
         )
+        if (
+            identity["migration"].get("source_head") != "0042"
+            or identity["migration"].get("database_head") != "0042"
+            or identity["migration"].get("status") != "PASS"
+        ):
+            raise RuntimeError("migration_downgrade_policy_head_unreviewed")
         container("migration-drift", ["alembic", "check"])
-        container("migration-downgrade", ["alembic", "downgrade", "0016"])
-        container("migration-reupgrade", ["alembic", "upgrade", "head"])
+        container(
+            "migration-downgrade-denial",
+            ["alembic", "downgrade", "0041"],
+            expected_refusal=DOWNGRADE_DENIAL,
+        )
         container(
             "migration-reidentity",
             ["python", "-m", "scripts.verify_migration_identity"],
@@ -768,8 +863,15 @@ def main():
         if identity["migration"] != json.loads(
             (args.output / "migration-reidentity.log").read_text()
         ):
-            raise RuntimeError("migration_reupgrade_identity_changed")
+            raise RuntimeError("migration_denial_identity_changed")
         container("migration-redrift", ["alembic", "check"])
+        identity["migration_downgrade_policy"] = {
+            "source_head": "0042",
+            "target": "0041",
+            "result": "DENIED",
+            "policy_refusal": DOWNGRADE_DENIAL,
+            "database_head_after": "0042",
+        }
         if args.suite in ("full", "postgres"):
             # Check the committed journal retention schema before the long
             # PostgreSQL suite. A failure is a hard denial; its allowlisted

@@ -53,6 +53,7 @@ POSTGRES_INTEGRATION = (
     "test_demo_automation_control_cas_repository.py",
     "test_demo_control_durability_probe.py",
     "test_demo_control_repository.py",
+    "test_demo_event_history_epoch_repository.py",
     "test_durable_migration_downgrade.py",
     "test_gate3_blind_window_schedule_ack_binding_repository.py",
     "test_gate3_canonical_schedule_claim.py",
@@ -82,6 +83,7 @@ POSTGRES_INTEGRATION = (
     "test_qualification_submission_intent_repository.py",
     "test_range_v5_reservation_repository.py",
     "test_submission_reporting_repository.py",
+    "test_submission_transport_denial_migration.py",
 )
 
 # Exact approved test and reason pairs. A new skip requires source review; a

@@ -12,6 +12,7 @@ import pytest
 
 from scripts.verify_final_hermetic import (
     ARCHIVE_REQUIRED_CASES,
+    DOWNGRADE_DENIAL,
     verify_linux_collection,
     verify_pytest_report,
 )
@@ -152,7 +153,12 @@ def _artifacts(tmp_path: Path) -> tuple[Path, list[str]]:
     artifacts = tmp_path / "artifacts"
     artifacts.mkdir()
     full = _full_nodeids()
-    migration = {"schema": "ctcc.migration_identity.v1", "status": "PASS"}
+    migration = {
+        "schema": "ctcc.migration_identity.v1",
+        "status": "PASS",
+        "source_head": "0042",
+        "database_head": "0042",
+    }
     for mode, index in (
         ("postgres", None),
         *(("shard", i) for i in range(SHARD_COUNT)),
@@ -229,6 +235,19 @@ def _artifacts(tmp_path: Path) -> tuple[Path, list[str]]:
             "hermetic_regression": "PENDING_UNION",
             "cleanup": "PASS",
             "migration": migration,
+            "migration_supported_roundtrip": {
+                "schema": "ctcc.migration_revision_readback.v1",
+                "expected": "0001",
+                "observed": "0001",
+                "execution_authority": False,
+            },
+            "migration_downgrade_policy": {
+                "source_head": "0042",
+                "target": "0041",
+                "result": "DENIED",
+                "policy_refusal": DOWNGRADE_DENIAL,
+                "database_head_after": "0042",
+            },
             "collection": collection,
             "postgres_tests" if mode == "postgres" else "linux_tests": report,
         }
@@ -239,16 +258,44 @@ def _artifacts(tmp_path: Path) -> tuple[Path, list[str]]:
         (root / "steps.json").write_text(
             json.dumps(
                 [
-                    {"name": stage_name, "exit_code": 0}
+                    {
+                        "name": stage_name,
+                        "exit_code": (
+                            1 if stage_name == "migration-downgrade-denial" else 0
+                        ),
+                        **(
+                            {"policy_refusal": DOWNGRADE_DENIAL}
+                            if stage_name == "migration-downgrade-denial"
+                            else {}
+                        ),
+                    }
                     for stage_name in (*COMMON_STAGES, stage)
                 ]
             )
         )
         (root / "source-files.json").write_bytes(SOURCE_FILES)
+        supported_log = root / "migration-supported-readback.log"
+        supported_log.write_text(json.dumps(identity["migration_supported_roundtrip"]))
+        migration_log = root / "migration-identity.log"
+        migration_log.write_text(json.dumps(migration))
+        reidentity_log = root / "migration-reidentity.log"
+        reidentity_log.write_text(json.dumps(migration))
+        denial_log = root / "migration-downgrade-denial.log"
+        denial_log.write_text(
+            "INFO Running downgrade 0042 -> 0041\n"
+            '  File "/app/migrations/versions/'
+            '0042_submission_transport_authenticity_denial.py", line 109\n'
+            f"asyncpg.exceptions.RaiseError: {DOWNGRADE_DENIAL}\n"
+            f"sqlalchemy.exc.DBAPIError: (asyncpg.Error): {DOWNGRADE_DENIAL}\n"
+        )
         files = (
             root / "identity.json",
             root / "steps.json",
             root / "source-files.json",
+            supported_log,
+            migration_log,
+            reidentity_log,
+            denial_log,
             xml,
             collection_file,
         )
@@ -283,6 +330,61 @@ def test_exact_union_passes_and_missing_shard_fails(tmp_path):
     assert result["selected_cases"] == len(full)
     shutil.rmtree(artifacts / f"ctcc-linux-shard-7-{COMMIT}")
     with pytest.raises(ValueError, match="linux_union_component_set_incomplete"):
+        verify_union(
+            artifacts, commit=COMMIT, tree=TREE, manifest_sha256=_sha(MANIFEST)
+        )
+
+
+@pytest.mark.parametrize(
+    "damage", ("wrong_exception", "success_exit", "missing_refusal")
+)
+def test_union_never_accepts_arbitrary_or_successful_downgrade(tmp_path, damage):
+    artifacts, _ = _artifacts(tmp_path)
+    root = artifacts / f"ctcc-linux-shard-0-{COMMIT}" / "ctcc-validation"
+    if damage == "wrong_exception":
+        path = root / "migration-downgrade-denial.log"
+        path.write_text(
+            path.read_text().replace(DOWNGRADE_DENIAL, "database_unavailable")
+        )
+        hashes_path = root / "results.sha256.json"
+        hashes = json.loads(hashes_path.read_text())
+        hashes[path.name] = _sha(path.read_bytes())
+        hashes_path.write_text(json.dumps(hashes))
+    else:
+        steps_path = root / "steps.json"
+        steps = json.loads(steps_path.read_text())
+        refusal = next(
+            step for step in steps if step["name"] == "migration-downgrade-denial"
+        )
+        if damage == "success_exit":
+            refusal["exit_code"] = 0
+        else:
+            refusal.pop("policy_refusal")
+        steps_path.write_text(json.dumps(steps))
+        hashes_path = root / "results.sha256.json"
+        hashes = json.loads(hashes_path.read_text())
+        hashes[steps_path.name] = _sha(steps_path.read_bytes())
+        hashes_path.write_text(json.dumps(hashes))
+    with pytest.raises(ValueError, match="policy|common_stage"):
+        verify_union(
+            artifacts, commit=COMMIT, tree=TREE, manifest_sha256=_sha(MANIFEST)
+        )
+
+
+def test_union_rejects_post_denial_database_head_change_even_with_rehashed_log(
+    tmp_path,
+):
+    artifacts, _ = _artifacts(tmp_path)
+    root = artifacts / f"ctcc-linux-shard-0-{COMMIT}" / "ctcc-validation"
+    path = root / "migration-reidentity.log"
+    record = json.loads(path.read_text())
+    record["database_head"] = "0041"
+    path.write_text(json.dumps(record))
+    hashes_path = root / "results.sha256.json"
+    hashes = json.loads(hashes_path.read_text())
+    hashes[path.name] = _sha(path.read_bytes())
+    hashes_path.write_text(json.dumps(hashes))
+    with pytest.raises(ValueError, match="linux_union_migration_readback_changed"):
         verify_union(
             artifacts, commit=COMMIT, tree=TREE, manifest_sha256=_sha(MANIFEST)
         )

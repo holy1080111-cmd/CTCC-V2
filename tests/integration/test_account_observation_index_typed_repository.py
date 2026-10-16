@@ -187,9 +187,10 @@ async def _db0040_catalog_matches(connection, bodies, tables):
     return actual == expected
 
 
-async def test_db0040_catalog_matches_guard_source_and_rejects_drift(sandbox):
+@pytest.mark.parametrize("revision", ["0040"])
+async def test_db0040_catalog_matches_guard_source_and_rejects_drift(sandbox, revision):
     engine, _ = sandbox
-    migration = load_migration("0040")
+    migration = load_migration(revision)
     bodies = _db0040_guard_bodies(migration)
     tables = migration._TABLES
     changed_guard = migration._batch_guard()

@@ -15,6 +15,8 @@ from pathlib import Path
 
 from scripts.verify_final_hermetic import (
     ARCHIVE_REQUIRED_CASES,
+    DOWNGRADE_DENIAL,
+    verify_downgrade_denial_log,
     verify_linux_collection,
     verify_pytest_report,
 )
@@ -33,11 +35,13 @@ COMMON_STAGES = (
     "ruff",
     "format",
     "migration-initial-supported",
+    "migration-upgrade-supported",
+    "migration-downgrade-supported",
+    "migration-supported-readback",
     "migration-upgrade",
     "migration-identity",
     "migration-drift",
-    "migration-downgrade",
-    "migration-reupgrade",
+    "migration-downgrade-denial",
     "migration-reidentity",
     "migration-redrift",
 )
@@ -57,7 +61,15 @@ def _verify_hashes(root: Path):
     recorded = _json(root / "results.sha256.json")
     if not isinstance(recorded, dict):
         raise TypeError("linux_union_hash_map_invalid")
-    for name in ("identity.json", "steps.json", "source-files.json"):
+    for name in (
+        "identity.json",
+        "steps.json",
+        "source-files.json",
+        "migration-supported-readback.log",
+        "migration-identity.log",
+        "migration-reidentity.log",
+        "migration-downgrade-denial.log",
+    ):
         if name not in recorded:
             raise ValueError("linux_union_core_hash_missing")
     for name, digest in recorded.items():
@@ -129,8 +141,33 @@ def verify_union(
             or identity.get("hermetic_regression") != "PENDING_UNION"
             or identity.get("cleanup") != "PASS"
             or not isinstance(identity.get("migration"), dict)
+            or identity["migration"].get("source_head") != "0042"
+            or identity["migration"].get("database_head") != "0042"
+            or identity["migration"].get("status") != "PASS"
+            or identity.get("migration_supported_roundtrip")
+            != {
+                "schema": "ctcc.migration_revision_readback.v1",
+                "expected": "0001",
+                "observed": "0001",
+                "execution_authority": False,
+            }
+            or identity.get("migration_downgrade_policy")
+            != {
+                "source_head": "0042",
+                "target": "0041",
+                "result": "DENIED",
+                "policy_refusal": DOWNGRADE_DENIAL,
+                "database_head_after": "0042",
+            }
         ):
             raise ValueError(f"linux_union_component_identity_rejected:{name}")
+        if (
+            _json(root / "migration-supported-readback.log")
+            != identity["migration_supported_roundtrip"]
+            or _json(root / "migration-identity.log") != identity["migration"]
+            or _json(root / "migration-reidentity.log") != identity["migration"]
+        ):
+            raise ValueError(f"linux_union_migration_readback_changed:{name}")
         archive = attachment / "ctcc-source.tar"
         if (
             archive.is_symlink()
@@ -151,12 +188,20 @@ def verify_union(
             raise ValueError("linux_union_source_or_migration_drift")
         if not isinstance(stages, list) or any(
             not any(
-                step.get("name") == required and step.get("exit_code") == 0
+                step.get("name") == required
+                and (
+                    type(step.get("exit_code")) is int
+                    and step["exit_code"] != 0
+                    and step.get("policy_refusal") == DOWNGRADE_DENIAL
+                    if required == "migration-downgrade-denial"
+                    else step.get("exit_code") == 0
+                )
                 for step in stages
             )
             for required in COMMON_STAGES
         ):
             raise ValueError(f"linux_union_common_stage_missing:{name}")
+        verify_downgrade_denial_log(root / "migration-downgrade-denial.log")
         stage = "postgres-intent" if mode == "postgres" else f"linux-shard-{index}"
         if not any(
             step.get("name") == stage and step.get("exit_code") == 0 for step in stages

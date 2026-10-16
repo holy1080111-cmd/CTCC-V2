@@ -19,8 +19,15 @@ from zoneinfo import ZoneInfo
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.trade_qualification.current_risk import evaluate_current_risk
-from app.trade_qualification.engine import PortfolioInputs, _copy, _preflight
+from app.trade_qualification.engine import (
+    PortfolioInputs,
+    PreEvidenceRun,
+    _copy,
+    _preflight,
+)
 from app.trade_qualification.history_engine import (
+    HistoryPreEvidenceRunV2,
+    HistoryPreEvidenceRunV3,
     HistoryPreEvidenceRunV4,
     HistoryPreEvidenceRunV5,
 )
@@ -755,6 +762,17 @@ def _require_owned_recheck_for_reservation(request):
 def prepare_reservation(request, claims, active, *, observed_at):
     """Called again under the account lock, not a caller-written PASS input."""
     request = checked_reservation_request(request)
+    pre = request.origin.evidence.pre_evidence
+    if type(pre) not in (
+        PreEvidenceRun,
+        HistoryPreEvidenceRunV2,
+        HistoryPreEvidenceRunV3,
+        HistoryPreEvidenceRunV4,
+        HistoryPreEvidenceRunV5,
+    ):
+        # Every new G12 version needs its own audited reservation replay.
+        # In particular, the V6 sweep branch must not inherit legacy admission.
+        raise QualificationLedgerError("ledger_history_version_unsupported")
     if type(request) in (ReservationRequestV2, ReservationRequestV3):
         from app.trade_qualification.submission_intent import _guard
 
@@ -766,13 +784,13 @@ def prepare_reservation(request, claims, active, *, observed_at):
         or request.risk_inputs.authority != claims.authority
     ):
         raise QualificationLedgerError("ledger_current_claims_mismatch")
-    if type(request.origin.evidence.pre_evidence) is HistoryPreEvidenceRunV4:
+    if type(pre) is HistoryPreEvidenceRunV4:
         _check_range_reservation_admission(
-            request.origin.evidence.pre_evidence,
+            pre,
             request.quote,
             observed_at=observed_at,
         )
-    if type(request.origin.evidence.pre_evidence) is HistoryPreEvidenceRunV5:
+    if type(pre) is HistoryPreEvidenceRunV5:
         if type(request) in (ReservationRequestV2, ReservationRequestV3):
             _require_owned_recheck_for_reservation(request)
         replay_range_reservation(request, observed_at=observed_at)

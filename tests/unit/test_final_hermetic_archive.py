@@ -13,11 +13,13 @@ from types import SimpleNamespace
 import pytest
 
 from scripts.verify_final_hermetic import (
+    DOWNGRADE_DENIAL,
     Run,
     archive_files,
     archive_tree,
     cleanup_resources,
     verify_copied_source,
+    verify_downgrade_denial_log,
 )
 
 
@@ -217,6 +219,51 @@ def test_command_timeout_is_durable_failed_step(tmp_path, monkeypatch):
     assert step["failure_type"] == "TimeoutExpired"
     assert step["name"] == "linux-full"
     assert step["timeout_scope"] == "stage"
+
+
+@pytest.mark.parametrize(
+    "returncode,marker,passes",
+    (
+        (1, DOWNGRADE_DENIAL, True),
+        (0, DOWNGRADE_DENIAL, False),
+        (1, "network_unavailable", False),
+    ),
+)
+def test_migration_policy_refusal_requires_exact_database_error_and_failed_exit(
+    tmp_path, monkeypatch, returncode, marker, passes
+):
+    output = (
+        "INFO Running downgrade 0042 -> 0041\n"
+        '  File "/app/migrations/versions/'
+        '0042_submission_transport_authenticity_denial.py", line 109\n'
+        f"asyncpg.exceptions.RaiseError: {marker}\n"
+        f"sqlalchemy.exc.DBAPIError: (asyncpg.Error): {marker}\n"
+    ).encode()
+
+    def docker(*args, **kwargs):
+        kwargs["stdout"].write(output)
+        kwargs["stdout"].flush()
+        return SimpleNamespace(returncode=returncode)
+
+    monkeypatch.setattr(subprocess, "run", docker)
+    run = Run(tmp_path)
+    if passes:
+        run.command(
+            "migration-downgrade-denial",
+            ["docker", "run"],
+            expected_refusal=DOWNGRADE_DENIAL,
+        )
+        verify_downgrade_denial_log(tmp_path / "migration-downgrade-denial.log")
+    else:
+        with pytest.raises((RuntimeError, ValueError), match="policy_refusal"):
+            run.command(
+                "migration-downgrade-denial",
+                ["docker", "run"],
+                expected_refusal=DOWNGRADE_DENIAL,
+            )
+    step = json.loads((tmp_path / "steps.json").read_text())[0]
+    assert step.get("policy_refusal") == (DOWNGRADE_DENIAL if passes else None)
+    assert step["exit_code"] == returncode
 
 
 def test_global_deadline_caps_stage_timeout_and_preserves_failed_step(
