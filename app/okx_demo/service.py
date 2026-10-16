@@ -910,13 +910,26 @@ class OkxDemoService:
             stop_loss = Decimal(str(row.get("slTriggerPx") or ""))
             take_profit = Decimal(str(row.get("tpTriggerPx") or ""))
             protected_size = Decimal(str(row.get("sz") or ""))
+            stop_loss_order_price = Decimal(str(row.get("slOrdPx") or ""))
+            take_profit_order_price = Decimal(str(row.get("tpOrdPx") or ""))
         except InvalidOperation:
             return False
         return (
-            all(value.is_finite() for value in (stop_loss, take_profit, protected_size))
+            all(
+                value.is_finite()
+                for value in (
+                    stop_loss,
+                    take_profit,
+                    protected_size,
+                    stop_loss_order_price,
+                    take_profit_order_price,
+                )
+            )
             and stop_loss == request.stop_loss
             and take_profit == request.take_profit
             and protected_size == request.size
+            and stop_loss_order_price == Decimal(-1)
+            and take_profit_order_price == Decimal(-1)
             and row.get("slTriggerPxType") == request.trigger_price_type
             and row.get("tpTriggerPxType") == request.trigger_price_type
         )

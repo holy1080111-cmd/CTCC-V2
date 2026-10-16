@@ -311,6 +311,9 @@ Persistence is best effort here; durable pre-submit intent remains step 13.
 Initial and ongoing protection confirmation requires a unique client ID, exact
 covered quantity, instrument, opposite side, actual net/hedged position mode,
 matching SL/TP and mark triggers. Missing raw position-mode evidence is rejected.
+Demo post-submit readback also requires both SL/TP execution prices to equal
+the submitted market sentinel `-1`; missing, non-finite or limit execution
+prices leave protection unconfirmed and trigger the automation protection stop.
 The combined existing Demo suites have 182 passing tests. These mocked writes
 are not exchange submissions. No flags, deployment files or live services were
 changed. Nine existing strategy files also contain owned formatting-only changes,

@@ -125,6 +125,8 @@ class FakePrivate:
             "tpTriggerPx": attached["tpTriggerPx"],
             "slTriggerPxType": attached["slTriggerPxType"],
             "tpTriggerPxType": attached["tpTriggerPxType"],
+            "slOrdPx": attached["slOrdPx"],
+            "tpOrdPx": attached["tpOrdPx"],
         }
         row.update(self.pending_algo_row_overrides)
         for field in self.pending_algo_missing_fields:
@@ -595,6 +597,11 @@ async def test_protection_confirmation_requires_exact_unique_client_id() -> None
         ("state", "order_failed"),
         ("state", ""),
         ("ordType", "trigger"),
+        ("slOrdPx", "90"),
+        ("tpOrdPx", "110"),
+        ("slOrdPx", "NaN"),
+        ("tpOrdPx", "Infinity"),
+        ("slOrdPx", "invalid"),
     ],
 )
 @pytest.mark.asyncio
@@ -627,6 +634,8 @@ async def test_protection_confirmation_rejects_mismatched_protection(
         "tpTriggerPx",
         "slTriggerPxType",
         "tpTriggerPxType",
+        "slOrdPx",
+        "tpOrdPx",
     ],
 )
 @pytest.mark.parametrize("missing", [True, False], ids=["missing", "empty"])
