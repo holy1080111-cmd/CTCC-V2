@@ -20,6 +20,7 @@ from app.trade_qualification import data_v2 as module
 from app.trade_qualification import public_market_collector as legacy
 from app.trade_qualification import public_market_collector_v2 as public
 from app.trade_qualification import qualification_runtime as initial
+from app.trade_qualification import quote_collector as wire
 from app.trade_qualification import quote_collector_v2 as quotes_v2
 from app.trade_qualification.executable_quote_v2 import POLICY_SHA256
 from app.trade_qualification.quote_collector_v2 import TRANSPORT_POLICY_SHA256
@@ -116,6 +117,46 @@ def test_full_owner_raw_profile_and_upcoming_funding_pair_recompute_g1(
         passing.model_dump_json()
     )
     assert restored.evaluation_sha256 == passing.evaluation_sha256
+
+
+@pytest.mark.parametrize("field,offset", [("low24h", "0.01"), ("high24h", "-0.01")])
+def test_raw_v2_ticker_outside_24h_range_fails_g1_without_authority(
+    captured, field, offset
+):
+    parts = routed_packet_parts(captured, "global")
+    _, quote, observations = public._quote_parts(parts["quote"])
+    ticker = observations[-1]
+    payload = json.loads(ticker.response_body)
+    row = payload["data"][0]
+    row[field] = str(D(row["last"]) + D(offset))
+    raw = canonical(payload)
+    canonical_text = wire._parse(raw)[1]
+    malformed_ticker = ticker.model_copy(
+        update={
+            "response_body": raw,
+            "body_size_bytes": len(raw),
+            "body_sha256": sha(raw),
+            "canonical_json": canonical_text,
+            "canonical_sha256": sha(canonical_text.encode()),
+        }
+    )
+    parts["quote"] = quotes_v2.build_diagnostic_quote_packet_v2(
+        report_id=quote.report_id,
+        instrument_id=quote.instrument_id,
+        environment=quote.environment,
+        observations=(*observations[:-1], malformed_ticker),
+        capture_started_at=quote.capture_started_at,
+        capture_completed_at=quote.capture_completed_at,
+        barrier_completed_at=None,
+        route=demo_public_origin.reviewed_demo_public_route("global"),
+    )
+    packet, _ = public._build(**parts)
+    result = evaluate(packet, captured[0].context.evaluated_at)
+    assert result.gate.code == "market_source_invalid"
+    assert result.source_json is None
+    assert result.admission == "DENY"
+    assert result.execution_authority is False
+    assert result.source_authenticity_verified is False
 
 
 @pytest.mark.parametrize("region", ["global", "us_au", "eea"])

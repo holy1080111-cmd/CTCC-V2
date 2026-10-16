@@ -5930,3 +5930,29 @@ Their 15,333 JUnit cases had zero failures/errors and 76 Windows-only skips.
 The separate 390-case PostgreSQL suite and Windows job were still running at
 02:44 UTC; the aggregate Docker job had not started. This CI identity is for
 the *earlier* `b7dc99a` source and cannot validate the current working changes.
+
+## 2026-10-16 subsequent G1 and Notion readback (not release acceptance)
+
+G1 now rejects a ticker whose last traded price is outside its own 24-hour
+low/high interval. This applies to both the legacy ticker and the unit-correct
+SWAP V2 ticker; the raw V2 packet replay also reaches G1 and is denied. It is
+a stricter malformed-source check, not a source-authenticity or order permit.
+The three relevant modules had 191 passing tests and two Windows-only skips;
+Ruff and diff checks passed. The semantics follow the
+[official OKX ticker definitions](https://www.okx.com/docs-v5/en/).
+
+The existing private `CTCC V2 Outbox` token and pinned four-field destination
+were independently rechecked through two authenticated, GET-only Notion API
+reads against source `aa4927291aeee5c23c7c4caa1f9e9288ef838d5f`. The
+[redacted receipt](../../validation-results/notion-binding-readback-aa49272-20261016-retry2.json)
+has SHA256 `cd30d64f0316f7a85cf10f31f8c407abb4ce138f21ea185d4d74e48ad3b118e8`
+and reports `binding=PASS`, zero Notion writes and no outbox delivery. Two
+earlier local attempts remain recorded: the first supplied the canonical
+destination digest where the file-byte digest was required; the second loaded
+an older installed package because its external script did not put the current
+checkout first on Python's import path. Neither failure was an authenticated
+schema rejection. The corrected script pins the current checkout before imports.
+The developer UI's Content access tab displayed `No page access` even though
+the pinned token's database/data-source GETs succeeded; the narrow access scope
+therefore needs reconciliation before any Notion write is accepted. The worker
+and trading authority remain **DENY**.
