@@ -12,6 +12,7 @@ from datetime import timedelta
 from decimal import Context, Decimal, localcontext
 from types import MappingProxyType
 
+from app.market.quality.candles import BAR_SECONDS
 from app.strategies.structural_protection import (
     StructuralProtectionSelection,
     select_structural_protection,
@@ -25,6 +26,7 @@ from app.trade_qualification.service import (
 from tests.unit.qualification_prefix_fixtures import (
     MINIMUM_SCORE,
     SyntheticPrefixTrace,
+    _aggregate_overlap,
     prefix_source,
     run_prefix_source,
 )
@@ -62,22 +64,63 @@ class SyntheticEngineTrace:
 
 
 def engine_source(direction="long", *, report_id=None):
-    """Enrich only historical raw wicks; never move entry, return or trigger bars."""
+    """Enrich historical child wicks, then rebuild each covered parent bar."""
     source = prefix_source(direction, report_id=report_id)
     with localcontext(Context(prec=100)):
+        witnesses = {
+            "15m": (
+                (-25, D("100.00"), True),
+                (-15, D("104.50"), False),
+            ),
+            "1H": ((-25, D("100.00"), True),),
+            "4H": (
+                (-30, D("110.17"), False),
+                (-25, D("97.20"), True),
+                (-15, D("107.23"), False),
+            ),
+        }
         for timeframe in ("15m", "1H", "4H"):
             rows = source.market.candles[timeframe]
-            for offset, price, low in (
-                (-30, D("110.17"), False),
-                (-25, D("98.50"), True),
-                (-20, D("97.20"), True),
-                (-15, D("107.23"), False),
-            ):
+            for offset, price, low in witnesses[timeframe]:
                 field = "low" if low else "high"
                 if direction == "short":
                     field = "high" if low else "low"
                     price = D(200) - price
-                rows[offset] = rows[offset].model_copy(update={field: price})
+                timestamp = rows[offset].timestamp
+                child_timeframe = next(
+                    frame
+                    for frame in ("5m", "15m", "1H")
+                    if frame != timeframe
+                    and any(
+                        child.timestamp == timestamp
+                        for child in source.market.candles[frame]
+                    )
+                )
+                children = source.market.candles[child_timeframe]
+                child_index = next(
+                    index
+                    for index, child in enumerate(children)
+                    if child.timestamp == timestamp
+                )
+                original = children[child_index]
+                if (field == "low" and price > min(original.open, original.close)) or (
+                    field == "high" and price < max(original.open, original.close)
+                ):
+                    raise ValueError(
+                        f"synthetic_wick_incompatible_with_child_bar:{timeframe}:{offset}:{field}"
+                    )
+                children[child_index] = original.model_copy(update={field: price})
+        for timeframe, child_timeframe in (
+            ("15m", "5m"),
+            ("1H", "15m"),
+            ("4H", "1H"),
+        ):
+            _aggregate_overlap(
+                source.market.candles[timeframe],
+                source.market.candles[child_timeframe],
+                BAR_SECONDS[timeframe],
+                BAR_SECONDS[child_timeframe],
+            )
     return source
 
 

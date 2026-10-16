@@ -2,8 +2,8 @@
 
 Every evaluator runs normally. There are no supplied analysis flags, fake PASS
 records, lowered gate thresholds, or runtime strategy/quote adapters. Quotes use
-the existing MockTransport raw-response fixture. The prices describe independent
-timeframe examples, not a claimed reconstruction of one real exchange tape.
+the existing MockTransport raw-response fixture. Overlapping confirmed bars are
+aggregated from one synthetic 5m tape; this is not observed exchange evidence.
 """
 
 import asyncio
@@ -123,6 +123,30 @@ def _set(rows, offset, close, high, low):
     rows[offset] = _candle(rows[offset].timestamp, D(close), high=D(high), low=D(low))
 
 
+def _aggregate_overlap(parent, child, parent_seconds, child_seconds):
+    """Replace each fully covered synthetic parent bar with its exact child rollup."""
+    by_open = {row.timestamp: row for row in child}
+    width = parent_seconds // child_seconds
+    for index, row in enumerate(parent):
+        covered = tuple(
+            by_open.get(row.timestamp + timedelta(seconds=step * child_seconds))
+            for step in range(width)
+        )
+        if any(part is None for part in covered):
+            continue
+        parent[index] = Candle(
+            timestamp=row.timestamp,
+            open=covered[0].open,
+            high=max(part.high for part in covered),
+            low=min(part.low for part in covered),
+            close=covered[-1].close,
+            volume_contracts=sum((part.volume_contracts for part in covered), D(0)),
+            volume_currency=sum((part.volume_currency for part in covered), D(0)),
+            volume_quote=sum((part.volume_quote for part in covered), D(0)),
+            confirmed=True,
+        )
+
+
 def _frames(direction):
     if type(direction) is not str or direction not in {"long", "short"}:
         raise ValueError("synthetic fixture direction must be long or short")
@@ -141,35 +165,65 @@ def _frames(direction):
     # regime nor high-volatility evidence; both derive from these actual bars.
     for timeframe in ("4H", "1H"):
         for index, row in enumerate(frames[timeframe]):
-            close = D(93) + D(index) * D("0.03")
+            base = D("89.23") if timeframe == "4H" else D("94.63")
+            close = base + D(index) * D("0.03")
             frames[timeframe][index] = _candle(
                 row.timestamp, close, high=close + D("0.16"), low=close - D("0.16")
             )
-    # Actual 15m bullish FVG [100,101], followed by its first return, known at
-    # 01:00. The mirrored short setup has the corresponding bearish geometry.
-    rows = frames["15m"]
-    _set(rows, -4, "99.9", "100", "99.8")
-    _set(rows, -3, "100.5", "100.8", "100.2")
-    _set(rows, -2, "101.2", "101.4", "101.0")
-    _set(rows, -1, "100.75", "101.2", "100.5")
-    # A real closed-bar false→true momentum change at 01:10. Its price sits
-    # inside the source-derived tick zone, without editing a trigger or zone.
+    # The three shorter tapes meet at their coverage boundaries. This avoids a
+    # false volatility spike when a parent bar first becomes child-covered.
+    for index, row in enumerate(frames["15m"]):
+        close = D("100") + D(index) * D("0.002") + D(index % 8 - 4) * D("0.01")
+        frames["15m"][index] = _candle(
+            row.timestamp, close, high=close + D("0.08"), low=close - D("0.08")
+        )
+    prior_high_at = frames["1H"][-25].timestamp
+    for index, row in enumerate(frames["15m"]):
+        if row.timestamp == prior_high_at:
+            frames["15m"][index] = row.model_copy(update={"high": D("100.60")})
+            break
+    # One 5m tape creates the 15m bullish FVG [100,101] and its first return.
+    # The final 01:00→01:05 transition remains a closed-bar momentum change.
     rows = frames["5m"]
     for index, row in enumerate(rows):
-        close = D("100.89") + D(index % 8 - 4) * D("0.05")
+        close = D("100.32") + D(index) * D("0.002") + D(index % 8 - 4) * D("0.01")
         rows[index] = _candle(
-            row.timestamp, close, high=close + D("0.01"), low=close - D("0.01")
+            row.timestamp, close, high=close + D("0.12"), low=close - D("0.12")
         )
-    _set(rows, -2, "100.79", "100.80", "100.78")
-    _set(rows, -1, "100.99", "101.00", "100.98")
+    for offset, close, high, low in (
+        (-14, "99.9", "100", "99.8"),
+        (-13, "99.9", "99.95", "99.85"),
+        (-12, "99.9", "99.95", "99.85"),
+        (-11, "100.5", "100.8", "100.2"),
+        (-10, "100.5", "100.6", "100.4"),
+        (-9, "100.5", "100.6", "100.4"),
+        (-8, "101.2", "101.4", "101.0"),
+        (-7, "101.2", "101.3", "101.1"),
+        (-6, "101.2", "101.3", "101.1"),
+        (-5, "100.75", "101.2", "100.5"),
+        (-4, "100.75", "100.9", "100.6"),
+        (-3, "100.75", "100.9", "100.6"),
+        (-2, "100.60", "100.61", "100.59"),
+        (-1, "100.99", "101.00", "100.98"),
+    ):
+        _set(rows, offset, close, high, low)
+    for parent, child in (("15m", "5m"), ("1H", "15m"), ("4H", "1H")):
+        _aggregate_overlap(
+            frames[parent],
+            frames[child],
+            BAR_SECONDS[parent],
+            BAR_SECONDS[child],
+        )
     if direction == "short":
         frames = {
             timeframe: [
-                _candle(
-                    row.timestamp,
-                    D(200) - row.close,
-                    high=D(200) - row.low,
-                    low=D(200) - row.high,
+                row.model_copy(
+                    update={
+                        "open": D(200) - row.open,
+                        "high": D(200) - row.low,
+                        "low": D(200) - row.high,
+                        "close": D(200) - row.close,
+                    }
                 )
                 for row in rows
             ]

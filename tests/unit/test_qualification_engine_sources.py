@@ -2,16 +2,17 @@
 
 No evaluator is mocked, no precomputed gate/analysis/event/geometry is supplied,
 and a passing computation still has no source authentication or order authority.
-The independent timeframe examples do not claim one aggregated exchange tape.
+Overlapping bars share one synthetic tape and claim no exchange authenticity.
 """
 
 import hashlib
 import json
+from datetime import timedelta
 from decimal import ROUND_DOWN, Context, Decimal, Inexact, Rounded, localcontext
 
 import pytest
 
-from app.market.quality.candles import candle_closed_at
+from app.market.quality.candles import BAR_SECONDS, candle_closed_at
 from app.strategies.structural_protection import select_structural_protection
 from app.trade_qualification.engine import (
     evaluate_pre_evidence,
@@ -61,7 +62,7 @@ def _select(source):
     )
 
 
-def test_enrichment_changes_only_twelve_fixed_historical_raw_wicks(trace):
+def test_enrichment_changes_only_historical_raw_wicks_and_preserves_rollups(trace):
     source = trace.prefix.source
     baseline = prefix_source(source.direction)
     assert source.market.quality == baseline.market.quality == {}
@@ -77,16 +78,36 @@ def test_enrichment_changes_only_twelve_fixed_historical_raw_wicks(trace):
             for key in left:
                 if left[key] != right[key]:
                     changed.append((timeframe, index - 240, key))
-            assert candle.open == candle.close == original.close
+            assert candle.open == original.open and candle.close == original.close
             assert candle.timestamp == original.timestamp
             assert candle_closed_at(candle, timeframe) <= source.evaluated_at
+    assert len(changed) == 17
+    assert all(field in {"high", "low"} for _, _, field in changed)
     high, low = ("high", "low") if source.direction == "long" else ("low", "high")
-    assert set(changed) == {
-        (timeframe, offset, field)
-        for timeframe in ("15m", "1H", "4H")
-        for offset, field in ((-30, high), (-25, low), (-20, low), (-15, high))
+    assert {item for item in changed if item[0] == "5m"} == {
+        ("5m", -77, low),
+        ("5m", -47, high),
     }
-    assert len(changed) == 12
+    for parent, child in (("15m", "5m"), ("1H", "15m"), ("4H", "1H")):
+        by_open = {bar.timestamp: bar for bar in source.market.candles[child]}
+        child_seconds = BAR_SECONDS[child]
+        width = BAR_SECONDS[parent] // child_seconds
+        compared = 0
+        for row in source.market.candles[parent]:
+            parts = tuple(
+                by_open.get(row.timestamp + timedelta(seconds=index * child_seconds))
+                for index in range(width)
+            )
+            if any(part is None for part in parts):
+                continue
+            compared += 1
+            assert (row.open, row.high, row.low, row.close) == (
+                parts[0].open,
+                max(part.high for part in parts),
+                min(part.low for part in parts),
+                parts[-1].close,
+            )
+        assert compared > 0
     assert qualify_data(baseline).source_sha256 != trace.prefix.data.source_sha256
 
 
@@ -114,8 +135,8 @@ def test_original_trigger_and_zone_are_not_repriced_to_make_structure_pass(trace
 def test_all_raw_native_timeframe_candidates_are_evaluated_and_audited(trace):
     selection = trace.protection
     assert selection.evidence == "confirmed_ohlc" and selection.protection_valid
-    assert len(selection.stops) == 10 and len(selection.targets) == 6
-    assert len(selection.alternatives) == 60
+    assert len(selection.stops) == 11 and len(selection.targets) == 8
+    assert len(selection.alternatives) == 88
     assert {
         (bracket.stop.anchor.anchor_id, bracket.target.anchor.anchor_id)
         for bracket in selection.alternatives
@@ -151,9 +172,9 @@ def test_selected_bracket_clears_original_thesis_and_unchanged_rr_threshold(trac
     selection = trace.protection
     stop, target = selection.selected.stop, selection.selected.target
     expected = (
-        (D("98.32"), D("107.23"))
+        (D("99.63"), D("104.50"))
         if source.direction == "long"
-        else (D("101.68"), D("92.77"))
+        else (D("100.37"), D("95.50"))
     )
     assert (stop.final_stop, target.final_target) == expected
     invalidation = trace.prefix.detection.invalidation_price
@@ -216,7 +237,7 @@ def test_actual_economics_and_base_contract_units_flow_to_real_risk(trace):
         assert risk.max_loss_amount == risk.base_quantity * (
             abs(costs.candidate_entry - costs.stop_loss) + costs.cost_per_base
         )
-    expected = D("0.2841584") if prefix.source.direction == "long" else D("0.2838416")
+    expected = D("0.1531584") if prefix.source.direction == "long" else D("0.1528416")
     assert risk.max_loss_amount == expected
     assert risk.causes == () and risk.evidence_sha256
 
@@ -276,7 +297,10 @@ def test_original_prefix_without_historical_targets_stops_at_real_g8(direction):
     prefix, selection = _select(source)
     assert prefix.data.passed and prefix.location.passed
     assert not selection.protection_valid
-    assert "structural_target_missing" in selection.fail_codes
+    assert selection.fail_codes == ("no_valid_structural_bracket",)
+    assert selection.targets and all(
+        target.rejection_codes for target in selection.targets
+    )
     result = evaluate_pre_evidence(source.market, **engine_inputs(source))
     assert all(g.passed for g in result.result.gates[:7])
     assert len(result.result.gates) == 8 and not result.result.gates[-1].passed

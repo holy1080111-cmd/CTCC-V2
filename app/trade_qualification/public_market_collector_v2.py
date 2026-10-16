@@ -280,6 +280,44 @@ def _scope_route(scope):
     return route
 
 
+def _validate_cross_frame_candles(packet):
+    """Reject contradictory confirmed OHLC over complete overlapping bars."""
+    for parent, child in zip(packet.frames[:-1], packet.frames[1:], strict=True):
+        child_seconds = candles.BAR_SECONDS[child.timeframe]
+        parent_seconds = candles.BAR_SECONDS[parent.timeframe]
+        if parent_seconds % child_seconds:
+            _deny("public_v2_candle_cross_frame_interval_invalid")
+        width = parent_seconds // child_seconds
+        children = {row.timestamp: row for row in child.confirmed}
+        if len(children) != len(child.confirmed):
+            _deny("public_v2_candle_cross_frame_duplicate")
+        first, last = child.confirmed[0].timestamp, child.confirmed[-1].timestamp
+        compared = 0
+        for row in parent.confirmed:
+            if (
+                row.timestamp < first
+                or row.timestamp + timedelta(seconds=parent_seconds - child_seconds)
+                > last
+            ):
+                continue
+            sequence = tuple(
+                children.get(row.timestamp + timedelta(seconds=index * child_seconds))
+                for index in range(width)
+            )
+            if any(item is None for item in sequence):
+                _deny("public_v2_candle_cross_frame_gap")
+            compared += 1
+            if (
+                row.open != sequence[0].open
+                or row.high != max(item.high for item in sequence)
+                or row.low != min(item.low for item in sequence)
+                or row.close != sequence[-1].close
+            ):
+                _deny("public_v2_candle_cross_frame_mismatch")
+        if not compared:
+            _deny("public_v2_candle_cross_frame_overlap_missing")
+
+
 def _build(
     *, scope, policy, quote, candle_packet, market_aux, reference, started, completed
 ):
@@ -313,6 +351,7 @@ def _build(
     ):
         _deny("public_v2_capture_interval_invalid")
     candle_packet = candles.validate_collected_candles(candle_packet)
+    _validate_cross_frame_candles(candle_packet)
     market_aux = aux.validate_collected_market_aux(market_aux)
     reference = ws.validate_collected_ws_reference(reference)
     document, current_quote, quote_observations = _quote_parts(quote)

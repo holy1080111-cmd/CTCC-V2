@@ -158,7 +158,7 @@ def change_momentum_bar(source, offset, long_price):
 
 
 def test_missing_current_momentum_stops_g4_before_historical_event(source, monkeypatch):
-    market = change_momentum_bar(source, -1, "100.79")
+    market = change_momentum_bar(source, -1, "100.60")
     monkeypatch.setattr(module, "extract_trigger", forbidden)
     result = check(source, market=market)
     assert len(result.result.gates) == 4

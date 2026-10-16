@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import os
+import subprocess
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -842,6 +843,26 @@ def test_native_private_token_permissions_pin_and_no_overwrite(tmp_path):
     destination_file.write_bytes(raw + b" ")
     with pytest.raises(binding.NotionBindingError, match="pin_mismatch"):
         binding.load_destination(destination_file, hashlib.sha256(raw).hexdigest())
+
+
+def test_windows_private_acl_timeout_denies_without_retry(tmp_path, monkeypatch):
+    calls = []
+
+    def timeout_once(command, **kwargs):
+        calls.append((command, kwargs))
+        raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+    monkeypatch.setattr(binding.subprocess, "run", timeout_once)
+    path = tmp_path / "synthetic.token"
+    with pytest.raises(
+        binding.NotionBindingError, match="notion_private_file_permissions_invalid"
+    ):
+        binding._windows_private_acl(path, create=True)
+    assert len(calls) == 1
+    command, options = calls[0]
+    assert command[:3] == ["powershell.exe", "-NoProfile", "-NonInteractive"]
+    assert options["env"]["CTCC_PRIVATE_FILE"] == str(path)
+    assert options["timeout"] == 30
 
 
 def test_token_cannot_be_loaded_from_outbox_directory(tmp_path):

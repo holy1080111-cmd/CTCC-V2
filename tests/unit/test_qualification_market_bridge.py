@@ -61,10 +61,10 @@ def full_ticker(request, value):
             level[0] = str(Decimal("100.01") + Decimal("0.01") * index)
 
 
-def test_v1_source_hash_and_serialization_unchanged():
+def test_v1_source_schema_and_cross_frame_fixture_hash_stable():
     market = prefix_market()
     assert hashlib.sha256(_canonical(market)).hexdigest() == (
-        "1fbcb54f20e73e382d4271d6a86eaa8bb0944205e3ddd292dc5982ec76828fa8"
+        "2db1fd14e4c460f15f8ed8a1163115e2c6f0b9ff3b1d2c22f7e3292ea312e927"
     )
     assert _market_copy(market) == market
     assert "schema_version" not in market.ticker.model_dump()

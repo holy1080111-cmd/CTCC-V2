@@ -110,7 +110,10 @@ def test_targetless_bracket_never_invents_a_passing_g8_stop(direction, monkeypat
     run = evaluate_pre_evidence(source.market, **engine_inputs(source))
     _stopped(run, 8)
     audit = json.loads(run.protection_audit_json)
-    assert "structural_target_missing" in audit["fail_codes"]
+    assert audit["fail_codes"] == ["no_valid_structural_bracket"]
+    assert audit["targets"] and all(
+        target["rejection_codes"] for target in audit["targets"]
+    )
     assert run.result.gates[-1].code == audit["fail_codes"][0]
     assert run.result.stop_loss is run.result.take_profit is None
     assert run.economics is run.portfolio is None

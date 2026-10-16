@@ -95,19 +95,22 @@ if ($rules.Count -ne 1 -or $rules[0].IdentityReference.Value -ne $sid -or $rules
 """
     env = os.environ.copy()
     env["CTCC_PRIVATE_FILE"] = str(path)
-    result = subprocess.run(
-        [
-            "powershell.exe",
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            "$ErrorActionPreference = 'Stop'\n" + setup + check,
-        ],
-        env=env,
-        capture_output=True,
-        timeout=10,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "$ErrorActionPreference = 'Stop'\n" + setup + check,
+            ],
+            env=env,
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise NotionBindingError("notion_private_file_permissions_invalid") from exc
     if result.returncode:
         raise NotionBindingError("notion_private_file_permissions_invalid")
 

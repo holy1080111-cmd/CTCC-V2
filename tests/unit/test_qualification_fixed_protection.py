@@ -15,7 +15,7 @@ import pytest
 from pydantic import ValidationError, create_model
 
 from app.analysis.service import analyze_snapshot_at
-from app.market.quality.candles import inspect_candles_at
+from app.market.quality.candles import BAR_SECONDS, inspect_candles_at
 from app.strategies.structural_protection import _source_anchors
 from app.trade_qualification import fixed_protection as module
 from app.trade_qualification.engine import evaluate_pre_evidence
@@ -26,7 +26,7 @@ from app.trade_qualification.fixed_protection import (
 )
 from app.trade_qualification.location import quote_fingerprint
 from tests.unit.qualification_engine_fixtures import engine_inputs, engine_source
-from tests.unit.qualification_prefix_fixtures import restore_source
+from tests.unit.qualification_prefix_fixtures import _aggregate_overlap, restore_source
 
 D = Decimal
 TIMEFRAMES = ("4H", "1H", "15m", "5m")
@@ -236,11 +236,36 @@ def test_new_equal_price_pool_cannot_be_cleared_by_replacing_fixed_stop(
     long = baseline["detection"].direction == "long"
     field = "low" if long else "high"
     price = baseline["stop_loss"] + (D("0.03") if long else -D("0.03"))
-    rows = market.candles[timeframe]
-    # The previously deeper second low/high moves toward the first; ATR does
-    # not rise and the actual equal-pivot exclusion is reached independently.
-    for index in (-25, -20):
-        rows[index] = rows[index].model_copy(update={field: price})
+    frames = ("5m", "15m", "1H", "4H")
+    child_frame = frames[frames.index(timeframe) - 1]
+    # These distinct confirmed pivots survive the selector's last-three limit
+    # without failing the current-noise check first. Change the source child
+    # bars and rebuild every covered parent so the market remains coherent.
+    offsets = {"15m": (-18, -4), "1H": (-25, -20), "4H": (-14, -10)}
+    for offset in offsets[timeframe]:
+        timestamp = market.candles[timeframe][offset].timestamp
+        matches = [
+            index
+            for index, row in enumerate(market.candles[child_frame])
+            if row.timestamp == timestamp
+        ]
+        assert len(matches) == 1
+        child = market.candles[child_frame][matches[0]]
+        if long:
+            assert price <= min(child.open, child.close)
+        else:
+            assert price >= max(child.open, child.close)
+        market.candles[child_frame][matches[0]] = child.model_copy(
+            update={field: price}
+        )
+    for parent_index in range(frames.index(child_frame) + 1, len(frames)):
+        parent, child = frames[parent_index], frames[parent_index - 1]
+        _aggregate_overlap(
+            market.candles[parent],
+            market.candles[child],
+            BAR_SECONDS[parent],
+            BAR_SECONDS[child],
+        )
     changed = rebuild(baseline, market)
     stops, _ = _source_anchors(changed["current_market"].candles, baseline["detection"])
     assert any(
