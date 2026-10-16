@@ -1,5 +1,80 @@
 # Final completion validation state
 
+## 2026-10-16 exact `58362d1` CI result and source boundary
+
+The matching [CI run 38450057039](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/38450057039)
+for commit `58362d15ba78a9203e7417d5a906628a76c1971f`, tree
+`3cc1d0b9f96c66243962528f0a1c4ce5e7bc12f9`, and manifest SHA256
+`d4612a8af3cbef701521952a34d6a10c166564f96c97d152f479527e3091f7b7`
+has finished **FAIL**. Independent readback of all nine successful job artifacts
+confirmed their GitHub ZIP sizes and SHA256s, source inventory, JUnit results,
+and matching commit/tree/manifest. Windows ran 15,205 PASS plus 29 approved
+platform skips. Eight Linux shards ran 15,159 PASS plus 75 platform skips;
+both platforms covered the same 15,234 selected case IDs. The PostgreSQL job
+ran 384 PASS and two FAIL among 386 cases. Therefore the aggregate Docker
+hermetic result did not pass. Those passing components cannot be combined with
+another source version or treated as final acceptance. The independent audit
+receipt is `../../validation-results/ci-58362d1-success-audit-20261016/success-audit.json`
+(SHA256 `59d5b933e67f010f2c2e6b57f4b40d8ee251f6a7b554ddf7538794a2f139ed78`).
+Shard image IDs were ephemeral and are not a retained release image digest.
+
+The two PostgreSQL failures involve V4/V5 late source-clock rejection paths.
+They require a coherent source-time fixture or a production correction followed
+by targeted tests and a new exact-source regression; neither failure is waived.
+This candidate repairs both synthetic fixtures: V4 now captures genuinely
+fresh funding and a complete native clock pair; V5 persists and replays its
+public journal before the locked local checkpoint. Both test modules collect,
+and fixture/source readback probes, Ruff and formatting pass. Actual PostgreSQL
+execution on this candidate remains unverified until the new CI run.
+The repaired DB integration fixtures deliberately stub the earlier original-G1
+and/or current-economics gate to reach their locked account/local-checkpoint
+assertions. Separate unit tests exercise the real G1 and quote-age functions;
+the fixtures do not constitute end-to-end market-to-local economics acceptance.
+The new candidate adds a versioned final native-clock receipt and a
+default-off, one-use Gate 3 scheduled public-minute entry point. These are
+DENY-only changes and are **not** validated by the `58362d1` CI.
+The new entry point and adjacent scheduled-window tests passed 19/19 in a
+low-load local run with the pytest cache disabled; this is only a focused
+component result.
+Gate 3 still lacks original point-in-time availability and independent custody;
+there is no sealed predictive OOS or positive execution authority.
+
+A read-only review of the Demo dynamic-leverage path found an explicit
+`None` check for risk score (zero is preserved), the configured 3/5/8/10/20x
+ladder, 0.5% per-trade structural and 1% portfolio open stop-risk ceilings,
+and an effective aggregate-margin cap no greater than 60% of the 300 USDT
+bucket. Existing tests cover a third-order margin denial and late state
+mutation. This is an offline code/test finding, not a rollout acceptance:
+structural Demo Arm still rejects outside test mode with
+`structural_rollout_atomic_flat_start_unavailable`.
+
+The official OKX support ticket was inspected read-only after it closed. The
+reply did not establish the account's historical registration site, migration
+record, or current API region; it offered a registration certificate that was
+neither requested nor received. The redacted observation is
+`../../validation-results/okx-registration-support-readonly-20261016.json`
+(SHA256 `aaa0a5426e62114213bccafaea2cfdbe8667da85fbf6b9a7f2f5538e299c1d56`).
+The available signed Demo GET and regional-domain results cannot substitute for
+that first-party provenance. Trusted account admission and order POST stay
+DENY. The Notion REST token and four real property bindings were verified by
+readback, but the outbox worker remains off and no delivery is accepted.
+Original required real evidence examples remain 0/4. Demo, Micro Live,
+main merge, release, and final bundle remain unaccepted;
+`CTCC_V2_ENGINEERING_COMPLETE=0` and `CTCC_V2_FINAL_COMPLETE=0`.
+
+The 9/15 extracted deployment candidate still has no established Git tree.
+Its retained release contract independently rehashes 582/582 source-manifest
+members and 278/278 candidate-map members. The historical dependency mismatch
+was one extra locally installed `ctcc_v2.egg-info` metadata record, not a
+third-party package upgrade; the current lock identities nevertheless remain
+unaccepted as a full-validation baseline. The reviewed HighVol/Momentum
+installer fixes the original PowerShell `$Mode:` interpolation parser error
+using `${Mode}:` and has zero parser errors. Its retained review directory now
+contains an unlisted `__pycache__`, so a current dry run correctly rejects its
+package member set. Install/reinstall/upgrade/rollback and integration into
+the canonical safety path are not accepted. See
+`docs/installer_provenance.md` and `docs/dependency_identity.md`.
+
 The 2026-09-19 final-completion branch begins at development commit
 `016a3587476e83bb267558cf46998c501626ca3b`, tree
 `0bcd60c53faf1ab8b0f290a7585fbeeb170540dc`. The separate deployment at

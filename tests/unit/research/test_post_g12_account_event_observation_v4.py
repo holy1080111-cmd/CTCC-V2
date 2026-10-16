@@ -105,6 +105,41 @@ def _receipt(expected, *, changed=None):
     return joined.PostG12OwnedPublicAccountHistoryDiagnosticV3(canonical(value))
 
 
+def test_v4_clocked_v3_deadline_must_match_original(source_inputs_fixture):
+    source, values, run = source_inputs_fixture
+    scope = LedgerScope(account_id=UID, settlement_currency="USDT")
+    expected = bridge._original_binding(
+        source.market, run, values, _session(), scope, HISTORY_ID
+    )
+    old = decode(_receipt(expected).receipt_json)
+    observed = joined._utc(old["observed_at"])
+    delta = observed - datetime.fromtimestamp(0, tz=observed.tzinfo)
+    final_ns = (delta.days * 86400 + delta.seconds) * 1_000_000_000
+    final_ns += delta.microseconds * 1000
+    journal = old["public_journal_sha256"]
+    clocked = {
+        **old,
+        "schema_version": joined._CLOCK_SCHEMA,
+        "candidate_deadline_at": expected["deadline"].isoformat(),
+        "final_clock_proof": joined.final_clock_proof.make_proof(
+            {"utc_ns": final_ns - 1_000_000_000, "monotonic_ns": 1_000_000_000},
+            {"utc_ns": final_ns, "monotonic_ns": 2_000_000_000},
+            journal,
+        ),
+    }
+    joined.PostG12OwnedPublicAccountHistoryDiagnosticV3(canonical(clocked))
+    assert bridge._bound_v3(clocked, expected)
+    changed = {
+        **clocked,
+        "candidate_deadline_at": (
+            expected["deadline"] + timedelta(seconds=1)
+        ).isoformat(),
+    }
+    joined.PostG12OwnedPublicAccountHistoryDiagnosticV3(canonical(changed))
+    with pytest.raises(bridge.PostG12AccountEventObservationError):
+        bridge._bound_v3(changed, expected)
+
+
 def test_v4_exact_public_packet_original_g1_expires_before_candidate(
     source_inputs_fixture, captured_public_journal
 ):
@@ -908,6 +943,73 @@ async def test_v4_one_invocation_v3_readback_then_uid_event_only(
     assert replayed == result
     assert (event_root / "receipt.json").read_bytes() == result.receipt_json
     record = decode(result.receipt_json, bridge._MAX_RECEIPT)
+    assert record["schema_version"] == bridge._CLOCK_SCHEMA
+    if record["final_clock_proof"] is not None:
+        proof = record["final_clock_proof"]
+        assert proof["public_journal_sha256"] == record["public_journal_sha256"]
+        cutoff = bridge.final_clock_proof.replay_proof(
+            proof,
+            expected_public_journal_sha256=record["public_journal_sha256"],
+        )
+        observation_raw = (event_root / "observation.json").read_bytes()
+        observation = LedgerEventObservation.model_validate_json(
+            observation_raw, strict=True
+        )
+        assert observation.received_at <= cutoff
+        if fault is None:
+            assert cutoff < joined._utc(record["candidate_deadline_at"])
+            with pytest.raises(bridge.PostG12AccountEventObservationError):
+                bridge._receipt_from_bytes(
+                    canonical({**record, "candidate_deadline_at": cutoff.isoformat()})
+                )
+            v3_at = joined._utc(record["v3_observed_at"])
+            epoch = datetime.fromtimestamp(0, tz=v3_at.tzinfo)
+            v3_delta = v3_at - epoch
+            received_delta = observation.received_at - epoch
+            v3_ns = (v3_delta.days * 86400 + v3_delta.seconds) * 1_000_000_000
+            v3_ns += v3_delta.microseconds * 1000
+            received_ns = (
+                received_delta.days * 86400 + received_delta.seconds
+            ) * 1_000_000_000
+            received_ns += received_delta.microseconds * 1000
+            early_ns = ((v3_ns + received_ns) // 2 // 1000) * 1000
+            assert v3_ns < early_ns < received_ns
+            public_clock = proof["public_clock"]
+            early_clock = {
+                "utc_ns": early_ns,
+                "monotonic_ns": public_clock["monotonic_ns"]
+                + early_ns
+                - public_clock["utc_ns"],
+            }
+            early_proof = bridge.final_clock_proof.make_proof(
+                public_clock, early_clock, record["public_journal_sha256"]
+            )
+            early_receipt = canonical({**record, "final_clock_proof": early_proof})
+            # Arithmetic alone accepts the coherent early pair; the pinned DB
+            # sidecar must reject its false claim of a later final observation.
+            bridge._receipt_from_bytes(early_receipt)
+            forged_root = tmp_path / "early-clock-event"
+            forged_root.mkdir()
+            (forged_root / "observation.json").write_bytes(observation_raw)
+            (forged_root / "receipt.json").write_bytes(early_receipt)
+            forged_identity = joined.source_runtime._native_recheck_root_identity(
+                forged_root
+            )
+            with pytest.raises(bridge.PostG12AccountEventObservationError):
+                bridge.read_post_g12_account_event_observation_v4(
+                    forged_root,
+                    expected_sha256=sha(early_receipt),
+                    expected_root_identity=forged_identity,
+                )
+        forged = {
+            **record,
+            "final_clock_proof": {
+                **proof,
+                "effective_cutoff_at": "1970-01-01T00:00:00+00:00",
+            },
+        }
+        with pytest.raises(bridge.PostG12AccountEventObservationError):
+            bridge._receipt_from_bytes(canonical(forged))
     assert record["candidate_deadline_at"] == expected["deadline"].isoformat()
     assert record["account_uid_sha256"] == sha(scope.account_id.encode("ascii"))
     assert record["candidate_sha256"] == expected["candidate_sha256"]

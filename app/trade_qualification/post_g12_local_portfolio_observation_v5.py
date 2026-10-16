@@ -22,6 +22,7 @@ from app.domain.native_clock import native_stamp
 from app.domain.source_primitives import canonical, decode, sha
 from app.trade_qualification import current_economics_v2 as current_economics
 from app.trade_qualification import post_g12_account_event_observation_v4 as prior
+from app.trade_qualification import post_g12_final_clock_proof_v1 as final_clock_proof
 from app.trade_qualification import public_source_runtime as source_runtime
 from app.trade_qualification.event_observation import (
     MAX_OBSERVATION_BYTES,
@@ -35,6 +36,7 @@ from app.trade_qualification.reservations import (
 )
 
 _SCHEMA = "ctcc.post_g12_local_portfolio_observation.v5"
+_CLOCK_SCHEMA = "ctcc.post_g12_local_portfolio_observation.v5.clock1"
 _MAX_RECEIPT = 3072
 _MAX_CHECKPOINT = 262144
 _HEX = re.compile(r"[a-f0-9]{64}\Z")
@@ -85,6 +87,7 @@ _FIELDS = frozenset(
         *_FALSE_FIELDS,
     }
 )
+_CLOCK_FIELDS = _FIELDS | {"public_journal_sha256", "final_clock_proof"}
 _ADVANCED_V4 = frozenset(
     {"trusted_execution_inputs_missing", "original_event_already_recorded"}
 )
@@ -122,9 +125,14 @@ class PostG12LocalPortfolioObservationV5:
             record = decode(self.receipt_json, _MAX_RECEIPT)
             if (
                 type(record) is not dict
-                or set(record) != _FIELDS
+                or set(record)
+                != (
+                    _CLOCK_FIELDS
+                    if record.get("schema_version") == _CLOCK_SCHEMA
+                    else _FIELDS
+                )
                 or canonical(record) != self.receipt_json
-                or record["schema_version"] != _SCHEMA
+                or record["schema_version"] not in (_SCHEMA, _CLOCK_SCHEMA)
                 or record["code"] not in _CODES
                 or record["v4_code"] not in prior._CODES
                 or record["admission"] != "DENY"
@@ -143,6 +151,43 @@ class PostG12LocalPortfolioObservationV5:
             ):
                 raise ValueError
             deadline = _utc_text(record["candidate_deadline_at"])
+            if record["schema_version"] == _CLOCK_SCHEMA:
+                journal = record["public_journal_sha256"]
+                proof = record["final_clock_proof"]
+                if journal is not None and (
+                    type(journal) is not str or _HEX.fullmatch(journal) is None
+                ):
+                    raise ValueError
+                if proof is not None:
+                    cutoff = final_clock_proof.replay_proof(
+                        proof, expected_public_journal_sha256=journal
+                    )
+                    if record["second_received_at"] is None or cutoff < _utc_text(
+                        record["second_received_at"]
+                    ):
+                        raise ValueError
+                    if (
+                        record["code"]
+                        in {
+                            "public_g1_rejected_at_local_readback",
+                            "public_transport_profile_rejected_at_local_readback",
+                            "public_economics_quote_stale_at_local_readback",
+                            "original_event_already_recorded",
+                            "local_state_stable_not_authority",
+                            "local_state_blocked",
+                        }
+                        and cutoff >= deadline
+                    ):
+                        raise ValueError
+                elif record["code"] in {
+                    "public_g1_rejected_at_local_readback",
+                    "public_transport_profile_rejected_at_local_readback",
+                    "public_economics_quote_stale_at_local_readback",
+                    "original_event_already_recorded",
+                    "local_state_stable_not_authority",
+                    "local_state_blocked",
+                }:
+                    raise ValueError
             local = record["local_blocking_reasons"]
             if (
                 type(local) is not list
@@ -667,7 +712,7 @@ async def publish_capture_inspect_local_portfolio_v5(
     ):
         raise PostG12LocalPortfolioObservationError("v5_v4_scope_mismatch")
     record = {
-        "schema_version": _SCHEMA,
+        "schema_version": _CLOCK_SCHEMA,
         "code": "v4_incomplete",
         "v4_code": v4.code,
         "v4_receipt_sha256": v4.receipt_sha256,
@@ -676,6 +721,8 @@ async def publish_capture_inspect_local_portfolio_v5(
         "candidate_sha256": v4.candidate_sha256,
         "original_event_key": v4.original_event_key,
         "candidate_deadline_at": v4.candidate_deadline_at,
+        "public_journal_sha256": v4.public_journal_sha256,
+        "final_clock_proof": None,
         "v4_event_read_received_at": None,
         "first_checkpoint_sha256": None,
         "second_checkpoint_sha256": None,
@@ -737,10 +784,19 @@ async def publish_capture_inspect_local_portfolio_v5(
         else:
             try:
                 final_stamp = native_stamp()
-                validation_at = prior.joined.prior._monotonic_final_freshness_at(
-                    public_stamp, final_stamp
+                final_proof = final_clock_proof.make_proof(
+                    public_stamp,
+                    final_stamp,
+                    v4.public_journal_sha256,
                 )
-                if not second_end <= validation_at < deadline:
+                validation_at = final_clock_proof.replay_proof(
+                    final_proof,
+                    expected_public_journal_sha256=v4.public_journal_sha256,
+                )
+                if validation_at < second_end:
+                    raise ValueError("v5_public_validation_clock_invalid")
+                record["final_clock_proof"] = final_proof
+                if validation_at >= deadline:
                     raise ValueError("v5_public_validation_clock_invalid")
             except asyncio.CancelledError:
                 raise

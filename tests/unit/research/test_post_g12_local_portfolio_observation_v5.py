@@ -398,6 +398,31 @@ async def test_v5_same_invocation_v4_readback_then_two_local_reads(
     )
     assert calls == ["new_v4", "local_read", "local_read"]
     record = decode(result.receipt_json)
+    assert record["schema_version"] == bridge._CLOCK_SCHEMA
+    proof = record["final_clock_proof"]
+    assert proof["public_journal_sha256"] == record["public_journal_sha256"]
+    cutoff = bridge.final_clock_proof.replay_proof(
+        proof,
+        expected_public_journal_sha256=record["public_journal_sha256"],
+    )
+    assert (
+        bridge._utc_text(record["second_received_at"])
+        <= cutoff
+        < bridge._utc_text(record["candidate_deadline_at"])
+    )
+    with pytest.raises(bridge.PostG12LocalPortfolioObservationError):
+        bridge.PostG12LocalPortfolioObservationV5(
+            canonical({**record, "candidate_deadline_at": cutoff.isoformat()})
+        )
+    forged = {
+        **record,
+        "final_clock_proof": {
+            **proof,
+            "effective_cutoff_at": "1970-01-01T00:00:00+00:00",
+        },
+    }
+    with pytest.raises(bridge.PostG12LocalPortfolioObservationError):
+        bridge.PostG12LocalPortfolioObservationV5(canonical(forged))
     assert record["code"] == expected
     assert record["v4_receipt_sha256"] == v4.receipt_sha256
     assert record["first_checkpoint_sha256"] == record["second_checkpoint_sha256"]

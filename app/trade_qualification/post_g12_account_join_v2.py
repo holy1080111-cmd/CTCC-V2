@@ -31,6 +31,7 @@ from app.domain.source_primitives import (
 from app.trade_qualification import account_capture, current_economics_v2, data_v2
 from app.trade_qualification import account_native_runtime as account_native
 from app.trade_qualification import original_source_coordinator_v2 as original_source
+from app.trade_qualification import post_g12_final_clock_proof_v1 as final_clock_proof
 from app.trade_qualification import post_g12_public_runtime as public_runtime
 from app.trade_qualification import post_g12_recheck_v2 as public_recheck
 from app.trade_qualification import public_market_collector_v2 as public_v2
@@ -41,6 +42,7 @@ from app.trade_qualification.one_shot import _original
 from app.trade_qualification.timing import event_identity
 
 _SCHEMA = "ctcc.post_g12_owned_public_account_diagnostic.v2"
+_CLOCK_SCHEMA = "ctcc.post_g12_owned_public_account_diagnostic.v2.clock1"
 _MAX_RECEIPT = 4096
 _HEX = re.compile(r"[a-f0-9]{64}\Z")
 _CODES = frozenset(
@@ -96,6 +98,7 @@ _FIELDS = frozenset(
         *_FALSE_FIELDS,
     }
 )
+_CLOCK_FIELDS = _FIELDS | {"candidate_deadline_at", "final_clock_proof"}
 
 
 class PostG12AccountJoinError(ValueError):
@@ -145,10 +148,10 @@ def _monotonic_final_freshness_at(public_stamp, final_stamp):
     skew extend the original deadline or the age of the fixed public packet.
     Receipt observation time remains the unmodified native final UTC sample.
     """
+    # Retain the existing validator error contract for callers of this helper.
+    # The versioned proof's public API uses a fixed redacted denial instead.
     validate_stamps((public_stamp, final_stamp))
-    elapsed_ns = final_stamp["monotonic_ns"] - public_stamp["monotonic_ns"]
-    measured_floor = utc_from_ns(public_stamp["utc_ns"] + elapsed_ns)
-    return max(utc_from_ns(final_stamp["utc_ns"]), measured_floor)
+    return final_clock_proof.effective_cutoff(public_stamp, final_stamp)
 
 
 def _utc_text(value):
@@ -174,9 +177,14 @@ class PostG12OwnedPublicAccountDiagnosticV2:
             raw = decode(self.receipt_json, _MAX_RECEIPT)
             if (
                 type(raw) is not dict
-                or set(raw) != _FIELDS
+                or set(raw)
+                != (
+                    _CLOCK_FIELDS
+                    if raw.get("schema_version") == _CLOCK_SCHEMA
+                    else _FIELDS
+                )
                 or canonical(raw) != self.receipt_json
-                or raw["schema_version"] != _SCHEMA
+                or raw["schema_version"] not in (_SCHEMA, _CLOCK_SCHEMA)
                 or raw["code"] not in _CODES
                 or raw["admission"] != "DENY"
                 or any(raw[name] is not False for name in _FALSE_FIELDS)
@@ -224,6 +232,34 @@ class PostG12OwnedPublicAccountDiagnosticV2:
             first_account = raw["account_first_request_started_at"]
             recheck_at = raw["public_only_recheck_observed_at"]
             recheck_code = raw["public_only_recheck_code"]
+            if raw["schema_version"] == _CLOCK_SCHEMA:
+                deadline_text = raw["candidate_deadline_at"]
+                if deadline_text is not None and (
+                    _utc_text(deadline_text).isoformat() != deadline_text
+                ):
+                    raise ValueError
+                if (barrier is None) != (deadline_text is None):
+                    raise ValueError
+                proof = raw["final_clock_proof"]
+                if proof is not None:
+                    cutoff = final_clock_proof.replay_proof(
+                        proof,
+                        expected_public_journal_sha256=raw["public_journal_sha256"],
+                    )
+                    if (
+                        first_public is None
+                        or recheck_at is None
+                        or raw["observed_at"]
+                        != utc_from_ns(proof["final_clock"]["utc_ns"]).isoformat()
+                        or cutoff < _utc_text(raw["observed_at"])
+                        or raw["code"] == "joined_unqualified"
+                        and (
+                            deadline_text is None or cutoff >= _utc_text(deadline_text)
+                        )
+                    ):
+                        raise ValueError
+                elif raw["code"] == "joined_unqualified":
+                    raise ValueError
             if (
                 raw["candidate_sha256"] is None
                 or raw["original_event_key"] is None
@@ -553,15 +589,17 @@ async def publish_capture_public_account_v2(
         "account_packet_sha256": None,
         "public_only_recheck_sha256": None,
     }
-    barrier = public_first = account_first = None
+    barrier = public_first = account_first = candidate_deadline = None
     recheck_code = recheck_at = None
     recheck_persisted = False
+    final_proof = None
+    journal_clock = journal_root_identity = None
     public_count = account_count = 0
 
     def finish():
         receipt = canonical(
             {
-                "schema_version": _SCHEMA,
+                "schema_version": _CLOCK_SCHEMA,
                 "code": code,
                 "report_id": intent.report_id,
                 "instrument_id": intent.instrument_id,
@@ -569,6 +607,9 @@ async def publish_capture_public_account_v2(
                 "original_entry": str(candidate.candidate_entry),
                 "original_stop_loss": str(candidate.stop_loss),
                 "original_take_profit": str(candidate.take_profit),
+                "candidate_deadline_at": None
+                if candidate_deadline is None
+                else candidate_deadline.isoformat(),
                 "candidate_sha256": candidate_pin,
                 "original_event_key": original_key,
                 "g12_evidence_sha256": pins["g12_evidence_sha256"],
@@ -596,6 +637,7 @@ async def publish_capture_public_account_v2(
                 "observed_at": None
                 if last is None
                 else utc_from_ns(last["utc_ns"]).isoformat(),
+                "final_clock_proof": final_proof,
                 "public_request_count": public_count,
                 "account_page_count": account_count,
                 "admission": "DENY",
@@ -645,6 +687,7 @@ async def publish_capture_public_account_v2(
             or origin.pre_evidence_sha256 != pre.evaluation_sha256
         ):
             raise PostG12AccountJoinError("post_g12_original_changed")
+        candidate_deadline = origin.deadline
         barrier = origin.publication_completed_at
         pins["g12_evidence_sha256"] = evidence.evaluation_sha256
         pins["g12_report_sha256"] = evidence.receipt.report_sha256
@@ -673,6 +716,14 @@ async def publish_capture_public_account_v2(
         public_first, public_count = _public_request_starts(packet, barrier)
         pins["public_packet_sha256"] = packet.bundle_sha256
         pins["public_journal_sha256"] = journal
+        journal_clock, journal_root_identity = (
+            final_clock_proof.read_persisted_public_clock(
+                public_root,
+                expected_journal_sha256=journal,
+                expected_packet_sha256=packet.bundle_sha256,
+            )
+        )
+        validate_stamps((journal_clock, public_stamp))
         account_start = native_stamp()
         validate_stamps((last, account_start))
         last = account_start
@@ -773,10 +824,31 @@ async def publish_capture_public_account_v2(
         recheck_code = decode(replay.receipt_json)["code"]
         recheck_at = completed_at
         recheck_persisted = True
+        replayed_clock, replayed_identity = (
+            final_clock_proof.read_persisted_public_clock(
+                public_root,
+                expected_journal_sha256=journal,
+                expected_packet_sha256=packet.bundle_sha256,
+                expected_root_identity=journal_root_identity,
+            )
+        )
+        if (
+            replayed_clock != journal_clock
+            or replayed_identity != journal_root_identity
+        ):
+            raise PostG12AccountJoinError("post_g12_public_clock_changed")
         final_stamp = native_stamp()
         validate_stamps((last, final_stamp))
         last = final_stamp
-        final_at = _monotonic_final_freshness_at(public_stamp, final_stamp)
+        final_at = final_clock_proof.effective_cutoff(
+            journal_clock, final_stamp, public_stamp
+        )
+        final_proof = final_clock_proof.make_proof(
+            journal_clock,
+            final_stamp,
+            journal,
+            consume_clock=public_stamp,
+        )
         if final_at >= min(origin.deadline, owned.expires_at):
             raise PostG12AccountJoinError("post_g12_recheck_expired")
         _require_final_original_g1(packet, pre, final_at)

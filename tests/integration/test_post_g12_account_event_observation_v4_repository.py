@@ -14,7 +14,7 @@ from app.database.repositories.account_capture_journal import (
     LockedAccountSourceJoinReadback,
 )
 from app.database.repositories.qualification_ledger import QualificationLedgerRepository
-from app.domain.source_primitives import canonical
+from app.domain.source_primitives import canonical, decode, utc_from_ns
 from app.trade_qualification import account_capture
 from app.trade_qualification import post_g12_account_event_observation_v4 as bridge
 from app.trade_qualification import post_g12_account_history_join_v3 as joined
@@ -95,9 +95,22 @@ def public_source_inputs_fixture():
 
 @pytest.fixture(scope="module")
 async def public_journal_fixture(public_source_inputs_fixture, tmp_path_factory):
-    return await unit_v4.captured_public_journal.__wrapped__(
-        public_source_inputs_fixture, tmp_path_factory
-    )
+    # The shared unit packet deliberately has funding older than this
+    # candidate's original 30-second economics policy. Build a new immutable
+    # synthetic journal with a genuinely fresher exchange funding timestamp.
+    with pytest.MonkeyPatch.context() as patch:
+        clock, directory, harness, publications = unit_v4.public_fixture.setup(
+            patch, public_source_inputs_fixture[0]
+        )
+        unit_v4.public_fixture.fresh_funding_return(harness, clock)
+        result = await unit_v4.public_fixture.invoke(
+            tmp_path_factory.mktemp("v4-public-fresh-funding")
+        )
+        assert result.packet is not None and result.journal_sha256 is not None
+        harness.assert_closed()
+        assert not publications
+        unit_v4.public_fixture.empty_registries()
+        return result, dict(directory.content)
 
 
 async def test_v4_real_uid_lock_observation_waits_after_fresh_v3_receipt(
@@ -107,14 +120,34 @@ async def test_v4_real_uid_lock_observation_waits_after_fresh_v3_receipt(
     expected = bridge._original_binding(
         source.market, run, values, account_session, scope, HISTORY_ID
     )
-    logical_now = expected["deadline"] - timedelta(milliseconds=500)
-    validation_at = expected["deadline"] - timedelta(milliseconds=300)
+    public_stamp = decode(public_journal_fixture[1]["summary.json"])["completed"]
+    public_completed = utc_from_ns(public_stamp["utc_ns"])
+    public_started = joined._utc(
+        decode(public_journal_fixture[0].packet.packet_json)["started_at"]
+    )
+    # The original candidate lives for five minutes, while the public packet's
+    # measured freshness lease is much shorter. Keep the synthetic V3/DB
+    # sequence immediately after the actual journal's completed clock pair.
+    v3_observed = public_completed + timedelta(milliseconds=400)
+    logical_now = public_completed + timedelta(milliseconds=700)
+    validation_at = public_completed + timedelta(seconds=1)
+    assert (
+        source.evaluated_at
+        < public_started
+        < public_completed
+        < v3_observed
+        < logical_now
+        < validation_at
+        < expected["deadline"]
+    )
+    elapsed_ns = int((validation_at - public_completed).total_seconds() * 1_000_000_000)
     monkeypatch.setattr(
         bridge,
         "native_stamp",
         lambda: {
             "utc_ns": int(validation_at.timestamp()) * 1_000_000_000
-            + validation_at.microsecond * 1_000
+            + validation_at.microsecond * 1_000,
+            "monotonic_ns": public_stamp["monotonic_ns"] + elapsed_ns,
         },
     )
     ledger = QualificationLedgerRepository(database[1], clock=lambda: logical_now)
@@ -133,10 +166,27 @@ async def test_v4_real_uid_lock_observation_waits_after_fresh_v3_receipt(
     async def synthetic_v3(*args, **kwargs):
         assert args[4] == join_root
         assert kwargs["account_session"] is account_session
+        times = {
+            "publication_completed_at": source.evaluated_at,
+            "public_first_request_started_at": public_started,
+            "account_history_readback_started_at": public_completed
+            + timedelta(milliseconds=50),
+            "account_history_readback_completed_at": public_completed
+            + timedelta(milliseconds=60),
+            "account_history_replay_verified_at": public_completed
+            + timedelta(milliseconds=70),
+            "account_session_first_http_started_at": public_completed
+            + timedelta(milliseconds=80),
+            "public_only_recheck_observed_at": public_completed
+            + timedelta(milliseconds=180),
+            "observed_at": v3_observed,
+        }
         receipt = _publish_synthetic_artifacts(
             tmp_path,
             expected,
-            _receipt(expected),
+            _receipt(
+                expected, changed={name: at.isoformat() for name, at in times.items()}
+            ),
             public_journal_fixture,
             account_session,
         )

@@ -32,6 +32,7 @@ from app.trade_qualification import account_native_runtime as account_native
 from app.trade_qualification import account_observation_index as observed_account
 from app.trade_qualification import original_source_coordinator_v2 as original_source
 from app.trade_qualification import post_g12_account_join_v2 as prior
+from app.trade_qualification import post_g12_final_clock_proof_v1 as final_clock_proof
 from app.trade_qualification import post_g12_public_runtime as public_runtime
 from app.trade_qualification import post_g12_recheck_v2 as public_recheck
 from app.trade_qualification import public_market_collector_v2 as public_v2
@@ -43,6 +44,7 @@ from app.trade_qualification.one_shot import _original
 from app.trade_qualification.timing import event_identity
 
 _SCHEMA = "ctcc.post_g12_owned_public_account_history_diagnostic.v3"
+_CLOCK_SCHEMA = "ctcc.post_g12_owned_public_account_history_diagnostic.v3.clock1"
 _MAX_RECEIPT = 4096
 _MAX_NATIVE_JOIN_RECEIPT = 8192
 _HEX = re.compile(r"[a-f0-9]{64}\Z")
@@ -110,6 +112,7 @@ _FIELDS = frozenset(
         *_FALSE_FIELDS,
     }
 )
+_CLOCK_FIELDS = _FIELDS | {"candidate_deadline_at", "final_clock_proof"}
 
 
 class PostG12AccountHistoryJoinError(ValueError):
@@ -139,9 +142,14 @@ class PostG12OwnedPublicAccountHistoryDiagnosticV3:
             value = decode(self.receipt_json, _MAX_RECEIPT)
             if (
                 type(value) is not dict
-                or set(value) != _FIELDS
+                or set(value)
+                != (
+                    _CLOCK_FIELDS
+                    if value.get("schema_version") == _CLOCK_SCHEMA
+                    else _FIELDS
+                )
                 or canonical(value) != self.receipt_json
-                or value["schema_version"] != _SCHEMA
+                or value["schema_version"] not in (_SCHEMA, _CLOCK_SCHEMA)
                 or value["code"] not in _CODES
                 or value["admission"] != "DENY"
                 or any(value[field] is not False for field in _FALSE_FIELDS)
@@ -195,6 +203,32 @@ class PostG12OwnedPublicAccountHistoryDiagnosticV3:
             account_first = value["account_session_first_http_started_at"]
             recheck_at = value["public_only_recheck_observed_at"]
             observed_at = value["observed_at"]
+            if value["schema_version"] == _CLOCK_SCHEMA:
+                deadline_text = value["candidate_deadline_at"]
+                if deadline_text is not None and (
+                    _utc(deadline_text).isoformat() != deadline_text
+                ):
+                    raise ValueError
+                if (barrier is None) != (deadline_text is None):
+                    raise ValueError
+                proof = value["final_clock_proof"]
+                if proof is not None:
+                    cutoff = final_clock_proof.replay_proof(
+                        proof,
+                        expected_public_journal_sha256=value["public_journal_sha256"],
+                    )
+                    if (
+                        public_first is None
+                        or recheck_at is None
+                        or observed_at
+                        != utc_from_ns(proof["final_clock"]["utc_ns"]).isoformat()
+                        or cutoff < _utc(observed_at)
+                        or value["code"] == "joined_unqualified"
+                        and (deadline_text is None or cutoff >= _utc(deadline_text))
+                    ):
+                        raise ValueError
+                elif value["code"] == "joined_unqualified":
+                    raise ValueError
             claimed_times = tuple(
                 item
                 for item in (
@@ -557,12 +591,15 @@ async def publish_capture_public_account_history_v3(
     public_count = 0
     code = "new_g12_required"
     recheck_persisted = False
+    final_proof = None
+    candidate_deadline = None
+    journal_clock = journal_root_identity = None
 
     def finish():
         receipt = PostG12OwnedPublicAccountHistoryDiagnosticV3(
             canonical(
                 {
-                    "schema_version": _SCHEMA,
+                    "schema_version": _CLOCK_SCHEMA,
                     "code": code,
                     "report_id": intent.report_id,
                     "instrument_id": intent.instrument_id,
@@ -570,6 +607,9 @@ async def publish_capture_public_account_history_v3(
                     "original_entry": str(candidate.candidate_entry),
                     "original_stop_loss": str(candidate.stop_loss),
                     "original_take_profit": str(candidate.take_profit),
+                    "candidate_deadline_at": None
+                    if candidate_deadline is None
+                    else candidate_deadline.isoformat(),
                     "publication_completed_at": None
                     if barrier is None
                     else barrier.isoformat(),
@@ -591,6 +631,7 @@ async def publish_capture_public_account_history_v3(
                     "observed_at": None
                     if last is None
                     else utc_from_ns(last["utc_ns"]).isoformat(),
+                    "final_clock_proof": final_proof,
                     "public_request_count": public_count,
                     "public_only_recheck_code": recheck_code,
                     "public_only_recheck_observed_at": None
@@ -645,6 +686,7 @@ async def publish_capture_public_account_history_v3(
             or origin.pre_evidence_sha256 != pre.evaluation_sha256
         ):
             raise PostG12AccountHistoryJoinError("post_g12_history_original_changed")
+        candidate_deadline = origin.deadline
         barrier = origin.publication_completed_at
         pins["g12_evidence_sha256"] = evidence.evaluation_sha256
         pins["g12_report_sha256"] = evidence.receipt.report_sha256
@@ -672,6 +714,14 @@ async def publish_capture_public_account_history_v3(
         public_first, public_count = prior._public_request_starts(packet, barrier)
         pins["public_packet_sha256"] = packet.bundle_sha256
         pins["public_journal_sha256"] = journal
+        journal_clock, journal_root_identity = (
+            final_clock_proof.read_persisted_public_clock(
+                public_root,
+                expected_journal_sha256=journal,
+                expected_packet_sha256=packet.bundle_sha256,
+            )
+        )
+        validate_stamps((journal_clock, public_stamp))
         current_started = native_stamp()
         validate_stamps((last, current_started))
         last = current_started
@@ -873,10 +923,31 @@ async def publish_capture_public_account_history_v3(
         recheck_code = decode(replay.receipt_json)["code"]
         recheck_at = checked_at
         recheck_persisted = True
+        replayed_clock, replayed_identity = (
+            final_clock_proof.read_persisted_public_clock(
+                public_root,
+                expected_journal_sha256=journal,
+                expected_packet_sha256=packet.bundle_sha256,
+                expected_root_identity=journal_root_identity,
+            )
+        )
+        if (
+            replayed_clock != journal_clock
+            or replayed_identity != journal_root_identity
+        ):
+            raise PostG12AccountHistoryJoinError("post_g12_public_clock_changed")
         final_stamp = native_stamp()
         validate_stamps((last, final_stamp))
         last = final_stamp
-        final_at = prior._monotonic_final_freshness_at(public_stamp, final_stamp)
+        final_at = final_clock_proof.effective_cutoff(
+            journal_clock, final_stamp, public_stamp
+        )
+        final_proof = final_clock_proof.make_proof(
+            journal_clock,
+            final_stamp,
+            journal,
+            consume_clock=public_stamp,
+        )
         if final_at >= origin.deadline:
             raise PostG12AccountHistoryJoinError("post_g12_history_final_expired")
         prior._require_final_original_g1(packet, pre, final_at)

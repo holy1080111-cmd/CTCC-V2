@@ -104,6 +104,9 @@ async def test_v3_g12_public_then_committed_history_and_fresh_current(
     source_inputs_fixture, tmp_path, monkeypatch, fault, expected
 ):
     source, values, run = source_inputs_fixture
+    # The synthetic journal uses in-memory bytes; give its native root an
+    # identity for the source-bound final clock readback.
+    (tmp_path / "public").mkdir()
     (tmp_path / "recheck").mkdir()
     (tmp_path / "join").mkdir()
     clock, _, harness, _ = setup(monkeypatch, source)
@@ -299,6 +302,33 @@ async def test_v3_g12_public_then_committed_history_and_fresh_current(
     )
     receipt = decode(result.receipt_json)
     assert receipt["code"] == expected
+    assert receipt["schema_version"] == joined._CLOCK_SCHEMA
+    if fault is None:
+        proof = receipt["final_clock_proof"]
+        assert proof["public_journal_sha256"] == receipt["public_journal_sha256"]
+        assert proof["consume_clock"] is not None
+        cutoff = joined.final_clock_proof.replay_proof(
+            proof,
+            expected_public_journal_sha256=receipt["public_journal_sha256"],
+        )
+        assert (
+            joined._utc(receipt["observed_at"])
+            <= cutoff
+            < joined._utc(receipt["candidate_deadline_at"])
+        )
+        with pytest.raises(joined.PostG12AccountHistoryJoinError):
+            joined.PostG12OwnedPublicAccountHistoryDiagnosticV3(
+                canonical({**receipt, "candidate_deadline_at": cutoff.isoformat()})
+            )
+        forged = {
+            **receipt,
+            "final_clock_proof": {
+                **proof,
+                "effective_cutoff_at": "1970-01-01T00:00:00+00:00",
+            },
+        }
+        with pytest.raises(joined.PostG12AccountHistoryJoinError):
+            joined.PostG12OwnedPublicAccountHistoryDiagnosticV3(canonical(forged))
     assert calls == ["account_after_public"]
     assert controlled._used is True
     assert (

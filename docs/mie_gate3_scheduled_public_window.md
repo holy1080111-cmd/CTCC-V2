@@ -59,3 +59,33 @@ There is no live public acquisition or real candidate in the tests for this
 module. Focused synthetic tests cover default-off behavior, exact four-ordinal
 continuation and restart readback, skipped/early/late minutes, ambiguous result,
 crash after claim, duplicate source identity and changed external pins.
+
+## Stateless one-shot invocation boundary
+
+`app.mie.validation.scheduled_public_one_shot.drive_scheduled_public_minute_once`
+is a default-off entry point for a separately timed controller. Each call must
+provide the exact externally retained DB0030 seal, coordinate-plan and DB0029
+schedule hashes, the selected ordinal, every prior receipt SHA-256 in order, and
+the pre-existing service-owned store root. It reopens the native store rather
+than carrying an in-memory window across process restarts. It neither creates a
+seal/store nor waits, loops, schedules a future call, retries, or changes source.
+
+Before consuming an ordinal, it replays the existing receipt prefix and reads
+the committed seal plus its separate observer ACK and the claimed schedule plus
+its separate ACK. Missing or mismatched database evidence denies without a new
+local claim. The owned minute capture repeats the same database read after the
+claim, so the first preflight cannot grant stale authority across awaits. The
+native source clock is checked inside that owned path. An early or late enabled
+call is therefore published as a one-use `not_due` or `late` incomplete receipt;
+unknown source/database results and a crash retain their original claim and
+block duplicate capture. A second process reopening the store needs the
+independently retained previous receipt pins, not a hash discovered from local
+files after the fact.
+
+This is an offline-tested invocation contract, not a deployed timer or real
+capture. Its complete-window result remains `INCOMPLETE`, computational,
+predictive-ineligible and without execution authority. Independently protected
+clock and journal custody, a controlled first evaluator read, a real sealed
+Candidate, complete multi-instrument forward data and unexposed OOS windows
+remain unproven. The focused tests use synthetic service responses and make no
+network request.

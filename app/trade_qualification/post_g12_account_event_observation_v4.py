@@ -29,6 +29,7 @@ from app.trade_qualification import account_current_source_verifier as current_s
 from app.trade_qualification import account_observation_index as observed_account
 from app.trade_qualification import current_economics_v2 as current_economics
 from app.trade_qualification import post_g12_account_history_join_v3 as joined
+from app.trade_qualification import post_g12_final_clock_proof_v1 as final_clock_proof
 from app.trade_qualification import public_source_runtime as source_runtime
 from app.trade_qualification.account_capture_journal import digest
 from app.trade_qualification.event_observation import (
@@ -82,6 +83,7 @@ _SOURCE_PINS = (
 _STATES = frozenset({"reserved", "consumed", "uncertain", "reconciled_flat"})
 _HEX = re.compile(r"[a-f0-9]{64}\Z")
 _SCHEMA = "ctcc.post_g12_account_event_observation.v4"
+_CLOCK_SCHEMA = "ctcc.post_g12_account_event_observation.v4.clock1"
 _MAX_RECEIPT = 4096
 
 
@@ -127,6 +129,8 @@ class PostG12AccountEventObservationV4:
     account_db_readback_sha256: str | None = None
     ledger_observation_sha256: str | None = None
     ledger_event_state: str | None = None
+    final_clock_proof_json: bytes | None = None
+    receipt_schema_version: str = _SCHEMA
     admission: Literal["DENY"] = "DENY"
     original_source_verified: Literal[False] = False
     account_complete: Literal[False] = False
@@ -171,6 +175,7 @@ class PostG12AccountEventObservationV4:
                 type(self.account_db_readback_sha256) is not str
                 or _HEX.fullmatch(self.account_db_readback_sha256) is None
             )
+            or self.receipt_schema_version not in (_SCHEMA, _CLOCK_SCHEMA)
             or self.admission != "DENY"
             or any(
                 getattr(self, name) is not False
@@ -258,6 +263,44 @@ class PostG12AccountEventObservationV4:
                 self.v3_observed_at is None
             ):
                 raise ValueError
+            if self.receipt_schema_version == _SCHEMA:
+                if self.final_clock_proof_json is not None:
+                    raise ValueError
+            else:
+                proof = (
+                    None
+                    if self.final_clock_proof_json is None
+                    else decode(self.final_clock_proof_json, 1024)
+                )
+                if proof is not None:
+                    cutoff = final_clock_proof.replay_proof(
+                        proof,
+                        expected_public_journal_sha256=self.public_journal_sha256,
+                    )
+                    if self.v3_observed_at is None or cutoff < joined._utc(
+                        self.v3_observed_at
+                    ):
+                        raise ValueError
+                    if (
+                        self.code
+                        in {
+                            "public_g1_rejected_at_event_readback",
+                            "public_transport_profile_rejected_at_event_readback",
+                            "public_economics_quote_stale_at_event_readback",
+                            "original_event_already_recorded",
+                            "trusted_execution_inputs_missing",
+                        }
+                        and cutoff >= deadline
+                    ):
+                        raise ValueError
+                elif self.code in {
+                    "public_g1_rejected_at_event_readback",
+                    "public_transport_profile_rejected_at_event_readback",
+                    "public_economics_quote_stale_at_event_readback",
+                    "original_event_already_recorded",
+                    "trusted_execution_inputs_missing",
+                }:
+                    raise ValueError
             if len(canonical(_receipt_document(self))) > _MAX_RECEIPT:
                 raise ValueError
         except Exception:  # noqa: BLE001 -- bounded static rejection
@@ -269,7 +312,14 @@ class PostG12AccountEventObservationV4:
             raise PostG12AccountEventObservationError("v4_exact_receipt_required")
         document = _receipt_document(self)
         PostG12AccountEventObservationV4(
-            **{name: document[name] for name in _RECEIPT_VALUE_FIELDS}
+            **{name: document[name] for name in _RECEIPT_VALUE_FIELDS},
+            receipt_schema_version=document["schema_version"],
+            final_clock_proof_json=(
+                None
+                if "final_clock_proof" not in document
+                or document["final_clock_proof"] is None
+                else canonical(document["final_clock_proof"])
+            ),
         )
         return canonical(document)
 
@@ -278,15 +328,27 @@ class PostG12AccountEventObservationV4:
         return sha(self.receipt_json)
 
 
-_RECEIPT_VALUE_FIELDS = tuple(PostG12AccountEventObservationV4.__dataclass_fields__)
+_RECEIPT_VALUE_FIELDS = tuple(
+    name
+    for name in PostG12AccountEventObservationV4.__dataclass_fields__
+    if name not in {"final_clock_proof_json", "receipt_schema_version"}
+)
 _RECEIPT_FIELDS = frozenset(("schema_version", *_RECEIPT_VALUE_FIELDS))
+_CLOCK_RECEIPT_FIELDS = _RECEIPT_FIELDS | {"final_clock_proof"}
 
 
 def _receipt_document(value: PostG12AccountEventObservationV4) -> dict:
-    return {
-        "schema_version": _SCHEMA,
+    document = {
+        "schema_version": value.receipt_schema_version,
         **{name: getattr(value, name) for name in _RECEIPT_VALUE_FIELDS},
     }
+    if value.receipt_schema_version == _CLOCK_SCHEMA:
+        document["final_clock_proof"] = (
+            None
+            if value.final_clock_proof_json is None
+            else decode(value.final_clock_proof_json, 1024)
+        )
+    return document
 
 
 def _receipt_from_bytes(raw: bytes) -> PostG12AccountEventObservationV4:
@@ -296,13 +358,25 @@ def _receipt_from_bytes(raw: bytes) -> PostG12AccountEventObservationV4:
         document = decode(raw, _MAX_RECEIPT)
         if (
             type(document) is not dict
-            or set(document) != _RECEIPT_FIELDS
-            or document["schema_version"] != _SCHEMA
+            or set(document)
+            != (
+                _CLOCK_RECEIPT_FIELDS
+                if document.get("schema_version") == _CLOCK_SCHEMA
+                else _RECEIPT_FIELDS
+            )
+            or document["schema_version"] not in (_SCHEMA, _CLOCK_SCHEMA)
             or canonical(document) != raw
         ):
             raise ValueError
         result = PostG12AccountEventObservationV4(
-            **{name: document[name] for name in _RECEIPT_VALUE_FIELDS}
+            **{name: document[name] for name in _RECEIPT_VALUE_FIELDS},
+            receipt_schema_version=document["schema_version"],
+            final_clock_proof_json=(
+                None
+                if "final_clock_proof" not in document
+                or document["final_clock_proof"] is None
+                else canonical(document["final_clock_proof"])
+            ),
         )
         if result.receipt_json != raw:
             raise ValueError
@@ -352,6 +426,14 @@ def _observation_bytes_for_receipt(
             < joined._utc(receipt.candidate_deadline_at)
         ):
             raise ValueError
+        if receipt.final_clock_proof_json is not None:
+            proof = decode(receipt.final_clock_proof_json, 1024)
+            cutoff = final_clock_proof.replay_proof(
+                proof,
+                expected_public_journal_sha256=receipt.public_journal_sha256,
+            )
+            if cutoff < replayed.received_at:
+                raise ValueError
         return raw
     except Exception:  # noqa: BLE001 -- never disclose account or SQL details
         raise PostG12AccountEventObservationError("v4_observation_invalid") from None
@@ -530,6 +612,11 @@ def _bound_v3(value, expected):
         raise PostG12AccountEventObservationError("v4_receipt_original_changed")
     if value.get("code") != "joined_unqualified":
         return False
+    if (
+        value.get("schema_version") == joined._CLOCK_SCHEMA
+        and value.get("candidate_deadline_at") != expected["deadline"].isoformat()
+    ):
+        raise PostG12AccountEventObservationError("v4_receipt_original_changed")
     if (
         value.get("public_only_recheck_code")
         != "projected_math_consistent_account_path_required"
@@ -966,6 +1053,7 @@ async def publish_capture_inspect_history_event_v4(
         "original_event_key": expected["original_event_key"],
         "reservation_id": reservation_id(scope, expected["original_event_key"]),
         "candidate_deadline_at": expected["deadline"].isoformat(),
+        "receipt_schema_version": _CLOCK_SCHEMA,
     }
     try:
         for root in (evidence_root, public_root, account_root, recheck_root, join_root):
@@ -1085,11 +1173,19 @@ async def publish_capture_inspect_history_event_v4(
                 root_identity=public_root_identity,
                 with_stamp=True,
             )
+            if (
+                value["schema_version"] == joined._CLOCK_SCHEMA
+                and value["final_clock_proof"]["public_clock"] != public_stamp
+            ):
+                raise PostG12AccountEventObservationError(
+                    "v4_public_clock_anchor_changed"
+                )
         except PostG12AccountEventObservationError:
             result = PostG12AccountEventObservationV4(
                 code="v3_artifact_readback_invalid", **base, **pins
             )
     if result is None:
+        final_proof_json = None
         try:
             account_db_pin, account_db_received_at = await _read_bound_account_sources(
                 account_root,
@@ -1166,10 +1262,19 @@ async def publish_capture_inspect_history_event_v4(
         else:
             try:
                 final_stamp = native_stamp()
-                validation_at = joined.prior._monotonic_final_freshness_at(
-                    public_stamp, final_stamp
+                final_proof = final_clock_proof.make_proof(
+                    public_stamp,
+                    final_stamp,
+                    value["public_journal_sha256"],
                 )
-                if not observation.received_at <= validation_at < expected["deadline"]:
+                validation_at = final_clock_proof.replay_proof(
+                    final_proof,
+                    expected_public_journal_sha256=value["public_journal_sha256"],
+                )
+                if validation_at < observation.received_at:
+                    raise ValueError("v4_public_validation_clock_invalid")
+                final_proof_json = canonical(final_proof)
+                if validation_at >= expected["deadline"]:
                     raise ValueError("v4_public_validation_clock_invalid")
             except asyncio.CancelledError:
                 raise
@@ -1221,6 +1326,7 @@ async def publish_capture_inspect_history_event_v4(
             ledger_observation_sha256=observation.sha256,
             ledger_event_state=state,
             v3_observed_at=value["observed_at"],
+            final_clock_proof_json=final_proof_json,
             **base,
             **pins,
         )
