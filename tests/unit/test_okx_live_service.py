@@ -1065,6 +1065,27 @@ async def test_continuous_reconcile_uses_persisted_exact_protection_geometry() -
 
 
 @pytest.mark.asyncio
+async def test_continuous_reconcile_rejects_oversized_stale_protection() -> None:
+    service, read, _, intents, _ = service_fixture()
+    await seed_legacy_local_lease_for_downstream_unit_test(service)
+    result = await service.place_order(live_order(size=D("0.2")))
+    assert result.final_state_confirmed is True
+    assert intents.rows["CTCCLabcdef"]["expected_protection_size"] == D("0.2")
+
+    # A later position reduction cannot leave the original 0.2-contract OCO
+    # certified as the exact protection for a 0.1-contract position.
+    read.position_rows[0]["pos"] = "0.1"
+    read.position_rows[0]["availPos"] = "0.1"
+    await service.reconcile()
+
+    assert service.arm_status().emergency_stop is True
+    assert service.arm_status().last_error == "live_position_protection_not_confirmed"
+    mirror = service.mirror_repository
+    assert mirror is not None
+    assert mirror.safety_latched is True
+
+
+@pytest.mark.asyncio
 async def test_reconcile_engages_stop_for_untrusted_unprotected_position() -> None:
     service, read, _, _, _ = service_fixture()
     read.position_rows = [

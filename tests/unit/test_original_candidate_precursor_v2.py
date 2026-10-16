@@ -64,9 +64,19 @@ HISTORY_CASES = tuple(
 def v2_market(market):
     # This synthetic source is declared before raw capture. Its reported SWAP
     # quote turnover must imply a trade price inside each candle's OHLC.
+    # Rebuild covered parent quote turnover from the child tape after changing
+    # prices; replacing every parent with volume_currency * parent.close would
+    # contradict the actual sum of the child quote turnovers.
     for rows in market.candles.values():
         for row in rows:
             row.volume_quote = row.volume_currency * row.close
+    for parent, child in (("15m", "5m"), ("1H", "15m"), ("4H", "1H")):
+        prefix._aggregate_overlap(
+            market.candles[parent],
+            market.candles[child],
+            BAR_SECONDS[parent],
+            BAR_SECONDS[child],
+        )
     values = market.ticker.model_dump()
     if type(market.ticker) is not SwapTickerV2:
         contracts = values.pop("volume_24h")

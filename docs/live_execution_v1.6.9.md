@@ -175,7 +175,10 @@ and the exact active OKX OCO protection in the OKX UI.
 
 CTCC requires a unique active protection Algo with the expected client ID,
 instrument, side, position side, margin mode, mark-trigger TP/SL geometry,
-market execution prices, and covered size. A delayed OKX Algo appearance is
+market execution prices, and covered size. The active Algo `sz` must equal the
+absolute current position size in SWAP contracts and cannot exceed the
+persisted intent size; a stale, oversized OCO is a mismatch, even if it would
+appear to cover the smaller position. A delayed OKX Algo appearance is
 bounded-polled; duplicates or mismatches engage the durable safety latch.
 
 Do not retry an ambiguous submission. A canceled order with any accumulated

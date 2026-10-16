@@ -1596,7 +1596,8 @@ class OkxLiveService:
             and item.take_profit_order_price == D("-1")
             and item.stop_loss_order_price == D("-1")
             and position_size > 0
-            and position_size <= item.size <= expected_size
+            and item.size == position_size
+            and item.size <= expected_size
             and item.actual_size == 0
             and item.trigger_time is None
             and item.failure_code is None
