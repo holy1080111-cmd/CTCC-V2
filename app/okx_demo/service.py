@@ -902,8 +902,10 @@ class OkxDemoService:
             row.get("instId") != request.instrument_id
             or row.get("side") != expected_side
             or row.get("posSide") != expected_position_side
+            or row.get("tdMode") != request.margin_mode
+            or (expected_position_side == "net" and row.get("reduceOnly") != "true")
             or row.get("state") != "live"
-            or row.get("ordType") not in {"oco", "conditional"}
+            or row.get("ordType") != "oco"
         ):
             return False
         try:

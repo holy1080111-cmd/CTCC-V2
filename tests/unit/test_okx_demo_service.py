@@ -121,6 +121,8 @@ class FakePrivate:
             "sz": self.placed_payload["sz"],
             "side": "sell" if self.placed_payload["side"] == "buy" else "buy",
             "posSide": self.placed_payload["posSide"],
+            "tdMode": self.placed_payload["tdMode"],
+            "reduceOnly": "true",
             "slTriggerPx": attached["slTriggerPx"],
             "tpTriggerPx": attached["tpTriggerPx"],
             "slTriggerPxType": attached["slTriggerPxType"],
@@ -591,12 +593,16 @@ async def test_protection_confirmation_requires_exact_unique_client_id() -> None
         ("side", "buy"),
         ("posSide", "long"),
         ("posSide", "short"),
+        ("tdMode", "isolated"),
+        ("reduceOnly", "false"),
+        ("reduceOnly", 1),
         ("attachAlgoClOrdId", "CONFLICTINGPROTECTIONID"),
         ("state", "canceled"),
         ("state", "effective"),
         ("state", "order_failed"),
         ("state", ""),
         ("ordType", "trigger"),
+        ("ordType", "conditional"),
         ("slOrdPx", "90"),
         ("tpOrdPx", "110"),
         ("slOrdPx", "NaN"),
@@ -607,7 +613,7 @@ async def test_protection_confirmation_requires_exact_unique_client_id() -> None
 @pytest.mark.asyncio
 async def test_protection_confirmation_rejects_mismatched_protection(
     field: str,
-    value: str,
+    value: object,
 ) -> None:
     private = FakePrivate()
     private.pending_algo_row_overrides = {field: value}
@@ -628,6 +634,8 @@ async def test_protection_confirmation_rejects_mismatched_protection(
         "sz",
         "side",
         "posSide",
+        "tdMode",
+        "reduceOnly",
         "slTriggerPx",
         "state",
         "ordType",

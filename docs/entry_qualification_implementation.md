@@ -314,6 +314,11 @@ matching SL/TP and mark triggers. Missing raw position-mode evidence is rejected
 Demo post-submit readback also requires both SL/TP execution prices to equal
 the submitted market sentinel `-1`; missing, non-finite or limit execution
 prices leave protection unconfirmed and trigger the automation protection stop.
+It requires an active `oco` Algo: OKX documents that a net `conditional` Algo
+carrying both TP and SL ignores the TP leg, so matching price fields alone do
+not establish two-sided protection. Readback also requires the submitted trade
+mode and, in net mode, explicit `reduceOnly=true`; missing or conflicting fields
+leave protection unconfirmed.
 The combined existing Demo suites have 182 passing tests. These mocked writes
 are not exchange submissions. No flags, deployment files or live services were
 changed. Nine existing strategy files also contain owned formatting-only changes,
