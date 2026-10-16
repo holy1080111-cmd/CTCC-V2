@@ -213,3 +213,58 @@ def test_parse_ticker_spread() -> None:
     )
     assert ticker.spread == Decimal(2)
     assert ticker.spread_pct == Decimal(2)
+
+
+def _ticker_row(inst_type: str, instrument_id: str) -> dict[str, str]:
+    return {
+        "instType": inst_type,
+        "instId": instrument_id,
+        "last": "100",
+        "bidPx": "99",
+        "askPx": "101",
+        "bidSz": "2",
+        "askSz": "3",
+        "open24h": "90",
+        "high24h": "110",
+        "low24h": "80",
+        "vol24h": "1000",
+        "volCcy24h": "12",
+        "ts": "1750000000000",
+    }
+
+
+@pytest.mark.parametrize(
+    "inst_type,instrument_id",
+    [
+        ("FUTURES", "BTC-USDT-251226"),
+        ("OPTION", "BTC-USD-251226-100000-C"),
+        ("EVENTS", "BTC-USDT"),
+        ("UNKNOWN", "BTC-USDT"),
+    ],
+)
+def test_parse_ticker_rejects_unsupported_volume_units(
+    inst_type: str, instrument_id: str
+) -> None:
+    with pytest.raises(ValueError, match="ticker_instrument_type_invalid"):
+        parse_ticker(_ticker_row(inst_type, instrument_id))
+
+
+def test_parse_ticker_rejects_missing_instrument_type() -> None:
+    row = _ticker_row("SPOT", "BTC-USDT")
+    del row["instType"]
+    with pytest.raises(ValueError, match="ticker_instrument_type_invalid"):
+        parse_ticker(row)
+
+
+@pytest.mark.parametrize("inst_type", ["SPOT", "MARGIN"])
+def test_parse_ticker_preserves_spot_margin_quote_volume(inst_type: str) -> None:
+    ticker = parse_ticker(_ticker_row(inst_type, "BTC-USDT"))
+    assert ticker.volume_24h == Decimal(1000)
+    assert ticker.volume_quote_24h == Decimal(12)
+
+
+def test_parse_ticker_swap_does_not_infer_quote_volume() -> None:
+    ticker = parse_ticker(_ticker_row("SWAP", "BTC-USDT-SWAP"))
+    assert ticker.volume_contracts_24h == Decimal(1000)
+    assert ticker.volume_currency_24h == Decimal(12)
+    assert ticker.volume_quote_24h is None

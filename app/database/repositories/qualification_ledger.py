@@ -1399,12 +1399,28 @@ class QualificationLedgerRepository:
         risks += [Fraction(item.coverage.risk_amount) for item in active]
         margins += [Fraction(item.coverage.margin_amount) for item in active]
         risk, margin = Fraction(coverage.risk_amount), Fraction(coverage.margin_amount)
+        instrument_margins: dict[str, Fraction] = {}
+        for item in exposures:
+            instrument_margins[item.instrument_id] = instrument_margins.get(
+                item.instrument_id, Fraction(0)
+            ) + Fraction(item.margin)
+        for item in active:
+            instrument_margins[item.instrument_id] = instrument_margins.get(
+                item.instrument_id, Fraction(0)
+            ) + Fraction(item.coverage.margin_amount)
+        instrument_id = request.risk_inputs.instrument.instrument_id
+        instrument_margins[instrument_id] = (
+            instrument_margins.get(instrument_id, Fraction(0)) + margin
+        )
         if (
             risk > equity * min(Fraction(policy.risk_per_trade_pct), MAX_TRADE_RISK_PCT)
             or sum(risks) + risk
             > equity
             * min(Fraction(policy.max_portfolio_risk_pct), MAX_PORTFOLIO_STOP_RISK_PCT)
-            or margin > MAX_SINGLE_POSITION_MARGIN_USDT
+            or any(
+                used > MAX_SINGLE_POSITION_MARGIN_USDT
+                for used in instrument_margins.values()
+            )
             or sum(margins) + margin
             > equity
             * min(Fraction(policy.max_portfolio_margin_pct), MAX_PORTFOLIO_MARGIN_PCT)

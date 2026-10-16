@@ -120,6 +120,8 @@ def parse_swap_ticker_v2(row: dict[str, Any]) -> SwapTickerV2:
 
 
 def parse_ticker(row: dict[str, Any]) -> Ticker | SwapTickerV2:
+    if type(row) is not dict or row.get("instType") not in {"SPOT", "MARGIN", "SWAP"}:
+        raise ValueError("ticker_instrument_type_invalid")
     if row.get("instType") == "SWAP" or str(row.get("instId", "")).endswith("-SWAP"):
         return parse_swap_ticker_v2(row)
     return Ticker(

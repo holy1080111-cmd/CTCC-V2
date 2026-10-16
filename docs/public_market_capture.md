@@ -85,6 +85,9 @@ OHLC volCcy、ticker volCcy24h、OI oiCcy 以本位幣計；OHLC volCcyQuote 是
 `volume_quote_24h=None`。新 SWAP parser 要求原始欄位，拒絕 missing／空值／
 非有限數值，不以 0 或 last×base 推估。Spot／歷史 v1 DTO 原序列化鍵保持不變；
 混入新版欄位或未知 schema 不能被 union replay 靜默丟棄。
+通用 ticker parser 另要求明確 `instType` 為 SPOT、MARGIN 或 SWAP；
+FUTURES、OPTION、EVENTS、未知或缺失類型直接拒絕，避免把其他衍生品的
+`volCcy24h` 誤標為報價幣成交量。這項防錯不增加可信來源或交易權限。
 
 `market_bridge.public_market_snapshot` 在任何 serialization 前完整重驗原始
 packet 與外部 bundle pin，產生新的 domain copy；`qualify_public_market` 再執行

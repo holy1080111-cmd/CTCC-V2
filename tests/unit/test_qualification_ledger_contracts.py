@@ -1,7 +1,7 @@
 """Pure ledger coverage/replay tests; synthetic account claims are not authority."""
 
 from datetime import UTC, datetime, timedelta, timezone, tzinfo
-from decimal import Context, Decimal, Inexact, localcontext
+from decimal import ROUND_DOWN, Context, Decimal, Inexact, localcontext
 from fractions import Fraction
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
@@ -33,7 +33,7 @@ from app.trade_qualification.reservations import (
     validate_claims,
 )
 from tests.unit.qualification_ledger_fixtures import ledger_fixture
-from tests.unit.test_qualification_portfolio import reservation
+from tests.unit.test_qualification_portfolio import position, reservation
 
 D = Decimal
 
@@ -127,9 +127,25 @@ def test_ledger_rounded_aggregate_margin_respects_nonwaivable_sixty_percent(
     held_margin = D("600") - coverage.margin_amount
     if over:
         held_margin += D("0.00000000000000000001")
-    held = reservation(risk_amount=D("0"), margin=held_margin)
+    first_margin = (held_margin / 2).quantize(
+        D("0.00000000000000000001"), rounding=ROUND_DOWN
+    )
+    held = (
+        reservation(
+            reservation_id="other-pending-1",
+            instrument_id="ETH-USDT-SWAP",
+            risk_amount=D("0"),
+            margin=first_margin,
+        ),
+        reservation(
+            reservation_id="other-pending-2",
+            instrument_id="SOL-USDT-SWAP",
+            risk_amount=D("0"),
+            margin=held_margin - first_margin,
+        ),
+    )
     snapshot = fixture.claims.account.model_copy(
-        update={"pending_reservations": (held,), "pending_reservation_count": 1}
+        update={"pending_reservations": held, "pending_reservation_count": 2}
     )
     claims = fixture.claims.model_copy(update={"account": snapshot})
     if over:
@@ -171,6 +187,111 @@ def test_ledger_single_position_bucket_is_exact_even_with_loose_policy(
             QualificationLedgerRepository._coverage_caps(
                 fixture.request, fixture.claims, (), coverage
             )
+
+
+@pytest.mark.parametrize("source", ("positions", "pending_reservations"))
+@pytest.mark.parametrize("same_instrument", (True, False))
+def test_ledger_bucket_counts_existing_margin_by_swap(fixture, source, same_instrument):
+    coverage, _ = prepare_reservation(
+        fixture.request, fixture.claims, (), observed_at=fixture.now
+    )
+    existing = (position if source == "positions" else reservation)(
+        instrument_id=(
+            fixture.request.risk_inputs.instrument.instrument_id
+            if same_instrument
+            else "ETH-USDT-SWAP"
+        ),
+        margin=D("300"),
+        notional=D("600"),
+        risk_amount=D("0"),
+    )
+    count_field = (
+        "position_count" if source == "positions" else "pending_reservation_count"
+    )
+    snapshot = fixture.claims.account.model_copy(
+        update={source: (existing,), count_field: 1}
+    )
+    claims = fixture.claims.model_copy(update={"account": snapshot})
+    if same_instrument:
+        with pytest.raises(
+            QualificationLedgerError, match="ledger_rounded_coverage_exceeds_caps"
+        ):
+            QualificationLedgerRepository._coverage_caps(
+                fixture.request, claims, (), coverage
+            )
+    else:
+        QualificationLedgerRepository._coverage_caps(
+            fixture.request, claims, (), coverage
+        )
+
+
+def test_ledger_existing_other_swap_over_bucket_denies_new_order(fixture):
+    coverage, _ = prepare_reservation(
+        fixture.request, fixture.claims, (), observed_at=fixture.now
+    )
+    existing = position(
+        instrument_id="ETH-USDT-SWAP",
+        margin=D("301"),
+        notional=D("602"),
+        risk_amount=D("0"),
+    )
+    claims = fixture.claims.model_copy(
+        update={
+            "account": fixture.claims.account.model_copy(
+                update={"positions": (existing,), "position_count": 1}
+            )
+        }
+    )
+    with pytest.raises(
+        QualificationLedgerError, match="ledger_rounded_coverage_exceeds_caps"
+    ):
+        QualificationLedgerRepository._coverage_caps(
+            fixture.request, claims, (), coverage
+        )
+
+
+def test_ledger_bucket_counts_active_hold_not_only_claimed_pending(fixture):
+    coverage, _ = prepare_reservation(
+        fixture.request, fixture.claims, (), observed_at=fixture.now
+    )
+    existing = position(
+        instrument_id=fixture.request.risk_inputs.instrument.instrument_id,
+        margin=D("300") - coverage.margin_amount,
+        notional=D("600"),
+        risk_amount=D("0"),
+    )
+    claims = fixture.claims.model_copy(
+        update={
+            "account": fixture.claims.account.model_copy(
+                update={"positions": (existing,), "position_count": 1}
+            )
+        }
+    )
+    QualificationLedgerRepository._coverage_caps(fixture.request, claims, (), coverage)
+    active = ReservationReceipt(
+        scope=fixture.request.scope,
+        reservation_id="b" * 64,
+        original_event_key=fixture.request.origin.original_event_key,
+        report_id=fixture.request.origin.candidate.report_id,
+        instrument_id=fixture.request.risk_inputs.instrument.instrument_id,
+        direction=fixture.request.origin.candidate.direction,
+        correlation_group=fixture.request.risk_inputs.instrument.correlation_group,
+        request_sha256=digest(fixture.request),
+        coverage=coverage,
+        state="reserved",
+        state_revision=1,
+        account_revision=1,
+        ledger_revision=2,
+        created_at=fixture.now,
+        updated_at=fixture.now,
+        deadline=fixture.request.origin.deadline,
+    )
+    with pytest.raises(
+        QualificationLedgerError, match="ledger_rounded_coverage_exceeds_caps"
+    ):
+        QualificationLedgerRepository._coverage_caps(
+            fixture.request, claims, (active,), coverage
+        )
 
 
 def test_ledger_usdt_bucket_does_not_guess_an_fx_conversion(fixture):

@@ -165,12 +165,17 @@ tests, but that path is not the new qualification/R6 handoff.
 The pure portfolio evaluator and account-locked reservation coverage now also
 apply fixed, non-waivable arithmetic ceilings even if a supplied policy is
 looser: upward-rounded risk per new trade is at most 0.5% of settlement equity,
-all open stop-risk plus the new hold is at most 1%, the new position's rounded
-margin is at most 300 USDT, and aggregate position/pending/local-held margin
-plus the new hold is at most 60%. A stricter supplied policy still applies.
+all open stop-risk plus the new hold is at most 1%, and aggregate
+position/pending/local-held margin plus the new hold is at most 60%. Position,
+pending and locally held margin are also combined by exact SWAP instrument:
+every instrument, including the new hold, must remain at or below 300 USDT.
+An already over-budget instrument denies a new reservation even when the new
+order names a different SWAP. A stricter supplied policy still applies.
 The pure evaluator uses the same upward 1e-20 amount quantum as the ledger;
 the ledger independently repeats the checks against its durable active holds
-under the account lock. A settlement currency other than USDT is denied for
+under the account lock. This is a conservative instrument-level ceiling because
+several small orders can merge into one exchange position. A settlement
+currency other than USDT is denied for
 the fixed bucket because no verified conversion source is present. These are
 arithmetic safety ceilings over supplied account claims, not proof of their
 source authenticity or a selected runtime setting. In particular, a configured

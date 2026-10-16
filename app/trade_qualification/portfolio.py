@@ -606,6 +606,17 @@ def evaluate_portfolio(
         existing_margin = sum(
             (Fraction(item.margin) for item in exposures), Fraction(0)
         )
+        # One SWAP position can be built from several pending orders or local
+        # holds. A per-order bucket check alone would allow that position to
+        # exceed its 300-USDT margin ceiling while aggregate margin stays low.
+        instrument_margins: dict[str, Fraction] = {}
+        for item in exposures:
+            instrument_margins[item.instrument_id] = instrument_margins.get(
+                item.instrument_id, Fraction(0)
+            ) + Fraction(item.margin)
+        instrument_margins[instrument_id] = (
+            instrument_margins.get(instrument_id, Fraction(0)) + reserved_margin
+        )
         same_direction_notional = sum(
             (
                 Fraction(item.notional)
@@ -643,7 +654,10 @@ def evaluate_portfolio(
                 "trade_risk_limit_exceeded",
             ),
             (
-                reserved_margin > MAX_SINGLE_POSITION_MARGIN_USDT,
+                any(
+                    used > MAX_SINGLE_POSITION_MARGIN_USDT
+                    for used in instrument_margins.values()
+                ),
                 "position_margin_bucket_exceeded",
             ),
             (

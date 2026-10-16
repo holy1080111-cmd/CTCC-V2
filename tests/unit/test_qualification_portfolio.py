@@ -792,8 +792,10 @@ def test_selected_60_percent_margin_cap_counts_position_reservation_and_new_orde
     reserved_margin, passed
 ):
     snapshot = account(
-        positions=(position(margin=D("300")),),
-        pending_reservations=(reservation(margin=reserved_margin),),
+        positions=(position(instrument_id="ETH-USDT-SWAP", margin=D("300")),),
+        pending_reservations=(
+            reservation(instrument_id="SOL-USDT-SWAP", margin=reserved_margin),
+        ),
     )
     selected_policy = policy(
         risk_per_trade_pct=D("0.005"),
@@ -865,12 +867,47 @@ def test_single_position_usdt_bucket_is_inclusive_and_cannot_be_waived(
     )
 
 
+@pytest.mark.parametrize("source", ("positions", "pending_reservations"))
+@pytest.mark.parametrize("same_instrument", (True, False))
+def test_bucket_counts_existing_margin_by_swap_instrument(source, same_instrument):
+    existing = (position if source == "positions" else reservation)(
+        instrument_id=INSTRUMENT if same_instrument else "ETH-USDT-SWAP",
+        margin=D("250"),
+        notional=D("250"),
+    )
+    result = evaluate(
+        account=account(**{source: (existing,)}),
+        requested_contracts=D("250"),
+        requested_leverage=1,
+        stop_loss=D("99.99"),
+        round_trip_cost_per_base=D("0"),
+    )
+    assert result.required_margin == D("250")
+    if same_instrument:
+        assert_denied(result, "position_margin_bucket_exceeded")
+    else:
+        assert_passed(result)
+
+
+@pytest.mark.parametrize("source", ("positions", "pending_reservations"))
+def test_existing_over_bucket_position_blocks_another_instrument(source):
+    existing = (position if source == "positions" else reservation)(
+        instrument_id="ETH-USDT-SWAP", margin=D("301"), notional=D("602")
+    )
+    assert_denied(
+        evaluate(account=account(**{source: (existing,)})),
+        "position_margin_bucket_exceeded",
+    )
+
+
 @pytest.mark.parametrize("pending,passed", [(D("299"), True), (D("300"), False)])
 def test_nonwaivable_sixty_percent_aggregate_margin_with_loose_policy(pending, passed):
     result = evaluate(
         account=account(
-            positions=(position(margin=D("300")),),
-            pending_reservations=(reservation(margin=pending),),
+            positions=(position(instrument_id="ETH-USDT-SWAP", margin=D("300")),),
+            pending_reservations=(
+                reservation(instrument_id="SOL-USDT-SWAP", margin=pending),
+            ),
         ),
         policy=policy(max_portfolio_margin_pct=D("0.8")),
     )

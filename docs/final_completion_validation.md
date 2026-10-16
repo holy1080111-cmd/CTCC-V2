@@ -1,5 +1,36 @@
 # Final completion validation state
 
+## 2026-10-16 post-`4ce2c9c` working-source boundary
+
+Commit `4ce2c9ca6672d7a25b226afb3e2791bf9c4631a3`, tree
+`08534f196bc92252ce9b99ca062b003776e0991e`, has manifest SHA256
+`a365edea7f8bd369ad2d1e8151c377ad8a85178205c936cb86162838fd9fc386`.
+Its matching [CI run 38833246707](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/38833246707)
+was in progress when this record was written. No result from that or an older
+source can validate the following working-source edits. The preceding
+`00a49c7` Linux shard 1 failed on a stale test import allowlist after the
+scheduled Gate 3 module changed; `d9bc764` corrected that test and added a
+mutation case. Its Windows and PostgreSQL jobs were still running for
+diagnostics, and the aggregate result was not accepted.
+
+The current DENY-only parser change rejects ticker records whose explicit
+instrument type is not SPOT, MARGIN or SWAP, preventing FUTURES/OPTION base
+volume from entering the legacy quote-volume field. Related parser/public
+REST/bridge tests passed 260 with two platform skips. The current structural
+risk change aggregates position, pending and local-hold margin by exact SWAP
+instrument in both the pure portfolio gate and account-locked durable
+reservation check; an existing instrument over 300 USDT also denies a new
+order. The two affected risk modules passed 549 tests with no skips. Both
+changes passed Ruff, format and diff checks locally. These are focused
+synthetic tests, not source authenticity, complete account history, Demo
+execution or a full regression. Execution remains hard DENY.
+
+The latest source-owned V12 diagnostic replays original public/account bytes
+and G1--G5 within one frame, but its external event-history completeness is
+false and it has no complete G11 account risk snapshot. It cannot safely
+construct a complete G1--G11 run or DB0039 G12 custody claim from its summary.
+Gate 3, OOS, Demo, Micro Live, main merge and release remain unaccepted.
+
 ## 2026-10-16 post-`51a4751` working-source boundary
 
 The matching [CI run 38828390421](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/38828390421)
