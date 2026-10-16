@@ -340,6 +340,10 @@ def test_valid_reducing_pending_remains_visible_without_opening_risk():
         ({"sz": ""}, "reducing_remaining_quantity_invalid"),
         ({"tdMode": "unknown"}, "reducing_order_scope_unsupported"),
         ({"posSide": "long"}, "reducing_order_scope_unsupported"),
+        (
+            {"sz": "2.05", "accFillSz": "1.05"},
+            "reducing_quantity_off_lot",
+        ),
     ],
 )
 def test_malformed_reducing_pending_is_not_silently_treated_as_empty(change, expected):
@@ -1648,3 +1652,15 @@ def test_peak_uses_earlier_valid_currency_update_not_later_account_time(source):
     )
     assert peak[0] == D("1200")
     assert peak[1] == currency_updated != sample.observed_at
+
+
+@pytest.mark.parametrize("size,filled", [("2.05", "1.05"), ("2", "1.05")])
+def test_pending_order_rejects_off_lot_source_quantities(size, filled):
+    def change(pages):
+        pages["orders_pending"][0][0].update(sz=size, accFillSz=filled)
+
+    result = materialize(source=packet(changes=change))
+    assert "pending_quantity_off_lot" in projection(result, "orders_pending").reasons
+    assert "pending_quantity_off_lot" in result.incomplete_reasons
+    assert result.pending_reservations == ()
+    assert result.snapshot is None

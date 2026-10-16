@@ -764,6 +764,12 @@ def _positions_and_orders(
             if size is not None and filled is not None and 0 <= filled <= size
             else None
         )
+        spec = specs.get(name)
+        quantity_off_lot = spec is not None and any(
+            quantity is not None
+            and (quantity / Fraction(spec.lot_size)).denominator != 1
+            for quantity in (size, filled, remaining)
+        )
         if row.get("reduceOnly") is True:
             reducing_reasons = set()
             if (
@@ -781,6 +787,8 @@ def _positions_and_orders(
                 reducing_reasons.add("reducing_order_scope_unsupported")
             if remaining is None or remaining <= 0:
                 reducing_reasons.add("reducing_remaining_quantity_invalid")
+            if quantity_off_lot:
+                reducing_reasons.add("reducing_quantity_off_lot")
             if _time(row.get("uTime")) is None:
                 reducing_reasons.add("reducing_source_time_missing")
             gaps.update(reducing_reasons)
@@ -805,7 +813,7 @@ def _positions_and_orders(
             and row.get("posSide") != direction
         ):
             reasons.add("pending_order_scope_unsupported")
-        spec, cost = specs.get(name), costs.get(name)
+        cost = costs.get(name)
         price = _fraction(row.get("px"), positive=True)
         leverage = _fraction(row.get("lever"), positive=True)
         if spec is None:
@@ -852,11 +860,7 @@ def _positions_and_orders(
             and cost is not None
             else None
         )
-        if (
-            spec
-            and remaining is not None
-            and (remaining / Fraction(spec.lot_size)).denominator != 1
-        ):
+        if quantity_off_lot:
             reasons.add("pending_quantity_off_lot")
         projection = ExposureProjection(
             **fields,
