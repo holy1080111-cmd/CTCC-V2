@@ -333,6 +333,19 @@ def test_valid_reducing_pending_remains_visible_without_opening_risk():
     assert result.snapshot is None
 
 
+def test_reducing_pending_with_unmapped_instrument_retains_row_gap():
+    def alter(pages):
+        pages["orders_pending"][0][0].update(reduceOnly=True, side="sell")
+
+    result = materialize(source=packet(changes=alter), supplied=inputs(instruments=()))
+    recorded = projection(result, "orders_pending")
+    assert recorded.kind == "reducing_order"
+    assert "instrument_mapping_missing" in recorded.reasons
+    assert "instrument_mapping_missing" in result.incomplete_reasons
+    assert result.pending_reservations == ()
+    assert result.snapshot is None
+
+
 @pytest.mark.parametrize(
     ("change", "expected"),
     [

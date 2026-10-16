@@ -772,6 +772,8 @@ def _positions_and_orders(
         )
         if row.get("reduceOnly") is True:
             reducing_reasons = set()
+            if spec is None:
+                reducing_reasons.add("instrument_mapping_missing")
             if (
                 row.get("instType") != "SWAP"
                 or row.get("tdMode") not in {"cross", "isolated"}
