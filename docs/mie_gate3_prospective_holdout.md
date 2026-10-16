@@ -113,6 +113,26 @@ remains permanently ineligible for a predictive claim because its descriptive
 summary was exposed before candidate preregistration. It is not relabelled or
 reused as a prospective holdout.
 
+### Multi-window campaign geometry (computational only)
+
+The V1 scheduled one-minute seal caps one child window at 3,840 BTC/ETH rows
+(eight complete 4H bars). A 21-bar feature history plus one 4H outcome cannot
+fit inside one such window. `prospective_campaign_v2.py` therefore freezes and
+replays an ordered chain of up to 16 **unchanged V1** seal/schedule pairs, with
+exact contiguous 4H grids, source and model-policy pins, a child hash chain,
+and an explicit minimum history/outcome capacity check. A missing, reordered,
+overlapping, or changed child fails verification. This joins declarations; it
+does not acquire market data or widen any V1 capture limit.
+
+The child times and seals supplied to this in-memory contract remain
+caller-declared. No pre-window database commit, complete source capture,
+independent custody, or first evaluator access is proven by the campaign.
+Consequently its predictive, promotion, runtime, and execution eligibility are
+fixed false. PostgreSQL publication and readback, actual minute capture and
+dataset stitching, an independently pinned first-access record, and a real
+sealed evaluation remain outstanding. Synthetic campaign tests are engineering
+coverage only; they are not a Gate 3 PASS or OOS evidence.
+
 ## Authority boundary
 
 The prospective models have

@@ -732,7 +732,11 @@ async def test_control_bound_reporting_downgrade_rejects_retained_v3_outcome(
     assert hold.state == "reserved" and hold.state_revision == 1
     # Continue only inside the disposable migration fixture to construct a
     # retained synthetic outcome. This is not a runtime retry or exchange IO.
-    outer = await setup.consume()
+    with monkeypatch.context() as local_patch:
+        report_fixtures.allow_synthetic_range_replay_for_repository_mechanism(
+            local_patch
+        )
+        outer = await setup.consume()
     body = json.loads(json.loads(outer.canonical_json)["intent_json"])
     setup.clock.value += timedelta(milliseconds=1)
     capture = CapturedSubmission(

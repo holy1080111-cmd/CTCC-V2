@@ -179,7 +179,7 @@ async def test_v10_keeps_raw_g5_frame_across_locked_journal_reads(
     empty_registries()
     # Pin the complete readback after checking its source and DENY semantics.
     assert sha(result.receipt_json) == (
-        "28ba9d799f940116d33af848d7cdbdf2e4d7ce66337cf61302a9db7c384514e4"
+        "5be33f923da5e509a0f2fa244fe790d5e75c889af8ce157ba44475f76904f113"
     )
 
 

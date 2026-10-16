@@ -3,7 +3,8 @@
 Every evaluator runs normally. There are no supplied analysis flags, fake PASS
 records, lowered gate thresholds, or runtime strategy/quote adapters. Quotes use
 the existing MockTransport raw-response fixture. Overlapping confirmed bars are
-aggregated from one synthetic 5m tape; this is not observed exchange evidence.
+aggregated from one synthetic 5m tape where the timeframes overlap; older
+nonoverlapping bars are independent fixtures. None is observed exchange evidence.
 """
 
 import asyncio

@@ -114,7 +114,7 @@ async def _assert_db0042_catalog(engine):
             for name, enabled in (
                 await connection.execute(
                     text("""
-                      SELECT tgname,tgenabled FROM pg_catalog.pg_trigger
+                      SELECT tgname,tgenabled::text FROM pg_catalog.pg_trigger
                       WHERE tgname IN (
                         'qualification_spool_binding_guard',
                         'qualification_projection_binding_guard')

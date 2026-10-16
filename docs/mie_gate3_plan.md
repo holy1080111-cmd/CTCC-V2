@@ -103,6 +103,12 @@ remains retrospective-only. This synthetic engineering integration does not
 qualify row-level availability, authenticate real acquisition, or enable a
 prospective predictive claim; those evidence steps remain pending.
 
+The bounded V2 prospective campaign contract described in
+`docs/mie_gate3_prospective_holdout.md` joins multiple unchanged V1 minute
+seals so a 21-bar 4H feature history and outcome can fit a declared grid. It
+remains computational-only: no real child capture, independently committed
+pre-window chain, first-access proof, or OOS evaluation exists.
+
 ## Work packages
 
 1. Freeze contracts for dataset identity, bar construction, outcome labels,

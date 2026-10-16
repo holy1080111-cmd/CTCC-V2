@@ -19,7 +19,8 @@ import pytest
 from pydantic import BaseModel, model_serializer
 
 from app.domain.analysis import MultiTimeframeAnalysis
-from app.domain.market import MarketSnapshot, SwapTickerV2
+from app.domain.market import Candle, MarketSnapshot, SwapTickerV2
+from app.market.quality.candles import BAR_SECONDS
 from app.public_market_source.public_market_receipts import canonical, decode, sha
 from app.strategies.base import StrategyContext
 from app.strategies.conditions import assess_conditions
@@ -79,6 +80,173 @@ def v2_market(market):
     return market
 
 
+def _seed_covered_children(
+    parent,
+    child,
+    parent_seconds,
+    child_seconds,
+    *,
+    keep=(),
+    repeat_high=False,
+    repeat_low=False,
+):
+    """Give synthetic child bars their parent's declared OHLC where covered.
+
+    The historical fixtures were built as independent timeframes. In this raw
+    V2 scenario, construct one child tape before capture; explicitly retained
+    native 15m chronology can change its containing 1H parent.
+    """
+    by_open = {row.timestamp: index for index, row in enumerate(child)}
+    width = parent_seconds // child_seconds
+    for row in parent:
+        offsets = [
+            by_open.get(row.timestamp + timedelta(seconds=step * child_seconds))
+            for step in range(width)
+        ]
+        if any(index is None for index in offsets):
+            continue
+        for step, index in enumerate(offsets):
+            if index in keep:
+                continue
+            first = (row.open + (row.close - row.open) * D(step) / D(width)).quantize(
+                D("0.00000001")
+            )
+            last = (
+                row.close
+                if step == width - 1
+                else (
+                    row.open + (row.close - row.open) * D(step + 1) / D(width)
+                ).quantize(D("0.00000001"))
+            )
+            high = max(first, last) + D("0.01")
+            low = min(first, last) - D("0.01")
+            if step == 0:
+                high = max(high, row.high)
+                low = min(low, row.low)
+            if repeat_high:
+                high = max(high, row.high)
+            if repeat_low:
+                low = min(low, row.low)
+            volume_contracts = (row.volume_contracts / D(width)).quantize(
+                D("0.00000001")
+            )
+            volume_currency = (row.volume_currency / D(width)).quantize(D("0.00000001"))
+            if step == width - 1:
+                volume_contracts = row.volume_contracts - volume_contracts * (width - 1)
+                volume_currency = row.volume_currency - volume_currency * (width - 1)
+            child[index] = Candle(
+                timestamp=child[index].timestamp,
+                open=first,
+                high=high,
+                low=low,
+                close=last,
+                volume_contracts=volume_contracts,
+                volume_currency=volume_currency,
+                volume_quote=volume_currency * last,
+                confirmed=True,
+            )
+
+
+def _expansion_base(timestamp):
+    delta = timestamp - NOW
+    assert delta.microseconds == 0
+    seconds = delta.days * 86400 + delta.seconds
+    return (D(100) + D(seconds) * D("0.0025") / D(3600)).quantize(D("0.00000001"))
+
+
+def _coherent_expansion_candles(market, direction):
+    """Declare one 5m expansion tape, then aggregate every covered parent.
+
+    The previous independent HTF tape hid a 15m spike from its containing 1H
+    candle. Here the baseline, pivot, compression, break and later momentum
+    are all source bars fixed before raw capture and actual policy replay.
+    """
+    for frame, rows in market.candles.items():
+        baseline = []
+        for row in rows:
+            close = _expansion_base(row.timestamp)
+            if row.timestamp < NOW.replace(hour=6, minute=0):
+                close += (
+                    D("0.025")
+                    if int((row.timestamp - NOW) // timedelta(hours=1)) % 2 == 0
+                    else D("-0.025")
+                )
+            baseline.append(
+                row.model_copy(
+                    update={
+                        "open": close,
+                        "high": close + D("0.025"),
+                        "low": close - D("0.025"),
+                        "close": close,
+                    }
+                )
+            )
+        market.candles[frame] = baseline
+
+    five_minute = market.candles["5m"]
+    for index in range(205, 235):
+        row = five_minute[index]
+        close = row.close + D((index % 6) - 3) * D("0.02")
+        five_minute[index] = row.model_copy(
+            update={
+                "open": close,
+                "high": close + D("0.025"),
+                "low": close - D("0.025"),
+                "close": close,
+            }
+        )
+
+    by_open = {row.timestamp: index for index, row in enumerate(five_minute)}
+    for parent in market.candles["15m"][225:239]:
+        for step in range(3):
+            index = by_open[parent.timestamp + timedelta(minutes=5 * step)]
+            row = five_minute[index]
+            base = _expansion_base(row.timestamp)
+            five_minute[index] = row.model_copy(
+                update={
+                    "high": max(row.high, base + D("0.095")),
+                    "low": min(row.low, base - D("0.095")),
+                }
+            )
+
+    pivot = market.candles["15m"][-20]
+    index = by_open[pivot.timestamp]
+    five_minute[index] = five_minute[index].model_copy(update={"high": D("100.3")})
+    spike = D("112.2") if direction == "long" else D("112.0")
+    for stamp, close, high, low in (
+        (NOW.replace(hour=9, minute=45), D(100), spike, D("99.95")),
+        (NOW.replace(hour=9, minute=50), D("100.1"), D("100.11"), D("100.09")),
+        (NOW.replace(hour=9, minute=55), D("100.5"), D("100.51"), D("100.49")),
+        (NOW.replace(hour=10, minute=0), D("100.5"), D("100.51"), D("100.49")),
+        (NOW.replace(hour=10, minute=5), D("100.4"), D("100.41"), D("100.39")),
+    ):
+        index = by_open[stamp]
+        row = five_minute[index]
+        five_minute[index] = row.model_copy(
+            update={"open": close, "high": high, "low": low, "close": close}
+        )
+    for parent, child in (("15m", "5m"), ("1H", "15m"), ("4H", "1H")):
+        prefix._aggregate_overlap(
+            market.candles[parent],
+            market.candles[child],
+            BAR_SECONDS[parent],
+            BAR_SECONDS[child],
+        )
+    if direction == "short":
+        for frame, rows in market.candles.items():
+            market.candles[frame] = [
+                row.model_copy(
+                    update={
+                        "open": D(200) - row.open,
+                        "high": D(200) - row.low,
+                        "low": D(200) - row.high,
+                        "close": D(200) - row.close,
+                    }
+                )
+                for row in rows
+            ]
+
+
 def history_raw_source(strategy, direction, *, sweep_scenario="inside"):
     if strategy == "range_reversal":
         source = range_v5_source(direction)
@@ -101,6 +269,112 @@ def history_raw_source(strategy, direction, *, sweep_scenario="inside"):
         ]
         for frame, rows in market.candles.items()
     }
+    if strategy == "volatility_expansion":
+        _coherent_expansion_candles(market, direction)
+        market.received_at = NOW
+        market.ticker.timestamp += shift
+        market.order_book.timestamp += shift
+        if market.next_funding_time is not None:
+            market.next_funding_time += shift
+        return replace(
+            source,
+            market=v2_market(market),
+            evaluated_at=NOW + timedelta(milliseconds=10),
+        )
+    # The 5m trigger occurs after the latest confirmed 15m candle. Preserve
+    # that trigger and its quote; synthesize the covered child tape from the
+    # higher-timeframe history instead of flattening the 1H/4H regime with the
+    # independently constructed legacy 5m tape.
+    if strategy == "structure_reversal":
+        # The original independent 1H tape kept falling through the entire
+        # 15m coverage. Bring its covered pre-break section gradually to a
+        # flat base: an abrupt step would falsely create a causal shock veto.
+        one_hour = market.candles["1H"]
+        start = one_hour[len(one_hour) - 61].close
+        for index in range(len(one_hour) - 60, len(one_hour) - 7):
+            row = one_hour[index]
+            step = index - (len(one_hour) - 61)
+            flat = D(100)
+            close = (
+                (start + (flat - start) * D(step) / D(30)).quantize(D("0.00000001"))
+                if step <= 30
+                else flat
+            )
+            one_hour[index] = row.model_copy(
+                update={
+                    "open": close,
+                    "high": close + D("0.10"),
+                    "low": close - D("0.10"),
+                    "close": close,
+                }
+            )
+    if strategy == "structure_reversal":
+        keep_15m = ()
+    elif strategy == "liquidity_sweep_reversal":
+        # This source's earlier 15m reversal chronology starts well before
+        # the final 20 bars. Keep it in the declared tape and roll its entire
+        # covered history upward from coherent 5m children.
+        keep_15m = range(len(market.candles["15m"]) - 180, len(market.candles["15m"]))
+    else:
+        keep_15m = range(len(market.candles["15m"]) - 20, len(market.candles["15m"]))
+    _seed_covered_children(
+        market.candles["1H"],
+        market.candles["15m"],
+        BAR_SECONDS["1H"],
+        BAR_SECONDS["15m"],
+        keep=keep_15m,
+        repeat_high=strategy == "range_reversal" and direction == "long",
+        repeat_low=strategy == "range_reversal" and direction == "short",
+    )
+    _seed_covered_children(
+        market.candles["15m"],
+        market.candles["5m"],
+        BAR_SECONDS["15m"],
+        BAR_SECONDS["5m"],
+        keep=(
+            range(len(market.candles["5m"]) - 18, len(market.candles["5m"]))
+            if strategy == "range_reversal"
+            else ()
+        ),
+    )
+    if strategy == "range_reversal":
+        # Raise the declared intrabar excursion on the first 5m child of each
+        # 15m bar in the range lead-in. The original event bars remain fixed;
+        # bottom-up aggregation carries each wick into every covered parent.
+        five_by_open = {
+            row.timestamp: index for index, row in enumerate(market.candles["5m"])
+        }
+        for parent in market.candles["15m"][225:234]:
+            index = five_by_open[parent.timestamp]
+            child = market.candles["5m"][index]
+            if direction == "long":
+                amended = {"high": max(child.high, parent.high + D("0.24"))}
+            else:
+                amended = {"low": min(child.low, parent.low - D("0.24"))}
+            market.candles["5m"][index] = child.model_copy(update=amended)
+    if strategy == "structure_reversal":
+        # A post-break dip in the last closed 1H bar precedes the untouched
+        # 10:00/10:05 momentum transition. All five 5m bars are before the
+        # 1H setup closes, so this does not erase a post-setup invalidation.
+        dip = D("100.5") if direction == "long" else D("99.5")
+        five_minute = market.candles["5m"]
+        for index in range(len(five_minute) - 8, len(five_minute) - 3):
+            row = five_minute[index]
+            five_minute[index] = row.model_copy(
+                update={
+                    "open": dip,
+                    "high": dip + D("0.01"),
+                    "low": dip - D("0.01"),
+                    "close": dip,
+                }
+            )
+    for parent, child in (("15m", "5m"), ("1H", "15m"), ("4H", "1H")):
+        prefix._aggregate_overlap(
+            market.candles[parent],
+            market.candles[child],
+            BAR_SECONDS[parent],
+            BAR_SECONDS[child],
+        )
     # This constructs a new declared synthetic raw source before capture. No
     # collected row, source timestamp, receipt or old event is rewritten.
     market.received_at = NOW

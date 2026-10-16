@@ -1,6 +1,7 @@
 """Cross-frame OHLC is reconstructed from raw pages, including offline replay."""
 
 import json
+from datetime import timedelta
 from decimal import Decimal
 
 import pytest
@@ -17,20 +18,26 @@ from tests.unit.research.test_owned_public_runtime_v2 import (
 )
 
 
-def _changed_parent_high(packet, timeframe):
+def _changed_high(packet, timeframe, *, timestamp=None, minimum_high=None):
     frames = list(packet.frames)
     frame_index = next(
         index for index, frame in enumerate(frames) if frame.timeframe == timeframe
     )
     frame = frames[frame_index]
-    target = frame.confirmed[-1]
+    target = (
+        frame.confirmed[-1]
+        if timestamp is None
+        else next(row for row in frame.confirmed if row.timestamp == timestamp)
+    )
     pages = list(frame.pages)
     page = pages[0]
     body = json.loads(page.response_body)
     row = next(
         row for row in body["data"] if candles._timestamp(row[0]) == target.timestamp
     )
-    raised = target.high + Decimal(1)
+    raised = max(
+        target.high, target.high if minimum_high is None else minimum_high
+    ) + Decimal(1)
     row[2] = str(raised)
     raw = canonical(body)
     _, canonical_text = candles._parse(raw)
@@ -43,7 +50,12 @@ def _changed_parent_high(packet, timeframe):
             "canonical_sha256": sha(canonical_text.encode()),
         }
     )
-    confirmed = (*frame.confirmed[:-1], target.model_copy(update={"high": raised}))
+    confirmed = tuple(
+        row.model_copy(update={"high": raised})
+        if row.timestamp == target.timestamp
+        else row
+        for row in frame.confirmed
+    )
     changed = frame.model_copy(update={"pages": tuple(pages), "confirmed": confirmed})
     frames[frame_index] = changed.model_copy(
         update={"frame_sha256": candles._hash(changed, omit="frame_sha256")}
@@ -67,12 +79,47 @@ def test_rehashed_raw_parent_conflict_is_denied_at_capture_and_readback(
         == accepted.packet_json
     )
 
-    parts["candle_packet"] = _changed_parent_high(parts["candle_packet"], timeframe)
+    parts["candle_packet"] = _changed_high(parts["candle_packet"], timeframe)
     with pytest.raises(
         public.PublicMarketV2Error, match="public_v2_candle_cross_frame_mismatch"
     ):
         public._build(**parts)
 
+    document = decode(accepted.packet_json, public.MAX_PACKET_BYTES)
+    document["candles"] = parts["candle_packet"].model_dump(
+        mode="json", round_trip=True
+    )
+    raw = canonical(document)
+    with pytest.raises(
+        public.PublicMarketV2Error, match="public_v2_candle_cross_frame_mismatch"
+    ):
+        public.replay_collected_public_market_v2(raw, expected_sha256=sha(raw))
+
+
+def test_rehashed_raw_5m_conflict_reaches_15m_child_check(captured):
+    parts = routed_packet_parts(captured, "global")
+    frames = {frame.timeframe: frame for frame in parts["candle_packet"].frames}
+    children = {row.timestamp for row in frames["5m"].confirmed}
+    parent = next(
+        row
+        for row in frames["15m"].confirmed
+        if all(
+            row.timestamp + timedelta(minutes=5 * index) in children
+            for index in range(3)
+        )
+    )
+    parts["candle_packet"] = _changed_high(
+        parts["candle_packet"],
+        "5m",
+        timestamp=parent.timestamp,
+        minimum_high=parent.high,
+    )
+    with pytest.raises(
+        public.PublicMarketV2Error, match="public_v2_candle_cross_frame_mismatch"
+    ):
+        public._build(**parts)
+
+    accepted, _ = public._build(**routed_packet_parts(captured, "global"))
     document = decode(accepted.packet_json, public.MAX_PACKET_BYTES)
     document["candles"] = parts["candle_packet"].model_dump(
         mode="json", round_trip=True

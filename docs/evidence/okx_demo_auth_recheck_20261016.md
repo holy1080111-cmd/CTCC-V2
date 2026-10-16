@@ -27,11 +27,13 @@ receipt SHA256 is
 That historical response neither proves the registered site nor validates the
 current credential or complete account history.
 
-OKX currently documents different API hosts by registration region and says
-`50119` usually indicates a region/domain mismatch. Its API FAQ also notes a
-possible key-type incompatibility for `50110`; the code alone does not identify
-the cause here. See the [OKX API guide](https://www.okx.com/docs-v5) and
-[API FAQ](https://www.okx.com/en-gb/help/api-faq).
+OKX's [official API error table](https://app.okx.com/docs-v5/en/#error-code)
+defines `50110` as the request IP being absent from that key's IP whitelist,
+and `50119` as the API key not existing on the queried host. The redacted
+receipts did not retain the IP in OKX's error message. They cannot distinguish
+an egress-IP change from a stale or different whitelist/key in the browser,
+and they do not prove the account's original registration site. No host or
+whitelist fallback is authorized by this diagnostic.
 
 Current authenticated account identity, complete account collector, Demo
 reconciliation and Demo acceptance remain **FAIL CLOSED**. This diagnostic

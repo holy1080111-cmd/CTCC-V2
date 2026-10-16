@@ -297,7 +297,7 @@ def test_opposite_requested_direction_is_not_repaired_by_strategy_score(source):
 
 
 def test_required_current_momentum_cannot_be_repaired_by_minimum_score_zero(source):
-    market = change_momentum_bar(source, -1, "100.79")
+    market = change_momentum_bar(source, -1, "100.60")
     policy = inputs(source)["policy"].model_copy(update={"minimum_score": 0})
     result = parity(source, market=market, policy=policy)
     assert len(result.gates) == 4
@@ -418,9 +418,33 @@ def test_fresh_spread_exact_limit_is_inclusive_without_float_rounding(source, of
 @pytest.mark.parametrize("minimum", (80, 81))
 def test_real_breakout_nonrequired_volume_score_obeys_minimum_boundary(source, minimum):
     market = source.market.model_copy(deep=True)
-    long = source.direction == "long"
-    market.candles["15m"][-10] = market.candles["15m"][-10].model_copy(
-        update={"high" if long else "low": D("100.2") if long else D("99.8")}
+    close = D("101.0") if source.direction == "long" else D("99.0")
+    last_15m = market.candles["15m"][-1]
+    market.candles["15m"][-1] = last_15m.model_copy(update={"close": close})
+    # Keep the child close and containing 1H close aligned with this synthetic
+    # confirmed breakout; the score boundary is the 5m volume condition.
+    last_child_at = last_15m.timestamp + timedelta(minutes=10)
+    child_index = next(
+        index
+        for index, row in enumerate(market.candles["5m"])
+        if row.timestamp == last_child_at
+    )
+    child = market.candles["5m"][child_index]
+    market.candles["5m"][child_index] = child.model_copy(
+        update={
+            "close": close,
+            "high": max(child.high, close),
+            "low": min(child.low, close),
+        }
+    )
+    hour_at = last_15m.timestamp.replace(minute=0)
+    hour_index = next(
+        index
+        for index, row in enumerate(market.candles["1H"])
+        if row.timestamp == hour_at
+    )
+    market.candles["1H"][hour_index] = market.candles["1H"][hour_index].model_copy(
+        update={"close": close}
     )
     market.candles["5m"][-1] = market.candles["5m"][-1].model_copy(
         update={"volume_contracts": D(1)}
