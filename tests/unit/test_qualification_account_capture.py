@@ -1343,6 +1343,76 @@ def test_source_clock_lifecycle_and_nested_future_clock_are_checked():
         )
 
 
+@pytest.mark.parametrize(
+    ("created_offset", "updated_offset", "reversed"),
+    [(-2, -3, True), (-3, -2, False), (-2, -2, False)],
+)
+def test_anchor_nested_position_lifecycle_preserves_original_order(
+    created_offset, updated_offset, reversed
+):
+    created = NOW + timedelta(seconds=created_offset)
+    updated = NOW + timedelta(seconds=updated_offset)
+    anchor = row(
+        "account_position_risk",
+        posData=[
+            {
+                "posId": "900",
+                "instId": INSTRUMENT,
+                "cTime": ms(created),
+                "uTime": ms(updated),
+            }
+        ],
+    )
+    if reversed:
+        with pytest.raises(
+            module.AccountCaptureError, match="source_lifecycle_reversed"
+        ):
+            stream_observation("account_position_risk", [anchor])
+        return
+    observation = stream_observation("account_position_risk", [anchor])
+    clocks = {item.path: item.value for item in observation.rows[0].source_times}
+    assert clocks["posData[0].cTime"] == created
+    assert clocks["posData[0].uTime"] == updated
+    selected, observations = records(
+        pages={"account_position_risk": [[anchor]]}, empty=True
+    )
+    packet = verify(selected, observations)
+    frozen = module.freeze_demo_account_packet(
+        packet, expected_plan_sha256=module.plan_sha256(selected)
+    )
+    assert (
+        module.verify_demo_account_packet(
+            frozen.payload,
+            expected_sha256=frozen.sha256,
+            expected_plan_sha256=module.plan_sha256(selected),
+        )
+        == packet
+    )
+
+
+def test_anchor_checks_each_nested_position_without_filling_missing_clocks():
+    first = {
+        "posId": "901",
+        "instId": INSTRUMENT,
+        "cTime": ms(NOW - timedelta(seconds=3)),
+        "uTime": ms(NOW - timedelta(seconds=2)),
+    }
+    second = {
+        "posId": "900",
+        "instId": INSTRUMENT,
+        "cTime": ms(NOW - timedelta(seconds=2)),
+        "uTime": ms(NOW - timedelta(seconds=3)),
+    }
+    anchor = row("account_position_risk", posData=[first, second])
+    with pytest.raises(module.AccountCaptureError, match="source_lifecycle_reversed"):
+        stream_observation("account_position_risk", [anchor])
+    second["cTime"] = ""
+    observation = stream_observation("account_position_risk", [anchor])
+    assert "posData[1].cTime" in observation.rows[0].missing_fields
+    clocks = {time.path: time.value for time in observation.rows[0].source_times}
+    assert clocks["posData[1].cTime"] is None
+
+
 def test_equal_header_body_clocks_and_adjacent_request_boundary_are_valid():
     same = NOW + timedelta(milliseconds=10)
     captured = observe(

@@ -1284,6 +1284,16 @@ def _row_record(row, stream, plan, received):
         and roots["cTime"] > roots["uTime"]
     ):
         _fail("source_lifecycle_reversed")
+    if stream == "account_position_risk":
+        # Anchor positions are nested inside one response row. Check each
+        # original position independently; the root-only check above cannot
+        # see an impossible nested creation/update sequence.
+        for index in range(len(row["posData"])):
+            prefix = f"posData[{index}]"
+            created = roots.get(f"{prefix}.cTime")
+            updated = roots.get(f"{prefix}.uTime")
+            if created is not None and updated is not None and created > updated:
+                _fail("source_lifecycle_reversed")
     for earlier, later in (("cTime", "fillTime"), ("fillTime", "uTime")):
         if (
             roots.get(earlier) is not None

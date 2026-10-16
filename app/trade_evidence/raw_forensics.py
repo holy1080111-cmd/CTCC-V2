@@ -217,6 +217,60 @@ def _attribution(raw, pin, report, submission_pin, account_pin):
     return value, by_order
 
 
+def _observed_exit_orders(account, candidate, report, orders):
+    """Corroborate claimed exits with retained terminal order-history rows."""
+    exits = {
+        identifier: binding
+        for identifier, binding in orders.items()
+        if binding["role"] == "exit"
+    }
+    retained = {}
+    for observation in account.observations:
+        if account_capture.stream_family(observation.request.stream) not in {
+            "orders_history_recent",
+            "orders_history_archive",
+        }:
+            continue
+        for record in observation.rows:
+            if record.row_id not in exits:
+                continue
+            previous = retained.get(record.row_id)
+            if previous is not None and previous[0] != record.canonical_json:
+                raise ValueError("exit_order_history_conflict")
+            retained[record.row_id] = (record.canonical_json, record.source_times)
+    if set(retained) != set(exits):
+        raise ValueError("exit_order_history_missing")
+    verified = {}
+    closing = "sell" if candidate.direction == "long" else "buy"
+    for identifier, binding in exits.items():
+        canonical, source_times = retained[identifier]
+        row = json.loads(canonical)
+        if any(
+            row.get(field) != value
+            for field, value in {
+                "ordId": identifier,
+                "clOrdId": binding["client_order_id"],
+                "instId": candidate.instrument_id,
+                "instType": "SWAP",
+                "side": closing,
+            }.items()
+        ) or row.get("posSide") not in {"net", candidate.direction}:
+            raise ValueError("exit_order_history_scope")
+        if row.get("state") not in {"filled", "canceled", "mmp_canceled"}:
+            raise ValueError("exit_order_history_terminal")
+        times = {item.path: item.value for item in source_times}
+        created, updated = times.get("cTime"), times.get("uTime")
+        if (
+            created is None
+            or updated is None
+            or not report.submit_started_at <= created <= updated
+            or updated > account.plan.history_end
+        ):
+            raise ValueError("exit_order_history_clock")
+        verified[identifier] = (row, created, updated)
+    return verified
+
+
 def _path(raw, pin, candidate, observed, cutoff):
     if raw is None and pin is None:
         return ()
@@ -309,6 +363,11 @@ def _reconstruct(
         expected_submission_sha256,
         expected_account_sha256,
     )
+    exit_orders = (
+        _observed_exit_orders(account, candidate, report, orders)
+        if attribution["purpose"] == "observed"
+        else {}
+    )
     fills, flows, source_links, unbound_fills, bills, trades = [], [], [], [], {}, set()
     for observation in account.observations:
         stream = account_capture.stream_family(observation.request.stream)
@@ -345,6 +404,15 @@ def _reconstruct(
                 <= account.plan.history_end
             ):
                 raise ValueError("fill_clock")
+            if binding["role"] == "exit" and exit_orders:
+                order, created, updated = exit_orders[row["ordId"]]
+                if (
+                    row["instType"] != order["instType"]
+                    or row["side"] != order["side"]
+                    or row["posSide"] != order["posSide"]
+                    or not created <= matched <= updated
+                ):
+                    raise ValueError("exit_fill_order_history_mismatch")
             base = _base(
                 candidate,
                 pin,

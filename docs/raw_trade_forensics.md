@@ -69,6 +69,14 @@ Duplicate trade IDs, contradictory side/role, over-closes and equal-time mixed
 entry/exit roles fail. Fill times must follow submit start and precede generation
 and the retained query cutoff; receipt times remain the actual recorded page times.
 
+For `purpose="observed"`, each claimed exit must also have a retained terminal
+order-history row. Its order/client IDs, SWAP instrument, closing side, position
+side and typed creation/update times must agree with the mapped exit fills; a
+missing, conflicting or changed row fails closed. This is a local consistency
+check on retained account bytes, not proof of account-history completeness or
+exchange authentication. The existing `synthetic_test` fixture path remains
+compatible with its older sources.
+
 Descending account pages are explicitly converted into chronological FIFO order;
 equal-time same-role rows use namespaced bill IDs, the existing evaluator's
 documented accounting convention, not a claim about exchange intratimestamp order.

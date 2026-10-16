@@ -45,6 +45,7 @@ def fixtures(
     extra_fills=(),
     empty=False,
     all_products=False,
+    exit_order_changes=None,
 ):
     value, args = submit.inputs(direction)
     value = value.model_copy(update={"account_id": UID})
@@ -121,6 +122,21 @@ def fixtures(
     )
     pages = {stream: [[]] for stream in CURSORS}
     pages["positions"] = [[]]
+    if exit_order_changes is not None:
+        exit_order = row(
+            "orders_history_recent",
+            "801",
+            clOrdId="closeSynthetic",
+            side=closing,
+            sz="10",
+            accFillSz="10",
+            cTime=ms(at(30)),
+            uTime=ms(at(45)),
+        )
+        pages["orders_history_recent"] = [
+            [exit_order | exit_order_changes],
+            [],
+        ]
     if not empty:
         pages["fills_history"] = [fills, []]
         pages["bills_archive"] = [[bill, mirror], []]
@@ -259,6 +275,64 @@ def test_v4_raw_forensics_replays_source_packet_without_omitting_typed_history()
             result.canonical_receipt, result.receipt_sha256, sources[0], **sources[1]
         )
         == result
+    )
+
+
+def test_observed_exit_requires_retained_terminal_order_history():
+    sources = change_attr(fixtures(), lambda attr: attr.update(purpose="observed"))
+    with pytest.raises(
+        module.RawForensicsError, match="^raw_forensics_reconstruction_invalid$"
+    ):
+        run(sources)
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"ordId": "800"},
+        {"clOrdId": "otherClient"},
+        {"instId": "ETH-USDT-SWAP"},
+        {"side": "buy"},
+        {"posSide": "short"},
+        {"cTime": ms(at(41))},
+        {"uTime": ms(at(39))},
+        {"cTime": ""},
+        {"uTime": ""},
+    ],
+)
+def test_observed_exit_rejects_mismatched_order_history(changes):
+    sources = change_attr(
+        fixtures(exit_order_changes=changes),
+        lambda attr: attr.update(purpose="observed"),
+    )
+    with pytest.raises(
+        module.RawForensicsError, match="^raw_forensics_reconstruction_invalid$"
+    ):
+        run(sources)
+
+
+def test_observed_exit_with_synthetic_order_history_keeps_authority_unknown():
+    sources = change_attr(
+        fixtures(exit_order_changes={}),
+        lambda attr: attr.update(purpose="observed"),
+    )
+    result = run(sources)
+    assert len(result.analysis.inputs.fills) == 3
+    assert result.analysis.inputs.fills[-1].role == "exit"
+    assert result.analysis.pnl.value is None
+    assert all(item.status == "partial" for item in result.analysis.inputs.coverage)
+    receipt = json.loads(result.canonical_receipt)
+    assert result.analysis.inputs.purpose == "observed"
+    assert all(
+        receipt[field] is False
+        for field in (
+            "source_authenticity_verified",
+            "execution_authority",
+            "funding_accrual_verified",
+            "ingestion_completeness_verified",
+            "protection_verified",
+            "real_trade_sample_verified",
+        )
     )
 
 
@@ -617,8 +691,13 @@ def test_module_has_no_io_or_service_registration_imports():
     )
 
 
-def test_reported_observed_purpose_is_not_a_verified_real_trade(sources):
-    result = run(change_attr(sources, lambda attr: attr.update(purpose="observed")))
+def test_reported_observed_purpose_is_not_a_verified_real_trade():
+    result = run(
+        change_attr(
+            fixtures(exit_order_changes={}),
+            lambda attr: attr.update(purpose="observed"),
+        )
+    )
     assert result.analysis.inputs.purpose == "observed"
     assert json.loads(result.canonical_receipt)["real_trade_sample_verified"] is False
 
