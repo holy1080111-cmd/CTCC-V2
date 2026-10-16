@@ -564,6 +564,19 @@ class QualificationLedgerRepository:
         return claims
 
     @staticmethod
+    def _require_owned_account_revision(claims):
+        """Do not promote a caller-written revision to an authenticated source.
+
+        ``reconcile_scope`` stores validated claims under the UID lock, but the
+        scope row has no collector-owned source receipt or issuer binding. Even
+        complete stamps and a matching claims hash remain caller assertions.
+        A later positive R7 issuer must not make those rows operational: a
+        separate reviewed source issuer and durable lineage are required first.
+        """
+        checked(claims, AccountLedgerClaims)
+        raise QualificationLedgerError("ledger_owned_account_revision_missing")
+
+    @staticmethod
     def _set_claims(row, claims, now):
         if row.claims_json is not None:
             previous = QualificationLedgerRepository._claims(row)
@@ -1558,6 +1571,11 @@ class QualificationLedgerRepository:
             coverage, result = prepare_reservation(
                 request, claims, active, observed_at=now
             )
+            if type(request) in (ReservationRequestV2, ReservationRequestV3):
+                # Independent of the R7 replay verdict. A caller can currently
+                # publish the account revision via reconcile_scope; no owned
+                # source witness is persisted with that revision yet.
+                self._require_owned_account_revision(claims)
             self._coverage_caps(request, claims, active, coverage)
             record = QualificationReservation(
                 **self._keys(request.scope),

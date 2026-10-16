@@ -284,7 +284,7 @@ async def test_new_g12_then_fresh_public_and_account_raw_page_starts(
     monkeypatch.setattr(
         account_runtime_fixture,
         "BARRIER",
-        original_fixture.NOW + timedelta(milliseconds=100),
+        original_fixture.NOW + timedelta(milliseconds=102),
     )
     chain, account_harness = await recorded_current(
         monkeypatch, offset_seconds=601, pages=pages

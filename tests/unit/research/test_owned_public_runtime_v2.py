@@ -2,9 +2,11 @@
 
 import asyncio
 import copy
+import os
 import pickle
 from datetime import timedelta
 from decimal import Decimal
+from threading import get_ident
 
 import pytest
 
@@ -1085,9 +1087,18 @@ async def test_actual_v2_publisher_flow_precedes_all_new_requests(
         monkeypatch, source, original=inputs
     )
     fresh_funding_return(harness, clock)
+    complete = coordinator._complete_lineage_v2
+    custody_readbacks = []
+
+    async def recorded_readback(*args, **kwargs):
+        result = await complete(*args, **kwargs)
+        custody_readbacks.append(clock.stamp())
+        return result
+
+    monkeypatch.setattr(coordinator, "_complete_lineage_v2", recorded_readback)
 
     def published_first():
-        assert len(publications) == 1
+        assert len(publications) == len(custody_readbacks) == 1
 
     harness.before_request = published_first
     result = await coordinator.publish_capture_public_v2(
@@ -1169,6 +1180,10 @@ async def test_actual_v2_publisher_flow_precedes_all_new_requests(
     plan = decode(directory.content["plan.json"])
     assert summary["disposition"] == "captured"
     assert plan["schema_version"] == "ctcc.public.runtime_plan.v2"
+    assert all(
+        plan["barrier"][key] > custody_readbacks[0][key]
+        for key in ("utc_ns", "monotonic_ns")
+    )
     assert (
         plan["publication_completed_at"]
         == result.evidence.receipt.completed_at.isoformat()
@@ -1186,6 +1201,72 @@ async def test_actual_v2_publisher_flow_precedes_all_new_requests(
         )
     harness.assert_closed()
     empty_registries()
+
+
+@pytest.mark.asyncio
+async def test_v2_publication_token_cannot_start_capture_before_custody_readback(
+    monkeypatch,
+):
+    before = {"utc_ns": 1_000_000_000, "monotonic_ns": 1_000_000_000}
+    after = {"utc_ns": 1_001_000_000, "monotonic_ns": 1_001_000_000}
+    plan = {"barrier": before}
+
+    def issued():
+        token = coordinator._PublicationV2(coordinator._ISSUER)
+        coordinator._PUBLICATIONS[token] = {
+            "parent": asyncio.current_task(),
+            "pid": os.getpid(),
+            "thread": get_ident(),
+            "loop": asyncio.get_running_loop(),
+            "plan": plan,
+            "barrier": before,
+            "expires_at": coordinator.utc_from_ns(2_000_000_000),
+            "custody_barrier_resealed": False,
+        }
+        return token
+
+    premature = issued()
+    with pytest.raises(ValueError, match="owned_publication_unavailable"):
+        coordinator._take_publication_v2(premature)
+    assert premature not in coordinator._PUBLICATIONS
+
+    monkeypatch.setattr(coordinator, "native_stamp", lambda: after)
+    ready = issued()
+    assert coordinator._seal_post_commit_publication_barrier_v2(ready) == after
+    assert plan["barrier"] == after
+    with pytest.raises(ValueError, match="public_v2_publication_unavailable"):
+        coordinator._seal_post_commit_publication_barrier_v2(ready)
+    assert coordinator._take_publication_v2(ready)["barrier"] == after
+    assert ready not in coordinator._PUBLICATIONS
+
+
+@pytest.mark.asyncio
+async def test_v2_custody_barrier_rejects_reverse_clock_and_expiry(monkeypatch):
+    before = {"utc_ns": 1_000_000_000, "monotonic_ns": 1_000_000_000}
+    for after in (
+        {"utc_ns": 1_000_000_000, "monotonic_ns": 1_000_000_000},
+        {"utc_ns": 1_000_000_000, "monotonic_ns": 1_001_000_000},
+        {"utc_ns": 1_001_000_000, "monotonic_ns": 1_000_000_000},
+        {"utc_ns": 2_000_000_000, "monotonic_ns": 2_000_000_000},
+    ):
+        token = coordinator._PublicationV2(coordinator._ISSUER)
+        plan = {"barrier": before}
+        coordinator._PUBLICATIONS[token] = {
+            "parent": asyncio.current_task(),
+            "pid": os.getpid(),
+            "thread": get_ident(),
+            "loop": asyncio.get_running_loop(),
+            "plan": plan,
+            "barrier": before,
+            "expires_at": coordinator.utc_from_ns(2_000_000_000),
+            "custody_barrier_resealed": False,
+        }
+        monkeypatch.setattr(coordinator, "native_stamp", lambda after=after: after)
+        with pytest.raises(ValueError, match="public_v2_post_commit_barrier_invalid"):
+            coordinator._seal_post_commit_publication_barrier_v2(token)
+        assert plan["barrier"] == before
+        with pytest.raises(ValueError, match="owned_publication_unavailable"):
+            coordinator._take_publication_v2(token)
 
 
 @pytest.mark.asyncio

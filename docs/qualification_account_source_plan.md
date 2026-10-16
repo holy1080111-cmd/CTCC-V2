@@ -147,6 +147,12 @@ Balance uTime 與 position uTime 分別描述來源更新，後者可長期不�
 
 ## 6. Local ledger 與不得 complete 的情況
 
+目前 `QualificationLedgerRepository.reconcile_scope` 可把 caller 建立的
+`AccountLedgerClaims` 寫入 UID 鎖定 revision，但該資料列沒有 collector-owned
+簽章來源 witness 或持久來源譜系。V2/V3 operational reservation 因此另有
+獨立硬性拒絕；即使未來 R7 計算通過，單靠 claims hash、完整 stamp 或 revision
+仍不能取得預留權限。這個拒絕閘不是完整帳戶 collector，也不證明帳戶為空。
+
 Local checkpoint 至少以 `(environment, uid, settlement_currency)` 分域，保存 revision、全部 in-flight/uncertain、原始 intent/order/algo 關係、history watermark 與 seed、peak window 與來源 pin。**這不是要求交易所 ID 連號，也不是已實作 R6 原子預留。**
 
 以下任何一項存在都不得產生 complete 風控 snapshot：

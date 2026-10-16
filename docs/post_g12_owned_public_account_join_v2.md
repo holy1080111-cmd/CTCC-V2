@@ -15,8 +15,10 @@ device/inode 身分；各自發佈及重新開啟讀回時必須仍是同一目�
 SL、TP、report、instrument 及帳戶 UID。原始輸入仍由 caller 提供；這項重播
 **尚未**把 V4 的受控原始來源診斷接成可建立候選的來源權限。
 
-只有本次 G12 完整寫入並 readback 後，私有 `_PublicationV2` 才能開始新的
-公開 REST／WS 收集。公開 carrier 在同一 task 一次性消耗，逐一要求 HTTP
+只有本次 G12 完整寫入、DB0039 publication commit 與分開 readback 後，流程
+才取新的原生 UTC／monotonic 時鐘樣本，重新封存 `_PublicationV2` 的公開來源
+not-before 邊界；若時鐘未嚴格前進或候選已到期即拒絕，憑證也不能提前消耗。
+公開 REST／WS 收集使用這個較晚的邊界。公開 carrier 在同一 task 一次性消耗，逐一要求 HTTP
 request 與 WS connection start 嚴格晚於 G12 publication barrier。之後才
 啟動受控 Demo 帳戶收集，將原生 V6 raw-packet lease 在同一 task 一次性消耗；
 account packet barrier 與每頁 request start 必須晚於 G12，且每頁不得早於

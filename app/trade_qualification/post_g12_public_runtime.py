@@ -125,7 +125,10 @@ def _take_publication_exact(value, expected):
         or task.cancelling()
         or (
             expected is _PublicationV2
-            and result["loop"] is not asyncio.get_running_loop()
+            and (
+                result["loop"] is not asyncio.get_running_loop()
+                or result["custody_barrier_resealed"] is not True
+            )
         )
     ):
         raise ValueError("owned_publication_unavailable")
@@ -535,6 +538,7 @@ def _publish_lineage_v2(
         "barrier": last,
         "publication_completed_at": origin.publication_completed_at,
         "expires_at": origin.deadline,
+        "custody_barrier_resealed": False,
     }
     return publication, evidence, origin, last
 
@@ -589,6 +593,44 @@ async def _complete_lineage_v2(
         claim, committed, evidence, evidence_root
     )
     return committed
+
+
+def _seal_post_commit_publication_barrier_v2(publication):
+    """Start the public-source clock only after durable G12 readback succeeds.
+
+    The private token remains single-use and task-bound. Its journal plan and
+    runtime not-before clock receive the same later native stamp; the G12
+    receipt's publication time is left intact for independent replay.
+    """
+    if type(publication) is not _PublicationV2:
+        raise ValueError("public_v2_publication_required")
+    claim = _PUBLICATIONS.get(publication)
+    task = asyncio.current_task()
+    if (
+        claim is None
+        or task is None
+        or task.cancelling()
+        or claim["parent"] is not task
+        or claim["pid"] != os.getpid()
+        or claim["thread"] != get_ident()
+        or claim["loop"] is not asyncio.get_running_loop()
+        or claim["custody_barrier_resealed"] is not False
+    ):
+        raise ValueError("public_v2_publication_unavailable")
+    stamp = native_stamp()
+    previous = claim["barrier"]
+    validate_stamps((previous, stamp))
+    at = utc_from_ns(stamp["utc_ns"])
+    if (
+        stamp["utc_ns"] <= previous["utc_ns"]
+        or stamp["monotonic_ns"] <= previous["monotonic_ns"]
+        or at >= claim["expires_at"]
+    ):
+        raise ValueError("public_v2_post_commit_barrier_invalid")
+    claim["barrier"] = stamp
+    claim["plan"]["barrier"] = stamp
+    claim["custody_barrier_resealed"] = True
+    return stamp
 
 
 async def publish_capture_public_v2(
@@ -681,6 +723,7 @@ async def publish_capture_public_v2(
             pre,
             inputs,
         )
+        last = _seal_post_commit_publication_barrier_v2(publication)
         carrier = await _capture_after_publication_v2(
             publication, selected, public_root
         )

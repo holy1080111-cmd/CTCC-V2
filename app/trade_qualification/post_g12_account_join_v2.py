@@ -679,6 +679,7 @@ async def publish_capture_public_account_v2(
             pre,
             inputs,
         )
+        last = public_runtime._seal_post_commit_publication_barrier_v2(publication)
         if (
             origin.candidate.candidate_entry != intent.candidate_entry
             or origin.candidate.stop_loss != candidate.stop_loss

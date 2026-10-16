@@ -5,6 +5,7 @@ from uuid import uuid4
 import pytest
 
 from app.database.repositories.qualification_ledger import QualificationLedgerRepository
+from app.trade_qualification import reservations as reservation_module
 from app.trade_qualification.recheck import RecordedRecheckAssessment
 from app.trade_qualification.reservations import QualificationLedgerError
 from app.trade_qualification.submission_intent import _document
@@ -65,3 +66,29 @@ async def test_caller_pass_flag_and_valid_offline_replay_both_fail_closed(
         await repo.reserve(fixture.request)
     state = await repo.read_scope(fixture.request.scope)
     assert state.ledger_revision == 1 and not state.active
+
+
+async def test_positive_r7_alone_cannot_promote_caller_account_revision(
+    database, chain, monkeypatch
+):
+    fixture, _ = chain
+    repo, _ = await shared.initialize(database, fixture)
+    # Adversarially bypass the separate, currently hard-denied R7 check. The
+    # account source boundary must still prevent any durable reservation.
+    monkeypatch.setattr(
+        reservation_module,
+        "_require_owned_recheck_for_reservation",
+        lambda _request: None,
+    )
+    with pytest.raises(
+        QualificationLedgerError, match="ledger_owned_account_revision_missing"
+    ):
+        await repo.reserve(fixture.request)
+    state = await repo.read_scope(fixture.request.scope)
+    assert state.account_revision == state.ledger_revision == 1
+    assert not state.active
+    assert (
+        await repo.read_event_observation(
+            fixture.request.scope, fixture.request.origin.original_event_key
+        )
+    ).matched is None

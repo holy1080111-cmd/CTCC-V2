@@ -6048,3 +6048,32 @@ evaluation reservation before opening hash-pinned holdout files; 22 focused
 tests passed, including alias rejection. Local SQLite can be replaced and
 data read outside the adapter, so original point-in-time custody, Gate 3,
 sealed OOS and Gate 4 remain **FAIL**.
+
+## 2026-10-16 later exact-source and current safety changes
+
+The preceding historical entries retain their original source identity and
+must not be read as current acceptance. Source `5df23f1051fd8225739789f1d27f106b9e0e25f5`
+(tree `64f5158a193eb412e9743ab36d0baa48a8781cea`) was preserved in an
+exact archive and Git bundle under
+`../../validation-results/checkpoint-5df23f1-20261016/`; source/manifest and
+bundle readback passed. Its [CI run 38886217746](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/38886217746)
+was still running when these later changes were prepared. Component results
+from that run cannot validate this changed source or supply final union,
+PostgreSQL, Docker or release acceptance.
+
+The current working source adds a second native UTC/monotonic publication
+barrier **after** DB0039 G12 publication commit and separate readback. The
+private V2 publication token cannot start public capture until that later
+barrier is resealed. Public-only, public/account and public/account-history
+paths share the requirement; clock regression or expiry rejects the attempt.
+Focused synthetic public-flow/barrier cases (4), account-join cases (11),
+history-join case (1) and failed-DB-readback denial case (1) passed. No
+trusted Demo source or live exchange request is inferred from these fixtures.
+
+Separately, V2/V3 reservation admission now independently rejects a
+`reconcile_scope` account revision because its caller-written claims have no
+collector-owned signed-source witness or durable source lineage. Two focused
+unit cases and two existing R7 denial cases passed. A new adversarial
+PostgreSQL case remains unexecuted locally without an isolated database; it
+must pass in matching exact-source CI. These guards remain **DENY**, do not
+materialize a complete `PortfolioRiskSnapshot`, and do not authorize an order.
