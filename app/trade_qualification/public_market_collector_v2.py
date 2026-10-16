@@ -10,6 +10,7 @@ import asyncio
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from fractions import Fraction
 
 from app.domain.source_primitives import canonical, decode, sha
 from app.exchange.okx.symbols import REVIEWED_DEMO_INSTRUMENT_IDS
@@ -281,7 +282,7 @@ def _scope_route(scope):
 
 
 def _validate_cross_frame_candles(packet):
-    """Reject contradictory confirmed OHLC over complete overlapping bars."""
+    """Reject contradictory confirmed OHLC and volumes over complete overlaps."""
     for parent, child in zip(packet.frames[:-1], packet.frames[1:], strict=True):
         child_seconds = candles.BAR_SECONDS[child.timeframe]
         parent_seconds = candles.BAR_SECONDS[parent.timeframe]
@@ -314,6 +315,14 @@ def _validate_cross_frame_candles(packet):
                 or row.close != sequence[-1].close
             ):
                 _deny("public_v2_candle_cross_frame_mismatch")
+            # Compare only like units. Without a reviewed rounding allowance,
+            # even a small disagreement cannot establish volume coherence.
+            if any(
+                Fraction(getattr(row, field))
+                != sum(Fraction(getattr(item, field)) for item in sequence)
+                for field in ("volume_contracts", "volume_currency", "volume_quote")
+            ):
+                _deny("public_v2_candle_cross_frame_volume_mismatch")
         if not compared:
             _deny("public_v2_candle_cross_frame_overlap_missing")
 

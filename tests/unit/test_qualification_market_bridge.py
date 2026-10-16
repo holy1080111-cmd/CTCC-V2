@@ -315,6 +315,18 @@ def v2_engine_source(direction):
     for rows in source.market.candles.values():
         for candle in rows:
             candle.volume_quote = candle.volume_currency * candle.close
+    # Parent turnover is a sum of trades, not base volume times the last price.
+    frames = source.market.candles
+    for parent, child, width in (("15m", "5m", 3), ("1H", "15m", 4), ("4H", "1H", 4)):
+        children = {row.timestamp: row for row in frames[child]}
+        seconds = {"5m": 300, "15m": 900, "1H": 3600}[child]
+        for row in frames[parent]:
+            covered = [
+                children.get(row.timestamp + timedelta(seconds=index * seconds))
+                for index in range(width)
+            ]
+            if all(part is not None for part in covered):
+                row.volume_quote = sum(part.volume_quote for part in covered)
     values = source.market.ticker.model_dump()
     contracts = values.pop("volume_24h")
     values.pop("volume_quote_24h")

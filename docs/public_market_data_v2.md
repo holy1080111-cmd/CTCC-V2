@@ -54,6 +54,14 @@ bytes. Offline packet consistency does not attest the original TLS or IO owner.
 The existing private runtime owner and its one-use same-invocation handoff remain
 the separate acquisition boundary.
 
+For each complete overlapping 4H→1H→15m→5m interval, the V2 replay checks
+the parent OHLC against its children and independently sums contract, base-
+currency and quote-currency volumes in their original units. A disagreement,
+including one hidden by ordinary Decimal context rounding, denies the packet;
+there is no inferred rounding allowance. Incomplete edge intervals are not
+treated as complete overlap. This is a consistency check on recorded public
+bytes, not proof that the network source or historical availability is trusted.
+
 ## One arithmetic core
 
 data.py retains the V1 evaluate_data signature, CollectedQuote validation and V1

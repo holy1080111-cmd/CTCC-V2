@@ -1,8 +1,9 @@
-"""Cross-frame OHLC is reconstructed from raw pages, including offline replay."""
+"""Cross-frame OHLC and volume replay from raw pages."""
 
 import json
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 
@@ -18,7 +19,9 @@ from tests.unit.research.test_owned_public_runtime_v2 import (
 )
 
 
-def _changed_high(packet, timeframe, *, timestamp=None, minimum_high=None):
+def _changed_high(
+    packet, timeframe, *, timestamp=None, minimum_high=None, volume_field=None
+):
     frames = list(packet.frames)
     frame_index = next(
         index for index, frame in enumerate(frames) if frame.timeframe == timeframe
@@ -38,7 +41,17 @@ def _changed_high(packet, timeframe, *, timestamp=None, minimum_high=None):
     raised = max(
         target.high, target.high if minimum_high is None else minimum_high
     ) + Decimal(1)
-    row[2] = str(raised)
+    field = "high" if volume_field is None else volume_field
+    column = {
+        "high": 2,
+        "volume_contracts": 5,
+        "volume_currency": 6,
+        "volume_quote": 7,
+    }[field]
+    changed_value = (
+        raised if volume_field is None else getattr(target, field) + Decimal(1)
+    )
+    row[column] = str(changed_value)
     raw = canonical(body)
     _, canonical_text = candles._parse(raw)
     pages[0] = page.model_copy(
@@ -51,7 +64,7 @@ def _changed_high(packet, timeframe, *, timestamp=None, minimum_high=None):
         }
     )
     confirmed = tuple(
-        row.model_copy(update={"high": raised})
+        row.model_copy(update={field: changed_value})
         if row.timestamp == target.timestamp
         else row
         for row in frame.confirmed
@@ -129,3 +142,135 @@ def test_rehashed_raw_5m_conflict_reaches_15m_child_check(captured):
         public.PublicMarketV2Error, match="public_v2_candle_cross_frame_mismatch"
     ):
         public.replay_collected_public_market_v2(raw, expected_sha256=sha(raw))
+
+
+@pytest.mark.parametrize(
+    "field", ["volume_contracts", "volume_currency", "volume_quote"]
+)
+def test_rehashed_raw_volume_conflict_denied_at_capture_and_readback(captured, field):
+    parts = routed_packet_parts(captured, "global")
+    accepted, _ = public._build(**parts)
+    # Clean synthetic packets remain replayable without source authenticity.
+    replayed = public.replay_collected_public_market_v2(
+        accepted.packet_json, expected_sha256=accepted.bundle_sha256
+    )
+    assert replayed.packet_json == accepted.packet_json
+    parts["candle_packet"] = _changed_high(
+        parts["candle_packet"], "15m", volume_field=field
+    )
+    # Rehashing the altered raw response establishes internal byte consistency;
+    # it must not hide the contradictory volume from the parent/child check.
+    candles.validate_collected_candles(parts["candle_packet"])
+    with pytest.raises(
+        public.PublicMarketV2Error, match="public_v2_candle_cross_frame_volume_mismatch"
+    ):
+        public._build(**parts)
+    document = decode(accepted.packet_json, public.MAX_PACKET_BYTES)
+    document["candles"] = parts["candle_packet"].model_dump(
+        mode="json", round_trip=True
+    )
+    raw = canonical(document)
+    with pytest.raises(
+        public.PublicMarketV2Error, match="public_v2_candle_cross_frame_volume_mismatch"
+    ):
+        public.replay_collected_public_market_v2(raw, expected_sha256=sha(raw))
+
+
+@pytest.mark.parametrize(
+    "field", [None, "volume_contracts", "volume_currency", "volume_quote"]
+)
+def test_complete_15m_volume_rollup_compares_each_unit(field):
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    children = tuple(
+        SimpleNamespace(
+            timestamp=start + timedelta(minutes=5 * index),
+            open=Decimal(100),
+            high=Decimal(101),
+            low=Decimal(99),
+            close=Decimal(100),
+            volume_contracts=Decimal(1),
+            volume_currency=Decimal("0.01"),
+            volume_quote=Decimal("1.005"),
+        )
+        for index in range(3)
+    )
+    parent = SimpleNamespace(
+        timestamp=start,
+        open=Decimal(100),
+        high=Decimal(101),
+        low=Decimal(99),
+        close=Decimal(100),
+        volume_contracts=Decimal(3),
+        volume_currency=Decimal("0.03"),
+        volume_quote=Decimal("3.015"),
+    )
+    packet = SimpleNamespace(
+        frames=(
+            SimpleNamespace(timeframe="15m", confirmed=(parent,)),
+            SimpleNamespace(timeframe="5m", confirmed=children),
+        )
+    )
+    if field is None:
+        public._validate_cross_frame_candles(packet)
+    else:
+        setattr(parent, field, Decimal(999))
+        with pytest.raises(
+            public.PublicMarketV2Error,
+            match="public_v2_candle_cross_frame_volume_mismatch",
+        ):
+            public._validate_cross_frame_candles(packet)
+
+
+@pytest.mark.parametrize(
+    "field", ["volume_contracts", "volume_currency", "volume_quote"]
+)
+@pytest.mark.parametrize("coherent", [False, True])
+def test_volume_rollup_preserves_small_terms_beyond_decimal_context(field, coherent):
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    amounts = (
+        "10000000000000000000",
+        "0.00000000000000000001",
+        "0.00000000000000000001",
+    )
+    # Use the storage DTO to prove these are accepted source amounts, including
+    # the exact 40-digit parent total; arithmetic must not round away the tails.
+    children = tuple(
+        candles.CapturedCandle(
+            timestamp=start + timedelta(minutes=5 * index),
+            open=Decimal(100),
+            high=Decimal(101),
+            low=Decimal(99),
+            close=Decimal(100),
+            volume_contracts=Decimal(amount),
+            volume_currency=Decimal(amount),
+            volume_quote=Decimal(amount),
+            confirmed=True,
+        )
+        for index, amount in enumerate(amounts)
+    )
+    exact = Decimal("10000000000000000000.00000000000000000002")
+    parent = children[0].model_copy(
+        update={
+            "volume_contracts": exact,
+            "volume_currency": exact,
+            "volume_quote": exact,
+        }
+    )
+    if not coherent:
+        parent = parent.model_copy(update={field: Decimal(amounts[0])})
+    # model_copy skips validation, so explicitly validate its full contents.
+    parent = candles.CapturedCandle.model_validate(parent.model_dump())
+    packet = SimpleNamespace(
+        frames=(
+            SimpleNamespace(timeframe="15m", confirmed=(parent,)),
+            SimpleNamespace(timeframe="5m", confirmed=children),
+        )
+    )
+    if coherent:
+        public._validate_cross_frame_candles(packet)
+    else:
+        with pytest.raises(
+            public.PublicMarketV2Error,
+            match="public_v2_candle_cross_frame_volume_mismatch",
+        ):
+            public._validate_cross_frame_candles(packet)
