@@ -31,6 +31,14 @@ false and it has no complete G11 account risk snapshot. It cannot safely
 construct a complete G1--G11 run or DB0039 G12 custody claim from its summary.
 Gate 3, OOS, Demo, Micro Live, main merge and release remain unaccepted.
 
+Two additional DB0040 acceptance tests are prepared after `f0076a3`: a real
+PostgreSQL active-writer versus NOWAIT downgrade race on all five relevant
+tables, and a source-to-catalog comparison of three PL/pgSQL guard bodies,
+their execution permissions, and all 13 trigger bindings and states. Static
+collection and lint pass, but neither test has run against PostgreSQL yet.
+They cannot close migration or schema-drift acceptance until a later exact
+source CI executes and reads back their results.
+
 ## 2026-10-16 post-`51a4751` working-source boundary
 
 The matching [CI run 38828390421](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/38828390421)

@@ -32,6 +32,197 @@ from tests.integration.test_qualification_ledger_repository import (
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
 
+def _db0040_guard_bodies(migration):
+    rendered = {
+        "account_observation_typed_batch_guard": migration._batch_guard(),
+        "account_observation_typed_member_guard": migration._member_guard(),
+        "account_observation_typed_membership_guard": migration._membership_guard(),
+    }
+    bodies = {}
+    for name, sql in rendered.items():
+        opening = f"CREATE FUNCTION public.{name}() RETURNS trigger AS $$"
+        closing = "$$ LANGUAGE plpgsql SET search_path=pg_catalog,pg_temp;"
+        assert sql.count(opening) == sql.count(closing) == 1
+        before, after = sql.split(opening, 1)
+        body, remainder = after.split(closing, 1)
+        assert not before.strip() and not remainder.strip()
+        bodies[name] = body.encode("utf-8")
+    return bodies
+
+
+def _db0040_search_path_is_pinned(settings):
+    if type(settings) not in (list, tuple) or len(settings) != 1:
+        return False
+    setting = settings[0]
+    if type(setting) is not str:
+        return False
+    name, separator, value = setting.partition("=")
+    return (
+        name == "search_path"
+        and separator == "="
+        and tuple(part.strip() for part in value.split(","))
+        == ("pg_catalog", "pg_temp")
+    )
+
+
+async def _db0040_catalog_matches(connection, bodies, tables):
+    function_rows = await connection.execute(
+        text("""
+                SELECT p.proname AS name, p.prosrc AS body,
+                       p.proconfig AS settings,
+                       (lang.lanname='plpgsql' AND p.provolatile='v'
+                        AND NOT p.prosecdef AND p.prokind='f' AND p.pronargs=0
+                        AND p.prorettype='pg_catalog.trigger'::regtype)
+                         AS properties_valid,
+                       NOT EXISTS (
+                         SELECT 1 FROM pg_catalog.aclexplode(
+                           COALESCE(p.proacl,
+                                    pg_catalog.acldefault('f',p.proowner))
+                         ) AS acl
+                         WHERE acl.grantee=0
+                           AND acl.privilege_type='EXECUTE'
+                       ) AS public_execute_revoked
+                FROM pg_catalog.pg_proc p
+                JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+                JOIN pg_catalog.pg_language lang ON lang.oid=p.prolang
+                WHERE n.nspname='public'
+                  AND p.proname IN (
+                    'account_observation_typed_batch_guard',
+                    'account_observation_typed_member_guard',
+                    'account_observation_typed_membership_guard'
+                  )
+            """)
+    )
+    functions = function_rows.mappings().all()
+    if len(functions) != len(bodies) or {row["name"] for row in functions} != set(
+        bodies
+    ):
+        return False
+    for function in functions:
+        name = function["name"]
+        body = function["body"]
+        if (
+            type(body) is not str
+            or body.encode("utf-8") != bodies[name]
+            or function["properties_valid"] is not True
+            or not _db0040_search_path_is_pinned(function["settings"])
+            or function["public_execute_revoked"] is not True
+        ):
+            return False
+
+    batch = "demo_account_observation_typed_batches"
+    immutable = "qualification_ledger_immutable"
+    expected = {
+        (batch, "account_observation_typed_batch_guard"): (
+            7,
+            "account_observation_typed_batch_guard",
+            False,
+            False,
+            False,
+        ),
+        (batch, "account_observation_typed_membership_guard"): (
+            5,
+            "account_observation_typed_membership_guard",
+            True,
+            True,
+            True,
+        ),
+    }
+    for table in tables:
+        if table != batch:
+            expected[(table, "account_observation_typed_member_guard")] = (
+                7,
+                "account_observation_typed_member_guard",
+                False,
+                False,
+                False,
+            )
+        expected[(table, f"{table}_immutable")] = (27, immutable, False, False, False)
+        expected[(table, f"{table}_no_truncate")] = (34, immutable, False, False, False)
+    assert len(expected) == 13
+    trigger_rows = await connection.execute(
+        text("""
+                SELECT tab.relname AS table_name, tg.tgname AS trigger_name,
+                       tg.tgtype::integer AS kind,
+                       tg.tgdeferrable AS deferrable,
+                       tg.tginitdeferred AS initially_deferred,
+                       tg.tgconstraint::bigint<>0 AS constraint_trigger,
+                       proc.proname AS function_name,
+                       (tg.tgenabled='O' AND proc_ns.nspname='public'
+                        AND proc.pronargs=0
+                        AND proc.prorettype='pg_catalog.trigger'::regtype
+                        AND proc.oid=pg_catalog.to_regprocedure(
+                          'public.'||proc.proname||'()')) AS binding_valid
+                FROM pg_catalog.pg_trigger tg
+                JOIN pg_catalog.pg_class tab ON tab.oid=tg.tgrelid
+                JOIN pg_catalog.pg_namespace tab_ns
+                  ON tab_ns.oid=tab.relnamespace
+                JOIN pg_catalog.pg_proc proc ON proc.oid=tg.tgfoid
+                JOIN pg_catalog.pg_namespace proc_ns
+                  ON proc_ns.oid=proc.pronamespace
+                WHERE tab_ns.nspname='public' AND NOT tg.tgisinternal
+                  AND tab.relname IN (
+                    'demo_account_observation_typed_batches',
+                    'demo_account_observation_typed_facts',
+                    'demo_account_observation_typed_coverage',
+                    'demo_account_observation_typed_findings'
+                  )
+            """)
+    )
+    triggers = trigger_rows.mappings().all()
+    if len(triggers) != len(expected):
+        return False
+    actual = {}
+    for trigger in triggers:
+        key = (trigger["table_name"], trigger["trigger_name"])
+        if key in actual or trigger["binding_valid"] is not True:
+            return False
+        actual[key] = (
+            trigger["kind"],
+            trigger["function_name"],
+            trigger["deferrable"],
+            trigger["initially_deferred"],
+            trigger["constraint_trigger"],
+        )
+    return actual == expected
+
+
+async def test_db0040_catalog_matches_guard_source_and_rejects_drift(sandbox):
+    engine, _ = sandbox
+    migration = load_migration("0040")
+    bodies = _db0040_guard_bodies(migration)
+    tables = migration._TABLES
+    changed_guard = migration._batch_guard()
+    old_reason = "account_observation_typed_append_denied"
+    assert changed_guard.count(old_reason) == 1
+    changed_guard = changed_guard.replace(
+        "CREATE FUNCTION", "CREATE OR REPLACE FUNCTION", 1
+    ).replace(old_reason, "account_observation_typed_drift_probe_denied", 1)
+    mutations = (
+        changed_guard,
+        (
+            "ALTER TABLE public.demo_account_observation_typed_batches "
+            "DISABLE TRIGGER account_observation_typed_batch_guard"
+        ),
+        (
+            "GRANT EXECUTE ON FUNCTION "
+            "public.account_observation_typed_batch_guard() TO PUBLIC"
+        ),
+    )
+    for statement in mutations:
+        async with engine.connect() as connection:
+            transaction = await connection.begin()
+            try:
+                assert await _db0040_catalog_matches(connection, bodies, tables)
+                await connection.exec_driver_sql(statement)
+                assert not await _db0040_catalog_matches(connection, bodies, tables)
+            finally:
+                await transaction.rollback()
+
+    async with engine.connect() as connection:
+        assert await _db0040_catalog_matches(connection, bodies, tables)
+
+
 @pytest.mark.parametrize("revision", ["0040"])
 async def test_db0040_rendered_batch_guard_compiles_in_postgresql(sandbox, revision):
     engine, _ = sandbox
@@ -195,6 +386,32 @@ async def test_db0040_empty_downgrade_and_reupgrade_preserves_exact_schema(
     async with engine.begin() as connection:
         await connection.run_sync(migrate, revision, "upgrade")
     assert await shape(engine) == before
+
+
+@pytest.mark.parametrize("revision", ["0040"])
+async def test_db0040_active_writer_denies_downgrade_without_partial_drop(
+    sandbox, revision
+):
+    engine, _ = sandbox
+    before = await shape(engine)
+    locked_tables = (
+        "demo_account_capture_events",
+        *load_migration(revision)._TABLES,
+    )
+    assert len(locked_tables) == len(set(locked_tables)) == 5
+    for table in locked_tables:
+        async with engine.begin() as writer:
+            await writer.execute(
+                text(f"LOCK TABLE public.{table} IN ROW EXCLUSIVE MODE")
+            )
+            with pytest.raises(DBAPIError) as denied:
+                async with engine.begin() as migration:
+                    await migration.execute(
+                        text("SET LOCAL statement_timeout='2000ms'")
+                    )
+                    await migration.run_sync(migrate, revision, "downgrade")
+            assert denied.value.orig.sqlstate == "55P03"  # lock_not_available
+        assert await shape(engine) == before
 
 
 @pytest.mark.parametrize("revision", ["0040"])
