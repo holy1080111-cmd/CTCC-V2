@@ -15,7 +15,12 @@ from pydantic import Field, field_validator, model_validator
 from app.database.repositories.public_receipt_post_read_observation import (
     PublicReceiptPostReadRepository,
 )
-from app.mie.validation.artifact import FrozenGate3Artifact, _freeze, _verify
+from app.mie.validation.artifact import (
+    ArtifactVerificationError,
+    FrozenGate3Artifact,
+    _freeze,
+    _verify,
+)
 from app.mie.validation.contracts import (
     Gate3Claim,
     Gate3Contract,
@@ -114,6 +119,28 @@ class ScheduledPublicMinuteReceiptV1(Gate3Contract):
         return self
 
 
+class ScheduledPublicMinuteReceiptV2(ScheduledPublicMinuteReceiptV1):
+    """Exact native due timestamp for later half-open boundary replay."""
+
+    schema_version: Literal["ctcc.mie.gate3.scheduled_public_minute.v2"] = (
+        "ctcc.mie.gate3.scheduled_public_minute.v2"
+    )
+    due_observed_utc_ns: int | None = Field(
+        default=None, strict=True, ge=0, le=2**63 - 1
+    )
+
+    @model_validator(mode="after")
+    def native_due_matches_display_time(self) -> ScheduledPublicMinuteReceiptV2:
+        if (self.due_observed_utc_ns is None) != (self.due_observed_at is None):
+            raise ValueError("native due timestamp and display time must pair")
+        if (
+            self.due_observed_utc_ns is not None
+            and utc_from_ns(self.due_observed_utc_ns) != self.due_observed_at
+        ):
+            raise ValueError("native due timestamp differs from display time")
+        return self
+
+
 def _receipt(
     *,
     seal_sha256: str,
@@ -124,10 +151,11 @@ def _receipt(
     reason_code: _REASON,
     plan_sha256: str | None = None,
     due_observed_at: datetime | None = None,
+    due_observed_utc_ns: int | None = None,
     result: OwnedPostReadCapture | None = None,
-) -> FrozenGate3Artifact[ScheduledPublicMinuteReceiptV1]:
+) -> FrozenGate3Artifact[ScheduledPublicMinuteReceiptV2]:
     witnessed = None if result is None else result.witnessed
-    receipt = ScheduledPublicMinuteReceiptV1(
+    receipt = ScheduledPublicMinuteReceiptV2(
         seal_sha256=seal_sha256,
         coordinate_plan_sha256=coordinate_plan_sha256,
         schedule_sha256=schedule_sha256,
@@ -135,6 +163,7 @@ def _receipt(
         ordinal=ordinal,
         plan_sha256=plan_sha256,
         due_observed_at=due_observed_at,
+        due_observed_utc_ns=due_observed_utc_ns,
         reason_code=reason_code,
         capture_id=None if witnessed is None else witnessed.capture_id,
         capture_receipt_sha256=(
@@ -153,7 +182,7 @@ def _receipt(
             None if result is None else result.post_read_observed_at
         ),
     )
-    return _freeze(receipt, contract_type=ScheduledPublicMinuteReceiptV1)
+    return _freeze(receipt, contract_type=ScheduledPublicMinuteReceiptV2)
 
 
 async def capture_scheduled_public_minute_once(
@@ -167,7 +196,7 @@ async def capture_scheduled_public_minute_once(
     expected_seal_sha256: str,
     expected_schedule_sha256: str,
     ordinal: int,
-) -> FrozenGate3Artifact[ScheduledPublicMinuteReceiptV1]:
+) -> FrozenGate3Artifact[ScheduledPublicMinuteReceiptV2]:
     """Attempt one due minute only; never resubmit after an uncertain result.
 
     A returned incomplete receipt is diagnostic, not a repaired source. The
@@ -249,6 +278,7 @@ async def capture_scheduled_public_minute_once(
             **common,
             plan_sha256=plan_sha256,
             due_observed_at=due_at,
+            due_observed_utc_ns=now_ns,
             reason_code="not_due",
         )
     if now_ns >= plan.end_ns + MINUTE_NS:
@@ -256,6 +286,7 @@ async def capture_scheduled_public_minute_once(
             **common,
             plan_sha256=plan_sha256,
             due_observed_at=due_at,
+            due_observed_utc_ns=now_ns,
             reason_code="late",
         )
     try:
@@ -271,6 +302,7 @@ async def capture_scheduled_public_minute_once(
             **common,
             plan_sha256=plan_sha256,
             due_observed_at=due_at,
+            due_observed_utc_ns=now_ns,
             reason_code="capture_or_post_read_unresolved",
         )
     if (
@@ -283,12 +315,14 @@ async def capture_scheduled_public_minute_once(
             **common,
             plan_sha256=plan_sha256,
             due_observed_at=due_at,
+            due_observed_utc_ns=now_ns,
             reason_code="capture_result_mismatch",
         )
     return _receipt(
         **common,
         plan_sha256=plan_sha256,
         due_observed_at=due_at,
+        due_observed_utc_ns=now_ns,
         reason_code="source_chain_replayed_custody_unproven",
         result=result,
     )
@@ -296,17 +330,25 @@ async def capture_scheduled_public_minute_once(
 
 def verify_scheduled_public_minute_receipt(
     payload: bytes, *, expected_sha256: str
-) -> ScheduledPublicMinuteReceiptV1:
+) -> ScheduledPublicMinuteReceiptV1 | ScheduledPublicMinuteReceiptV2:
     """Verify exact canonical receipt bytes; never promote its claim."""
-    return _verify(
-        payload,
-        expected_sha256=expected_sha256,
-        contract_type=ScheduledPublicMinuteReceiptV1,
-    )
+    try:
+        return _verify(
+            payload,
+            expected_sha256=expected_sha256,
+            contract_type=ScheduledPublicMinuteReceiptV2,
+        )
+    except ArtifactVerificationError:
+        return _verify(
+            payload,
+            expected_sha256=expected_sha256,
+            contract_type=ScheduledPublicMinuteReceiptV1,
+        )
 
 
 __all__ = (
     "ScheduledPublicMinuteReceiptV1",
+    "ScheduledPublicMinuteReceiptV2",
     "capture_scheduled_public_minute_once",
     "verify_scheduled_public_minute_receipt",
 )

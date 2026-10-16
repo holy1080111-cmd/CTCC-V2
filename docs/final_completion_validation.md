@@ -1,5 +1,44 @@
 # Final completion validation state
 
+## 2026-10-16 post-`51a4751` working-source boundary
+
+The matching [CI run 38828390421](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/38828390421)
+was started for exact commit `51a4751f2677b758cd8ed751feec98ed58b68157`,
+tree `13a77612a7378997e986c3ebbfea278923af9566`, manifest SHA256
+`f09f0d621e35508d59a0356a2b5788b406050e5e2a77eb6067446557e1939699`.
+Its status was in progress when this section was written; a running job is not
+an acceptance result. The matching exact source archive and verified complete
+Git bundle are in `../../validation-results/checkpoint-51a4751-20261016/`.
+All 1,166 manifest members matched the archive bytes. A bounded archive scan
+found seven literal credential-assignment pattern hits in three explicitly
+synthetic unit-test fixtures; no raw values were retained in the scan receipt.
+This does not cover all possible secret encodings, other archives or runtime
+logs. No distributable Docker image digest exists yet.
+
+Further working-source changes after `51a4751` close a Gate 3 receipt boundary:
+the old V1 microsecond due time could not replay the original half-open native
+nanosecond decision. V2 now persists native due UTC nanoseconds and requires
+`[minute_end_ns, minute_end_ns + 60 seconds)` at publish/readback; exact old V1
+receipts remain readable but cannot continue a source-success window. Its
+scheduled-minute/window/one-shot focused tests passed 52/52. A separate V5
+test exercises the real pinned public packet, G1, current transport and quote
+age functions before a blocked local checkpoint; the V5 unit module passed
+34/34. These post-`51a4751` results are not covered by that CI and do not
+establish original-source custody, complete account risk, predictive OOS,
+execution authority or Demo acceptance. Gate 3 remains FAIL.
+
+An independent 9/15 candidate-to-Git audit retained
+`../../validation-results/sept15-candidate-git-provenance-20261016.json`
+(SHA256 `bbb07f66bbbbea7a5a390c6c6ce17e2603b546f52578d545f99f745e94bd66b2`).
+Among 237 reachable/reflog commits, nearest `ba8dd2474aea6eca99bd627bd057f192d9927ada`
+matches 556/582 candidate paths and blobs. The other 26 candidate blobs are
+not in the current Git object database. The historical candidate is a local
+archive/working-tree lineage, not an exact recovered Git commit. Its 39
+full-validation dependency tuples and candidate manifest match the retained
+contract, while normal discovery's 40th item is project egg-info. Historical
+Windows validation, original package bytes and current release-baseline
+acceptance remain absent.
+
 ## 2026-10-16 exact `58362d1` CI result and source boundary
 
 The matching [CI run 38450057039](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/38450057039)

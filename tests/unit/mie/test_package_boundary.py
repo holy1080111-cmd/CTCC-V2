@@ -23,7 +23,10 @@ from app.mie.validation import (
     PointInTimeReplaySnapshot,
     ProspectiveHoldoutSpec,
 )
-from app.mie.validation.scheduled_public_minute import ScheduledPublicMinuteReceiptV1
+from app.mie.validation.scheduled_public_minute import (
+    ScheduledPublicMinuteReceiptV1,
+    ScheduledPublicMinuteReceiptV2,
+)
 from app.mie.validation.scheduled_public_window import ScheduledWindowReadbackV1
 
 MIE_ROOT = Path(__file__).resolve().parents[3] / "app" / "mie"
@@ -124,6 +127,7 @@ def test_mie_decision_and_trace_have_no_order_geometry() -> None:
     assert forbidden_fields.isdisjoint(ArchiveBatchManifest.model_fields)
     assert forbidden_fields.isdisjoint(AvailabilityProvenance.model_fields)
     assert forbidden_fields.isdisjoint(ScheduledPublicMinuteReceiptV1.model_fields)
+    assert forbidden_fields.isdisjoint(ScheduledPublicMinuteReceiptV2.model_fields)
     assert forbidden_fields.isdisjoint(ScheduledWindowReadbackV1.model_fields)
 
 
@@ -144,6 +148,7 @@ def test_gate3_contracts_are_structurally_zero_authority() -> None:
         PointInTimeReplaySnapshot,
         ForwardDirectionLabel,
         ScheduledPublicMinuteReceiptV1,
+        ScheduledPublicMinuteReceiptV2,
         ScheduledWindowReadbackV1,
     ):
         assert contract_type.model_fields["runtime_consumers"].default == 0
@@ -159,6 +164,7 @@ def test_archive_rehearsal_cannot_attest_predictive_eligibility() -> None:
         AvailabilityProvenance,
         Gate3ProspectiveEvidenceArtifact,
         ScheduledPublicMinuteReceiptV1,
+        ScheduledPublicMinuteReceiptV2,
         ScheduledWindowReadbackV1,
     ):
         assert contract_type.model_fields["predictive_oos_eligible"].default is False

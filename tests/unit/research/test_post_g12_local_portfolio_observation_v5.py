@@ -3,6 +3,7 @@
 import asyncio
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -39,6 +40,23 @@ async def captured_public_journal(source_inputs_fixture, tmp_path_factory):
     return await v4_fixture.captured_public_journal.__wrapped__(
         source_inputs_fixture, tmp_path_factory
     )
+
+
+@pytest.fixture(scope="module")
+async def captured_fresh_public_journal(source_inputs_fixture, tmp_path_factory):
+    with pytest.MonkeyPatch.context() as patch:
+        clock, directory, harness, publications = v4_fixture.public_fixture.setup(
+            patch, source_inputs_fixture[0]
+        )
+        v4_fixture.public_fixture.fresh_funding_return(harness, clock)
+        result = await v4_fixture.public_fixture.invoke(
+            tmp_path_factory.mktemp("v5-public-fresh-funding")
+        )
+        assert result.packet is not None and result.journal_sha256 is not None
+        harness.assert_closed()
+        assert not publications
+        v4_fixture.public_fixture.empty_registries()
+        return result, dict(directory.content)
 
 
 def _roots(tmp_path):
@@ -762,6 +780,85 @@ async def test_v5_real_pinned_public_packet_expires_before_candidate(
     assert (roots[5] / "receipt.json").read_bytes() == v4.receipt_json
     assert all(record[field] is False for field in bridge._FALSE_FIELDS)
     assert result.admission == "DENY"
+
+
+@pytest.mark.asyncio
+async def test_v5_real_pinned_transport_and_economics_reach_local_denial(
+    tmp_path, monkeypatch, source_inputs_fixture, captured_fresh_public_journal
+):
+    source, values, run = source_inputs_fixture
+    packet = captured_fresh_public_journal[0].packet
+    completed = datetime.fromisoformat(decode(packet.packet_json)["completed_at"])
+    validation_at = completed + timedelta(seconds=1)
+    original = prior.joined._original
+    read_journal = prior._read_bound_public_journal
+    require_g1 = prior.joined.prior._require_final_original_g1
+    real_profile = bridge.current_economics.public_market_context_v2
+    real_quote_age = bridge.current_economics.quote_within_economics_policy_age_v2
+    _, pre, _ = original(source.market, run, values)
+    deadline = min(
+        pre.prefix.intent.expires_at,
+        pre.prefix.detection.trigger.expires_at,
+        pre.result.entry_zone.expires_at,
+        pre.prefix.timing.latest_valid_entry_time,
+    )
+    assert validation_at < deadline
+    require_g1(packet, pre, validation_at)
+    context = real_profile(
+        packet,
+        expected_bundle_sha256=packet.bundle_sha256,
+        evaluated_at=validation_at,
+    )
+    assert context.packet_sha256 == packet.bundle_sha256
+    assert real_quote_age(packet, pre.policy.economics, validation_at)
+
+    roots, scope, ledger, calls, v4 = _setup(
+        monkeypatch,
+        tmp_path,
+        reasons=("legacy_reconciliation_incomplete_or_exposed",),
+        deadline_override=deadline,
+        v4_received=completed + timedelta(milliseconds=200),
+        first_checkpoint_at=completed + timedelta(milliseconds=400),
+        second_checkpoint_at=completed + timedelta(milliseconds=600),
+        validation_at=validation_at,
+        public_journal=captured_fresh_public_journal,
+    )
+    profile_spy = Mock(wraps=real_profile)
+    quote_age_spy = Mock(wraps=real_quote_age)
+    monkeypatch.setattr(prior.joined, "_original", original)
+    monkeypatch.setattr(prior, "_read_bound_public_journal", read_journal)
+    monkeypatch.setattr(prior.joined.prior, "_require_final_original_g1", require_g1)
+    monkeypatch.setattr(
+        bridge.current_economics, "public_market_context_v2", profile_spy
+    )
+    monkeypatch.setattr(
+        bridge.current_economics, "quote_within_economics_policy_age_v2", quote_age_spy
+    )
+    result = await bridge.publish_capture_inspect_local_portfolio_v5(
+        *roots,
+        source.market,
+        **{
+            **_invoke_kwargs(roots, ledger, scope),
+            "run": run,
+            "original_inputs": values,
+        },
+    )
+    record = decode(result.receipt_json)
+    assert calls == ["new_v4", "local_read", "local_read"]
+    profile_spy.assert_called_once_with(
+        packet,
+        expected_bundle_sha256=packet.bundle_sha256,
+        evaluated_at=validation_at,
+    )
+    quote_age_spy.assert_called_once_with(packet, pre.policy.economics, validation_at)
+    assert (
+        record["public_journal_sha256"]
+        == captured_fresh_public_journal[0].journal_sha256
+    )
+    assert record["code"] == "local_state_blocked"
+    assert record["local_flat_at_reads"] is False
+    assert result.admission == "DENY" and result.execution_authority is False
+    assert (roots[5] / "receipt.json").read_bytes() == v4.receipt_json
 
 
 @pytest.mark.asyncio

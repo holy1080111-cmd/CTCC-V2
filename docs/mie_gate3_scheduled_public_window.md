@@ -50,11 +50,15 @@ receipt with the matching pin and source-chain reason before creating the next
 one-use claim. A missing or unresolved prior receipt leaves its original
 tombstone intact and denies the next ordinal. The coordinator remains the
 default-off window interface; these store checks close a direct-call bypass,
-but the caller still has to protect prior pins independently. The stored
-`due_observed_at` has microsecond precision and cannot prove the exact
-nanosecond boundary accepted by the original capture clock; actual HTTP
-request start also needs separate causal verification. Neither this local
-readback nor a full 4/4 synthetic window is a time-attested source.
+but the caller still has to protect prior pins independently. The V1
+`due_observed_at` has only microsecond precision; an old V1 source-success
+receipt remains readable but cannot continue the window. New V2 receipts also
+pin the native `due_observed_utc_ns`, bind it to the displayed UTC value and
+replay the exact half-open `[minute_end_ns, minute_end_ns + 60 seconds)`
+boundary at publication and readback. This proves only the receipt's internal
+boundary: independent host-clock trust and actual HTTP request-start causality
+still need separate evidence. Neither this local readback nor a full 4/4
+synthetic window is a time-attested source.
 There is no live public acquisition or real candidate in the tests for this
 module. Focused synthetic tests cover default-off behavior, exact four-ordinal
 continuation and restart readback, skipped/early/late minutes, ambiguous result,

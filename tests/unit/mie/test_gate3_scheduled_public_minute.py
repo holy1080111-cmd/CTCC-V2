@@ -142,6 +142,8 @@ async def test_one_due_coordinate_yields_hash_only_computational_receipt(case):
     )
     assert result.status == "incomplete"
     assert result.reason_code == "source_chain_replayed_custody_unproven"
+    assert result.schema_version == "ctcc.mie.gate3.scheduled_public_minute.v2"
+    assert result.due_observed_utc_ns == schedule.plans[0].end_ns + 1_000_000_000
     assert result.plan_sha256 == schedule.plans[0].canonical_sha256()
     assert result.post_read_v3_sha256 == "f" * 64
     assert result.blind_capture_sha256 == "e" * 64
@@ -154,6 +156,20 @@ async def test_one_due_coordinate_yields_hash_only_computational_receipt(case):
     with pytest.raises(ArtifactVerificationError):
         owner.verify_scheduled_public_minute_receipt(
             frozen.payload + b" ", expected_sha256=frozen.sha256
+        )
+
+
+async def test_native_due_stamp_must_match_display_time(case):
+    kwargs, _, _ = case
+    receipt = (await owner.capture_scheduled_public_minute_once(**kwargs)).contract
+    fields = receipt.model_dump(mode="python")
+    with pytest.raises(ValueError, match="native due timestamp differs"):
+        owner.ScheduledPublicMinuteReceiptV2.model_validate(
+            {**fields, "due_observed_utc_ns": fields["due_observed_utc_ns"] + 1}
+        )
+    with pytest.raises(ValueError, match="must pair"):
+        owner.ScheduledPublicMinuteReceiptV2.model_validate(
+            {**fields, "due_observed_utc_ns": None}
         )
 
 

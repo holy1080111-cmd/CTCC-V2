@@ -25,10 +25,10 @@ from app.mie.validation.prospective_capture_schedule import (
 )
 from app.mie.validation.scheduled_public_minute import (
     ScheduledPublicMinuteReceiptV1,
+    ScheduledPublicMinuteReceiptV2,
     capture_scheduled_public_minute_once,
     verify_scheduled_public_minute_receipt,
 )
-from app.public_market_source.public_market_receipts import utc_from_ns
 from app.trade_evidence.storage import (
     _posix_root,
     _root_path,
@@ -297,13 +297,16 @@ class ScheduledMinuteReceiptStore:
     ) -> None:
         if receipt.reason_code != "source_chain_replayed_custody_unproven":
             return
-        due = receipt.due_observed_at
+        # V1 retained only microsecond display time and cannot replay the
+        # original half-open nanosecond decision. Preserve its bytes for audit,
+        # but never use a V1 success to continue a sealed window.
+        if type(receipt) is not ScheduledPublicMinuteReceiptV2:
+            raise ScheduledMinuteUnresolved(
+                "legacy scheduled minute lacks exact replay time"
+            )
+        due_ns = receipt.due_observed_utc_ns
         end_ns = self._schedule.plans[ordinal].end_ns
-        # utc_from_ns rounds a sub-microsecond native stamp up. A sample just
-        # before the next close may therefore equal the upper boundary here.
-        if due is None or not (
-            utc_from_ns(end_ns) <= due <= utc_from_ns(end_ns + MINUTE_NS)
-        ):
+        if due_ns is None or not end_ns <= due_ns < end_ns + MINUTE_NS:
             raise ScheduledMinuteUnresolved(
                 "scheduled minute replay time differs from sealed plan"
             )

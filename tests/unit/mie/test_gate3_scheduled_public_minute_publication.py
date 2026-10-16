@@ -39,11 +39,13 @@ def _inputs(case, tmp_path: Path):
     return root, pins, call, state, schedule
 
 
-def _with_due_time(frozen, due_at):
-    contract = capture_owner.ScheduledPublicMinuteReceiptV1.model_validate(
+def _with_due_time(frozen, due_ns):
+    due_at = utc_from_ns(due_ns)
+    contract = capture_owner.ScheduledPublicMinuteReceiptV2.model_validate(
         {
             **frozen.contract.model_dump(mode="python"),
             "due_observed_at": due_at,
+            "due_observed_utc_ns": due_ns,
             "post_read_observed_at": due_at + timedelta(seconds=1),
         }
     )
@@ -162,7 +164,8 @@ async def test_store_rejects_incomplete_previous_source_without_new_claim(
     [
         (-1_000, False),
         (0, True),
-        (MINUTE_NS, True),
+        (MINUTE_NS - 1, True),
+        (MINUTE_NS, False),
         (MINUTE_NS + 1_000, False),
     ],
 )
@@ -174,8 +177,7 @@ async def test_source_replay_due_time_must_match_sealed_minute_before_publish(
 
     async def changed_due(**kwargs):
         frozen = await original(**kwargs)
-        due = utc_from_ns(schedule.plans[0].end_ns + offset_ns)
-        return _with_due_time(frozen, due)
+        return _with_due_time(frozen, schedule.plans[0].end_ns + offset_ns)
 
     monkeypatch.setattr(owner, "capture_scheduled_public_minute_once", changed_due)
     store = owner.ScheduledMinuteReceiptStore.initialize(root, **pins)
@@ -189,21 +191,65 @@ async def test_source_replay_due_time_must_match_sealed_minute_before_publish(
         assert not (root / "minute-00000000" / "receipt.json").exists()
 
 
-async def test_replay_readback_rejects_impossible_due_with_matching_local_digest(
-    case, tmp_path
+@pytest.mark.parametrize("offset_ns", [-1, MINUTE_NS, MINUTE_NS + 1_000])
+async def test_replay_readback_rejects_outside_half_open_due_with_matching_digest(
+    case, tmp_path, offset_ns
 ):
     root, pins, call, _, schedule = _inputs(case, tmp_path)
     store = owner.ScheduledMinuteReceiptStore.initialize(root, **pins)
     frozen = await store.capture_once(**call)
-    impossible = _with_due_time(
-        frozen, utc_from_ns(schedule.plans[0].end_ns + MINUTE_NS + 1_000)
-    )
+    impossible = _with_due_time(frozen, schedule.plans[0].end_ns + offset_ns)
     slot = root / "minute-00000000"
     (slot / "receipt.json").write_bytes(impossible.payload)
     (slot / "receipt.sha256").write_bytes(impossible.sha256.encode("ascii") + b"\n")
     restarted = owner.ScheduledMinuteReceiptStore.resume(root, **pins)
     with pytest.raises(owner.ScheduledMinuteUnresolved, match="replay time"):
         restarted.read_ordinal(0, expected_receipt_sha256=impossible.sha256)
+
+
+async def test_legacy_v1_success_keeps_exact_bytes_but_cannot_continue_window(
+    case, tmp_path, monkeypatch
+):
+    root, pins, call, _, _ = _inputs(case, tmp_path)
+    original = owner.capture_scheduled_public_minute_once
+    legacy_artifact = None
+
+    async def legacy_result(**kwargs):
+        nonlocal legacy_artifact
+        current = await original(**kwargs)
+        fields = current.contract.model_dump(mode="python")
+        fields.pop("due_observed_utc_ns")
+        fields["schema_version"] = "ctcc.mie.gate3.scheduled_public_minute.v1"
+        legacy = capture_owner.ScheduledPublicMinuteReceiptV1.model_validate(fields)
+        frozen = _freeze(legacy, contract_type=type(legacy))
+        legacy_artifact = frozen
+        assert (
+            capture_owner.verify_scheduled_public_minute_receipt(
+                frozen.payload, expected_sha256=frozen.sha256
+            )
+            == legacy
+        )
+        return frozen
+
+    monkeypatch.setattr(owner, "capture_scheduled_public_minute_once", legacy_result)
+    store = owner.ScheduledMinuteReceiptStore.initialize(root, **pins)
+    with pytest.raises(
+        owner.ScheduledMinuteUnresolved, match="legacy scheduled minute"
+    ):
+        await store.capture_once(**call)
+    assert (root / "minute-00000000" / "claim.json").is_file()
+    assert not (root / "minute-00000000" / "receipt.json").exists()
+    assert legacy_artifact is not None
+    slot = root / "minute-00000000"
+    (slot / "receipt.json").write_bytes(legacy_artifact.payload)
+    (slot / "receipt.sha256").write_bytes(
+        legacy_artifact.sha256.encode("ascii") + b"\n"
+    )
+    restarted = owner.ScheduledMinuteReceiptStore.resume(root, **pins)
+    with pytest.raises(
+        owner.ScheduledMinuteUnresolved, match="legacy scheduled minute"
+    ):
+        restarted.read_ordinal(0, expected_receipt_sha256=legacy_artifact.sha256)
 
 
 @pytest.mark.parametrize("offset,reason", [(-1, "not_due"), (60_000_000_000, "late")])
