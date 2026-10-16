@@ -51,7 +51,8 @@ async def raw_sources(monkeypatch, direction="long", *, neutral=False):
         ]
         for frame, rows in market.candles.items()
     }
-    bid, ask, price = market.ticker.bid, market.ticker.ask, market.ticker.last
+    ticker_source = market.ticker
+    bid, ask, price = ticker_source.bid, ticker_source.ask, ticker_source.last
     at = NOW + timedelta(seconds=1)
     original_ticker = public_fixture.ticker
 
@@ -101,9 +102,9 @@ async def raw_sources(monkeypatch, direction="long", *, neutral=False):
                 askPx=str(ask),
                 bidSz="2",
                 askSz="3",
-                open24h="100",
-                high24h="102",
-                low24h="98",
+                open24h=str(ticker_source.open_24h),
+                high24h=str(ticker_source.high_24h),
+                low24h=str(ticker_source.low_24h),
                 vol24h="100",
                 volCcy24h="1",
             )

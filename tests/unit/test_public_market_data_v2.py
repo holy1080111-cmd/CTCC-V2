@@ -119,16 +119,26 @@ def test_full_owner_raw_profile_and_upcoming_funding_pair_recompute_g1(
     assert restored.evaluation_sha256 == passing.evaluation_sha256
 
 
-@pytest.mark.parametrize("field,offset", [("low24h", "0.01"), ("high24h", "-0.01")])
-def test_raw_v2_ticker_outside_24h_range_fails_g1_without_authority(
-    captured, field, offset
+@pytest.mark.parametrize(
+    "field,base,offset,expected",
+    [
+        ("low24h", "last", "0.01", "market_source_invalid"),
+        ("high24h", "last", "-0.01", "market_source_invalid"),
+        ("open24h", "low24h", "-0.01", "market_source_invalid"),
+        ("open24h", "high24h", "0.01", "market_source_invalid"),
+        ("open24h", "low24h", "0", "passed"),
+        ("open24h", "high24h", "0", "passed"),
+    ],
+)
+def test_raw_v2_ticker_24h_range_geometry_and_boundaries_without_authority(
+    captured, field, base, offset, expected
 ):
     parts = routed_packet_parts(captured, "global")
     _, quote, observations = public._quote_parts(parts["quote"])
     ticker = observations[-1]
     payload = json.loads(ticker.response_body)
     row = payload["data"][0]
-    row[field] = str(D(row["last"]) + D(offset))
+    row[field] = str(D(row[base]) + D(offset))
     raw = canonical(payload)
     canonical_text = wire._parse(raw)[1]
     malformed_ticker = ticker.model_copy(
@@ -152,8 +162,8 @@ def test_raw_v2_ticker_outside_24h_range_fails_g1_without_authority(
     )
     packet, _ = public._build(**parts)
     result = evaluate(packet, captured[0].context.evaluated_at)
-    assert result.gate.code == "market_source_invalid"
-    assert result.source_json is None
+    assert result.gate.code == expected
+    assert (result.source_json is None) is (expected != "passed")
     assert result.admission == "DENY"
     assert result.execution_authority is False
     assert result.source_authenticity_verified is False

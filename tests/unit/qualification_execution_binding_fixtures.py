@@ -6,9 +6,18 @@ from datetime import timedelta
 
 from app.trade_qualification import account_capture as accounts
 from app.trade_qualification.current_risk import evaluate_current_risk
+from app.trade_qualification.engine import PreEvidenceRun
+from app.trade_qualification.history_engine import (
+    HistoryPreEvidenceRun,
+    HistoryPreEvidenceRunV2,
+    HistoryPreEvidenceRunV3,
+    HistoryPreEvidenceRunV4,
+)
 from app.trade_qualification.recheck import evaluate_recorded_recheck
 from app.trade_qualification.reservations import (
     ReservationReceipt,
+    ReservationRequestV2,
+    ReservationRequestV3,
     RiskCoverage,
     ScenarioOperands,
     digest,
@@ -31,8 +40,21 @@ def document(value):
 def consumed_receipt(fixture):
     """Synthetic downstream intent fixture; no reservation admission occurs."""
     request = fixture.request
-    replay = replay_range_reservation(request, observed_at=fixture.now)
-    assert replay.computational_checks_passed
+    if type(request) in (ReservationRequestV2, ReservationRequestV3):
+        replay = replay_range_reservation(request, observed_at=fixture.now)
+        assert replay.computational_checks_passed
+    else:
+        # Only the legacy non-history run and these historical versions may
+        # borrow a synthetic consumed receipt. New history versions require
+        # their own replay contract.
+        if type(request.origin.evidence.pre_evidence) not in (
+            PreEvidenceRun,
+            HistoryPreEvidenceRun,
+            HistoryPreEvidenceRunV2,
+            HistoryPreEvidenceRunV3,
+            HistoryPreEvidenceRunV4,
+        ):
+            raise ValueError("synthetic_consumed_receipt_history_family_unsupported")
     risk = evaluate_current_risk(
         request.origin,
         quote=request.quote,

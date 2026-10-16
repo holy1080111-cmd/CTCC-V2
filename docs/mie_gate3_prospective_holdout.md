@@ -78,13 +78,28 @@ Neither a caller-provided eligibility flag nor the receipt's own
 fixed `computational`/`predictive_oos_eligible=false` result. The ledger stores
 no market data, credential, account, or order authority.
 
+The offline `read_prospective_holdout_once` adapter now uses that same ledger.
+It requires an already existing ledger and exact external seal/receipt hashes,
+commits the single-use reservation, and reads it back through a separate ledger
+instance **before opening** either holdout input. It then verifies the receipt
+and reads a bounded, regular manifest file and one materialized dataset file.
+Both files must match the receipt's original-byte SHA-256 pins; path/descriptor
+identity and size/mtime are compared at open and after read. Before either read,
+both paths must resolve to distinct files; their opened file identities are also
+compared, so aliases and hard links cannot pass when the two digests coincide.
+A competing worker, restart, changed byte, file swap, missing file, or uncertain
+read fails closed; the consumed slot is never retried. The adapter returns only
+the verified bytes and a `computational` record with no predictive or execution
+authority. Its single-file dataset format does not yet connect a real capture
+or evaluation runner, and it does not validate the rows inside the bytes.
+
 This is a local coordination mechanism, **not** independent seal-time
 attestation or proof of first evaluator access. The host clock and SQLite file
 must be protected and backed up as one source of evidence; an evaluator could
-read data outside this interface. A real controlled access service, independent
-time/hash pins, complete source-qualified holdout, and actual candidate
-evaluation remain necessary. No real seal or receipt has been published by
-this change.
+read data outside this interface or replace the local database. A real
+controlled access service, independent time/hash pins, complete
+source-qualified holdout, and actual candidate evaluation remain necessary.
+No real seal or receipt has been published by this change.
 
 ## Current evidence status
 

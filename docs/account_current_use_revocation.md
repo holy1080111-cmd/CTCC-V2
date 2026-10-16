@@ -26,3 +26,23 @@ DENY-only 收據。每一頁都檢查原始 REST gateway 時間是否齊全，�
 為 gateway 收到請求、`outTime` 為 gateway 送出回應，單位都是 Unix 微秒。
 此因果檢查不證明註冊站點、憑證 session、完整帳戶歷史、exchange-wide
 原子快照、保護或下單權限。未建立任何新的正向交易路徑。
+
+`account_v7_exposure_diagnostic.diagnose_v7_recorded_exposure` 另提供非空倉位／
+掛單的**離線診斷**。它重播傳入的原始 B1 V7 頁鏈與明確的 reference，要求全部目前
+inventory query 完成、至少有一列、current-source 無其他新增阻擋原因，並要求
+每頁原始 gateway 時間齊全、所有已知 row 時間不晚於同頁 `outTime`。版本化收據
+保留 scope、原始來源、頁鏈、row 證據、現行用途撤銷及 row/gateway 稽核的 hash；
+讀回必須使用外部提供的收據 SHA 並重新完整重播。空集合、過期、缺頁、來源
+變更、gateway 缺失或因果衝突均不會產生非空診斷收據。這裡的「過期」**只相對於
+呼叫方傳入的 `validated_at`**：它是離線重播截止時間，不是受控 runtime 擷取的
+現行時鐘。舊頁鏈若搭配回填的歷史截止時間，仍可能得到歷史診斷收據；該收據
+不能聲稱帳戶目前仍有曝險、已空倉、已完成來源認證或可用於交易。收據自身
+SHA 也不是外部可信 pin；讀回還會用原始頁鏈重播並比對內容。
+
+此收據只表示「在所記錄頁鏈中觀察到非空 inventory」，不是原生時鐘已驗證、
+全帳戶曝險已知或可下單。未有來源時間的 row 仍是未知；歷史、local uncertain、
+reservation、保護、account revision 及憑證／站點真實性也維持未知。收據固定
+`source_clock_coverage_complete=false`、
+`snapshot=null`、`account_complete=false`、`flat_start_permission=false`、
+`execution_authority=false`、`admission=DENY`。舊 V7 flat issuer 保持撤銷；
+這個診斷沒有接入交易決策或補足 R5 Trusted Demo Account Collector。

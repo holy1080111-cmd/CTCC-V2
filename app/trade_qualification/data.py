@@ -362,10 +362,14 @@ def _validate_market_quotes(market):
         )
     ):
         raise ValueError("invalid ticker number")
-    # OKX defines `last` as the last traded price and high/low as the extrema
-    # of that same 24-hour ticker window. A row contradicting its own range is
-    # malformed source data, even if its bid/ask and other components agree.
-    if ticker.bid >= ticker.ask or not ticker.low_24h <= ticker.last <= ticker.high_24h:
+    # OKX defines `last` and `open24h` within the same 24-hour window as its
+    # high/low extrema. A row contradicting its own range is malformed source
+    # data, even if its bid/ask and other components agree.
+    if (
+        ticker.bid >= ticker.ask
+        or not ticker.low_24h <= ticker.last <= ticker.high_24h
+        or not ticker.low_24h <= ticker.open_24h <= ticker.high_24h
+    ):
         raise ValueError("invalid ticker geometry")
     if (
         min(

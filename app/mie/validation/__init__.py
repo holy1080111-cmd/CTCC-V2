@@ -82,6 +82,11 @@ from app.mie.validation.contracts import (
     TrialTestResult,
     UncertaintyPlan,
 )
+from app.mie.validation.controlled_holdout_reader import (
+    ControlledHoldoutRead,
+    ControlledHoldoutReadError,
+    read_prospective_holdout_once,
+)
 from app.mie.validation.costs import (
     CostedObservation,
     ReturnPathMetrics,
@@ -189,6 +194,8 @@ __all__ = [
     "CandidateSpec",
     "ClosedTradeOutcome",
     "ComponentVersion",
+    "ControlledHoldoutRead",
+    "ControlledHoldoutReadError",
     "CostModel",
     "CostedObservation",
     "DatasetIdentity",
@@ -289,6 +296,7 @@ __all__ = [
     "no_skill_baseline",
     "probability_metrics",
     "purged_walk_forward_folds",
+    "read_prospective_holdout_once",
     "reliability_bins",
     "replay_aggregated_features_at",
     "replay_features_at",

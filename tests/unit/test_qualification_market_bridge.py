@@ -201,6 +201,44 @@ async def test_g1_rejects_last_outside_24h_range_for_legacy_and_swap_tickers():
 
             on_boundary = market.model_copy(deep=True)
             setattr(on_boundary.ticker, field, on_boundary.ticker.last)
+            on_boundary.ticker.open_24h = on_boundary.ticker.last
+            accepted = qualify_data(replace(source, market=on_boundary))
+            assert accepted.gate.passed
+            assert accepted.execution_authority is False
+
+
+@pytest.mark.asyncio
+async def test_g1_rejects_open_outside_24h_range_for_legacy_and_swap_tickers():
+    source = await capture_prefix_source()
+    for swap in (False, True):
+        market = source.market.model_copy(deep=True)
+        if swap:
+            for rows in market.candles.values():
+                for candle in rows:
+                    candle.volume_quote = candle.volume_currency * candle.close
+            values = market.ticker.model_dump()
+            contracts = values.pop("volume_24h")
+            values.pop("volume_quote_24h")
+            market.ticker = SwapTickerV2(
+                **values,
+                schema_version="okx-swap-ticker-v2",
+                volume_contracts_24h=contracts,
+                volume_currency_24h=Decimal("123.4567"),
+            )
+        assert qualify_data(replace(source, market=market)).gate.passed
+        for field, offset in (("low_24h", -1), ("high_24h", 1)):
+            malformed = market.model_copy(deep=True)
+            malformed.ticker.open_24h = getattr(malformed.ticker, field) + (
+                Decimal("0.01") * offset
+            )
+            denied = qualify_data(replace(source, market=malformed))
+            assert denied.gate.code == "market_source_invalid"
+            assert denied.source_json is None
+            assert denied.execution_authority is False
+            assert denied.source_authenticity_verified is False
+
+            on_boundary = market.model_copy(deep=True)
+            on_boundary.ticker.open_24h = getattr(on_boundary.ticker, field)
             accepted = qualify_data(replace(source, market=on_boundary))
             assert accepted.gate.passed
             assert accepted.execution_authority is False

@@ -2,16 +2,40 @@
 
 import json
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 
 from app.trade_qualification import submission_intent as intents
+from app.trade_qualification.history_engine import (
+    HistoryPreEvidenceRunV5,
+    HistoryPreEvidenceRunV6,
+)
 from tests.unit.qualification_execution_binding_fixtures import (
     consumed_receipt,
     execution_binding,
     repin_json,
 )
 from tests.unit.qualification_history_intent_fixtures import history_ledger_fixture
+
+
+@pytest.mark.parametrize(
+    "history_type", (HistoryPreEvidenceRunV5, HistoryPreEvidenceRunV6)
+)
+def test_new_history_family_cannot_borrow_legacy_synthetic_consumed_receipt(
+    history_type,
+):
+    fixture = SimpleNamespace(
+        request=SimpleNamespace(
+            origin=SimpleNamespace(
+                evidence=SimpleNamespace(pre_evidence=history_type.model_construct())
+            )
+        )
+    )
+    with pytest.raises(
+        ValueError, match="synthetic_consumed_receipt_history_family_unsupported"
+    ):
+        consumed_receipt(fixture)
 
 
 @pytest.fixture(

@@ -6001,3 +6001,50 @@ execution because this host has no isolated `DATABASE_URL`. It requires the
 next exact-source PostgreSQL run. The V6 reservation guard passed two direct
 cases and the focused V5 range regression completed successfully; neither is
 a production execution acceptance.
+
+## 2026-10-16 later Demo credential UI readback (diagnostic only)
+
+The logged-in OKX Demo API list showed one key with Read and Trade; the edit
+form showed Withdraw, Earn, Borrow and Transfer unchecked and its IP whitelist
+entry field empty. No form was saved or order sent. The redacted local
+[readback receipt](../../validation-results/demo-api-whitelist-readback-20261016.json)
+has SHA256 `3fc9e250d1d462e76e3939de0f207d4f43776301c60afe5e03e4f40d2dcc05f2`
+and contains no key, token, UID, IP or private URL. This UI state and the earlier
+Global signed-GET `50110` result are not reconciled. OKX's
+[API error reference](https://app.okx.com/docs-v5/en/#error-code) identifies
+`50110` as invalid IP, but the UI readback cannot prove the local credential is
+that listed key or establish its current egress binding. Account origin,
+authenticated capture and Demo execution remain DENY.
+
+## 2026-10-16 `e02a347` exact-source CI regression triage
+
+The pushed `e02a347` source started [CI run 38846463729](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/38846463729).
+At 04:06 UTC, Linux shards 0, 1 and 6 had passed; shards 3, 4, 5 and 7
+failed; shard 2, PostgreSQL and Windows were still running. Failed-shard
+artifacts are retained under `../../validation-results/ci-e02a347-shard-*-20261016`.
+The repeated setup error came from a synthetic downstream intent fixture
+calling the V5 replay API for legacy request types. Two original-candidate
+tests used an impossible 24-hour ticker range after strict G1 validation;
+two DB0041 migration tests recognized neither its schema-qualified table
+lock nor its raw SQL empty-table drop. The working source repairs only those
+test contracts, explicitly rejects V5/V6/future history in the legacy fixture,
+and retains the runtime G1, reservation and migration denial rules. Focused
+tests passed locally, but this working source has no matching full CI and the
+ongoing `e02a347` result is **not** an acceptance PASS.
+
+The current source also extends G1's ticker geometry check to require
+`low24h <= open24h <= high24h`, alongside the existing `last` check, for both
+legacy and SWAP V2 inputs. Raw V2 packet replay and inclusive-boundary tests
+pass locally. OKX defines these prices over the same prior 24-hour interval
+in its [ticker API documentation](https://www.okx.com/docs-v5/en/); this is
+malformed-source rejection, not permission to trust an unauthenticated route.
+
+Two other bounded, working-source additions remain offline and DENY-only. The
+V7 account exposure diagnostic replays an original page chain and emits a
+hash-only nonempty-inventory receipt, without a live clock, complete history,
+flat-start proof, snapshot or trading authority; 16 synthetic focused tests
+passed. The Gate 3 controlled reader consumes a local one-use SQLite
+evaluation reservation before opening hash-pinned holdout files; 22 focused
+tests passed, including alias rejection. Local SQLite can be replaced and
+data read outside the adapter, so original point-in-time custody, Gate 3,
+sealed OOS and Gate 4 remain **FAIL**.
