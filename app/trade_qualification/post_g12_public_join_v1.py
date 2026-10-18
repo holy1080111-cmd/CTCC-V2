@@ -109,10 +109,18 @@ class PostG12PublicJoinReceiptV1:
                 )
             ):
                 raise ValueError
+            stamps = []
             for name in ("publication_completed_at", "observed_at"):
                 stamp = datetime.fromisoformat(raw[name])
-                if stamp.utcoffset() is None or stamp.utcoffset().total_seconds() != 0:
+                if (
+                    stamp.utcoffset() is None
+                    or stamp.utcoffset().total_seconds() != 0
+                    or stamp.isoformat() != raw[name]
+                ):
                     raise ValueError
+                stamps.append(stamp)
+            if stamps[0] >= stamps[1]:
+                raise ValueError
         except (ValueError, TypeError, KeyError, OverflowError, RecursionError):
             _deny("public_join_receipt_invalid")
 

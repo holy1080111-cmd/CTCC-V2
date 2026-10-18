@@ -165,3 +165,31 @@ diagnostic cannot retroactively authorize the earlier public request. A
 pre-publication read-only identity/provenance phase would be required before any
 trusted-source admission. None of this grants G1, account completeness or order
 authority.
+
+## 2026-10-18 serial, read-only route diagnosis
+
+One bounded signed Demo `GET /api/v5/account/config` on each of the Global,
+US/AU and EEA REST origins returned OKX codes `50110`, `50119` and `50119`,
+respectively. The [redacted receipt](../../validation-results/okx-region-serial-20261018/redacted-receipt.json)
+has SHA256 `c6d3f8f3d081fb8227240e6b7a725be094499b0967a2ec4112d17ae226cffb54`.
+It records one request per origin, the Demo header, no proxy/redirect/retry,
+zero successful identities and zero order writes; it stores no credential, UID,
+IP address or remote error message. No request is repeated to diagnose this
+result.
+
+OKX's [regional API overview](https://www.okx.com/docs-v5/) maps US/AU
+registration on `app.okx.com` to `us.okx.com` and EU registration on
+`my.okx.com` to `eea.okx.com`. Its [API FAQ](https://www.okx.com/en-gb/help/api-faq)
+says `50119` commonly reflects a domain mismatch. The [API error reference](https://app.okx.com/docs-v5/en/#error-code)
+labels `50110` as invalid IP; the FAQ also discusses that code in a separate
+third-party key-binding context. These descriptions make Global IP/key-policy
+and regional key absence plausible diagnoses, not proof of the registration
+site, exact key identity, IP whitelist state, or any account field. A former
+successful Global GET and the current Global rejection are not interchangeable
+observations. The private REST client statically uses UTC millisecond signing,
+the exact request path, `x-simulated-trading: 1`, disabled proxy inheritance and
+redirects, and a pinned GET-only session; that code review does not establish
+why OKX rejected this credential at this time. The FAQ's unbound-IP workaround
+for third-party software must not weaken CTCC's IP-binding safety requirement.
+Account ingestion, trusted Demo source and execution remain `DENY` until a
+first-party site/key binding and a fresh authenticated account read are verified.

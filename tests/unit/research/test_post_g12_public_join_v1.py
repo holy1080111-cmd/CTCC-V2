@@ -36,6 +36,54 @@ from tests.unit.test_qualification_one_shot import inputs as inputs  # noqa: PLC
 
 
 @pytest.mark.parametrize(
+    ("publication", "observed"),
+    (
+        ("2026-10-16T00:00:00+00:00", "2026-10-16T00:00:00+00:00"),
+        ("2026-10-16T00:00:01+00:00", "2026-10-16T00:00:00+00:00"),
+        ("2026-10-16 00:00:00+00:00", "2026-10-16T00:00:01+00:00"),
+    ),
+)
+def test_public_join_receipt_rejects_noncausal_or_noncanonical_time(
+    publication, observed
+):
+    record = {
+        name: "a" * 64
+        for name in (
+            "public_plan_sha256",
+            "public_journal_sha256",
+            "public_packet_sha256",
+            "quote_v2_packet_sha256",
+            "current_market_sha256",
+            "reference_sha256",
+            "account_plan_sha256",
+            "candidate_sha256",
+            "event_key",
+        )
+    }
+    record.update(
+        schema_version="ctcc.post_g12_public_join.v1",
+        code="public_v2_integrity_join_only",
+        report_id="synthetic-no-io",
+        instrument_id="BTC-USDT-SWAP",
+        publication_completed_at=publication,
+        observed_at=observed,
+        admission="DENY",
+    )
+    for name in (
+        "legacy_quote_bound",
+        "source_authenticity_verified",
+        "execution_recheck_performed",
+        "account_complete",
+        "atomic_risk_reserved",
+        "execution_authority",
+        "order_submitted",
+    ):
+        record[name] = False
+    with pytest.raises(PostG12PublicJoinError, match="^public_join_receipt_invalid$"):
+        PostG12PublicJoinReceiptV1(canonical(record))
+
+
+@pytest.mark.parametrize(
     "field",
     (
         "original_entry",
