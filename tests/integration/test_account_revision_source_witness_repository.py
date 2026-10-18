@@ -32,6 +32,7 @@ from app.database.repositories.qualification_ledger import QualificationLedgerRe
 from app.trade_qualification import account_capture_journal as journal
 from app.trade_qualification import account_history_query_verifier as history_query
 from app.trade_qualification import account_observation_index as observed
+from app.trade_qualification import account_revision_recorded_claim as recorded_claim
 from app.trade_qualification.reservations import QualificationLedgerError
 from scripts.verify_final_hermetic import (
     ACCOUNT_MEASURED_HWM_V2_TRIGGER_CATALOG_SQL,
@@ -161,6 +162,68 @@ async def test_owned_source_witness_binds_exact_sources_but_cannot_promote_claim
         QualificationLedgerError, match="ledger_owned_account_revision_missing"
     ):
         ledger._require_owned_account_revision(claims)
+
+
+async def test_denied_source_claim_replays_exact_balance_in_separate_sessions(
+    monkeypatch, database
+):
+    scope, typed, current, ledger, claims = await _sources(monkeypatch, database)
+    repository = AccountRevisionSourceWitnessRepository(database[1], clock=_now)
+    witness = await repository.record_denied_source_witness(
+        scope,
+        account_revision=1,
+        typed_sequence=typed.sequence,
+        current_sequence=current.sequence,
+    )
+    first = await repository.read_denied_recorded_source_claim(
+        scope, witness.witness_sha256
+    )
+    second = await repository.read_denied_recorded_source_claim(
+        scope, witness.witness_sha256
+    )
+    value = json.loads(first.receipt_json)
+    assert first == second
+    assert value["witness_sha256"] == witness.witness_sha256
+    assert value["caller_account_revision"] == 1
+    assert (
+        value["recorded_current_reference"]["head_sha256"]
+        == json.loads(witness.witness_json)["current"]["head_sha256"]
+    )
+    assert value["source_balance"]["equity"] == {
+        "numerator": "1000",
+        "denominator": "1",
+    }
+    assert value["source_balance"]["available_equity"] == {
+        "numerator": "800",
+        "denominator": "1",
+    }
+    assert value["account_revision_issued"] is first.account_revision_issued is False
+    assert value["execution_authority"] is first.execution_authority is False
+    assert value["admission"] == first.admission == "DENY"
+    assert (await ledger.read_scope(scope)).account_revision == 1
+    with pytest.raises(
+        QualificationLedgerError, match="ledger_owned_account_revision_missing"
+    ):
+        ledger._require_owned_account_revision(claims)
+
+    original = repository._recorded_claim_once
+    calls = 0
+
+    async def changed_on_second_read(*args):
+        nonlocal calls
+        result = await original(*args)
+        calls += 1
+        return recorded_claim.RecordedAccountClaim(b"{}") if calls == 2 else result
+
+    monkeypatch.setattr(repository, "_recorded_claim_once", changed_on_second_read)
+    with pytest.raises(
+        AccountRevisionSourceError,
+        match="account_revision_source_claim_readback_failed",
+    ):
+        await repository.read_denied_recorded_source_claim(
+            scope, witness.witness_sha256
+        )
+    assert (await repository.read_one(scope, witness.witness_sha256)) == witness
 
 
 async def test_committed_denial_blocks_0043_downgrade_and_rolls_back(

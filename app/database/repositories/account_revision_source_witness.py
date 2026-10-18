@@ -38,6 +38,7 @@ from app.trade_qualification import account_capture as capture
 from app.trade_qualification import account_capture_journal as journal
 from app.trade_qualification import account_current_history_join as joined
 from app.trade_qualification import account_observation_index as observed
+from app.trade_qualification import account_revision_recorded_claim as recorded_claim
 from app.trade_qualification.reservations import LedgerScope, checked_bootstrap
 
 _SCHEMA = "ctcc.demo_account_revision_source_witness.v1"
@@ -418,4 +419,68 @@ class AccountRevisionSourceWitnessRepository:
         except Exception:  # noqa: BLE001 -- no private source or SQL exception text
             raise AccountRevisionSourceError(
                 "account_revision_source_readback_failed"
+            ) from None
+
+    async def _recorded_claim_once(self, scope, witness_sha256):
+        """Recompute a factual current claim under one independent UID lock."""
+        async with self.session_factory() as session, session.begin():
+            await self.ledger._locked(session, scope)
+            row = await session.get(Witness, witness_sha256)
+            if (
+                row is None
+                or any(
+                    getattr(row, key) != value for key, value in _keys(scope).items()
+                )
+                or journal.digest(row.witness_json.encode("utf-8")) != witness_sha256
+            ):
+                _deny("account_revision_source_claim_witness_missing")
+            chain = await self.journal._read_chain_locked(
+                session, scope, row.current_capture_id
+            )
+            reference = observed.source_reference(chain)
+            value = json.loads(row.witness_json)
+            if (
+                reference.capture_id != row.current_capture_id
+                or reference.head_sha256 != row.current_head_sha256
+                or len(chain) != row.current_terminal_sequence
+                or value["current"]["capture_id"] != reference.capture_id
+                or value["current"]["head_sha256"] != reference.head_sha256
+                or value["claims_sha256"] != row.claims_sha256
+                or value["account_revision"] != row.account_revision
+            ):
+                _deny("account_revision_source_claim_binding_changed")
+            claims = self.ledger._claims(row)
+            return recorded_claim.derive_recorded_current_claim(
+                chain,
+                reference=reference,
+                scope=scope,
+                witness_sha256=witness_sha256,
+                account_revision=row.account_revision,
+                claims_sha256=row.claims_sha256,
+                claims=claims,
+                validated_at=chain[-1].db_recorded_at,
+            )
+
+    async def read_denied_recorded_source_claim(
+        self, scope, witness_sha256
+    ) -> recorded_claim.RecordedAccountClaim:
+        """Replay an immutable source projection twice; issue no revision.
+
+        The initial and final DB0043 readbacks validate the original witness.
+        Two additional independent sessions recompute the same source-derived
+        receipt. If any session is uncertain or disagrees, no claim is returned.
+        """
+        try:
+            before = await self.read_one(scope, witness_sha256)
+            first = await self._recorded_claim_once(scope, witness_sha256)
+            second = await self._recorded_claim_once(scope, witness_sha256)
+            after = await self.read_one(scope, witness_sha256)
+            if first != second or before != after:
+                _deny("account_revision_source_claim_readback_changed")
+            return first
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 -- no private source or SQL exception text
+            raise AccountRevisionSourceError(
+                "account_revision_source_claim_readback_failed"
             ) from None

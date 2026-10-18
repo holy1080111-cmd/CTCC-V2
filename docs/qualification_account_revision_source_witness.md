@@ -43,6 +43,11 @@ read back that exact revision in another session before any reservation use.
 This DB0043 witness cannot be promoted by changing its flags or by inferring
 completeness from a successful insert.
 
+The separate [recorded source claim](qualification_account_revision_recorded_claim.md)
+can now replay a witness's original current B1 chain and compare exact
+settlement balance amounts with the stored caller claims. That read-only
+projection stays DENY and does not issue or authenticate the ledger revision.
+
 The isolated PostgreSQL tests cover exact-source binding without promotion,
 wrong revision/source rejection, two competing writers, durable denial after
 a late readback failure, old-revision replay after ledger advancement, direct
