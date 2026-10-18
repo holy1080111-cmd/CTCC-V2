@@ -65,6 +65,11 @@ DOWNGRADE_LOCKS = {
     "0020": ("qualification_account_scopes",) + TABLES["0020"],
     "0021": TABLES["0020"] + TABLES["0021"],
     "0022": ("qualification_account_scopes",) + TABLES["0022"],
+    "0044": (
+        "demo_account_capture_events",
+        "demo_account_observation_batches",
+        "demo_account_measured_hwm_v2",
+    ),
 }
 
 

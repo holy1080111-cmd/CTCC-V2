@@ -21,14 +21,22 @@ _POLICY_SHA256 = "8098bda7733ab7c3e3e814768af7591ad6da8caf605d82b000224f54a2e1c5
 
 def _guard() -> str:
     # The domain and member encoding match account_measured_hwm_continuation.
-    # SQL checks an inductive persisted chain. Original B1 semantic extraction
-    # is independently replayed by the repository before and after commit.
+    # SQL checks the inductive chain and core balance fields against original
+    # immutable B1 packet bytes; the repository independently replays the full
+    # original B1 semantics before and after commit.
     return f"""
       CREATE FUNCTION public.account_measured_hwm_v2_guard() RETURNS trigger AS $$
-      DECLARE b RECORD; source RECORD; prior RECORD; genesis RECORD; peak RECORD;
+      DECLARE b RECORD; source RECORD; packet_source RECORD;
+              prior RECORD; genesis RECORD; peak RECORD;
               m JSONB; p JSONB; oldp JSONB; g JSONB; selected JSONB;
+              packet JSONB; balance_page JSONB; balance_row JSONB;
+              config_page JSONB; config_row JSONB;
+              packet_count BIGINT; balance_count BIGINT; balance_index BIGINT;
+              config_count BIGINT; finalized_count BIGINT; observed_native BOOLEAN;
               lock_key BIGINT; member TEXT; expected_membership TEXT;
               old_num NUMERIC; old_den NUMERIC; new_num NUMERIC; new_den NUMERIC;
+              avail_num NUMERIC; avail_den NUMERIC;
+              gcd_left NUMERIC; gcd_right NUMERIC; gcd_remainder NUMERIC;
               expected_peak BIGINT; expected_native BOOLEAN;
       BEGIN
         lock_key := ('x'||substr(encode(sha256(convert_to('ctcc-qualification-account-v1','UTF8')||decode('00','hex')||convert_to(NEW.environment,'UTF8')||decode('00','hex')||convert_to(NEW.account_id,'UTF8')),'hex'),1,16))::bit(64)::bigint;
@@ -39,6 +47,10 @@ def _guard() -> str:
           FOR KEY SHARE;
         SELECT * INTO source FROM public.demo_account_capture_events
           WHERE capture_id=NEW.capture_id AND sequence=NEW.source_sequence FOR KEY SHARE;
+        SELECT count(*) INTO packet_count FROM public.demo_account_capture_events
+          WHERE capture_id=NEW.capture_id AND packet_payload IS NOT NULL;
+        SELECT * INTO packet_source FROM public.demo_account_capture_events
+          WHERE capture_id=NEW.capture_id AND packet_payload IS NOT NULL FOR KEY SHARE;
         SELECT * INTO prior FROM public.demo_account_measured_hwm_v2
           WHERE environment=NEW.environment AND account_id=NEW.account_id
             AND settlement_currency=NEW.settlement_currency
@@ -47,10 +59,59 @@ def _guard() -> str:
           m := NEW.measurement_json::jsonb;
           p := NEW.projection_json::jsonb;
           oldp := prior.projection_json::jsonb;
+          packet := convert_from(packet_source.packet_payload,'UTF8')::jsonb;
+          SELECT count(*) INTO balance_count
+            FROM jsonb_array_elements(packet->'observations') AS o(value)
+            WHERE o.value->'request'->>'stream'='balance';
+          SELECT o.value,o.ordinality-1 INTO balance_page,balance_index
+            FROM jsonb_array_elements(packet->'observations')
+              WITH ORDINALITY AS o(value,ordinality)
+            WHERE o.value->'request'->>'stream'='balance' LIMIT 1;
+          balance_row := (balance_page->'rows'->0->>'canonical_json')::jsonb;
+          SELECT count(*) INTO config_count
+            FROM jsonb_array_elements(packet->'observations') AS o(value)
+            WHERE o.value->'request'->>'stream'='config_after';
+          SELECT o.value INTO config_page
+            FROM jsonb_array_elements(packet->'observations') AS o(value)
+            WHERE o.value->'request'->>'stream'='config_after' LIMIT 1;
+          config_row := (config_page->'rows'->0->>'canonical_json')::jsonb;
+          SELECT count(*),bool_and(
+            e.event_json::jsonb->'data'->>'tls_provenance'='owned_signed_verified_tls'
+            AND COALESCE(e.event_json::jsonb->'data'->>'tls_certificate_sha256' ~ '^[a-f0-9]{{64}}$',false))
+            INTO finalized_count,observed_native
+            FROM public.demo_account_capture_events AS e
+            WHERE e.capture_id=NEW.capture_id
+              AND e.event_json::jsonb->>'kind'='raw_finalized';
         EXCEPTION WHEN others THEN
           RAISE EXCEPTION 'account_measured_hwm_v2_document_invalid';
         END;
         IF b.sequence IS NULL OR source.sequence IS NULL
+          OR packet_count IS DISTINCT FROM 1::bigint
+          OR packet_source.sequence IS NULL
+          OR packet_source.event_json::jsonb->>'kind' IS DISTINCT FROM 'packet_recorded'
+          OR ROW(packet_source.environment,packet_source.account_id,packet_source.settlement_currency)
+             IS DISTINCT FROM ROW(NEW.environment,NEW.account_id,NEW.settlement_currency)
+          OR encode(sha256(packet_source.packet_payload),'hex')
+             IS DISTINCT FROM b.document_json::jsonb->'reference'->>'packet_sha256'
+          OR packet->>'plan_sha256' IS DISTINCT FROM b.document_json::jsonb->'reference'->>'plan_sha256'
+          OR packet->'plan'->>'expected_uid' IS DISTINCT FROM NEW.account_id
+          OR packet->'plan'->>'settlement_currency' IS DISTINCT FROM NEW.settlement_currency
+          OR packet->'plan'->>'registration_region' IS DISTINCT FROM 'global'
+          OR balance_page->>'environment' IS DISTINCT FROM 'demo'
+          OR packet->'account_complete' IS DISTINCT FROM 'false'::jsonb
+          OR packet->'execution_authority' IS DISTINCT FROM 'false'::jsonb
+          OR balance_count IS DISTINCT FROM 1::bigint
+          OR config_count IS DISTINCT FROM 1::bigint
+          OR jsonb_typeof(config_page->'rows') IS DISTINCT FROM 'array'
+          OR jsonb_array_length(config_page->'rows') IS DISTINCT FROM 1
+          OR config_row->>'acctLv' IS DISTINCT FROM '2'
+          OR config_row->>'uid' IS DISTINCT FROM NEW.account_id
+          OR config_row->>'mainUid' IS DISTINCT FROM m->>'main_uid'
+          OR finalized_count IS DISTINCT FROM jsonb_array_length(packet->'observations')::bigint
+          OR m->'recorded_native_transport' IS DISTINCT FROM to_jsonb(COALESCE(observed_native,false))
+          OR jsonb_typeof(balance_page->'rows') IS DISTINCT FROM 'array'
+          OR jsonb_array_length(balance_page->'rows') IS DISTINCT FROM 1
+          OR jsonb_typeof(balance_row) IS DISTINCT FROM 'object'
           OR ROW(b.capture_id,b.source_sequence,b.event_sha256,b.previous_sha256)
              IS DISTINCT FROM ROW(NEW.capture_id,NEW.source_sequence,NEW.event_sha256,NEW.previous_event_sha256)
           OR ROW(source.environment,source.account_id,source.settlement_currency)
@@ -72,15 +133,60 @@ def _guard() -> str:
           OR ROW(m->>'environment',m->>'account_id',m->>'settlement_currency')
              IS DISTINCT FROM ROW(NEW.environment,NEW.account_id,NEW.settlement_currency)
           OR m->'current_source_authority' IS DISTINCT FROM 'false'::jsonb
+          OR m IS DISTINCT FROM jsonb_build_object(
+               'schema_version','ctcc.measured_balance.v1',
+               'source_reference',b.document_json::jsonb->'reference',
+               'environment',NEW.environment,'account_id',NEW.account_id,
+               'main_uid',config_row->>'mainUid',
+               'settlement_currency',NEW.settlement_currency,
+               'equity',m->'equity','available_margin',m->'available_margin',
+               'request_index',balance_index,'row_ordinal',0,
+               'raw_row_sha256',m->>'raw_row_sha256',
+               'raw_row_json',balance_page->'rows'->0->>'canonical_json',
+               'page_receipt_sha256',balance_page->>'receipt_sha256',
+               'body_sha256',balance_page->>'body_sha256',
+               'request_started_at',balance_page->>'request_started_at',
+               'headers_received_at',balance_page->>'headers_received_at',
+               'body_completed_at',balance_page->>'body_completed_at',
+               'account_uTime',balance_row->>'uTime',
+               'settlement_uTime',balance_row->'details'->0->>'uTime',
+               'recorded_native_transport',COALESCE(observed_native,false),
+               'current_source_authority',false)
+          OR m->'request_index' IS DISTINCT FROM to_jsonb(balance_index)
+          OR m->'row_ordinal' IS DISTINCT FROM '0'::jsonb
+          OR m->>'raw_row_json' IS DISTINCT FROM balance_page->'rows'->0->>'canonical_json'
+          OR m->>'page_receipt_sha256' IS DISTINCT FROM balance_page->>'receipt_sha256'
+          OR m->>'body_sha256' IS DISTINCT FROM balance_page->>'body_sha256'
+          OR m->>'request_started_at' IS DISTINCT FROM balance_page->>'request_started_at'
+          OR m->>'headers_received_at' IS DISTINCT FROM balance_page->>'headers_received_at'
+          OR m->>'body_completed_at' IS DISTINCT FROM balance_page->>'body_completed_at'
+          OR m->>'account_uTime' IS DISTINCT FROM balance_row->>'uTime'
+          OR m->>'settlement_uTime' IS DISTINCT FROM balance_row->'details'->0->>'uTime'
+          OR jsonb_typeof(balance_row->'details') IS DISTINCT FROM 'array'
+          OR jsonb_array_length(balance_row->'details') IS DISTINCT FROM 1
+          OR balance_row->'details'->0->>'ccy' IS DISTINCT FROM NEW.settlement_currency
+          OR (balance_row->'details'->0->>'liab')::numeric IS DISTINCT FROM 0::numeric
+          OR (balance_row->'details'->0->>'borrowFroz')::numeric IS DISTINCT FROM 0::numeric
           OR jsonb_typeof(m->'raw_row_json') IS DISTINCT FROM 'string'
           OR COALESCE(m->>'raw_row_sha256' ~ '^[a-f0-9]{{64}}$',false) IS NOT TRUE
           OR m->>'raw_row_sha256' IS DISTINCT FROM encode(sha256(convert_to(m->>'raw_row_json','UTF8')),'hex')
           OR jsonb_typeof(m->'recorded_native_transport') IS DISTINCT FROM 'boolean'
           OR jsonb_typeof(m->'equity') IS DISTINCT FROM 'object'
+          OR m->'equity' IS DISTINCT FROM jsonb_build_object(
+               'numerator',m->'equity'->>'numerator',
+               'denominator',m->'equity'->>'denominator')
           OR COALESCE(m->'equity'->>'numerator' ~ '^[1-9][0-9]*$',false) IS NOT TRUE
           OR COALESCE(m->'equity'->>'denominator' ~ '^[1-9][0-9]*$',false) IS NOT TRUE
-          OR length(m->'equity'->>'numerator') > 4096
-          OR length(m->'equity'->>'denominator') > 4096
+          OR length(m->'equity'->>'numerator') > 64
+          OR length(m->'equity'->>'denominator') > 64
+          OR jsonb_typeof(m->'available_margin') IS DISTINCT FROM 'object'
+          OR m->'available_margin' IS DISTINCT FROM jsonb_build_object(
+               'numerator',m->'available_margin'->>'numerator',
+               'denominator',m->'available_margin'->>'denominator')
+          OR COALESCE(m->'available_margin'->>'numerator' ~ '^(0|[1-9][0-9]*)$',false) IS NOT TRUE
+          OR COALESCE(m->'available_margin'->>'denominator' ~ '^[1-9][0-9]*$',false) IS NOT TRUE
+          OR length(m->'available_margin'->>'numerator') > 64
+          OR length(m->'available_margin'->>'denominator') > 64
           OR jsonb_typeof(m->'request_started_at') IS DISTINCT FROM 'string'
           OR jsonb_typeof(m->'headers_received_at') IS DISTINCT FROM 'string'
           OR jsonb_typeof(m->'body_completed_at') IS DISTINCT FROM 'string'
@@ -106,8 +212,29 @@ def _guard() -> str:
         END IF;
         new_num := (m->'equity'->>'numerator')::numeric;
         new_den := (m->'equity'->>'denominator')::numeric;
-        IF new_num <= 0 OR new_den <= 0 THEN
+        avail_num := (m->'available_margin'->>'numerator')::numeric;
+        avail_den := (m->'available_margin'->>'denominator')::numeric;
+        IF new_num <= 0 OR new_den <= 0 OR avail_num < 0 OR avail_den <= 0
+          OR new_num IS DISTINCT FROM (balance_row->'details'->0->>'eq')::numeric*new_den
+          OR avail_num IS DISTINCT FROM (balance_row->'details'->0->>'availEq')::numeric*avail_den
+          OR avail_num*new_den > new_num*avail_den THEN
           RAISE EXCEPTION 'account_measured_hwm_v2_equity_denied';
+        END IF;
+        gcd_left := new_num; gcd_right := new_den;
+        WHILE gcd_right <> 0 LOOP
+          gcd_remainder := mod(gcd_left,gcd_right);
+          gcd_left := gcd_right; gcd_right := gcd_remainder;
+        END LOOP;
+        IF gcd_left IS DISTINCT FROM 1::numeric THEN
+          RAISE EXCEPTION 'account_measured_hwm_v2_equity_denied';
+        END IF;
+        gcd_left := avail_num; gcd_right := avail_den;
+        WHILE gcd_right <> 0 LOOP
+          gcd_remainder := mod(gcd_left,gcd_right);
+          gcd_left := gcd_right; gcd_right := gcd_remainder;
+        END LOOP;
+        IF gcd_left IS DISTINCT FROM 1::numeric THEN
+          RAISE EXCEPTION 'account_measured_hwm_v2_available_denied';
         END IF;
         IF prior.sequence IS NULL THEN
           g := m; selected := m;
@@ -220,7 +347,9 @@ def upgrade():
 
 def downgrade():
     op.execute(
-        "LOCK TABLE public.demo_account_measured_hwm_v2 IN ACCESS EXCLUSIVE MODE NOWAIT"
+        "LOCK TABLE public.demo_account_capture_events, "
+        "public.demo_account_observation_batches, "
+        "public.demo_account_measured_hwm_v2 IN ACCESS EXCLUSIVE MODE NOWAIT"
     )
     op.execute("""
       DO $$ BEGIN

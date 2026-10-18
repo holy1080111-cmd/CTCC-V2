@@ -45,6 +45,7 @@ POSTGRES_INTEGRATION = (
     "test_account_observation_policy_epoch_migration.py",
     "test_account_portfolio_components_repository.py",
     "test_account_revision_source_witness_repository.py",
+    "test_measured_hwm_v2_postgres.py",
     "test_complete_consumed_event_ledger_repository.py",
     "test_control_bound_ledger_repository.py",
     "test_dashboard_snapshot_audit_integration.py",

@@ -13,6 +13,12 @@ from tests.durable_migration_fixtures import DOWNGRADE_LOCKS, TABLES, RecordedDo
 EPOCH_TABLE = "public.demo_event_history_epoch_events"
 
 
+def _migration_table_reference(revision, table):
+    # The integration fixture retains unqualified catalog names. These
+    # migrations deliberately lock their exact public-qualified references.
+    return f"public.{table}" if revision in {"0043", "0044"} else table
+
+
 @pytest.mark.parametrize("revision", TABLES)
 def test_exclusive_nowait_locks_precede_any_read_or_drop(revision):
     commands = RecordedDowngrade(revision).commands
@@ -20,12 +26,25 @@ def test_exclusive_nowait_locks_precede_any_read_or_drop(revision):
     assert kind == "execute" and statement.startswith("LOCK TABLE ")
     assert statement.endswith("IN ACCESS EXCLUSIVE MODE NOWAIT")
     # DROP removes FK triggers on parent tables; acquire their locks up front.
-    expected = (EPOCH_TABLE,) if revision == "0041" else DOWNGRADE_LOCKS[revision]
+    expected = (
+        (EPOCH_TABLE,)
+        if revision == "0041"
+        else tuple(
+            _migration_table_reference(revision, table)
+            for table in DOWNGRADE_LOCKS[revision]
+        )
+    )
     actual = re.search(r"LOCK TABLE (.*?) IN ACCESS", statement, re.DOTALL)[1]
     assert tuple(item.strip() for item in actual.split(",")) == expected
     guard = commands[1][1]
     assert commands[1][0] == "execute" and "RAISE EXCEPTION" in guard
-    guard_tables = (EPOCH_TABLE,) if revision == "0041" else TABLES[revision]
+    guard_tables = (
+        (EPOCH_TABLE,)
+        if revision == "0041"
+        else tuple(
+            _migration_table_reference(revision, table) for table in TABLES[revision]
+        )
+    )
     assert (
         tuple(re.findall(r"EXISTS\s*\(SELECT 1 FROM ([\w.]+)\)", guard)) == guard_tables
     )
@@ -67,7 +86,11 @@ def test_scheduled_write_between_guard_and_drop_cannot_be_lost(revision):
             table = TABLES[revision][0] if revision == "0041" else value
             if not writer_attempted:
                 writer_attempted = True
-                locked_name = EPOCH_TABLE if revision == "0041" else TABLES[revision][0]
+                locked_name = (
+                    EPOCH_TABLE
+                    if revision == "0041"
+                    else _migration_table_reference(revision, TABLES[revision][0])
+                )
                 writer_blocked = locked_name in locked
                 if not writer_blocked:
                     tables[TABLES[revision][0]].append("synthetic-durable-record")

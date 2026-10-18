@@ -179,13 +179,27 @@ V2 receipt and returned wrapper retain `durable_membership_verified=false`,
 `native_clock_verified=false`, `account_complete=false`,
 `execution_authority=false` and `admission=DENY`.
 
+The DB0044 insert guard also extracts the balance and account configuration
+from the immutable DB0020 packet referenced by the accepted DB0021 sequence.
+It checks the exact raw row, source locator, transport inventory, and reduced
+fractional equity/available margin before a measurement can enter the chain,
+including a new sample that would not become the selected peak. The guard
+checks the original sequence-one and selected-peak witness links in bounded
+work; it does not scan the lifetime population per append. The downgrade first
+requests NOWAIT locks on both foreign-key parent tables and DB0044, then refuses
+a nonempty diagnostic table. The hermetic identity gate pins the DB0044 trigger
+body hash and demands a 0044 → 0043 → 0042 empty roundtrip, full re-upgrade,
+schema check, and rollback readback after the DB0042 refusal.
+
 This migration and repository are **not wired into the live B5 runtime**. The
 current runtime still replays V1 history. Existing B3 populations require a
 separate, source-verified offline backfill from sequence one before a current
 tail can use DB0044; no implicit bootstrap or account-lifetime reset is allowed.
-The schema and repository have offline tests only until dedicated PostgreSQL
-upgrade, nonempty downgrade refusal, concurrency, crash/readback and schema
-drift tests pass. A database receipt proves neither OKX source authenticity nor
+Focused offline tests and PostgreSQL integration cases are authored, but the
+new PostgreSQL cases and Docker hermetic path have not been executed against
+this isolated source. Fresh upgrade, nonempty downgrade refusal, concurrent
+append, direct-SQL nonpeak forgery denial, crash/readback, and schema drift
+therefore remain unaccepted. A database receipt proves neither OKX source authenticity nor
 native clock ownership. Older uncollected balance samples and unobserved equity
 peaks remain unknown. Limited OKX history endpoints and later archive exports
 cannot recreate balance responses never captured, nor establish account-wide
