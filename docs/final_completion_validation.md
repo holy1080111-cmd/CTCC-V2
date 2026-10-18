@@ -6185,9 +6185,9 @@ the retained failed receipt remains under
 `validation-results/public-components-31c966e-20261018/`. A separate exact
 signed-file profile now recognizes the measured replacement while preserving
 historical 9278 replay, rejecting unknown hashes and mixed profiles, and
-leaving timestamp tolerances unchanged. Existing sealed Demo account-native
-policies still reject the 9549 profile until separately versioned. The current
-clock change needs a new source archive and matching full regression before
+leaving timestamp tolerances unchanged. At the 37a checkpoint, sealed Demo
+account-native policies still rejected 9549 pending a separate versioned
+contract. That clock change needed a new source archive and full regression before
 it can replace the 31c accepted baseline.
 
 ## 2026-10-18 account revision source witness foundation
@@ -6217,3 +6217,23 @@ reproduced the failure and accepted the exact guard after parenthesizing that
 `CASE` expression. The failed run remains evidence of a real migration defect;
 its Linux, PostgreSQL and Docker results cannot be accepted. The repaired
 source still requires its own fresh full CI and database integration run.
+
+On the exact `56d4293f1edab2a8cb96d64cf56922348bf86374` source, a separate
+isolated PostgreSQL 17.11 instance completed fresh DB0043 upgrade and all 12
+new witness repository cases. Eleven committed DENY witnesses prevented a
+nonempty downgrade while retaining the head, rows and three triggers. A second
+empty database completed 0043→0042→0043, then refused 0043→0041 at DB0042
+and rolled back to 0043 with no schema drift. The external targeted receipt is
+`validation-results/local-pg-56d4293-20261018/acceptance.json`; this is not
+Docker/full-suite CI. The matching 56d CI run reached `0043` identity but
+stopped before tests because its hermetic downgrade policy still expected
+`0042`; that policy needs an explicit reviewed upgrade.
+
+A separately versioned, exact signed-9549 native-clock proof is now available
+for the V6 *exposed-account diagnostic* only. It requires both current V6
+source blockers, selects its clock profile from the runtime-owned host-before
+observation, requires the same host-after profile and remains DENY through
+no-clobber publication and independent readback. The old 9278 policy bytes and
+V7 current-use revocation remain unchanged. Synthetic proof tests and an
+independent scoped review passed; authenticated account completeness and
+execution authority remain unproven.

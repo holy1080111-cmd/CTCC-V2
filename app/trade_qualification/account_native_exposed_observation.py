@@ -50,6 +50,23 @@ V2_POLICY_BYTES = canonical(
     }
 )
 V2_POLICY_SHA256 = sha(V2_POLICY_BYTES)
+V3_9549_POLICY_BYTES = canonical(
+    {
+        "version": "ctcc.native_demo_exposed_observation.w32tm_9549.v1",
+        "recorded_observation_policy_sha256": POLICY_SHA256,
+        "native_companion_policy_sha256": proof.EXPOSED_9549_POLICY_SHA256,
+        "native_companion_readback": "separate_no_clobber_original_root_readback",
+        "native_companion_readback_schema": (
+            "ctcc.demo_account_exposed_native_clock_readback.w32tm_9549.v1"
+        ),
+        "source_authenticity_verified": False,
+        "history_protection_and_local_join": "unknown",
+        "account_complete": False,
+        "flat_start_permission": False,
+        "execution_authority": False,
+    }
+)
+V3_9549_POLICY_SHA256 = sha(V3_9549_POLICY_BYTES)
 
 _UNKNOWN = (
     "native_clock_companion_proof_missing",

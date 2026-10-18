@@ -63,8 +63,10 @@ def test_native_account_root_context_accepts_concrete_absolute_path(tmp_path):
         )
 
 
-def synthetic_host(samples):
-    evidence = clock_fixture()
+def synthetic_host(samples, *, profile_id=None):
+    evidence = (
+        clock_fixture() if profile_id is None else clock_fixture(profile_id=profile_id)
+    )
     sample = samples()
     evidence["sample"] = sample
     for kind in ("host_before", "status", "host_after"):
@@ -203,6 +205,7 @@ async def companion_fixture(
     current_only=False,
     current_v7=True,
     algo_v6=False,
+    exposed_9549=False,
     verify_baseline=True,
     gateway_case=None,
 ):
@@ -214,6 +217,10 @@ async def companion_fixture(
         "row_after_outtime",
     }:
         raise ValueError("unsupported_synthetic_gateway_case")
+    if exposed_9549 and (
+        not current_only or current_v7 or source_case != "fresh_exposed" or algo_v6
+    ):
+        raise ValueError("unsupported_synthetic_9549_exposure_scenario")
     holder = {}
     gateway_bodies = []
 
@@ -268,7 +275,14 @@ async def companion_fixture(
     samples = Samples()
     monkeypatch.setattr(native.clock, "native_stamp", samples)
     monkeypatch.setattr(
-        native.clock, "native_os_clock", lambda: synthetic_host(samples)
+        native.clock,
+        "native_os_clock",
+        lambda: synthetic_host(
+            samples,
+            profile_id=(
+                proof.public_clock.UPDATED_PROFILE_ID if exposed_9549 else None
+            ),
+        ),
     )
     scope = LedgerScope(account_id=UID, settlement_currency="USDT")
     with (
@@ -281,6 +295,12 @@ async def companion_fixture(
     ):
         state = native._state(stage)
         files = {"host-before.json": native._host_observation(stage, "before")}
+        if exposed_9549:
+            proof_schema, proof_policy_sha256 = (
+                proof.contract_for_exposed_v6_owned_before(
+                    session._plan, files["host-before.json"]
+                )
+            )
         plan = proof._exchange_plan(state["started"])
         files["exchange-plan.json"] = plan.canonical_bytes()
         (

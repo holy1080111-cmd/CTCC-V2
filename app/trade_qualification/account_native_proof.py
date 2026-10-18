@@ -30,6 +30,7 @@ from app.trade_qualification.reservations import LedgerScope, checked_bootstrap
 SCHEMA = "ctcc.demo_account_native_clock_proof.v2"
 V3_SCHEMA = "ctcc.demo_account_native_clock_proof.v3"
 EXPOSED_V4_SCHEMA = "ctcc.demo_account_exposed_native_clock_proof.v4"
+EXPOSED_9549_SCHEMA = "ctcc.demo_account_exposed_native_clock_proof.w32tm_9549.v1"
 V7_FLAT_SCHEMA = "ctcc.demo_account_native_clock_proof.v5"
 ALGO_V6_SCHEMA = "ctcc.demo_account_algo_history_native_clock_proof.v1"
 MAX_PROOF = 2 * 1024 * 1024
@@ -109,6 +110,28 @@ EXPOSED_V4_POLICY_BYTES = canonical(
     }
 )
 EXPOSED_V4_POLICY_SHA256 = sha(EXPOSED_V4_POLICY_BYTES)
+EXPOSED_9549_POLICY_BYTES = canonical(
+    {
+        "schema_version": "ctcc.demo_account_exposed_native_clock_policy.w32tm_9549.v1",
+        "prior_exposed_policy_sha256": EXPOSED_V4_POLICY_SHA256,
+        "stage": "initial_account_only",
+        "current_capture_plan": "ctcc.demo_current_account_plan.v6",
+        "account_current_policy_sha256": current.V6_POLICY_SHA256,
+        "clock_profile": public_clock.UPDATED_PROFILE_ID,
+        "clock_resources": list(public_clock.RESOURCE_IDS),
+        "required_current_inventory": "one_or_more_exact_replayed_exposure_rows",
+        "native_clock_and_original_page_chain": "same_strict_v3_phase_and_readback_contract",
+        "current_source_blockers": (
+            "exactly_v6_algo_type_coverage_incomplete_and_exposure_join_required"
+        ),
+        "flat_start_permission": False,
+        "source_authenticity_verified": False,
+        "historical_hwm_clock_verified": False,
+        "account_complete": False,
+        "execution_authority": False,
+    }
+)
+EXPOSED_9549_POLICY_SHA256 = sha(EXPOSED_9549_POLICY_BYTES)
 V7_FLAT_POLICY_BYTES = canonical(
     {
         "schema_version": "ctcc.demo_account_native_clock_policy.v5",
@@ -189,6 +212,30 @@ def contract_for_exposed_v6_plan(plan):
     if type(plan) is capture.CurrentDemoAccountCapturePlanV6:
         return EXPOSED_V4_SCHEMA, EXPOSED_V4_POLICY_SHA256
     raise NativeAccountProofError("native_account_exposure_scope_unsupported")
+
+
+def contract_for_exposed_v6_owned_before(plan, host_before_raw):
+    """Select a DENY-only policy from the runtime's original owned host sample."""
+    contract_for_exposed_v6_plan(plan)
+    if type(host_before_raw) is not bytes:
+        raise NativeAccountProofError("native_account_clock_profile_invalid")
+    try:
+        replay = public_clock.replay_clock_observation(host_before_raw)
+        if replay["outcome"] != "accepted":
+            raise NativeAccountProofError("native_account_host_clock_rejected")
+        observation = replay["observation"]
+        if observation["schema_version"] != "ctcc.windows_clock_observation.v2":
+            raise NativeAccountProofError("native_account_clock_profile_invalid")
+        profile = observation["diagnostic"]["profile_id"]
+    except NativeAccountProofError:
+        raise
+    except Exception:  # noqa: BLE001 -- no caller bytes or host details escape
+        raise NativeAccountProofError("native_account_clock_profile_invalid") from None
+    if profile == public_clock.PROFILE_ID:
+        return EXPOSED_V4_SCHEMA, EXPOSED_V4_POLICY_SHA256
+    if profile == public_clock.UPDATED_PROFILE_ID:
+        return EXPOSED_9549_SCHEMA, EXPOSED_9549_POLICY_SHA256
+    raise NativeAccountProofError("native_account_clock_profile_invalid")
 
 
 class NativeAccountProofError(ValueError):
@@ -322,7 +369,12 @@ def _source(chain, scope, *, proof_schema=SCHEMA):
             **observed._pins(reference, scope),
         )
         expected_plan = capture.AllProductDemoAccountCapturePlanV6
-    elif proof_schema in {V3_SCHEMA, EXPOSED_V4_SCHEMA, V7_FLAT_SCHEMA}:
+    elif proof_schema in {
+        V3_SCHEMA,
+        EXPOSED_V4_SCHEMA,
+        EXPOSED_9549_SCHEMA,
+        V7_FLAT_SCHEMA,
+    }:
         v7 = proof_schema == V7_FLAT_SCHEMA
         current.verify_current_account_sources(
             chain,
@@ -558,7 +610,12 @@ def _time_trace(raw, *, phase, stage, scope_sha, plan, receipt, body):
     return stamps
 
 
-def _clocks(files, *, stage, scope_sha):
+def _clocks(files, *, stage, scope_sha, expected_profile=public_clock.PROFILE_ID):
+    if expected_profile not in {
+        public_clock.PROFILE_ID,
+        public_clock.UPDATED_PROFILE_ID,
+    }:
+        raise NativeAccountProofError("native_account_clock_profile_invalid")
     if (
         type(files) is not dict
         or set(files) != set(FILES)
@@ -574,11 +631,10 @@ def _clocks(files, *, stage, scope_sha):
     observations = [host["observation"] for host in hosts]
     if any(
         host["schema_version"] != "ctcc.windows_clock_observation.v2"
-        or host["diagnostic"]["profile_id"] != public_clock.PROFILE_ID
+        or host["diagnostic"]["profile_id"] != expected_profile
         for host in observations
     ):
-        # These sealed account policies name the original clock profile.
-        # A reviewed replacement needs a new policy hash, not reinterpretation.
+        # The policy fixes one exact signed profile on both sides of capture.
         raise NativeAccountProofError("native_account_clock_profile_invalid")
     if public_clock.clock_timezone(observations[0]) != public_clock.clock_timezone(
         observations[1]
@@ -656,12 +712,20 @@ def _replay(raw, files, chain, scope, expected):
             "admission",
         }
         or value["schema_version"]
-        not in {SCHEMA, V3_SCHEMA, EXPOSED_V4_SCHEMA, V7_FLAT_SCHEMA, ALGO_V6_SCHEMA}
+        not in {
+            SCHEMA,
+            V3_SCHEMA,
+            EXPOSED_V4_SCHEMA,
+            EXPOSED_9549_SCHEMA,
+            V7_FLAT_SCHEMA,
+            ALGO_V6_SCHEMA,
+        }
         or value["policy_sha256"]
         != {
             SCHEMA: POLICY_SHA256,
             V3_SCHEMA: V3_POLICY_SHA256,
             EXPOSED_V4_SCHEMA: EXPOSED_V4_POLICY_SHA256,
+            EXPOSED_9549_SCHEMA: EXPOSED_9549_POLICY_SHA256,
             V7_FLAT_SCHEMA: V7_FLAT_POLICY_SHA256,
             ALGO_V6_SCHEMA: ALGO_V6_POLICY_SHA256,
         }[value["schema_version"]]
@@ -710,7 +774,14 @@ def _replay(raw, files, chain, scope, expected):
     if packet.barrier_completed_at != utc_from_ns(stage["started"]["utc_ns"]):
         raise NativeAccountProofError("native_account_initial_stage_invalid")
     hosts, _probes, traces = _clocks(
-        files, stage=stage, scope_sha=value["scope_sha256"]
+        files,
+        stage=stage,
+        scope_sha=value["scope_sha256"],
+        expected_profile=(
+            public_clock.UPDATED_PROFILE_ID
+            if proof_schema == EXPOSED_9549_SCHEMA
+            else public_clock.PROFILE_ID
+        ),
     )
     witnesses = value["witnesses"]
     if (
@@ -906,16 +977,23 @@ def _replay(raw, files, chain, scope, expected):
             or any(type(count) is not int or count != 0 for count in counts.values())
         ):
             raise NativeAccountProofError("native_account_v7_inventory_incomplete")
-    if proof_schema == EXPOSED_V4_SCHEMA:
+    if proof_schema in {EXPOSED_V4_SCHEMA, EXPOSED_9549_SCHEMA}:
         counts = current_data["inventory_row_counts"]
+        expected_blockers = (
+            [
+                "algo_type_coverage_incomplete",
+                "current_exposure_requires_protection_and_local_join",
+            ]
+            if proof_schema == EXPOSED_9549_SCHEMA
+            else ["current_exposure_requires_protection_and_local_join"]
+        )
         if (
             type(counts) is not dict
             or set(counts) != set(current.INVENTORY_STREAMS)
             or any(type(count) is not int or count < 0 for count in counts.values())
             or not any(counts.values())
             or current_data["observed_flat"] is not False
-            or current_data["blocking_reasons"]
-            != ["current_exposure_requires_protection_and_local_join"]
+            or current_data["blocking_reasons"] != expected_blockers
         ):
             raise NativeAccountProofError("native_account_exposure_source_missing")
     elif current_data["blocking_reasons"] or current_data["observed_flat"] is not True:

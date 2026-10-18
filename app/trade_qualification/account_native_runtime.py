@@ -948,6 +948,12 @@ async def _capture_initial_current(
         storage._publish_part(directory, "host-before.json", files["host-before.json"])
         if state["clock_results"].get("before") != "accepted":
             raise proof.NativeAccountProofError("native_account_host_clock_rejected")
+        if _exposure_sink is not None:
+            proof_schema, proof_policy_sha256 = (
+                proof.contract_for_exposed_v6_owned_before(
+                    selected, files["host-before.json"]
+                )
+            )
         files["exchange-plan.json"] = plan.canonical_bytes()
         _secret_checked(files["exchange-plan.json"], before_tokens)
         storage._publish_part(
@@ -1106,7 +1112,7 @@ async def _capture_initial_current(
         raise proof.NativeAccountProofError("native_account_source_expired")
     if _exposure_sink is not None:
         if (
-            proof_schema != proof.EXPOSED_V4_SCHEMA
+            proof_schema not in {proof.EXPOSED_V4_SCHEMA, proof.EXPOSED_9549_SCHEMA}
             or type(exposure_observation) is not exposed.NativeExposedAccountObservation
         ):
             raise proof.NativeAccountProofError("native_account_exposure_proof_invalid")
@@ -1128,8 +1134,16 @@ async def _capture_initial_current(
         diagnostic = exposed.NativeExposedAccountObservation(
             canonical(
                 {
-                    "schema_version": "ctcc.native_demo_exposed_observation.v2",
-                    "policy_sha256": exposed.V2_POLICY_SHA256,
+                    "schema_version": (
+                        "ctcc.native_demo_exposed_observation.w32tm_9549.v1"
+                        if proof_schema == proof.EXPOSED_9549_SCHEMA
+                        else "ctcc.native_demo_exposed_observation.v2"
+                    ),
+                    "policy_sha256": (
+                        exposed.V3_9549_POLICY_SHA256
+                        if proof_schema == proof.EXPOSED_9549_SCHEMA
+                        else exposed.V2_POLICY_SHA256
+                    ),
                     "account_scope_sha256": recorded["account_scope_sha256"],
                     "source_reference": recorded["source_reference"],
                     "recorded_exposure_receipt_sha256": exposure_observation.receipt_sha256,
