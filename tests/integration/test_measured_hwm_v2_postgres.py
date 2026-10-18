@@ -27,6 +27,7 @@ from app.database.repositories.account_measured_hwm_v2 import (
 )
 from app.trade_qualification import account_capture_journal as journal
 from app.trade_qualification import account_measured_hwm_continuation as hwm
+from app.trade_qualification import account_observation_index as observed
 from app.trade_qualification import account_portfolio_components as components
 from scripts.verify_final_hermetic import (
     ACCOUNT_MEASURED_HWM_V2_TRIGGER_CATALOG_SQL,
@@ -83,6 +84,67 @@ async def _row_count(database, scope):
                 settlement_currency=scope.settlement_currency,
             )
         )
+
+
+async def test_b5_preflight_rejects_existing_b3_only_tail_without_new_batch(
+    monkeypatch, database
+):
+    observation_repo, repository, scope, _, second = await _second(
+        monkeypatch, database
+    )
+    with pytest.raises(AccountMeasuredHWMError, match="prefix_preflight_denied"):
+        await repository.preflight_prefix(scope)
+    async with database[1]() as session, session.begin():
+        await repository.journal._lock(session, scope)
+        latest = await session.scalar(
+            select(Batch).filter_by(
+                environment=scope.environment,
+                account_id=scope.account_id,
+                settlement_currency=scope.settlement_currency,
+                sequence=2,
+            )
+        )
+        with pytest.raises(
+            observed.AccountObservationError,
+            match="observation_hwm_prefix_missing_or_changed",
+        ):
+            await observation_repo._require_hwm_prefix_locked(session, scope, latest)
+    assert await _row_count(database, scope) == 1
+    assert second.sequence == 2
+
+
+async def test_complete_b5_prefix_allows_guarded_second_b3_then_replays_head(
+    monkeypatch, database
+):
+    observation_repo, repository, scope, first, _ = await _first(monkeypatch, database)
+    prefix = await repository.preflight_prefix(scope)
+    assert prefix.sequence == 1 and prefix.head_sha256 == first.event_sha256
+    assert prefix.admission == "DENY" and not prefix.execution_authority
+    reference, window = await additional_capture(
+        monkeypatch, observation_repo, scope, []
+    )
+    second = await observation_repo.append(
+        scope,
+        reference,
+        window,
+        expected_revision=1,
+        require_hwm_prefix=True,
+    )
+    await repository.append_next(
+        scope, expected_sequence=2, expected_head_sha256=second.event_sha256
+    )
+    replayed = await repository.preflight_prefix(scope)
+    assert replayed.sequence == 2 and replayed.head_sha256 == second.event_sha256
+    assert (
+        replayed.projection_sha256
+        == (
+            await repository.readback(
+                scope, expected_sequence=2, expected_head_sha256=second.event_sha256
+            )
+        ).projection_sha256
+    )
+    assert replayed.admission == "DENY" and not replayed.execution_authority
+    assert await _row_count(database, scope) == 2
 
 
 async def _second_insert_values(database, repository, scope):

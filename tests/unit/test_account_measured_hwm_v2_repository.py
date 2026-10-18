@@ -10,6 +10,7 @@ from app.database.repositories.account_measured_hwm_v2 import (
     AccountMeasuredHWMError,
     AccountMeasuredHWMRepository,
     MeasuredHWMReadback,
+    _checked_prefix_pair,
 )
 from app.trade_qualification import account_capture_journal as journal
 from app.trade_qualification import account_measured_hwm_continuation as hwm
@@ -36,6 +37,33 @@ def _batch(sequence):
         previous_sha256=None if sequence == 1 else f"{sequence - 1:064x}",
         event_sha256=f"{sequence:064x}",
     )
+
+
+@pytest.mark.parametrize("gap", ["missing", "lag", "head"])
+def test_locked_prefix_pair_rejects_b3_only_or_misaligned_b5(gap):
+    batch = _batch(2)
+    row = SimpleNamespace(
+        environment=SCOPE.environment,
+        account_id=SCOPE.account_id,
+        settlement_currency=SCOPE.settlement_currency,
+        sequence=2,
+        event_sha256=batch.event_sha256,
+        projection_json="{}",
+        projection_sha256=journal.digest(b"{}"),
+        account_complete=False,
+        execution_authority=False,
+        admission="DENY",
+    )
+    assert _checked_prefix_pair(SCOPE, None, None).sequence == 0
+    assert _checked_prefix_pair(SCOPE, batch, row).sequence == 2
+    if gap == "missing":
+        row = None
+    elif gap == "lag":
+        row.sequence = 1
+    else:
+        row.event_sha256 = "f" * 64
+    with pytest.raises(AccountMeasuredHWMError, match="prefix_gap"):
+        _checked_prefix_pair(SCOPE, batch, row)
 
 
 @pytest.mark.asyncio

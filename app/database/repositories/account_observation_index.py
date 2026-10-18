@@ -10,6 +10,9 @@ from datetime import datetime, timedelta
 
 from sqlalchemy import and_, func, or_, select
 
+from app.database.models.account_measured_hwm_v2 import (
+    DemoAccountMeasuredHWMV2 as HWMRow,
+)
 from app.database.models.account_observation_index import (
     DemoAccountObservationBatch as Batch,
 )
@@ -706,15 +709,45 @@ class AccountObservationIndexRepository:
                 "component_balance_source_read_failed"
             ) from None
 
-    async def append(self, scope, reference, window, *, expected_revision):
+    async def _require_hwm_prefix_locked(self, session, scope, latest):
+        """Check B5 under the same account lock as a guarded B3 append."""
+        row = await session.scalar(
+            select(HWMRow)
+            .filter_by(**_keys(scope))
+            .order_by(HWMRow.sequence.desc())
+            .limit(1)
+        )
+        if latest is None and row is None:
+            return
+        if (
+            latest is None
+            or row is None
+            or row.sequence != latest.sequence
+            or row.event_sha256 != latest.event_sha256
+            or row.projection_sha256 != journal.digest(row.projection_json.encode())
+            or row.account_complete
+            or row.execution_authority
+            or row.admission != "DENY"
+        ):
+            observed.deny("observation_hwm_prefix_missing_or_changed")
+
+    async def append(
+        self, scope, reference, window, *, expected_revision, require_hwm_prefix=False
+    ):
         try:
-            return await self._append(scope, reference, window, expected_revision)
+            if type(require_hwm_prefix) is not bool:
+                observed.deny("observation_hwm_prefix_switch_invalid")
+            return await self._append(
+                scope, reference, window, expected_revision, require_hwm_prefix
+            )
         except Exception:  # noqa: BLE001 -- committed evidence survives readback failure
             raise observed.AccountObservationError(
                 "observation_append_failed"
             ) from None
 
-    async def _append(self, scope, reference, window, expected_revision):
+    async def _append(
+        self, scope, reference, window, expected_revision, require_hwm_prefix=False
+    ):
         observed.reference_document(reference)
         observed.window_document(window)
         if (
@@ -727,6 +760,14 @@ class AccountObservationIndexRepository:
             existing = await session.scalar(
                 select(Batch).where(Batch.capture_id == reference.capture_id)
             )
+            if require_hwm_prefix:
+                latest = await session.scalar(
+                    select(Batch)
+                    .filter_by(**_keys(scope))
+                    .order_by(Batch.sequence.desc())
+                    .limit(1)
+                )
+                await self._require_hwm_prefix_locked(session, scope, latest)
         if existing:
             data = self._checked_document(existing, scope)
             if (
@@ -765,6 +806,8 @@ class AccountObservationIndexRepository:
                 None if latest is None else latest.event_sha256
             ) != previous:
                 observed.deny("observation_revision_conflict")
+            if require_hwm_prefix:
+                await self._require_hwm_prefix_locked(session, scope, latest)
             session.add(
                 Batch(
                     **_keys(scope),

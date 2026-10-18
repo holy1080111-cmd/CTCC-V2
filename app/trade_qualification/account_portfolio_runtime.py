@@ -11,6 +11,7 @@ from app.database.repositories.account_capture_journal import (
 )
 from app.database.repositories.account_measured_hwm_v2 import (
     AccountMeasuredHWMRepository,
+    MeasuredHWMPrefixPreflight,
     MeasuredHWMReadback,
 )
 from app.database.repositories.account_observation_index import (
@@ -56,6 +57,8 @@ DIAGNOSTIC_V3_POLICY_BYTES = journal.canonical(
         "v2_policy_sha256": DIAGNOSTIC_POLICY_SHA256,
         "measured_hwm_policy_sha256": hwm_v2.POLICY_SHA256,
         "measured_hwm": "same_invocation_B3_append_DB0044_commit_and_independent_readback",
+        "prefix_preflight": "locked_B3_B5_tail_and_independent_readback_before_B1",
+        "b3_write_guard": "locked_B5_tail_alignment_before_guarded_B3_insert",
         "historical_native_clock": "unknown_without_original_companion_proofs",
         "current_native_owner_issuer": "unimplemented_durable_clock_proof_required",
         "publish_account_revision": False,
@@ -317,6 +320,10 @@ async def _collect(
             and (
                 type(hwm_repository) is not AccountMeasuredHWMRepository
                 or repository.session_factory is not hwm_repository.session_factory
+                or repository.session_factory
+                is not hwm_repository.journal.session_factory
+                or repository.session_factory
+                is not hwm_repository.observations.session_factory
             )
         )
         or type(policy_pin) is not str
@@ -351,8 +358,25 @@ async def _collect(
     scope = LedgerScope(
         account_id=plan.expected_uid, settlement_currency=plan.settlement_currency
     )
-    started = collector._read_clock(clock)
-    await repository.initialize_capture_scope(scope)
+    if v3 and (type(revision) is not int or revision < 0):
+        components.deny("component_hwm_expected_revision_invalid")
+    if v3:
+        await repository.initialize_capture_scope(scope)
+        # This locked, independently read-back prefix check precedes every B1
+        # account GET, caller clock read and new B3 write. The B3 append checks
+        # it again under its own write lock after intervening acquisition.
+        prefix = await hwm_repository.preflight_prefix(scope)
+        if (
+            type(prefix) is not MeasuredHWMPrefixPreflight
+            or prefix.sequence != revision
+            or prefix.admission != "DENY"
+            or prefix.execution_authority
+        ):
+            components.deny("component_hwm_prefix_preflight_mismatch")
+        started = collector._read_clock(clock)
+    else:
+        started = collector._read_clock(clock)
+        await repository.initialize_capture_scope(scope)
     before = await repository.read_portfolio_checkpoint(scope)
     recorded, source_owner = await bootstrap._collect_recorded(
         session,
@@ -385,8 +409,11 @@ async def _collect(
         or first["data"]["local_checkpoint_sha256"] != source_owner.checkpoint
     ):
         components.deny("component_owner_journal_binding_mismatch")
+    append_options = {"expected_revision": revision}
+    if v3:
+        append_options["require_hwm_prefix"] = True
     indexed = await observation_repository.append(
-        scope, reference, window, expected_revision=revision
+        scope, reference, window, **append_options
     )
     measured_hwm_first = None
     if v3:

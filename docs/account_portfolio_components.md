@@ -3,11 +3,20 @@
 ## B3→B5 same-invocation sampled-HWM bridge (version 3)
 
 `collect_owned_portfolio_components_v3` is an additive, DENY-only diagnostic.
-It uses the original B1 acquisition and B3 observation append from version 2,
-then calls the exact DB0044 measured-HWM repository with the just committed B3
-sequence and head. The B5 append commits under the account lock and performs
-its own separate-session readback. Version 3 opens one further separate
-readback and compares both results to the independently folded complete B3
+It first initializes the local scope and, under the exact account lock, checks
+that the existing B3 and B5 tails are both empty or have the same sequence and
+event hash. A nonempty B5 tail receives an independent-session original-source
+readback. This happens before any new B1 account GET. A B3-only or misaligned
+scope stops here; version 3 never invents a later genesis or silently catches
+up historical samples.
+
+Version 3 then uses the original B1 acquisition and guarded B3 append. The
+guard rechecks B5 alignment inside B3's write transaction after the intervening
+network reads, so a newly created gap prevents this invocation from committing
+another B3 row. It then calls the exact DB0044 measured-HWM repository with the
+just committed B3 sequence and head. The B5 append commits under the account
+lock and performs its own separate-session readback. Version 3 opens one further
+separate readback and compares both results to the independently folded complete B3
 population. It checks scope, sequence/head, genesis and last sample times,
 sampled peak amount/time/source digest, and the recorded native-transport flag.
 The v1 and v2 membership digests use different algorithms and are not falsely
@@ -19,6 +28,12 @@ share the original session factory. A missing predecessor, changed B3 head,
 inconsistent projection, failed DB readback or late failure denies the result.
 Previously committed B1/B3/B5 evidence remains for audit after that failure.
 Version 2's policy, schema and bytes remain unchanged.
+
+The B3 write guard is opt-in for this version 3 route. Other legacy B3 writers
+may still create a gap outside this invocation; the next version 3 preflight
+then refuses new acquisition until a separate reviewed, bounded historical B5
+catch-up reaches the exact B3 head. This patch does not implement that catch-up
+or grant a trading permit from an aligned prefix.
 
 This verifies consistency of **sampled** balances through the B3 head. It
 does not prove a continuous peak between reads, historical native-clock

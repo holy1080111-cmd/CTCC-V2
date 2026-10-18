@@ -129,6 +129,45 @@ class MeasuredHWMHistoryReadback:
         return "DENY"
 
 
+@dataclass(frozen=True, slots=True, repr=False)
+class MeasuredHWMPrefixPreflight:
+    """A locked B3/B5 tail observation; never a future-write permit."""
+
+    sequence: int
+    head_sha256: str | None
+    projection_sha256: str | None
+
+    @property
+    def execution_authority(self) -> bool:
+        return False
+
+    @property
+    def admission(self) -> str:
+        return "DENY"
+
+
+def _checked_prefix_pair(scope, batch, row):
+    if batch is None and row is None:
+        return MeasuredHWMPrefixPreflight(0, None, None)
+    if (
+        batch is None
+        or row is None
+        or type(batch.sequence) is not int
+        or type(row.sequence) is not int
+        or batch.sequence != row.sequence
+        or batch.event_sha256 != row.event_sha256
+        or any(getattr(row, key) != value for key, value in _keys(scope).items())
+        or row.projection_sha256 != journal.digest(row.projection_json.encode())
+        or row.account_complete
+        or row.execution_authority
+        or row.admission != "DENY"
+    ):
+        _deny("account_measured_hwm_prefix_gap")
+    return MeasuredHWMPrefixPreflight(
+        batch.sequence, batch.event_sha256, row.projection_sha256
+    )
+
+
 class AccountMeasuredHWMRepository:
     def __init__(self, session_factory, *, clock):
         self.session_factory = session_factory
@@ -136,6 +175,50 @@ class AccountMeasuredHWMRepository:
         self.observations = AccountObservationIndexRepository(
             session_factory, clock=clock
         )
+
+    async def preflight_prefix(self, scope: LedgerScope) -> MeasuredHWMPrefixPreflight:
+        """Fail before new account GETs when existing B3 lacks its B5 prefix.
+
+        The account lock protects this read. A separate DB session replays the
+        terminal B5/B1 proof; the subsequent B3 append must guard the prefix
+        again under its own write lock because network acquisition intervenes.
+        """
+        try:
+            async with self.session_factory() as session, session.begin():
+                await self.journal._lock(session, scope)
+                batch = await session.scalar(
+                    select(Batch)
+                    .filter_by(**_keys(scope))
+                    .order_by(Batch.sequence.desc())
+                    .limit(1)
+                )
+                row = await session.scalar(
+                    select(HWMRow)
+                    .filter_by(**_keys(scope))
+                    .order_by(HWMRow.sequence.desc())
+                    .limit(1)
+                )
+                prefix = _checked_prefix_pair(scope, batch, row)
+                if batch is not None:
+                    self.observations._checked_document(batch, scope)
+            if prefix.sequence:
+                checked = await self.readback(
+                    scope,
+                    expected_sequence=prefix.sequence,
+                    expected_head_sha256=prefix.head_sha256,
+                )
+                if (
+                    type(checked) is not MeasuredHWMReadback
+                    or checked.sequence != prefix.sequence
+                    or checked.head_sha256 != prefix.head_sha256
+                    or checked.projection_sha256 != prefix.projection_sha256
+                ):
+                    _deny("account_measured_hwm_prefix_readback_mismatch")
+            return prefix
+        except Exception:  # noqa: BLE001 -- never expose private DB/source data
+            raise AccountMeasuredHWMError(
+                "account_measured_hwm_prefix_preflight_denied"
+            ) from None
 
     async def _original(self, session, scope, batch):
         data = self.observations._checked_document(batch, scope)
