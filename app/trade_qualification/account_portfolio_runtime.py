@@ -9,6 +9,10 @@ from weakref import WeakKeyDictionary
 from app.database.repositories.account_capture_journal import (
     AccountCaptureJournalRepository,
 )
+from app.database.repositories.account_measured_hwm_v2 import (
+    AccountMeasuredHWMRepository,
+    MeasuredHWMReadback,
+)
 from app.database.repositories.account_observation_index import (
     AccountObservationIndexRepository,
     BalanceSourcePage,
@@ -21,6 +25,7 @@ from app.trade_qualification import account_clock_boundary as clock_boundary
 from app.trade_qualification import account_collector as collector
 from app.trade_qualification import account_current_source_verifier as current
 from app.trade_qualification import account_materializer as mapping
+from app.trade_qualification import account_measured_hwm_continuation as hwm_v2
 from app.trade_qualification import account_metadata as metadata
 from app.trade_qualification import account_observation_index as observed
 from app.trade_qualification import account_portfolio_components as components
@@ -45,6 +50,19 @@ DIAGNOSTIC_POLICY_BYTES = journal.canonical(
     }
 )
 DIAGNOSTIC_POLICY_SHA256 = journal.digest(DIAGNOSTIC_POLICY_BYTES)
+DIAGNOSTIC_V3_POLICY_BYTES = journal.canonical(
+    {
+        "version": "ctcc.portfolio_components_diagnostic.v3",
+        "v2_policy_sha256": DIAGNOSTIC_POLICY_SHA256,
+        "measured_hwm_policy_sha256": hwm_v2.POLICY_SHA256,
+        "measured_hwm": "same_invocation_B3_append_DB0044_commit_and_independent_readback",
+        "historical_native_clock": "unknown_without_original_companion_proofs",
+        "current_native_owner_issuer": "unimplemented_durable_clock_proof_required",
+        "publish_account_revision": False,
+        "execution_authority": False,
+    }
+)
+DIAGNOSTIC_V3_POLICY_SHA256 = journal.digest(DIAGNOSTIC_V3_POLICY_BYTES)
 
 
 class OwnedAccountComponents:
@@ -157,6 +175,7 @@ async def collect_owned_portfolio_components(
                 expected_profile_sha256,
                 required_drawdown_window_started_at,
                 expected_policy_sha256,
+                None,
             )
     except asyncio.CancelledError:
         raise
@@ -164,6 +183,109 @@ async def collect_owned_portfolio_components(
         raise components.PortfolioComponentError(
             "owned_portfolio_component_capture_failed"
         ) from None
+
+
+async def collect_owned_portfolio_components_v3(
+    session,
+    *,
+    repository,
+    journal_repository,
+    observation_repository,
+    hwm_repository,
+    clock,
+    barrier_completed_at,
+    window,
+    expected_revision,
+    profile,
+    expected_profile_sha256,
+    required_drawdown_window_started_at=None,
+    expected_policy_sha256=DIAGNOSTIC_V3_POLICY_SHA256,
+):
+    """B1/B3/B5 same-invocation diagnostic; no account or order authority.
+
+    B5 is read from its own committed transaction and compared with the old
+    complete-population v1 fold. A failure retains any earlier B1/B3/B5 rows.
+    The source and HWM receipts are never inputs supplied by this caller.
+    """
+    if type(hwm_repository) is not AccountMeasuredHWMRepository:
+        components.deny("component_hwm_repository_required")
+    try:
+        async with asyncio.timeout(30):
+            return await _collect(
+                session,
+                repository,
+                journal_repository,
+                observation_repository,
+                clock,
+                barrier_completed_at,
+                window,
+                expected_revision,
+                profile,
+                expected_profile_sha256,
+                required_drawdown_window_started_at,
+                expected_policy_sha256,
+                hwm_repository,
+            )
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001 -- no credential/raw/SQL exception leakage
+        raise components.PortfolioComponentError(
+            "owned_portfolio_component_capture_failed"
+        ) from None
+
+
+def _match_measured_hwm_v2(scope, indexed, reference, folded, first, second):
+    """Compare two DB readbacks to the independent v1 full-population fold.
+
+    This is a consistency check on sampled balances, not native-clock proof or
+    full risk-window coverage. V1 and V2 membership hashes are distinct schemes.
+    """
+    if (
+        type(first) is not MeasuredHWMReadback
+        or type(second) is not MeasuredHWMReadback
+        or first != second
+        or first.sequence != indexed.sequence
+        or first.head_sha256 != indexed.event_sha256
+        or first.projection_sha256 != journal.digest(first.projection_json)
+        or first.admission != "DENY"
+        or first.account_complete
+        or first.execution_authority
+    ):
+        components.deny("component_hwm_v2_readback_mismatch")
+    try:
+        projection = hwm_v2._prior(hwm_v2.HWMContinuation(first.projection_json), scope)
+        if (
+            projection["last_source_reference"]
+            != observed.reference_document(reference)
+            or projection["sample_count"] != folded["sample_count"]
+            or projection["through_sequence"] != folded["through_sequence"]
+            or projection["head_sha256"] != folded["head_sha256"]
+            or projection["window_started_at"] != folded["window_started_at"]
+            or projection["last_measured_at"] != folded["last_measured_at"]
+            or projection["peak_equity"] != folded["peak_equity"]
+            or projection["peak_observed_at"] != folded["peak_observed_at"]
+            or projection["peak_measurement_sha256"] != folded["peak_source_sha256"]
+            or projection["all_sources_recorded_native"]
+            != folded["all_sources_recorded_native"]
+            or projection["unsampled_intermediate_peak"] != "unknown"
+            or projection["durable_membership_verified"] is not False
+            or projection["native_clock_verified"] is not False
+            or projection["account_complete"] is not False
+            or projection["execution_authority"] is not False
+            or projection["admission"] != "DENY"
+        ):
+            raise ValueError
+    except (KeyError, TypeError, ValueError, UnicodeError, RecursionError):
+        components.deny("component_hwm_v2_projection_mismatch")
+    return {
+        "projection_sha256": first.projection_sha256,
+        "through_sequence": first.sequence,
+        "head_sha256": first.head_sha256,
+        "db_readback_matched": True,
+        "native_clock_verified": False,
+        "account_complete": False,
+        "execution_authority": False,
+    }
 
 
 async def _collect(
@@ -179,7 +301,10 @@ async def _collect(
     profile_pin,
     required_window,
     policy_pin,
+    hwm_repository,
 ):
+    v3 = hwm_repository is not None
+    required_policy = DIAGNOSTIC_V3_POLICY_SHA256 if v3 else DIAGNOSTIC_POLICY_SHA256
     if (
         type(session) is not ControlledDemoAccountSession
         or type(repository) is not QualificationLedgerRepository
@@ -187,8 +312,15 @@ async def _collect(
         or type(observation_repository) is not AccountObservationIndexRepository
         or repository.session_factory is not journal_repository.session_factory
         or repository.session_factory is not observation_repository.session_factory
+        or (
+            v3
+            and (
+                type(hwm_repository) is not AccountMeasuredHWMRepository
+                or repository.session_factory is not hwm_repository.session_factory
+            )
+        )
         or type(policy_pin) is not str
-        or policy_pin != DIAGNOSTIC_POLICY_SHA256
+        or policy_pin != required_policy
     ):
         components.deny("component_owned_dependencies_invalid")
     profile = mapping.copy_materialization_inputs(profile)
@@ -256,6 +388,13 @@ async def _collect(
     indexed = await observation_repository.append(
         scope, reference, window, expected_revision=revision
     )
+    measured_hwm_first = None
+    if v3:
+        measured_hwm_first = await hwm_repository.append_next(
+            scope,
+            expected_sequence=indexed.sequence,
+            expected_head_sha256=indexed.event_sha256,
+        )
     fold = components.MeasuredHWMFold(scope, indexed.sequence, indexed.event_sha256)
     after_cursor = 0
     while after_cursor < indexed.sequence:
@@ -277,6 +416,16 @@ async def _collect(
             fold.add(*item)
         after_cursor = fold.sequence
     hwm = json.loads(fold.finish(required_window_started_at=required_window))
+    durable_hwm = None
+    if v3:
+        measured_hwm_second = await hwm_repository.readback(
+            scope,
+            expected_sequence=indexed.sequence,
+            expected_head_sha256=indexed.event_sha256,
+        )
+        durable_hwm = _match_measured_hwm_v2(
+            scope, indexed, reference, hwm, measured_hwm_first, measured_hwm_second
+        )
     packet = recorded.bootstrap.packet
     frozen = capture.freeze_demo_account_packet(
         packet, expected_plan_sha256=session._pin
@@ -374,7 +523,9 @@ async def _collect(
         components.deny("component_final_freshness_or_deadline_invalid")
     payload = journal.canonical(
         {
-            "schema_version": "ctcc.portfolio_components_diagnostic.v2",
+            "schema_version": "ctcc.portfolio_components_diagnostic.v3"
+            if v3
+            else "ctcc.portfolio_components_diagnostic.v2",
             "policy_sha256": policy_pin,
             "profile_sha256": profile_pin,
             "source_reference": observed.reference_document(reference),
@@ -387,6 +538,7 @@ async def _collect(
             "local_received_at": after.received_at.isoformat(),
             "current_balance": source["balance"],
             "measured_hwm": hwm,
+            **({"durable_measured_hwm": durable_hwm} if v3 else {}),
             "instrument_rules": rule_pins,
             "instrument_specs": {
                 key: value.model_dump(mode="json") for key, value in specs.items()

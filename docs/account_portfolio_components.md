@@ -1,5 +1,34 @@
 # B5 diagnostic portfolio components, version 2
 
+## B3→B5 same-invocation sampled-HWM bridge (version 3)
+
+`collect_owned_portfolio_components_v3` is an additive, DENY-only diagnostic.
+It uses the original B1 acquisition and B3 observation append from version 2,
+then calls the exact DB0044 measured-HWM repository with the just committed B3
+sequence and head. The B5 append commits under the account lock and performs
+its own separate-session readback. Version 3 opens one further separate
+readback and compares both results to the independently folded complete B3
+population. It checks scope, sequence/head, genesis and last sample times,
+sampled peak amount/time/source digest, and the recorded native-transport flag.
+The v1 and v2 membership digests use different algorithms and are not falsely
+compared as equal.
+
+The version 3 receipt pins the B5 projection digest and the matched B3 head.
+The caller cannot supply a B5 receipt or measurement; the B5 repository must
+share the original session factory. A missing predecessor, changed B3 head,
+inconsistent projection, failed DB readback or late failure denies the result.
+Previously committed B1/B3/B5 evidence remains for audit after that failure.
+Version 2's policy, schema and bytes remain unchanged.
+
+This verifies consistency of **sampled** balances through the B3 head. It
+does not prove a continuous peak between reads, historical native-clock
+attestation, the required drawdown-window origin, complete account history,
+current account identity/revision or protection. The result still has
+`owner=None`, `snapshot=None`, `account_complete=false`,
+`execution_authority=false` and `admission=DENY`. Synthetic unit cases check
+the join mechanism; only isolated PostgreSQL tests can check DB0044 durability,
+and neither kind of test is authenticated Demo acceptance.
+
 The injected-clock entry now emits `ctcc.portfolio_components_diagnostic.v2`
 under a new pinned diagnostic policy. It always returns `owner=None`. Native TLS
 transport, injected UTC ordering and native-clock attestation are separate facts.
