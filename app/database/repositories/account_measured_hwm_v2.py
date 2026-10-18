@@ -496,8 +496,8 @@ class AccountMeasuredHWMRepository:
                 )
                 if (
                     tip is None
-                    or tip.sequence != through_sequence
-                    or tip.projection_sha256 != expected_projection_sha256
+                    or tip.sequence < through_sequence
+                    or tip.sequence > head.sequence
                 ):
                     _deny("account_measured_hwm_history_tip_changed")
                 rows = (
@@ -514,6 +514,9 @@ class AccountMeasuredHWMRepository:
                 ).all()
                 if len(rows) != through_sequence - first_sequence + 1:
                     _deny("account_measured_hwm_history_page_missing")
+                target = rows[-1]
+                if target.projection_sha256 != expected_projection_sha256:
+                    _deny("account_measured_hwm_history_target_changed")
                 previous = None
                 if first_sequence > 1:
                     previous = await session.scalar(
@@ -543,10 +546,10 @@ class AccountMeasuredHWMRepository:
                     await self._verified_row_locked(session, scope, batch, row)
                     previous = row
                 return MeasuredHWMHistoryReadback(
-                    tip.projection_json.encode(),
-                    tip.projection_sha256,
-                    tip.sequence,
-                    tip.event_sha256,
+                    target.projection_json.encode(),
+                    target.projection_sha256,
+                    target.sequence,
+                    target.event_sha256,
                     head.sequence,
                     head.event_sha256,
                     len(rows),

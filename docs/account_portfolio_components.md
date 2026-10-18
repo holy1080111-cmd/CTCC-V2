@@ -215,9 +215,12 @@ B3 gaps, altered predecessors, older B3 policy epochs, and changed latest
 heads deny the page. DB0044's insert guard retains the raw balance/account
 configuration checks, exact B3 binding, canonical bytes and predecessor B5
 projection. No reset or later genesis exists. After commit, another session
-re-acquires the lock, checks both heads, and independently replays each new row
-and its predecessor. A late readback failure leaves committed DENY evidence in
-place for explicit restart and replay; it never deletes or rewrites a row.
+re-acquires the lock, pins the latest B3 head, and independently replays each
+new row and its predecessor. It checks the exact B5 page-end projection even
+when another worker has subsequently appended a later B5 page; old pages stay
+readable under the same pinned B3 head. A late readback failure leaves
+committed DENY evidence in place for explicit restart and replay; it never
+deletes or rewrites a row.
 
 This path does not assert account-lifetime completeness or historical
 point-in-time availability. B5 `db_recorded_at` is the backfill time, not a

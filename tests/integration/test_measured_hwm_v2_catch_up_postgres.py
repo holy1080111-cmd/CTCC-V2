@@ -82,6 +82,28 @@ async def test_b3_only_scope_catches_up_from_original_genesis_in_bounded_pages(
     assert second_page.verified_rows == 1
     assert second_page.admission == "DENY"
     assert await _row_count(database, scope) == 2
+    # The earlier committed page remains independently replayable even after
+    # a later worker has advanced the B5 tip under the same B3 head.
+    assert (
+        await restarted.readback_history(
+            scope,
+            expected_observation_sequence=2,
+            expected_observation_head_sha256=second.event_sha256,
+            first_sequence=1,
+            through_sequence=1,
+            expected_projection_sha256=first_page.projection_sha256,
+        )
+        == first_page
+    )
+    with pytest.raises(AccountMeasuredHWMError, match="history_readback_unknown"):
+        await restarted.readback_history(
+            scope,
+            expected_observation_sequence=2,
+            expected_observation_head_sha256=second.event_sha256,
+            first_sequence=1,
+            through_sequence=1,
+            expected_projection_sha256="0" * 64,
+        )
     assert (
         await restarted.catch_up_history(
             scope,
