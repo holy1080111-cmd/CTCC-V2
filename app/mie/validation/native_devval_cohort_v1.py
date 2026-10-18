@@ -102,6 +102,7 @@ class NativeDevValCohortPlanV1(Gate3Contract):
             or self.development.partition != DatasetPartition.DEVELOPMENT
             or self.validation.partition != DatasetPartition.VALIDATION
             or self.development.end_at > self.validation.start_at
+            or self.development_cutoff_at > self.validation.start_at
         ):
             raise ValueError("native cohort instruments or partition order differ")
         for window, cutoff in (

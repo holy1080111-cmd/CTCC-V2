@@ -167,6 +167,35 @@ def cohort_case(monkeypatch, observation_case, synthetic_batches):
     return kwargs, known
 
 
+def test_development_cutoff_cannot_cross_into_adjacent_validation_window():
+    development = PartitionWindow(
+        partition=DatasetPartition.DEVELOPMENT,
+        start_at=START,
+        end_at=START + timedelta(hours=4),
+    )
+    validation = PartitionWindow(
+        partition=DatasetPartition.VALIDATION,
+        start_at=development.end_at,
+        end_at=development.end_at + timedelta(hours=4),
+    )
+    common = {
+        "instrument_ids": SYMBOLS,
+        "development": development,
+        "validation": validation,
+        "validation_cutoff_at": validation.end_at + timedelta(seconds=30),
+    }
+    exact_boundary = cohort.NativeDevValCohortPlanV1(
+        **common, development_cutoff_at=validation.start_at
+    )
+    assert exact_boundary.development_cutoff_at == validation.start_at
+    assert exact_boundary.predictive_oos_eligible is False
+    with pytest.raises(ValidationError, match="partition order"):
+        cohort.NativeDevValCohortPlanV1(
+            **common,
+            development_cutoff_at=validation.start_at + timedelta(seconds=1),
+        )
+
+
 @pytest.mark.asyncio
 async def test_four_original_groups_replay_deterministically_but_remain_denied(
     cohort_case,

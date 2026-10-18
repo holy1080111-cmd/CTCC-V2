@@ -6,6 +6,8 @@ with the same two pinned instruments. Each batch must cover one complete,
 four-hour-aligned 240-minute window. The two symbols in a partition share the
 same event-time grid; Development must precede Validation. This is a bounded
 source-admission pilot, not a full research dataset or Candidate V1 seal.
+The Development decision cutoff may meet but cannot enter the Validation
+window, including when the two four-hour windows are adjacent.
 
 The caller supplies a canonical cohort plan and its separately retained SHA-256
 pin, each original batch artifact and its pin, all original capture inputs,
