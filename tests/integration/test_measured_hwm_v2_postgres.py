@@ -99,6 +99,125 @@ async def _batch_count(database, scope):
         )
 
 
+def _first_append_diagnostic(stage: str, error: Exception) -> str:
+    """Report only static failure metadata; DB errors can contain private rows."""
+    safe_types = {
+        "AccountMeasuredHWMError",
+        "AssertionError",
+        "DBAPIError",
+        "DataError",
+        "IntegrityError",
+        "InternalError",
+        "InvalidRequestError",
+        "KeyError",
+        "OperationalError",
+        "PortfolioComponentError",
+        "ProgrammingError",
+        "RuntimeError",
+        "StatementError",
+        "TypeError",
+        "ValueError",
+    }
+    safe_constraints = {
+        "pk_demo_account_measured_hwm_v2",
+        "fk_hwm_v2_observation",
+        "fk_hwm_v2_source",
+        "ck_demo_account_measured_hwm_v2_scope",
+        "ck_demo_account_measured_hwm_v2_sequence",
+        "ck_demo_account_measured_hwm_v2_digests",
+        "ck_demo_account_measured_hwm_v2_bytes",
+        "ck_demo_account_measured_hwm_v2_no_authority",
+    }
+    safe_primary = {
+        "account_measured_hwm_v2_document_invalid",
+        "account_measured_hwm_v2_binding_denied",
+        "account_measured_hwm_v2_equity_denied",
+        "account_measured_hwm_v2_available_denied",
+        "account_measured_hwm_v2_prior_witness_denied",
+        "account_measured_hwm_v2_selected_peak_denied",
+        "account_measured_hwm_v2_membership_denied",
+    }
+    origin = error.orig if isinstance(error, DBAPIError) else error
+    diag = getattr(origin, "diag", None)
+    sqlstate = getattr(origin, "sqlstate", None)
+    if not (
+        isinstance(sqlstate, str)
+        and len(sqlstate) == 5
+        and all(
+            character in "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+            for character in sqlstate
+        )
+    ):
+        sqlstate = "unavailable"
+    constraint = getattr(diag, "constraint_name", None) or getattr(
+        origin, "constraint_name", None
+    )
+    if not isinstance(constraint, str) or constraint not in safe_constraints:
+        constraint = "unavailable"
+    primary = getattr(diag, "message_primary", None) or getattr(origin, "message", None)
+    if not isinstance(primary, str) or primary not in safe_primary:
+        primary = "unavailable"
+    exception_type = type(error).__name__
+    if exception_type not in safe_types:
+        exception_type = "OtherException"
+    return (
+        f"b5_first_append_stage={stage} exception_type={exception_type} "
+        f"sqlstate={sqlstate} constraint={constraint} primary={primary}"
+    )
+
+
+async def test_b5_first_legitimate_append_stage_diagnostics(monkeypatch, database):
+    """Pin the first B3 tail and identify a B5 failure without private SQL."""
+    stage = "source_fixture"
+    try:
+        _, scope, _, _, first = await stored(monkeypatch, database)
+        repository = AccountMeasuredHWMRepository(database[1], clock=now)
+        async with database[1]() as session:
+            stage = "locked_source"
+            await repository.journal._lock(session, scope)
+            batch = await session.scalar(
+                select(Batch).filter_by(
+                    environment=scope.environment,
+                    account_id=scope.account_id,
+                    settlement_currency=scope.settlement_currency,
+                    sequence=1,
+                )
+            )
+            if batch is None or batch.event_sha256 != first.event_sha256:
+                raise AssertionError("b5_first_source_changed")
+            stage = "compute"
+            projected, measurement, peak_sequence = await repository._compute(
+                session, scope, batch, None
+            )
+            stage = "flush_trigger"
+            session.add(
+                repository._new_row(
+                    scope, batch, None, projected, measurement, peak_sequence
+                )
+            )
+            await session.flush()
+            stage = "commit"
+            await session.commit()
+        stage = "independent_readback"
+        restarted = AccountMeasuredHWMRepository(database[1], clock=now)
+        readback = await restarted.readback(
+            scope, expected_sequence=1, expected_head_sha256=first.event_sha256
+        )
+        if (
+            readback.sequence != 1
+            or readback.head_sha256 != first.event_sha256
+            or readback.projection_sha256 != projected.receipt_sha256
+            or readback.admission != "DENY"
+            or readback.execution_authority
+            or await _row_count(database, scope) != 1
+        ):
+            raise AssertionError("b5_first_readback_mismatch")
+    except Exception as error:  # noqa: BLE001 -- emit only the static allowlist
+        raise pytest.fail.Exception(
+            _first_append_diagnostic(stage, error), pytrace=False
+        ) from None
+
+
 async def test_legacy_b3_gap_blocks_next_guarded_append_without_new_b3(
     monkeypatch, database
 ):
