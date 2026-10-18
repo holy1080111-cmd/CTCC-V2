@@ -12,12 +12,14 @@ offline Gate 3 prerequisite; its PostgreSQL role tests and decision-time
 availability proof remain pending. It does not advance Gate 3 or trading
 authority.
 
-The current source migration head is `0044`. It adds a DENY-only sampled
-balance high-water-mark diagnostic over accepted observations. Its first sample
-is not exchange-account genesis, and unseen peaks remain unknown. `0043` adds
+The current source migration head is `0045`. It repairs the first-sample insert
+guard in the `0044` DENY-only sampled balance high-water-mark diagnostic over
+accepted observations. Its first sample is not exchange-account genesis, and
+unseen peaks remain unknown. `0043` adds
 an append-only, DENY-only source witness for an existing Demo ledger revision;
 that revision remains a caller claim and cannot grant complete account,
-reservation or order authority. DB0044 PostgreSQL/Docker acceptance is pending.
+reservation or order authority. Exact-source DB0045 PostgreSQL/Docker
+acceptance is pending.
 `0042` denies new submission-report projection while transport authenticity
 has no trusted issuer and refuses upgrade over unresolved older eligible rows.
 `0041` adds an append-only Demo

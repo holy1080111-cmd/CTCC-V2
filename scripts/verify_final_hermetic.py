@@ -247,6 +247,21 @@ ACCOUNT_MEASURED_HWM_V2_TRIGGERS = (
     ),
 )
 
+# DB0045 replaces only the reviewed guard body. DB0044's catalog pin remains
+# separate so a downgrade/readback cannot silently reinterpret old history.
+ACCOUNT_MEASURED_HWM_V2_TRIGGERS_0045 = (
+    (
+        "account_measured_hwm_v2_guard",
+        "O",
+        7,
+        True,
+        True,
+        True,
+        "707f66529bfd183f480d6124e87d11e006a76513c2d8fae983988e11310de8f9",
+    ),
+    *ACCOUNT_MEASURED_HWM_V2_TRIGGERS[1:],
+)
+
 MIGRATION_REVISION_PROBE = """
 import asyncio, json, sys
 from sqlalchemy import text
@@ -307,8 +322,8 @@ def expected_migration_revision_readback(revision: str) -> dict:
         "observed": revision,
         "execution_authority": False,
     }
-    if revision in ("0001", "0042", "0043", "0044"):
-        witness_expected = revision in ("0043", "0044")
+    if revision in ("0001", "0042", "0043", "0044", "0045"):
+        witness_expected = revision in ("0043", "0044", "0045")
         result["account_revision_witness_table_present"] = witness_expected
         result["account_revision_witness_guard_present"] = witness_expected
         result["account_revision_witness_trigger_count"] = 3 if witness_expected else 0
@@ -317,12 +332,19 @@ def expected_migration_revision_readback(revision: str) -> dict:
             if witness_expected
             else []
         )
-        hwm_expected = revision == "0044"
+        hwm_expected = revision in ("0044", "0045")
         result["account_measured_hwm_v2_table_present"] = hwm_expected
         result["account_measured_hwm_v2_guard_present"] = hwm_expected
         result["account_measured_hwm_v2_trigger_count"] = 3 if hwm_expected else 0
         result["account_measured_hwm_v2_trigger_catalog"] = (
-            [list(row) for row in ACCOUNT_MEASURED_HWM_V2_TRIGGERS]
+            [
+                list(row)
+                for row in (
+                    ACCOUNT_MEASURED_HWM_V2_TRIGGERS_0045
+                    if revision == "0045"
+                    else ACCOUNT_MEASURED_HWM_V2_TRIGGERS
+                )
+            ]
             if hwm_expected
             else []
         )
@@ -340,7 +362,7 @@ def migration_revision_readback(
     hwm_trigger_catalog: Iterable[Sequence[object]] = (),
 ) -> dict:
     """Deny schema drift, including extra or disabled non-internal triggers."""
-    if expected not in ("0001", "0042", "0043", "0044"):
+    if expected not in ("0001", "0042", "0043", "0044", "0045"):
         raise RuntimeError("migration_revision_readback_mismatch")
     catalog = [list(row) for row in trigger_catalog]
     hwm_catalog = [list(row) for row in hwm_trigger_catalog]
@@ -364,7 +386,7 @@ def migration_revision_readback(
 
 
 def verify_downgrade_denial_log(path: Path) -> None:
-    """Accept only DB0042's refusal after DB0044 and DB0043 downgrade."""
+    """Accept only DB0042's refusal after DB0045 through DB0043 downgrade."""
     if path.is_symlink() or not path.is_file() or path.stat().st_size > 2 * 1024 * 1024:
         raise ValueError("migration_downgrade_denial_log_missing_or_unsafe")
     try:
@@ -372,7 +394,8 @@ def verify_downgrade_denial_log(path: Path) -> None:
     except UnicodeError as error:
         raise ValueError("migration_downgrade_denial_log_invalid") from error
     if (
-        "Running downgrade 0044 -> 0043" not in output
+        "Running downgrade 0045 -> 0044" not in output
+        or "Running downgrade 0044 -> 0043" not in output
         or "Running downgrade 0043 -> 0042" not in output
         or "Running downgrade 0042 -> 0041" not in output
         or "/app/migrations/versions/0042_submission_transport_authenticity_denial.py"
@@ -1124,12 +1147,24 @@ def main():
             (args.output / "migration-identity.log").read_text()
         )
         if (
-            identity["migration"].get("source_head") != "0044"
-            or identity["migration"].get("database_head") != "0044"
+            identity["migration"].get("source_head") != "0045"
+            or identity["migration"].get("database_head") != "0045"
             or identity["migration"].get("status") != "PASS"
         ):
             raise RuntimeError("migration_downgrade_policy_head_unreviewed")
         container("migration-drift", ["alembic", "check"])
+        # Prove the repaired trigger restores the exact DB0044 body only on an
+        # empty HWM table before checking the existing empty-table downgrade.
+        container("migration-guard-empty-downgrade", ["alembic", "downgrade", "0044"])
+        container(
+            "migration-guard-empty-readback",
+            ["python", "-c", MIGRATION_REVISION_PROBE, "0044"],
+        )
+        guard_empty_readback = json.loads(
+            (args.output / "migration-guard-empty-readback.log").read_text()
+        )
+        if guard_empty_readback != expected_migration_revision_readback("0044"):
+            raise RuntimeError("migration_guard_empty_downgrade_readback_invalid")
         # Prove each append-only diagnostic table can be removed only empty,
         # including a committed DB0043 readback before reaching DB0042.
         container("migration-hwm-empty-downgrade", ["alembic", "downgrade", "0043"])
@@ -1163,16 +1198,18 @@ def main():
             raise RuntimeError("migration_reupgrade_identity_changed")
         container(
             "migration-reupgrade-readback",
-            ["python", "-c", MIGRATION_REVISION_PROBE, "0044"],
+            ["python", "-c", MIGRATION_REVISION_PROBE, "0045"],
         )
         reupgrade_readback = json.loads(
             (args.output / "migration-reupgrade-readback.log").read_text()
         )
-        if reupgrade_readback != expected_migration_revision_readback("0044"):
+        if reupgrade_readback != expected_migration_revision_readback("0045"):
             raise RuntimeError("migration_reupgrade_readback_invalid")
         container("migration-reupgrade-drift", ["alembic", "check"])
         identity["migration_empty_roundtrip"] = {
-            "source_head": "0044",
+            "source_head": "0045",
+            "guard_down_revision": "0044",
+            "guard_down_readback": guard_empty_readback,
             "hwm_down_revision": "0043",
             "hwm_down_readback": hwm_empty_readback,
             "down_revision": "0042",
@@ -1196,21 +1233,21 @@ def main():
             raise RuntimeError("migration_denial_identity_changed")
         container(
             "migration-denial-readback",
-            ["python", "-c", MIGRATION_REVISION_PROBE, "0044"],
+            ["python", "-c", MIGRATION_REVISION_PROBE, "0045"],
         )
         denial_readback = json.loads(
             (args.output / "migration-denial-readback.log").read_text()
         )
-        if denial_readback != expected_migration_revision_readback("0044"):
+        if denial_readback != expected_migration_revision_readback("0045"):
             raise RuntimeError("migration_denial_transaction_rollback_unverified")
         container("migration-redrift", ["alembic", "check"])
         identity["migration_downgrade_policy"] = {
-            "source_head": "0044",
+            "source_head": "0045",
             "target": "0041",
             "result": "DENIED",
             "denied_at": "0042",
             "policy_refusal": DOWNGRADE_DENIAL,
-            "database_head_after": "0044",
+            "database_head_after": "0045",
             "rollback_readback": denial_readback,
             "schema_drift": "PASS",
         }

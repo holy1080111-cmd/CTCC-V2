@@ -99,6 +99,75 @@ async def _batch_count(database, scope):
         )
 
 
+async def test_b5_0045_roundtrip_or_nonempty_denial_keeps_catalog(database):
+    """Restore the empty guard, or reject downgrade after a prior test wrote B5."""
+    migration = load_migration("0045")
+
+    async def catalog(connection):
+        function = (
+            await connection.execute(
+                text("""
+                  SELECT p.oid::bigint, p.proacl::text, p.proconfig::text,
+                         p.prosecdef, p.prolang::bigint, p.prorettype::bigint,
+                         p.proowner::bigint, p.prokind, p.pronargs,
+                         p.proargtypes::text, p.provolatile, p.proisstrict,
+                         p.proparallel, p.proleakproof, p.procost, p.prorows,
+                         p.prosupport::bigint,
+                         EXISTS (
+                           SELECT 1 FROM pg_catalog.aclexplode(
+                             COALESCE(p.proacl,pg_catalog.acldefault('f',p.proowner))
+                           ) AS a
+                           WHERE a.grantee=0 AND a.privilege_type='EXECUTE'
+                         ),
+                         encode(sha256(convert_to(p.prosrc,'UTF8')),'hex')
+                  FROM pg_catalog.pg_proc AS p
+                  WHERE p.oid=pg_catalog.to_regprocedure(
+                    'public.account_measured_hwm_v2_guard()')
+                """)
+            )
+        ).one()
+        triggers = (
+            await connection.execute(
+                text("""
+                  SELECT t.oid::bigint, t.tgname, t.tgfoid::bigint,
+                         t.tgtype, t.tgenabled, t.tgisinternal
+                  FROM pg_catalog.pg_trigger AS t
+                  WHERE t.tgrelid='public.demo_account_measured_hwm_v2'::regclass
+                  ORDER BY t.tgname
+                """)
+            )
+        ).all()
+        return function, triggers
+
+    def invoke(sync_connection, direction):
+        migration.op = Operations(MigrationContext.configure(sync_connection))
+        getattr(migration, direction)()
+
+    async with database[0].begin() as connection:
+        row_count = await connection.scalar(
+            text("SELECT count(*) FROM public.demo_account_measured_hwm_v2")
+        )
+        assert await connection.run_sync(database_head) == "0045"
+        original = await catalog(connection)
+        assert original[0][-1] == migration._NEW_BODY_SHA256
+        assert original[0][-2] is False
+        if row_count:
+            with pytest.raises(
+                RuntimeError, match="account_measured_hwm_v2_downgrade_requires_empty"
+            ):
+                await connection.run_sync(invoke, "downgrade")
+            assert await catalog(connection) == original
+            return
+        await connection.run_sync(invoke, "downgrade")
+        legacy = await catalog(connection)
+        assert legacy[0][:-1] == original[0][:-1]
+        assert legacy[0][-1] == migration._OLD_BODY_SHA256
+        assert legacy[1] == original[1]
+        await connection.run_sync(invoke, "upgrade")
+        assert await catalog(connection) == original
+        assert await connection.run_sync(database_head) == "0045"
+
+
 def _first_append_diagnostic(stage: str, error: Exception) -> str:
     """Report only static failure metadata; DB errors can contain private rows."""
     safe_types = {
@@ -667,7 +736,7 @@ async def test_b5_nonempty_downgrade_denies_and_rolls_back_exact_catalog(
                 )
             ).all()
         return migration_revision_readback(
-            "0044",
+            "0045",
             head,
             witness_table,
             witness_guard,
@@ -680,12 +749,12 @@ async def test_b5_nonempty_downgrade_denies_and_rolls_back_exact_catalog(
     before = await inspect()
 
     def downgrade(sync_connection):
-        migration = load_migration("0044")
+        migration = load_migration("0045")
         migration.op = Operations(MigrationContext.configure(sync_connection))
         migration.downgrade()
 
     with pytest.raises(
-        DBAPIError, match="account_measured_hwm_v2_downgrade_requires_empty"
+        RuntimeError, match="account_measured_hwm_v2_downgrade_requires_empty"
     ):
         async with database[0].begin() as connection:
             await connection.run_sync(downgrade)
@@ -702,7 +771,7 @@ async def test_b5_downgrade_nowait_refuses_concurrent_parent_reader(
     await _first(monkeypatch, database)
 
     def downgrade(sync_connection):
-        migration = load_migration("0044")
+        migration = load_migration("0045")
         migration.op = Operations(MigrationContext.configure(sync_connection))
         migration.downgrade()
 
@@ -714,4 +783,4 @@ async def test_b5_downgrade_nowait_refuses_concurrent_parent_reader(
             async with database[0].begin() as contender:
                 await contender.run_sync(downgrade)
     async with database[0].connect() as connection:
-        assert await connection.run_sync(database_head) == "0044"
+        assert await connection.run_sync(database_head) == "0045"

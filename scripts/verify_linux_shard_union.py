@@ -42,6 +42,8 @@ COMMON_STAGES = (
     "migration-upgrade",
     "migration-identity",
     "migration-drift",
+    "migration-guard-empty-downgrade",
+    "migration-guard-empty-readback",
     "migration-hwm-empty-downgrade",
     "migration-hwm-empty-readback",
     "migration-empty-downgrade",
@@ -77,6 +79,7 @@ def _verify_hashes(root: Path):
         "source-files.json",
         "migration-supported-readback.log",
         "migration-identity.log",
+        "migration-guard-empty-readback.log",
         "migration-hwm-empty-readback.log",
         "migration-empty-readback.log",
         "migration-reupgrade-identity.log",
@@ -157,31 +160,33 @@ def verify_union(
             or identity.get("hermetic_regression") != "PENDING_UNION"
             or identity.get("cleanup") != "PASS"
             or not isinstance(identity.get("migration"), dict)
-            or identity["migration"].get("source_head") != "0044"
-            or identity["migration"].get("database_head") != "0044"
+            or identity["migration"].get("source_head") != "0045"
+            or identity["migration"].get("database_head") != "0045"
             or identity["migration"].get("status") != "PASS"
             or identity.get("migration_supported_roundtrip")
             != expected_migration_revision_readback("0001")
             or identity.get("migration_empty_roundtrip")
             != {
-                "source_head": "0044",
+                "source_head": "0045",
+                "guard_down_revision": "0044",
+                "guard_down_readback": expected_migration_revision_readback("0044"),
                 "hwm_down_revision": "0043",
                 "hwm_down_readback": expected_migration_revision_readback("0043"),
                 "down_revision": "0042",
                 "down_readback": expected_migration_revision_readback("0042"),
-                "reupgrade_readback": expected_migration_revision_readback("0044"),
+                "reupgrade_readback": expected_migration_revision_readback("0045"),
                 "reupgrade_identity": "PASS",
                 "schema_drift": "PASS",
             }
             or identity.get("migration_downgrade_policy")
             != {
-                "source_head": "0044",
+                "source_head": "0045",
                 "target": "0041",
                 "result": "DENIED",
                 "denied_at": "0042",
                 "policy_refusal": DOWNGRADE_DENIAL,
-                "database_head_after": "0044",
-                "rollback_readback": expected_migration_revision_readback("0044"),
+                "database_head_after": "0045",
+                "rollback_readback": expected_migration_revision_readback("0045"),
                 "schema_drift": "PASS",
             }
         ):
@@ -190,6 +195,8 @@ def verify_union(
             _json(root / "migration-supported-readback.log")
             != identity["migration_supported_roundtrip"]
             or _json(root / "migration-identity.log") != identity["migration"]
+            or _json(root / "migration-guard-empty-readback.log")
+            != identity["migration_empty_roundtrip"]["guard_down_readback"]
             or _json(root / "migration-hwm-empty-readback.log")
             != identity["migration_empty_roundtrip"]["hwm_down_readback"]
             or _json(root / "migration-empty-readback.log")

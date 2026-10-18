@@ -205,7 +205,7 @@ the membership digests intentionally differ. Every V2 output says
 `account_complete=false`, `execution_authority=false`, and `admission=DENY`.
 
 This pure calculation is connected only to the version 3 DENY-only diagnostic
-path described above. Its DB0044 storage has not passed PostgreSQL or
+path described above. Its DB0045-repaired storage has not passed full
 cross-process acceptance on this exact source; no source-binding issuer,
 partition rebuild or native historical clock proof exists. Version 3 still
 performs its full V1 historical replay to cross-check the B5 sample projection,
@@ -234,8 +234,9 @@ including a new sample that would not become the selected peak. The guard
 checks the original sequence-one and selected-peak witness links in bounded
 work; it does not scan the lifetime population per append. The downgrade first
 requests NOWAIT locks on both foreign-key parent tables and DB0044, then refuses
-a nonempty diagnostic table. The hermetic identity gate pins the DB0044 trigger
-body hash and demands a 0044 → 0043 → 0042 empty roundtrip, full re-upgrade,
+a nonempty diagnostic table. The hermetic identity gate pins both the original
+DB0044 and repaired DB0045 trigger body hashes and demands a
+0045 → 0044 → 0043 → 0042 empty roundtrip, full re-upgrade,
 schema check, and rollback readback after the DB0042 refusal.
 
 DB0044 also refuses noncanonical outer measurement/projection JSON text and
@@ -277,7 +278,11 @@ false account/native-clock/membership/execution authority and `DENY`. It is not
 wired into B5 runtime or order submission. Prior B3 policy epochs need their
 own versioned replay and cannot be silently reinterpreted by current policy.
 The isolated PostgreSQL tests must pass on an exact merged source before this
-path is called validated.
+path is called validated. DB0045 repairs only the first-sample branch, where
+DB0044 referred to unassigned record fields. The repair pins the before/after
+function bodies, preserves the function identity and permissions, and refuses
+to downgrade a nonempty sampled index. It does not create missing historical
+balance observations or account authority.
 
 Focused offline tests and PostgreSQL integration cases are authored, but the
 new PostgreSQL cases and Docker hermetic path have not been executed against

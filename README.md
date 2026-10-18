@@ -145,15 +145,16 @@ portfolio risk, reservation or execution authority. Its exact-source
 regression status is recorded in `docs/final_completion_validation.md`.
 
 Migration `0044` adds a separate DENY-only sampled balance high-water-mark
-diagnostic chain over accepted account observations. It starts at the first
-recorded sample, not exchange-account inception. Historical unseen peaks remain
-unknown; no account-risk or trading authority follows from this chain. Its
-PostgreSQL and Docker acceptance remain pending.
+diagnostic chain over accepted account observations. Migration `0045` repairs
+its first-sample insert guard; it does not expand its authority. The chain
+starts at the first recorded sample, not exchange-account inception. Historical
+unseen peaks remain unknown; no account-risk or trading authority follows from
+this chain. Exact-source PostgreSQL, Docker and CI acceptance remain pending.
 
 Migration identities (the stopped local deployment is not silently upgraded):
 
 ```text
-Current final-completion source head: 0044
+Current final-completion source head: 0045
 Last independently restored local deployment: 0017
 ```
 

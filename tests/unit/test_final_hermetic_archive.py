@@ -15,6 +15,7 @@ import pytest
 
 from scripts.verify_final_hermetic import (
     ACCOUNT_MEASURED_HWM_V2_TRIGGERS,
+    ACCOUNT_MEASURED_HWM_V2_TRIGGERS_0045,
     ACCOUNT_REVISION_WITNESS_TRIGGERS,
     DOWNGRADE_DENIAL,
     Run,
@@ -37,6 +38,20 @@ def test_db0044_guard_body_hash_is_the_reviewed_hermetic_catalog_pin():
         hashlib.sha256(match.group(1).encode()).hexdigest()
         == (ACCOUNT_MEASURED_HWM_V2_TRIGGERS[0][6])
     )
+
+
+def test_db0045_repaired_guard_body_and_reverse_are_exactly_pinned():
+    old_sql = load_migration("0044")._guard()
+    old_match = re.search(r"AS \$\$(.*?)\$\$ LANGUAGE", old_sql, re.DOTALL)
+    assert old_match is not None
+    old_body = old_match.group(1)
+    migration = load_migration("0045")
+    repaired = migration._transform(old_body)
+    assert (
+        hashlib.sha256(repaired.encode()).hexdigest()
+        == (ACCOUNT_MEASURED_HWM_V2_TRIGGERS_0045[0][6])
+    )
+    assert migration._transform(repaired, reverse=True) == old_body
 
 
 @pytest.mark.parametrize("revision", ("0001", "0042"))
@@ -92,8 +107,15 @@ def test_migration_readback_rejects_any_db0043_trigger_catalog_drift(drift):
     "drift",
     ("missing_table", "missing_guard", "extra", "disabled", "body", "function"),
 )
-def test_migration_readback_rejects_db0044_catalog_drift(drift):
-    catalog = [list(row) for row in ACCOUNT_MEASURED_HWM_V2_TRIGGERS]
+@pytest.mark.parametrize(
+    "revision,pin",
+    (
+        ("0044", ACCOUNT_MEASURED_HWM_V2_TRIGGERS),
+        ("0045", ACCOUNT_MEASURED_HWM_V2_TRIGGERS_0045),
+    ),
+)
+def test_migration_readback_rejects_hwm_catalog_drift(drift, revision, pin):
+    catalog = [list(row) for row in pin]
     table, guard = True, True
     if drift == "missing_table":
         table = False
@@ -109,8 +131,8 @@ def test_migration_readback_rejects_db0044_catalog_drift(drift):
         catalog[0][3] = False
     with pytest.raises(RuntimeError, match="migration_revision_readback_mismatch"):
         migration_revision_readback(
-            "0044",
-            "0044",
+            revision,
+            revision,
             True,
             True,
             ACCOUNT_REVISION_WITNESS_TRIGGERS,
@@ -119,15 +141,15 @@ def test_migration_readback_rejects_db0044_catalog_drift(drift):
             catalog,
         )
     assert migration_revision_readback(
-        "0044",
-        "0044",
+        revision,
+        revision,
         True,
         True,
         ACCOUNT_REVISION_WITNESS_TRIGGERS,
         True,
         True,
-        ACCOUNT_MEASURED_HWM_V2_TRIGGERS,
-    ) == expected_migration_revision_readback("0044")
+        pin,
+    ) == expected_migration_revision_readback(revision)
 
 
 def archive(entries):
@@ -393,6 +415,7 @@ def test_migration_policy_refusal_requires_exact_database_error_and_failed_exit(
     tmp_path, monkeypatch, returncode, marker, passes
 ):
     output = (
+        "INFO Running downgrade 0045 -> 0044\n"
         "INFO Running downgrade 0044 -> 0043\n"
         "INFO Running downgrade 0043 -> 0042\n"
         "INFO Running downgrade 0042 -> 0041\n"
@@ -431,6 +454,7 @@ def test_migration_policy_refusal_requires_exact_database_error_and_failed_exit(
 @pytest.mark.parametrize(
     "transitions",
     (
+        "INFO Running downgrade 0045 -> 0044\n",
         "INFO Running downgrade 0043 -> 0042\n",
         "INFO Running downgrade 0044 -> 0043\n",
     ),

@@ -6280,3 +6280,26 @@ serializer and adds no broad function grant. Offline source/guard tests and
 new PostgreSQL forgery/ACL cases are authored. No PostgreSQL, Docker or
 matching-source CI result is claimed for DB0044 yet; the preceding DB0043
 receipts remain historical evidence for their exact source only.
+
+## 2026-10-18 DB0045 first-sample guard repair (targeted validation)
+
+An isolated PostgreSQL 17 probe reproduced the DB0044 first B5 append failing
+with SQLSTATE `55000`: the guard's final expression referenced `genesis` and
+`peak` record fields that the first-sample branch never assigned. DB0045
+replaces those two comparisons with scalar SHA256 values assigned in both
+branches. It accepts only the pinned DB0044 function body, checks the repaired
+body hash, preserves function OID and catalog attributes, and refuses a
+nonempty downgrade. The original DB0044 migration is unchanged.
+
+On fresh isolated synthetic databases, six selected B5 integration variants
+passed, including first and second append, empty-table reverse/reapply,
+nonempty downgrade refusal and two concurrent parent-lock refusals. Four
+direct-SQL forgery/equity denial variants also passed. A separate fresh
+Alembic database completed 0001→0045, empty 0045→0044→0045, `alembic check`,
+and final readback of the repaired guard hash with zero B5 rows. The focused
+hermetic/union/migration identity unit suite passed locally (with two
+platform-limited skips), as did Ruff. These are targeted local results on an
+uncommitted source slice; exact committed-source Windows, Linux, PostgreSQL,
+Docker and GitHub CI acceptance still require their own matching receipts.
+The repair does not prove complete account history, a trusted issuer,
+portfolio risk, execution authority, Demo acceptance or Live readiness.

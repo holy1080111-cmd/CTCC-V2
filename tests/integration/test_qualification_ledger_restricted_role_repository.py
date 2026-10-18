@@ -49,7 +49,7 @@ async def restricted_role(database):
             # than constructing an alternate subset of the ledger schema.
             assert (
                 await connection.scalar(text("SELECT version_num FROM alembic_version"))
-                == "0044"
+                == "0045"
             )
             assert (
                 int(await connection.scalar(text("SHOW server_version_num"))) >= 170000
