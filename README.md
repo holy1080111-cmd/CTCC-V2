@@ -144,10 +144,16 @@ still originates from caller claims and does not prove complete account history,
 portfolio risk, reservation or execution authority. Its exact-source
 regression status is recorded in `docs/final_completion_validation.md`.
 
+Migration `0044` adds a separate DENY-only sampled balance high-water-mark
+diagnostic chain over accepted account observations. It starts at the first
+recorded sample, not exchange-account inception. Historical unseen peaks remain
+unknown; no account-risk or trading authority follows from this chain. Its
+PostgreSQL and Docker acceptance remain pending.
+
 Migration identities (the stopped local deployment is not silently upgraded):
 
 ```text
-Current final-completion source head: 0043
+Current final-completion source head: 0044
 Last independently restored local deployment: 0017
 ```
 

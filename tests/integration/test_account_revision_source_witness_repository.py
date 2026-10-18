@@ -34,6 +34,7 @@ from app.trade_qualification import account_history_query_verifier as history_qu
 from app.trade_qualification import account_observation_index as observed
 from app.trade_qualification.reservations import QualificationLedgerError
 from scripts.verify_final_hermetic import (
+    ACCOUNT_MEASURED_HWM_V2_TRIGGER_CATALOG_SQL,
     ACCOUNT_REVISION_WITNESS_TRIGGER_CATALOG_SQL,
     migration_revision_readback,
 )
@@ -110,8 +111,28 @@ async def _committed_migration_witness_state(engine, witness_sha256):
         catalog = (
             await connection.execute(text(ACCOUNT_REVISION_WITNESS_TRIGGER_CATALOG_SQL))
         ).all()
+        hwm_present = await connection.scalar(
+            text(
+                "SELECT pg_catalog.to_regclass('public.demo_account_measured_hwm_v2') IS NOT NULL"
+            )
+        )
+        hwm_guard_present = await connection.scalar(
+            text(
+                "SELECT pg_catalog.to_regprocedure('public.account_measured_hwm_v2_guard()') IS NOT NULL"
+            )
+        )
+        hwm_catalog = (
+            await connection.execute(text(ACCOUNT_MEASURED_HWM_V2_TRIGGER_CATALOG_SQL))
+        ).all()
     readback = migration_revision_readback(
-        "0043", head, table_present, guard_present, catalog
+        "0044",
+        head,
+        table_present,
+        guard_present,
+        catalog,
+        hwm_present,
+        hwm_guard_present,
+        hwm_catalog,
     )
     return row, readback
 
@@ -161,7 +182,7 @@ async def test_committed_denial_blocks_0043_downgrade_and_rolls_back(
     assert before[1]["account_revision_witness_trigger_count"] == 3
 
     def downgrade_after_committed_readback(sync_connection):
-        assert database_head(sync_connection) == "0043"
+        assert database_head(sync_connection) == "0044"
         assert (
             sync_connection.execute(
                 text(

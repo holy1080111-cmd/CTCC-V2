@@ -14,10 +14,9 @@ EPOCH_TABLE = "public.demo_event_history_epoch_events"
 
 
 def _migration_table_reference(revision, table):
-    # The integration fixture names the catalog table without a schema so it
-    # can issue LOCK TABLE "name". DB0043's migration deliberately uses an
-    # explicit public-qualified reference for its lock and nonempty guard.
-    return f"public.{table}" if revision == "0043" else table
+    # The integration fixture retains unqualified catalog names. These
+    # migrations deliberately lock their exact public-qualified references.
+    return f"public.{table}" if revision in {"0043", "0044"} else table
 
 
 @pytest.mark.parametrize("revision", TABLES)

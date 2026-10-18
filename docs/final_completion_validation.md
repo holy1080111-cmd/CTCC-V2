@@ -6261,3 +6261,22 @@ credential file classes by case-insensitive name or suffix, as well as private
 runtime directories. The focused path-denial tests pass. This is a path-class
 guard only; final release still requires a content and Git-history secret
 audit, and this change needs its own exact-source CI before acceptance.
+
+## 2026-10-18 isolated DB0044 diagnostic continuation
+
+The isolated DB0044 branch advances the *source* migration head to `0044`.
+It stores a DENY-only high-water-mark continuation over accepted, recorded
+balance samples. The first sample is an index anchor, not OKX account genesis;
+unseen peaks and earlier incomplete history remain unknown. DB0044 is not
+wired into account-risk or order admission.
+
+An independent review found that JSONB semantic comparison alone could allow
+a direct SQL insert with reordered/whitespace JSON text or an extra projection
+field. Such a row would be immutable yet fail repository source replay. The
+DB0044 guard now requires canonical ASCII outer JSON text and the exact V2
+projection key set before insert; non-ASCII source text is refused for this
+diagnostic index without substitution. It reuses the existing restricted SQL
+serializer and adds no broad function grant. Offline source/guard tests and
+new PostgreSQL forgery/ACL cases are authored. No PostgreSQL, Docker or
+matching-source CI result is claimed for DB0044 yet; the preceding DB0043
+receipts remain historical evidence for their exact source only.

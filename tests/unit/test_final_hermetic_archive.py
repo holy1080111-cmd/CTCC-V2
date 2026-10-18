@@ -4,6 +4,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tarfile
@@ -13,6 +14,7 @@ from types import SimpleNamespace
 import pytest
 
 from scripts.verify_final_hermetic import (
+    ACCOUNT_MEASURED_HWM_V2_TRIGGERS,
     ACCOUNT_REVISION_WITNESS_TRIGGERS,
     DOWNGRADE_DENIAL,
     Run,
@@ -24,6 +26,17 @@ from scripts.verify_final_hermetic import (
     verify_copied_source,
     verify_downgrade_denial_log,
 )
+from tests.durable_migration_fixtures import load_migration
+
+
+def test_db0044_guard_body_hash_is_the_reviewed_hermetic_catalog_pin():
+    sql = load_migration("0044")._guard()
+    match = re.search(r"AS \$\$(.*?)\$\$ LANGUAGE", sql, re.DOTALL)
+    assert match is not None
+    assert (
+        hashlib.sha256(match.group(1).encode()).hexdigest()
+        == (ACCOUNT_MEASURED_HWM_V2_TRIGGERS[0][6])
+    )
 
 
 @pytest.mark.parametrize("revision", ("0001", "0042"))
@@ -73,6 +86,48 @@ def test_migration_readback_rejects_any_db0043_trigger_catalog_drift(drift):
     assert migration_revision_readback(
         "0043", "0043", True, True, ACCOUNT_REVISION_WITNESS_TRIGGERS
     ) == expected_migration_revision_readback("0043")
+
+
+@pytest.mark.parametrize(
+    "drift",
+    ("missing_table", "missing_guard", "extra", "disabled", "body", "function"),
+)
+def test_migration_readback_rejects_db0044_catalog_drift(drift):
+    catalog = [list(row) for row in ACCOUNT_MEASURED_HWM_V2_TRIGGERS]
+    table, guard = True, True
+    if drift == "missing_table":
+        table = False
+    elif drift == "missing_guard":
+        guard = False
+    elif drift == "extra":
+        catalog.append(["unreviewed_trigger", "O", 7, False])
+    elif drift == "disabled":
+        catalog[0][1] = "D"
+    elif drift == "body":
+        catalog[0][6] = "0" * 64
+    else:
+        catalog[0][3] = False
+    with pytest.raises(RuntimeError, match="migration_revision_readback_mismatch"):
+        migration_revision_readback(
+            "0044",
+            "0044",
+            True,
+            True,
+            ACCOUNT_REVISION_WITNESS_TRIGGERS,
+            table,
+            guard,
+            catalog,
+        )
+    assert migration_revision_readback(
+        "0044",
+        "0044",
+        True,
+        True,
+        ACCOUNT_REVISION_WITNESS_TRIGGERS,
+        True,
+        True,
+        ACCOUNT_MEASURED_HWM_V2_TRIGGERS,
+    ) == expected_migration_revision_readback("0044")
 
 
 def archive(entries):
@@ -338,6 +393,7 @@ def test_migration_policy_refusal_requires_exact_database_error_and_failed_exit(
     tmp_path, monkeypatch, returncode, marker, passes
 ):
     output = (
+        "INFO Running downgrade 0044 -> 0043\n"
         "INFO Running downgrade 0043 -> 0042\n"
         "INFO Running downgrade 0042 -> 0041\n"
         '  File "/app/migrations/versions/'
@@ -372,10 +428,17 @@ def test_migration_policy_refusal_requires_exact_database_error_and_failed_exit(
     assert step["exit_code"] == returncode
 
 
-def test_migration_policy_refusal_rejects_missing_db0043_transition(tmp_path):
+@pytest.mark.parametrize(
+    "transitions",
+    (
+        "INFO Running downgrade 0043 -> 0042\n",
+        "INFO Running downgrade 0044 -> 0043\n",
+    ),
+)
+def test_migration_policy_refusal_rejects_missing_transition(tmp_path, transitions):
     log = tmp_path / "migration-downgrade-denial.log"
     log.write_text(
-        "INFO Running downgrade 0042 -> 0041\n"
+        transitions + "INFO Running downgrade 0042 -> 0041\n"
         '  File "/app/migrations/versions/'
         '0042_submission_transport_authenticity_denial.py", line 109\n'
         f"asyncpg.exceptions.RaiseError: {DOWNGRADE_DENIAL}\n"
