@@ -6159,6 +6159,33 @@ pass. Those fixtures bypassed the R7 guard to exercise downstream SQL lineage
 but still encountered the independent, intentionally closed account-revision
 guard. The fixture now asserts both production denials before constructing
 disposable synthetic rows for SQL-only tests. Production reservation and
-account guards are unchanged. PostgreSQL runtime and the full exact-source CI
-remain unverified for this fix until its new commit runs; no prior green shard
-may be borrowed for a new source identity.
+account guards are unchanged. At this checkpoint, PostgreSQL runtime and the
+full exact-source CI were still unverified for the fix; no prior green shard
+could be borrowed for a new source identity. The matching result follows.
+
+## 2026-10-18 exact-source CI and Windows clock update
+
+Commit `31c966ed25dff1ac90467f7ec2999df2270f2b74` (tree
+`26b225e46597bc3b3a9a0d0255efc5721dab6ff5`) completed matching
+[CI run 38898466223](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/38898466223):
+19 of 19 jobs succeeded, including Windows and Linux full-suite unions,
+PostgreSQL, and the required Docker hermetic job. The 19 original GitHub
+artifact ZIPs matched API hashes, sizes, run and head, and their independently
+extracted contents were read back byte-for-byte. The external
+`validation-results/ci-31c966e-20261018/baseline-accepted.json` receipt has
+SHA256 `1169f5aedba82ce100eb9e1c42052eb694a0c0c8a3c93ef18daf5fb58c5173bf`.
+It accepts only this exact source/dependency/regression baseline. It does not
+grant market/account source, trading, OOS, release, or Live authority. Any
+subsequent source commit needs its own complete CI.
+
+After a host restart, Windows replaced signed `w32tm.exe` version
+`10.0.26100.9278` with `10.0.26100.9549`. The 31c source's anonymous public
+diagnostic stopped before any market request with `NativeClockObservationError`;
+the retained failed receipt remains under
+`validation-results/public-components-31c966e-20261018/`. A separate exact
+signed-file profile now recognizes the measured replacement while preserving
+historical 9278 replay, rejecting unknown hashes and mixed profiles, and
+leaving timestamp tolerances unchanged. Existing sealed Demo account-native
+policies still reject the 9549 profile until separately versioned. The current
+clock change needs a new source archive and matching full regression before
+it can replace the 31c accepted baseline.

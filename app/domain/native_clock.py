@@ -222,6 +222,7 @@ def _validate_v1(evidence: dict):
 
 
 PROFILE_ID = "ctcc.w32tm.26100_9278.en_US_zh_TW.cp950.v1"
+UPDATED_PROFILE_ID = "ctcc.w32tm.26100_9549.en_US_zh_TW.cp950.v1"
 
 RESOURCE_IDS = [2501, 2502, 2508, 2535, 2536]
 
@@ -261,6 +262,29 @@ _FILES = [
         "signature_status": 0,
     },
 ]
+
+# A Windows update changes the native resource identity. Keep the historical
+# profile replayable, and admit the measured replacement only as a separate,
+# exact, signed-file profile. Never infer a profile from a version alone.
+_UPDATED_FILES = [
+    {
+        "slot": "w32tm.exe",
+        "sha256": "4f5d676f363552b6a3ca290c35cca84429c1decb9b5757c83fba11bc6686c62d",
+        "version": "10.0.26100.9549",
+        "signature_status": 0,
+    },
+    *(dict(row) for row in _FILES[1:]),
+]
+_PROFILE_FILES = {PROFILE_ID: _FILES, UPDATED_PROFILE_ID: _UPDATED_FILES}
+
+
+def _profile_for_files(files):
+    raw = canonical(files)
+    for profile_id, expected in _PROFILE_FILES.items():
+        if raw == canonical(expected):
+            return profile_id
+    raise PublicReceiptError("os_clock_profile_unsupported")
+
 
 _MAX_OUTPUT = 32768
 
@@ -321,7 +345,8 @@ def replay_clock_observation(payload):
             "host_after",
         }
         or diagnostic["schema_version"] != "ctcc.windows_clock_diagnostic.v2"
-        or diagnostic["profile_id"] != PROFILE_ID
+        or type(diagnostic["profile_id"]) is not str
+        or diagnostic["profile_id"] not in _PROFILE_FILES
         or canonical(diagnostic["resource_ids"]) != canonical(RESOURCE_IDS)
         or canonical(diagnostic["clock_domain"]) != canonical(_CLOCK_DOMAIN)
     ):
@@ -440,7 +465,7 @@ def _check_probe(record, command_id, encoding):
     return raw
 
 
-def _host_record(record):
+def _host_record(record, profile_id):
     data = decode(_check_probe(record, "host_metadata.v2", "utf-8"), _MAX_OUTPUT)
     if (
         type(data) is not dict
@@ -452,7 +477,7 @@ def _host_record(record):
             "utc_offset_minutes",
             "files",
         }
-        or canonical(data["files"]) != canonical(_FILES)
+        or canonical(data["files"]) != canonical(_PROFILE_FILES[profile_id])
     ):
         raise PublicReceiptError("os_clock_profile_unsupported")
     if (
@@ -516,13 +541,17 @@ def _validate_v2(evidence):
             "host_after",
         }
         or data["schema_version"] != "ctcc.windows_clock_diagnostic.v2"
-        or data["profile_id"] != PROFILE_ID
+        or type(data["profile_id"]) is not str
+        or data["profile_id"] not in _PROFILE_FILES
         or canonical(data["resource_ids"]) != canonical(RESOURCE_IDS)
         or canonical(data["clock_domain"]) != canonical(_CLOCK_DOMAIN)
         or sha(canonical(data)) != evidence["diagnostic_sha256"]
     ):
         raise PublicReceiptError("os_clock_diagnostic_invalid")
-    before, after = _host_record(data["host_before"]), _host_record(data["host_after"])
+    before, after = (
+        _host_record(data["host_before"], data["profile_id"]),
+        _host_record(data["host_after"], data["profile_id"]),
+    )
     if canonical(before) != canonical(after):
         raise PublicReceiptError("os_clock_host_changed")
     fields = _localized_status(_check_probe(data["status"], "w32tm_status.v2", "cp950"))
@@ -575,7 +604,7 @@ def clock_timezone(evidence):
     validate_os_clock(evidence)
     data = evidence["diagnostic"]
     if evidence["schema_version"] == "ctcc.windows_clock_observation.v2":
-        data = _host_record(data["host_after"])
+        data = _host_record(data["host_after"], data["profile_id"])
     return data["timezone_id"], data["utc_offset_minutes"]
 
 
@@ -717,7 +746,7 @@ def native_os_clock() -> dict:
     deadline = time.perf_counter() + _MAX_OBSERVATION_NS / 10**9
     data = {
         "schema_version": "ctcc.windows_clock_diagnostic.v2",
-        "profile_id": PROFILE_ID,
+        "profile_id": UPDATED_PROFILE_ID,
         "resource_ids": list(RESOURCE_IDS),
         "clock_domain": domain,
         "host_before": _capture_command(
@@ -732,8 +761,9 @@ def native_os_clock() -> dict:
         host = decode(
             _check_probe(data["host_before"], "host_metadata.v2", "utf-8"), _MAX_OUTPUT
         )
-        if type(host) is not dict or canonical(host.get("files")) != canonical(_FILES):
+        if type(host) is not dict:
             raise PublicReceiptError("os_clock_profile_unsupported")
+        data["profile_id"] = _profile_for_files(host.get("files"))
         data["status"] = _capture_command(
             [str(directory / "w32tm.exe"), "/query", "/status", "/verbose"],
             "w32tm_status.v2",

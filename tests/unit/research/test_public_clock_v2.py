@@ -60,17 +60,17 @@ def probe(raw, command_id, encoding):
     }
 
 
-def fixture(language="zh"):
+def fixture(language="zh", *, profile_id=clock.PROFILE_ID):
     host = {
         "service_state": 4,
         "service_start_type": 2,
         "timezone_id": "Taipei Standard Time",
         "utc_offset_minutes": 480,
-        "files": copy.deepcopy(clock._FILES),
+        "files": copy.deepcopy(clock._PROFILE_FILES[profile_id]),
     }
     data = {
         "schema_version": "ctcc.windows_clock_diagnostic.v2",
-        "profile_id": clock.PROFILE_ID,
+        "profile_id": profile_id,
         "resource_ids": list(clock.RESOURCE_IDS),
         "clock_domain": copy.deepcopy(clock._CLOCK_DOMAIN),
         "host_before": probe(canonical(host), "host_metadata.v2", "utf-8"),
@@ -127,6 +127,36 @@ def test_v2_exact_profile_raw_bytes_pure_replay(language):
     assert base64.b64decode(evidence["diagnostic"]["status"]["stdout"]["base64"]) == (
         ZH if language == "zh" else EN
     ).encode("cp950")
+
+
+def test_updated_signed_profile_replays_without_rewriting_historical_profile():
+    old = fixture()
+    updated = fixture(profile_id=clock.UPDATED_PROFILE_ID)
+    assert clock.validate_os_clock(old) is old
+    assert clock.validate_os_clock(updated) is updated
+    assert old["diagnostic"]["profile_id"] == clock.PROFILE_ID
+    assert updated["diagnostic"]["profile_id"] == clock.UPDATED_PROFILE_ID
+    assert (
+        old["diagnostic"]["host_before"]["stdout"]["sha256"]
+        != updated["diagnostic"]["host_before"]["stdout"]["sha256"]
+    )
+
+
+def test_updated_profile_rejects_unknown_binary_even_with_rehashed_receipt():
+    evidence = fixture(profile_id=clock.UPDATED_PROFILE_ID)
+    files = copy.deepcopy(clock._UPDATED_FILES)
+    files[0]["sha256"] = "a" * 64
+    for side in ("host_before", "host_after"):
+        host_change(evidence, "files", files, side=side)
+    with pytest.raises(PublicReceiptError, match="profile_unsupported"):
+        clock.validate_os_clock(resign(evidence))
+
+
+def test_updated_files_cannot_be_relabelled_as_historical_profile():
+    evidence = fixture(profile_id=clock.UPDATED_PROFILE_ID)
+    evidence["diagnostic"]["profile_id"] = clock.PROFILE_ID
+    with pytest.raises(PublicReceiptError, match="profile_unsupported"):
+        clock.validate_os_clock(resign(evidence))
 
 
 @pytest.mark.parametrize(
@@ -377,6 +407,31 @@ def test_unreviewed_native_binary_profile_prevents_even_readonly_status_executio
     assert len(calls) == 1
 
 
+def test_updated_native_profile_selected_only_from_exact_measured_files(
+    monkeypatch, tmp_path
+):
+    evidence = fixture(profile_id=clock.UPDATED_PROFILE_ID)
+    calls = fake_native(
+        monkeypatch,
+        tmp_path,
+        [evidence["diagnostic"][k] for k in ("host_before", "status", "host_after")],
+    )
+    observed = clock.native_os_clock()
+    assert observed["diagnostic"]["profile_id"] == clock.UPDATED_PROFILE_ID
+    assert len(calls) == 3
+
+
+def test_updated_native_unknown_hash_stops_before_status(monkeypatch, tmp_path):
+    evidence = fixture(profile_id=clock.UPDATED_PROFILE_ID)
+    files = copy.deepcopy(clock._UPDATED_FILES)
+    files[0]["sha256"] = "a" * 64
+    host_change(evidence, "files", files)
+    calls = fake_native(monkeypatch, tmp_path, [evidence["diagnostic"]["host_before"]])
+    with pytest.raises(clock.NativeClockObservationError, match="profile_unsupported"):
+        clock.native_os_clock()
+    assert len(calls) == 1
+
+
 @pytest.mark.parametrize(
     "mode", ["normal", "overflow", "timeout", "stderr", "clock_failure"]
 )
@@ -529,7 +584,7 @@ def test_unavailable_precise_windows_api_is_a_failure(monkeypatch):
         clock._windows_wall_reader()
 
 
-@pytest.mark.parametrize("mode", ["v2", "mixed", "zone_change"])
+@pytest.mark.parametrize("mode", ["v2", "mixed", "zone_change", "profile_change"])
 def test_capture_clock_version_dispatch_preserves_synthetic_authority_boundary(
     monkeypatch, mode
 ):
@@ -548,6 +603,10 @@ def test_capture_clock_version_dispatch_preserves_synthetic_authority_boundary(
         if mode == "zone_change" and number > 0:
             for side in ("host_before", "host_after"):
                 host_change(evidence, "timezone_id", "UTC", side=side)
+        if mode == "profile_change" and number > 0:
+            evidence["diagnostic"]["profile_id"] = clock.UPDATED_PROFILE_ID
+            for side in ("host_before", "host_after"):
+                host_change(evidence, "files", clock._UPDATED_FILES, side=side)
         return resign(evidence)
 
     monkeypatch.setattr(capture, "native_os_clock", observation)

@@ -355,9 +355,12 @@ def replay_public_capture(receipt, raw_files):
         raise PublicReceiptError("exchange_clock_reversed")
     validate_os_clock(receipt.os_clock_before)
     validate_os_clock(receipt.os_clock_after)
-    if (
-        receipt.os_clock_before["schema_version"]
-        != receipt.os_clock_after["schema_version"]
+    if receipt.os_clock_before["schema_version"] != receipt.os_clock_after[
+        "schema_version"
+    ] or (
+        receipt.os_clock_before["schema_version"] == "ctcc.windows_clock_observation.v2"
+        and receipt.os_clock_before["diagnostic"]["profile_id"]
+        != receipt.os_clock_after["diagnostic"]["profile_id"]
     ):
         raise PublicReceiptError("clock_domain_changed_during_capture")
     if clock_timezone(receipt.os_clock_before) != clock_timezone(

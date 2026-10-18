@@ -906,6 +906,31 @@ async def test_changed_clock_files_rejected_even_when_file_pins_rehashed(
 
 
 @pytest.mark.asyncio
+async def test_updated_clock_profile_cannot_relabel_old_sealed_account_policy(
+    monkeypatch,
+):
+    raw, files, chain, scope, _ = await companion_fixture(monkeypatch)
+    value = json.loads(raw)
+    for phase in ("before", "after"):
+        name = f"host-{phase}.json"
+        host = json.loads(files[name])
+        old = host["observation"]
+        updated = clock_fixture(profile_id=proof.public_clock.UPDATED_PROFILE_ID)
+        updated["sample"] = old["sample"]
+        for kind in ("host_before", "status", "host_after"):
+            for edge in ("request_start", "completed"):
+                updated["diagnostic"][kind][edge] = old["diagnostic"][kind][edge]
+        host["observation"] = resign(updated)
+        assert proof.public_clock.validate_os_clock(host["observation"])
+        files[name] = canonical(host)
+    value["clock_file_sha256"] = {name: sha(data) for name, data in files.items()}
+    with pytest.raises(
+        proof.NativeAccountProofError, match="native_account_clock_profile_invalid"
+    ):
+        replay(canonical(value), files, chain, scope)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "failure",
     [None, "late_publish", "changed_readback", "root_changed", "missing_receipt"],

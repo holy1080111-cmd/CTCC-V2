@@ -574,8 +574,11 @@ def _clocks(files, *, stage, scope_sha):
     observations = [host["observation"] for host in hosts]
     if any(
         host["schema_version"] != "ctcc.windows_clock_observation.v2"
+        or host["diagnostic"]["profile_id"] != public_clock.PROFILE_ID
         for host in observations
     ):
+        # These sealed account policies name the original clock profile.
+        # A reviewed replacement needs a new policy hash, not reinterpretation.
         raise NativeAccountProofError("native_account_clock_profile_invalid")
     if public_clock.clock_timezone(observations[0]) != public_clock.clock_timezone(
         observations[1]
