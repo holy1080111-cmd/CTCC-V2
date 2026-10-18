@@ -27,8 +27,10 @@ import base64
 import hashlib
 import hmac
 import json
+import math
 import re
 import ssl
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -42,6 +44,24 @@ from app.trade_qualification import account_capture as capture
 
 BASE_URL = "https://www.okx.com"
 CLEANUP_SECONDS = 1
+# OKX Global v5, checked 2026-10-18: https://www.okx.com/docs-v5/en/
+# Every entry is the documented per-UID limit for one HTTP endpoint, not one
+# stream or instType. This only bounds this capture's own requests; unrelated
+# API clients can still exhaust the UID budget, in which case we fail closed.
+_PAGE_RATE_LIMITS = {
+    "/api/v5/trade/orders-pending": (60, 2.0),
+    "/api/v5/trade/orders-algo-pending": (20, 2.0),
+    "/api/v5/trade/fills": (60, 2.0),
+    "/api/v5/trade/fills-history": (10, 2.0),
+    "/api/v5/account/bills": (5, 1.0),
+    "/api/v5/account/bills-archive": (5, 2.0),
+    "/api/v5/trade/orders-history": (40, 2.0),
+    "/api/v5/trade/orders-history-archive": (20, 2.0),
+    "/api/v5/trade/orders-algo-history": (20, 2.0),
+}
+# Avoid dispatching exactly on a rolling-window boundary whose inclusivity is
+# not specified by OKX. This is a conservative local guard, not a retry.
+_PAGE_RATE_GUARD_SECONDS = 0.05
 _CREDENTIAL_FIELDS = (
     "api_key",
     "api_secret",
@@ -66,6 +86,9 @@ _ERROR_CODES = frozenset(
         "credential_echo_rejected",
         "batch_clock_reversed",
         "batch_deadline_exceeded",
+        "account_rate_policy_missing",
+        "account_rate_clock_invalid",
+        "account_rate_budget_exhausted",
         "publication_barrier_not_crossed",
         "request_clock_reversed",
         "request_deadline_exceeded",
@@ -493,6 +516,69 @@ def _check_batch(now, started, previous, seconds):
         raise AccountCollectionError("batch_deadline_exceeded")
 
 
+class _AccountPagePacer:
+    """Bound one sequential capture by conservative monotonic receipt times."""
+
+    def __init__(self, now, sleep):
+        self._now = now
+        self._sleep = sleep
+        self._last = None
+        self._dispatched = {}
+
+    def _clock(self):
+        value = self._now()
+        if (
+            type(value) not in {int, float}
+            or not math.isfinite(value)
+            or (self._last is not None and value < self._last)
+        ):
+            raise AccountCollectionError("account_rate_clock_invalid")
+        self._last = value
+        return value
+
+    def _window(self, endpoint, now):
+        policy = _PAGE_RATE_LIMITS.get(endpoint)
+        if policy is None:
+            raise AccountCollectionError("account_rate_policy_missing")
+        limit, seconds = policy
+        dispatched = self._dispatched.setdefault(endpoint, deque())
+        while dispatched and now - dispatched[0] >= seconds + _PAGE_RATE_GUARD_SECONDS:
+            dispatched.popleft()
+        return limit, seconds, dispatched
+
+    async def wait(self, endpoint, *, deadline):
+        while True:
+            now = self._clock()
+            if now >= deadline:
+                raise AccountCollectionError("batch_deadline_exceeded")
+            limit, seconds, dispatched = self._window(endpoint, now)
+            if len(dispatched) < limit:
+                return
+            delay = dispatched[0] + seconds + _PAGE_RATE_GUARD_SECONDS - now
+            if now + delay >= deadline:
+                raise AccountCollectionError("batch_deadline_exceeded")
+            await self._sleep(delay)
+            if self._clock() <= now:
+                raise AccountCollectionError("account_rate_clock_invalid")
+
+    def dispatched(self, endpoint):
+        now = self._clock()
+        limit, _, sent = self._window(endpoint, now)
+        if len(sent) >= limit:
+            raise AccountCollectionError("account_rate_budget_exhausted")
+        sent.append(now)
+
+    def headers_received(self, endpoint):
+        # The exchange sees a request no later than this local header receipt.
+        # Starting its rolling window at our earlier dispatch could release a
+        # slot too soon after connection/network delay.
+        now = self._clock()
+        sent = self._dispatched.get(endpoint)
+        if not sent or now < sent[-1]:
+            raise AccountCollectionError("account_rate_clock_invalid")
+        sent[-1] = now
+
+
 def _signed_request(spec, credentials, started, timeout):
     # spec is generated from the already copied/pinned plan, not caller metadata.
     url = httpx.URL(spec.origin + spec.endpoint, params=spec.parameters or None)
@@ -545,6 +631,7 @@ async def _page(
     _native_observer=None,
     _request_index=None,
     _read_session=None,
+    _pacer=None,
 ):
     _client_guard(client)
     spec = capture.account_request(plan, stream, after)
@@ -553,6 +640,12 @@ async def _page(
         _check_pinned_read_session(_read_session, credentials, origin=spec.origin)
 
     check_session()
+    if stream in capture._CURSOR_FIELDS:
+        if _pacer is None:
+            raise AccountCollectionError("account_rate_policy_missing")
+        await _pacer.wait(spec.endpoint, deadline=wall_deadline)
+        _client_guard(client)
+        check_session()
     loop = asyncio.get_running_loop()
     request_wall_deadline = loop.time() + plan.max_request_seconds
     started = _phase_clock(
@@ -600,6 +693,15 @@ async def _page(
                 page_index=page_index,
             )
         check_session()
+        # The observer and session check above are synchronous foreign calls;
+        # either can consume the remaining native budget without yielding to
+        # asyncio.timeout_at. Recheck immediately before the actual send.
+        if loop.time() >= wall_deadline:
+            raise AccountCollectionError("batch_deadline_exceeded")
+        if loop.time() >= request_wall_deadline:
+            raise AccountCollectionError("request_deadline_exceeded")
+        if stream in capture._CURSOR_FIELDS:
+            _pacer.dispatched(spec.endpoint)
         response = await client.send(
             request, auth=None, follow_redirects=False, stream=True
         )
@@ -614,6 +716,8 @@ async def _page(
                     stream=stream,
                     page_index=page_index,
                 )
+                if stream in capture._CURSOR_FIELDS:
+                    _pacer.headers_received(spec.endpoint)
                 check_session()
             except Exception:
                 if _journal is not None and type(response) is httpx.Response:
@@ -891,6 +995,7 @@ async def _collect_owned_demo_account_records(
         # An invalid foreign factory result must not execute its cleanup callback.
         if type(client) is not httpx.AsyncClient:
             raise AccountCollectionError("client_invalid")
+        pacer = _AccountPagePacer(loop.time, asyncio.sleep)
         cancelled = False
         observations = []
         capture_proofs = []
@@ -946,6 +1051,7 @@ async def _collect_owned_demo_account_records(
                             capture_proofs=capture_proofs,
                             _journal=active_journal,
                             _read_session=_read_session,
+                            _pacer=pacer,
                             **(
                                 {}
                                 if _native_observer is None

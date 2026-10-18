@@ -186,6 +186,111 @@ def assert_secret_free(value):
     assert all(secret not in value for secret in SECRETS)
 
 
+def test_every_paginated_endpoint_has_one_documented_uid_rate_policy():
+    endpoints = {
+        capture_api._ENDPOINTS[stream] for stream in capture_api._CURSOR_FIELDS
+    }
+    assert endpoints == set(module._PAGE_RATE_LIMITS)
+    assert module._PAGE_RATE_LIMITS["/api/v5/account/bills-archive"] == (5, 2.0)
+    assert module._PAGE_RATE_LIMITS["/api/v5/trade/fills-history"] == (10, 2.0)
+    assert module._PAGE_RATE_LIMITS["/api/v5/trade/orders-algo-history"] == (
+        20,
+        2.0,
+    )
+
+
+@pytest.mark.asyncio
+async def test_page_pacer_uses_response_upper_bound_and_batch_deadline():
+    instant = [0.0]
+    sleeps = []
+
+    async def sleep(delay):
+        sleeps.append(delay)
+        instant[0] += delay
+
+    pacer = module._AccountPagePacer(lambda: instant[0], sleep)
+    endpoint = "/api/v5/account/bills-archive"
+    for index in range(5):
+        await pacer.wait(endpoint, deadline=10.0)
+        pacer.dispatched(endpoint)
+        if index == 0:
+            # A delayed first response must move the release time beyond what
+            # the earlier local dispatch alone would imply.
+            instant[0] = 0.5
+        pacer.headers_received(endpoint)
+    assert sleeps == []
+    instant[0] = 2.05
+    with pytest.raises(module.AccountCollectionError, match="batch_deadline_exceeded"):
+        await pacer.wait(endpoint, deadline=2.5)
+    assert sleeps == []
+    await pacer.wait(endpoint, deadline=10.0)
+    assert sleeps == [pytest.approx(0.5)]
+    pacer.dispatched(endpoint)
+    # The policy is keyed by endpoint: a different read endpoint is independent.
+    await pacer.wait("/api/v5/trade/fills-history", deadline=10.0)
+    pacer.dispatched("/api/v5/trade/fills-history")
+
+
+@pytest.mark.asyncio
+async def test_page_pacer_rejects_missing_policy_and_reversed_monotonic_clock():
+    instant = [1.0]
+
+    async def sleep(_delay):
+        raise AssertionError("unexpected sleep")
+
+    pacer = module._AccountPagePacer(lambda: instant[0], sleep)
+    with pytest.raises(
+        module.AccountCollectionError, match="account_rate_policy_missing"
+    ):
+        await pacer.wait("/api/v5/unknown", deadline=10.0)
+    instant[0] = 0.0
+    with pytest.raises(
+        module.AccountCollectionError, match="account_rate_clock_invalid"
+    ):
+        await pacer.wait("/api/v5/account/bills-archive", deadline=10.0)
+
+
+@pytest.mark.asyncio
+async def test_owned_capture_never_sends_sixth_bill_page_past_batch_deadline(
+    monkeypatch,
+):
+    bill_pages = [[row("bills_archive", str(900 - index))] for index in range(5)]
+    harness = Harness(
+        monkeypatch, pages={"bills_archive": [*bill_pages, []]}, empty=True
+    )
+    selected = plan(
+        page_size=1,
+        max_pages_per_stream=6,
+        max_batch_seconds=1,
+    )
+    with pytest.raises(module.AccountCollectionError, match="batch_deadline_exceeded"):
+        await harness.collect(selected=selected)
+    bill_requests = [
+        request
+        for request in harness.requests
+        if request.url.path == "/api/v5/account/bills-archive"
+    ]
+    # A busy CI worker may exhaust the one-second batch deadline before the
+    # fifth page. The invariant is that the sixth page never escapes.
+    assert len(bill_requests) <= 5
+    assert all(request.method == "GET" for request in harness.requests)
+    harness.assert_closed()
+
+
+@pytest.mark.asyncio
+async def test_okx_200_rate_limit_envelope_still_denies_without_retry(monkeypatch):
+    harness = Harness(
+        monkeypatch,
+        change=lambda _stream, index, data: (
+            wire(data, code="50011", msg="rate limit") if index == 0 else None
+        ),
+    )
+    with pytest.raises(module.AccountCollectionError, match="account_records_invalid"):
+        await harness.collect()
+    assert len(harness.requests) == 1
+    harness.assert_closed()
+
+
 @pytest.mark.asyncio
 async def test_legacy_plan_is_rejected_before_private_https_request(monkeypatch):
     harness = Harness(monkeypatch)
@@ -1568,6 +1673,33 @@ async def test_synchronous_clock_delay_cannot_send_after_native_deadline(
     with pytest.raises(module.AccountCollectionError):
         await harness.collect(selected=plan(**{bound: 1}), clock=delayed_clock)
     assert clock.calls == 2
+    assert harness.factory_calls == 1 and harness.requests == []
+    harness.assert_closed()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bound", ["max_batch_seconds", "max_request_seconds"])
+async def test_final_session_check_delay_cannot_send_after_native_deadline(
+    monkeypatch, bound
+):
+    harness = Harness(monkeypatch)
+    original = module._check_pinned_read_session
+    checks = 0
+
+    def delayed_session_check(*args, **kwargs):
+        nonlocal checks
+        checks += 1
+        if checks == 3:
+            # The first two checks finish before the deadline. The third is
+            # immediately before the GET and must not be allowed to start it.
+            time.sleep(1.05)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(module, "_check_pinned_read_session", delayed_session_check)
+    with pytest.raises(module.AccountCollectionError):
+        await harness.collect(selected=plan(**{bound: 1}))
+    # A very busy runner may expire before the injected third check. Either
+    # route must fail before a GET, while a normal runner exercises the delay.
     assert harness.factory_calls == 1 and harness.requests == []
     harness.assert_closed()
 

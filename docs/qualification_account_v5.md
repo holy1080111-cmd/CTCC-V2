@@ -105,6 +105,25 @@ settings allow only Global `openapi` and EEA `eea`; US/AU and Turkey Live routin
 is not implemented. No account region has been authenticated for this machine,
 so no regional account request is authorized.
 
+## 2026-10-18 paged GET rate pacing
+
+The [OKX Global v5 endpoint contracts](https://www.okx.com/docs-v5/en/)
+specify private REST limits by **User ID and endpoint**: `orders-pending`
+60/2s, `orders-algo-pending` 20/2s, `fills` 60/2s, `fills-history`
+10/2s, `bills` 5/1s, `bills-archive` 5/2s, `orders-history` 40/2s,
+`orders-history-archive` 20/2s, and `orders-algo-history` 20/2s. These
+figures apply to the exact `/api/v5/trade/` or `/api/v5/account/` GET
+endpoint, not independently to each page chain or instrument type. The
+owned collector now paces its own paged requests per endpoint. It records the
+local dispatch and advances that window anchor to the later monotonic response
+header receipt, a conservative upper bound on exchange arrival, with a 50 ms
+rolling-window guard. Waiting consumes the
+existing batch deadline; an exhausted deadline, missing policy, or invalid
+clock denies the capture before another GET. A `50011` rate-limit response
+still denies the capture without retry. This pacer is local to one capture:
+another process or API client sharing the UID can still exhaust the exchange
+limit. The change grants neither `account_complete` nor execution authority.
+
 The official API also exposes a separate since-2021 bills archive generation
 flow, while the current 34-stream v5 account plan contains only the recent and
 three-month bills endpoints. The current history-query policy is bounded to 28
