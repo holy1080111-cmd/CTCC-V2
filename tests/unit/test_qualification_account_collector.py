@@ -25,6 +25,7 @@ from tests.unit.test_qualification_account_capture import (
     CURSORS,
     NOW,
     STREAMS,
+    ms,
     plan,
     row,
     wire,
@@ -1858,6 +1859,27 @@ async def test_parser_diagnostic_identifies_later_stream_and_exact_page(monkeypa
         reason="source_cursor_not_exclusive",
     )
     assert len(harness.requests) == 6
+    harness.assert_closed()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("across_pages", (False, True))
+async def test_bills_chronology_conflict_aborts_owned_capture(
+    monkeypatch, across_pages
+):
+    first = row("bills_archive", "902", ts=ms(NOW - timedelta(seconds=3)))
+    second = row("bills_archive", "901", ts=ms(NOW - timedelta(seconds=2)))
+    pages = [[first], [second], []] if across_pages else [[first, second], []]
+    harness = Harness(monkeypatch, pages={"bills_archive": pages})
+    with pytest.raises(module.AccountCollectionError) as error:
+        await harness.collect()
+    assert_diagnostic(
+        error.value,
+        stage="verify_records" if across_pages else "parse_observation",
+        stream=None if across_pages else "bills_archive",
+        page_index=None if across_pages else 0,
+        reason="source_bill_time_order_invalid",
+    )
     harness.assert_closed()
 
 

@@ -1,5 +1,11 @@
 # Gate 3 scheduled public window coordination (computational only)
 
+The opt-in, finite two-symbol four-hour research dispatcher and its separate
+local append-only pin chain are described in
+[`mie_gate3_four_hour_research_capture.md`](mie_gate3_four_hour_research_capture.md).
+That separate root is not independent custody and does not change this
+window's `INCOMPLETE` result.
+
 `app.mie.validation.scheduled_public_window.ScheduledPublicWindowCoordinator`
 coordinates the existing one-coordinate public capture and durable receipt store
 across an exact, preplanned minute window. It is not registered with startup,

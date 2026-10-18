@@ -194,6 +194,7 @@ _CAPTURE_REASONS = frozenset(
         "source_position_order_invalid",
         "source_cursor_order_invalid",
         "source_cursor_not_exclusive",
+        "source_bill_time_order_invalid",
         "observation_replay_mismatch",
         "inventory_page_count_invalid",
         "inventory_bytes_limit",

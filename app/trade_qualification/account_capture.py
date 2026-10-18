@@ -1539,6 +1539,18 @@ def parse_demo_account_observation(
             _fail("source_cursor_order_invalid")
         if after is not None and any(value >= int(after) for value in numeric_ids):
             _fail("source_cursor_not_exclusive")
+    if stream in _BILL_STREAMS:
+        # OKX documents bills as newest first. A decreasing billId alone does
+        # not prove that the balance-change timestamps follow the same order.
+        bill_times = tuple(
+            next(time.value for time in row.source_times if time.path == "ts")
+            for row in rows
+        )
+        if any(
+            newer is not None and older is not None and newer < older
+            for newer, older in itertools.pairwise(bill_times)
+        ):
+            _fail("source_bill_time_order_invalid")
     fields = {
         "request": request,
         "plan_sha256": expected_plan_sha256,
@@ -1645,6 +1657,7 @@ def verify_demo_account_records(
         if not pages[-1].terminal:
             _fail("empty_terminal_page_required")
         seen = set()
+        previous_bill_time = None
         for index, page in enumerate(pages):
             if page.page_index != index:
                 _fail("page_index_gap")
@@ -1658,6 +1671,17 @@ def verify_demo_account_records(
                 ):
                     _fail("page_chain_mismatch")
             for row in page.rows:
+                if stream in _BILL_STREAMS:
+                    bill_time = next(
+                        time.value for time in row.source_times if time.path == "ts"
+                    )
+                    if (
+                        previous_bill_time is not None
+                        and bill_time is not None
+                        and previous_bill_time < bill_time
+                    ):
+                        _fail("source_bill_time_order_invalid")
+                    previous_bill_time = bill_time
                 if row.row_id in seen:
                     _fail("duplicate_or_conflicting_page_identity")
                 seen.add(row.row_id)

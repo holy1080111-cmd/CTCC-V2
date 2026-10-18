@@ -1136,6 +1136,54 @@ def test_pagination_after_cursor_must_strictly_advance_without_duplicates(second
         )
 
 
+@pytest.mark.parametrize("stream", ("bills_recent", "bills_archive"))
+def test_bills_reject_newer_timestamp_behind_older_id_in_one_page(stream):
+    older_time = ms(NOW - timedelta(seconds=3))
+    newer_time = ms(NOW - timedelta(seconds=2))
+    with pytest.raises(
+        module.AccountCaptureError, match="source_bill_time_order_invalid"
+    ):
+        stream_observation(
+            stream,
+            [
+                row(stream, "902", ts=older_time),
+                row(stream, "901", ts=newer_time),
+            ],
+        )
+
+
+@pytest.mark.parametrize("stream", ("bills_recent", "bills_archive"))
+def test_bills_reject_newer_timestamp_after_page_cursor(stream):
+    selected, observations = records(
+        pages={
+            stream: [
+                [row(stream, "902", ts=ms(NOW - timedelta(seconds=3)))],
+                [row(stream, "901", ts=ms(NOW - timedelta(seconds=2)))],
+                [],
+            ]
+        }
+    )
+    with pytest.raises(
+        module.AccountCaptureError, match="source_bill_time_order_invalid"
+    ):
+        verify(selected, observations)
+
+
+def test_bills_allow_equal_timestamp_across_page_cursor():
+    selected, observations = records(
+        pages={
+            "bills_archive": [
+                [row("bills_archive", "902")],
+                [row("bills_archive", "901")],
+                [],
+            ]
+        }
+    )
+    packet = verify(selected, observations)
+    assert packet.state == "records_verified_incomplete_account"
+    assert not packet.account_complete and not packet.execution_authority
+
+
 @pytest.mark.parametrize("changed", [False, True])
 def test_duplicate_row_ids_fail_even_when_one_copy_has_conflicting_values(changed):
     duplicate = row("fills_history", fee="-0.02" if changed else "-0.01")
