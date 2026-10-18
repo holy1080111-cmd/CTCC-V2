@@ -175,6 +175,23 @@ response time；funding `ts` 在本次收據中比 headers receipt 早約 48 秒
 account requests 與 order writes 均為 0，admission 始終 `DENY`。匿名 Global
 production 回應不能證明帳戶原始註冊站點，也不能充當 Demo 來源或候選資格。
 
+2026-10-18 台北時間約 11:54，Windows W32Time 為 Running／Automatic，時區為
+Taipei Standard Time，最近同步來源為 `time.windows.com`。在精確來源
+`726bc1bd2feb30ddfaf64e80371dbcf8e2f38e0f`（tree
+`ec9c9c6b1aa3278247561b58a4add3e40bc8e402`）再次執行匿名 Global
+production 固定診斷：11 筆唯讀 REST 和一筆公開 WS ticker 均被觀察到，沒有
+future component。原始與收據共 28 份檔案獨立讀回，另有 30 列 SHA256 清單；
+summary SHA256 為
+`547947fe5a2df19ee23916c03a9b7e15e3ac47dab2686a1520ff2f10673aa766`，
+readback SHA256 為
+`23edb0f92b3745a4ee6afb4f8156a9e0e3463b8ec79b40dbc0f23f655530d80e`。
+保存於 `../../validation-results/public-components-20261018-1156/`。兩筆
+server-time、ticker、mark、books5 與 OI 的原始 source time 位於對應請求
+期間；OHLC `ts` 是較早的 bar open，funding `ts` 比 headers receipt 早約
+53.6 秒，不能把它們重新標為 HTTP 回應時間。這只支持本次匿名來源時鐘
+診斷；帳戶請求和 order writes 均為 0，Demo region／帳戶來源與交易許可仍
+為 `DENY`。
+
 ## 仍未完成
 
 新受控公開 minute acquisition journal 使用版本化 attempt v2，在 HTTP 前後透過
