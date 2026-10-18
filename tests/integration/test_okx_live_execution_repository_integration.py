@@ -19,6 +19,71 @@ from app.database.repositories.okx_live_execution import (
     OkxLiveExecutionRepositoryError,
 )
 from app.domain.okx_live import OkxLiveIntentResolutionExpectation
+from tests.unit.test_okx_live_service import (
+    live_order,
+    seed_legacy_local_lease_for_downstream_unit_test,
+    service_fixture,
+)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_live_intent_commit_ack_loss_stops_before_private_write_and_retains_unresolved() -> (
+    None
+):
+    engine = create_async_engine(get_settings().database_url, poolclass=NullPool)
+    Session = async_sessionmaker(engine, expire_on_commit=False, autoflush=False)
+    repository = OkxLiveExecutionRepository(Session)
+    key = "CTCCL" + uuid4().hex[:20]
+
+    class CommitAckLostRepository:
+        reserved_kwargs: dict[str, object] | None = None
+
+        def __getattr__(self, name: str):
+            return getattr(repository, name)
+
+        async def reserve_intent(self, **kwargs):
+            self.reserved_kwargs = dict(kwargs)
+            await repository.reserve_intent(**kwargs)
+            raise RuntimeError("synthetic post-commit acknowledgement loss")
+
+    service, _, execution, _, _ = service_fixture()
+    await seed_legacy_local_lease_for_downstream_unit_test(service)
+    ack_lost_repository = CommitAckLostRepository()
+    service.execution_repository = ack_lost_repository
+    try:
+        with pytest.raises(RuntimeError, match="post-commit acknowledgement loss"):
+            await service.place_order(live_order(client_order_id=key))
+
+        assert service.arm_status().armed is False
+        assert service.arm_status().emergency_stop is True
+        assert not {
+            "order_precheck",
+            "set_leverage",
+            "cancel_all_after",
+            "place_order",
+        } & {name for name, _ in execution.calls}
+        # A fresh repository reads the committed tombstone independently.
+        # A full process-restart acceptance test is still required.
+        restarted = OkxLiveExecutionRepository(Session)
+        stored = await restarted.load_intent(key)
+        assert stored is not None
+        assert stored.status == "ambiguous"
+        assert stored.operator_reconciled_at is None
+        assert key in {
+            item.idempotency_key for item in await restarted.load_unresolved_intents()
+        }
+        assert ack_lost_repository.reserved_kwargs is not None
+        with pytest.raises(OkxLiveExecutionIntentReplay):
+            await restarted.reserve_intent(**ack_lost_repository.reserved_kwargs)
+    finally:
+        async with Session() as session, session.begin():
+            await session.execute(
+                delete(OkxLiveExecutionIntent).where(
+                    OkxLiveExecutionIntent.idempotency_key == key
+                )
+            )
+        await engine.dispose()
 
 
 @pytest.mark.integration

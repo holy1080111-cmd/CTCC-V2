@@ -22,6 +22,25 @@ integrated. It is containment evidence, not Micro Live readiness or acceptance.
 `MICRO_LIVE_READY` and `MICRO_LIVE_ACCEPTANCE` remain unproven. Synthetic service
 tests using fake clients do not establish real Live submission capability.
 
+The legacy Live service also contains cancellation after a durable intent is
+attempted, including cancellation during submission or after an acknowledgement.
+It disarms and engages the process stop before another await, then makes bounded,
+shielded attempts to mark the intent ambiguous and persist the safety latch.
+Repeated cancellation cannot skip those attempts; the original cancellation
+still propagates. An unavailable database may prevent a durable write, so such
+a result remains unresolved and requires independent reconciliation. This code
+does not retry, auto-close exposure, grant Arm, or enable the blocked transport.
+An ordinary ambiguous write error uses the same bounded durable attempts:
+local stop precedes IO, the safety latch is attempted even if the intent update
+fails, and persistence errors do not replace the original exchange error. If a
+new cancellation arrives during that recording, the cancellation propagates
+after the bounded attempts without starting another exchange submission.
+If intent reservation or its readback raises an uncertain database error, the
+service likewise disarms, stops locally, and attempts both durable records
+before propagating the database error; no private POST has begun at that point.
+Fake-client tests cover this behavior, but real PostgreSQL failure and restart
+acceptance remain outstanding.
+
 Authenticated reads and existing cancel-order, close-position, cancel-all-after,
 leverage and nonexecuting precheck operations retain their existing service
 safety checks. This change performs no exchange request and alters no position

@@ -1510,6 +1510,35 @@ async def test_leverage_response_mismatch_disarms_before_live_order_post() -> No
 
 
 @pytest.mark.asyncio
+async def test_ambiguous_non_order_live_write_persists_stop() -> None:
+    service, _, execution, intents, _ = service_fixture()
+    await seed_legacy_local_lease_for_downstream_unit_test(service)
+
+    async def failed_leverage(payload):
+        execution.calls.append(("set_leverage", dict(payload)))
+        raise RuntimeError("synthetic transport uncertainty")
+
+    execution.set_leverage = failed_leverage
+    with pytest.raises(RuntimeError, match="synthetic transport uncertainty"):
+        await service.set_leverage(
+            OkxLiveLeverageRequest(
+                instrument_id="BTC-USDT-SWAP",
+                leverage=1,
+                idempotency_key="CTCCXlever03",
+                confirmation=LIVE_LEVERAGE_PHRASE,
+            )
+        )
+
+    mirror = service.mirror_repository
+    assert mirror is not None
+    assert mirror.safety_latched is True
+    assert mirror.safety_latch_code == "ambiguous_live_order_submission"
+    assert intents.rows["CTCCXlever03"]["status"] == "ambiguous"
+    assert service.arm_status().armed is False
+    assert [name for name, _ in execution.calls].count("set_leverage") == 1
+
+
+@pytest.mark.asyncio
 async def test_database_wide_execution_lock_blocks_a_second_instance() -> None:
     service, _, execution, intents, _ = service_fixture()
     await seed_legacy_local_lease_for_downstream_unit_test(service)
@@ -1532,11 +1561,377 @@ async def test_ambiguous_order_transport_engages_stop_without_retry_or_auto_clos
     with pytest.raises(OkxPrivateApiError, match="network"):
         await service.place_order(live_order())
 
+    mirror = service.mirror_repository
+    assert mirror is not None
     assert service.arm_status().emergency_stop is True
+    assert service.arm_status().armed is False
+    assert mirror.safety_latched is True
+    assert mirror.safety_latch_code == "ambiguous_live_order_submission"
     assert intents.rows["CTCCLabcdef"]["status"] == "ambiguous"
     names = [name for name, _ in execution.calls]
     assert names.count("place_order") == 1
     assert "close_position" not in names
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_live_write_intent_failure_still_persists_stop() -> None:
+    service, _, execution, intents, _ = service_fixture()
+    execution.fail_place = True
+    await seed_legacy_local_lease_for_downstream_unit_test(service)
+
+    async def failed_intent_update(*args, **kwargs):
+        raise RuntimeError("synthetic intent update failure")
+
+    intents.update_intent = failed_intent_update
+    with pytest.raises(OkxPrivateApiError, match="network"):
+        await service.place_order(live_order())
+
+    mirror = service.mirror_repository
+    assert mirror is not None
+    assert mirror.safety_latched is True
+    assert mirror.safety_latch_code == "ambiguous_live_order_submission"
+    assert intents.rows["CTCCLabcdef"]["status"] == "reserved"
+    assert service.arm_status().armed is False
+    assert service.arm_status().emergency_stop is True
+    assert [name for name, _ in execution.calls].count("place_order") == 1
+
+
+@pytest.mark.asyncio
+async def test_rejected_live_write_journal_failure_still_disarms() -> None:
+    service, _, execution, intents, _ = service_fixture()
+    await seed_legacy_local_lease_for_downstream_unit_test(service)
+
+    async def rejected_place(payload):
+        execution.calls.append(("place_order", dict(payload)))
+        raise OkxPrivateApiError("synthetic rejection", code="51000")
+
+    async def failed_intent_update(*args, **kwargs):
+        raise RuntimeError("synthetic journal failure")
+
+    execution.place_order = rejected_place
+    intents.update_intent = failed_intent_update
+    with pytest.raises(RuntimeError, match="synthetic journal failure"):
+        await service.place_order(live_order())
+
+    assert service.arm_status().armed is False
+    assert intents.rows["CTCCLabcdef"]["status"] == "reserved"
+    assert [name for name, _ in execution.calls].count("place_order") == 1
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_live_write_latch_failure_retains_intent_and_stop() -> None:
+    service, _, execution, intents, _ = service_fixture()
+    execution.fail_place = True
+    await seed_legacy_local_lease_for_downstream_unit_test(service)
+    mirror = service.mirror_repository
+    assert mirror is not None
+    mirror.fail_latch_write = True
+
+    with pytest.raises(OkxPrivateApiError, match="network"):
+        await service.place_order(live_order())
+
+    assert mirror.safety_latched is False
+    assert intents.rows["CTCCLabcdef"]["status"] == "ambiguous"
+    assert service.arm_status().armed is False
+    assert service.arm_status().emergency_stop is True
+    assert [name for name, _ in execution.calls].count("place_order") == 1
+
+
+@pytest.mark.asyncio
+async def test_cancel_during_ambiguous_error_recording_propagates_once() -> None:
+    service, _, execution, intents, _ = service_fixture()
+    execution.fail_place = True
+    await seed_legacy_local_lease_for_downstream_unit_test(service)
+    mirror = service.mirror_repository
+    assert mirror is not None
+    original_engage = mirror.engage_safety_latch
+    latch_entered = asyncio.Event()
+    latch_release = asyncio.Event()
+    latch_calls = 0
+
+    async def delayed_latch(code):
+        nonlocal latch_calls
+        latch_calls += 1
+        latch_entered.set()
+        await latch_release.wait()
+        return await original_engage(code)
+
+    mirror.engage_safety_latch = delayed_latch
+    task = asyncio.create_task(service.place_order(live_order()))
+    await asyncio.wait_for(latch_entered.wait(), timeout=1)
+    task.cancel()
+    latch_release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=1)
+
+    assert latch_calls == 1
+    assert mirror.safety_latched is True
+    assert intents.rows["CTCCLabcdef"]["status"] == "ambiguous"
+    assert service.arm_status().armed is False
+    assert [name for name, _ in execution.calls].count("place_order") == 1
+
+
+@pytest.mark.asyncio
+async def test_cancel_during_live_order_send_persists_ambiguity_and_stop() -> None:
+    service, read, execution, intents, clock = service_fixture()
+    await seed_legacy_local_lease_for_downstream_unit_test(service)
+    entered = asyncio.Event()
+    blocked = asyncio.Event()
+
+    async def stalled_place(payload):
+        execution.calls.append(("place_order", dict(payload)))
+        entered.set()
+        await blocked.wait()
+
+    execution.place_order = stalled_place
+    task = asyncio.create_task(service.place_order(live_order()))
+    await asyncio.wait_for(entered.wait(), timeout=1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=1)
+
+    mirror = service.mirror_repository
+    assert mirror is not None
+    assert service.arm_status().armed is False
+    assert service.arm_status().emergency_stop is True
+    assert mirror.safety_latched is True
+    assert mirror.safety_latch_code == "ambiguous_live_write_cancelled"
+    assert intents.rows["CTCCLabcdef"]["status"] == "ambiguous"
+    assert service.arm_status().unresolved_intent_count == 1
+    names = [name for name, _ in execution.calls]
+    assert names.count("place_order") == 1
+    assert "close_position" not in names
+
+    restarted = OkxLiveService(
+        read,
+        FakePublicClient(),
+        mirror,
+        execution_client=execution,
+        execution_repository=intents,
+        settings=live_settings(),
+        clock=clock,
+        sleeper=no_sleep,
+    )
+    await restarted.startup()
+    assert restarted.arm_status().armed is False
+    assert restarted.arm_status().emergency_stop is True
+    assert restarted.arm_status().safety_latch_code == "ambiguous_live_write_cancelled"
+    with pytest.raises(OkxLiveSafetyError, match="unresolved_execution_intents"):
+        await restarted._assert_no_unresolved_intents()
+    assert restarted.arm_status().unresolved_intent_count == 1
+    assert names.count("place_order") == 1
+
+
+@pytest.mark.asyncio
+async def test_cancel_after_live_order_ack_keeps_original_cancellation() -> None:
+    service, _, execution, intents, _ = service_fixture()
+    await seed_legacy_local_lease_for_downstream_unit_test(service)
+    original_update = intents.update_intent
+    updating_ack = asyncio.Event()
+    blocked = asyncio.Event()
+
+    async def stalled_ack_update(key, **kwargs):
+        if kwargs.get("status") == "acknowledged":
+            updating_ack.set()
+            await blocked.wait()
+        await original_update(key, **kwargs)
+
+    intents.update_intent = stalled_ack_update
+    task = asyncio.create_task(service.place_order(live_order()))
+    await asyncio.wait_for(updating_ack.wait(), timeout=1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=1)
+
+    mirror = service.mirror_repository
+    assert mirror is not None
+    assert mirror.safety_latched is True
+    assert intents.rows["CTCCLabcdef"]["status"] == "ambiguous"
+    assert service.arm_status().armed is False
+    assert service.arm_status().emergency_stop is True
+    names = [name for name, _ in execution.calls]
+    assert names.count("place_order") == 1
+    assert "close_position" not in names
+
+
+@pytest.mark.asyncio
+async def test_second_cancel_cannot_skip_durable_live_stop() -> None:
+    service, _, execution, intents, _ = service_fixture()
+    await seed_legacy_local_lease_for_downstream_unit_test(service)
+    send_entered = asyncio.Event()
+    send_blocked = asyncio.Event()
+    latch_entered = asyncio.Event()
+    latch_release = asyncio.Event()
+    mirror = service.mirror_repository
+    assert mirror is not None
+    original_engage = mirror.engage_safety_latch
+
+    async def stalled_place(payload):
+        execution.calls.append(("place_order", dict(payload)))
+        send_entered.set()
+        await send_blocked.wait()
+
+    async def stalled_latch(code):
+        latch_entered.set()
+        await latch_release.wait()
+        return await original_engage(code)
+
+    execution.place_order = stalled_place
+    mirror.engage_safety_latch = stalled_latch
+    task = asyncio.create_task(service.place_order(live_order()))
+    await asyncio.wait_for(send_entered.wait(), timeout=1)
+    task.cancel()
+    await asyncio.wait_for(latch_entered.wait(), timeout=1)
+    task.cancel()
+    latch_release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=1)
+
+    assert mirror.safety_latched is True
+    assert intents.rows["CTCCLabcdef"]["status"] == "ambiguous"
+    assert service.arm_status().armed is False
+    assert [name for name, _ in execution.calls].count("place_order") == 1
+
+
+@pytest.mark.asyncio
+async def test_cancel_during_intent_commit_uncertainty_stops_before_post() -> None:
+    service, _, execution, intents, _ = service_fixture()
+    await seed_legacy_local_lease_for_downstream_unit_test(service)
+    original_reserve = intents.reserve_intent
+    commit_entered = asyncio.Event()
+    commit_blocked = asyncio.Event()
+
+    async def uncertain_commit(**kwargs):
+        await original_reserve(**kwargs)
+        commit_entered.set()
+        await commit_blocked.wait()
+
+    intents.reserve_intent = uncertain_commit
+    task = asyncio.create_task(service.place_order(live_order()))
+    await asyncio.wait_for(commit_entered.wait(), timeout=1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=1)
+
+    mirror = service.mirror_repository
+    assert mirror is not None
+    assert mirror.safety_latched is True
+    assert intents.rows["CTCCLabcdef"]["status"] == "ambiguous"
+    assert service.arm_status().armed is False
+    assert "place_order" not in [name for name, _ in execution.calls]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["place_order", "set_leverage"])
+@pytest.mark.parametrize("committed", [False, True])
+async def test_uncertain_intent_reservation_exception_disarms_before_post(
+    action: str, committed: bool
+) -> None:
+    service, _, execution, intents, _ = service_fixture()
+    await seed_legacy_local_lease_for_downstream_unit_test(service)
+    original_reserve = intents.reserve_intent
+    key = "CTCCLabcdef" if action == "place_order" else "CTCCXlever09"
+
+    async def uncertain_reserve(**kwargs):
+        if committed:
+            await original_reserve(**kwargs)
+        raise RuntimeError("synthetic intent commit acknowledgement uncertainty")
+
+    intents.reserve_intent = uncertain_reserve
+    if action == "place_order":
+        submit = service.place_order(live_order())
+    else:
+        submit = service.set_leverage(
+            OkxLiveLeverageRequest(
+                instrument_id="BTC-USDT-SWAP",
+                leverage=1,
+                idempotency_key=key,
+                confirmation=LIVE_LEVERAGE_PHRASE,
+            )
+        )
+    with pytest.raises(RuntimeError, match="intent commit acknowledgement uncertainty"):
+        await submit
+
+    mirror = service.mirror_repository
+    assert mirror is not None
+    assert mirror.safety_latched is True
+    assert mirror.safety_latch_code == "live_intent_reservation_uncertain"
+    assert service.arm_status().armed is False
+    assert service.arm_status().emergency_stop is True
+    assert not {"order_precheck", "set_leverage", "cancel_all_after", "place_order"} & {
+        name for name, _ in execution.calls
+    }
+    if committed:
+        assert intents.rows[key]["status"] == "ambiguous"
+    else:
+        assert key not in intents.rows
+
+
+@pytest.mark.asyncio
+async def test_cancelled_live_write_latch_failure_retains_uncertain_intent() -> None:
+    service, _, execution, intents, _ = service_fixture()
+    await seed_legacy_local_lease_for_downstream_unit_test(service)
+    mirror = service.mirror_repository
+    assert mirror is not None
+    mirror.fail_latch_write = True
+    entered = asyncio.Event()
+    blocked = asyncio.Event()
+
+    async def stalled_place(payload):
+        execution.calls.append(("place_order", dict(payload)))
+        entered.set()
+        await blocked.wait()
+
+    execution.place_order = stalled_place
+    task = asyncio.create_task(service.place_order(live_order()))
+    await asyncio.wait_for(entered.wait(), timeout=1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=1)
+
+    assert mirror.safety_latched is False
+    assert intents.rows["CTCCLabcdef"]["status"] == "ambiguous"
+    assert service.arm_status().armed is False
+    assert service.arm_status().emergency_stop is True
+    assert [name for name, _ in execution.calls].count("place_order") == 1
+
+
+@pytest.mark.asyncio
+async def test_cancelled_live_write_cleanup_deadline_keeps_reserved_tombstone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _, execution, intents, _ = service_fixture()
+    await seed_legacy_local_lease_for_downstream_unit_test(service)
+    monkeypatch.setattr(
+        "app.okx_live.service._UNCERTAIN_WRITE_CLEANUP_TIMEOUT_SECONDS", 0.02
+    )
+    mirror = service.mirror_repository
+    assert mirror is not None
+    entered = asyncio.Event()
+    blocked = asyncio.Event()
+    persistence_blocked = asyncio.Event()
+
+    async def stalled_place(payload):
+        execution.calls.append(("place_order", dict(payload)))
+        entered.set()
+        await blocked.wait()
+
+    async def stalled_persistence(*args, **kwargs):
+        await persistence_blocked.wait()
+
+    execution.place_order = stalled_place
+    mirror.engage_safety_latch = stalled_persistence
+    intents.update_intent = stalled_persistence
+    task = asyncio.create_task(service.place_order(live_order()))
+    await asyncio.wait_for(entered.wait(), timeout=1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=1)
+
+    assert service.arm_status().armed is False
+    assert service.arm_status().emergency_stop is True
+    assert intents.rows["CTCCLabcdef"]["status"] == "reserved"
+    assert [name for name, _ in execution.calls].count("place_order") == 1
 
 
 @pytest.mark.asyncio

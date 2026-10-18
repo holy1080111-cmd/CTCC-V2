@@ -74,6 +74,7 @@ _FINAL_ORDER_STATES = frozenset({"filled", "canceled", "mmp_canceled"})
 _CANCEL_CONFIRMED_STATES = frozenset({"canceled", "mmp_canceled"})
 _ACTIVE_PROTECTION_ALGO_STATES = frozenset({"live"})
 _PROTECTION_CLIENT_ID_PREFIX = "CTCCA"
+_UNCERTAIN_WRITE_CLEANUP_TIMEOUT_SECONDS = 5.0
 
 
 class OkxLiveService:
@@ -105,6 +106,9 @@ class OkxLiveService:
         self._clock = clock or (lambda: datetime.now(UTC))
         self._sleep = sleeper or asyncio.sleep
         self._write_lock = asyncio.Lock()
+        self._active_intent_key: str | None = None
+        self._uncertain_cleanup_key: str | None = None
+        self._uncertain_cleanup_tasks: set[asyncio.Task[None]] = set()
         self._armed_until: datetime | None = None
         self._baseline_equity: Decimal | None = None
         self._submissions = 0
@@ -683,12 +687,15 @@ class OkxLiveService:
                 stage = "place_order"
                 exchange_data = await self._execution().place_order(payload)
             except Exception as exc:
-                await self._record_write_failure(
-                    request.client_order_id,
-                    exc,
-                    stage=stage,
-                )
-                self._disarm_local()
+                try:
+                    await self._record_write_failure(
+                        request.client_order_id,
+                        exc,
+                        stage=stage,
+                    )
+                finally:
+                    # A failed failure-journal write must not preserve Arm.
+                    self._disarm_local()
                 raise
 
             self._submissions += 1
@@ -1016,12 +1023,14 @@ class OkxLiveService:
                         "okx_live_leverage_exchange_response_mismatch"
                     )
             except Exception as exc:
-                await self._record_write_failure(
-                    request.idempotency_key,
-                    exc,
-                    stage="set_leverage",
-                )
-                self._disarm_local()
+                try:
+                    await self._record_write_failure(
+                        request.idempotency_key,
+                        exc,
+                        stage="set_leverage",
+                    )
+                finally:
+                    self._disarm_local()
                 raise
             await self._update_intent_or_stop(
                 request.idempotency_key,
@@ -1653,11 +1662,30 @@ class OkxLiveService:
         repository = self.execution_repository
         if repository is None:
             raise OkxLiveSafetyError("okx_live_execution_persistence_unavailable")
+        # A cancellation may arrive while the DB commit acknowledgement is
+        # uncertain. Keep the key before the first repository await so the
+        # execution guard can latch and reconcile even in that case.
+        self._active_intent_key = kwargs["idempotency_key"]
         try:
             await repository.reserve_intent(**kwargs)
             await self._refresh_unresolved_intent_count()
         except (OkxLiveExecutionIntentConflict, OkxLiveExecutionIntentReplay) as exc:
+            # The database definitively rejected this new key. Do not let an
+            # unrelated cancellation reclassify an older intent with that key.
+            self._active_intent_key = None
             raise OkxLiveSafetyError(str(exc)) from exc
+        except Exception:
+            # The reservation may have committed even when its acknowledgement
+            # or subsequent readback failed. No private write has begun, but
+            # the current Arm must not survive an unknown durable intent.
+            cancelled_during_cleanup = await self._persist_uncertain_write(
+                kwargs["idempotency_key"],
+                stop_code="live_intent_reservation_uncertain",
+                detail_code="intent_reservation_uncertain",
+            )
+            if cancelled_during_cleanup:
+                raise asyncio.CancelledError
+            raise
 
     async def _assert_execution_safe(self) -> None:
         await self._assert_safety_latch_clear()
@@ -1706,11 +1734,102 @@ class OkxLiveService:
         if repository is None:
             raise OkxLiveSafetyError("okx_live_execution_persistence_unavailable")
         async with self._write_lock:
+            self._active_intent_key = None
+            self._uncertain_cleanup_key = None
+            cancellation_contained = False
             try:
                 async with repository.execution_lock():
-                    yield
+                    try:
+                        yield
+                    except asyncio.CancelledError:
+                        cancellation_contained = True
+                        if (
+                            self._active_intent_key is not None
+                            and self._uncertain_cleanup_key != self._active_intent_key
+                        ):
+                            await self._contain_cancelled_write(self._active_intent_key)
+                        raise
+            except asyncio.CancelledError:
+                # Also covers cancellation while the advisory lock is exiting.
+                if (
+                    not cancellation_contained
+                    and self._active_intent_key is not None
+                    and self._uncertain_cleanup_key != self._active_intent_key
+                ):
+                    await self._contain_cancelled_write(self._active_intent_key)
+                raise
             except OkxLiveExecutionAuthorityBusy as exc:
                 raise OkxLiveBusyError(str(exc)) from exc
+            finally:
+                self._active_intent_key = None
+                self._uncertain_cleanup_key = None
+
+    async def _contain_cancelled_write(self, idempotency_key: str) -> None:
+        """Keep the original cancellation after a bounded durable stop attempt."""
+        await self._persist_uncertain_write(
+            idempotency_key,
+            stop_code="ambiguous_live_write_cancelled",
+            detail_code="live_write_cancelled_ambiguous",
+        )
+
+    async def _persist_uncertain_write(
+        self, idempotency_key: str, *, stop_code: str, detail_code: str
+    ) -> bool:
+        """Stop locally first, then attempt both durable writes independently.
+
+        A failed or timed-out DB operation cannot establish a safe result. The
+        existing intent, if committed, remains unresolved for reconciliation.
+        """
+        self._engage_emergency_stop(stop_code)
+        self._uncertain_cleanup_key = idempotency_key
+
+        async def persist() -> None:
+            outcomes = await asyncio.gather(
+                self._engage_persistent_emergency_stop(stop_code),
+                self._update_intent(
+                    idempotency_key,
+                    status="ambiguous",
+                    detail_codes=[detail_code],
+                ),
+                return_exceptions=True,
+            )
+            for outcome in outcomes:
+                if isinstance(outcome, BaseException):
+                    logger.warning(
+                        "auxiliary_io_failed kind=%s", type(outcome).__name__
+                    )
+
+        task = asyncio.create_task(persist())
+        self._uncertain_cleanup_tasks.add(task)
+        task.add_done_callback(self._finish_uncertain_cleanup)
+        deadline = (
+            asyncio.get_running_loop().time() + _UNCERTAIN_WRITE_CLEANUP_TIMEOUT_SECONDS
+        )
+        cancelled_during_cleanup = False
+        while not task.done():
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                task.cancel()
+                break
+            try:
+                await asyncio.wait_for(asyncio.shield(task), timeout=remaining)
+            except asyncio.CancelledError:
+                # Cancellation while recording an earlier uncertain result
+                # cannot skip the already-started durable attempts. The caller
+                # propagates that cancellation after the bounded wait.
+                cancelled_during_cleanup = True
+                continue
+            except TimeoutError:
+                task.cancel()
+                break
+        return cancelled_during_cleanup
+
+    def _finish_uncertain_cleanup(self, task: asyncio.Task[None]) -> None:
+        self._uncertain_cleanup_tasks.discard(task)
+        try:
+            task.result()
+        except BaseException as exc:  # noqa: BLE001 - Never leak private IO errors.
+            logger.warning("auxiliary_io_failed kind=%s", type(exc).__name__)
 
     async def _update_intent(self, idempotency_key: str, **kwargs) -> None:
         repository = self.execution_repository
@@ -1791,18 +1910,23 @@ class OkxLiveService:
         ambiguous = not isinstance(exc, OkxPrivateApiError) or getattr(
             exc, "code", None
         ) in {"transport_error", "ambiguous_response"}
-        status = "ambiguous" if ambiguous else "rejected"
+        if ambiguous:
+            cancelled_during_cleanup = await self._persist_uncertain_write(
+                idempotency_key,
+                stop_code="ambiguous_live_order_submission",
+                detail_code=f"{stage}_ambiguous",
+            )
+            if cancelled_during_cleanup:
+                raise asyncio.CancelledError
+            return
         try:
             await self._update_intent(
                 idempotency_key,
-                status=status,
-                detail_codes=[f"{stage}_{status}"],
+                status="rejected",
+                detail_codes=[f"{stage}_rejected"],
             )
         finally:
-            if ambiguous:
-                self._engage_emergency_stop("ambiguous_live_order_submission")
-            else:
-                self._record_error(exc)
+            self._record_error(exc)
 
     def _execution(self) -> OkxPrivateApiClient:
         if self.execution_client is None:
