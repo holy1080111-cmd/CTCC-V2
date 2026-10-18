@@ -178,9 +178,10 @@ async def test_v10_keeps_raw_g5_frame_across_locked_journal_reads(
     harness.assert_closed()
     empty_registries()
     # Pin the complete readback after checking its source and DENY semantics.
-    # The owned raw fixture now rolls quote turnover up from child candles.
+    # Measured last-component receipt (not later batch validation) changes the
+    # G1 source digest and its derived receipts; all DENY checks above remain.
     assert sha(result.receipt_json) == (
-        "2bc60ab9f2a4bf355c71fdc0622ca2a73e502441f7574cecfa401fef3c270f2c"
+        "0c65793d447c88871ae35373db6fec2b54f7ba838a7c21fc750f203c206dfb41"
     )
 
 
