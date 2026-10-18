@@ -6255,3 +6255,9 @@ above. The focused hermetic policy unit suite, Ruff and manifest checks also
 passed. These are targeted local results; exact committed-source Windows,
 Linux, PostgreSQL, Docker and GitHub CI remain pending. No execution authority
 is inferred from these tests.
+
+A later source-archive admission hardening rejects tracked private-key and
+credential file classes by case-insensitive name or suffix, as well as private
+runtime directories. The focused path-denial tests pass. This is a path-class
+guard only; final release still requires a content and Git-history secret
+audit, and this change needs its own exact-source CI before acceptance.

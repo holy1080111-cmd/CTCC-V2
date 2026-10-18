@@ -30,6 +30,38 @@ VALIDATION_BUDGET_SECONDS = 165 * 60
 CLEANUP_BUDGET_SECONDS = 5 * 60
 HEARTBEAT_INTERVAL_SECONDS = 60
 DOWNGRADE_DENIAL = "submission_transport_authenticity_downgrade_denied"
+PRIVATE_ARCHIVE_SUFFIXES = frozenset(
+    {".token", ".key", ".pem", ".p12", ".pfx", ".kdbx", ".jks", ".keystore"}
+)
+PRIVATE_ARCHIVE_NAMES = frozenset(
+    {
+        ".npmrc",
+        ".pypirc",
+        "id_rsa",
+        "id_dsa",
+        "id_ecdsa",
+        "id_ed25519",
+        "credentials.json",
+        "secrets.json",
+        "secret.json",
+        "token.json",
+        "api-key.json",
+        "apikey.json",
+    }
+)
+PRIVATE_ARCHIVE_DIRECTORIES = frozenset(
+    {
+        ".git",
+        "reports",
+        "backups",
+        ".venv",
+        "private-notion",
+        "private",
+        "secrets",
+        "credentials",
+    }
+)
+PRIVATE_ARCHIVE_BACKUP_SUFFIXES = (".bak", ".backup", ".old", ".orig", ".tmp", "~")
 # The exact 0b28282 PostgreSQL shard reached 84% before the 75-minute stage
 # deadline killed pytest without a JUnit report. Keep a bounded stage deadline
 # inside the 165-minute validation and 180-minute CI job budgets.
@@ -259,24 +291,47 @@ def git_object(kind: str, raw: bytes) -> bytes:
 def archive_tree(archive: tarfile.TarFile) -> str:
     """Hash exact archived bytes/modes, not normalized manifest representations."""
     root: dict = {}
+    declared_directories: set[tuple[str, ...]] = set()
+    file_paths: set[tuple[str, ...]] = set()
+    directories_with_files: set[tuple[str, ...]] = set()
     for item in archive.getmembers():
         path = PurePosixPath(item.name)
         if path.is_absolute() or ".." in path.parts or not path.parts:
             raise ValueError("unsafe_archive_path")
+        for index, part in enumerate(path.parts):
+            folded = part.casefold()
+            if folded in PRIVATE_ARCHIVE_DIRECTORIES:
+                raise ValueError("archive_runtime_or_git_entry")
+            base_name = folded
+            for backup_suffix in PRIVATE_ARCHIVE_BACKUP_SUFFIXES:
+                if base_name.endswith(backup_suffix):
+                    base_name = base_name[: -len(backup_suffix)]
+                    break
+            if (
+                folded.startswith(".env")
+                and not (
+                    index == len(path.parts) - 1
+                    and item.isfile()
+                    and folded == ".env.example"
+                )
+                or base_name in PRIVATE_ARCHIVE_NAMES
+                or base_name in PRIVATE_ARCHIVE_SUFFIXES
+                or PurePosixPath(base_name).suffix in PRIVATE_ARCHIVE_SUFFIXES
+            ):
+                raise ValueError("archive_non_source_entry")
         if item.isdir():
+            if path.parts in declared_directories or path.parts in file_paths:
+                raise ValueError("archive_duplicate_entry")
+            declared_directories.add(path.parts)
             continue
-        if (
-            not item.isfile()
-            or path.name.casefold().startswith(".env")
-            and path.name != ".env.example"
-            or path.suffix.casefold() == ".token"
-        ):
+        if not item.isfile():
             raise ValueError("archive_non_source_entry")
-        if any(
-            part.casefold() in {".git", "reports", "backups", ".venv", "private-notion"}
-            for part in path.parts
-        ):
-            raise ValueError("archive_runtime_or_git_entry")
+        if path.parts in declared_directories:
+            raise ValueError("archive_path_conflict")
+        file_paths.add(path.parts)
+        directories_with_files.update(
+            path.parts[:index] for index in range(1, len(path.parts))
+        )
         node = root
         for part in path.parts[:-1]:
             node = node.setdefault(part, {})
@@ -291,6 +346,9 @@ def archive_tree(archive: tarfile.TarFile) -> str:
             b"100755" if item.mode & 0o111 else b"100644",
             git_object("blob", raw),
         )
+
+    if not declared_directories.issubset(directories_with_files):
+        raise ValueError("archive_empty_directory")
 
     def tree(node):
         records = []

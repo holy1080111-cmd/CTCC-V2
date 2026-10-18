@@ -103,6 +103,35 @@ def archive(entries):
         "config/.ENV.live",
         "private-notion/destination.json",
         "PRIVATE-NOTION/nested/data.json",
+        "config/exchange.key",
+        "config/private.pem",
+        "config/account.p12",
+        "config/account.pfx",
+        "config/login.kdbx",
+        "config/store.jks",
+        "config/key.keystore",
+        ".npmrc",
+        "config/.pypirc",
+        "config/id_ed25519",
+        "config/CREDENTIALS.JSON",
+        "config/secrets.json",
+        "config/TOKEN.JSON",
+        "private/harmless.txt",
+        "secrets/harmless.txt",
+        "credentials/harmless.txt",
+        ".key",
+        ".token",
+        ".pem",
+        "config/.p12",
+        "config/.pfx",
+        "config/.kdbx",
+        "config/.jks",
+        "config/.keystore",
+        ".env/secret.txt",
+        "config/.ENV.live/data.txt",
+        "config/private.pem.bak",
+        "config/exchange.key.old",
+        "config/credentials.json.backup",
     ),
 )
 def test_archive_refuses_non_source_paths(name):
@@ -126,6 +155,30 @@ def test_archive_refuses_symlink_and_duplicate_members():
         pytest.raises(ValueError, match="duplicate"),
     ):
         archive_tree(value)
+
+
+@pytest.mark.parametrize(
+    "name", (".git", "config/.env", "config/.ENV.live", "unlisted")
+)
+def test_archive_refuses_private_or_empty_directory_members(name):
+    with (
+        archive(
+            [
+                ("tracked.py", b"pass\n", tarfile.REGTYPE),
+                (name, b"", tarfile.DIRTYPE),
+            ]
+        ) as value,
+        pytest.raises(ValueError),
+    ):
+        archive_tree(value)
+
+
+def test_archive_accepts_directory_with_tracked_source_descendant():
+    entries = [("config/source.py", b"pass\n", tarfile.REGTYPE)]
+    with archive(entries) as bare:
+        expected_tree = archive_tree(bare)
+    with archive([("config", b"", tarfile.DIRTYPE), *entries]) as declared:
+        assert archive_tree(declared) == expected_tree
 
 
 def test_archive_tree_changes_when_checkout_bytes_change():
