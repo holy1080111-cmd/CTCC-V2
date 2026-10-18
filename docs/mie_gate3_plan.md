@@ -96,6 +96,11 @@ complete daily archive with conservative retrieval-time availability. It
 does not establish historical first-receipt evidence or verify the real
 external acquisition chain.
 
+The source-replayed, DENY-only historical archive admission audit in
+`docs/mie_gate3_pit_dataset_admission.md` checks original ZIPs, submitted rows,
+and caller-created dataset identities. It cannot grant Candidate sealing or
+formal evaluation and does not rehabilitate the exposed holdout.
+
 Before candidate fitting or a real seal:
 
 1. Implement an immutable availability-provenance contract separating measured

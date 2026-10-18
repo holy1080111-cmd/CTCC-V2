@@ -125,6 +125,12 @@ from app.mie.validation.metrics import (
 from app.mie.validation.metrics import (
     ReliabilityBin as CalculatedReliabilityBin,
 )
+from app.mie.validation.pit_dataset_admission import (
+    ArchivePITDatasetAdmissionV1,
+    PITDatasetAdmissionError,
+    audit_archive_pit_dataset_admission,
+    verify_archive_pit_dataset_admission,
+)
 from app.mie.validation.prospective import (
     DevelopmentValidationSplit,
     Gate3ProspectiveHoldoutReceipt,
@@ -181,6 +187,7 @@ __all__ = [
     "ArchiveBatchSource",
     "ArchiveBatchValidationError",
     "ArchiveObservationReceipt",
+    "ArchivePITDatasetAdmissionV1",
     "ArchiveReplayDataset",
     "ArtifactVerificationError",
     "AvailabilityBasis",
@@ -235,6 +242,7 @@ __all__ = [
     "MultipleTestingCorrection",
     "OutcomeKind",
     "OutcomeLabelSpec",
+    "PITDatasetAdmissionError",
     "PartitionWindow",
     "PointInTimeBar",
     "PointInTimeReplaySnapshot",
@@ -265,6 +273,7 @@ __all__ = [
     "archive_batch_minutes",
     "assert_no_grouped_temporal_leakage",
     "assert_no_temporal_leakage",
+    "audit_archive_pit_dataset_admission",
     "brier_loss_values",
     "brier_score",
     "conservative_archive_rows",
@@ -306,6 +315,7 @@ __all__ = [
     "verify_archive_batch_manifest",
     "verify_archive_batch_plan",
     "verify_archive_observation_receipt",
+    "verify_archive_pit_dataset_admission",
     "verify_archive_replay_dataset",
     "verify_evidence_artifact",
     "verify_preregistration",
