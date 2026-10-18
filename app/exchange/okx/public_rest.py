@@ -2,6 +2,7 @@ import asyncio
 import re
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from itertools import pairwise
 from typing import Any
 
 import httpx
@@ -193,7 +194,14 @@ class OkxPublicRestClient:
             {"instId": instrument_id, "bar": bar, "limit": str(limit)},
         )
         candles = [parse_candle(row) for row in rows]
-        return sorted(candles, key=lambda candle: candle.timestamp)
+        # OKX sends newest first. Validate the source order before adapting to
+        # the domain's oldest-first convention; sorting would conceal a
+        # malformed or duplicated exchange page from downstream quality checks.
+        if not candles or any(
+            newer.timestamp <= older.timestamp for newer, older in pairwise(candles)
+        ):
+            raise OkxPublicApiError("candles source order invalid")
+        return list(reversed(candles))
 
     async def order_book(self, instrument_id: str, size: int = 5) -> OrderBook:
         _require_swap_instrument(instrument_id)

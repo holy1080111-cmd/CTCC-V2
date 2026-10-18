@@ -161,6 +161,47 @@ async def test_candles_reject_spot_before_request() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("source_indices", "accepted"),
+    [
+        ((2, 1, 0), True),
+        ((0, 1, 2), False),
+        ((2, 2, 0), False),
+        ((2, 0, 1), False),
+        ((), False),
+    ],
+)
+async def test_candles_require_exchange_newest_first_order(
+    source_indices: tuple[int, ...], accepted: bool
+) -> None:
+    timestamps = [1750000000000 + index * 300000 for index in range(3)]
+    rows = [
+        [str(timestamps[index]), "100", "101", "99", "100", "10", "1", "100", "1"]
+        for index in source_indices
+    ]
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        assert request.url.path == "/api/v5/market/candles"
+        return httpx.Response(200, json={"code": "0", "msg": "", "data": rows})
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="https://example.test"
+    ) as client:
+        if accepted:
+            candles = await OkxPublicRestClient(client).candles(INSTRUMENT, "5m", 3)
+            assert [int(candle.timestamp.timestamp() * 1000) for candle in candles] == (
+                timestamps
+            )
+        else:
+            with pytest.raises(OkxPublicApiError, match="source order invalid"):
+                await OkxPublicRestClient(client).candles(INSTRUMENT, "5m", 3)
+    assert calls == 1
+
+
+@pytest.mark.asyncio
 async def test_auxiliary_reads_preserve_decimal_precision_and_real_zero() -> None:
     assert await _aux_request("mark_price", [VALID_AUX_ROWS["mark_price"]]) == Decimal(
         "100.00000000000000000001"

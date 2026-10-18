@@ -89,6 +89,11 @@ OHLC volCcy、ticker volCcy24h、OI oiCcy 以本位幣計；OHLC volCcyQuote 是
 FUTURES、OPTION、EVENTS、未知或缺失類型直接拒絕，避免把其他衍生品的
 `volCcy24h` 誤標為報價幣成交量。這項防錯不增加可信來源或交易權限。
 
+舊 `OkxPublicRestClient.candles` 入口也須先驗證 OKX 原始列嚴格由新到舊，
+再以單純反轉交給舊 domain 正序介面；空頁、重複或錯序列直接拒絕。
+原本的 `sorted` 會在下游品質檢查前掩蓋錯序。此舊入口仍不是 R5 可信
+公開來源，不能取代保留 raw bytes／逐頁 receipt 的 one-shot collector。
+
 `market_bridge.public_market_snapshot` 在任何 serialization 前完整重驗原始
 packet 與外部 bundle pin，產生新的 domain copy；`qualify_public_market` 再執行
 真正 G1，沒有 caller analysis／PASS。完整 packet 應與 G1 evidence 一併保存，
