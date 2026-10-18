@@ -142,6 +142,17 @@ receipt is `../validation-results/notion-binding-readback-20261013.json` outside
 the source tree. This confirms the binding at that observation time, not a
 Notion page write, outbox delivery, or Demo acceptance. The reviewed setup
 left the worker disabled; this readback did not enable it.
+On 2026-10-18, the existing user-only token and the same pinned destination
+passed another authenticated GET-only database/data-source schema readback.
+The nonsecret receipt and its scope addendum are
+`../validation-results/notion-binding-readback-20261018.json` and
+`../validation-results/notion-binding-readback-20261018.addendum.json`.
+The developer portal also showed that this connection already shares exactly
+the CTCC single-trade report database and has read/insert content capabilities.
+The local source worktree had an unrelated uncommitted V7 diagnostic at the
+readback time; the receipt is a Notion binding observation, not an exact-source
+CI result. No Notion page was created and the worker remains blocked by the
+submission-source authority guard.
 Generic interactive database/source/property selection is available when
 nonsecret options are omitted.
 

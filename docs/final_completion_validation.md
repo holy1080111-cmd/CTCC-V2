@@ -6327,3 +6327,19 @@ checks passed. Neither V4 nor V5 pinned entry is wired to the production Demo
 route; source-owned original qualification and complete account revision are
 still missing. These tests do not prove execution eligibility or a final CI
 result for this changed source.
+
+## 2026-10-18 Notion source and binding readback
+
+The [original Notion final-report instruction](https://app.notion.com/p/3d832165a6888173bfb1df896604fc7c)
+still requires the four authentic examples recorded in
+`docs/notion_four_evidence_acceptance.md`; the count remains 0/4. Its read-only
+requirements receipt is outside source at
+`../validation-results/notion-original-evidence-20261018/requirements.json`.
+The existing `CTCC V2 Outbox` connection already has read/insert capabilities
+and access to the single-trade report database. A new GET-only REST readback
+using the existing user-only local token verified the pinned database, data
+source and four field IDs/types. Its nonsecret receipt is
+`../validation-results/notion-binding-readback-20261018.json` with a separate
+scope addendum. No page create, outbox delivery or trade occurred; the worker's
+submission-source guard remains `DENY`. This is a binding observation made
+while an unrelated V7 diagnostic was uncommitted, not an exact-source CI result.

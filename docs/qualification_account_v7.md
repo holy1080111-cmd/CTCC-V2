@@ -62,6 +62,13 @@ portfolio risk, or continuous peak/drawdown. Every packet remains
 `execution_authority=false`. No live account capture or Demo order is claimed
 by the synthetic tests.
 
+The separate [observed-inventory metadata diagnostic](account_v7_inventory_metadata_coverage.md)
+compares instruments actually present in positions and pending orders with the
+plan-declared metadata/leverage query. An undeclared exposure instrument stays
+unknown; the diagnostic cannot borrow leverage from the candidate instrument
+or make an empty inventory a positive metadata-coverage claim. It remains
+`DENY` and does not change the V7 packet or current-source policies.
+
 The separate V7 gateway policy (`ctcc.demo_account_gateway_causality.v2`)
 replays the full original B1 journal and the V7 current-source policy. Its
 receipt (`ctcc.demo_account_gateway_causality_audit.v2`) lists every page,
