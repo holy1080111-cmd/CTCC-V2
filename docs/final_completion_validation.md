@@ -6206,3 +6206,14 @@ proof remain absent, and R6/R7 still reject execution. Local targeted unit,
 format, manifest, and migration-head checks passed; the twelve new PostgreSQL
 cases have been collected but require matching isolated CI before their result
 can be claimed. No Demo or Live private write is enabled by DB0043.
+
+The first matching run for `76a2185d0e5c4b08a407cb93984406d1e3cc2ec6`,
+[39092297407](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/39092297407),
+failed during the `0042 -> 0043` migration before any PostgreSQL witness tests
+could execute. The new PL/pgSQL guard used an unparenthesized `CASE` expression
+on the right of `IS DISTINCT FROM` inside a long `IF` condition; PostgreSQL 17
+reported `syntax error at end of input`. An isolated PostgreSQL 17.11 parser
+reproduced the failure and accepted the exact guard after parenthesizing that
+`CASE` expression. The failed run remains evidence of a real migration defect;
+its Linux, PostgreSQL and Docker results cannot be accepted. The repaired
+source still requires its own fresh full CI and database integration run.

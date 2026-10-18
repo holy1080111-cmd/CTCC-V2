@@ -125,12 +125,12 @@ def _guard() -> str:
           OR COALESCE(hf.event_json::jsonb->'data'->'plan'->>'registration_region','')
              NOT IN ('global','us_au','eea','tr')
           OR hf.event_json::jsonb->'data'->'plan'->>'origin'
-             IS DISTINCT FROM CASE hf.event_json::jsonb->'data'->'plan'->>'registration_region'
+             IS DISTINCT FROM (CASE hf.event_json::jsonb->'data'->'plan'->>'registration_region'
                WHEN 'global' THEN 'https://openapi.okx.com'
                WHEN 'us_au' THEN 'https://us.okx.com'
                WHEN 'eea' THEN 'https://eea.okx.com'
                WHEN 'tr' THEN 'https://tr.okx.com'
-             END
+             END)
           OR cf.event_json::jsonb->'data'->'plan'->>'registration_region'
              IS DISTINCT FROM hf.event_json::jsonb->'data'->'plan'->>'registration_region'
           OR hf.event_json::jsonb->'data'->'plan'->>'registration_evidence_sha256'
