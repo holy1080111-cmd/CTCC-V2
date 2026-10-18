@@ -6189,3 +6189,20 @@ leaving timestamp tolerances unchanged. Existing sealed Demo account-native
 policies still reject the 9549 profile until separately versioned. The current
 clock change needs a new source archive and matching full regression before
 it can replace the 31c accepted baseline.
+
+## 2026-10-18 account revision source witness foundation
+
+DB0043 adds an immutable, explicitly `DENY` witness that binds one existing
+Demo ledger revision and copied claims bytes to replayed B1 V5 history, B3
+typed history, B1 V7 current, and DB0038 current observation heads under the
+account UID lock. An independent session reads the saved witness back. The
+trigger and repository compare nested scope/account identities; direct SQL
+cannot label another UID's claims as this account's witness. The new
+PostgreSQL module is in the exact-source database CI set.
+
+This witness is **not** a collector-owned account revision issuer: the original
+ledger revision remains caller-written, complete history and portfolio source
+proof remain absent, and R6/R7 still reject execution. Local targeted unit,
+format, manifest, and migration-head checks passed; the twelve new PostgreSQL
+cases have been collected but require matching isolated CI before their result
+can be claimed. No Demo or Live private write is enabled by DB0043.

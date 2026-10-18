@@ -14,6 +14,9 @@ from app.database.models.account_observation_index_typed import (
     DemoAccountObservationTypedFact,
     DemoAccountObservationTypedFinding,
 )
+from app.database.models.account_revision_source_witness import (
+    DemoAccountRevisionSourceWitness,
+)
 from app.database.models.analysis import (
     AnalysisRun,
     StrategyEvaluation,
@@ -127,6 +130,7 @@ __all__ = [
     "DemoAccountObservationTypedCoverage",
     "DemoAccountObservationTypedFact",
     "DemoAccountObservationTypedFinding",
+    "DemoAccountRevisionSourceWitness",
     "DemoAutomationFingerprint",
     "DemoAutomationRun",
     "DemoAutomationState",
