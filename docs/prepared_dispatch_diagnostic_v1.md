@@ -50,3 +50,20 @@ blockers in `TransportPreparedDispatchDiagnosticV1`; a visible match still says
 Future admission requires authenticated write-side identity, source-owned
 public/account producers, fresh Arm/EStop/revision/expiry checks, a durable
 one-use claim, and a reviewed first-byte guard.
+
+## Intent-derived request plan (2026-10-18)
+
+`plan_demo_fok_from_control_bound_intent` replays the complete control-bound
+durable intent and derives an immutable Demo FOK proposal: the same compact,
+sorted-key UTF-8 body encoding used by the private REST order-create branch,
+the reservation-derived `CTQ` order and `CTA` protection IDs, and the exact
+`expTime` header from the intent. It rejects a changed intent hash, Demo/FOK
+scope, ID or header. The plan contains no credential, signature or selected
+origin, and is always `admission=DENY` with execution/retry authority false.
+
+This pure plan is not an independently read-back DB claim or a transport
+issuer. The current Demo service still generates its own order payload and
+does not receive this plan's `expTime`; no order route consumes the plan.
+Matching proposed bytes therefore does not close the write-side identity,
+fresh-control, source-provenance or first-byte gaps above. Every existing
+private-write and route hard DENY remains in force.
