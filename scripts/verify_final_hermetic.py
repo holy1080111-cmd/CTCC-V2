@@ -70,6 +70,18 @@ FULL_TEST_TIMEOUT_SECONDS = 100 * 60
 
 ARCHIVE_REQUIRED_CASES = (
     (
+        "tests.integration.test_account_portfolio_runtime_v3_postgres",
+        "test_v3_real_postgresql_same_invocation_commits_and_replays_deny_only",
+    ),
+    (
+        "tests.integration.test_account_portfolio_runtime_v3_postgres",
+        "test_v3_late_v1_fold_failure_preserves_committed_b1_b3_b5_after_restart",
+    ),
+    (
+        "tests.integration.test_measured_hwm_v2_catch_up_postgres",
+        "test_b3_only_scope_catches_up_from_original_genesis_in_bounded_pages",
+    ),
+    (
         "tests.integration.test_measured_hwm_v2_postgres",
         "test_b5_direct_sql_forged_nonpeak_equity_cannot_enter_chain",
     ),

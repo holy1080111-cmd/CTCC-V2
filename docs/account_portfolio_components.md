@@ -204,12 +204,15 @@ the membership digests intentionally differ. Every V2 output says
 `durable_membership_verified=false`, `native_clock_verified=false`,
 `account_complete=false`, `execution_authority=false`, and `admission=DENY`.
 
-This pure calculation is not yet connected to B5 runtime. Its new DB0044
-diagnostic storage has not passed PostgreSQL or cross-process acceptance; no
-source-binding issuer, partition rebuild or native historical clock proof exists.
-The current runtime therefore still performs its full V1 historical replay and
-may deny at 30 seconds. A caller-supplied hash or arbitrary suffix cannot
-substitute for the missing source and persistence evidence.
+This pure calculation is connected only to the version 3 DENY-only diagnostic
+path described above. Its DB0044 storage has not passed PostgreSQL or
+cross-process acceptance on this exact source; no source-binding issuer,
+partition rebuild or native historical clock proof exists. Version 3 still
+performs its full V1 historical replay to cross-check the B5 sample projection,
+and may deny at 30 seconds. The production account-risk and trading runtime
+cannot consume this diagnostic as authority. A caller-supplied hash or
+arbitrary suffix cannot substitute for the missing source and persistence
+evidence.
 
 ### DB0044 diagnostic persistence under review
 
