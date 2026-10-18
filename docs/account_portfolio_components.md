@@ -148,16 +148,25 @@ continuation projection must bind the previous projection, contiguous sequence,
 genesis, ordered membership, previous maximum and the selected maximum's
 original witness. It must retain any invalidation, unknown or policy mismatch.
 
-A new projection can then verify the prior accepted projection's complete
-membership contract plus the newly appended original source and the selected
-maximum witness. Missing membership, a wrong predecessor, changed source or
-unverified witness is a hard denial. A mere caller hash or an arbitrary recent
-suffix cannot replace this proof. Database constraints must prevent modification,
-deletion, late membership insertion or a projection detached from the original
-source. A readback/rebuild procedure must independently compare incremental
-results with full replay over bounded historical partitions, without deleting
-the durable source chain. That contract is not implemented or accepted by B5v1;
-it requires a reviewed migration and concurrency/crash/rollback tests.
+The isolated `account_measured_hwm_continuation` module now implements the
+calculation half of this contract. It uses a new, domain-separated V2 membership
+chain; it does not reinterpret or overwrite the V1 SHA256 of concatenated
+members. Given a pinned preceding projection, its sequence and source head, the
+original genesis and selected-peak measurements, and the newly verified source
+measurement, one append uses bounded memory and work. A missing witness,
+changed predecessor pin, gap, reversed measured time, or changed peak fails.
+The V2 peak agrees with a full V1 replay for the same synthetic population, but
+the membership digests intentionally differ. Every V2 output says
+`durable_membership_verified=false`, `native_clock_verified=false`,
+`account_complete=false`, `execution_authority=false`, and `admission=DENY`.
+
+This pure calculation is not yet connected to B5 runtime. No durable projection
+row, SQL uniqueness/immutability, source-binding issuer, cross-process readback,
+crash/concurrency/rollback test, partition rebuild, or native historical clock
+proof exists for V2. The current runtime therefore still performs its full V1
+historical replay and may deny at 30 seconds. Persisting and consuming this V2
+chain safely requires a reviewed migration and those acceptance checks; a
+caller-supplied hash or arbitrary suffix cannot substitute for them.
 
 ## Validation status
 
