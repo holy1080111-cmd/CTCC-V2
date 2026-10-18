@@ -45,6 +45,11 @@ and exact-file comparison gap **when all replay inputs are independently
 available**. The six-file report still deliberately contains the pre-G12
 snapshot; the separate sidecar avoids a circular report/G12 hash.
 
+The DB0039 observed path now reuses the pure G1–G12 rerendering checks inside
+its own post-commit, same-invocation custody boundary. It neither publishes
+nor accepts this synthetic-only V1 proof sidecar, and a saved V1 proof cannot
+resume an observed invocation.
+
 Focused synthetic tests cover V1 and liquidity V2 rendering, passing history
 run versions V2/V3/V5/V6, the existing blocked V4 case, changed original inputs,
 tampered report/sidecar, and no-clobber retry. They do not count as a real

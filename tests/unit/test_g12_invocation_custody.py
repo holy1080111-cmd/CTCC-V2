@@ -8,6 +8,7 @@ import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.domain.source_primitives import decode
+from app.trade_evidence import g12_computational_proof_v1 as computation
 from app.trade_evidence import gates
 from app.trade_qualification import g12_invocation_custody as custody
 from app.trade_qualification import post_g12_public_runtime as runtime
@@ -100,6 +101,132 @@ def test_postpublication_requires_new_six_file_write_and_same_root(tmp_path):
     report.write_bytes(report.read_bytes() + b" ")
     with pytest.raises(custody.G12InvocationCustodyError):
         custody.prepare_g12_publication(committed, evidence, tmp_path)
+
+
+def test_postcommit_computation_replays_exact_liquidity_packet(tmp_path, monkeypatch):
+    source, inputs, run = original()
+    claim = custody.prepare_g12_claim(
+        tmp_path,
+        source.market,
+        run,
+        inputs,
+        account_uid=inputs["risk_inputs"].account.account_id,
+        account_plan_sha256="a" * 64,
+    )
+    committed = replace(claim, db_claimed_at=source.evaluated_at - timedelta(seconds=1))
+    evidence = gates.publish_qualification_evidence_liquidity_v2(
+        tmp_path,
+        source.market,
+        run=run,
+        purpose="synthetic_test",
+        clock=Clock(source.evaluated_at),
+        **inputs,
+    )
+    publication = custody.prepare_g12_publication(committed, evidence, tmp_path)
+    recorded = replace(
+        publication,
+        db_recorded_at=evidence.receipt.completed_at + timedelta(milliseconds=1),
+    )
+    custody.require_committed_publication_files(committed, recorded, evidence, tmp_path)
+    assert (
+        custody.require_replayed_publication_computation(
+            committed,
+            recorded,
+            evidence,
+            tmp_path,
+            source.market,
+            run,
+            inputs,
+        )
+        is None
+    )
+    original_renderer = computation.gates.render_evidence_liquidity_v2
+
+    def changed_renderer(snapshot):
+        packet = dict(original_renderer(snapshot))
+        packet["summary.png"] += b"changed"
+        return packet
+
+    monkeypatch.setattr(
+        computation.gates, "render_evidence_liquidity_v2", changed_renderer
+    )
+
+    async def committed_publication(_self, _claim, _publication):
+        return recorded
+
+    monkeypatch.setattr(
+        custody.G12InvocationCustodyRepository,
+        "publication",
+        committed_publication,
+    )
+    repository = custody.G12InvocationCustodyRepository(async_sessionmaker())
+    with pytest.raises(
+        custody.G12InvocationCustodyError,
+        match="^g12_custody_computation_replay_failed$",
+    ):
+        asyncio.run(
+            runtime._complete_lineage_v2(
+                repository,
+                committed,
+                tmp_path,
+                evidence,
+                source.market,
+                run,
+                inputs,
+            )
+        )
+    assert (tmp_path / source.report_id / "summary.png").is_file()
+
+
+def test_postcommit_original_change_denies_after_database_await(tmp_path, monkeypatch):
+    source, inputs, run = original()
+    claim = custody.prepare_g12_claim(
+        tmp_path,
+        source.market,
+        run,
+        inputs,
+        account_uid=inputs["risk_inputs"].account.account_id,
+        account_plan_sha256="a" * 64,
+    )
+    committed = replace(claim, db_claimed_at=source.evaluated_at - timedelta(seconds=1))
+    evidence = gates.publish_qualification_evidence_liquidity_v2(
+        tmp_path,
+        source.market,
+        run=run,
+        purpose="synthetic_test",
+        clock=Clock(source.evaluated_at),
+        **inputs,
+    )
+    publication = custody.prepare_g12_publication(committed, evidence, tmp_path)
+    recorded = replace(
+        publication,
+        db_recorded_at=evidence.receipt.completed_at + timedelta(milliseconds=1),
+    )
+
+    async def changed_after_commit(_self, _claim, _publication):
+        inputs["consumed_event_keys"] = frozenset({"changed-after-commit"})
+        return recorded
+
+    monkeypatch.setattr(
+        custody.G12InvocationCustodyRepository, "publication", changed_after_commit
+    )
+    repository = custody.G12InvocationCustodyRepository(async_sessionmaker())
+    with pytest.raises(
+        custody.G12InvocationCustodyError,
+        match="^g12_custody_computation_replay_failed$",
+    ):
+        asyncio.run(
+            runtime._complete_lineage_v2(
+                repository,
+                committed,
+                tmp_path,
+                evidence,
+                source.market,
+                run,
+                inputs,
+            )
+        )
+    assert (tmp_path / source.report_id / "report.json").is_file()
 
 
 def test_postcommit_file_change_denies_before_fresh_capture(tmp_path, monkeypatch):

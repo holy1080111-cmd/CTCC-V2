@@ -592,6 +592,9 @@ async def _complete_lineage_v2(
     g12_invocation_custody.require_committed_publication_files(
         claim, committed, evidence, evidence_root
     )
+    g12_invocation_custody.require_replayed_publication_computation(
+        claim, committed, evidence, evidence_root, market, pre, inputs
+    )
     return committed
 
 

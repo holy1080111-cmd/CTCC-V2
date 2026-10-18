@@ -96,7 +96,11 @@ post-G12 result is public-only. V4 neither reserves risk nor creates a durable
 intent, Arm state or order. Demo and Live transport hard denial remains in
 force. The public journal replay checks retained bytes and semantics; it does
 not establish a new source-owned capture or current execution inputs. V4 does
-not independently recompute G12's computational evaluation hash.
+not independently recompute G12 from a historical receipt after restart.
+The common DB0039 publication boundary used by V3 now recomputes G1–G12 and
+compares all six rendered bytes before any post-G12 source request. DB0039
+does not retain the original market or input values, so the V4 receipt alone
+cannot repeat that computation later.
 The sidecar's post-G12 12-gate candidate digest is pinned by its receipt SHA,
 but cannot be recomputed from V4's original 11-gate candidate alone. These
 replay gaps require a separately reviewed source-owned handoff before any risk

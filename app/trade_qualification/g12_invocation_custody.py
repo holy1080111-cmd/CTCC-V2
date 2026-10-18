@@ -286,7 +286,13 @@ def prepare_g12_publication(
         _deny("g12_custody_publication_invalid")
 
 
-def _read_exact_six(root: Path, receipt, expected_root_sha256: str) -> bool:
+def _read_exact_six(
+    root: Path,
+    receipt,
+    expected_root_sha256: str,
+    *,
+    expected_packet: dict[str, bytes] | None = None,
+) -> bool:
     """Read six files under one held, identity-checked native root context."""
     try:
         storage._report_name(receipt.report_id)
@@ -323,6 +329,13 @@ def _read_exact_six(root: Path, receipt, expected_root_sha256: str) -> bool:
                     for name in storage.FILE_NAMES
                 }
                 storage._packet(receipt.report_id, packet)
+                if expected_packet is not None and (
+                    type(expected_packet) is not dict
+                    or set(expected_packet) != _FILES
+                    or any(type(item) is not bytes for item in expected_packet.values())
+                    or packet != expected_packet
+                ):
+                    return False
                 if not all(
                     sha(packet[item.name]) == item.sha256
                     and len(packet[item.name]) == item.size_bytes
@@ -372,6 +385,75 @@ def require_committed_publication_files(
             raise ValueError
     except Exception:  # noqa: BLE001 -- committed rows remain, capture denied
         _deny("g12_custody_postcommit_files_changed")
+
+
+def require_replayed_publication_computation(
+    claim: G12InvocationClaim,
+    publication: G12InvocationPublication,
+    evidence: gates.EvidenceGateRun,
+    evidence_root: Path,
+    market,
+    pre,
+    inputs: dict,
+) -> None:
+    """Replay G1--G12 and the exact six bytes after durable readback.
+
+    The original inputs and the committed publication are both checked again
+    after the database await. This read-only check cannot authenticate their
+    source, create a reservation, or issue execution authority. A late failure
+    leaves the accepted publication and its files intact.
+    """
+    try:
+        from app.trade_evidence import g12_computational_proof_v1 as proof
+
+        if (
+            type(claim) is not G12InvocationClaim
+            or type(publication) is not G12InvocationPublication
+            or publication.db_recorded_at is None
+            or publication.invocation_id != claim.invocation_id
+            or type(evidence)
+            not in {
+                gates.EvidenceGateRun,
+                gates.HistoryEvidenceGateRunV2,
+                gates.HistoryEvidenceGateRunV3,
+                gates.HistoryEvidenceGateRunV4,
+                gates.HistoryEvidenceGateRunV5,
+                gates.HistoryEvidenceGateRunV6,
+            }
+        ):
+            raise ValueError
+        require_original_unchanged(claim, market, pre, inputs)
+        checked = gates._copy(evidence, type(evidence))
+        if checked.pre_evidence != pre:
+            raise ValueError
+        receipt = checked.receipt
+        published = decode(publication.publication_json, _MAX_DOCUMENT)
+        if (
+            receipt is None
+            or receipt.status != "written"
+            or published["claim_sha256"] != claim.claim_sha256
+            or published["evidence_sha256"] != checked.evaluation_sha256
+            or published["report_sha256"] != receipt.report_sha256
+            or published["file_sha256"]
+            != {item.name: item.sha256 for item in receipt.files}
+            or receipt.report_directory != str(evidence_root / checked.result.report_id)
+            or tuple(item.name for item in receipt.files) != storage.FILE_NAMES
+            or checked.rendered_files != receipt.files
+        ):
+            raise ValueError
+        packet = proof._replay_expected_packet(checked, market, inputs, "liquidity_v2")
+        proof._replay_g12_result(checked)
+        if set(packet) != set(storage.FILE_NAMES) or not _read_exact_six(
+            evidence_root,
+            receipt,
+            claim.values["evidence_root_sha256"],
+            expected_packet=packet,
+        ):
+            raise ValueError
+        # A slow render or filesystem read cannot retain an old source pin.
+        require_original_unchanged(claim, market, pre, inputs)
+    except Exception:  # noqa: BLE001 -- redact source, DB and path failures
+        _deny("g12_custody_computation_replay_failed")
 
 
 def require_prepublication_root(claim: G12InvocationClaim, root: Path) -> None:

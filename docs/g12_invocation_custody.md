@@ -24,7 +24,12 @@ database rejects a completion timestamp outside the strict claim-to-database
 recording interval; clock disagreement denies the publication. The initial
 publication check and the final post-database check each rehash all six exact
 files while holding one native evidence-root context and comparing its identity
-before and after the read. A
+before and after the read. After the committed readback, the same invocation
+also recomputes G1–G11 and G12, rerenders the fixed liquidity-v2 profile, and
+compares all six rendered files byte-for-byte with the native published files
+before any post-G12 public or account request. It rechecks the original input
+hashes both after the database await and after rendering. A computation or
+input mismatch denies continuation without removing accepted evidence. A
 failed publication insert/readback or crash retains the preclaim and any
 already-written evidence; there is no retry, overwrite or reconstruction of
 the old attempt into a new one. The account-UID/event unique constraint permits
