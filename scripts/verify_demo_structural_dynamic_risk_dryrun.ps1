@@ -1,5 +1,5 @@
 param(
-    [decimal]$ExpectedBucketUsdt = 2000,
+    [decimal]$ExpectedBucketUsdt = 300,
     [decimal]$MinimumNetRiskReward = 2.0
 )
 

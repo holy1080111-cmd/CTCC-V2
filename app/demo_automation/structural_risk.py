@@ -158,7 +158,7 @@ def select_structural_leverage(
     # ``tier.risk_pct`` is an account-equity risk budget, whereas leverage is
     # applied to the margin available to this one position.  Those quantities
     # are equal only while the account is no larger than its capital bucket.
-    # Above the 2,000-USDT bucket boundary, omitting this ratio understates the
+    # Above the configured bucket boundary, omitting this ratio understates the
     # leverage required to deploy the requested risk budget.
     risk_budget_amount = account_equity * D(str(tier.risk_pct))
     required = int(

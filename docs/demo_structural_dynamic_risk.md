@@ -299,7 +299,7 @@ keeping both Demo write switches false, rebuild and run the read-only probe:
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass `
   -File .\scripts\verify_demo_structural_dynamic_risk_dryrun.ps1 `
-  -ExpectedBucketUsdt 2000 `
+  -ExpectedBucketUsdt 300 `
   -MinimumNetRiskReward 2.0
 ```
 

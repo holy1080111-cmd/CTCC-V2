@@ -29,7 +29,7 @@ def build_demo_capital_bucket_plan(
     configured_bucket_usdt: Decimal,
     configured_position_limit: int,
 ) -> DemoCapitalBucketPlan:
-    """Build the fail-closed ``< 2000 all capital / otherwise 2000`` plan.
+    """Build a fail-closed plan around the configured per-position bucket.
 
     At or below the configured bucket, the account forms exactly one capital
     slot whose ceiling is the full risk equity. Above it, only complete bucket
