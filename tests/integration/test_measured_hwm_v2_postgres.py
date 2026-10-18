@@ -86,6 +86,58 @@ async def _row_count(database, scope):
         )
 
 
+async def _batch_count(database, scope):
+    async with database[1]() as session:
+        return await session.scalar(
+            select(func.count())
+            .select_from(Batch)
+            .filter_by(
+                environment=scope.environment,
+                account_id=scope.account_id,
+                settlement_currency=scope.settlement_currency,
+            )
+        )
+
+
+async def test_legacy_b3_gap_blocks_next_guarded_append_without_new_b3(
+    monkeypatch, database
+):
+    observation_repo, repository, scope, first, _ = await _first(monkeypatch, database)
+    prefix = await repository.preflight_prefix(scope)
+    assert prefix.sequence == 1 and prefix.head_sha256 == first.event_sha256
+    assert prefix.admission == "DENY" and not prefix.execution_authority
+
+    reference, window = await additional_capture(
+        monkeypatch, observation_repo, scope, []
+    )
+    legacy_second = await observation_repo.append(
+        scope, reference, window, expected_revision=1
+    )
+    assert legacy_second.sequence == 2
+    assert await _batch_count(database, scope) == 2
+    assert await _row_count(database, scope) == 1
+    with pytest.raises(AccountMeasuredHWMError, match="prefix_preflight_denied"):
+        await repository.preflight_prefix(scope)
+
+    next_reference, next_window = await additional_capture(
+        monkeypatch, observation_repo, scope, []
+    )
+    with pytest.raises(
+        observed.AccountObservationError, match="observation_append_failed"
+    ):
+        await observation_repo.append(
+            scope,
+            next_reference,
+            next_window,
+            expected_revision=2,
+            require_hwm_prefix=True,
+        )
+    assert await _batch_count(database, scope) == 2
+    assert await _row_count(database, scope) == 1
+    latest = (await observation_repo.read(scope, after=1, limit=1))[0]
+    assert latest.event_sha256 == legacy_second.event_sha256
+
+
 async def test_b5_preflight_rejects_existing_b3_only_tail_without_new_batch(
     monkeypatch, database
 ):
