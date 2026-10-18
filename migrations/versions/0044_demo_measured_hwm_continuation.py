@@ -293,11 +293,11 @@ def _guard() -> str:
         END IF;
         IF NEW.peak_sequence IS DISTINCT FROM expected_peak
           OR p->>'genesis_measurement_sha256' IS DISTINCT FROM
-             CASE WHEN prior.sequence IS NULL THEN NEW.measurement_sha256 ELSE genesis.measurement_sha256 END
+             (CASE WHEN prior.sequence IS NULL THEN NEW.measurement_sha256 ELSE genesis.measurement_sha256 END)
           OR p->'genesis_source_reference' IS DISTINCT FROM g->'source_reference'
           OR p->>'window_started_at' IS DISTINCT FROM g->>'body_completed_at'
           OR p->>'peak_measurement_sha256' IS DISTINCT FROM
-             CASE WHEN expected_peak=NEW.sequence THEN NEW.measurement_sha256 ELSE peak.measurement_sha256 END
+             (CASE WHEN expected_peak=NEW.sequence THEN NEW.measurement_sha256 ELSE peak.measurement_sha256 END)
           OR p->'peak_source_reference' IS DISTINCT FROM selected->'source_reference'
           OR p->>'peak_observed_at' IS DISTINCT FROM selected->>'body_completed_at'
           OR p->'peak_equity' IS DISTINCT FROM selected->'equity'

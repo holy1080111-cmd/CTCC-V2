@@ -213,7 +213,7 @@ ACCOUNT_MEASURED_HWM_V2_TRIGGERS = (
         True,
         True,
         True,
-        "970262b7666ffee8e3def7791954dbde1cfb377ea85971e78a02f720b97c062b",
+        "f489bd66b20bee39e630b6a6e50643c7c5f962a4c7613070c7e50bab53ce0aaa",
     ),
     (
         "account_measured_hwm_v2_immutable",
