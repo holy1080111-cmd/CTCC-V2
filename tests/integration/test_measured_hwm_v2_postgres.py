@@ -49,6 +49,10 @@ pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
 async def _first(monkeypatch, database):
     observation_repo, scope, _, _, batch = await stored(monkeypatch, database)
+    assert (
+        batch.event_sha256
+        != json.loads(batch.document_json)["reference"]["head_sha256"]
+    )
     repository = AccountMeasuredHWMRepository(database[1], clock=now)
     readback = await repository.append_next(
         scope, expected_sequence=1, expected_head_sha256=batch.event_sha256

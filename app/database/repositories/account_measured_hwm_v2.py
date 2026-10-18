@@ -99,7 +99,10 @@ class AccountMeasuredHWMRepository:
         )
         if (
             batch.capture_id != reference.capture_id
-            or batch.event_sha256 != reference.head_sha256
+            # The B3 batch event is the observation-document digest; the B1
+            # reference head is the capture-journal terminal-event digest.
+            # _checked_document verifies the former, and source_reference
+            # verifies the latter against the original chain below.
             or len(chain) != batch.source_sequence
             or observed.source_reference(chain) != reference
             or capture._utc(batch.db_recorded_at)
