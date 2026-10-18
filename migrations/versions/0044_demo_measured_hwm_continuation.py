@@ -38,6 +38,18 @@ def _guard() -> str:
               avail_num NUMERIC; avail_den NUMERIC;
               gcd_left NUMERIC; gcd_right NUMERIC; gcd_remainder NUMERIC;
               expected_peak BIGINT; expected_native BOOLEAN;
+              projection_keys TEXT[] := ARRAY[
+                'account_complete','account_id','admission',
+                'all_sources_recorded_native','durable_membership_verified',
+                'environment','execution_authority','genesis_measurement_sha256',
+                'genesis_source_reference','head_sha256','last_measured_at',
+                'last_measurement_sha256','last_source_reference',
+                'membership_sha256','native_clock_verified','peak_equity',
+                'peak_measurement_sha256','peak_observed_at','peak_source_reference',
+                'policy_sha256','previous_head_sha256',
+                'previous_projection_sha256','sample_count','schema_version',
+                'settlement_currency','through_sequence',
+                'unsampled_intermediate_peak','window_started_at'];
       BEGIN
         lock_key := ('x'||substr(encode(sha256(convert_to('ctcc-qualification-account-v1','UTF8')||decode('00','hex')||convert_to(NEW.environment,'UTF8')||decode('00','hex')||convert_to(NEW.account_id,'UTF8')),'hex'),1,16))::bit(64)::bigint;
         PERFORM pg_advisory_xact_lock(lock_key);
@@ -128,6 +140,17 @@ def _guard() -> str:
           OR encode(sha256(convert_to(NEW.projection_json,'UTF8')),'hex') IS DISTINCT FROM NEW.projection_sha256
           OR jsonb_typeof(m) IS DISTINCT FROM 'object'
           OR jsonb_typeof(p) IS DISTINCT FROM 'object'
+          -- The shared Gate 3 serializer is proved only for ASCII JSON.
+          -- B5 is diagnostic: a non-ASCII source fails closed, never gets an
+          -- alternate lossy encoding or a newly inferred balance.
+          OR public.gate3_schedule_all_ascii(m) IS DISTINCT FROM true
+          OR public.gate3_schedule_all_ascii(p) IS DISTINCT FROM true
+          OR NEW.measurement_json IS DISTINCT FROM
+             public.gate3_schedule_canonical_jsonb(m)
+          OR NEW.projection_json IS DISTINCT FROM
+             public.gate3_schedule_canonical_jsonb(p)
+          OR (p ?& projection_keys) IS DISTINCT FROM true
+          OR (p - projection_keys) IS DISTINCT FROM '{{}}'::jsonb
           OR m->>'schema_version' IS DISTINCT FROM 'ctcc.measured_balance.v1'
           OR m->'source_reference' IS DISTINCT FROM b.document_json::jsonb->'reference'
           OR ROW(m->>'environment',m->>'account_id',m->>'settlement_currency')

@@ -1,6 +1,7 @@
 """Offline DB0044 computation tests; no PostgreSQL or account authentication."""
 
 import json
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -115,6 +116,17 @@ def test_db0044_contract_remains_denied_and_downgrade_refuses_evidence():
     assert hwm.POLICY_SHA256 in sql
     assert "pg_advisory_xact_lock" in sql
     assert "account_measured_hwm_v2_membership_denied" in sql
+    assert "gate3_schedule_all_ascii(m)" in sql
+    assert "gate3_schedule_all_ascii(p)" in sql
+    assert "gate3_schedule_canonical_jsonb(m)" in sql
+    assert "gate3_schedule_canonical_jsonb(p)" in sql
+    assert "NEW.measurement_json IS DISTINCT FROM" in sql
+    assert "NEW.projection_json IS DISTINCT FROM" in sql
+    keys = re.search(r"projection_keys TEXT\[\] := ARRAY\[(.*?)\];", sql, re.DOTALL)
+    assert keys is not None
+    names = re.findall(r"'([^']+)'", keys.group(1))
+    assert len(names) == len(set(names)) == len(hwm._FIELDS)
+    assert set(names) == hwm._FIELDS
     assert "account_complete" in sql and "execution_authority" in sql
     commands = RecordedDowngrade("0044").commands
     assert commands[0][0] == "execute" and "NOWAIT" in commands[0][1]

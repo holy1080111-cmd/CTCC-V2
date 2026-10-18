@@ -6,6 +6,7 @@ equity, account genesis, historical completeness, or order execution.
 """
 
 import asyncio
+import hashlib
 import json
 
 import pytest
@@ -78,6 +79,52 @@ async def _row_count(database, scope):
                 settlement_currency=scope.settlement_currency,
             )
         )
+
+
+async def _second_insert_values(database, repository, scope):
+    """Build a valid SQL candidate before tampering with its outer JSON text."""
+    async with database[1]() as session, session.begin():
+        predecessor = await session.scalar(
+            select(HWMRow).filter_by(
+                environment=scope.environment,
+                account_id=scope.account_id,
+                settlement_currency=scope.settlement_currency,
+                sequence=1,
+            )
+        )
+        batch = await session.scalar(
+            select(Batch).filter_by(
+                environment=scope.environment,
+                account_id=scope.account_id,
+                settlement_currency=scope.settlement_currency,
+                sequence=2,
+            )
+        )
+        assert predecessor is not None and batch is not None
+        projected, measurement, peak_sequence = await repository._compute(
+            session, scope, batch, predecessor
+        )
+        assert peak_sequence == 1
+        return {
+            "environment": scope.environment,
+            "account_id": scope.account_id,
+            "settlement_currency": scope.settlement_currency,
+            "sequence": 2,
+            "capture_id": batch.capture_id,
+            "source_sequence": batch.source_sequence,
+            "event_sha256": batch.event_sha256,
+            "previous_event_sha256": batch.previous_sha256,
+            "measurement_sha256": journal.digest(measurement.source_json),
+            "measurement_json": measurement.source_json.decode(),
+            "genesis_sequence": 1,
+            "peak_sequence": 1,
+            "previous_projection_sha256": predecessor.projection_sha256,
+            "projection_sha256": projected.receipt_sha256,
+            "projection_json": projected.receipt_json.decode(),
+            "account_complete": False,
+            "execution_authority": False,
+            "admission": "DENY",
+        }, predecessor
 
 
 async def test_b5_committed_chain_restarts_and_keeps_original_genesis_peak(
@@ -185,6 +232,122 @@ async def test_b5_direct_sql_forged_nonpeak_equity_cannot_enter_chain(
         scope, expected_sequence=2, expected_head_sha256=second.event_sha256
     )
     assert accepted.admission == "DENY" and await _row_count(database, scope) == 2
+
+
+@pytest.mark.parametrize("poison", ("whitespace", "reordered", "projection_extra"))
+async def test_b5_direct_sql_rejects_rehashed_noncanonical_or_extra_fields(
+    monkeypatch, database, poison
+):
+    _, repository, scope, _, second = await _second(monkeypatch, database)
+    values, predecessor = await _second_insert_values(database, repository, scope)
+    if poison == "projection_extra":
+        projected = json.loads(values["projection_json"])
+        projected["extra_caller_claim"] = True
+        raw_projection = journal.canonical(projected)
+        values["projection_json"] = raw_projection.decode()
+        values["projection_sha256"] = journal.digest(raw_projection)
+    else:
+        original = json.loads(values["measurement_json"])
+        if poison == "whitespace":
+            raw_measurement = json.dumps(
+                original, sort_keys=True, indent=1, ensure_ascii=False
+            ).encode()
+        else:
+            raw_measurement = json.dumps(
+                dict(reversed(tuple(original.items()))),
+                separators=(",", ":"),
+                ensure_ascii=False,
+            ).encode()
+        assert raw_measurement != journal.canonical(original)
+        values["measurement_json"] = raw_measurement.decode()
+        values["measurement_sha256"] = journal.digest(raw_measurement)
+        projected = json.loads(values["projection_json"])
+        projected["last_measurement_sha256"] = values["measurement_sha256"]
+        member = journal.canonical(
+            [
+                2,
+                values["previous_event_sha256"],
+                values["event_sha256"],
+                values["measurement_sha256"],
+            ]
+        )
+        projected["membership_sha256"] = hashlib.sha256(
+            hwm._MEMBERSHIP_DOMAIN
+            + bytes.fromhex(
+                json.loads(predecessor.projection_json)["membership_sha256"]
+            )
+            + member
+        ).hexdigest()
+        raw_projection = journal.canonical(projected)
+        values["projection_json"] = raw_projection.decode()
+        values["projection_sha256"] = journal.digest(raw_projection)
+    # Every digest/member pin is internally consistent. Old JSONB-only checks
+    # would accept this immutable row; the new SQL guard rejects before commit.
+    with pytest.raises(DBAPIError, match="account_measured_hwm_v2_binding_denied"):
+        async with database[1]() as session, session.begin():
+            session.add(HWMRow(**values))
+            await session.flush()
+    assert await _row_count(database, scope) == 1
+    accepted = await repository.append_next(
+        scope, expected_sequence=2, expected_head_sha256=second.event_sha256
+    )
+    assert accepted.admission == "DENY" and await _row_count(database, scope) == 2
+
+
+async def test_b5_shared_json_helpers_are_not_public_execution_grants(database):
+    async with database[0].connect() as connection:
+        rows = (
+            await connection.execute(
+                text("""
+                  SELECT p.proname,
+                    EXISTS(SELECT 1 FROM pg_catalog.aclexplode(
+                      COALESCE(p.proacl,pg_catalog.acldefault('f',p.proowner))) AS a
+                      WHERE a.grantee=0 AND a.privilege_type='EXECUTE'),
+                    pg_catalog.has_function_privilege(
+                      current_user,p.oid,'EXECUTE')
+                  FROM pg_catalog.pg_proc AS p
+                  WHERE p.oid IN (
+                    'public.gate3_schedule_all_ascii(jsonb)'::pg_catalog.regprocedure,
+                    'public.gate3_schedule_canonical_jsonb(jsonb)'::pg_catalog.regprocedure)
+                  ORDER BY p.proname
+                """)
+            )
+        ).all()
+    assert [row[0] for row in rows] == [
+        "gate3_schedule_all_ascii",
+        "gate3_schedule_canonical_jsonb",
+    ]
+    assert all(row[1] is False for row in rows)
+    assert all(row[2] is True for row in rows)
+
+
+async def test_b5_ascii_sql_serializer_matches_python_canonical_examples(
+    monkeypatch, database
+):
+    _, repository, scope, _, _ = await _second(monkeypatch, database)
+    values, _ = await _second_insert_values(database, repository, scope)
+    samples = (
+        values["measurement_json"],
+        values["projection_json"],
+        journal.canonical(
+            {
+                "controls": 'quote" slash/ backslash\\ newline\n tab\t',
+                "items": [0, 1, True, None],
+            }
+        ).decode(),
+    )
+    async with database[0].connect() as connection:
+        for raw in samples:
+            ascii_only, canonical = (
+                await connection.execute(
+                    text("""
+                      SELECT public.gate3_schedule_all_ascii(CAST(:raw AS jsonb)),
+                             public.gate3_schedule_canonical_jsonb(CAST(:raw AS jsonb))
+                    """),
+                    {"raw": raw},
+                )
+            ).one()
+            assert ascii_only is True and canonical == raw
 
 
 async def test_b5_two_writers_same_tail_create_only_one_durable_row(

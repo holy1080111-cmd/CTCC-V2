@@ -75,6 +75,14 @@ ARCHIVE_REQUIRED_CASES = (
     ),
     (
         "tests.integration.test_measured_hwm_v2_postgres",
+        "test_b5_direct_sql_rejects_rehashed_noncanonical_or_extra_fields[whitespace]",
+    ),
+    (
+        "tests.integration.test_measured_hwm_v2_postgres",
+        "test_b5_direct_sql_rejects_rehashed_noncanonical_or_extra_fields[projection_extra]",
+    ),
+    (
+        "tests.integration.test_measured_hwm_v2_postgres",
         "test_b5_nonempty_downgrade_denies_and_rolls_back_exact_catalog",
     ),
     (
@@ -205,7 +213,7 @@ ACCOUNT_MEASURED_HWM_V2_TRIGGERS = (
         True,
         True,
         True,
-        "4051a063f11247c3b6ef297dd91e5ccb7ffe887c56d661a42bafba94c0b9a2bb",
+        "970262b7666ffee8e3def7791954dbde1cfb377ea85971e78a02f720b97c062b",
     ),
     (
         "account_measured_hwm_v2_immutable",

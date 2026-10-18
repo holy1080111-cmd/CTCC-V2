@@ -191,6 +191,16 @@ a nonempty diagnostic table. The hermetic identity gate pins the DB0044 trigger
 body hash and demands a 0044 → 0043 → 0042 empty roundtrip, full re-upgrade,
 schema check, and rollback readback after the DB0042 refusal.
 
+DB0044 also refuses noncanonical outer measurement/projection JSON text and
+extra projection keys before an immutable insert. The shared SQL serializer is
+used only after an ASCII check, which matches this Python serializer for the
+admitted integer/string/bool/null shapes. A captured row containing non-ASCII
+text cannot be indexed by this diagnostic migration and remains DENY; it is
+not translated or replaced. The serializer functions retain their existing
+restricted EXECUTE ACLs. No broad function grant or account authority is added.
+A restricted runtime login without the specific EXECUTE privilege cannot append
+DB0044 rows; that role binding needs explicit PostgreSQL validation before use.
+
 This migration and repository are **not wired into the live B5 runtime**. The
 current runtime still replays V1 history. Existing B3 populations require a
 separate, source-verified offline backfill from sequence one before a current
