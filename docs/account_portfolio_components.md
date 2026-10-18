@@ -205,6 +205,29 @@ This migration and repository are **not wired into the live B5 runtime**. The
 current runtime still replays V1 history. Existing B3 populations require a
 separate, source-verified offline backfill from sequence one before a current
 tail can use DB0044; no implicit bootstrap or account-lifetime reset is allowed.
+
+The isolated `catch_up_history` path implements that diagnostic prefix backfill
+in pages of at most four B3 batches. It pins the *latest* B3 sequence and
+digest under the existing exact-UID PostgreSQL transaction lock, starts only
+at B5 sequence one or the immediately missing successor, and replays each
+accepted B3 batch from its original immutable B1 capture. Missing B1 packets,
+B3 gaps, altered predecessors, older B3 policy epochs, and changed latest
+heads deny the page. DB0044's insert guard retains the raw balance/account
+configuration checks, exact B3 binding, canonical bytes and predecessor B5
+projection. No reset or later genesis exists. After commit, another session
+re-acquires the lock, checks both heads, and independently replays each new row
+and its predecessor. A late readback failure leaves committed DENY evidence in
+place for explicit restart and replay; it never deletes or rewrites a row.
+
+This path does not assert account-lifetime completeness or historical
+point-in-time availability. B5 `db_recorded_at` is the backfill time, not a
+historical balance observation time. The wrapper and stored projections retain
+false account/native-clock/membership/execution authority and `DENY`. It is not
+wired into B5 runtime or order submission. Prior B3 policy epochs need their
+own versioned replay and cannot be silently reinterpreted by current policy.
+The isolated PostgreSQL tests must pass on an exact merged source before this
+path is called validated.
+
 Focused offline tests and PostgreSQL integration cases are authored, but the
 new PostgreSQL cases and Docker hermetic path have not been executed against
 this isolated source. Fresh upgrade, nonempty downgrade refusal, concurrent
