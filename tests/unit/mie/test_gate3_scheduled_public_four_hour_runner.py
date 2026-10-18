@@ -451,6 +451,64 @@ async def test_changed_original_page_chain_or_pin_denies_continuation(setup):
     assert state["captures"] == 1
 
 
+async def test_source_changed_during_due_wait_blocks_next_capture(setup, monkeypatch):
+    inputs, state, source_root, pin_root = setup
+    runner = ScheduledPublicFourHourRunner(**inputs)
+    assert (
+        await runner.dispatch_ordinal_once(ordinal=0, enabled=True)
+    ).pinned_rows == 1
+    state["clock_ns"] = inputs["schedule"].plans[1].end_ns + 1_000_000_000
+
+    async def change_prior_source(_due_ns):
+        state["source"][f"{1:032x}"] = (
+            f"{1:064x}",
+            inputs["schedule"].plans[0].canonical_sha256(),
+            "f" * 64,
+        )
+
+    monkeypatch.setattr(runner_owner, "_wait_until_due", change_prior_source)
+    status = await runner.dispatch_ordinal_once(ordinal=1, enabled=True)
+    assert status.reason_code == "pin_or_original_source_unavailable"
+    assert status.pinned_rows == 1
+    assert state["captures"] == 1
+    assert not (source_root / "minute-00000001").exists()
+    assert not (pin_root / "pin-00000001.json").exists()
+
+
+async def test_source_changed_during_capture_blocks_next_pin(setup, monkeypatch):
+    inputs, state, source_root, pin_root = setup
+    runner = ScheduledPublicFourHourRunner(**inputs)
+    assert (
+        await runner.dispatch_ordinal_once(ordinal=0, enabled=True)
+    ).pinned_rows == 1
+    state["clock_ns"] = inputs["schedule"].plans[1].end_ns + 1_000_000_000
+    original = runner_owner.drive_scheduled_public_minute_once
+
+    async def change_after_capture(**kwargs):
+        result = await original(**kwargs)
+        state["source"][f"{1:032x}"] = (
+            f"{1:064x}",
+            inputs["schedule"].plans[0].canonical_sha256(),
+            "f" * 64,
+        )
+        return result
+
+    monkeypatch.setattr(
+        runner_owner, "drive_scheduled_public_minute_once", change_after_capture
+    )
+    status = await runner.dispatch_ordinal_once(ordinal=1, enabled=True)
+    assert status.reason_code == "scheduled_pin_append_unresolved"
+    assert status.pinned_rows == 1
+    assert state["captures"] == 2
+    assert (source_root / "minute-00000001" / "receipt.json").is_file()
+    assert not (pin_root / "pin-00000001.json").exists()
+    resumed = await ScheduledPublicFourHourRunner(**inputs).dispatch_ordinal_once(
+        ordinal=1, enabled=True
+    )
+    assert resumed.reason_code == "pin_or_original_source_unavailable"
+    assert state["captures"] == 2
+
+
 async def test_separate_root_and_four_hour_geometry_are_required(
     setup, four_hour, tmp_path
 ):

@@ -219,6 +219,20 @@ class ScheduledPublicFourHourRunner:
                 else "native_clock_unavailable",
                 pins,
             )
+        # The wait can span many native clock samples. A pinned source may
+        # change while this coroutine is asleep; re-read its original journal
+        # before the next one-use claim and any public capture request.
+        try:
+            if (
+                self._pin_chain.read_prefix(
+                    source_store=source_store,
+                    capture_service=self._capture_service,
+                )
+                != pins
+            ):
+                raise ValueError("scheduled pin prefix changed during wait")
+        except Exception:  # noqa: BLE001 - A changed source cannot advance.
+            return self._status("pin_or_original_source_unavailable", pins)
         try:
             result = await drive_scheduled_public_minute_once(
                 root=self._root,

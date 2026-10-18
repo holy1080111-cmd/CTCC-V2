@@ -29,7 +29,12 @@ pin binds native due UTC nanoseconds, original receipt digest, source capture
 receipt digest, the last canonical raw-page receipt
 digest, journal checkpoint, committed witness and DB0035 V3 digest. The raw
 source journal is replayed to reconstruct its page chain before append and on
-restart. An incomplete original receipt can be pinned for audit, but cannot be
+restart. The runner replays the retained source again after the due-time wait,
+before a new one-use capture claim. Pin append also replays every prior original
+source after the current claim and replays the full source and pin chain after
+publishing. A detected change during capture or append stops continuation;
+these separate local roots are not an atomic or independent custody boundary.
+An incomplete original receipt can be pinned for audit, but cannot be
 followed by another ordinal. A process crash after the original receipt but
 before its pin leaves an unpinned source claim; restart refuses recapture and
 does not infer the missing pin from the source files. Changed local pin or raw

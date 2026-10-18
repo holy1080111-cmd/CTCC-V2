@@ -393,6 +393,19 @@ class ScheduledPublicPinChain:
             or claims != tuple(range(len(pins)))
         ):
             raise ScheduledPinChainError("scheduled_pin_source_claims_unresolved")
+        self._replay_originals(
+            pins, source_store=source_store, capture_service=capture_service
+        )
+        return pins
+
+    def _replay_originals(
+        self,
+        pins: tuple[ScheduledReceiptPinV1, ...],
+        *,
+        source_store: ScheduledMinuteReceiptStore,
+        capture_service: PublicCheckpointCaptureService,
+    ) -> None:
+        """Recheck every retained pin against its original source bytes."""
         inventory = (
             _source_inventory(capture_service)
             if any(pin.reason_code == _SUCCESS for pin in pins)
@@ -406,7 +419,6 @@ class ScheduledPublicPinChain:
                 pin, receipt, inventory
             ):
                 raise ScheduledPinChainError("scheduled_pin_original_receipt_changed")
-        return pins
 
     @staticmethod
     def _matches(
@@ -467,6 +479,12 @@ class ScheduledPublicPinChain:
             or claims != tuple(range(ordinal + 1))
         ):
             raise ScheduledPinChainError("scheduled_pin_source_claims_unresolved")
+        # The current ordinal has been claimed, so read_prefix's exact
+        # preclaim inventory check cannot be used here. Replay the prior
+        # originals explicitly before publishing a new pin.
+        self._replay_originals(
+            pins, source_store=source_store, capture_service=capture_service
+        )
         receipt = source_store.read_ordinal(
             ordinal, expected_receipt_sha256=expected_receipt_sha256
         ).contract
@@ -526,7 +544,9 @@ class ScheduledPublicPinChain:
             raise
         except Exception as exc:
             raise ScheduledPinChainError("scheduled_pin_append_uncertain") from exc
-        if self._load() != (*pins, pin):
+        if self.read_prefix(
+            source_store=source_store, capture_service=capture_service
+        ) != (*pins, pin):
             raise ScheduledPinChainError("scheduled_pin_chain_readback_changed")
         return pin
 
