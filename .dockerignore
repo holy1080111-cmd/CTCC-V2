@@ -11,6 +11,23 @@
 **/*.[pP][fF][xX]
 *[pP][rR][iI][vV][aA][tT][eE]*.[pP][eE][mM]
 **/*[pP][rR][iI][vV][aA][tT][eE]*.[pP][eE][mM]
+# Keep private names out of direct Docker builds as well as admitted archives.
+# Docker's ** also matches files at the build-context root.
+**/*.[pP][eE][mM]
+**/*.[kK][dD][bB][xX]
+**/*.[jJ][kK][sS]
+**/*.[kK][eE][yY][sS][tT][oO][rR][eE]
+**/.[nN][pP][mM][rR][cC]
+**/.[pP][yY][pP][iI][rR][cC]
+**/[cC][rR][eE][dD][eE][nN][tT][iI][aA][lL][sS].[jJ][sS][oO][nN]
+**/[sS][eE][cC][rR][eE][tT][sS].[jJ][sS][oO][nN]
+**/[sS][eE][cC][rR][eE][tT].[jJ][sS][oO][nN]
+**/[tT][oO][kK][eE][nN].[jJ][sS][oO][nN]
+**/[aA][pP][iI]-[kK][eE][yY].[jJ][sS][oO][nN]
+**/[aA][pP][iI][kK][eE][yY].[jJ][sS][oO][nN]
+**/[pP][rR][iI][vV][aA][tT][eE]/
+**/[sS][eE][cC][rR][eE][tT][sS]/
+**/[cC][rR][eE][dD][eE][nN][tT][iI][aA][lL][sS]/
 [iI][dD]_[rR][sS][aA]
 **/[iI][dD]_[rR][sS][aA]
 [iI][dD]_[dD][sS][aA]
@@ -23,6 +40,21 @@
 **/[pP][rR][iI][vV][aA][tT][eE]-[nN][oO][tT][iI][oO][nN]/
 validation-results/
 **/validation-results/
+**/.git
+**/.venv/
+**/backups/
+**/reports/
+**/private-notion/
+**/*.[bB][aA][kK]
+**/*.[bB][aA][cC][kK][uU][pP]
+**/*.[oO][lL][dD]
+**/*.[oO][rR][iI][gG]
+**/*.[tT][mM][pP]
+**/*~
+**/*.[pP][aA][tT][cC][hH]
+**/*.[dD][uU][mM][pP]
+**/*.[lL][oO][gG]
+**/*.[zZ][iI][pP]
 !.env.example
 .git
 .venv/
