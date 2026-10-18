@@ -9,6 +9,15 @@ receipt is published to its own pre-provisioned no-clobber root and read back;
 it contains hashes and fixed blocking codes, never the raw local checkpoint,
 credential, UID or SQL detail. An old V4/V5 receipt cannot resume a run.
 
+The opt-in `publish_capture_inspect_local_portfolio_v5_pinned` entry requires
+the runtime-issued V7 Demo GET lease before delegating and checks that same
+lease again after both local reads. A closed or changed credential/session
+rejects the result, even if V4 or V5 already published valid diagnostic bytes;
+those bytes remain available for forensic readback. The older entry remains a
+legacy diagnostic and does not gain a lease or execution authority. Neither
+entry is wired into the production Demo execution route; the source-owned
+original candidate and complete account revision remain unavailable.
+
 The two observations must have the same canonical local-state hash, exact
 account/environment/currency, and strictly ordered UTC times after V4's event
 read and before the original candidate deadline. A changed state, unknown

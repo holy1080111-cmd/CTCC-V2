@@ -865,3 +865,33 @@ async def publish_capture_inspect_local_portfolio_v5(
     result = PostG12LocalPortfolioObservationV5(canonical(record))
     _publish_receipt(local_root, result, expected_root_identity=local_identity)
     return result
+
+
+def _require_pinned_v7_account_session(account_session, *, expected_used):
+    try:
+        prior._require_pinned_v7_account_session(
+            account_session, expected_used=expected_used
+        )
+    except prior.PostG12AccountEventObservationError:
+        raise PostG12LocalPortfolioObservationError(
+            "v5_pinned_account_session_invalid"
+        ) from None
+
+
+async def publish_capture_inspect_local_portfolio_v5_pinned(
+    *args, account_session, **kwargs
+) -> PostG12LocalPortfolioObservationV5:
+    """Keep one runtime-issued V7 read lease live through both local DB reads.
+
+    This opt-in boundary preserves the legacy DENY-only diagnostic and its
+    immutable receipts. A lease revoked during V4 or either later checkpoint
+    read rejects the completed diagnostic without erasing accepted evidence.
+    """
+    _require_pinned_v7_account_session(account_session, expected_used=False)
+    result = await publish_capture_inspect_local_portfolio_v5(
+        *args, account_session=account_session, **kwargs
+    )
+    _require_pinned_v7_account_session(account_session, expected_used=True)
+    if type(result) is not PostG12LocalPortfolioObservationV5:
+        raise PostG12LocalPortfolioObservationError("v5_pinned_result_invalid")
+    return result

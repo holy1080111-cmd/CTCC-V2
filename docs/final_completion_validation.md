@@ -6313,3 +6313,17 @@ excluded only from the table-drop suite and continues to have its own
 PostgreSQL empty/nonempty downgrade, lock and catalog tests. The corrected
 table-drop unit suite passed 18/18 locally. This correction requires a new
 exact-source CI run; the preceding c955 run cannot be used as final evidence.
+
+## 2026-10-18 V5 pinned Demo read-lease diagnostic
+
+The opt-in V5 local-portfolio diagnostic now validates the exact runtime-issued
+V7 Demo GET lease before invoking V4 and after its two later local database
+reads. A lease closed or changed during the invocation rejects the completed
+diagnostic without deleting published V4/V5 evidence. The original V5 receipt
+schema and fixed `DENY` admission are unchanged. Local synthetic V4/V5 tests
+passed 56/56, including late lease revocation, altered credential/origin,
+unconsumed session, invalid result type and cancellation. Ruff and manifest
+checks passed. Neither V4 nor V5 pinned entry is wired to the production Demo
+route; source-owned original qualification and complete account revision are
+still missing. These tests do not prove execution eligibility or a final CI
+result for this changed source.
