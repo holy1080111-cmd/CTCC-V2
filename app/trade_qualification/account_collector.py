@@ -30,6 +30,7 @@ import json
 import math
 import re
 import ssl
+import time
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -62,6 +63,7 @@ _PAGE_RATE_LIMITS = {
 # Avoid dispatching exactly on a rolling-window boundary whose inclusivity is
 # not specified by OKX. This is a conservative local guard, not a retry.
 _PAGE_RATE_GUARD_SECONDS = 0.05
+_PAGE_RATE_MAX_STALLED_SAMPLES = 8
 _CREDENTIAL_FIELDS = (
     "api_key",
     "api_secret",
@@ -524,6 +526,9 @@ class _AccountPagePacer:
         self._sleep = sleep
         self._last = None
         self._dispatched = {}
+        # Windows loop.time() can expose 15.625 ms ticks. A short positive
+        # sleep may legitimately return within the same monotonic tick.
+        self._minimum_sleep = 2 * time.get_clock_info("monotonic").resolution
 
     def _clock(self):
         value = self._now()
@@ -547,6 +552,7 @@ class _AccountPagePacer:
         return limit, seconds, dispatched
 
     async def wait(self, endpoint, *, deadline):
+        stalled_samples = 0
         while True:
             now = self._clock()
             if now >= deadline:
@@ -557,9 +563,15 @@ class _AccountPagePacer:
             delay = dispatched[0] + seconds + _PAGE_RATE_GUARD_SECONDS - now
             if now + delay >= deadline:
                 raise AccountCollectionError("batch_deadline_exceeded")
-            await self._sleep(delay)
-            if self._clock() <= now:
-                raise AccountCollectionError("account_rate_clock_invalid")
+            await self._sleep(max(delay, self._minimum_sleep))
+            if self._clock() == now:
+                # Equality proves no elapsed interval, so never dispatch.
+                # Bound a frozen clock independently of the batch deadline.
+                stalled_samples += 1
+                if stalled_samples >= _PAGE_RATE_MAX_STALLED_SAMPLES:
+                    raise AccountCollectionError("account_rate_clock_invalid")
+            else:
+                stalled_samples = 0
 
     def dispatched(self, endpoint):
         now = self._clock()

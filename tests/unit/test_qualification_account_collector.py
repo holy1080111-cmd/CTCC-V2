@@ -251,6 +251,58 @@ async def test_page_pacer_rejects_missing_policy_and_reversed_monotonic_clock():
 
 
 @pytest.mark.asyncio
+async def test_page_pacer_waits_past_equal_windows_clock_tick_without_overdispatch():
+    tick = 1 / 64  # Windows GetTickCount64 monotonic resolution: 15.625 ms.
+    instant = [0.0]
+    wakeups = [131 * tick, 131 * tick, 132 * tick, 133 * tick]
+    sleeps = []
+    endpoint = "/api/v5/trade/fills-history"
+
+    async def sleep(delay):
+        sleeps.append(delay)
+        instant[0] = wakeups[len(sleeps) - 1]
+
+    pacer = module._AccountPagePacer(lambda: instant[0], sleep)
+    for index in range(10):
+        instant[0] = index * tick
+        pacer.dispatched(endpoint)
+        pacer.headers_received(endpoint)
+
+    await pacer.wait(endpoint, deadline=10.0)
+    assert instant[0] == 132 * tick > 2.05
+    assert len(sleeps) == 3
+    pacer.dispatched(endpoint)
+    assert len(pacer._dispatched[endpoint]) == 10
+
+    await pacer.wait(endpoint, deadline=10.0)
+    assert instant[0] == 133 * tick > tick + 2.05
+    assert len(sleeps) == 4
+    pacer.dispatched(endpoint)
+    assert len(pacer._dispatched[endpoint]) == 10
+
+
+@pytest.mark.asyncio
+async def test_page_pacer_frozen_clock_stays_bounded_and_denies_dispatch():
+    endpoint = "/api/v5/trade/fills-history"
+    instant = [1.0]
+    sleeps = []
+
+    async def sleep(delay):
+        sleeps.append(delay)
+
+    pacer = module._AccountPagePacer(lambda: instant[0], sleep)
+    for _ in range(10):
+        pacer.dispatched(endpoint)
+        pacer.headers_received(endpoint)
+    with pytest.raises(
+        module.AccountCollectionError, match="account_rate_clock_invalid"
+    ):
+        await pacer.wait(endpoint, deadline=10.0)
+    assert len(sleeps) == module._PAGE_RATE_MAX_STALLED_SAMPLES
+    assert len(pacer._dispatched[endpoint]) == 10
+
+
+@pytest.mark.asyncio
 async def test_owned_capture_never_sends_sixth_bill_page_past_batch_deadline(
     monkeypatch,
 ):
