@@ -31,9 +31,9 @@ Version 2's policy, schema and bytes remain unchanged.
 
 The B3 write guard is opt-in for this version 3 route. Other legacy B3 writers
 may still create a gap outside this invocation; the next version 3 preflight
-then refuses new acquisition until a separate reviewed, bounded historical B5
-catch-up reaches the exact B3 head. This patch does not implement that catch-up
-or grant a trading permit from an aligned prefix.
+then refuses new acquisition until the separate bounded historical B5 catch-up
+described below reaches the exact B3 head. An aligned prefix grants no trading
+permit.
 
 This verifies consistency of **sampled** balances through the B3 head. It
 does not prove a continuous peak between reads, historical native-clock
@@ -245,10 +245,11 @@ restricted EXECUTE ACLs. No broad function grant or account authority is added.
 A restricted runtime login without the specific EXECUTE privilege cannot append
 DB0044 rows; that role binding needs explicit PostgreSQL validation before use.
 
-This migration and repository are **not wired into the live B5 runtime**. The
-current runtime still replays V1 history. Existing B3 populations require a
-separate, source-verified offline backfill from sequence one before a current
-tail can use DB0044; no implicit bootstrap or account-lifetime reset is allowed.
+The repository is used by the version 3 DENY-only diagnostic path, not by the
+live trading runtime. Version 2 still replays V1 history. Existing B3
+populations require a separate, source-verified offline backfill from sequence
+one before a current tail can use DB0044; no implicit bootstrap or
+account-lifetime reset is allowed.
 
 The isolated `catch_up_history` path implements that diagnostic prefix backfill
 in pages of at most four B3 batches. It pins the *latest* B3 sequence and
