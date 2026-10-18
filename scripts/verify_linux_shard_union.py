@@ -16,6 +16,7 @@ from pathlib import Path
 from scripts.verify_final_hermetic import (
     ARCHIVE_REQUIRED_CASES,
     DOWNGRADE_DENIAL,
+    expected_migration_revision_readback,
     verify_downgrade_denial_log,
     verify_linux_collection,
     verify_pytest_report,
@@ -41,8 +42,15 @@ COMMON_STAGES = (
     "migration-upgrade",
     "migration-identity",
     "migration-drift",
+    "migration-empty-downgrade",
+    "migration-empty-readback",
+    "migration-reupgrade",
+    "migration-reupgrade-identity",
+    "migration-reupgrade-readback",
+    "migration-reupgrade-drift",
     "migration-downgrade-denial",
     "migration-reidentity",
+    "migration-denial-readback",
     "migration-redrift",
 )
 
@@ -67,8 +75,13 @@ def _verify_hashes(root: Path):
         "source-files.json",
         "migration-supported-readback.log",
         "migration-identity.log",
+        "migration-empty-readback.log",
+        "migration-reupgrade-identity.log",
+        "migration-reupgrade-readback.log",
         "migration-reidentity.log",
+        "migration-denial-readback.log",
         "migration-downgrade-denial.log",
+        *(f"{stage}.log" for stage in COMMON_STAGES),
     ):
         if name not in recorded:
             raise ValueError("linux_union_core_hash_missing")
@@ -141,23 +154,30 @@ def verify_union(
             or identity.get("hermetic_regression") != "PENDING_UNION"
             or identity.get("cleanup") != "PASS"
             or not isinstance(identity.get("migration"), dict)
-            or identity["migration"].get("source_head") != "0042"
-            or identity["migration"].get("database_head") != "0042"
+            or identity["migration"].get("source_head") != "0043"
+            or identity["migration"].get("database_head") != "0043"
             or identity["migration"].get("status") != "PASS"
             or identity.get("migration_supported_roundtrip")
+            != expected_migration_revision_readback("0001")
+            or identity.get("migration_empty_roundtrip")
             != {
-                "schema": "ctcc.migration_revision_readback.v1",
-                "expected": "0001",
-                "observed": "0001",
-                "execution_authority": False,
+                "source_head": "0043",
+                "down_revision": "0042",
+                "down_readback": expected_migration_revision_readback("0042"),
+                "reupgrade_readback": expected_migration_revision_readback("0043"),
+                "reupgrade_identity": "PASS",
+                "schema_drift": "PASS",
             }
             or identity.get("migration_downgrade_policy")
             != {
-                "source_head": "0042",
+                "source_head": "0043",
                 "target": "0041",
                 "result": "DENIED",
+                "denied_at": "0042",
                 "policy_refusal": DOWNGRADE_DENIAL,
-                "database_head_after": "0042",
+                "database_head_after": "0043",
+                "rollback_readback": expected_migration_revision_readback("0043"),
+                "schema_drift": "PASS",
             }
         ):
             raise ValueError(f"linux_union_component_identity_rejected:{name}")
@@ -165,7 +185,14 @@ def verify_union(
             _json(root / "migration-supported-readback.log")
             != identity["migration_supported_roundtrip"]
             or _json(root / "migration-identity.log") != identity["migration"]
+            or _json(root / "migration-empty-readback.log")
+            != identity["migration_empty_roundtrip"]["down_readback"]
+            or _json(root / "migration-reupgrade-identity.log") != identity["migration"]
+            or _json(root / "migration-reupgrade-readback.log")
+            != identity["migration_empty_roundtrip"]["reupgrade_readback"]
             or _json(root / "migration-reidentity.log") != identity["migration"]
+            or _json(root / "migration-denial-readback.log")
+            != identity["migration_downgrade_policy"]["rollback_readback"]
         ):
             raise ValueError(f"linux_union_migration_readback_changed:{name}")
         archive = attachment / "ctcc-source.tar"

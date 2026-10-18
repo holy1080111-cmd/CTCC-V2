@@ -9,6 +9,8 @@ import json
 from datetime import timedelta
 
 import pytest
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
 from sqlalchemy import func, insert, select, text
 from sqlalchemy.exc import DBAPIError
 
@@ -31,6 +33,12 @@ from app.trade_qualification import account_capture_journal as journal
 from app.trade_qualification import account_history_query_verifier as history_query
 from app.trade_qualification import account_observation_index as observed
 from app.trade_qualification.reservations import QualificationLedgerError
+from scripts.verify_final_hermetic import (
+    ACCOUNT_REVISION_WITNESS_TRIGGER_CATALOG_SQL,
+    migration_revision_readback,
+)
+from scripts.verify_migration_identity import database_head
+from tests.durable_migration_fixtures import load_migration
 from tests.integration.test_account_locked_current_history_join_v7_repository import (
     _captured_v7_pair,
     _now,
@@ -75,6 +83,39 @@ async def _sources(monkeypatch, database):
     return scope, typed, current, ledger, claims
 
 
+async def _committed_migration_witness_state(engine, witness_sha256):
+    """Read the committed row and catalog through a new database connection."""
+    async with engine.connect() as connection:
+        head = await connection.run_sync(database_head)
+        row = (
+            await connection.execute(
+                select(
+                    Witness.witness_sha256,
+                    Witness.witness_json,
+                    Witness.claims_sha256,
+                    Witness.admission,
+                ).where(Witness.witness_sha256 == witness_sha256)
+            )
+        ).one()
+        table_present = await connection.scalar(
+            text(
+                "SELECT pg_catalog.to_regclass('public.demo_account_revision_source_witnesses') IS NOT NULL"
+            )
+        )
+        guard_present = await connection.scalar(
+            text(
+                "SELECT pg_catalog.to_regprocedure('public.account_revision_source_witness_guard()') IS NOT NULL"
+            )
+        )
+        catalog = (
+            await connection.execute(text(ACCOUNT_REVISION_WITNESS_TRIGGER_CATALOG_SQL))
+        ).all()
+    readback = migration_revision_readback(
+        "0043", head, table_present, guard_present, catalog
+    )
+    return row, readback
+
+
 async def test_owned_source_witness_binds_exact_sources_but_cannot_promote_claims(
     monkeypatch, database
 ):
@@ -99,6 +140,53 @@ async def test_owned_source_witness_binds_exact_sources_but_cannot_promote_claim
         QualificationLedgerError, match="ledger_owned_account_revision_missing"
     ):
         ledger._require_owned_account_revision(claims)
+
+
+async def test_committed_denial_blocks_0043_downgrade_and_rolls_back(
+    monkeypatch, database
+):
+    scope, typed, current, _, _ = await _sources(monkeypatch, database)
+    repository = AccountRevisionSourceWitnessRepository(database[1], clock=_now)
+    witness = await repository.record_denied_source_witness(
+        scope,
+        account_revision=1,
+        typed_sequence=typed.sequence,
+        current_sequence=current.sequence,
+    )
+    assert witness.admission == "DENY" and witness.execution_authority is False
+    before = await _committed_migration_witness_state(
+        database[0], witness.witness_sha256
+    )
+    assert before[0].witness_sha256 == witness.witness_sha256
+    assert before[1]["account_revision_witness_trigger_count"] == 3
+
+    def downgrade_after_committed_readback(sync_connection):
+        assert database_head(sync_connection) == "0043"
+        assert (
+            sync_connection.execute(
+                text(
+                    "SELECT count(*) FROM public.demo_account_revision_source_witnesses "
+                    "WHERE witness_sha256=:witness_sha256 AND admission='DENY'"
+                ),
+                {"witness_sha256": witness.witness_sha256},
+            ).scalar_one()
+            == 1
+        )
+        migration = load_migration("0043")
+        migration.op = Operations(MigrationContext.configure(sync_connection))
+        migration.downgrade()
+
+    with pytest.raises(
+        DBAPIError, match="account_revision_source_witness_downgrade_requires_empty"
+    ):
+        async with database[0].begin() as connection:
+            await connection.run_sync(downgrade_after_committed_readback)
+
+    after = await _committed_migration_witness_state(
+        database[0], witness.witness_sha256
+    )
+    assert after == before
+    assert (await repository.read_one(scope, witness.witness_sha256)) == witness
 
 
 async def test_witness_rejects_wrong_source_or_revision_without_row(

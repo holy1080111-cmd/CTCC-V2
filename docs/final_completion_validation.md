@@ -6237,3 +6237,21 @@ no-clobber publication and independent readback. The old 9278 policy bytes and
 V7 current-use revocation remain unchanged. Synthetic proof tests and an
 independent scoped review passed; authenticated account completeness and
 execution authority remain unproven.
+
+The subsequent hermetic policy now recognizes source head `0043`. In a fresh
+empty database it must read back `0043 -> 0042 -> 0043`, then attempt
+`0043 -> 0041` and observe DB0042's exact refusal, transaction rollback to
+`0043`, unchanged migration identity, and no Alembic schema drift. The
+readback enumerates **all** non-internal DB0043 table triggers and verifies
+their names, enabled state, event/type, target function OID, absence of a
+`WHEN` clause or column filter, and the target function body SHA256. This
+does not certify every function attribute or every unrelated database object.
+
+The isolated local PostgreSQL 17.11 run completed all 13 DB0043 witness
+repository cases, including a committed DENY witness that blocks DB0043
+downgrade and retains its row, source head and triggers after rollback. A
+separate empty database completed the policy roundtrip and refusal/readback
+above. The focused hermetic policy unit suite, Ruff and manifest checks also
+passed. These are targeted local results; exact committed-source Windows,
+Linux, PostgreSQL, Docker and GitHub CI remain pending. No execution authority
+is inferred from these tests.

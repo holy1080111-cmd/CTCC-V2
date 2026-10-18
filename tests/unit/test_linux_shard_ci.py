@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from scripts.verify_final_hermetic import (
+    ACCOUNT_REVISION_WITNESS_TRIGGERS,
     ARCHIVE_REQUIRED_CASES,
     DOWNGRADE_DENIAL,
     verify_linux_collection,
@@ -30,6 +31,27 @@ TREE = "b" * 40
 ARCHIVE = b"reviewed-git-archive"
 MANIFEST = b"reviewed-manifest\n"
 SOURCE_FILES = b"{}"
+
+
+def _revision_readback(revision: str) -> dict:
+    result = {
+        "schema": "ctcc.migration_revision_readback.v1",
+        "expected": revision,
+        "observed": revision,
+        "execution_authority": False,
+    }
+    if revision in ("0001", "0042", "0043"):
+        result["account_revision_witness_table_present"] = revision == "0043"
+        result["account_revision_witness_guard_present"] = revision == "0043"
+        result["account_revision_witness_trigger_count"] = (
+            3 if revision == "0043" else 0
+        )
+        result["account_revision_witness_trigger_catalog"] = (
+            [list(row) for row in ACCOUNT_REVISION_WITNESS_TRIGGERS]
+            if revision == "0043"
+            else []
+        )
+    return result
 
 
 def test_every_windows_classified_postgres_module_runs_in_strict_linux_postgres_suite():
@@ -156,8 +178,8 @@ def _artifacts(tmp_path: Path) -> tuple[Path, list[str]]:
     migration = {
         "schema": "ctcc.migration_identity.v1",
         "status": "PASS",
-        "source_head": "0042",
-        "database_head": "0042",
+        "source_head": "0043",
+        "database_head": "0043",
     }
     for mode, index in (
         ("postgres", None),
@@ -235,18 +257,24 @@ def _artifacts(tmp_path: Path) -> tuple[Path, list[str]]:
             "hermetic_regression": "PENDING_UNION",
             "cleanup": "PASS",
             "migration": migration,
-            "migration_supported_roundtrip": {
-                "schema": "ctcc.migration_revision_readback.v1",
-                "expected": "0001",
-                "observed": "0001",
-                "execution_authority": False,
+            "migration_supported_roundtrip": _revision_readback("0001"),
+            "migration_empty_roundtrip": {
+                "source_head": "0043",
+                "down_revision": "0042",
+                "down_readback": _revision_readback("0042"),
+                "reupgrade_readback": _revision_readback("0043"),
+                "reupgrade_identity": "PASS",
+                "schema_drift": "PASS",
             },
             "migration_downgrade_policy": {
-                "source_head": "0042",
+                "source_head": "0043",
                 "target": "0041",
                 "result": "DENIED",
+                "denied_at": "0042",
                 "policy_refusal": DOWNGRADE_DENIAL,
-                "database_head_after": "0042",
+                "database_head_after": "0043",
+                "rollback_readback": _revision_readback("0043"),
+                "schema_drift": "PASS",
             },
             "collection": collection,
             "postgres_tests" if mode == "postgres" else "linux_tests": report,
@@ -278,24 +306,44 @@ def _artifacts(tmp_path: Path) -> tuple[Path, list[str]]:
         supported_log.write_text(json.dumps(identity["migration_supported_roundtrip"]))
         migration_log = root / "migration-identity.log"
         migration_log.write_text(json.dumps(migration))
+        empty_log = root / "migration-empty-readback.log"
+        empty_log.write_text(json.dumps(_revision_readback("0042")))
+        reupgrade_identity_log = root / "migration-reupgrade-identity.log"
+        reupgrade_identity_log.write_text(json.dumps(migration))
+        reupgrade_readback_log = root / "migration-reupgrade-readback.log"
+        reupgrade_readback_log.write_text(json.dumps(_revision_readback("0043")))
         reidentity_log = root / "migration-reidentity.log"
         reidentity_log.write_text(json.dumps(migration))
+        denial_readback_log = root / "migration-denial-readback.log"
+        denial_readback_log.write_text(json.dumps(_revision_readback("0043")))
         denial_log = root / "migration-downgrade-denial.log"
         denial_log.write_text(
+            "INFO Running downgrade 0043 -> 0042\n"
             "INFO Running downgrade 0042 -> 0041\n"
             '  File "/app/migrations/versions/'
             '0042_submission_transport_authenticity_denial.py", line 109\n'
             f"asyncpg.exceptions.RaiseError: {DOWNGRADE_DENIAL}\n"
             f"sqlalchemy.exc.DBAPIError: (asyncpg.Error): {DOWNGRADE_DENIAL}\n"
         )
+        stage_logs = []
+        for stage_name in COMMON_STAGES:
+            path = root / f"{stage_name}.log"
+            if not path.exists():
+                path.write_text(f"stage={stage_name}\n")
+            stage_logs.append(path)
         files = (
             root / "identity.json",
             root / "steps.json",
             root / "source-files.json",
             supported_log,
             migration_log,
+            empty_log,
+            reupgrade_identity_log,
+            reupgrade_readback_log,
             reidentity_log,
+            denial_readback_log,
             denial_log,
+            *stage_logs,
             xml,
             collection_file,
         )
@@ -385,6 +433,91 @@ def test_union_rejects_post_denial_database_head_change_even_with_rehashed_log(
     hashes[path.name] = _sha(path.read_bytes())
     hashes_path.write_text(json.dumps(hashes))
     with pytest.raises(ValueError, match="linux_union_migration_readback_changed"):
+        verify_union(
+            artifacts, commit=COMMIT, tree=TREE, manifest_sha256=_sha(MANIFEST)
+        )
+
+
+@pytest.mark.parametrize(
+    "name,field,value",
+    (
+        ("migration-empty-readback.log", "observed", "0043"),
+        (
+            "migration-empty-readback.log",
+            "account_revision_witness_table_present",
+            True,
+        ),
+        (
+            "migration-empty-readback.log",
+            "account_revision_witness_guard_present",
+            True,
+        ),
+        ("migration-reupgrade-readback.log", "observed", "0042"),
+        (
+            "migration-denial-readback.log",
+            "account_revision_witness_table_present",
+            False,
+        ),
+        ("migration-denial-readback.log", "account_revision_witness_trigger_count", 2),
+        (
+            "migration-denial-readback.log",
+            "account_revision_witness_trigger_catalog",
+            [["account_revision_source_witness_guard", "D", 7, True]],
+        ),
+    ),
+)
+def test_union_rejects_rehashed_roundtrip_or_rollback_tamper(
+    tmp_path, name, field, value
+):
+    artifacts, _ = _artifacts(tmp_path)
+    root = artifacts / f"ctcc-linux-shard-0-{COMMIT}" / "ctcc-validation"
+    path = root / name
+    record = json.loads(path.read_text())
+    record[field] = value
+    path.write_text(json.dumps(record))
+    hashes_path = root / "results.sha256.json"
+    hashes = json.loads(hashes_path.read_text())
+    hashes[path.name] = _sha(path.read_bytes())
+    hashes_path.write_text(json.dumps(hashes))
+    with pytest.raises(ValueError, match="linux_union_migration_readback_changed"):
+        verify_union(
+            artifacts, commit=COMMIT, tree=TREE, manifest_sha256=_sha(MANIFEST)
+        )
+
+
+@pytest.mark.parametrize(
+    "stage",
+    (
+        "migration-empty-readback",
+        "migration-reupgrade-drift",
+        "migration-denial-readback",
+    ),
+)
+def test_union_requires_all_db0043_transition_stages(tmp_path, stage):
+    artifacts, _ = _artifacts(tmp_path)
+    root = artifacts / f"ctcc-linux-shard-0-{COMMIT}" / "ctcc-validation"
+    steps_path = root / "steps.json"
+    steps = json.loads(steps_path.read_text())
+    steps = [entry for entry in steps if entry["name"] != stage]
+    steps_path.write_text(json.dumps(steps))
+    hashes_path = root / "results.sha256.json"
+    hashes = json.loads(hashes_path.read_text())
+    hashes[steps_path.name] = _sha(steps_path.read_bytes())
+    hashes_path.write_text(json.dumps(hashes))
+    with pytest.raises(ValueError, match="linux_union_common_stage_missing"):
+        verify_union(
+            artifacts, commit=COMMIT, tree=TREE, manifest_sha256=_sha(MANIFEST)
+        )
+
+
+def test_union_requires_hash_for_empty_downgrade_log(tmp_path):
+    artifacts, _ = _artifacts(tmp_path)
+    root = artifacts / f"ctcc-linux-shard-0-{COMMIT}" / "ctcc-validation"
+    hashes_path = root / "results.sha256.json"
+    hashes = json.loads(hashes_path.read_text())
+    hashes.pop("migration-empty-downgrade.log")
+    hashes_path.write_text(json.dumps(hashes))
+    with pytest.raises(ValueError, match="linux_union_core_hash_missing"):
         verify_union(
             artifacts, commit=COMMIT, tree=TREE, manifest_sha256=_sha(MANIFEST)
         )

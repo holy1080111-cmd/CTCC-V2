@@ -13,14 +13,66 @@ from types import SimpleNamespace
 import pytest
 
 from scripts.verify_final_hermetic import (
+    ACCOUNT_REVISION_WITNESS_TRIGGERS,
     DOWNGRADE_DENIAL,
     Run,
     archive_files,
     archive_tree,
     cleanup_resources,
+    expected_migration_revision_readback,
+    migration_revision_readback,
     verify_copied_source,
     verify_downgrade_denial_log,
 )
+
+
+@pytest.mark.parametrize("revision", ("0001", "0042"))
+def test_migration_readback_requires_witness_absence_before_db0043(revision):
+    assert migration_revision_readback(revision, revision, False, False, ()) == (
+        expected_migration_revision_readback(revision)
+    )
+    for table, guard, triggers in (
+        (True, False, ()),
+        (False, True, ()),
+        (False, False, ACCOUNT_REVISION_WITNESS_TRIGGERS),
+    ):
+        with pytest.raises(RuntimeError, match="migration_revision_readback_mismatch"):
+            migration_revision_readback(revision, revision, table, guard, triggers)
+
+
+@pytest.mark.parametrize(
+    "drift",
+    (
+        "extra",
+        "disabled",
+        "wrong_function_oid",
+        "wrong_type",
+        "when_clause",
+        "column_filter",
+        "function_body",
+    ),
+)
+def test_migration_readback_rejects_any_db0043_trigger_catalog_drift(drift):
+    catalog = [list(row) for row in ACCOUNT_REVISION_WITNESS_TRIGGERS]
+    if drift == "extra":
+        catalog.append(["unreviewed_trigger", "O", 7, False])
+    elif drift == "disabled":
+        catalog[0][1] = "D"
+    elif drift == "wrong_function_oid":
+        catalog[1][3] = False
+    elif drift == "when_clause":
+        catalog[0][4] = False
+    elif drift == "column_filter":
+        catalog[1][5] = False
+    elif drift == "function_body":
+        catalog[2][6] = "0" * 64
+    else:
+        catalog[2][2] = 33
+    with pytest.raises(RuntimeError, match="migration_revision_readback_mismatch"):
+        migration_revision_readback("0043", "0043", True, True, catalog)
+    assert migration_revision_readback(
+        "0043", "0043", True, True, ACCOUNT_REVISION_WITNESS_TRIGGERS
+    ) == expected_migration_revision_readback("0043")
 
 
 def archive(entries):
@@ -233,6 +285,7 @@ def test_migration_policy_refusal_requires_exact_database_error_and_failed_exit(
     tmp_path, monkeypatch, returncode, marker, passes
 ):
     output = (
+        "INFO Running downgrade 0043 -> 0042\n"
         "INFO Running downgrade 0042 -> 0041\n"
         '  File "/app/migrations/versions/'
         '0042_submission_transport_authenticity_denial.py", line 109\n'
@@ -264,6 +317,21 @@ def test_migration_policy_refusal_requires_exact_database_error_and_failed_exit(
     step = json.loads((tmp_path / "steps.json").read_text())[0]
     assert step.get("policy_refusal") == (DOWNGRADE_DENIAL if passes else None)
     assert step["exit_code"] == returncode
+
+
+def test_migration_policy_refusal_rejects_missing_db0043_transition(tmp_path):
+    log = tmp_path / "migration-downgrade-denial.log"
+    log.write_text(
+        "INFO Running downgrade 0042 -> 0041\n"
+        '  File "/app/migrations/versions/'
+        '0042_submission_transport_authenticity_denial.py", line 109\n'
+        f"asyncpg.exceptions.RaiseError: {DOWNGRADE_DENIAL}\n"
+        f"sqlalchemy.exc.DBAPIError: (asyncpg.Error): {DOWNGRADE_DENIAL}\n"
+    )
+    with pytest.raises(
+        ValueError, match="migration_downgrade_policy_refusal_unverified"
+    ):
+        verify_downgrade_denial_log(log)
 
 
 def test_global_deadline_caps_stage_timeout_and_preserves_failed_step(

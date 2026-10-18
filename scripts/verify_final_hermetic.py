@@ -17,6 +17,7 @@ import subprocess
 import tarfile
 import threading
 import time
+from collections.abc import Iterable, Sequence
 from pathlib import Path, PurePosixPath
 from uuid import uuid4
 
@@ -84,33 +85,147 @@ LEDGER_SCHEMA_PREFLIGHT_CASES = (
     ),
 )
 
+ACCOUNT_REVISION_WITNESS_TRIGGER_CATALOG_SQL = """
+SELECT tgname, tgenabled::text, tgtype::integer,
+       CASE tgname
+         WHEN 'account_revision_source_witness_guard'
+           THEN tgfoid = pg_catalog.to_regprocedure('public.account_revision_source_witness_guard()')
+         WHEN 'account_revision_source_witness_immutable'
+           THEN tgfoid = pg_catalog.to_regprocedure('public.qualification_ledger_immutable()')
+         WHEN 'account_revision_source_witness_no_truncate'
+           THEN tgfoid = pg_catalog.to_regprocedure('public.qualification_ledger_immutable()')
+         ELSE false
+       END AS function_oid_matches,
+       tgqual IS NULL AS when_clause_absent,
+       tgattr::text = '' AS column_filter_absent,
+       encode(sha256(convert_to(p.prosrc, 'UTF8')), 'hex') AS function_body_sha256
+FROM pg_catalog.pg_trigger AS t
+JOIN pg_catalog.pg_proc AS p ON p.oid = t.tgfoid
+WHERE tgrelid=pg_catalog.to_regclass('public.demo_account_revision_source_witnesses')
+  AND NOT tgisinternal
+ORDER BY tgname
+"""
+
+ACCOUNT_REVISION_WITNESS_TRIGGERS = (
+    (
+        "account_revision_source_witness_guard",
+        "O",
+        7,
+        True,
+        True,
+        True,
+        "6be587260ac8375424aa5a986170664752e3778ab5a84f5309d95c5da99e6312",
+    ),
+    (
+        "account_revision_source_witness_immutable",
+        "O",
+        27,
+        True,
+        True,
+        True,
+        "14fe6a29f274ba10141a2ecdfbc40e4dc6e4014421f338f76a39352670e48649",
+    ),
+    (
+        "account_revision_source_witness_no_truncate",
+        "O",
+        34,
+        True,
+        True,
+        True,
+        "14fe6a29f274ba10141a2ecdfbc40e4dc6e4014421f338f76a39352670e48649",
+    ),
+)
+
 MIGRATION_REVISION_PROBE = """
 import asyncio, json, sys
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 from app.config.settings import get_settings
+from scripts.verify_final_hermetic import (
+    ACCOUNT_REVISION_WITNESS_TRIGGER_CATALOG_SQL,
+    migration_revision_readback,
+)
 from scripts.verify_migration_identity import database_head
 
 async def read_head():
     engine = create_async_engine(get_settings().database_url, poolclass=NullPool)
     try:
         async with engine.connect() as connection:
-            return await connection.run_sync(database_head)
+            def read_state(sync_connection):
+                head = database_head(sync_connection)
+                witness_present = sync_connection.execute(text(
+                    "SELECT pg_catalog.to_regclass('public.demo_account_revision_source_witnesses') IS NOT NULL"
+                )).scalar_one()
+                guard_present = sync_connection.execute(text(
+                    "SELECT pg_catalog.to_regprocedure('public.account_revision_source_witness_guard()') IS NOT NULL"
+                )).scalar_one()
+                trigger_catalog = sync_connection.execute(text(
+                    ACCOUNT_REVISION_WITNESS_TRIGGER_CATALOG_SQL
+                )).all()
+                return head, witness_present, guard_present, trigger_catalog
+            return await connection.run_sync(read_state)
     finally:
         await engine.dispose()
 
-observed = asyncio.run(read_head())
+observed, witness_present, guard_present, trigger_catalog = asyncio.run(read_head())
 expected = sys.argv[1]
-if observed != expected:
-    raise RuntimeError('migration_revision_readback_mismatch')
-print(json.dumps({'schema': 'ctcc.migration_revision_readback.v1',
-                  'expected': expected, 'observed': observed,
-                  'execution_authority': False}, sort_keys=True))
+result = migration_revision_readback(
+    expected, observed, witness_present, guard_present, trigger_catalog
+)
+print(json.dumps(result, sort_keys=True))
 """
 
 
+def expected_migration_revision_readback(revision: str) -> dict:
+    result = {
+        "schema": "ctcc.migration_revision_readback.v1",
+        "expected": revision,
+        "observed": revision,
+        "execution_authority": False,
+    }
+    if revision in ("0001", "0042", "0043"):
+        result["account_revision_witness_table_present"] = revision == "0043"
+        result["account_revision_witness_guard_present"] = revision == "0043"
+        result["account_revision_witness_trigger_count"] = (
+            3 if revision == "0043" else 0
+        )
+        result["account_revision_witness_trigger_catalog"] = (
+            [list(row) for row in ACCOUNT_REVISION_WITNESS_TRIGGERS]
+            if revision == "0043"
+            else []
+        )
+    return result
+
+
+def migration_revision_readback(
+    expected: str,
+    observed: str,
+    witness_present: bool,
+    guard_present: bool,
+    trigger_catalog: Iterable[Sequence[object]],
+) -> dict:
+    """Deny schema drift, including extra or disabled non-internal triggers."""
+    if expected not in ("0001", "0042", "0043"):
+        raise RuntimeError("migration_revision_readback_mismatch")
+    catalog = [list(row) for row in trigger_catalog]
+    result = {
+        "schema": "ctcc.migration_revision_readback.v1",
+        "expected": expected,
+        "observed": observed,
+        "execution_authority": False,
+        "account_revision_witness_table_present": witness_present,
+        "account_revision_witness_guard_present": guard_present,
+        "account_revision_witness_trigger_count": len(catalog),
+        "account_revision_witness_trigger_catalog": catalog,
+    }
+    if result != expected_migration_revision_readback(expected):
+        raise RuntimeError("migration_revision_readback_mismatch")
+    return result
+
+
 def verify_downgrade_denial_log(path: Path) -> None:
-    """Accept only the DB0042 policy exception, never an arbitrary CLI failure."""
+    """Accept only DB0042's refusal after DB0043's attempted downgrade."""
     if path.is_symlink() or not path.is_file() or path.stat().st_size > 2 * 1024 * 1024:
         raise ValueError("migration_downgrade_denial_log_missing_or_unsafe")
     try:
@@ -118,7 +233,8 @@ def verify_downgrade_denial_log(path: Path) -> None:
     except UnicodeError as error:
         raise ValueError("migration_downgrade_denial_log_invalid") from error
     if (
-        "Running downgrade 0042 -> 0041" not in output
+        "Running downgrade 0043 -> 0042" not in output
+        or "Running downgrade 0042 -> 0041" not in output
         or "/app/migrations/versions/0042_submission_transport_authenticity_denial.py"
         not in output
         or len(
@@ -830,12 +946,9 @@ def main():
         identity["migration_supported_roundtrip"] = json.loads(
             (args.output / "migration-supported-readback.log").read_text()
         )
-        if identity["migration_supported_roundtrip"] != {
-            "schema": "ctcc.migration_revision_readback.v1",
-            "expected": "0001",
-            "observed": "0001",
-            "execution_authority": False,
-        }:
+        if identity[
+            "migration_supported_roundtrip"
+        ] != expected_migration_revision_readback("0001"):
             raise RuntimeError("migration_supported_roundtrip_readback_invalid")
         container("migration-upgrade", ["alembic", "upgrade", "head"])
         container(
@@ -845,12 +958,52 @@ def main():
             (args.output / "migration-identity.log").read_text()
         )
         if (
-            identity["migration"].get("source_head") != "0042"
-            or identity["migration"].get("database_head") != "0042"
+            identity["migration"].get("source_head") != "0043"
+            or identity["migration"].get("database_head") != "0043"
             or identity["migration"].get("status") != "PASS"
         ):
             raise RuntimeError("migration_downgrade_policy_head_unreviewed")
         container("migration-drift", ["alembic", "check"])
+        # DB0043 may be removed only while its append-only witness table is
+        # empty. Prove the real 0042 version and absent table, then recreate
+        # DB0043 and recheck source identity and schema before denial testing.
+        container("migration-empty-downgrade", ["alembic", "downgrade", "0042"])
+        container(
+            "migration-empty-readback",
+            ["python", "-c", MIGRATION_REVISION_PROBE, "0042"],
+        )
+        empty_readback = json.loads(
+            (args.output / "migration-empty-readback.log").read_text()
+        )
+        if empty_readback != expected_migration_revision_readback("0042"):
+            raise RuntimeError("migration_empty_downgrade_readback_invalid")
+        container("migration-reupgrade", ["alembic", "upgrade", "head"])
+        container(
+            "migration-reupgrade-identity",
+            ["python", "-m", "scripts.verify_migration_identity"],
+        )
+        if identity["migration"] != json.loads(
+            (args.output / "migration-reupgrade-identity.log").read_text()
+        ):
+            raise RuntimeError("migration_reupgrade_identity_changed")
+        container(
+            "migration-reupgrade-readback",
+            ["python", "-c", MIGRATION_REVISION_PROBE, "0043"],
+        )
+        reupgrade_readback = json.loads(
+            (args.output / "migration-reupgrade-readback.log").read_text()
+        )
+        if reupgrade_readback != expected_migration_revision_readback("0043"):
+            raise RuntimeError("migration_reupgrade_readback_invalid")
+        container("migration-reupgrade-drift", ["alembic", "check"])
+        identity["migration_empty_roundtrip"] = {
+            "source_head": "0043",
+            "down_revision": "0042",
+            "down_readback": empty_readback,
+            "reupgrade_readback": reupgrade_readback,
+            "reupgrade_identity": "PASS",
+            "schema_drift": "PASS",
+        }
         container(
             "migration-downgrade-denial",
             ["alembic", "downgrade", "0041"],
@@ -864,13 +1017,25 @@ def main():
             (args.output / "migration-reidentity.log").read_text()
         ):
             raise RuntimeError("migration_denial_identity_changed")
+        container(
+            "migration-denial-readback",
+            ["python", "-c", MIGRATION_REVISION_PROBE, "0043"],
+        )
+        denial_readback = json.loads(
+            (args.output / "migration-denial-readback.log").read_text()
+        )
+        if denial_readback != expected_migration_revision_readback("0043"):
+            raise RuntimeError("migration_denial_transaction_rollback_unverified")
         container("migration-redrift", ["alembic", "check"])
         identity["migration_downgrade_policy"] = {
-            "source_head": "0042",
+            "source_head": "0043",
             "target": "0041",
             "result": "DENIED",
+            "denied_at": "0042",
             "policy_refusal": DOWNGRADE_DENIAL,
-            "database_head_after": "0042",
+            "database_head_after": "0043",
+            "rollback_readback": denial_readback,
+            "schema_drift": "PASS",
         }
         if args.suite in ("full", "postgres"):
             # Check the committed journal retention schema before the long
