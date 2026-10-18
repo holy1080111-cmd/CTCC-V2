@@ -119,6 +119,24 @@ def test_full_owner_raw_profile_and_upcoming_funding_pair_recompute_g1(
     assert restored.evaluation_sha256 == passing.evaluation_sha256
 
 
+def test_v2_market_receipt_is_last_measured_component_arrival(captured):
+    diagnostic = captured[0]
+    _, (_, _, observations, candle_packet, auxiliary, ws) = public._parts(
+        diagnostic.packet
+    )
+    expected = max(
+        *(item.completed_at for item in observations),
+        *(page.completed_at for frame in candle_packet.frames for page in frame.pages),
+        *(item.completed_at for item in auxiliary.provenance),
+        ws.ticker.received_at,
+    )
+    assert diagnostic.context.market.received_at == expected
+    document = decode(diagnostic.packet.packet_json, public.MAX_PACKET_BYTES)
+    assert expected < public._time(document["completed_at"])
+    assert diagnostic.context.admission == "DENY"
+    assert diagnostic.context.execution_authority is False
+
+
 @pytest.mark.parametrize(
     "field,base,offset,expected",
     [

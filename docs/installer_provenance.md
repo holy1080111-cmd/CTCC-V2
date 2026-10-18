@@ -16,12 +16,16 @@ the same read-only verification. It does not install, recreate, restore, Arm, or
 submit. Repeated success proves verification idempotence, not install/reinstall or
 rollback acceptance.
 
-The verifier pins the reviewed package identity file to SHA256
-`34ef5b12fa3855977d784d31803e0e1c7cb871959609f68a29cca2efcbffd722`
+The verifier pins the current reviewed package identity file to SHA256
+`c24d5acdfe12b081579a459fd1e977647cf6ee90e64b1b60d02535551b578909`
 before it reads the manifest. A replacement manifest with self-consistent file
 hashes is therefore rejected by default; an explicitly supplied alternate
 `-ExpectedIdentitySha256` is a separate, caller-owned trust decision and is used
-only by the negative fixture tests. The package remains blocked from deployment.
+only by isolated verifier fixture tests; release evidence must use the default
+pin. A read-only PASS is never deployment
+authority. The package remains blocked from deployment.
+The verifier reports `default_pin_used`; fixture overrides show false, so a
+caller cannot mistake a self-selected trust anchor for the canonical pin.
 The identity JSON and installer PowerShell are each hashed and parsed from the
 same captured byte array with strict UTF-8 decoding. A source path changing
 between a hash read and a parser read cannot produce a false parser result.
@@ -151,3 +155,20 @@ unlisted `__pycache__` directory, so the stricter verifier rejects that folder
 as a dirty package. A temporary copy containing exactly the eight pinned files
 passed two identical read-only dry-runs and was removed afterward. No installer
 or trading route was executed. The package remains blocked from deployment.
+
+## 2026-10-18 latest reviewed rollback package
+
+The isolated reviewed-v2 package in
+`../validation-results/installer-reviewed-v2-rollback-20261018/package-final/`
+fixes a partial `docker compose up` failure path by marking image replacement
+uncertain before calling Docker, so the existing old-image rollback is attempted
+if the command returns failure. Its seven-file identity is recorded in the
+adjacent `package-identity.json` (SHA256
+`c24d5acdfe12b081579a459fd1e977647cf6ee90e64b1b60d02535551b578909`).
+The canonical verifier now pins this newer identity by default. Its output
+explicitly says `deployment_authority=DENY`; no parser, hash or fake-Docker
+result grants canonical trade qualification or deployment permission. The
+package targets an older image and retains its default
+`CANONICAL_V2_DISPATCH_INTEGRATION_REQUIRED` stop before Docker mutation.
+The actual canonical HighVol entry policy still lacks a permitted historical
+G2/G3 path and the common post-G12, reservation, intent and submit chain.

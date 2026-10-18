@@ -42,6 +42,7 @@ def fixtures(
     direction="long",
     fill_changes=None,
     funding_changes=None,
+    mirror_bill_changes=None,
     extra_fills=(),
     recent_fills=(),
     empty=False,
@@ -121,6 +122,7 @@ def fixtures(
         pnl="999",
         ts=ms(at(11)),
     )
+    mirror.update(mirror_bill_changes or {})
     pages = {stream: [[]] for stream in CURSORS}
     pages["positions"] = [[]]
     if recent_fills:
@@ -828,7 +830,12 @@ def test_path_never_extends_before_candidate_or_beyond_account_cutoff(
 
 def test_funding_bill_before_submission_cannot_be_attributed():
     with pytest.raises(module.RawForensicsError):
-        run(fixtures(funding_changes={"ts": ms(at(9))}))
+        run(
+            fixtures(
+                funding_changes={"ts": ms(at(9))},
+                mirror_bill_changes={"ts": ms(at(8))},
+            )
+        )
 
 
 @pytest.mark.parametrize("kind", ["attribution", "path"])

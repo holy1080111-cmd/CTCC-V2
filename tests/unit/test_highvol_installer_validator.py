@@ -43,7 +43,7 @@ def package(tmp_path, *, malformed=False):
     return identity, marker
 
 
-def validate(tmp_path, identity, *, expected_identity_sha256=None):
+def validate(tmp_path, identity, *, expected_identity_sha256=None, use_default=False):
     identity_sha256 = (
         expected_identity_sha256 or hashlib.sha256(identity.read_bytes()).hexdigest()
     )
@@ -59,11 +59,11 @@ def validate(tmp_path, identity, *, expected_identity_sha256=None):
         str(tmp_path),
         "-IdentityPath",
         str(identity),
-        "-ExpectedIdentitySha256",
-        identity_sha256,
         "-DryRun",
         "-StageTrace",
     ]
+    if not use_default:
+        command.extend(("-ExpectedIdentitySha256", identity_sha256))
     try:
         return subprocess.run(
             command,
@@ -106,7 +106,17 @@ def test_native_parse_and_repeated_dry_run_do_not_execute_installer(tmp_path):
         )
     assert records[0]["external_calls"] == 0
     assert records[0]["deployment_performed"] is False
+    assert records[0]["default_pin_used"] is False
     assert records[0]["canonical_qualification_integration"] == "NOT_ACCEPTED"
+    assert records[0]["deployment_authority"] == "DENY"
+    assert not marker.exists()
+
+
+def test_default_trusted_identity_rejects_an_unreviewed_package(tmp_path):
+    identity, marker = package(tmp_path)
+    result = validate(tmp_path, identity, use_default=True)
+    assert result.returncode != 0
+    assert "INSTALLER_IDENTITY_MISMATCH" in result.stderr
     assert not marker.exists()
 
 

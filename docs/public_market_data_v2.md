@@ -54,6 +54,14 @@ bytes. Offline packet consistency does not attest the original TLS or IO owner.
 The existing private runtime owner and its one-use same-invocation handoff remain
 the separate acquisition boundary.
 
+The disposable `MarketSnapshot.received_at` is the latest measured arrival
+among the raw quote, candle-page and auxiliary body completions and the WS
+ticker receipt. The later whole-batch `completed_at` remains a separate
+validation stamp; it is not relabelled as market receipt. A packet whose
+measured arrival becomes stale at the declared G1 cutoff fails freshness.
+Historical V2 result hashes made with the former batch-completion projection
+must be replayed under this source version and cannot inherit a prior PASS.
+
 For each complete overlapping 4H→1H→15m→5m interval, the V2 replay checks
 the parent OHLC against its children and independently sums contract, base-
 currency and quote-currency volumes in their original units. A disagreement,

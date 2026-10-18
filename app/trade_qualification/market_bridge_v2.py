@@ -71,6 +71,15 @@ def public_market_context_v2(packet, *, expected_bundle_sha256, evaluated_at):
     ticker_row = wire._row(
         wire._parse(provenance[-1].response_body)[0], quote.instrument_id
     )
+    # The batch completion stamp is a later validation clock, not a wire
+    # receipt. The complete snapshot was first available when its last raw
+    # component arrived; preserve that measured boundary for G1 and recheck.
+    received_at = max(
+        *(item.completed_at for item in provenance),
+        *(page.completed_at for frame in candle_packet.frames for page in frame.pages),
+        *(item.completed_at for item in auxiliary.provenance),
+        ws.ticker.received_at,
+    )
     market = MarketSnapshot(
         symbol=to_canonical_symbol(quote.instrument_id),
         instrument_id=quote.instrument_id,
@@ -83,7 +92,7 @@ def public_market_context_v2(packet, *, expected_bundle_sha256, evaluated_at):
         order_book=auxiliary.book.order_book,
         candles={frame.timeframe: frame.candles for frame in candle_packet.frames},
         quality={},
-        received_at=public._time(document["completed_at"]),
+        received_at=received_at,
     )
     reference = WSReferenceObservation(
         report_id=quote.report_id,

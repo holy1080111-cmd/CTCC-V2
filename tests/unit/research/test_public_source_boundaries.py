@@ -56,11 +56,28 @@ def test_public_source_has_only_explicit_reviewed_consumers():
     scheduled_minute_publication_consumer = (
         APP / "mie" / "validation" / "scheduled_public_minute_publication.py"
     )
+    scheduled_pin_consumer = (
+        APP / "mie" / "validation" / "scheduled_public_pin_chain.py"
+    )
+    scheduled_four_hour_consumer = (
+        APP / "mie" / "validation" / "scheduled_public_four_hour_runner.py"
+    )
     scheduled_minute_imports = {
         "app.public_market_source.public_clock",
         "app.public_market_source.public_clock.native_stamp",
         "app.public_market_source.public_market_receipts",
         "app.public_market_source.public_market_receipts.utc_from_ns",
+    }
+    scheduled_pin_imports = {
+        "app.public_market_source.public_market_receipts",
+        "app.public_market_source.public_market_receipts.PublicRawReceiptV1",
+        "app.public_market_source.public_market_receipts.canonical",
+        "app.public_market_source.public_receipt_storage",
+        "app.public_market_source.public_receipt_storage.ControlledPublicReceiptJournal",
+    }
+    scheduled_four_hour_imports = {
+        "app.public_market_source.public_clock",
+        "app.public_market_source.public_clock.native_stamp",
     }
     post_read_batch_imports = {
         "app.public_market_source.public_receipt_storage",
@@ -127,6 +144,15 @@ def test_public_source_has_only_explicit_reviewed_consumers():
         # One opt-in research minute samples the native clock and converts its
         # pinned UTC nanoseconds. It cannot import capture or storage here.
         scheduled_minute_consumer: ("public_clock", "public_market_receipts"),
+        # The separate local pin chain replays retained source bytes only. It
+        # cannot acquire a live market source or grant research promotion.
+        scheduled_pin_consumer: (
+            "public_market_receipts",
+            "public_receipt_storage",
+        ),
+        # A due four-hour invocation reads only the native clock; the existing
+        # one-shot service owns acquisition and the separate pin store owns IO.
+        scheduled_four_hour_consumer: ("public_clock",),
         APP / "mie" / "validation" / "public_checkpoint_service.py": (
             "public_checkpoint_hook",
             "public_market_capture",
@@ -151,6 +177,8 @@ def test_public_source_has_only_explicit_reviewed_consumers():
     observed_native_devval_imports = set()
     native_devval_import_count = 0
     observed_scheduled_minute_imports = set()
+    observed_scheduled_pin_imports = set()
+    observed_scheduled_four_hour_imports = set()
     for path in APP.rglob("*.py"):
         if path.is_relative_to(SOURCE):
             continue
@@ -220,6 +248,28 @@ def test_public_source_has_only_explicit_reviewed_consumers():
                             and node.names[0].asname is None
                         ), name
                         observed_scheduled_minute_imports.add(name)
+                    if path == scheduled_pin_consumer:
+                        assert name in scheduled_pin_imports, name
+                        assert (
+                            isinstance(node, ast.ImportFrom)
+                            and node.module
+                            in {
+                                "app.public_market_source.public_market_receipts",
+                                "app.public_market_source.public_receipt_storage",
+                            }
+                            and all(alias.asname is None for alias in node.names)
+                        ), name
+                        observed_scheduled_pin_imports.add(name)
+                    if path == scheduled_four_hour_consumer:
+                        assert name in scheduled_four_hour_imports, name
+                        assert (
+                            isinstance(node, ast.ImportFrom)
+                            and node.module == "app.public_market_source.public_clock"
+                            and len(node.names) == 1
+                            and node.names[0].name == "native_stamp"
+                            and node.names[0].asname is None
+                        ), name
+                        observed_scheduled_four_hour_imports.add(name)
                     if path.name == "blind_window_dataset.py" and name.startswith(
                         "app.public_market_source.public_market_capture"
                     ):
@@ -250,6 +300,8 @@ def test_public_source_has_only_explicit_reviewed_consumers():
     assert observed_native_devval_imports == post_read_batch_imports
     assert native_devval_import_count == 1
     assert observed_scheduled_minute_imports == scheduled_minute_imports
+    assert observed_scheduled_pin_imports == scheduled_pin_imports
+    assert observed_scheduled_four_hour_imports == scheduled_four_hour_imports
 
 
 def test_post_publication_rejects_unreviewed_public_capture_import(monkeypatch):

@@ -3,7 +3,7 @@ param(
     [Parameter(Mandatory = $true)][string]$PackageRoot,
     [Parameter(Mandatory = $true)][string]$IdentityPath,
     [ValidatePattern('^[0-9a-fA-F]{64}$')][string]$ExpectedIdentitySha256 =
-        '34ef5b12fa3855977d784d31803e0e1c7cb871959609f68a29cca2efcbffd722',
+        'c24d5acdfe12b081579a459fd1e977647cf6ee90e64b1b60d02535551b578909',
     [switch]$DryRun,
     [switch]$StageTrace
 )
@@ -127,9 +127,11 @@ Write-VerifyStage 'analyzer_discovery_end'
     identity_sha256 = $identitySha256
     verified_files = $seen.Count
     dry_run = [bool]$DryRun
+    default_pin_used = -not $PSBoundParameters.ContainsKey('ExpectedIdentitySha256')
     script_analyzer_available = $analyzerAvailable
     external_calls = 0
     deployment_performed = $false
     canonical_qualification_integration = 'NOT_ACCEPTED'
+    deployment_authority = 'DENY'
 } | ConvertTo-Json -Compress
 Write-VerifyStage 'complete'
