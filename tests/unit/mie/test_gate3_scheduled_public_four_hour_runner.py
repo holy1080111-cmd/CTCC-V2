@@ -509,6 +509,44 @@ async def test_source_changed_during_capture_blocks_next_pin(setup, monkeypatch)
     assert state["captures"] == 2
 
 
+async def test_source_changed_during_pin_append_fails_final_readback(
+    setup, monkeypatch
+):
+    inputs, state, _source_root, pin_root = setup
+    runner = ScheduledPublicFourHourRunner(**inputs)
+    assert (
+        await runner.dispatch_ordinal_once(ordinal=0, enabled=True)
+    ).pinned_rows == 1
+    state["clock_ns"] = inputs["schedule"].plans[1].end_ns + 1_000_000_000
+    inventory = pin_owner._source_inventory
+    after_capture_reads = 0
+
+    def change_during_append(service):
+        nonlocal after_capture_reads
+        result = inventory(service)
+        if state["captures"] == 2:
+            after_capture_reads += 1
+            if after_capture_reads == 2:
+                state["source"][f"{1:032x}"] = (
+                    f"{1:064x}",
+                    inputs["schedule"].plans[0].canonical_sha256(),
+                    "f" * 64,
+                )
+        return result
+
+    monkeypatch.setattr(pin_owner, "_source_inventory", change_during_append)
+    status = await runner.dispatch_ordinal_once(ordinal=1, enabled=True)
+    assert status.reason_code == "scheduled_pin_append_unresolved"
+    assert state["captures"] == 2
+    assert after_capture_reads >= 3
+    assert (pin_root / "pin-00000001.json").is_file()
+    resumed = await ScheduledPublicFourHourRunner(**inputs).dispatch_ordinal_once(
+        ordinal=2, enabled=True
+    )
+    assert resumed.reason_code == "pin_or_original_source_unavailable"
+    assert state["captures"] == 2
+
+
 async def test_separate_root_and_four_hour_geometry_are_required(
     setup, four_hour, tmp_path
 ):
