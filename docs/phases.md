@@ -12,9 +12,12 @@ offline Gate 3 prerequisite; its PostgreSQL role tests and decision-time
 availability proof remain pending. It does not advance Gate 3 or trading
 authority.
 
-The current source migration head is `0042`. It denies new submission-report
-projection while transport authenticity has no trusted issuer and refuses
-upgrade over unresolved older eligible rows. `0041` adds an append-only Demo
+The current source migration head is `0043`. It adds an append-only, DENY-only
+source witness for an existing Demo ledger revision; that revision remains a
+caller claim and cannot grant complete account, reservation or order authority.
+`0042` denies new submission-report projection while transport authenticity
+has no trusted issuer and refuses upgrade over unresolved older eligible rows.
+`0041` adds an append-only Demo
 event-history epoch journal whose initial anchor remains unverified and cannot
 grant G6, account completeness, reservation, or order authority. `0040` adds
 separate append-only typed account source-time observations without changing

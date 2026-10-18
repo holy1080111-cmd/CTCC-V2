@@ -138,10 +138,16 @@ it refuses upgrade over unresolved legacy eligible rows or projection receipts
 without deleting their evidence, and refuses an unsafe downgrade. The current source has not passed final
 PostgreSQL, Docker, Demo or Live acceptance.
 
+Migration `0043` adds an append-only, DENY-only witness connecting an existing
+Demo ledger revision to recorded history/current source heads. The revision
+still originates from caller claims and does not prove complete account history,
+portfolio risk, reservation or execution authority. Its exact-source
+regression status is recorded in `docs/final_completion_validation.md`.
+
 Migration identities (the stopped local deployment is not silently upgraded):
 
 ```text
-Current final-completion source head: 0042
+Current final-completion source head: 0043
 Last independently restored local deployment: 0017
 ```
 
