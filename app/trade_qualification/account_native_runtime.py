@@ -47,12 +47,14 @@ from app.trade_qualification import account_collector as collector
 from app.trade_qualification import account_current_history_join as source_join
 from app.trade_qualification import account_current_source_verifier as current
 from app.trade_qualification import account_funding_bill_audit as funding_bills
+from app.trade_qualification import account_gateway_causality as gateway
 from app.trade_qualification import account_history_query_verifier as history
 from app.trade_qualification import account_native_clock as native
 from app.trade_qualification import account_native_exposed_observation as exposed
 from app.trade_qualification import account_native_proof as proof
 from app.trade_qualification import account_native_proof_storage as storage
 from app.trade_qualification import account_observation_index as observed
+from app.trade_qualification import account_row_gateway_causality as row_gateway
 from app.trade_qualification import account_time_probe as time_source
 from app.trade_qualification.account_runtime import ControlledDemoAccountSession
 from app.trade_qualification.reservations import LedgerScope
@@ -908,7 +910,13 @@ async def _recheck_original_db_chain(
 
 
 async def _capture_initial_current(
-    stage, session, session_factory, root, *, _exposure_sink=None
+    stage,
+    session,
+    session_factory,
+    root,
+    *,
+    _exposure_sink=None,
+    _v7_diagnostic_sink=None,
 ):
     """Only an active exact initial issuer reaches this actual acquisition."""
     state = native._state(stage)
@@ -923,7 +931,19 @@ async def _capture_initial_current(
         session_factory, clock=owned_clock
     )
     selected = capture._checked_plan(session._plan, session._pin)
-    if _exposure_sink is None:
+    if _v7_diagnostic_sink is not None:
+        if (
+            _exposure_sink is not None
+            or type(_v7_diagnostic_sink) is not list
+            or _v7_diagnostic_sink
+        ):
+            raise proof.NativeAccountProofError(
+                "native_account_v7_diagnostic_sink_invalid"
+            )
+        proof_schema, proof_policy_sha256 = proof.contract_for_v7_9549_diagnostic_plan(
+            selected
+        )
+    elif _exposure_sink is None:
         proof_schema, proof_policy_sha256 = proof.current_use_contract_for_plan(
             selected
         )
@@ -951,6 +971,12 @@ async def _capture_initial_current(
         if _exposure_sink is not None:
             proof_schema, proof_policy_sha256 = (
                 proof.contract_for_exposed_v6_owned_before(
+                    selected, files["host-before.json"]
+                )
+            )
+        elif _v7_diagnostic_sink is not None:
+            proof_schema, proof_policy_sha256 = (
+                proof.contract_for_v7_9549_diagnostic_owned_before(
                     selected, files["host-before.json"]
                 )
             )
@@ -1029,10 +1055,9 @@ async def _capture_initial_current(
                 "native_account_original_source_readback_changed"
             )
         exposure_observation = None
-        if _exposure_sink is not None:
-            # The exposed route must use its separate diagnostic proof. Its
-            # original source is reread under the exact-UID DB lock before
-            # sealing, without entering the flat-only v3 carrier path.
+        if _exposure_sink is not None or _v7_diagnostic_sink is not None:
+            # Diagnostic routes reread the original source under the exact-UID
+            # DB lock before sealing, without entering the flat carrier path.
             await _recheck_original_db_chain(
                 journal_repository,
                 scope,
@@ -1041,6 +1066,7 @@ async def _capture_initial_current(
                 packet,
                 proof_schema=proof_schema,
             )
+        if _exposure_sink is not None:
             exposure_observation = exposed.observe_recorded_native_v6_exposure(
                 chain=chain,
                 reference=reference,
@@ -1110,6 +1136,95 @@ async def _capture_initial_current(
         or replay.packet != packet
     ):
         raise proof.NativeAccountProofError("native_account_source_expired")
+    if _v7_diagnostic_sink is not None:
+        if proof_schema != proof.V7_9549_DIAGNOSTIC_SCHEMA or replay.packet != packet:
+            raise proof.NativeAccountProofError("native_account_v7_diagnostic_invalid")
+        at = utc_from_ns(issue["utc_ns"])
+        gateway_audit = gateway.audit_recorded_demo_account_gateway_causality(
+            chain=chain,
+            reference=reference,
+            scope=scope,
+            validated_at=at,
+            expected_policy_sha256=gateway.V7_POLICY_SHA256,
+        )
+        row_audit = row_gateway.audit_v7_account_row_gateway_causality(
+            chain=chain,
+            reference=reference,
+            scope=scope,
+            validated_at=at,
+        )
+        current_source = json.loads(replay.current_source_receipt_json)
+        gateway_value = json.loads(gateway_audit.receipt_json)
+        row_value = json.loads(row_audit.receipt_json)
+        if (
+            current_source.get("policy_sha256") != current.V7_POLICY_SHA256
+            or gateway_value.get("gateway_causal_coverage_complete") is not True
+            or row_value.get("gateway_audit_receipt_sha256")
+            != gateway_audit.receipt_sha256
+            or len(current_source["current_pages"]) != len(packet.observations)
+            or len(gateway_value["pages"]) != len(packet.observations)
+            or len(row_value["pages"]) != len(packet.observations)
+            or any(page["status"] != "checked" for page in row_value["pages"])
+            or any(
+                page["missing_source_timestamp_count"] != 0
+                for page in row_value["pages"]
+            )
+        ):
+            raise proof.NativeAccountProofError(
+                "native_account_v7_chronology_incomplete"
+            )
+        counts = current_source["inventory_row_counts"]
+        receipt = canonical(
+            {
+                "schema_version": "ctcc.initial_native_v7_chronology_diagnostic.w32tm_9549.v1",
+                "policy_sha256": proof_policy_sha256,
+                "native_clock_profile_id": proof.public_clock.UPDATED_PROFILE_ID,
+                "scope_sha256": proof.scope_sha256(scope),
+                "original_source_reference_sha256": sha(
+                    canonical(observed.reference_document(reference))
+                ),
+                "original_current_chain_head_sha256": reference.head_sha256,
+                "native_proof_sha256": sha(raw),
+                "native_readback_sha256": readback_pin,
+                "current_source_receipt_sha256": sha(
+                    replay.current_source_receipt_json
+                ),
+                "gateway_audit_receipt_sha256": gateway_audit.receipt_sha256,
+                "row_gateway_audit_receipt_sha256": row_audit.receipt_sha256,
+                "page_evidence_sha256": sha(canonical(current_source["current_pages"])),
+                "row_evidence_sha256": sha(canonical(current_source["current_rows"])),
+                "page_count": len(current_source["current_pages"]),
+                "inventory_row_counts": counts,
+                "recorded_inventory_nonempty": any(counts.values()),
+                "known_source_timestamp_count": sum(
+                    page["known_source_timestamp_count"] for page in row_value["pages"]
+                ),
+                "unclocked_row_count": sum(
+                    not row["source_times"] for row in current_source["current_rows"]
+                ),
+                "gateway_causal_coverage_complete": True,
+                "known_source_row_times_ordered": True,
+                "source_clock_coverage_complete": False,
+                "current_flat_qualified": False,
+                "native_companion_readback_verified": True,
+                "source_authenticity_verified": False,
+                "history_complete": None,
+                "local_exposure_complete": None,
+                "active_protection_complete": None,
+                "account_atomic_revision_verified": False,
+                "observed_at": at.isoformat(),
+                "expires_at": expires.isoformat(),
+                "snapshot": None,
+                "account_complete": False,
+                "flat_start_permission": False,
+                "execution_authority": False,
+                "admission": "DENY",
+            }
+        )
+        _secret_checked(receipt, owner.tokens)
+        diagnostic = InitialNativeAccountDiagnostic(receipt)
+        _v7_diagnostic_sink.append(diagnostic)
+        return diagnostic
     if _exposure_sink is not None:
         if (
             proof_schema not in {proof.EXPOSED_V4_SCHEMA, proof.EXPOSED_9549_SCHEMA}
@@ -1546,6 +1661,106 @@ async def capture_native_exposed_account_observation(
                     "code": "native_account_exposure_observation_denied",
                     "current_exposure_rows_observed": None,
                     "native_companion_proof_verified": False,
+                    "source_authenticity_verified": False,
+                    "snapshot": None,
+                    "account_complete": False,
+                    "flat_start_permission": False,
+                    "execution_authority": False,
+                    "admission": "DENY",
+                }
+            )
+        )
+    finally:
+        session._used = True
+
+
+async def capture_native_v7_9549_chronology_diagnostic(
+    session, *, session_factory, proof_root
+) -> InitialNativeAccountDiagnostic:
+    """Read-only V7 page-chain/clock diagnostic; never issue a flat carrier."""
+    if (
+        type(session) is not ControlledDemoAccountSession
+        or session._used
+        or not _configured_factory(session_factory)
+        or type(proof_root) not in (PosixPath, WindowsPath)
+        or not proof_root.is_absolute()
+    ):
+        raise proof.NativeAccountProofError(
+            "native_account_v7_diagnostic_inputs_invalid"
+        )
+    selected = capture._checked_plan(session._plan, session._pin)
+    proof.contract_for_v7_9549_diagnostic_plan(selected)
+    if (
+        selected.registration_region != "global"
+        or selected.settlement_currency != "USDT"
+    ):
+        raise proof.NativeAccountProofError(
+            "native_account_v7_diagnostic_scope_unsupported"
+        )
+    scope = LedgerScope(
+        account_id=selected.expected_uid,
+        settlement_currency=selected.settlement_currency,
+    )
+    observations = []
+    try:
+        with (
+            native._claim_initial_session(session),
+            native._initial_stage(
+                plan_sha256=session._pin,
+                scope_sha256=proof.scope_sha256(scope),
+                _claimed_session=session,
+            ) as stage,
+        ):
+            result = await _capture_initial_current(
+                stage,
+                session,
+                session_factory,
+                proof_root,
+                _v7_diagnostic_sink=observations,
+            )
+            if (
+                type(result) is not InitialNativeAccountDiagnostic
+                or len(observations) != 1
+                or observations[0] is not result
+            ):
+                raise proof.NativeAccountProofError(
+                    "native_account_v7_diagnostic_invalid"
+                )
+            value = proof._canonical_document(result.receipt_json)
+            if (
+                value.get("schema_version")
+                != "ctcc.initial_native_v7_chronology_diagnostic.w32tm_9549.v1"
+                or value.get("policy_sha256") != proof.V7_9549_DIAGNOSTIC_POLICY_SHA256
+                or result._origin_lease is not None
+                or result._raw_packet_lease is not None
+                or value.get("snapshot") is not None
+                or value.get("account_complete") is not False
+                or value.get("flat_start_permission") is not False
+                or value.get("execution_authority") is not False
+                or value.get("admission") != "DENY"
+            ):
+                raise proof.NativeAccountProofError(
+                    "native_account_v7_diagnostic_invalid"
+                )
+            return result
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001 -- do not disclose native or account details
+        task = asyncio.current_task()
+        if task is not None and task.cancelling():
+            raise asyncio.CancelledError from None
+        return InitialNativeAccountDiagnostic(
+            canonical(
+                {
+                    "schema_version": (
+                        "ctcc.initial_native_v7_chronology_diagnostic.w32tm_9549.v1"
+                    ),
+                    "policy_sha256": proof.V7_9549_DIAGNOSTIC_POLICY_SHA256,
+                    "code": "native_account_v7_diagnostic_denied",
+                    "native_companion_readback_verified": False,
+                    "gateway_causal_coverage_complete": False,
+                    "known_source_row_times_ordered": False,
+                    "current_flat_qualified": False,
                     "source_authenticity_verified": False,
                     "snapshot": None,
                     "account_complete": False,

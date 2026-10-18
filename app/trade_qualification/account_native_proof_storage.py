@@ -31,6 +31,9 @@ EXPOSED_9549_READBACK_SCHEMA = (
     "ctcc.demo_account_exposed_native_clock_readback.w32tm_9549.v1"
 )
 V7_FLAT_READBACK_SCHEMA = "ctcc.demo_account_native_clock_readback.v5"
+V7_9549_DIAGNOSTIC_READBACK_SCHEMA = (
+    "ctcc.demo_account_v7_native_chronology_readback.w32tm_9549.v1"
+)
 ALGO_V6_READBACK_SCHEMA = "ctcc.demo_account_algo_history_native_clock_readback.v1"
 MAX_PART = 512 * 1024
 
@@ -49,6 +52,8 @@ def _readback_schema(document):
         return EXPOSED_9549_READBACK_SCHEMA
     if schema == proof.V7_FLAT_SCHEMA:
         return V7_FLAT_READBACK_SCHEMA
+    if schema == proof.V7_9549_DIAGNOSTIC_SCHEMA:
+        return V7_9549_DIAGNOSTIC_READBACK_SCHEMA
     if schema == proof.ALGO_V6_SCHEMA:
         return ALGO_V6_READBACK_SCHEMA
     raise proof.NativeAccountProofError("native_account_proof_contract_invalid")

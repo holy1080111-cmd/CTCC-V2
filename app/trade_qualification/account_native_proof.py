@@ -17,9 +17,11 @@ from app.domain.source_primitives import (
 from app.trade_qualification import account_capture as capture
 from app.trade_qualification import account_capture_journal as journal
 from app.trade_qualification import account_current_source_verifier as current
+from app.trade_qualification import account_gateway_causality as gateway
 from app.trade_qualification import account_history_query_verifier as history
 from app.trade_qualification import account_native_clock as native
 from app.trade_qualification import account_observation_index as observed
+from app.trade_qualification import account_row_gateway_causality as row_gateway
 from app.trade_qualification.account_time_probe import (
     AccountTimeProbePlanV1,
     AccountTimeProbeReceiptV1,
@@ -32,6 +34,7 @@ V3_SCHEMA = "ctcc.demo_account_native_clock_proof.v3"
 EXPOSED_V4_SCHEMA = "ctcc.demo_account_exposed_native_clock_proof.v4"
 EXPOSED_9549_SCHEMA = "ctcc.demo_account_exposed_native_clock_proof.w32tm_9549.v1"
 V7_FLAT_SCHEMA = "ctcc.demo_account_native_clock_proof.v5"
+V7_9549_DIAGNOSTIC_SCHEMA = "ctcc.demo_account_v7_native_chronology.w32tm_9549.v1"
 ALGO_V6_SCHEMA = "ctcc.demo_account_algo_history_native_clock_proof.v1"
 MAX_PROOF = 2 * 1024 * 1024
 FILES = (
@@ -160,6 +163,30 @@ V7_FLAT_POLICY_BYTES = canonical(
     }
 )
 V7_FLAT_POLICY_SHA256 = sha(V7_FLAT_POLICY_BYTES)
+V7_9549_DIAGNOSTIC_POLICY_BYTES = canonical(
+    {
+        "schema_version": "ctcc.demo_account_v7_native_chronology_policy.w32tm_9549.v1",
+        "prior_v7_flat_policy_sha256": V7_FLAT_POLICY_SHA256,
+        "stage": "initial_account_only",
+        "clock_profile": public_clock.UPDATED_PROFILE_ID,
+        "clock_resources": list(public_clock.RESOURCE_IDS),
+        "current_capture_plan": "ctcc.demo_current_account_plan.v7",
+        "current_streams": list(capture.V7_CURRENT_STREAMS),
+        "current_algo_types": list(capture.CURRENT_ALGO_ORDER_TYPES_V7),
+        "account_current_policy_sha256": current.V7_POLICY_SHA256,
+        "gateway_policy_sha256": gateway.V7_POLICY_SHA256,
+        "row_gateway_policy_sha256": row_gateway.POLICY_SHA256,
+        "required": "complete_original_eight_algo_page_chain_and_causal_gateway_rows",
+        "missing_recognized_row_time": "reject",
+        "unclocked_rows": "unknown",
+        "v7_flat_current_use": "revoked",
+        "source_authenticity_verified": False,
+        "account_complete": False,
+        "flat_start_permission": False,
+        "execution_authority": False,
+    }
+)
+V7_9549_DIAGNOSTIC_POLICY_SHA256 = sha(V7_9549_DIAGNOSTIC_POLICY_BYTES)
 ALGO_V6_POLICY_BYTES = canonical(
     {
         "schema_version": "ctcc.demo_account_algo_history_native_clock_policy.v1",
@@ -236,6 +263,36 @@ def contract_for_exposed_v6_owned_before(plan, host_before_raw):
     if profile == public_clock.UPDATED_PROFILE_ID:
         return EXPOSED_9549_SCHEMA, EXPOSED_9549_POLICY_SHA256
     raise NativeAccountProofError("native_account_clock_profile_invalid")
+
+
+def contract_for_v7_9549_diagnostic_plan(plan):
+    """Preflight only; the owned host-before sample must pin the real profile."""
+    if type(plan) is not capture.CurrentDemoAccountCapturePlanV7:
+        raise NativeAccountProofError("native_account_v7_diagnostic_scope_unsupported")
+    return V7_9549_DIAGNOSTIC_SCHEMA, V7_9549_DIAGNOSTIC_POLICY_SHA256
+
+
+def contract_for_v7_9549_diagnostic_owned_before(plan, host_before_raw):
+    """Decode the runtime's owned sample; the active native stage owns its IO."""
+    contract = contract_for_v7_9549_diagnostic_plan(plan)
+    if type(host_before_raw) is not bytes:
+        raise NativeAccountProofError("native_account_clock_profile_invalid")
+    try:
+        replay = public_clock.replay_clock_observation(host_before_raw)
+        if replay["outcome"] != "accepted":
+            raise NativeAccountProofError("native_account_host_clock_rejected")
+        observation = replay["observation"]
+        if (
+            observation["schema_version"] != "ctcc.windows_clock_observation.v2"
+            or observation["diagnostic"]["profile_id"]
+            != public_clock.UPDATED_PROFILE_ID
+        ):
+            raise NativeAccountProofError("native_account_clock_profile_invalid")
+    except NativeAccountProofError:
+        raise
+    except Exception:  # noqa: BLE001 -- no host details escape
+        raise NativeAccountProofError("native_account_clock_profile_invalid") from None
+    return contract
 
 
 class NativeAccountProofError(ValueError):
@@ -374,8 +431,9 @@ def _source(chain, scope, *, proof_schema=SCHEMA):
         EXPOSED_V4_SCHEMA,
         EXPOSED_9549_SCHEMA,
         V7_FLAT_SCHEMA,
+        V7_9549_DIAGNOSTIC_SCHEMA,
     }:
-        v7 = proof_schema == V7_FLAT_SCHEMA
+        v7 = proof_schema in {V7_FLAT_SCHEMA, V7_9549_DIAGNOSTIC_SCHEMA}
         current.verify_current_account_sources(
             chain,
             reference=reference,
@@ -718,6 +776,7 @@ def _replay(raw, files, chain, scope, expected):
             EXPOSED_V4_SCHEMA,
             EXPOSED_9549_SCHEMA,
             V7_FLAT_SCHEMA,
+            V7_9549_DIAGNOSTIC_SCHEMA,
             ALGO_V6_SCHEMA,
         }
         or value["policy_sha256"]
@@ -727,6 +786,7 @@ def _replay(raw, files, chain, scope, expected):
             EXPOSED_V4_SCHEMA: EXPOSED_V4_POLICY_SHA256,
             EXPOSED_9549_SCHEMA: EXPOSED_9549_POLICY_SHA256,
             V7_FLAT_SCHEMA: V7_FLAT_POLICY_SHA256,
+            V7_9549_DIAGNOSTIC_SCHEMA: V7_9549_DIAGNOSTIC_POLICY_SHA256,
             ALGO_V6_SCHEMA: ALGO_V6_POLICY_SHA256,
         }[value["schema_version"]]
     ):
@@ -779,7 +839,7 @@ def _replay(raw, files, chain, scope, expected):
         scope_sha=value["scope_sha256"],
         expected_profile=(
             public_clock.UPDATED_PROFILE_ID
-            if proof_schema == EXPOSED_9549_SCHEMA
+            if proof_schema in {EXPOSED_9549_SCHEMA, V7_9549_DIAGNOSTIC_SCHEMA}
             else public_clock.PROFILE_ID
         ),
     )
@@ -909,7 +969,7 @@ def _replay(raw, files, chain, scope, expected):
         and w["stream"]
         in (
             current.V7_CURRENT_STREAMS
-            if proof_schema == V7_FLAT_SCHEMA
+            if proof_schema in {V7_FLAT_SCHEMA, V7_9549_DIAGNOSTIC_SCHEMA}
             else current.CURRENT_STREAMS
         )
     )
@@ -959,7 +1019,7 @@ def _replay(raw, files, chain, scope, expected):
             else {
                 "expected_policy_sha256": (
                     current.V7_POLICY_SHA256
-                    if proof_schema == V7_FLAT_SCHEMA
+                    if proof_schema in {V7_FLAT_SCHEMA, V7_9549_DIAGNOSTIC_SCHEMA}
                     else current.V6_POLICY_SHA256
                 )
             }
@@ -977,6 +1037,63 @@ def _replay(raw, files, chain, scope, expected):
             or any(type(count) is not int or count != 0 for count in counts.values())
         ):
             raise NativeAccountProofError("native_account_v7_inventory_incomplete")
+    if proof_schema == V7_9549_DIAGNOSTIC_SCHEMA:
+        counts = current_data["inventory_row_counts"]
+        if (
+            current_data["schema_version"]
+            != "ctcc.current_account_source_observation.v6"
+            or current_data["policy_sha256"] != current.V7_POLICY_SHA256
+            or type(counts) is not dict
+            or set(counts) != set(current.V7_INVENTORY_STREAMS)
+            or any(type(count) is not int or count < 0 for count in counts.values())
+            or current_data["blocking_reasons"]
+            != (
+                ["current_exposure_requires_protection_and_local_join"]
+                if any(counts.values())
+                else []
+            )
+            or current_data["observed_flat"] is not (not any(counts.values()))
+        ):
+            raise NativeAccountProofError("native_account_v7_inventory_incomplete")
+        gateway_audit = gateway.audit_recorded_demo_account_gateway_causality(
+            chain=chain,
+            reference=reference,
+            scope=scope,
+            validated_at=utc_from_ns(value["proof_persist_start"]["utc_ns"]),
+            expected_policy_sha256=gateway.V7_POLICY_SHA256,
+        )
+        row_audit = row_gateway.audit_v7_account_row_gateway_causality(
+            chain=chain,
+            reference=reference,
+            scope=scope,
+            validated_at=utc_from_ns(value["proof_persist_start"]["utc_ns"]),
+        )
+        gateway_value = decode(gateway_audit.receipt_json)
+        row_value = decode(row_audit.receipt_json)
+        if (
+            gateway_value["gateway_causal_coverage_complete"] is not True
+            or row_value["gateway_audit_receipt_sha256"] != gateway_audit.receipt_sha256
+            or len(gateway_value["pages"]) != len(packet.observations)
+            or len(row_value["pages"]) != len(packet.observations)
+            or any(
+                not page["gateway_causal_window_verified"]
+                for page in gateway_value["pages"]
+            )
+            or any(
+                page["status"] != "checked"
+                or page["missing_source_timestamp_count"] != 0
+                for page in row_value["pages"]
+            )
+            or any(
+                page.receipt_sha256
+                != gateway_value["pages"][index]["page_receipt_sha256"]
+                or page.body_sha256 != gateway_value["pages"][index]["raw_body_sha256"]
+                or page.receipt_sha256
+                != row_value["pages"][index]["page_receipt_sha256"]
+                for index, page in enumerate(packet.observations)
+            )
+        ):
+            raise NativeAccountProofError("native_account_v7_chronology_incomplete")
     if proof_schema in {EXPOSED_V4_SCHEMA, EXPOSED_9549_SCHEMA}:
         counts = current_data["inventory_row_counts"]
         expected_blockers = (
@@ -996,7 +1113,9 @@ def _replay(raw, files, chain, scope, expected):
             or current_data["blocking_reasons"] != expected_blockers
         ):
             raise NativeAccountProofError("native_account_exposure_source_missing")
-    elif current_data["blocking_reasons"] or current_data["observed_flat"] is not True:
+    elif proof_schema != V7_9549_DIAGNOSTIC_SCHEMA and (
+        current_data["blocking_reasons"] or current_data["observed_flat"] is not True
+    ):
         raise NativeAccountProofError(
             "native_account_current_sources_incomplete_or_exposed"
         )
