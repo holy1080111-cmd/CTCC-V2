@@ -2,6 +2,7 @@ from app.database.models.account_bill_archive_claim import DemoAccountBillArchiv
 from app.database.models.account_current_observation import (
     DemoAccountCurrentObservation,
 )
+from app.database.models.account_measured_hwm_v2 import DemoAccountMeasuredHWMV2
 from app.database.models.account_observation_index import (
     DemoAccountObservationBatch,
     DemoAccountObservationCoverage,
@@ -122,6 +123,7 @@ __all__ = [
     "DemoAccountCaptureEvent",
     "DemoAccountControl",
     "DemoAccountCurrentObservation",
+    "DemoAccountMeasuredHWMV2",
     "DemoAccountObservationBatch",
     "DemoAccountObservationCoverage",
     "DemoAccountObservationFact",

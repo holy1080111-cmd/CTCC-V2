@@ -160,13 +160,36 @@ the membership digests intentionally differ. Every V2 output says
 `durable_membership_verified=false`, `native_clock_verified=false`,
 `account_complete=false`, `execution_authority=false`, and `admission=DENY`.
 
-This pure calculation is not yet connected to B5 runtime. No durable projection
-row, SQL uniqueness/immutability, source-binding issuer, cross-process readback,
-crash/concurrency/rollback test, partition rebuild, or native historical clock
-proof exists for V2. The current runtime therefore still performs its full V1
-historical replay and may deny at 30 seconds. Persisting and consuming this V2
-chain safely requires a reviewed migration and those acceptance checks; a
-caller-supplied hash or arbitrary suffix cannot substitute for them.
+This pure calculation is not yet connected to B5 runtime. Its new DB0044
+diagnostic storage has not passed PostgreSQL or cross-process acceptance; no
+source-binding issuer, partition rebuild or native historical clock proof exists.
+The current runtime therefore still performs its full V1 historical replay and
+may deny at 30 seconds. A caller-supplied hash or arbitrary suffix cannot
+substitute for the missing source and persistence evidence.
+
+### DB0044 diagnostic persistence under review
+
+DB0044 adds a separate append-only projection keyed by the exact DB0021 scope
+and sequence. The repository reconstructs the current, original sequence-one
+genesis and selected peak measurements from their DB0020 B1 chains under the
+account UID transaction lock. It commits only one contiguous tail at a time and
+performs a separate-session source readback. A missing predecessor or any
+source mismatch denies; it never chooses a later starting balance. Its stored
+V2 receipt and returned wrapper retain `durable_membership_verified=false`,
+`native_clock_verified=false`, `account_complete=false`,
+`execution_authority=false` and `admission=DENY`.
+
+This migration and repository are **not wired into the live B5 runtime**. The
+current runtime still replays V1 history. Existing B3 populations require a
+separate, source-verified offline backfill from sequence one before a current
+tail can use DB0044; no implicit bootstrap or account-lifetime reset is allowed.
+The schema and repository have offline tests only until dedicated PostgreSQL
+upgrade, nonempty downgrade refusal, concurrency, crash/readback and schema
+drift tests pass. A database receipt proves neither OKX source authenticity nor
+native clock ownership. Older uncollected balance samples and unobserved equity
+peaks remain unknown. Limited OKX history endpoints and later archive exports
+cannot recreate balance responses never captured, nor establish account-wide
+genesis or the complete realized-loss window.
 
 ## Validation status
 
