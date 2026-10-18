@@ -6303,3 +6303,13 @@ uncommitted source slice; exact committed-source Windows, Linux, PostgreSQL,
 Docker and GitHub CI acceptance still require their own matching receipts.
 The repair does not prove complete account history, a trusted issuer,
 portfolio risk, execution authority, Demo acceptance or Live readiness.
+
+After the first DB0045 commit, a wider migration-test selection exposed a
+fixture classification error: the shared table-drop schedule included DB0045
+even though it only replaces a function and drops no table. The two DB0045
+cases in that table-drop suite failed locally while calling the fixture's
+non-database recorder. DB0045 remains in the migration inventory; it is
+excluded only from the table-drop suite and continues to have its own
+PostgreSQL empty/nonempty downgrade, lock and catalog tests. The corrected
+table-drop unit suite passed 18/18 locally. This correction requires a new
+exact-source CI run; the preceding c955 run cannot be used as final evidence.
