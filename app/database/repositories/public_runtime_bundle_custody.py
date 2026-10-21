@@ -224,7 +224,8 @@ _CONSTRAINT_DEFINITION_SHA256 = {
 }
 _ROLE_SQL = text("""
 SELECT session_user=current_user AS direct_login,
-  r.oid AS login_oid,c.relowner AS owner_oid,c.relkind,c.relpersistence,
+  r.oid AS login_oid,c.relowner AS owner_oid,
+  c.relkind::text AS relkind,c.relpersistence::text AS relpersistence,
   c.relrowsecurity,c.relforcerowsecurity,
   r.rolsuper OR r.rolcreatedb OR r.rolcreaterole OR r.rolreplication
     OR r.rolbypassrls AS privileged,
@@ -260,8 +261,9 @@ WHERE r.rolname=current_user AND d.datname=current_database()
 _FUNCTION_SQL = text("""
 SELECT p.proname,p.prosrc,p.prosecdef,l.lanname,t.typname AS return_type,
   p.proretset,pg_catalog.oidvectortypes(p.proargtypes) AS argtypes,
-  p.provolatile,p.proconfig,p.proowner,p.proisstrict,p.proparallel,p.proleakproof,
-  p.prokind,p.prosupport::bigint AS prosupport,
+  p.provolatile::text AS provolatile,p.proconfig,p.proowner,p.proisstrict,
+  p.proparallel::text AS proparallel,p.proleakproof,
+  p.prokind::text AS prokind,p.prosupport::bigint AS prosupport,
   pg_catalog.has_function_privilege(current_user,p.oid,'EXECUTE') AS can_execute,
   EXISTS(SELECT 1 FROM pg_catalog.aclexplode(COALESCE(p.proacl,
     pg_catalog.acldefault('f',p.proowner))) a
@@ -274,7 +276,7 @@ WHERE n.nspname='public' AND p.proname IN ('public_runtime_bundle_v1_guard',
   'public_runtime_bundle_v1_read')
 """)
 _TRIGGER_SQL = text("""
-SELECT g.tgname,g.tgtype,g.tgenabled,g.tgisinternal,g.tgconstraint,
+SELECT g.tgname,g.tgtype,g.tgenabled::text AS tgenabled,g.tgisinternal,g.tgconstraint,
   g.tgnargs,g.tgargs,g.tgqual::text AS qualification,g.tgoldtable,g.tgnewtable,
   p.proname,n.nspname
 FROM pg_catalog.pg_trigger g JOIN pg_catalog.pg_proc p ON p.oid=g.tgfoid
@@ -283,13 +285,13 @@ WHERE g.tgrelid=pg_catalog.to_regclass('public.public_runtime_raw_bundles_v1')
 """)
 _COLUMN_SQL = text("""
 SELECT a.attname,pg_catalog.format_type(a.atttypid,a.atttypmod) AS type_name,
-  a.attnotnull,a.attidentity,a.attgenerated
+  a.attnotnull,a.attidentity::text AS attidentity,a.attgenerated::text AS attgenerated
 FROM pg_catalog.pg_attribute a
 WHERE a.attrelid=pg_catalog.to_regclass('public.public_runtime_raw_bundles_v1')
   AND a.attnum>0 AND NOT a.attisdropped ORDER BY a.attnum
 """)
 _CONSTRAINT_SQL = text("""
-SELECT conname,contype,convalidated,condeferrable,condeferred,
+SELECT conname,contype::text AS contype,convalidated,condeferrable,condeferred,
   pg_catalog.pg_get_constraintdef(oid,true) AS definition,
   CASE WHEN contype IN ('p','u') THEN conkey ELSE NULL END AS key_columns,
   CASE WHEN contype IN ('p','u') THEN
@@ -321,6 +323,24 @@ _DIAGNOSTIC_CATEGORIES = frozenset(
         "poisoned",
     }
 )
+_ROLE_DIAGNOSTIC_CONDITIONS = (
+    "role_row_present",
+    "direct_login",
+    "nonprivileged",
+    "no_other_role",
+    "owner_separation",
+    "no_table_access",
+    "no_create",
+    "ordinary_table",
+    "persistent_table",
+    "no_rls",
+    "no_force_rls",
+    "fsync",
+    "full_page_writes",
+    "synchronous_commit",
+    "replication_origin",
+    "not_recovery",
+)
 
 
 class RuntimeBundleCustodyError(ValueError):
@@ -330,10 +350,30 @@ class RuntimeBundleCustodyError(ValueError):
     callers cannot use it as a deployment, custody or execution capability.
     """
 
-    __slots__ = ("__diagnostic_category",)
+    __slots__ = ("__diagnostic_category", "__diagnostic_conditions")
 
-    def __init__(self, code, *, diagnostic_category="unclassified"):
+    def __init__(
+        self, code, *, diagnostic_category="unclassified", diagnostic_conditions=()
+    ):
+        if (
+            type(diagnostic_conditions) is not tuple
+            or len(diagnostic_conditions) > len(_ROLE_DIAGNOSTIC_CONDITIONS)
+            or any(
+                type(name) is not str or name not in _ROLE_DIAGNOSTIC_CONDITIONS
+                for name in diagnostic_conditions
+            )
+            or len(set(diagnostic_conditions)) != len(diagnostic_conditions)
+            or (
+                diagnostic_conditions
+                and (
+                    type(diagnostic_category) is not str
+                    or diagnostic_category != "role_scope"
+                )
+            )
+        ):
+            raise ValueError("runtime_bundle_diagnostic_conditions_invalid") from None
         super().__init__(code)
+        self.__diagnostic_conditions = diagnostic_conditions
         self.__diagnostic_category = (
             diagnostic_category
             if type(diagnostic_category) is str
@@ -345,6 +385,35 @@ class RuntimeBundleCustodyError(ValueError):
     def diagnostic_category(self):
         """Read-only failure grouping; never an acceptance result."""
         return self.__diagnostic_category
+
+    @property
+    def diagnostic_conditions(self):
+        """Fixed failed-check names only; never row values or acceptance data."""
+        return self.__diagnostic_conditions
+
+
+def _failed_role_conditions(role):
+    """Describe the same failed row after the original guard has denied it."""
+    if role is None:
+        return ("role_row_present",)
+    checks = (
+        ("direct_login", role.direct_login),
+        ("nonprivileged", not role.privileged),
+        ("no_other_role", not role.other_role),
+        ("owner_separation", role.login_oid != role.owner_oid),
+        ("no_table_access", not role.table_access),
+        ("no_create", not role.can_create),
+        ("ordinary_table", role.relkind == "r"),
+        ("persistent_table", role.relpersistence == "p"),
+        ("no_rls", not role.relrowsecurity),
+        ("no_force_rls", not role.relforcerowsecurity),
+        ("fsync", role.fsync == "on"),
+        ("full_page_writes", role.full_page_writes == "on"),
+        ("synchronous_commit", role.synchronous_commit == "on"),
+        ("replication_origin", role.replication_role == "origin"),
+        ("not_recovery", not role.recovery),
+    )
+    return tuple(name for name, passed in checks if not passed)
 
 
 async def _catalog_query(session, statement, *, category):
@@ -532,7 +601,9 @@ class RuntimeBundleCustodyRepository:
             and not role.recovery
         ):
             raise RuntimeBundleCustodyError(
-                "runtime_bundle_custody_unavailable", diagnostic_category="role_scope"
+                "runtime_bundle_custody_unavailable",
+                diagnostic_category="role_scope",
+                diagnostic_conditions=_failed_role_conditions(role),
             )
         functions = tuple(
             (

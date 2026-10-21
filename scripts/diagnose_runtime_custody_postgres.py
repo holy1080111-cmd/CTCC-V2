@@ -52,6 +52,26 @@ _CATEGORIES = frozenset(
         "poisoned",
     }
 )
+_ROLE_CONDITIONS = frozenset(
+    {
+        "role_row_present",
+        "direct_login",
+        "nonprivileged",
+        "no_other_role",
+        "owner_separation",
+        "no_table_access",
+        "no_create",
+        "ordinary_table",
+        "persistent_table",
+        "no_rls",
+        "no_force_rls",
+        "fsync",
+        "full_page_writes",
+        "synchronous_commit",
+        "replication_origin",
+        "not_recovery",
+    }
+)
 
 
 def _write(path, record):
@@ -88,6 +108,7 @@ def redacted_report(raw):
             raise ValueError("diagnostic_report_outcome_invalid")
         status = outcomes[0] if outcomes else "passed"
         category = None
+        failed_conditions = ()
         counts["tests"] += 1
         result = ET.SubElement(suite, "testcase", classname=key[0], name=key[1])
         if outcomes:
@@ -98,14 +119,34 @@ def redacted_report(raw):
             # Match only an exact fixed failure line, never save raw message text.
             text = (original.text or "").strip()
             match = re.fullmatch(
-                r"(?:Failed: )?runtime_custody_diagnostic:([a-z_]+)", text
+                r"(?:Failed: )?runtime_custody_diagnostic:([a-z_]+)(?:;checks=([a-z_,]+))?",
+                text,
             )
-            category = match[1] if match and match[1] in _CATEGORIES else "unclassified"
+            category = "unclassified"
+            if match and match[1] in _CATEGORIES:
+                checks = tuple(match[2].split(",")) if match[2] else ()
+                if not checks or (
+                    match[1] == "role_scope"
+                    and len(checks) <= len(_ROLE_CONDITIONS)
+                    and len(set(checks)) == len(checks)
+                    and all(name in _ROLE_CONDITIONS for name in checks)
+                ):
+                    category = match[1]
+                    failed_conditions = checks
+            suffix = (
+                ";checks=" + ",".join(failed_conditions) if failed_conditions else ""
+            )
             ET.SubElement(
-                result, status, message=f"runtime_custody_diagnostic:{category}"
+                result, status, message=f"runtime_custody_diagnostic:{category}{suffix}"
             )
         records.append(
-            {"module": key[0], "case": key[1], "status": status, "category": category}
+            {
+                "module": key[0],
+                "case": key[1],
+                "status": status,
+                "category": category,
+                "failed_conditions": list(failed_conditions),
+            }
         )
     for key, value in counts.items():
         suite.set(key, str(value))

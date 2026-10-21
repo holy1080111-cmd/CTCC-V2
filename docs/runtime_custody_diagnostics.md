@@ -19,6 +19,26 @@ single-line redactor. The wrapper now saves the fixed category, leaves the
 handler and then reports the failure. The redactor remains strict; the actual
 PostgreSQL method phase and category require a new native diagnostic run.
 
+The `1baf117` run then exported `role_scope` for the three failed cases. This
+locates the original catalog role guard but does not establish which caller
+phase reached it. The diagnostic now records every failed condition from that
+same role row as a read-only, bounded tuple of fixed names. No catalog values,
+role OIDs, names, addresses or connection details are exported or re-queried.
+The optional single-line `;checks=name,name` grammar accepts only those fixed
+names, without duplicates; old category-only lines remain supported. Malformed
+metadata becomes `unclassified`, preserving the failed outcome. These names
+grant no deployment, custody or execution authority.
+
+The nine internal PostgreSQL `"char"` catalog projections now use explicit
+`::text AS` aliases while retaining the original guard comparisons. The pinned
+asyncpg codec maps raw CHAROID values through its bytes decoder, making this a
+strong type-mismatch candidate rather than an established native root cause.
+The existing positive native preflight case now checks raw `relkind` and
+`relpersistence` as bytes, their text casts as strings, and all nine repository
+projections as strings on the actual restricted connection. It exports no row
+values or identities. Until that exact-source native run executes, this remains
+an implementation with offline checks, not PostgreSQL acceptance evidence.
+
 The separate `diagnose_runtime_custody_postgres` runner builds the exact Git
 archive with the existing dependency lock, verifies every copied source byte,
 and runs only the four existing native preflight cases on a disposable pinned
