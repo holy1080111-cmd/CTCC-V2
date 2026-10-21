@@ -159,9 +159,10 @@ def _safe_custody_diagnostic(case):
         try:
             return await case(*args, **kwargs)
         except RuntimeBundleCustodyError as error:
-            pytest.fail(
-                f"runtime_custody_diagnostic:{error.diagnostic_category}", pytrace=False
-            )
+            category = error.diagnostic_category
+        # Outside the handler, pytest's JUnit text cannot inherit the original
+        # exception chain. Keep the exported category a single fixed line.
+        pytest.fail(f"runtime_custody_diagnostic:{category}", pytrace=False)
 
     return run
 

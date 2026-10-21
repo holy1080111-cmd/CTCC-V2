@@ -127,6 +127,27 @@ def _junit(*, failure=None, error=None):
     return ET.tostring(root)
 
 
+def test_safe_pg_failure_has_no_exception_context_and_matches_strict_redactor():
+    async def rejected():
+        raise custody.RuntimeBundleCustodyError(
+            "runtime_bundle_custody_unavailable", diagnostic_category="role_query"
+        ) from RuntimeError("private-driver-detail")
+
+    with pytest.raises(pytest.fail.Exception) as caught:
+        asyncio.run(pg_cases._safe_custody_diagnostic(rejected)())
+    failure = caught.value
+    assert failure.__context__ is None
+    assert failure.__cause__ is None
+    assert not failure.pytrace
+    assert str(failure) == "runtime_custody_diagnostic:role_query"
+    summary, clean = diagnostic.redacted_report(_junit(failure=str(failure)))
+    assert summary["cases"][0]["category"] == "role_query"
+    assert summary["cases"][0]["status"] == "failure"
+    assert not summary["all_four_passed"]
+    assert b"private-driver-detail" not in clean
+    assert b"runtime_bundle_custody_unavailable" not in clean
+
+
 def test_diagnostic_export_preserves_failure_and_drops_all_native_payloads():
     raw = _junit(
         failure="Failed: runtime_custody_diagnostic:role_query",
