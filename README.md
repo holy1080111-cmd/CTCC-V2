@@ -36,6 +36,11 @@ issues an initial, one-use source handle, with complete portfolio risk and
 post-G12 eligibility still unavailable. Synthetic boundary tests do not replace
 successful native account acquisition or PostgreSQL deployment acceptance.
 
+The separate [Linux kernel-clock observation](docs/linux_native_clock_v1.md)
+pins reviewed native runtime bytes and retains read-only kernel evidence. It
+does not establish upstream NTP freshness or change the current R5/Gate 3
+source policies. Its single-observation CLI requires its own native readback.
+
 The following sequence describes the preserved v1.6.9 Live control design; its
 submission step is blocked in this final-completion branch pending the new
 pipeline and actual acceptance. Paper, Demo and Live remain separate systems.

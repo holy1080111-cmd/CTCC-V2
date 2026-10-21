@@ -1,5 +1,42 @@
 # Final completion validation state
 
+## 2026-10-22 Linux kernel-clock observation boundary
+
+[Linux clock observation V1](linux_native_clock_v1.md) adds a separate native
+LP64/glibc reader, exact measured runtime profiles, original raw timex bytes,
+strict replay and an original-process/thread single-use token. Windows clock
+contracts, current source dispatch and R5/Gate 3 policies are unchanged. The
+module retains unknown upstream identity/last-sync and false UTC/source/order
+authority. The existing five-millisecond consistency/uncertainty bound and
+five-second lease are not increased.
+
+The independent [profile probe 39657125200](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/39657125200)
+measured exact source `21bcabcdc412d0528d52a120b3cf50dd57050560`. Its downloaded
+artifact SHA256 is `72c0f6d19f18a29361c719dbda8877a4d6dc48e1cf8f0b4b6749ae4a4dea6a83`.
+Host headers were glibc 2.39; the same host-compiled ELF also executed against
+the pinned container's glibc 2.41. The official 2.39/2.41 LP64 declaration bytes
+were separately retained and matched exactly. This is an ABI-compatibility
+check, not a claim that container development headers were compiled. Profile
+provenance retains these distinctions and the native binary/symbol pins.
+
+Review repaired an unjustified mandatory-PLL assumption, an arbitrary six-file
+minimum that excluded the measured five-file host, and omitted final-consume
+bracket/boottime checks. `STA_PLL` now records its actual control-mode bit;
+`TIME_OK`, error/unsupported-state rejection and all time bounds remain
+necessary. The exact role set includes executable, libc, loader, ctypes and
+libffi, plus shared libpython when present. All 73 focused module cases and
+18 CLI cases passed with synthetic seams. They are not native acceptance.
+The bounded CLI retains original successful payload or available failed raw
+status for independent replay and never retries. Actual native CLI acquisition
+on its own exact committed source remains to be read back.
+
+The preceding `741a3c3` CI run's early DB0046 check observed three failed cases
+and one passed negative case. Migration/readback/drift completed before that
+failure; native restricted-role deployment acceptance is not established.
+The generic error requires a separate diagnostic with fixed, nonsecret
+categories. No failed condition or release check is disabled by this clock
+work. Demo, OOS, Micro Live and release acceptance remain incomplete.
+
 ## 2026-10-22 initial current-account source and CI repair
 
 The preceding exact source is `2366ec3a9110cc02da123564def5355d55b731c8`,

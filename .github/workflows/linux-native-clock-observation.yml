@@ -1,0 +1,96 @@
+name: Linux native clock observation
+
+on:
+  push:
+    branches:
+      - validation/linux-native-clock-observation-20261022
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  observe:
+    if: github.ref == 'refs/heads/validation/linux-native-clock-observation-20261022'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact observation source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Build the archived source and observe once on each runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -C
+          evidence="$RUNNER_TEMP/ctcc-native-clock-observation"
+          source_root="$RUNNER_TEMP/ctcc-native-clock-source"
+          environment_root="$RUNNER_TEMP/ctcc-native-clock-venv"
+          mkdir "$evidence" "$source_root"
+          commit=$(git rev-parse HEAD)
+          tree=$(git rev-parse 'HEAD^{tree}')
+          test "$commit" = "$GITHUB_SHA"
+          git -c core.autocrlf=false -c core.eol=lf archive --format=tar --output="$evidence/source.tar" "$commit"
+          tar -xf "$evidence/source.tar" -C "$source_root"
+          python3 "$source_root/scripts/manifest.py" --root "$source_root" --check
+          /usr/bin/python3 -m venv "$environment_root"
+          "$environment_root/bin/python" -m pip install --require-hashes --only-binary=:all: -r "$source_root/requirements/validation-linux-py312.lock" > "$evidence/host-dependencies.log" 2>&1
+          docker build --build-arg "CTCC_SOURCE_COMMIT=$commit" --build-arg "CTCC_SOURCE_TREE=$tree" -t "ctcc-native-clock:$commit" "$source_root" > "$evidence/build.log" 2>&1
+          docker image inspect --format '{"Id":{{json .Id}},"Revision":{{json (index .Config.Labels "org.opencontainers.image.revision")}},"Tree":{{json (index .Config.Labels "org.ctcc.source.tree")}}}' "ctcc-native-clock:$commit" > "$evidence/image.json"
+          cd "$source_root"
+          set +e
+          "$environment_root/bin/python" -B -m scripts.observe_linux_clock_v1_once > "$evidence/host.json" 2> "$evidence/host.stderr"
+          host_rc=$?
+          docker run --rm --network none --cap-drop ALL --read-only --security-opt no-new-privileges:true --pids-limit 32 --memory 256m --cpus 1 --env ENVIRONMENT=test --env TRADING_MODE=analysis_only --env AUTO_TRADE=false --env LIVE_TRADING=false --env OKX_DEMO_ALLOW_ORDER_WRITES=false --env OKX_DEMO_AUTO_EXECUTION=false --env OKX_LIVE_ENABLED=false --env OKX_LIVE_ALLOW_ORDER_WRITES=false --env OKX_LIVE_AUTO_EXECUTION=false "ctcc-native-clock:$commit" python -B -m scripts.observe_linux_clock_v1_once > "$evidence/container.json" 2> "$evidence/container.stderr"
+          container_rc=$?
+          set -e
+          printf '%s\n' "$host_rc" > "$evidence/host.exit"
+          printf '%s\n' "$container_rc" > "$evidence/container.exit"
+          "$environment_root/bin/python" - "$evidence" "$commit" "$tree" <<'PY'
+          import hashlib
+          import json
+          import sys
+          from pathlib import Path
+
+          out = Path(sys.argv[1])
+          source = Path.cwd()
+          digest = lambda path: hashlib.sha256(path.read_bytes()).hexdigest()
+          image = json.loads((out / "image.json").read_bytes())
+          assert image["Revision"] == sys.argv[2]
+          assert image["Tree"] == sys.argv[3]
+          assert type(image["Id"]) is str and image["Id"].startswith("sha256:")
+          record = {
+              "schema": "ctcc.native_linux_clock_once_readback.v1",
+              "head": sys.argv[2],
+              "tree": sys.argv[3],
+              "manifest_sha256": digest(source / "MANIFEST.sha256"),
+              "module_sha256": digest(source / "app/domain/linux_native_clock_v1.py"),
+              "cli_sha256": digest(source / "scripts/observe_linux_clock_v1_once.py"),
+              "source_archive_sha256": digest(out / "source.tar"),
+              "image": image,
+              "host_exit": int((out / "host.exit").read_text()),
+              "container_exit": int((out / "container.exit").read_text()),
+              "scope": "one_native_kernel_observation_per_runtime",
+              "utc_certification": False,
+              "upstream_freshness_acceptance": False,
+              "source_or_trading_acceptance": False,
+              "files": {path.name: digest(path) for path in sorted(out.iterdir()) if path.is_file()},
+          }
+          with (out / "identity.json").open("x", encoding="utf-8") as stream:
+              json.dump(record, stream, indent=2)
+              stream.write("\n")
+          PY
+          test "$host_rc" = 0
+          test "$container_rc" = 0
+
+      - name: Preserve actual status including rejected observations
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ctcc-native-linux-clock-${{ github.sha }}
+          path: ${{ runner.temp }}/ctcc-native-clock-observation/*
+          if-no-files-found: error
+          retention-days: 30
