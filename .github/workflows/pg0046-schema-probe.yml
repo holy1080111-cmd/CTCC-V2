@@ -1,0 +1,40 @@
+name: DB0046 isolated schema probe
+
+on:
+  push:
+    branches:
+      - validation/pg0046-schema-20261022
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  catalog:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:17-alpine@sha256:f02121de6f74d30d8a94cd1d9584125e2178d7e6c377d8130112d4e52d867995
+        env:
+          POSTGRES_USER: ctcc_probe
+          POSTGRES_DB: ctcc_probe
+          POSTGRES_PASSWORD: ctcc-probe-test-only
+        options: >-
+          --health-cmd "pg_isready -U ctcc_probe -d ctcc_probe"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Execute reviewed DDL and read actual parser catalog
+        env:
+          PG_CONTAINER: ${{ job.services.postgres.id }}
+        run: python3 scripts/probe_runtime_custody_schema.py --container "$PG_CONTAINER" --output "$RUNNER_TEMP/ctcc-schema-probe"
+      - name: Preserve exact catalog evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: db0046-schema-${{ github.sha }}
+          path: ${{ runner.temp }}/ctcc-schema-probe/catalog-readback.json
+          if-no-files-found: error
+          retention-days: 30
