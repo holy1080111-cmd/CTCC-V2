@@ -300,3 +300,22 @@ def validate_stamps(stamps):
             raise PublicReceiptError("clock_lease_expired")
         previous = current
     return tuple(values)
+
+
+# V4 qualifies current native observations and retained raw bytes. It does not
+# reinterpret the stricter historical V2/V3 registration/PIT trust contracts.
+PUBLIC_V4_CURRENT_SOURCE_POLICY = canonical(
+    {
+        "schema_version": "ctcc.public_current_source_policy.v4",
+        "account_route": "same_invocation_native_signed_demo_config_exact_uid",
+        "registration_site": "UNKNOWN",
+        "market": "native_reviewed_demo_rest_and_ws_full_inventory",
+        "time": "native_clock_and_measured_exchange_time_bracket",
+        "custody": "restricted_append_only_db_raw_bundle_commit_and_readback",
+        "handoff": "one_use_same_task_process_thread_loop",
+        "historical_availability_verified": False,
+        "account_complete": False,
+        "execution_authority": False,
+    }
+)
+PUBLIC_V4_CURRENT_SOURCE_POLICY_SHA256 = sha(PUBLIC_V4_CURRENT_SOURCE_POLICY)

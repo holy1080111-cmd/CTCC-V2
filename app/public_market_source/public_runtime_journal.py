@@ -11,6 +11,7 @@ from threading import Lock
 from weakref import WeakKeyDictionary
 
 from app.domain.source_primitives import (
+    PUBLIC_V4_CURRENT_SOURCE_POLICY_SHA256,
     demo_public_v2_headers,
     demo_public_v2_policy_sha256,
     demo_public_v2_quote_transport_sha256,
@@ -386,7 +387,11 @@ def _replay_open_v3_prefix(attempt, *, market_packet=None):
         canonical(plan) != plan_raw
         or sha(plan_raw) != state["plan_sha256"]
         or plan.get("schema_version")
-        not in {"ctcc.public.initial_runtime_plan.v3", "ctcc.public.runtime_plan.v3"}
+        not in {
+            "ctcc.public.initial_runtime_plan.v3",
+            "ctcc.public.runtime_plan.v3",
+            "ctcc.public.initial_runtime_plan.v4",
+        }
     ):
         raise PublicReceiptError("runtime_v3_prefix_plan_invalid")
     _validate_plan(plan)
@@ -474,6 +479,11 @@ def _time(value):
 
 
 def _validate_plan(plan):
+    if (
+        type(plan) is dict
+        and plan.get("schema_version") == "ctcc.public.initial_runtime_plan.v4"
+    ):
+        return _validate_v4_plan(plan)
     if type(plan) is dict and plan.get("schema_version") in {
         "ctcc.public.initial_runtime_plan.v3",
         "ctcc.public.runtime_plan.v3",
@@ -680,11 +690,37 @@ def _validate_v3_plan(plan):
     _validate_v2_plan(base)
 
 
+def _validate_v4_plan(plan):
+    """Initial V4 adds current operational-route proof, never signup proof."""
+    added = {
+        "operational_route_proof_sha256",
+        "credential_session_sha256",
+        "current_source_policy_sha256",
+        "registration_site",
+    }
+    if (
+        plan.get("schema_version") != "ctcc.public.initial_runtime_plan.v4"
+        or plan.get("registration_site") != "UNKNOWN"
+        or plan.get("current_source_policy_sha256")
+        != PUBLIC_V4_CURRENT_SOURCE_POLICY_SHA256
+        or any(
+            type(plan.get(name)) is not str
+            or re.fullmatch("[a-f0-9]{64}", plan[name]) is None
+            for name in added - {"registration_site"}
+        )
+    ):
+        raise PublicReceiptError("runtime_v4_current_source_plan_invalid")
+    base = {name: value for name, value in plan.items() if name not in added}
+    base["schema_version"] = "ctcc.public.initial_runtime_plan.v3"
+    _validate_v3_plan(base)
+
+
 def _plan_start(plan):
     if plan["schema_version"] in {
         "ctcc.public.initial_runtime_plan.v1",
         "ctcc.public.initial_runtime_plan.v2",
         "ctcc.public.initial_runtime_plan.v3",
+        "ctcc.public.initial_runtime_plan.v4",
     }:
         return plan["invocation_started"]
     return plan["barrier"]
@@ -712,6 +748,7 @@ def _packet_stage_matches(plan, barrier, *, exact=False):
         "ctcc.public.initial_runtime_plan.v1",
         "ctcc.public.initial_runtime_plan.v2",
         "ctcc.public.initial_runtime_plan.v3",
+        "ctcc.public.initial_runtime_plan.v4",
     }:
         return barrier is None
     return barrier is not None and (
@@ -791,6 +828,7 @@ def _replay_semantics(plan, summary, events, payloads, *, market_packet=None):
     before_seen, after_seen = False, False
     v3 = plan["schema_version"] in {
         "ctcc.public.initial_runtime_plan.v3",
+        "ctcc.public.initial_runtime_plan.v4",
         "ctcc.public.runtime_plan.v3",
     }
     time_ids, time_validated = [], set()
@@ -836,6 +874,7 @@ def _replay_semantics(plan, summary, events, payloads, *, market_packet=None):
                     "ctcc.public.initial_runtime_plan.v2",
                     "ctcc.public.runtime_plan.v2",
                     "ctcc.public.initial_runtime_plan.v3",
+                    "ctcc.public.initial_runtime_plan.v4",
                     "ctcc.public.runtime_plan.v3",
                 }
                 and "registration_region" in plan
@@ -1217,6 +1256,7 @@ def _replay_semantics(plan, summary, events, payloads, *, market_packet=None):
                     "ctcc.public.initial_runtime_plan.v2",
                     "ctcc.public.runtime_plan.v2",
                     "ctcc.public.initial_runtime_plan.v3",
+                    "ctcc.public.initial_runtime_plan.v4",
                     "ctcc.public.runtime_plan.v3",
                 }
                 else observations[0].get("bundle_sha256")
@@ -1291,6 +1331,7 @@ def _packet_join(plan, packet, requests, websocket):
         "ctcc.public.initial_runtime_plan.v2",
         "ctcc.public.runtime_plan.v2",
         "ctcc.public.initial_runtime_plan.v3",
+        "ctcc.public.initial_runtime_plan.v4",
         "ctcc.public.runtime_plan.v3",
     } and (
         packet.get("schema_version") != "ctcc.collected_public_market.v2"

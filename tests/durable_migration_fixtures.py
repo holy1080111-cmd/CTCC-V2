@@ -33,6 +33,7 @@ MIGRATIONS = {
     "0043": "0043_account_revision_source_witness.py",
     "0044": "0044_demo_measured_hwm_continuation.py",
     "0045": "0045_demo_measured_hwm_first_sample_repair.py",
+    "0046": "0046_public_runtime_bundle_custody.py",
 }
 TABLES = {
     # 0023 is constraint/trigger-only and has dedicated upgrade/downgrade
@@ -60,6 +61,7 @@ TABLES = {
     "0041": ("demo_event_history_epoch_events",),
     "0043": ("demo_account_revision_source_witnesses",),
     "0044": ("demo_account_measured_hwm_v2",),
+    "0046": ("public_runtime_raw_bundles_v1",),
 }
 DOWNGRADE_LOCKS = {
     **TABLES,

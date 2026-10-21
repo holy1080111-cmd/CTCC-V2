@@ -1,11 +1,18 @@
 # CTCC 核心總規格：123 專案整合
 
-2026-09-23 最新施工與驗證限制見 [來源與驗證紀錄](final_completion_validation.md)。
+2026-10-22 最新施工與驗證限制見 [來源與驗證紀錄](final_completion_validation.md)。
 canonical 開發分支由 `016a358` 保留施工歷史後建立，未覆蓋原部署。
 每筆 structural risk 0.5%、portfolio stop risk 1%、300 USDT bucket 與
 60% aggregate margin 為本輪保守設定；continuous mode 不得跳過每日虧損或連敗。
 新資料／資格／風控／intent 的工程測試不代表 Demo、OOS 或 Micro Live 已驗收。
 Live 維持預設關閉；只完成實際驗證的項目才能勾選 Done。
+
+新 [V4 當次行情來源](public_current_source_v4.md) 以原生帳戶讀取綁定路由，
+並透過 DB0046 保存完整原始資料、提交後另開 transaction 讀回；未知提交
+不得重試，崩潰後唯讀恢復不得重發來源資格。其原生實機驗收仍待執行。
+[V8 原始歷史財務重算](account_history_risk_v8.md) 只證明符合嚴格比對的已平倉
+交易金額，不補造 funding accrual、完整連敗起點或歷史高水位。
+兩者都不代表完整帳戶風險、G1–G12、OOS、Demo 或 Live 已驗收。
 
 更新日期：2026-09-11。來源為「123」專案的
 [CTCC 開發進度](https://chatgpt.com/c/6a94fbd0-34e4-83ee-979c-519b5ecb1c66)。

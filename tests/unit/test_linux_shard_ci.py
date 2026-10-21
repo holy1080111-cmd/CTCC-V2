@@ -16,6 +16,7 @@ from scripts.verify_final_hermetic import (
     ACCOUNT_REVISION_WITNESS_TRIGGERS,
     ARCHIVE_REQUIRED_CASES,
     DOWNGRADE_DENIAL,
+    PUBLIC_RUNTIME_BUNDLE_SCHEMA,
     verify_linux_collection,
     verify_pytest_report,
 )
@@ -37,20 +38,24 @@ SOURCE_FILES = b"{}"
 
 def _revision_readback(revision: str) -> dict:
     result = {
-        "schema": "ctcc.migration_revision_readback.v2",
+        "schema": (
+            "ctcc.migration_revision_readback.v3"
+            if revision == "0046"
+            else "ctcc.migration_revision_readback.v2"
+        ),
         "expected": revision,
         "observed": revision,
         "execution_authority": False,
     }
-    if revision in ("0001", "0042", "0043", "0044", "0045"):
-        witness = revision in ("0043", "0044", "0045")
+    if revision in ("0001", "0042", "0043", "0044", "0045", "0046"):
+        witness = revision in ("0043", "0044", "0045", "0046")
         result["account_revision_witness_table_present"] = witness
         result["account_revision_witness_guard_present"] = witness
         result["account_revision_witness_trigger_count"] = 3 if witness else 0
         result["account_revision_witness_trigger_catalog"] = (
             [list(row) for row in ACCOUNT_REVISION_WITNESS_TRIGGERS] if witness else []
         )
-        hwm = revision in ("0044", "0045")
+        hwm = revision in ("0044", "0045", "0046")
         result["account_measured_hwm_v2_table_present"] = hwm
         result["account_measured_hwm_v2_guard_present"] = hwm
         result["account_measured_hwm_v2_trigger_count"] = 3 if hwm else 0
@@ -59,13 +64,15 @@ def _revision_readback(revision: str) -> dict:
                 list(row)
                 for row in (
                     ACCOUNT_MEASURED_HWM_V2_TRIGGERS_0045
-                    if revision == "0045"
+                    if revision in ("0045", "0046")
                     else ACCOUNT_MEASURED_HWM_V2_TRIGGERS
                 )
             ]
             if hwm
             else []
         )
+    if revision == "0046":
+        result["public_runtime_bundle_schema"] = PUBLIC_RUNTIME_BUNDLE_SCHEMA
     return result
 
 
@@ -209,8 +216,8 @@ def _artifacts(tmp_path: Path) -> tuple[Path, list[str]]:
     migration = {
         "schema": "ctcc.migration_identity.v1",
         "status": "PASS",
-        "source_head": "0045",
-        "database_head": "0045",
+        "source_head": "0046",
+        "database_head": "0046",
     }
     for mode, index in (
         ("postgres", None),
@@ -290,25 +297,27 @@ def _artifacts(tmp_path: Path) -> tuple[Path, list[str]]:
             "migration": migration,
             "migration_supported_roundtrip": _revision_readback("0001"),
             "migration_empty_roundtrip": {
-                "source_head": "0045",
+                "source_head": "0046",
+                "bundle_down_revision": "0045",
+                "bundle_down_readback": _revision_readback("0045"),
                 "guard_down_revision": "0044",
                 "guard_down_readback": _revision_readback("0044"),
                 "hwm_down_revision": "0043",
                 "hwm_down_readback": _revision_readback("0043"),
                 "down_revision": "0042",
                 "down_readback": _revision_readback("0042"),
-                "reupgrade_readback": _revision_readback("0045"),
+                "reupgrade_readback": _revision_readback("0046"),
                 "reupgrade_identity": "PASS",
                 "schema_drift": "PASS",
             },
             "migration_downgrade_policy": {
-                "source_head": "0045",
+                "source_head": "0046",
                 "target": "0041",
                 "result": "DENIED",
                 "denied_at": "0042",
                 "policy_refusal": DOWNGRADE_DENIAL,
-                "database_head_after": "0045",
-                "rollback_readback": _revision_readback("0045"),
+                "database_head_after": "0046",
+                "rollback_readback": _revision_readback("0046"),
                 "schema_drift": "PASS",
             },
             "collection": collection,
@@ -341,6 +350,8 @@ def _artifacts(tmp_path: Path) -> tuple[Path, list[str]]:
         supported_log.write_text(json.dumps(identity["migration_supported_roundtrip"]))
         migration_log = root / "migration-identity.log"
         migration_log.write_text(json.dumps(migration))
+        bundle_empty_log = root / "migration-bundle-empty-readback.log"
+        bundle_empty_log.write_text(json.dumps(_revision_readback("0045")))
         guard_empty_log = root / "migration-guard-empty-readback.log"
         guard_empty_log.write_text(json.dumps(_revision_readback("0044")))
         hwm_empty_log = root / "migration-hwm-empty-readback.log"
@@ -350,13 +361,14 @@ def _artifacts(tmp_path: Path) -> tuple[Path, list[str]]:
         reupgrade_identity_log = root / "migration-reupgrade-identity.log"
         reupgrade_identity_log.write_text(json.dumps(migration))
         reupgrade_readback_log = root / "migration-reupgrade-readback.log"
-        reupgrade_readback_log.write_text(json.dumps(_revision_readback("0045")))
+        reupgrade_readback_log.write_text(json.dumps(_revision_readback("0046")))
         reidentity_log = root / "migration-reidentity.log"
         reidentity_log.write_text(json.dumps(migration))
         denial_readback_log = root / "migration-denial-readback.log"
-        denial_readback_log.write_text(json.dumps(_revision_readback("0045")))
+        denial_readback_log.write_text(json.dumps(_revision_readback("0046")))
         denial_log = root / "migration-downgrade-denial.log"
         denial_log.write_text(
+            "INFO Running downgrade 0046 -> 0045\n"
             "INFO Running downgrade 0045 -> 0044\n"
             "INFO Running downgrade 0044 -> 0043\n"
             "INFO Running downgrade 0043 -> 0042\n"
@@ -378,6 +390,7 @@ def _artifacts(tmp_path: Path) -> tuple[Path, list[str]]:
             root / "source-files.json",
             supported_log,
             migration_log,
+            bundle_empty_log,
             empty_log,
             reupgrade_identity_log,
             reupgrade_readback_log,
@@ -480,8 +493,48 @@ def test_union_rejects_post_denial_database_head_change_even_with_rehashed_log(
 
 
 @pytest.mark.parametrize(
+    "filename,section,field",
+    (
+        (
+            "migration-reupgrade-readback.log",
+            "migration_empty_roundtrip",
+            "reupgrade_readback",
+        ),
+        (
+            "migration-denial-readback.log",
+            "migration_downgrade_policy",
+            "rollback_readback",
+        ),
+    ),
+)
+def test_union_pins_db0046_catalog_when_both_identity_and_log_are_rehashed(
+    tmp_path, filename, section, field
+):
+    artifacts, _ = _artifacts(tmp_path)
+    root = artifacts / f"ctcc-linux-shard-0-{COMMIT}" / "ctcc-validation"
+    record_path = root / filename
+    record = json.loads(record_path.read_text())
+    record["public_runtime_bundle_schema"]["functions"][0][1] = "0" * 64
+    record_path.write_text(json.dumps(record))
+    identity_path = root / "identity.json"
+    identity = json.loads(identity_path.read_text())
+    identity[section][field] = record
+    identity_path.write_text(json.dumps(identity))
+    hashes_path = root / "results.sha256.json"
+    hashes = json.loads(hashes_path.read_text())
+    for changed in (record_path, identity_path):
+        hashes[changed.name] = _sha(changed.read_bytes())
+    hashes_path.write_text(json.dumps(hashes))
+    with pytest.raises(ValueError, match="linux_union_component_identity_rejected"):
+        verify_union(
+            artifacts, commit=COMMIT, tree=TREE, manifest_sha256=_sha(MANIFEST)
+        )
+
+
+@pytest.mark.parametrize(
     "name,field,value",
     (
+        ("migration-bundle-empty-readback.log", "observed", "0044"),
         ("migration-empty-readback.log", "observed", "0043"),
         ("migration-guard-empty-readback.log", "observed", "0043"),
         ("migration-hwm-empty-readback.log", "observed", "0044"),
@@ -531,6 +584,8 @@ def test_union_rejects_rehashed_roundtrip_or_rollback_tamper(
 @pytest.mark.parametrize(
     "stage",
     (
+        "migration-bundle-empty-downgrade",
+        "migration-bundle-empty-readback",
         "migration-guard-empty-readback",
         "migration-hwm-empty-readback",
         "migration-empty-readback",
@@ -538,7 +593,7 @@ def test_union_rejects_rehashed_roundtrip_or_rollback_tamper(
         "migration-denial-readback",
     ),
 )
-def test_union_requires_all_db0045_transition_stages(tmp_path, stage):
+def test_union_requires_all_db0046_transition_stages(tmp_path, stage):
     artifacts, _ = _artifacts(tmp_path)
     root = artifacts / f"ctcc-linux-shard-0-{COMMIT}" / "ctcc-validation"
     steps_path = root / "steps.json"

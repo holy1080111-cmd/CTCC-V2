@@ -93,6 +93,7 @@ from app.database.models.public_receipt_publication_ack import (
     PublicReceiptPublicationAck,
 )
 from app.database.models.public_receipt_witness import PublicReceiptWitnessRevision
+from app.database.models.public_runtime_bundle_custody import PublicRuntimeRawBundleV1
 from app.database.models.qualification_ledger import (
     QualificationAccountScope,
     QualificationReservation,
@@ -178,6 +179,7 @@ __all__ = [
     "PublicReceiptPostReadObservation",
     "PublicReceiptPublicationAck",
     "PublicReceiptWitnessRevision",
+    "PublicRuntimeRawBundleV1",
     "QualificationAccountScope",
     "QualificationReportProjectionReceipt",
     "QualificationReportSpool",

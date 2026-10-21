@@ -1,7 +1,7 @@
 # CTCC V2 v1.6.9 — Durable OKX Live Recovery
 
 **V2.0 production acceptance is incomplete.** The final-completion branch is
-undergoing new source-bound validation (2026-10-16 update); [current status and boundaries](docs/final_completion_validation.md)
+undergoing new source-bound validation (2026-10-22 update); [current status and boundaries](docs/final_completion_validation.md)
 distinguish engineering checks from real Demo, OOS and Micro Live acceptance.
 Live remains default OFF and requires contemporaneous operator authorization.
 
@@ -21,6 +21,14 @@ unresolved intents. That display is not a qualified execution permit.
 New V2 Demo public capture is also blocked before network I/O: its earlier plan
 used a Production WebSocket and no authenticated Demo account-region binding.
 The [V2 source record](docs/public_source_runtime_v2.md) explains this boundary.
+
+The separate [V4 current-source path](docs/public_current_source_v4.md) connects
+native account-first market capture to exact restricted-role raw custody and a
+one-use current market handle. Its native deployment acceptance remains pending;
+it cannot grant complete portfolio risk or order authority. The
+[V8 financial reducer](docs/account_history_risk_v8.md) reconciles original
+closed-run amounts without inventing funding-accrual times, a loss-streak seed
+or a historical high-water mark.
 
 The following sequence describes the preserved v1.6.9 Live control design; its
 submission step is blocked in this final-completion branch pending the new
@@ -151,10 +159,17 @@ starts at the first recorded sample, not exchange-account inception. Historical
 unseen peaks remain unknown; no account-risk or trading authority follows from
 this chain. Exact-source PostgreSQL, Docker and CI acceptance remain pending.
 
+Migration `0046` adds restricted append/read custody for exact current-source
+raw bundles. An uncertain append never retries or issues a capability. A new
+restricted owner can recover retained bytes by known digest pins, without
+recreating a current-source handle. Nonempty downgrade refuses to discard
+evidence. This protects against the restricted application role; it does not
+establish independently administered WORM or historical availability.
+
 Migration identities (the stopped local deployment is not silently upgraded):
 
 ```text
-Current final-completion source head: 0045
+Current final-completion source head: 0046
 Last independently restored local deployment: 0017
 ```
 
@@ -466,8 +481,9 @@ powershell -ExecutionPolicy Bypass `
 
 Do not use `docker compose down -v` during an upgrade.
 
-For this development source after an authorized upgrade, the expected Alembic
-head and current revision are both `0017`. A healthy
+For this final-completion source after a reviewed upgrade, the expected Alembic
+head and current revision are both `0046`. The stopped local deployment has not
+been silently upgraded from its last independently restored `0017`. A healthy
 container alone is not sufficient deployment evidence: `/readiness` and all
 three Alembic commands above must also succeed. See the
 [v1.6.9 Live operator runbook](docs/live_execution_v1.6.9.md) for rollback and

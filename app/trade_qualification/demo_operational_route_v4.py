@@ -12,6 +12,7 @@ reservation, intent, or order-writer entrypoint. V2/V3 DENY paths are unchanged.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import ssl
 from dataclasses import dataclass, field
@@ -22,10 +23,11 @@ from weakref import WeakKeyDictionary, ref
 import httpx
 
 from app.domain.native_clock import native_os_clock, native_stamp, validate_os_clock
-from app.domain.source_primitives import sha, utc_from_ns, validate_stamps
+from app.domain.source_primitives import canonical, sha, utc_from_ns, validate_stamps
 from app.exchange.okx.private_rest import (
     OkxDemoPrivateRestClient,
 )
+from app.trade_evidence.storage import _PosixDirectory, _WindowsDirectory
 from app.trade_qualification import account_capture as capture
 from app.trade_qualification import account_collector as collector
 from app.trade_qualification.account_runtime import ControlledDemoAccountSession
@@ -44,10 +46,262 @@ _PROBE_LOCK = Lock()
 _ISSUER = object()
 _STARTED = object()
 _SPENT = object()
+_OWNED_ROUTES: WeakKeyDictionary = WeakKeyDictionary()
+_PRIVATE_ATTEMPTS: WeakKeyDictionary = WeakKeyDictionary()
+_ATTEMPT_SAFE_HEADERS = frozenset(
+    {"content-type", "content-length", "content-encoding", "date"}
+)
+_ATTEMPT_FAILURE_CODES = frozenset(
+    {
+        "demo_v4_response_invalid",
+        "demo_v4_native_tls_required",
+        "demo_v4_cleanup_failed",
+        "demo_v4_clock_invalid",
+        "demo_v4_config_invalid",
+        "demo_v4_probe_unavailable",
+        "demo_v4_request_invalid",
+        "demo_v4_session_invalid",
+        "demo_v4_account_route_rejected_50110",
+        "demo_v4_account_route_rejected_50119",
+    }
+)
+
+
+class _OwnedInitialRouteV4:
+    """Private identity; an instance without registry state grants nothing."""
+
+    __slots__ = ("__weakref__",)
+
+    def __copy__(self):
+        raise DemoOperationalRouteV4Error("demo_v4_route_not_transferable")
+
+    def __deepcopy__(self, memo):
+        raise DemoOperationalRouteV4Error("demo_v4_route_not_transferable")
+
+    def __reduce_ex__(self, protocol):
+        raise DemoOperationalRouteV4Error("demo_v4_route_not_transferable")
 
 
 class DemoOperationalRouteV4Error(ValueError):
     """Static local rejection only; no credential, UID, URL, or remote text."""
+
+
+def _native_attempt_directory(directory):
+    if type(directory) not in (_PosixDirectory, _WindowsDirectory):
+        raise DemoOperationalRouteV4Error("demo_v4_private_attempt_directory_required")
+    return directory
+
+
+def _private_attempt(session, private_client):
+    state = _PRIVATE_ATTEMPTS.get(session)
+    if state is None:
+        return None
+    if (
+        state["task"] is not asyncio.current_task()
+        or state["loop"] is not asyncio.get_running_loop()
+        or state["pid"] != os.getpid()
+        or state["thread"] != get_ident()
+        or state["client"] is not private_client
+    ):
+        raise DemoOperationalRouteV4Error("demo_v4_private_attempt_owner_changed")
+    return state
+
+
+def _retain_attempt_chunk(state, chunk):
+    if state is None or type(chunk) is not bytes:
+        return
+    state["observed_bytes"] += len(chunk)
+    state["observed_hash"].update(chunk)
+    remaining = _MAX_CONFIG_BYTES - len(state["raw_prefix"])
+    state["raw_prefix"].extend(chunk[:remaining])
+
+
+def _attempt_raw_safe(raw, tokens):
+    """Omit ambiguous/echoing bytes rather than persist a credential value."""
+    try:
+        if any(
+            name in raw.lower()
+            for name in (
+                b"ok-access-key",
+                b"ok-access-sign",
+                b"ok-access-passphrase",
+                b"authorization",
+            )
+        ):
+            return False
+        collector._no_secrets(raw, tokens)
+        if any(
+            token[index : index + 8].encode("ascii") in raw
+            for token in tokens
+            for index in range(max(1, len(token) - 7))
+        ):
+            return False
+        try:
+            _document, canon = capture._decode_json(
+                raw, limit=_MAX_CONFIG_BYTES, wire=True
+            )
+        except Exception:  # noqa: BLE001 -- partial/malformed body is evidence, not data
+            # Escaped strings in incomplete JSON cannot be safely decoded for
+            # credential-echo screening. Retain their digest/size only.
+            return b"\\" not in raw
+        collector._no_secret_json(canon, tokens)
+        return True
+    except Exception:  # noqa: BLE001 -- no echoed credential is written to disk
+        return False
+
+
+def _finalize_private_attempt(state, error):
+    directory = state["directory"]
+    raw = bytes(state["raw_prefix"])
+    safe = _attempt_raw_safe(raw, state["tokens"])
+    raw_name = None
+    if safe and state["observed_bytes"]:
+        raw_name = "account-route-attempt.v4.raw"
+        directory.publish(raw_name, raw)
+        if directory.read(raw_name, _MAX_CONFIG_BYTES) != raw:
+            raise DemoOperationalRouteV4Error("demo_v4_private_attempt_readback_failed")
+    if state.get("terminal_code") is not None:
+        code = state["terminal_code"]
+    elif error is None:
+        code = "accepted"
+    elif isinstance(error, asyncio.CancelledError):
+        code = "cancelled"
+    elif isinstance(error, TimeoutError):
+        code = "timeout"
+    elif (
+        type(error) is DemoOperationalRouteV4Error
+        and len(error.args) == 1
+        and error.args[0] in _ATTEMPT_FAILURE_CODES
+    ):
+        code = error.args[0]
+    else:
+        code = "source_or_transport_rejected"
+    safe_headers = []
+    omitted_headers = 0
+    for name, value in state["safe_headers"]:
+        if not _attempt_raw_safe(value.encode("utf-8"), state["tokens"]):
+            omitted_headers += 1
+        else:
+            safe_headers.append([name, value])
+    document = {
+        "schema_version": "ctcc.private_demo_route_attempt.v4",
+        "plan_sha256": state["plan_sha256"],
+        "disposition": "accepted" if error is None and safe else "rejected",
+        "code": code if safe else "credential_safety_raw_omitted",
+        "status": state["status"],
+        "safe_response_headers": safe_headers,
+        "omitted_header_count": omitted_headers,
+        "request_start": state["request_start"],
+        "headers_received": state["headers_received"],
+        "body_completed": state["body_completed"],
+        "body_stream_exhausted": state["body_stream_exhausted"],
+        "tls_peer_sha256": state["tls_peer_sha256"],
+        "observed_bytes": state["observed_bytes"],
+        "observed_sha256": state["observed_hash"].hexdigest(),
+        "raw_name": raw_name,
+        "retained_bytes": len(raw) if raw_name else 0,
+        "raw_retained": raw_name is not None,
+        "retained_sha256": sha(raw) if raw_name else None,
+        "truncated": state["observed_bytes"] > len(raw),
+        "raw_omitted_for_credential_safety": not safe,
+        "source_authenticity_verified": False,
+        "account_complete": False,
+        "execution_authority": False,
+    }
+    encoded = canonical(document)
+    directory.publish("account-route-attempt.v4.json", encoded)
+    if directory.read("account-route-attempt.v4.json", 32768) != encoded:
+        raise DemoOperationalRouteV4Error("demo_v4_private_attempt_readback_failed")
+    if error is None and not safe:
+        raise DemoOperationalRouteV4Error("demo_v4_credential_echo_rejected")
+
+
+async def _probe_initial_demo_operational_route_retained_v4(
+    session, private_client, *, proof_directory
+):
+    """Source-owned private attempt evidence; no injected network/clock seam."""
+    _plan, route = _checked_objects(session, private_client)
+    directory = _native_attempt_directory(proof_directory)
+    if session in _PRIVATE_ATTEMPTS:
+        raise DemoOperationalRouteV4Error("demo_v4_private_attempt_already_active")
+    encoded = canonical(
+        {
+            "schema_version": "ctcc.private_demo_route_attempt_plan.v4",
+            "account_plan_sha256": session._pin,
+            "environment": "demo",
+            "route_region": route.registration_region,
+            "origin": route.rest_origin,
+            "method": "GET",
+            "endpoint": _CONFIG_PATH,
+            "max_response_bytes": _MAX_CONFIG_BYTES,
+            "retries": 0,
+            "private_account_evidence": True,
+            "execution_authority": False,
+        }
+    )
+    try:
+        directory.publish("account-route-attempt.v4.plan.json", encoded)
+        if directory.read("account-route-attempt.v4.plan.json", 32768) != encoded:
+            raise DemoOperationalRouteV4Error("demo_v4_private_attempt_readback_failed")
+    except Exception:  # noqa: BLE001 -- pre-existing evidence is never replaced
+        raise DemoOperationalRouteV4Error(
+            "demo_v4_private_attempt_storage_failed"
+        ) from None
+    state = {
+        "directory": directory,
+        "task": asyncio.current_task(),
+        "loop": asyncio.get_running_loop(),
+        "pid": os.getpid(),
+        "thread": get_ident(),
+        "client": private_client,
+        "tokens": collector._credential_values(session._credentials)[:3],
+        "plan_sha256": sha(encoded),
+        "raw_prefix": bytearray(),
+        "observed_bytes": 0,
+        "observed_hash": hashlib.sha256(),
+        "status": None,
+        "safe_headers": (),
+        "request_start": None,
+        "headers_received": None,
+        "body_completed": None,
+        "body_stream_exhausted": False,
+        "tls_peer_sha256": None,
+    }
+    _PRIVATE_ATTEMPTS[session] = state
+    error = observation = None
+    try:
+        observation = await probe_initial_demo_operational_route_v4(
+            session, private_client
+        )
+        if (
+            state["observed_bytes"] != len(state["raw_prefix"])
+            or not state["body_stream_exhausted"]
+            or sha(bytes(state["raw_prefix"])) != observation.config_raw_sha256
+        ):
+            raise DemoOperationalRouteV4Error("demo_v4_private_attempt_body_incomplete")
+        return observation
+    except BaseException as caught:
+        error = caught
+        raise
+    finally:
+        _PRIVATE_ATTEMPTS.pop(session, None)
+        if error is not None and observation is not None:
+            _LEASES.pop(observation._lease, None)
+            _PROBES[session] = _SPENT
+        try:
+            _finalize_private_attempt(state, error)
+        except Exception:  # noqa: BLE001 -- failed retention cannot leave a usable lease
+            if observation is not None:
+                _LEASES.pop(observation._lease, None)
+            lease = _PROBES.get(session)
+            if type(lease) is _InitialRouteLeaseV4:
+                _LEASES.pop(lease, None)
+            _PROBES[session] = _SPENT
+            if isinstance(error, asyncio.CancelledError):
+                raise error
+            raise DemoOperationalRouteV4Error(
+                "demo_v4_private_attempt_storage_failed"
+            ) from None
 
 
 class _InitialRouteLeaseV4:
@@ -195,7 +449,17 @@ async def _read_native_config_body(
         request, auth=None, follow_redirects=False, stream=True
     )
     holder["response"] = response
+    attempt = _private_attempt(session, private_client)
+    if attempt is not None and type(response) is httpx.Response:
+        attempt["status"] = response.status_code
+        attempt["safe_headers"] = tuple(
+            (name, value[:1024])
+            for name, value in response.headers.multi_items()
+            if name.lower() in _ATTEMPT_SAFE_HEADERS
+        )[:16]
     headers = native_stamp()
+    if attempt is not None:
+        attempt["headers_received"] = headers
     validate_stamps((started, headers))
     if (
         type(response) is not httpx.Response
@@ -219,6 +483,8 @@ async def _read_native_config_body(
     certificate = tls.getpeercert(binary_form=True)
     if type(certificate) is not bytes or not certificate:
         raise DemoOperationalRouteV4Error("demo_v4_native_tls_required")
+    if attempt is not None:
+        attempt["tls_peer_sha256"] = sha(certificate)
     if (
         response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
         != "application/json"
@@ -234,11 +500,16 @@ async def _read_native_config_body(
     ):
         raise DemoOperationalRouteV4Error("demo_v4_response_invalid")
     async for chunk in response.aiter_raw():
+        _retain_attempt_chunk(attempt, chunk)
         _checked_objects(session, private_client)
         if type(chunk) is not bytes or len(raw) + len(chunk) > _MAX_CONFIG_BYTES:
             raise DemoOperationalRouteV4Error("demo_v4_response_invalid")
         raw.extend(chunk)
+    if attempt is not None:
+        attempt["body_stream_exhausted"] = True
     body_completed = native_stamp()
+    if attempt is not None:
+        attempt["body_completed"] = body_completed
     validate_stamps((started, headers, body_completed))
     if length is not None and len(raw) != int(length):
         raise DemoOperationalRouteV4Error("demo_v4_response_invalid")
@@ -279,6 +550,7 @@ async def probe_initial_demo_operational_route_v4(
     if task is None or task.cancelling():
         raise DemoOperationalRouteV4Error("demo_v4_task_invalid")
     plan, route = _checked_objects(session, private_client)
+    attempt = _private_attempt(session, private_client)
     # An account session gets at most one route probe, including failures.
     # This synchronous claim precedes clock sampling and all network IO.
     with _PROBE_LOCK:
@@ -294,6 +566,11 @@ async def probe_initial_demo_operational_route_v4(
             utc_from_ns(started["utc_ns"]),
             min(plan.max_request_seconds, 5),
         )
+        if attempt is not None:
+            attempt["request_start"] = started
+            # A reflected HMAC is a private header value too. Never retain it,
+            # even when the API key/secret/passphrase themselves are absent.
+            attempt["tokens"] = (*attempt["tokens"], _signature)
         if (
             request.method != "GET"
             or request.url != httpx.URL(route.rest_origin + _CONFIG_PATH)
@@ -385,6 +662,9 @@ async def probe_initial_demo_operational_route_v4(
             "uid": plan.expected_uid,
             "main_uid": plan.expected_main_uid,
             "validated": validated,
+            "request_start": started,
+            "headers_received": headers,
+            "body_completed": body_completed,
             "raw": bytes(raw),
             "peer_sha256": peer_sha256,
             "request_start_ns": started["utc_ns"],
@@ -412,11 +692,13 @@ async def probe_initial_demo_operational_route_v4(
         raise
     except asyncio.CancelledError:
         raise
-    except Exception:  # noqa: BLE001 -- no raw response, secret, UID or URL escapes
+    except Exception as error:  # noqa: BLE001 -- no raw response, secret, UID or URL escapes
+        if attempt is not None and isinstance(error, TimeoutError):
+            attempt["terminal_code"] = "timeout"
         raise DemoOperationalRouteV4Error("demo_v4_probe_unavailable") from None
 
 
-def _consume_initial_route_v4(observation, session, private_client):
+def _consume_initial_route_state_v4(observation, session, private_client):
     """Burn one route lease for a future owned *initial* V4 public issuer.
 
     The result is a reviewed route declaration, not permission to send a
@@ -483,6 +765,60 @@ def _consume_initial_route_v4(observation, session, private_client):
             or observation.schema_version != "ctcc.demo_initial_operational_route.v4"
         ):
             raise ValueError
-        return route
+        return {**state, "route": route, "consumed": now}
     except Exception:  # noqa: BLE001 -- spent lease stays spent on every failure
         raise DemoOperationalRouteV4Error("demo_v4_lease_unavailable") from None
+
+
+def _consume_initial_route_v4(observation, session, private_client):
+    """Historical time diagnostic consumes only its route declaration."""
+    return _consume_initial_route_state_v4(observation, session, private_client)[
+        "route"
+    ]
+
+
+def _claim_initial_route_v4(observation, session, private_client, *, invocation):
+    """Move native account bytes into this invocation's bounded public owner."""
+    state = _consume_initial_route_state_v4(observation, session, private_client)
+    claim = _OwnedInitialRouteV4()
+    _OWNED_ROUTES[claim] = {**state, "invocation": invocation}
+    return claim
+
+
+def _owned_route_state_v4(claim, *, invocation, owner_task):
+    """Validate a live claim; worker tasks are checked by their source owner."""
+    state = _OWNED_ROUTES.get(claim) if type(claim) is _OwnedInitialRouteV4 else None
+    try:
+        if (
+            state is None
+            or state["invocation"] is not invocation
+            or state["task"]() is not owner_task
+            or owner_task is None
+            or owner_task.cancelling()
+            or asyncio.current_task().cancelling()
+            or asyncio.get_running_loop() is not state["loop"]
+            or os.getpid() != state["pid"]
+            or get_ident() != state["thread"]
+        ):
+            raise ValueError
+        session, private_client = state["session"](), state["client"]()
+        plan, route = _checked_objects(session, private_client)
+        if (
+            route != state["route"]
+            or plan.session_binding_id != state["session_binding_id"]
+            or plan.expected_uid != state["uid"]
+            or plan.expected_main_uid != state["main_uid"]
+            or session._credential_pin != state["credential_pin"]
+            or session._pin != state["plan_sha256"]
+        ):
+            raise ValueError
+        _decode_accepted_config(
+            state["raw"], expected_uid=state["uid"], expected_main_uid=state["main_uid"]
+        )
+        return state
+    except Exception:  # noqa: BLE001 -- no private identifiers or transport details
+        raise DemoOperationalRouteV4Error("demo_v4_owned_route_unavailable") from None
+
+
+def _discard_owned_route_v4(claim):
+    _OWNED_ROUTES.pop(claim, None)

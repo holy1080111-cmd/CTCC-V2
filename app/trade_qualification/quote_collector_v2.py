@@ -389,13 +389,33 @@ def replay_quote_packet_v2(raw, *, expected_sha256) -> CollectedQuoteV2:
 
 
 async def _collect_owned_quote_v2(source) -> CollectedQuoteV2:
+    from app.trade_qualification import public_source_runtime as runtime
+
+    plan = runtime._state(source)["plan"]
+    if type(plan) is dict and plan.get("environment") == "demo":
+        runtime._require_trusted_v2_demo_origin_profile(plan)
+    return await _collect_owned_quote_parts(source, version=2)
+
+
+async def _collect_owned_quote_v4(source) -> CollectedQuoteV2:
+    from app.trade_qualification import public_source_runtime as runtime
+
+    runtime._require_owned_v4_route(runtime._state(source))
+    return await _collect_owned_quote_parts(source, version=4)
+
+
+async def _collect_owned_quote_parts(source, *, version) -> CollectedQuoteV2:
     """Internal future-owner seam. Legacy scopes lack the pinned v2 profile."""
     from app.trade_qualification import public_source_runtime as runtime
     from app.trade_qualification.public_market_collector import _close_client
 
     state = runtime._state(source)
+    if version == 4:
+        runtime._require_owned_v4_route(state)
+    elif version != 2:
+        _deny("quote_owned_collector_version_invalid")
     plan = state["plan"]
-    if type(plan) is dict and plan.get("environment") == "demo":
+    if version == 2 and type(plan) is dict and plan.get("environment") == "demo":
         # Direct internal calls cannot bypass the public owner into a clock or
         # three REST requests with a caller-declared registration region.
         runtime._require_trusted_v2_demo_origin_profile(plan)

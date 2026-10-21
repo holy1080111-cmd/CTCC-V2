@@ -1,5 +1,6 @@
 """Archive admission must reject source substitutions before Docker starts."""
 
+import copy
 import hashlib
 import io
 import json
@@ -18,6 +19,8 @@ from scripts.verify_final_hermetic import (
     ACCOUNT_MEASURED_HWM_V2_TRIGGERS_0045,
     ACCOUNT_REVISION_WITNESS_TRIGGERS,
     DOWNGRADE_DENIAL,
+    PUBLIC_RUNTIME_BUNDLE_SCHEMA,
+    PUBLIC_RUNTIME_BUNDLE_SCHEMA_ABSENT,
     Run,
     archive_files,
     archive_tree,
@@ -52,6 +55,150 @@ def test_db0045_repaired_guard_body_and_reverse_are_exactly_pinned():
         == (ACCOUNT_MEASURED_HWM_V2_TRIGGERS_0045[0][6])
     )
     assert migration._transform(repaired, reverse=True) == old_body
+
+
+def test_db0046_raw_custody_function_bodies_match_reviewed_catalog_pins():
+    migration = load_migration("0046")
+    bodies = {
+        "append": migration._APPEND_BODY,
+        "guard": migration._INSERT_BODY,
+        "immutable": migration._IMMUTABLE_BODY,
+        "read": migration._READ_BODY,
+    }
+    for row in PUBLIC_RUNTIME_BUNDLE_SCHEMA["functions"]:
+        name = row[0].removeprefix("public_runtime_bundle_v1_")
+        assert hashlib.sha256(bodies.pop(name).encode()).hexdigest() == row[1]
+    assert not bodies
+
+
+def _head_readback(runtime_catalog):
+    return migration_revision_readback(
+        "0046",
+        "0046",
+        True,
+        True,
+        ACCOUNT_REVISION_WITNESS_TRIGGERS,
+        True,
+        True,
+        ACCOUNT_MEASURED_HWM_V2_TRIGGERS_0045,
+        runtime_catalog,
+    )
+
+
+def test_expected_db0046_readback_cannot_mutate_reviewed_catalog_pins():
+    expected = expected_migration_revision_readback("0046")
+    expected["public_runtime_bundle_schema"]["functions"][0][1] = "0" * 64
+    assert _head_readback(copy.deepcopy(PUBLIC_RUNTIME_BUNDLE_SCHEMA)) == (
+        expected_migration_revision_readback("0046")
+    )
+    assert expected != expected_migration_revision_readback("0046")
+
+
+@pytest.mark.parametrize(
+    "drift",
+    (
+        "missing_catalog",
+        "missing_table",
+        "nonpersistent_table",
+        "column_type",
+        "column_nullable",
+        "extra_column",
+        "missing_function",
+        "function_body",
+        "function_security",
+        "function_set_returning",
+        "function_search_path",
+        "function_owner",
+        "function_native_shape",
+        "function_public_execute",
+        "disabled_trigger",
+        "trigger_event",
+        "trigger_filter",
+        "extra_trigger",
+        "constraint_hash",
+        "constraint_not_validated",
+        "constraint_deferrable",
+    ),
+)
+def test_db0046_readback_rejects_rehashed_raw_custody_catalog_drift(drift):
+    catalog = copy.deepcopy(PUBLIC_RUNTIME_BUNDLE_SCHEMA)
+    if drift == "missing_catalog":
+        catalog = None
+    elif drift == "missing_table":
+        catalog = copy.deepcopy(PUBLIC_RUNTIME_BUNDLE_SCHEMA_ABSENT)
+    elif drift == "nonpersistent_table":
+        catalog["table_shape"] = False
+    elif drift == "column_type":
+        catalog["columns"][3][1] = "text"
+    elif drift == "column_nullable":
+        catalog["columns"][3][2] = False
+    elif drift == "extra_column":
+        catalog["columns"].append(["unreviewed", "text", True, True, True])
+    elif drift == "missing_function":
+        catalog["functions"].pop()
+    elif drift == "function_body":
+        catalog["functions"][0][1] = "0" * 64
+    elif drift == "function_security":
+        catalog["functions"][0][2] = False
+    elif drift == "function_set_returning":
+        catalog["functions"][3][3] = False
+    elif drift == "function_search_path":
+        catalog["functions"][0][6] = False
+    elif drift == "function_owner":
+        catalog["functions"][0][7] = False
+    elif drift == "function_native_shape":
+        catalog["functions"][0][8] = False
+    elif drift == "function_public_execute":
+        catalog["functions"][0][9] = False
+    elif drift == "disabled_trigger":
+        catalog["triggers"][0][1] = "D"
+    elif drift == "trigger_event":
+        catalog["triggers"][0][2] = 7
+    elif drift == "trigger_filter":
+        catalog["triggers"][0][4] = False
+    elif drift == "extra_trigger":
+        catalog["triggers"].append(["unreviewed", "A", 7, "guard", True])
+    elif drift == "constraint_hash":
+        catalog["constraints"][0][5] = "0" * 64
+    elif drift == "constraint_not_validated":
+        catalog["constraints"][0][2] = False
+    else:
+        catalog["constraints"][0][3] = True
+    with pytest.raises(RuntimeError, match="migration_revision_readback_mismatch"):
+        _head_readback(catalog)
+    accepted = _head_readback(copy.deepcopy(PUBLIC_RUNTIME_BUNDLE_SCHEMA))
+    assert accepted == expected_migration_revision_readback("0046")
+    assert accepted["schema"] == "ctcc.migration_revision_readback.v3"
+
+
+@pytest.mark.parametrize("revision", ("0001", "0042", "0043", "0044", "0045"))
+def test_historical_readback_keeps_v2_schema_and_requires_runtime_custody_absence(
+    revision,
+):
+    witness = revision in ("0043", "0044", "0045")
+    hwm = revision in ("0044", "0045")
+    args = (
+        revision,
+        revision,
+        witness,
+        witness,
+        ACCOUNT_REVISION_WITNESS_TRIGGERS if witness else (),
+        hwm,
+        hwm,
+        (
+            ACCOUNT_MEASURED_HWM_V2_TRIGGERS_0045
+            if revision == "0045"
+            else ACCOUNT_MEASURED_HWM_V2_TRIGGERS
+        )
+        if hwm
+        else (),
+    )
+    result = migration_revision_readback(*args, PUBLIC_RUNTIME_BUNDLE_SCHEMA_ABSENT)
+    assert result == expected_migration_revision_readback(revision)
+    assert result["schema"] == "ctcc.migration_revision_readback.v2"
+    assert "public_runtime_bundle_schema" not in result
+    with pytest.raises(RuntimeError, match="migration_revision_readback_mismatch"):
+        migration_revision_readback(*args, PUBLIC_RUNTIME_BUNDLE_SCHEMA)
 
 
 @pytest.mark.parametrize("revision", ("0001", "0042"))
@@ -415,6 +562,7 @@ def test_migration_policy_refusal_requires_exact_database_error_and_failed_exit(
     tmp_path, monkeypatch, returncode, marker, passes
 ):
     output = (
+        "INFO Running downgrade 0046 -> 0045\n"
         "INFO Running downgrade 0045 -> 0044\n"
         "INFO Running downgrade 0044 -> 0043\n"
         "INFO Running downgrade 0043 -> 0042\n"
@@ -452,18 +600,32 @@ def test_migration_policy_refusal_requires_exact_database_error_and_failed_exit(
 
 
 @pytest.mark.parametrize(
-    "transitions",
+    "missing_transition",
     (
-        "INFO Running downgrade 0045 -> 0044\n",
-        "INFO Running downgrade 0043 -> 0042\n",
-        "INFO Running downgrade 0044 -> 0043\n",
+        "0046 -> 0045",
+        "0045 -> 0044",
+        "0044 -> 0043",
+        "0043 -> 0042",
+        "0042 -> 0041",
     ),
 )
-def test_migration_policy_refusal_rejects_missing_transition(tmp_path, transitions):
+def test_migration_policy_refusal_rejects_missing_transition(
+    tmp_path, missing_transition
+):
     log = tmp_path / "migration-downgrade-denial.log"
+    transitions = "".join(
+        f"INFO Running downgrade {transition}\n"
+        for transition in (
+            "0046 -> 0045",
+            "0045 -> 0044",
+            "0044 -> 0043",
+            "0043 -> 0042",
+            "0042 -> 0041",
+        )
+        if transition != missing_transition
+    )
     log.write_text(
-        transitions + "INFO Running downgrade 0042 -> 0041\n"
-        '  File "/app/migrations/versions/'
+        transitions + '  File "/app/migrations/versions/'
         '0042_submission_transport_authenticity_denial.py", line 109\n'
         f"asyncpg.exceptions.RaiseError: {DOWNGRADE_DENIAL}\n"
         f"sqlalchemy.exc.DBAPIError: (asyncpg.Error): {DOWNGRADE_DENIAL}\n"

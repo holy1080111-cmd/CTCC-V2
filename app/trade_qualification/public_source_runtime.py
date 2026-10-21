@@ -145,6 +145,7 @@ def _planned_public_route(plan):
             "ctcc.public.initial_runtime_plan.v2",
             "ctcc.public.runtime_plan.v3",
             "ctcc.public.initial_runtime_plan.v3",
+            "ctcc.public.initial_runtime_plan.v4",
         }
         or "registration_region" not in plan
     ):
@@ -188,11 +189,15 @@ def _fence_v2_demo_transport(state):
     """
     plan = state.get("plan")
     if type(plan) is dict:
+        if plan.get("schema_version") == "ctcc.public.initial_runtime_plan.v4":
+            _require_owned_v4_route(state)
+            return
         if plan.get("schema_version") in {
             "ctcc.public.runtime_plan.v2",
             "ctcc.public.initial_runtime_plan.v2",
             "ctcc.public.runtime_plan.v3",
             "ctcc.public.initial_runtime_plan.v3",
+            "ctcc.public.initial_runtime_plan.v4",
         } or any(
             key in plan
             for key in (
@@ -276,6 +281,35 @@ class _CapturedInitialPublicV3(_CapturedPublic):
     __slots__ = ()
 
 
+class _CapturedInitialPublicV4(_CapturedPublic):
+    __slots__ = ()
+
+
+def _require_owned_v4_route(state):
+    from app.trade_qualification import demo_operational_route_v4 as operational
+
+    try:
+        claim = operational._owned_route_state_v4(
+            state.get("v4_route_claim"),
+            invocation=state.get("invocation"),
+            owner_task=state.get("parent"),
+        )
+        plan = state["plan"]
+        if (
+            plan["schema_version"] != "ctcc.public.initial_runtime_plan.v4"
+            or plan["operational_route_proof_sha256"] != state["v4_route_proof_sha256"]
+            or plan["account_plan_sha256"] != claim["plan_sha256"]
+            or plan["rest_origin"] != claim["route"].rest_origin
+            or plan["ws_origin"] != claim["route"].ws_origin
+            or plan["registration_site"] != "UNKNOWN"
+            or plan["registration_region_authenticated"] is not False
+        ):
+            raise ValueError
+        return claim
+    except Exception:  # noqa: BLE001 -- never expose private route or account data
+        raise PublicSourceRuntimeError("public_v4_owned_route_required") from None
+
+
 def _state(source, *, audit=False):
     if type(source) is not _Source:
         raise PublicSourceRuntimeError("owned_public_source_required")
@@ -327,6 +361,7 @@ def _new_owned_client(source, role):
     _fence_v2_demo_transport(state)
     v3 = state["plan"].get("schema_version") in {
         "ctcc.public.initial_runtime_plan.v3",
+        "ctcc.public.initial_runtime_plan.v4",
         "ctcc.public.runtime_plan.v3",
     }
     v3_time = v3 and role in {"time_pre", "time_post"}
@@ -442,6 +477,7 @@ def _request_scope(source, client, request, started):
         state["plan"].get("schema_version")
         in {
             "ctcc.public.initial_runtime_plan.v3",
+            "ctcc.public.initial_runtime_plan.v4",
             "ctcc.public.runtime_plan.v3",
         }
         and not time_role
@@ -449,6 +485,7 @@ def _request_scope(source, client, request, started):
         _require_v3_pre_market_phase(source)
     if time_role and state["plan"].get("schema_version") not in {
         "ctcc.public.initial_runtime_plan.v3",
+        "ctcc.public.initial_runtime_plan.v4",
         "ctcc.public.runtime_plan.v3",
     }:
         raise PublicSourceRuntimeError("public_request_scope_invalid")
@@ -555,6 +592,11 @@ async def _fetch_http(source, client, request, started, policy):
     rejection = None
     try:
         async with asyncio.timeout(policy.request_timeout_seconds):
+            if (
+                state["plan"].get("schema_version")
+                == "ctcc.public.initial_runtime_plan.v4"
+            ):
+                _require_owned_v4_route(state)
             response = await client.send(
                 request, auth=None, follow_redirects=False, stream=True
             )
@@ -835,7 +877,11 @@ async def _fetch_owned_public_time_v3(source, role):
     _fence_v2_demo_transport(state)
     if (
         state["plan"].get("schema_version")
-        not in {"ctcc.public.initial_runtime_plan.v3", "ctcc.public.runtime_plan.v3"}
+        not in {
+            "ctcc.public.initial_runtime_plan.v3",
+            "ctcc.public.runtime_plan.v3",
+            "ctcc.public.initial_runtime_plan.v4",
+        }
         or role not in {"time_pre", "time_post"}
         or role in state.get("time_http", {})
         or role in state.get("client_roles", set())
@@ -917,6 +963,7 @@ def _ws_options(source, started):
     _fence_v2_demo_transport(state)
     if state["plan"].get("schema_version") in {
         "ctcc.public.initial_runtime_plan.v3",
+        "ctcc.public.initial_runtime_plan.v4",
         "ctcc.public.runtime_plan.v3",
     }:
         _require_v3_pre_market_phase(source)
@@ -936,6 +983,8 @@ def _ws_options(source, started):
 
 def _ws_connected(source, socket):
     state = _state(source)
+    if state["plan"].get("schema_version") == "ctcc.public.initial_runtime_plan.v4":
+        _require_owned_v4_route(state)
     if type(socket) is not ClientConnection or state["socket"] is not None:
         raise PublicSourceRuntimeError("owned_public_socket_required")
     context = state["ws_context"]
@@ -950,6 +999,8 @@ def _ws_connected(source, socket):
 
 def _ws_record(source, socket, kind, raw=None):
     state = _state(source)
+    if state["plan"].get("schema_version") == "ctcc.public.initial_runtime_plan.v4":
+        _require_owned_v4_route(state)
     if socket is not state["socket"] or kind not in {
         "ws_subscribe",
         "ws_subscribed",
@@ -963,6 +1014,8 @@ def _ws_record(source, socket, kind, raw=None):
 
 async def _receive_ws(source, socket, policy, kind):
     state = _state(source)
+    if state["plan"].get("schema_version") == "ctcc.public.initial_runtime_plan.v4":
+        _require_owned_v4_route(state)
     if socket is not state["socket"] or kind not in {"ws_ack", "ws_ticker"}:
         raise PublicSourceRuntimeError("public_socket_scope_invalid")
     async with asyncio.timeout(policy.receive_timeout_seconds):
@@ -1127,12 +1180,24 @@ async def _capture_initial_public_v3(initial_scope, policy, root):
     )
 
 
+async def _capture_initial_public_v4(initial_scope, policy, root):
+    return await _capture_owned(
+        initial_scope, policy, root, stage="initial_public", _version=4
+    )
+
+
 async def _capture_owned(scope, policy, root, *, stage, _version=1):
     # The common transport never accepts a caller plan/DTO as ownership. Each
     # stage consumes its own exact private issuer before any clock or IO.
-    if type(stage) is not str or type(_version) is not int or _version not in (1, 2, 3):
+    if (
+        type(stage) is not str
+        or type(_version) is not int
+        or _version not in (1, 2, 3, 4)
+    ):
         raise PublicSourceRuntimeError("public_capture_stage_invalid")
-    full_public = _version in (2, 3)
+    full_public = _version in (2, 3, 4)
+    if _version == 4 and stage != "initial_public":
+        raise PublicSourceRuntimeError("public_v4_initial_stage_required")
     if stage == "post_publication":
         from app.trade_qualification.post_g12_public_runtime import (
             _take_publication,
@@ -1155,7 +1220,16 @@ async def _capture_owned(scope, policy, root, *, stage, _version=1):
             _take_initial_scope_v2,
         )
 
-        claim = (_take_initial_scope_v2 if full_public else _take_initial_scope)(scope)
+        if _version == 4:
+            from app.trade_qualification.demo_market_source_v4 import (
+                _take_initial_scope_v4,
+            )
+
+            claim = _take_initial_scope_v4(scope)
+        else:
+            claim = (_take_initial_scope_v2 if full_public else _take_initial_scope)(
+                scope
+            )
         version, boundary = (
             f"ctcc.public.initial_runtime_plan.v{_version}",
             claim["invocation_started"],
@@ -1165,6 +1239,7 @@ async def _capture_owned(scope, policy, root, *, stage, _version=1):
                 1: _CapturedInitialPublic,
                 2: _CapturedInitialPublicV2,
                 3: _CapturedInitialPublicV3,
+                4: _CapturedInitialPublicV4,
             }[_version],
             _INITIAL_RESULTS,
         )
@@ -1192,7 +1267,7 @@ async def _capture_owned(scope, policy, root, *, stage, _version=1):
         **claim["plan"],
         "policy_sha256": policy_digest,
     }
-    if _version == 3:
+    if _version in (3, 4):
         if route is None:
             raise PublicSourceRuntimeError(
                 "trusted_demo_public_origin_profile_unavailable"
@@ -1207,7 +1282,7 @@ async def _capture_owned(scope, policy, root, *, stage, _version=1):
         )
     ):
         raise PublicSourceRuntimeError("public_v2_owned_plan_required")
-    if full_public:
+    if full_public and _version != 4:
         # This must precede journal creation, clock sampling and all network IO.
         _require_trusted_v2_demo_origin_profile(plan)
     source = _Source(_ISSUER)
@@ -1236,6 +1311,8 @@ async def _capture_owned(scope, policy, root, *, stage, _version=1):
     _SOURCES[source] = state
     packet = None
     try:
+        if _version == 4:
+            _require_owned_v4_route(state)
         with _runtime_attempt(root, plan) as attempt:
             state["attempt"] = attempt
             try:
@@ -1245,9 +1322,13 @@ async def _capture_owned(scope, policy, root, *, stage, _version=1):
                 if result["outcome"] != "accepted":
                     raise PublicSourceRuntimeError("native_public_clock_rejected")
                 _accept_clock_sample(state, result)
-                if _version == 3:
+                if _version in (3, 4):
                     await _fetch_owned_public_time_v3(source, "time_pre")
-                    packet = await public_v2._collect_owned_public_market_v2(source)
+                    packet = await (
+                        public_v2._collect_owned_public_market_v4(source)
+                        if _version == 4
+                        else public_v2._collect_owned_public_market_v2(source)
+                    )
                     packet = _complete_owned_public_market_v3(
                         source, packet, _owner=_ISSUER
                     )
@@ -1282,7 +1363,7 @@ async def _capture_owned(scope, policy, root, *, stage, _version=1):
                             "time_pre",
                             "time_post",
                         )
-                        if _version == 3
+                        if _version in (3, 4)
                         else ("quote", "candles", "market_aux"),
                     )
                 else:
@@ -1369,6 +1450,12 @@ def _consume_initial_public_capture_v3(value, invocation):
     )
 
 
+def _consume_initial_public_capture_v4(value, invocation):
+    return _consume_capture(
+        value, invocation, _CapturedInitialPublicV4, _INITIAL_RESULTS
+    )
+
+
 def _consume_capture(value, invocation, expected, registry):
     if type(value) is not expected:
         raise PublicSourceRuntimeError("owned_public_capture_required")
@@ -1396,6 +1483,7 @@ def _consume_capture(value, invocation, expected, registry):
             _CapturedInitialPublicV2,
             _CapturedPublicV3,
             _CapturedInitialPublicV3,
+            _CapturedInitialPublicV4,
         )
         else public.validate_collected_public_market(result[4])
     )
@@ -1425,6 +1513,7 @@ def _replay_captured_packet(plan_raw, summary_raw, packet_raw):
         "ctcc.public.initial_runtime_plan.v2",
         "ctcc.public.runtime_plan.v2",
         "ctcc.public.initial_runtime_plan.v3",
+        "ctcc.public.initial_runtime_plan.v4",
         "ctcc.public.runtime_plan.v3",
     }:
         return _replay_captured_packet_v2(plan_raw, plan, summary, packet_raw)

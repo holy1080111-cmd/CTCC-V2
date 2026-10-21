@@ -81,6 +81,7 @@ POSTGRES_INTEGRATION = (
     "test_public_receipt_witness_repository.py",
     "test_public_receipt_publication_ack_repository.py",
     "test_public_receipt_post_read_observation_repository.py",
+    "test_public_runtime_bundle_custody_repository.py",
     "test_qualification_bootstrap_repository.py",
     "test_qualification_ledger_repository.py",
     "test_qualification_ledger_restricted_role_repository.py",

@@ -1,5 +1,60 @@
 # Final completion validation state
 
+## 2026-10-22 post-`a6c659b` working-source boundary
+
+The preserved baseline is commit `a6c659bedbc8a9e7c449aa89b9b81f97383cf950`,
+tree `b90c278e2b9a7d78f6d11b299189bcff165d53f4`, manifest SHA256
+`9bf75f89fb6f16e16d2648fec6c2a70c01d3addcf2ad392e83dd46d19cdbe1e6`.
+Its [matching CI run 39644869150](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/39644869150)
+was still running when this section was written. That run cannot validate the
+following later source edits. The stopped deployment remains separate.
+
+The new [current market source V4](public_current_source_v4.md) connects the
+native signed account/config route claim, all fixed REST/WS public collectors,
+versioned raw journal and exact DB0046 bundle custody. It binds the native
+summary digest before custody and after readback; rehashing a journal while
+preserving its numeric packet cannot replace the native transport evidence.
+Rejected, malformed, timed-out, cancelled and late-cleanup config attempts keep
+bounded private evidence. Credential echoes omit raw with an explicit marker;
+they never issue a lease. Old V2/V3 policies and false flags remain unchanged.
+
+DB0046 verifies the actual restricted native PostgreSQL role, function bodies,
+trigger bindings, constraint definitions and durability settings. It commits
+once, opens another transaction for exact raw readback and refuses uncertain
+resubmission. Deterministic IDs derived from known bundle/proof digest pins
+allow a fresh restricted owner to recover retained evidence only. A readback
+cannot recreate the one-use custody or current-source capability. This is
+restricted application-role retention, not hostile-DBA protection, WORM or
+point-in-time availability. Nonempty downgrade preserves evidence by refusal.
+
+The separate [V8 financial operands](account_history_risk_v8.md) replay B1/B3,
+original position history and settled funding sources. Strictly matched normal
+full-close records can corroborate gross, signed fees, aggregate funding and
+net amounts. Execution, source update, bill posting and public settlement times
+remain distinct. Full-account history finality, risk windows, loss-streak seed
+and preserved HWM remain unproven; no portfolio snapshot or execution issuer is
+added.
+
+Focused review tests passed for source ownership/journal substitution, private
+attempt retention, custody recovery and DB0046 harness drift rejection. The
+harness-focused run recorded 208 passed, two Windows symlink skips and 28 native
+PowerShell cases deselected; it is not full Windows acceptance. New schema
+hashes were measured on isolated PostgreSQL 17.11 in
+[schema-only run 39647583880](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/39647583880),
+not a full migration or repository acceptance. Exact merged-source CI, actual
+restricted-role PostgreSQL integration and native OKX source acceptance remain
+pending. A new credentialed read on October 22 still returned HTTP 401/50110;
+identity, route and current inventory were not accepted. No exchange order
+write occurred. The later integrated source/route/custody boundary run passed
+84 cases before the final connection-callback restriction; the final custody
+unit module then passed 60 cases. These remain focused engineering results.
+
+`CTCC_V2_ENGINEERING_COMPLETE=0`,
+`MICRO_LIVE_READY_AWAITING_OPERATOR_ARM=0`, and
+`CTCC_V2_FINAL_COMPLETE=0`. All private exchange writes remain denied. Gate3,
+sealed OOS, shadow, economics, stress/chaos, real Demo/Micro Live, main merge and
+release remain separate unaccepted requirements.
+
 ## 2026-10-16 post-`4ce2c9c` working-source boundary
 
 Commit `4ce2c9ca6672d7a25b226afb3e2791bf9c4631a3`, tree

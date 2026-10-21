@@ -538,10 +538,30 @@ def _parts(packet):
 async def _collect_owned_public_market_v2(source):
     from app.trade_qualification import public_source_runtime as runtime
 
+    plan = runtime._state(source)["plan"]
+    if type(plan) is dict and plan.get("environment") == "demo":
+        runtime._require_trusted_v2_demo_origin_profile(plan)
+    return await _collect_owned_public_market_parts(source, version=2)
+
+
+async def _collect_owned_public_market_v4(source):
+    from app.trade_qualification import public_source_runtime as runtime
+
+    runtime._require_owned_v4_route(runtime._state(source))
+    return await _collect_owned_public_market_parts(source, version=4)
+
+
+async def _collect_owned_public_market_parts(source, *, version):
+    from app.trade_qualification import public_source_runtime as runtime
+
     state = runtime._state(source)
+    if version == 4:
+        runtime._require_owned_v4_route(state)
+    elif version != 2:
+        _deny("public_owned_collector_version_invalid")
     selected = _policy_copy(state["policy"])
     plan = state["plan"]
-    if type(plan) is dict and plan.get("environment") == "demo":
+    if version == 2 and type(plan) is dict and plan.get("environment") == "demo":
         # Even a malformed caller-built V2 route cannot reach a clock or IO.
         runtime._require_trusted_v2_demo_origin_profile(plan)
     route = (
@@ -591,7 +611,11 @@ async def _collect_owned_public_market_v2(source):
             raise
         tasks = {}
         try:
-            tasks["quote"] = asyncio.create_task(quotes._collect_owned_quote_v2(source))
+            tasks["quote"] = asyncio.create_task(
+                quotes._collect_owned_quote_v4(source)
+                if version == 4
+                else quotes._collect_owned_quote_v2(source)
+            )
             tasks["market_aux"] = asyncio.create_task(
                 legacy._http_capture(
                     aux.collect_market_aux,
