@@ -16,6 +16,7 @@ from pathlib import Path
 from scripts.verify_final_hermetic import (
     ARCHIVE_REQUIRED_CASES,
     DOWNGRADE_DENIAL,
+    RUNTIME_CUSTODY_PREFLIGHT_CASES,
     expected_migration_revision_readback,
     verify_downgrade_denial_log,
     verify_linux_collection,
@@ -255,6 +256,44 @@ def verify_union(
             step.get("name") == stage and step.get("exit_code") == 0 for step in stages
         ):
             raise ValueError(f"linux_union_suite_stage_failed:{name}")
+        if mode == "postgres":
+            preflight_stage = "runtime-bundle-custody-preflight"
+            observed = [
+                (i, step)
+                for i, step in enumerate(stages)
+                if step.get("name") == preflight_stage
+            ]
+            if (
+                len(observed) != 1
+                or type(observed[0][1].get("exit_code")) is not int
+                or observed[0][1]["exit_code"] != 0
+                or any(
+                    i <= observed[0][0]
+                    for i, step in enumerate(stages)
+                    if step.get("name") == stage
+                )
+            ):
+                raise ValueError("linux_union_runtime_custody_preflight_stage_missing")
+            preflight_xml = root / "test-results" / f"{preflight_stage}.xml"
+            for relative in (
+                f"{preflight_stage}.log",
+                preflight_xml.relative_to(root).as_posix(),
+            ):
+                if relative not in hashes:
+                    raise ValueError(
+                        "linux_union_runtime_custody_preflight_hash_missing"
+                    )
+            preflight = verify_pytest_report(
+                preflight_xml,
+                required_modules=tuple(
+                    sorted({module for module, _ in RUNTIME_CUSTODY_PREFLIGHT_CASES})
+                ),
+                required_cases=RUNTIME_CUSTODY_PREFLIGHT_CASES,
+            )
+            if preflight != identity.get("runtime_bundle_custody_preflight"):
+                raise ValueError(
+                    "linux_union_runtime_custody_preflight_readback_changed"
+                )
         if mode == "postgres" and (
             identity.get("synthetic_process_pg_redis_crash_durability") != "PASS"
             or identity.get("api_service_restart") != "PASS"

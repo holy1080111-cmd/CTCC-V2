@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 
+import app.public_market_source.public_runtime_journal as journal
 from app.domain.source_primitives import (
     PUBLIC_V4_CURRENT_SOURCE_POLICY_SHA256,
     PublicReceiptError,
@@ -18,7 +19,6 @@ from app.domain.source_primitives import (
     sha,
     validate_stamps,
 )
-from app.public_market_source import public_runtime_journal as journal
 
 MAX_BUNDLE_BYTES = 32 * 1024 * 1024
 SCHEMA = "ctcc.public_current_raw_bundle.v4"

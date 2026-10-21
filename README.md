@@ -30,6 +30,12 @@ it cannot grant complete portfolio risk or order authority. The
 closed-run amounts without inventing funding-accrual times, a loss-streak seed
 or a historical high-water mark.
 
+The [V4 current account source](docs/account_current_source_v4.md) retains the
+original signed page chains and native companion through DB0046 readback. It
+issues an initial, one-use source handle, with complete portfolio risk and
+post-G12 eligibility still unavailable. Synthetic boundary tests do not replace
+successful native account acquisition or PostgreSQL deployment acceptance.
+
 The following sequence describes the preserved v1.6.9 Live control design; its
 submission step is blocked in this final-completion branch pending the new
 pipeline and actual acceptance. Paper, Demo and Live remain separate systems.

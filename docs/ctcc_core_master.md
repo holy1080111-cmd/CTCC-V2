@@ -14,6 +14,12 @@ Live 維持預設關閉；只完成實際驗證的項目才能勾選 Done。
 交易金額，不補造 funding accrual、完整連敗起點或歷史高水位。
 兩者都不代表完整帳戶風險、G1–G12、OOS、Demo 或 Live 已驗收。
 
+新增 [V4 當次帳戶來源](account_current_source_v4.md)，以原生 B1／9549
+完整頁鏈與 DB0046 精確保存／讀回取得初始一次性來源 handle。它不授予
+圖後重檢、完整歷史、原子帳戶 revision 或執行資格。上一版 `2366ec3`
+在 Windows／Linux CI 揭露匯入邊界回歸；已修正並保留嚴格邊界測試，
+新來源仍須以新 commit 的完整 CI 與實際來源驗收為準。
+
 更新日期：2026-09-11。來源為「123」專案的
 [CTCC 開發進度](https://chatgpt.com/c/6a94fbd0-34e4-83ee-979c-519b5ecb1c66)。
 依 Asia/Taipei 時間，整理範圍為 9 月 9 日 22:51 起的討論，並包含同一段

@@ -62,6 +62,22 @@ def test_public_source_has_only_explicit_reviewed_consumers():
     scheduled_four_hour_consumer = (
         APP / "mie" / "validation" / "scheduled_public_four_hour_runner.py"
     )
+    current_market_consumer = APP / "trade_qualification" / "demo_market_source_v4.py"
+    current_account_consumer = (
+        APP / "trade_qualification" / "account_current_source_v4.py"
+    )
+    current_custody_imports = {
+        current_market_consumer: {
+            "app.public_market_source.public_runtime_custody_v4",
+            "app.public_market_source.public_runtime_custody_v4.PROOF_SCHEMA",
+            "app.public_market_source.public_runtime_custody_v4.freeze_runtime_bundle_v4",
+            "app.public_market_source.public_runtime_custody_v4.replay_runtime_bundle_v4",
+        },
+        current_account_consumer: {
+            "app.public_market_source.public_runtime_custody_v4",
+            "app.public_market_source.public_runtime_custody_v4.replay_operational_proof_v4",
+        },
+    }
     scheduled_minute_imports = {
         "app.public_market_source.public_clock",
         "app.public_market_source.public_clock.native_stamp",
@@ -168,6 +184,11 @@ def test_public_source_has_only_explicit_reviewed_consumers():
             "public_receipt_storage",
             "public_runtime_journal",
         ),
+        # The owned market coordinator freezes/replays exact retained bytes;
+        # the private account owner replays its already acquired route proof.
+        # Neither receives additional public capture or writable-journal APIs.
+        current_market_consumer: ("public_runtime_custody_v4",),
+        current_account_consumer: ("public_runtime_custody_v4",),
     }
     observed = set()
     observed_post_publication_imports = set()
@@ -179,6 +200,7 @@ def test_public_source_has_only_explicit_reviewed_consumers():
     observed_scheduled_minute_imports = set()
     observed_scheduled_pin_imports = set()
     observed_scheduled_four_hour_imports = set()
+    observed_current_custody_imports = {path: set() for path in current_custody_imports}
     for path in APP.rglob("*.py"):
         if path.is_relative_to(SOURCE):
             continue
@@ -186,6 +208,15 @@ def test_public_source_has_only_explicit_reviewed_consumers():
             for name in names(node):
                 if name.startswith("app.public_market_source"):
                     assert path in allowed, (path, name)
+                    if path in current_custody_imports:
+                        assert name in current_custody_imports[path], name
+                        assert (
+                            isinstance(node, ast.ImportFrom)
+                            and node.module
+                            == "app.public_market_source.public_runtime_custody_v4"
+                            and all(alias.asname is None for alias in node.names)
+                        ), name
+                        observed_current_custody_imports[path].add(name)
                     if path == post_publication_consumer:
                         assert name in post_publication_imports, name
                         observed_post_publication_imports.add(name)
@@ -302,6 +333,45 @@ def test_public_source_has_only_explicit_reviewed_consumers():
     assert observed_scheduled_minute_imports == scheduled_minute_imports
     assert observed_scheduled_pin_imports == scheduled_pin_imports
     assert observed_scheduled_four_hour_imports == scheduled_four_hour_imports
+    assert observed_current_custody_imports == current_custody_imports
+
+
+@pytest.mark.parametrize(
+    ("consumer_name", "import_line"),
+    [
+        (
+            "demo_market_source_v4.py",
+            "from app.public_market_source.public_market_capture import capture_public_market",
+        ),
+        (
+            "demo_market_source_v4.py",
+            "from app.public_market_source.public_receipt_storage import OwnedPublicReceiptPublisher",
+        ),
+        (
+            "account_current_source_v4.py",
+            "from app.public_market_source.public_runtime_custody_v4 import freeze_runtime_bundle_v4",
+        ),
+        (
+            "account_current_source_v4.py",
+            "from app.public_market_source.public_runtime_custody_v4 import replay_operational_proof_v4 as caller_alias",
+        ),
+    ],
+)
+def test_current_source_coordinators_reject_extra_public_capability(
+    monkeypatch, consumer_name, import_line
+):
+    original_nodes = nodes
+    consumer = APP / "trade_qualification" / consumer_name
+    unreviewed = ast.parse(import_line).body[0]
+
+    def with_unreviewed_import(path):
+        yield from original_nodes(path)
+        if path == consumer:
+            yield unreviewed
+
+    monkeypatch.setattr(sys.modules[__name__], "nodes", with_unreviewed_import)
+    with pytest.raises(AssertionError):
+        test_public_source_has_only_explicit_reviewed_consumers()
 
 
 def test_post_publication_rejects_unreviewed_public_capture_import(monkeypatch):

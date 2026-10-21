@@ -253,10 +253,14 @@ async def test_committed_append_with_unknown_readback_never_retries_or_issues_re
         encoding="ascii",
     )
 
-    async def unavailable(**_kwargs):
-        raise RuntimeError("private connection detail must not escape")
+    original_read = RuntimeBundleCustodyRepository._read
 
-    monkeypatch.setattr(repository, "_read", unavailable)
+    async def unavailable(_self, **kwargs):
+        if _self is repository:
+            raise RuntimeError("private connection detail must not escape")
+        return await original_read(_self, **kwargs)
+
+    monkeypatch.setattr(RuntimeBundleCustodyRepository, "_read", unavailable)
     with pytest.raises(
         RuntimeBundleCustodyError, match="^runtime_bundle_commit_uncertain$"
     ):

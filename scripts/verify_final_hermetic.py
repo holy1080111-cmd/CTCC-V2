@@ -146,6 +146,25 @@ LEDGER_SCHEMA_PREFLIGHT_CASES = (
     ),
 )
 
+RUNTIME_CUSTODY_PREFLIGHT_CASES = (
+    (
+        "tests.integration.test_public_runtime_bundle_custody_repository",
+        "test_migrated_restricted_role_commit_then_new_transaction_exact_readback",
+    ),
+    (
+        "tests.integration.test_public_runtime_bundle_custody_repository",
+        "test_privileged_migration_login_and_missing_preflight_rejected",
+    ),
+    (
+        "tests.integration.test_public_runtime_bundle_custody_repository",
+        "test_committed_append_with_unknown_readback_never_retries_or_issues_receipt",
+    ),
+    (
+        "tests.integration.test_public_runtime_bundle_custody_repository",
+        "test_direct_table_read_mutation_and_schema_changes_denied",
+    ),
+)
+
 ACCOUNT_REVISION_WITNESS_TRIGGER_CATALOG_SQL = """
 SELECT tgname, tgenabled::text, tgtype::integer,
        CASE tgname
@@ -848,6 +867,43 @@ def verify_linux_collection(path: Path, *, mode: str, index: int | None, report:
     }
 
 
+def run_runtime_bundle_custody_preflight(container, *, test_results: Path, mounts):
+    """Exercise native DB0046 protocol before any long PostgreSQL test run.
+
+    Use the same credential-free runner and isolated database as the full
+    suite. Suppress raw DB tracebacks/capture in both stage log and JUnit; the
+    exact four executed cases remain separately verifiable evidence.
+    """
+    container(
+        "runtime-bundle-custody-preflight",
+        [
+            "python",
+            "-m",
+            "scripts.hermetic_pytest",
+            "-p",
+            "no:cacheprovider",
+            "--tb=no",
+            "--show-capture=no",
+            "-o",
+            "junit_logging=no",
+            "--junitxml=/validation-results/runtime-bundle-custody-preflight.xml",
+            *(
+                f"{module.replace('.', '/')}.py::{case}"
+                for module, case in RUNTIME_CUSTODY_PREFLIGHT_CASES
+            ),
+        ],
+        mounts=mounts,
+        timeout=5 * 60,
+    )
+    return verify_pytest_report(
+        test_results / "runtime-bundle-custody-preflight.xml",
+        required_modules=tuple(
+            sorted({module for module, _ in RUNTIME_CUSTODY_PREFLIGHT_CASES})
+        ),
+        required_cases=RUNTIME_CUSTODY_PREFLIGHT_CASES,
+    )
+
+
 class Run:
     def __init__(
         self,
@@ -1462,6 +1518,11 @@ def main():
             "schema_drift": "PASS",
         }
         if args.suite in ("full", "postgres"):
+            identity["runtime_bundle_custody_preflight"] = (
+                run_runtime_bundle_custody_preflight(
+                    container, test_results=test_results, mounts=test_results_mount
+                )
+            )
             # Check the committed journal retention schema before the long
             # PostgreSQL suite. A failure is a hard denial; its allowlisted
             # mismatch category is retained in the JUnit artifact.

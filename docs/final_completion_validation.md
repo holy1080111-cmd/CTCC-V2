@@ -1,5 +1,44 @@
 # Final completion validation state
 
+## 2026-10-22 initial current-account source and CI repair
+
+The preceding exact source is `2366ec3a9110cc02da123564def5355d55b731c8`,
+tree `d2327f446039c66f735793f3f00c772806f4c787`, manifest SHA256
+`5dfa1c205e3140cb2a8ac743280de02ad14fe6bc8d8a026eea212345baaca8e4`.
+Its [CI run 39651678542](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/39651678542)
+failed three source-import boundary cases on both Windows and Linux shard 1.
+The new raw-custody module used a package-level import that the boundary
+correctly rejected, and its new reviewed market consumer was absent from the
+explicit consumer inventory. The repair uses the exact permitted module and
+lists only the required market/account replay symbols. Four mutation cases
+reject extra capture, publication, freezing and alias imports. All 30 boundary
+cases passed locally after this correction; full-source acceptance requires
+the subsequent commit's own CI. Remaining jobs from the failed run can still
+supply diagnostic evidence but cannot make that source pass.
+
+The [initial current-account source V4](account_current_source_v4.md) now owns
+the native B1/9549 acquisition, signed route proof and restricted DB0046 exact
+bundle commit/readback. One actual timeout covers acquisition and later
+database rechecks; its deadline can only shorten. Failed or late operations
+retain accepted evidence without issuing a source owner. The central custody
+repository has fixed slots so instance methods cannot be replaced with caller
+callbacks. The pinned packet-label repair excludes only verified nonsecret
+plan/page metadata from label-reflection scanning; original bytes, raw rows,
+credentials and signatures retain their checks.
+
+Focused synthetic source, custody and adjacent boundary runs passed 17, 67 and
+21 cases respectively. The DB0046 early-preflight/union harness run passed 188
+cases with two explicitly platform-limited Windows skips. Its four exact
+restricted-role PostgreSQL cases now run before the long database suite and
+require separate hashed log/JUnit readback; all ten repository integration
+cases remain in the full suite. These local tests are not real PostgreSQL,
+native TLS or signed OKX acceptance. The actual 401/50110 remains a denial.
+
+Current page-chain coverage does not establish complete history, account-wide
+atomic revision, funding accrual, loss-streak seed, HWM or portfolio risk.
+Post-G12 eligibility and all exchange-write authorities remain false. No Demo,
+OOS, Shadow, Micro Live, Notion delivery or production completion is claimed.
+
 ## 2026-10-22 post-`a6c659b` working-source boundary
 
 The preserved baseline is commit `a6c659bedbc8a9e7c449aa89b9b81f97383cf950`,

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import re
 import uuid
 from dataclasses import dataclass
@@ -81,6 +82,44 @@ def _sha(value):
 
 def canonical(value):
     return capture._canonical(value).encode("utf-8")
+
+
+def _check_owned_packet_for_storage(payload, tokens, plan):
+    """Allow the pinned nonsecret label only in owned plan/page metadata.
+
+    A pinned read lease's binding ID is forbidden in exchange responses, but
+    the existing private packet contract includes it in the copied plan. Keys,
+    secrets, passphrases and every signature remain forbidden everywhere.
+    No caller-selected JSON field or arbitrary token exemption is accepted.
+    """
+    from app.trade_qualification import account_collector as collector
+
+    selected = capture._checked_plan(plan, capture.plan_sha256(plan))
+    binding = selected.session_binding_id
+    if len(tokens) < 4 or tokens[3] != binding:
+        collector._no_secrets(payload, tokens)
+        collector._no_secret_json(payload, tokens)
+        return
+    # Revalidate the full original packet and its exact copied plan first.
+    capture.verify_demo_account_packet(
+        payload,
+        expected_sha256=digest(payload),
+        expected_plan_sha256=capture.plan_sha256(selected),
+    )
+    remaining = [*tokens[:3], *tokens[4:]]
+    collector._no_secrets(payload, remaining)
+    collector._no_secret_json(payload, remaining)
+    document = json.loads(payload)
+    if document["plan"]["session_binding_id"] != binding:
+        raise AccountJournalError("journal_original_owned_packet_required")
+    document["plan"]["session_binding_id"] = ""
+    for page in document["observations"]:
+        if page["session_binding_id"] != binding:
+            raise AccountJournalError("journal_original_owned_packet_required")
+        page["session_binding_id"] = ""
+    encoded = canonical(document)
+    collector._no_secrets(encoded, [binding])
+    collector._no_secret_json(encoded, [binding])
 
 
 @dataclass(frozen=True, slots=True, repr=False, init=False)
@@ -694,10 +733,7 @@ class _OwnedAccountJournal:
                 or frozen.sha256 != self.owned_packet_sha256
             ):
                 raise AccountJournalError("journal_original_owned_packet_required")
-            from app.trade_qualification import account_collector as collector
-
-            collector._no_secrets(frozen.payload, self.tokens)
-            collector._no_secret_json(frozen.payload, self.tokens)
+            _check_owned_packet_for_storage(frozen.payload, self.tokens, self.plan)
             await self.emit(
                 "packet_recorded",
                 {

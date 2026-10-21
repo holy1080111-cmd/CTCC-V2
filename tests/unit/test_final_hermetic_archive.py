@@ -21,12 +21,14 @@ from scripts.verify_final_hermetic import (
     DOWNGRADE_DENIAL,
     PUBLIC_RUNTIME_BUNDLE_SCHEMA,
     PUBLIC_RUNTIME_BUNDLE_SCHEMA_ABSENT,
+    RUNTIME_CUSTODY_PREFLIGHT_CASES,
     Run,
     archive_files,
     archive_tree,
     cleanup_resources,
     expected_migration_revision_readback,
     migration_revision_readback,
+    run_runtime_bundle_custody_preflight,
     verify_copied_source,
     verify_downgrade_denial_log,
 )
@@ -995,3 +997,85 @@ def test_exact_required_archive_case_cannot_be_omitted(tmp_path, case_name):
             required_cases=required,
         )
         assert result["required_case_passed"] == {"required.pg.module::target": 1}
+
+
+def _runtime_custody_report(path, *, damage=None):
+    import xml.etree.ElementTree as ET
+
+    document = ET.Element("testsuites")
+    suite = ET.SubElement(
+        document, "testsuite", tests="4", errors="0", failures="0", skipped="0"
+    )
+    for module, name in RUNTIME_CUSTODY_PREFLIGHT_CASES:
+        ET.SubElement(suite, "testcase", classname=module, name=name)
+    if damage == "missing":
+        suite.remove(suite[-1])
+        suite.set("tests", "3")
+    elif damage == "changed":
+        suite[0].set("name", "test_different_case")
+    elif damage == "skipped":
+        ET.SubElement(suite[0], "skipped")
+        suite.set("skipped", "1")
+    path.write_bytes(ET.tostring(document))
+
+
+def test_runtime_custody_preflight_uses_only_four_reviewed_credential_free_cases(
+    tmp_path,
+):
+    calls = []
+    mounts = ("-v", "isolated-results:/validation-results")
+
+    def container(name, command, **kwargs):
+        calls.append((name, command, kwargs))
+        _runtime_custody_report(tmp_path / "runtime-bundle-custody-preflight.xml")
+
+    report = run_runtime_bundle_custody_preflight(
+        container, test_results=tmp_path, mounts=mounts
+    )
+    assert report["passed"] == report["tests"] == 4
+    assert report["failures"] == report["errors"] == report["skipped"] == 0
+    assert len(report["required_case_passed"]) == 4
+    assert len(calls) == 1
+    name, command, options = calls[0]
+    assert name == "runtime-bundle-custody-preflight"
+    assert options == {"mounts": mounts, "timeout": 300}
+    assert command[:3] == ["python", "-m", "scripts.hermetic_pytest"]
+    assert "--tb=no" in command
+    assert "--show-capture=no" in command
+    assert command[command.index("-o") + 1] == "junit_logging=no"
+    assert command[-4:] == [
+        f"{module.replace('.', '/')}.py::{case}"
+        for module, case in RUNTIME_CUSTODY_PREFLIGHT_CASES
+    ]
+
+
+@pytest.mark.parametrize("damage", ("missing", "changed", "skipped"))
+def test_runtime_custody_preflight_requires_all_four_executed_cases(tmp_path, damage):
+    def container(*args, **kwargs):
+        _runtime_custody_report(
+            tmp_path / "runtime-bundle-custody-preflight.xml", damage=damage
+        )
+
+    with pytest.raises(ValueError, match="pytest_required_execution_not_verified"):
+        run_runtime_bundle_custody_preflight(
+            container, test_results=tmp_path, mounts=()
+        )
+
+
+def test_runtime_custody_failed_stage_cannot_reuse_existing_passing_xml(tmp_path):
+    _runtime_custody_report(tmp_path / "runtime-bundle-custody-preflight.xml")
+
+    def container(*args, **kwargs):
+        raise RuntimeError("validation_step_failed:runtime-bundle-custody-preflight")
+
+    with pytest.raises(RuntimeError, match="validation_step_failed"):
+        run_runtime_bundle_custody_preflight(
+            container, test_results=tmp_path, mounts=()
+        )
+
+
+def test_runtime_custody_no_actual_report_is_not_a_preflight_pass(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        run_runtime_bundle_custody_preflight(
+            lambda *args, **kwargs: None, test_results=tmp_path, mounts=()
+        )

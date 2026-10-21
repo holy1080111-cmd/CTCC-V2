@@ -21,6 +21,25 @@ from app.database.repositories import public_runtime_bundle_custody as custody
 from tests.integration import test_public_runtime_bundle_custody_repository as pg_cases
 
 
+@pytest.mark.parametrize(
+    "name",
+    [
+        "verify_deployment",
+        "seal_bundle",
+        "_check_factory",
+        "_catalog",
+        "_require_deployment",
+        "_read",
+        "read_retained_bundle_by_pins",
+    ],
+)
+def test_native_repository_cannot_accept_instance_method_callbacks(name):
+    repository = object.__new__(custody.RuntimeBundleCustodyRepository)
+    assert not hasattr(repository, "__dict__")
+    with pytest.raises(AttributeError):
+        setattr(repository, name, lambda *_args, **_kwargs: None)
+
+
 def _migration():
     path = (
         Path(__file__).parents[2]

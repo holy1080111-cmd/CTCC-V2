@@ -17,6 +17,7 @@ from scripts.verify_final_hermetic import (
     ARCHIVE_REQUIRED_CASES,
     DOWNGRADE_DENIAL,
     PUBLIC_RUNTIME_BUNDLE_SCHEMA,
+    RUNTIME_CUSTODY_PREFLIGHT_CASES,
     verify_linux_collection,
     verify_pytest_report,
 )
@@ -176,7 +177,7 @@ def _full_nodeids() -> list[str]:
     postgres = [f"{path}::test_module_smoke" for path in sorted(POSTGRES_TEST_PATHS)]
     postgres += [
         f"{module.replace('.', '/')}.py::{case}"
-        for module, case in ARCHIVE_REQUIRED_CASES
+        for module, case in (*ARCHIVE_REQUIRED_CASES, *RUNTIME_CUSTODY_PREFLIGHT_CASES)
     ]
     modules = []
     candidate = 0
@@ -326,6 +327,26 @@ def _artifacts(tmp_path: Path) -> tuple[Path, list[str]]:
         if mode == "postgres":
             identity["synthetic_process_pg_redis_crash_durability"] = "PASS"
             identity["api_service_restart"] = "PASS"
+        preflight_files = []
+        if mode == "postgres":
+            preflight_xml = results / "runtime-bundle-custody-preflight.xml"
+            _junit(
+                preflight_xml,
+                [
+                    f"{module.replace('.', '/')}.py::{case}"
+                    for module, case in RUNTIME_CUSTODY_PREFLIGHT_CASES
+                ],
+            )
+            identity["runtime_bundle_custody_preflight"] = verify_pytest_report(
+                preflight_xml,
+                required_modules=tuple(
+                    sorted({module for module, _ in RUNTIME_CUSTODY_PREFLIGHT_CASES})
+                ),
+                required_cases=RUNTIME_CUSTODY_PREFLIGHT_CASES,
+            )
+            preflight_log = root / "runtime-bundle-custody-preflight.log"
+            preflight_log.write_text("4 passed\n")
+            preflight_files = [preflight_xml, preflight_log]
         (root / "identity.json").write_text(json.dumps(identity))
         (root / "steps.json").write_text(
             json.dumps(
@@ -341,7 +362,15 @@ def _artifacts(tmp_path: Path) -> tuple[Path, list[str]]:
                             else {}
                         ),
                     }
-                    for stage_name in (*COMMON_STAGES, stage)
+                    for stage_name in (
+                        *COMMON_STAGES,
+                        *(
+                            ("runtime-bundle-custody-preflight",)
+                            if mode == "postgres"
+                            else ()
+                        ),
+                        stage,
+                    )
                 ]
             )
         )
@@ -398,6 +427,7 @@ def _artifacts(tmp_path: Path) -> tuple[Path, list[str]]:
             denial_readback_log,
             denial_log,
             *stage_logs,
+            *preflight_files,
             xml,
             collection_file,
         )
@@ -432,6 +462,116 @@ def test_exact_union_passes_and_missing_shard_fails(tmp_path):
     assert result["selected_cases"] == len(full)
     shutil.rmtree(artifacts / f"ctcc-linux-shard-7-{COMMIT}")
     with pytest.raises(ValueError, match="linux_union_component_set_incomplete"):
+        verify_union(
+            artifacts, commit=COMMIT, tree=TREE, manifest_sha256=_sha(MANIFEST)
+        )
+
+
+def _pg_root(artifacts):
+    return artifacts / f"ctcc-linux-postgres-{COMMIT}" / "ctcc-validation"
+
+
+def _rehash(root, *paths):
+    hashes_path = root / "results.sha256.json"
+    hashes = json.loads(hashes_path.read_text())
+    for path in paths:
+        hashes[path.relative_to(root).as_posix()] = _sha(path.read_bytes())
+    hashes_path.write_text(json.dumps(hashes))
+
+
+@pytest.mark.parametrize(
+    "damage", ("missing", "failed", "boolean", "duplicate", "late")
+)
+def test_union_requires_actual_early_runtime_custody_preflight(tmp_path, damage):
+    artifacts, _ = _artifacts(tmp_path)
+    root = _pg_root(artifacts)
+    path = root / "steps.json"
+    stages = json.loads(path.read_text())
+    target = next(
+        step for step in stages if step["name"] == "runtime-bundle-custody-preflight"
+    )
+    if damage == "missing":
+        stages.remove(target)
+    elif damage == "failed":
+        target["exit_code"] = 1
+    elif damage == "boolean":
+        target["exit_code"] = False
+    elif damage == "duplicate":
+        stages.append(dict(target))
+    else:
+        stages.remove(target)
+        stages.append(target)
+    path.write_text(json.dumps(stages))
+    _rehash(root, path)
+    with pytest.raises(ValueError, match="runtime_custody_preflight_stage_missing"):
+        verify_union(
+            artifacts, commit=COMMIT, tree=TREE, manifest_sha256=_sha(MANIFEST)
+        )
+
+
+@pytest.mark.parametrize(
+    "relative",
+    (
+        "runtime-bundle-custody-preflight.log",
+        "test-results/runtime-bundle-custody-preflight.xml",
+    ),
+)
+def test_union_requires_hashed_runtime_custody_preflight_evidence(tmp_path, relative):
+    artifacts, _ = _artifacts(tmp_path)
+    root = _pg_root(artifacts)
+    path = root / "results.sha256.json"
+    hashes = json.loads(path.read_text())
+    hashes.pop(relative)
+    path.write_text(json.dumps(hashes))
+    with pytest.raises(ValueError, match="runtime_custody_preflight_hash_missing"):
+        verify_union(
+            artifacts, commit=COMMIT, tree=TREE, manifest_sha256=_sha(MANIFEST)
+        )
+
+
+@pytest.mark.parametrize("damage", ("missing_case", "changed_case", "skipped_case"))
+def test_union_replays_exact_runtime_custody_cases_after_rehash(tmp_path, damage):
+    artifacts, _ = _artifacts(tmp_path)
+    root = _pg_root(artifacts)
+    path = root / "test-results/runtime-bundle-custody-preflight.xml"
+    document = ET.fromstring(path.read_bytes())
+    suite = document.find("testsuite")
+    case = suite.find("testcase")
+    if damage == "missing_case":
+        suite.remove(case)
+        suite.set("tests", "3")
+    elif damage == "changed_case":
+        case.set("name", "test_unreviewed_replacement")
+    else:
+        ET.SubElement(case, "skipped")
+        suite.set("skipped", "1")
+    path.write_bytes(ET.tostring(document))
+    _rehash(root, path)
+    with pytest.raises(ValueError, match="pytest_required_execution_not_verified"):
+        verify_union(
+            artifacts, commit=COMMIT, tree=TREE, manifest_sha256=_sha(MANIFEST)
+        )
+
+
+@pytest.mark.parametrize(
+    "damage", ("missing_receipt", "changed_receipt", "changed_xml")
+)
+def test_union_requires_exact_runtime_custody_preflight_readback(tmp_path, damage):
+    artifacts, _ = _artifacts(tmp_path)
+    root = _pg_root(artifacts)
+    path = root / "identity.json"
+    identity = json.loads(path.read_text())
+    if damage == "missing_receipt":
+        identity.pop("runtime_bundle_custody_preflight")
+    elif damage == "changed_receipt":
+        identity["runtime_bundle_custody_preflight"]["passed"] = 3
+    else:
+        xml = root / "test-results/runtime-bundle-custody-preflight.xml"
+        xml.write_bytes(xml.read_bytes() + b"\n")
+        _rehash(root, xml)
+    path.write_text(json.dumps(identity))
+    _rehash(root, path)
+    with pytest.raises(ValueError, match="runtime_custody_preflight_readback_changed"):
         verify_union(
             artifacts, commit=COMMIT, tree=TREE, manifest_sha256=_sha(MANIFEST)
         )

@@ -429,6 +429,8 @@ class RuntimeBundleCustodyRepository:
     creates a receipt. A possibly committed append is never retried here.
     """
 
+    __slots__ = ("_deployment", "_engine", "_factory", "_poisoned")
+
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]):
         self._factory = session_factory
         self._engine = None

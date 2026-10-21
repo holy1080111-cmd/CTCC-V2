@@ -19,6 +19,14 @@ The [V4 current-source owner](public_current_source_v4.md) and
 complete portfolio risk, historical availability and execution authority.
 Matching native PostgreSQL and full-source CI acceptance are pending.
 
+The initial [V4 current account owner](account_current_source_v4.md) now binds
+the native B1/9549 chain to exact DB0046 retained bytes. History, account-wide
+revision, portfolio risk and post-G12 eligibility remain unavailable. A short
+DB0046 preflight runs before the long PostgreSQL suite and has its own hashed
+log/JUnit readback; the full PostgreSQL suite is still required. The preceding
+`2366ec3` CI exposed an import-boundary regression on Windows and Linux. Its
+correction needs a new exact-source run; that failed run is not acceptance.
+
 Migration `0045` repairs the first-sample insert
 guard in the `0044` DENY-only sampled balance high-water-mark diagnostic over
 accepted observations. Its first sample is not exchange-account genesis, and
