@@ -7,17 +7,28 @@ OS/database isolation and real measured-source acceptance are reviewed.
 
 from __future__ import annotations
 
+import asyncio
+import os
 import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from threading import Lock, get_ident
+from types import FunctionType, MethodType
+from weakref import WeakKeyDictionary
 
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
+
+from app.database.repositories.public_receipt_post_read_observation import (
+    PublicReceiptPostReadRepository,
+)
 from app.database.repositories.public_receipt_witness import (
     PublicReceiptWitnessRepository,
     PublicWitnessError,
     WitnessRevision,
 )
+from app.database.repositories.public_runtime_bundle_custody import _native_engine
 from app.public_market_source.public_checkpoint_hook import (
     _ISSUER as _HOOK_ISSUER,
 )
@@ -40,6 +51,148 @@ from app.public_market_source.public_receipt_storage import (
 _ISSUER = object()
 _HEX32 = re.compile(r"[a-f0-9]{32}\Z")
 _HEX64 = re.compile(r"[a-f0-9]{64}\Z")
+_SOURCE_ISSUER = object()
+_SOURCE_LOCK = Lock()
+_SOURCE_RESULTS = WeakKeyDictionary()
+_SOURCE_USED_PLANS = WeakKeyDictionary()
+_SOURCE_BUSY = WeakKeyDictionary()
+_SOURCE_REPOSITORY_METHODS = {
+    cls: {
+        name: member
+        for name, member in vars(cls).items()
+        if type(member) in (FunctionType, staticmethod)
+    }
+    for cls in (PublicReceiptWitnessRepository, PublicReceiptPostReadRepository)
+}
+
+
+@dataclass(frozen=True, slots=True)
+class _SourceDatabasePins:
+    witness: object
+    observation: object
+    factories: tuple
+    engines: tuple
+    options: tuple
+
+
+def _source_database_pins(witness, observation, pins=None):
+    """Offline native-factory and method guard, before any repository callback.
+
+    Reuses the reviewed pinned SQLAlchemy/asyncpg engine policy. As with runtime
+    bundle custody, hostile arbitrary in-process replacement and DBAs remain
+    outside this application-role boundary.
+    """
+    repositories = (witness, observation)
+    classes = (PublicReceiptWitnessRepository, PublicReceiptPostReadRepository)
+    fields = ({"session_factory"}, {"session_factory", "witness_repository"})
+    factories, engines, options = [], [], []
+    for repository, cls, keys in zip(repositories, classes, fields, strict=True):
+        if type(repository) is not cls or set(vars(repository)) != keys:
+            raise PublicWitnessError("source_native_database_required")
+        for name, expected in _SOURCE_REPOSITORY_METHODS[cls].items():
+            if vars(cls).get(name) is not expected:
+                raise PublicWitnessError("source_native_database_required")
+            bound = getattr(repository, name)
+            if type(expected) is staticmethod:
+                valid = type(bound) is FunctionType and bound is expected.__func__
+            else:
+                valid = (
+                    type(bound) is MethodType
+                    and bound.__self__ is repository
+                    and bound.__func__ is expected
+                )
+            if not valid:
+                raise PublicWitnessError("source_native_database_required")
+        factory = repository.session_factory
+        if (
+            type(factory) is not async_sessionmaker
+            or set(vars(factory)) != {"kw", "class_"}
+            or factory.class_ is not AsyncSession
+            or type(factory.kw) is not dict
+            or not set(factory.kw) <= {"bind", "autoflush", "expire_on_commit"}
+            or any(
+                key in factory.kw and type(factory.kw[key]) is not bool
+                for key in ("autoflush", "expire_on_commit")
+            )
+        ):
+            raise PublicWitnessError("source_native_database_required")
+        engine = factory.kw.get("bind")
+        if (
+            type(engine) is not AsyncEngine
+            or engine.dialect.name != "postgresql"
+            or engine.dialect.driver != "asyncpg"
+            or not _native_engine(engine)
+        ):
+            raise PublicWitnessError("source_native_database_required")
+        factories.append(factory)
+        engines.append(engine)
+        options.append(tuple(sorted(factory.kw.items())))
+    if observation.witness_repository is not witness:
+        raise PublicWitnessError("source_native_database_required")
+    if pins is not None and (
+        type(pins) is not _SourceDatabasePins
+        or pins.witness is not witness
+        or pins.observation is not observation
+        or any(
+            old is not new for old, new in zip(pins.factories, factories, strict=True)
+        )
+        or any(old is not new for old, new in zip(pins.engines, engines, strict=True))
+        or pins.options != tuple(options)
+    ):
+        raise PublicWitnessError("source_native_database_changed")
+    return _SourceDatabasePins(
+        witness, observation, tuple(factories), tuple(engines), tuple(options)
+    )
+
+
+def _owned_source_repositories(pins):
+    """Private factories/repos, so caller instance swaps cannot enter DB awaits.
+
+    Engines are the already verified native engines, not new DB connections or
+    a second DB implementation. Shared engine/class hostile mutation remains
+    outside the reviewed application-role model.
+    """
+    if type(pins) is not _SourceDatabasePins:
+        raise PublicWitnessError("source_native_database_required")
+    factories = tuple(
+        async_sessionmaker(class_=AsyncSession, **dict(options))
+        for options in pins.options
+    )
+    witness = PublicReceiptWitnessRepository(factories[0])
+    observation = PublicReceiptPostReadRepository(factories[1], witness)
+    return witness, observation
+
+
+def _source_context():
+    try:
+        task = asyncio.current_task()
+    except RuntimeError:
+        raise PublicWitnessError("source_capture_task_required") from None
+    if task is None:
+        raise PublicWitnessError("source_capture_task_required")
+    return os.getpid(), get_ident(), task
+
+
+class NativeSourcePostReadCapture:
+    """One-use same-task result, never reconstructible from saved evidence."""
+
+    __slots__ = ("__weakref__",)
+
+    def __init__(self, issuer):
+        if issuer is not _SOURCE_ISSUER:
+            raise PublicWitnessError("native_source_capture_required")
+
+    def __copy__(self):
+        raise PublicWitnessError("native_source_capture_not_transferable")
+
+    def __deepcopy__(self, memo):
+        raise PublicWitnessError("native_source_capture_not_transferable")
+
+    def __reduce_ex__(self, protocol):
+        raise PublicWitnessError("native_source_capture_not_transferable")
+
+    def __reduce__(self):
+        raise PublicWitnessError("native_source_capture_not_transferable")
 
 
 @dataclass(frozen=True, slots=True)
@@ -213,7 +366,7 @@ class ControlledPublicCheckpointWitness:
 class PublicCheckpointCaptureService:
     """Explicit one-root owner; never created by API startup or scheduler."""
 
-    __slots__ = ("_journal", "_journal_id", "_latest", "_repository")
+    __slots__ = ("__weakref__", "_journal", "_journal_id", "_latest", "_repository")
 
     def __init__(self, issuer, journal, repository, journal_id, latest):
         if issuer is not _ISSUER:
@@ -302,6 +455,215 @@ class PublicCheckpointCaptureService:
             # A negative attempt can be fully anchored and closed before the
             # collector raises. Unknown commits still block the next open.
             self._latest = witness._latest
+
+    async def capture_source_with_post_read_v3(
+        self, *, plan, expected_plan_sha256, observation_repository
+    ) -> NativeSourcePostReadCapture:
+        """Acquire a fresh source batch without a holdout, seal or candidate.
+
+        The new method burns its plan before any await. Neither a failed append
+        nor an uncertain readback can be retried through this service instance.
+        Only its process/thread/task can consume the resulting one-use carrier.
+        V3's clock/custody/research limitations remain unchanged.
+        """
+        from app.database.repositories.public_receipt_post_read_observation import (
+            PublicReceiptPostReadRepository,
+        )
+        from app.mie.validation.artifact import FrozenGate3Artifact
+        from app.mie.validation.post_publication_availability_v3 import (
+            PostPublicationCaptureV3,
+            freeze_post_publication_capture_v3,
+            verify_post_publication_capture_v3,
+        )
+
+        if (
+            type(self) is not PublicCheckpointCaptureService
+            or type(observation_repository) is not PublicReceiptPostReadRepository
+            or observation_repository.witness_repository is not self._repository
+        ):
+            raise PublicWitnessError("source_capture_services_invalid")
+        selected = checked(plan, PublicMinuteCapturePlanV1)
+        if (
+            type(expected_plan_sha256) is not str
+            or selected.canonical_sha256() != expected_plan_sha256
+        ):
+            raise PublicWitnessError("source_capture_plan_pin_mismatch")
+        context = _source_context()
+        with _SOURCE_LOCK:
+            used = _SOURCE_USED_PLANS.setdefault(self, set())
+            if (
+                self in _SOURCE_BUSY
+                or expected_plan_sha256 in used
+                or len(used) >= 1024
+            ):
+                raise PublicWitnessError("source_capture_already_attempted")
+            used.add(expected_plan_sha256)
+            _SOURCE_BUSY[self] = context
+        owned_service = None
+        try:
+            database_pins = _source_database_pins(
+                self._repository, observation_repository
+            )
+            owned_repository, owned_observation = _owned_source_repositories(
+                database_pins
+            )
+            owned_pins = _source_database_pins(owned_repository, owned_observation)
+            owned_service = PublicCheckpointCaptureService(
+                _ISSUER, self._journal, owned_repository, self._journal_id, self._latest
+            )
+            await owned_repository.verify_role()
+            _source_database_pins(
+                self._repository, observation_repository, database_pins
+            )
+            _source_database_pins(owned_repository, owned_observation, owned_pins)
+            await owned_observation.verify_role()
+            _source_database_pins(
+                self._repository, observation_repository, database_pins
+            )
+            _source_database_pins(owned_repository, owned_observation, owned_pins)
+            witnessed = await owned_service.capture(
+                plan=selected, expected_plan_sha256=expected_plan_sha256
+            )
+            _source_database_pins(
+                self._repository, observation_repository, database_pins
+            )
+            _source_database_pins(owned_repository, owned_observation, owned_pins)
+            checkpoint = self._journal.checkpoint
+            if (
+                type(witnessed) is not WitnessedPublicCapture
+                or checkpoint.canonical_sha256() != witnessed.checkpoint_sha256
+                or checkpoint.genesis_sha256 != owned_service._latest.journal_key
+            ):
+                raise PublicWitnessError("source_capture_checkpoint_changed")
+            source = {
+                "journal": self._journal,
+                "witness_repository": owned_repository,
+                "capture_id": witnessed.capture_id,
+                "expected_plan_sha256": expected_plan_sha256,
+                "expected_receipt_sha256": witnessed.receipt_sha256,
+                "expected_journal_genesis_sha256": checkpoint.genesis_sha256,
+                "expected_capture_checkpoint_sha256": witnessed.checkpoint_sha256,
+                "expected_witness_revision": witnessed.witness_revision,
+                "expected_witness_record_sha256": witnessed.witness_record_sha256,
+            }
+            frozen = await freeze_post_publication_capture_v3(
+                observation_repository=owned_observation, **source
+            )
+            _source_database_pins(
+                self._repository, observation_repository, database_pins
+            )
+            _source_database_pins(owned_repository, owned_observation, owned_pins)
+            if type(frozen) is not FrozenGate3Artifact:
+                raise PublicWitnessError("source_post_read_result_invalid")
+            verified = await verify_post_publication_capture_v3(
+                frozen.payload,
+                expected_sha256=frozen.sha256,
+                observation_repository=owned_observation,
+                **source,
+            )
+            _source_database_pins(
+                self._repository, observation_repository, database_pins
+            )
+            _source_database_pins(owned_repository, owned_observation, owned_pins)
+            if (
+                type(verified) is not PostPublicationCaptureV3
+                or verified != frozen.contract
+                or verified.canonical_json_bytes() != frozen.payload
+                or sha(frozen.payload) != frozen.sha256
+                or verified.v2_capture.capture_id != witnessed.capture_id
+                or verified.v2_capture.plan_sha256 != expected_plan_sha256
+                or verified.v2_capture.receipt_sha256 != witnessed.receipt_sha256
+                or verified.v2_capture.instrument_id != selected.instrument_id
+                or len(verified.v2_capture.rows) != selected.expected_rows
+                or _source_context() != context
+            ):
+                raise PublicWitnessError("source_post_read_result_mismatch")
+            result = NativeSourcePostReadCapture(_SOURCE_ISSUER)
+            with _SOURCE_LOCK:
+                _SOURCE_RESULTS[result] = (self, context, expected_plan_sha256, frozen)
+            return result
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - DB/transport details must not enter public evidence.
+            raise PublicWitnessError("source_post_read_capture_failed") from None
+        finally:
+            if owned_service is not None:
+                # Includes capture errors and unknown commits; never erase the
+                # latest unresolved witness state or restart the old operation.
+                self._latest = owned_service._latest
+            with _SOURCE_LOCK:
+                _SOURCE_BUSY.pop(self, None)
+
+    def consume_source_post_read_v3(self, result, *, expected_plan_sha256):
+        """Burn one native result; returned bytes are evidence, never authority."""
+        if type(result) is not NativeSourcePostReadCapture:
+            raise PublicWitnessError("native_source_capture_required")
+        with _SOURCE_LOCK:
+            bound = _SOURCE_RESULTS.pop(result, None)
+        if (
+            bound is None
+            or type(expected_plan_sha256) is not str
+            or _HEX64.fullmatch(expected_plan_sha256) is None
+            or bound[0] is not self
+            or bound[1] != _source_context()
+            or bound[2] != expected_plan_sha256
+        ):
+            raise PublicWitnessError("native_source_capture_required")
+        frozen = bound[3]
+        if (
+            frozen.contract.canonical_json_bytes() != frozen.payload
+            or sha(frozen.payload) != frozen.sha256
+        ):
+            raise PublicWitnessError("native_source_capture_changed")
+        return frozen
+
+    async def replay_source_post_read_v3(
+        self, payload, *, expected_sha256, expected_plan_sha256, observation_repository
+    ):
+        """Read-only original-source replay. This never issues a native carrier."""
+        from app.database.repositories.public_receipt_post_read_observation import (
+            PublicReceiptPostReadRepository,
+        )
+        from app.mie.validation.artifact import _verify
+        from app.mie.validation.post_publication_availability_v3 import (
+            PostPublicationCaptureV3,
+            verify_post_publication_capture_v3,
+        )
+
+        if (
+            type(self) is not PublicCheckpointCaptureService
+            or type(observation_repository) is not PublicReceiptPostReadRepository
+            or observation_repository.witness_repository is not self._repository
+        ):
+            raise PublicWitnessError("source_capture_services_invalid")
+        database_pins = _source_database_pins(self._repository, observation_repository)
+        owned_repository, owned_observation = _owned_source_repositories(database_pins)
+        owned_pins = _source_database_pins(owned_repository, owned_observation)
+        recorded = _verify(
+            payload,
+            expected_sha256=expected_sha256,
+            contract_type=PostPublicationCaptureV3,
+        )
+        source = recorded.v2_capture
+        if source.plan_sha256 != expected_plan_sha256:
+            raise PublicWitnessError("source_capture_plan_pin_mismatch")
+        verified = await verify_post_publication_capture_v3(
+            payload,
+            expected_sha256=expected_sha256,
+            observation_repository=owned_observation,
+            journal=self._journal,
+            witness_repository=owned_repository,
+            capture_id=source.capture_id,
+            expected_plan_sha256=source.plan_sha256,
+            expected_receipt_sha256=source.receipt_sha256,
+            expected_journal_genesis_sha256=source.journal_genesis_sha256,
+            expected_capture_checkpoint_sha256=source.capture_checkpoint_sha256,
+            expected_witness_revision=source.witness_revision,
+            expected_witness_record_sha256=source.witness_record_sha256,
+        )
+        _source_database_pins(self._repository, observation_repository, database_pins)
+        _source_database_pins(owned_repository, owned_observation, owned_pins)
+        return verified
 
     async def capture_with_post_read_v3(
         self,
@@ -399,6 +761,7 @@ class PublicCheckpointCaptureService:
 
 
 __all__ = (
+    "NativeSourcePostReadCapture",
     "OwnedPostReadCapture",
     "PublicCheckpointCaptureService",
     "WitnessedPublicCapture",

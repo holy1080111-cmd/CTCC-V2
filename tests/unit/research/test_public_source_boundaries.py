@@ -50,6 +50,18 @@ def test_public_source_has_only_explicit_reviewed_consumers():
     post_read_batch_consumer = APP / "mie" / "validation" / "post_read_batch_v3.py"
     post_read_stitch_consumer = APP / "mie" / "validation" / "post_read_stitch_v1.py"
     native_devval_consumer = APP / "mie" / "validation" / "native_devval_cohort_v1.py"
+    devval_source_plan_consumer = (
+        APP / "mie" / "validation" / "development_validation_source_plan_v1.py"
+    )
+    devval_source_plan_imports = {
+        "app.public_market_source.public_attempt_journal",
+        "app.public_market_source.public_attempt_journal.MAX_ATTEMPTS",
+        "app.public_market_source.public_market_receipts",
+        "app.public_market_source.public_market_receipts.PublicMinuteCapturePlanV1",
+        "app.public_market_source.public_market_receipts.checked",
+        "app.public_market_source.public_receipt_storage",
+        "app.public_market_source.public_receipt_storage.MAX_CAPTURES",
+    }
     scheduled_minute_consumer = (
         APP / "mie" / "validation" / "scheduled_public_minute.py"
     )
@@ -157,6 +169,13 @@ def test_public_source_has_only_explicit_reviewed_consumers():
         # The D/V cohort replays retained journal bytes only. It may name this
         # exact read-only journal type, but owns no acquisition or publisher.
         native_devval_consumer: ("public_receipt_storage",),
+        # A portable batch plan names only exact request/limit contracts. The
+        # separate owner reaches acquisition through the reviewed MIE service.
+        devval_source_plan_consumer: (
+            "public_attempt_journal",
+            "public_market_receipts",
+            "public_receipt_storage",
+        ),
         # One opt-in research minute samples the native clock and converts its
         # pinned UTC nanoseconds. It cannot import capture or storage here.
         scheduled_minute_consumer: ("public_clock", "public_market_receipts"),
@@ -197,6 +216,7 @@ def test_public_source_has_only_explicit_reviewed_consumers():
     post_read_stitch_import_count = 0
     observed_native_devval_imports = set()
     native_devval_import_count = 0
+    observed_devval_source_plan_imports = set()
     observed_scheduled_minute_imports = set()
     observed_scheduled_pin_imports = set()
     observed_scheduled_four_hour_imports = set()
@@ -208,6 +228,12 @@ def test_public_source_has_only_explicit_reviewed_consumers():
             for name in names(node):
                 if name.startswith("app.public_market_source"):
                     assert path in allowed, (path, name)
+                    if path == devval_source_plan_consumer:
+                        assert name in devval_source_plan_imports, name
+                        assert isinstance(node, ast.ImportFrom) and all(
+                            alias.asname is None for alias in node.names
+                        ), name
+                        observed_devval_source_plan_imports.add(name)
                     if path in current_custody_imports:
                         assert name in current_custody_imports[path], name
                         assert (
@@ -330,6 +356,7 @@ def test_public_source_has_only_explicit_reviewed_consumers():
     assert post_read_stitch_import_count == 1
     assert observed_native_devval_imports == post_read_batch_imports
     assert native_devval_import_count == 1
+    assert observed_devval_source_plan_imports == devval_source_plan_imports
     assert observed_scheduled_minute_imports == scheduled_minute_imports
     assert observed_scheduled_pin_imports == scheduled_pin_imports
     assert observed_scheduled_four_hour_imports == scheduled_four_hour_imports
@@ -362,6 +389,33 @@ def test_current_source_coordinators_reject_extra_public_capability(
 ):
     original_nodes = nodes
     consumer = APP / "trade_qualification" / consumer_name
+    unreviewed = ast.parse(import_line).body[0]
+
+    def with_unreviewed_import(path):
+        yield from original_nodes(path)
+        if path == consumer:
+            yield unreviewed
+
+    monkeypatch.setattr(sys.modules[__name__], "nodes", with_unreviewed_import)
+    with pytest.raises(AssertionError):
+        test_public_source_has_only_explicit_reviewed_consumers()
+
+
+@pytest.mark.parametrize(
+    "import_line",
+    [
+        "from app.public_market_source.public_market_capture import collect_and_publish_public_minutes",
+        "from app.public_market_source.public_attempt_journal import _ISSUER",
+        "from app.public_market_source.public_receipt_storage import ControlledPublicReceiptJournal",
+        "from app.public_market_source.public_market_receipts import checked as caller_alias",
+        "import app.public_market_source.public_market_receipts",
+    ],
+)
+def test_devval_source_plan_rejects_extra_or_aliased_capability(
+    monkeypatch, import_line
+):
+    original_nodes = nodes
+    consumer = APP / "mie" / "validation" / "development_validation_source_plan_v1.py"
     unreviewed = ast.parse(import_line).body[0]
 
     def with_unreviewed_import(path):
