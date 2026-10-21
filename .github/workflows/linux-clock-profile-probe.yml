@@ -1,0 +1,39 @@
+name: Linux clock profile measurement
+
+on:
+  push:
+    branches:
+      - validation/linux-clock-profile-20261022
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  measure:
+    if: github.ref == 'refs/heads/validation/linux-clock-profile-20261022'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact validation source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Measure host and pinned container with the same host compiled probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -B scripts/run_linux_clock_profile_probe_v1.py \
+            --expected-head '${{ github.sha }}' \
+            --output "$RUNNER_TEMP/ctcc-linux-clock-profile"
+
+      - name: Preserve measurement and actual command outcomes
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ctcc-linux-clock-profile-${{ github.sha }}
+          path: ${{ runner.temp }}/ctcc-linux-clock-profile/*
+          if-no-files-found: error
+          retention-days: 30
