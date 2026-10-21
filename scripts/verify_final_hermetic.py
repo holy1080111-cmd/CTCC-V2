@@ -26,6 +26,9 @@ from scripts.verify_linux_shard import POSTGRES_TEST_PATHS, SHARD_COUNT, selecte
 from scripts.verify_native_witness_identity_schema import (
     NATIVE_WITNESS_IDENTITY_SCHEMA,
     NATIVE_WITNESS_IDENTITY_SCHEMA_SQL,  # noqa: F401 -- probe/API re-export
+    NATIVE_WITNESS_OBJECT_CUSTODY_SQL,  # noqa: F401 -- probe/API re-export
+    NATIVE_WITNESS_RETENTION_SNAPSHOT_SQL,  # noqa: F401 -- probe/API re-export
+    expected_legacy_witness_identity_schema,
     require_native_witness_identity_baseline,
 )
 
@@ -36,6 +39,9 @@ VALIDATION_BUDGET_SECONDS = 165 * 60
 CLEANUP_BUDGET_SECONDS = 5 * 60
 HEARTBEAT_INTERVAL_SECONDS = 60
 DOWNGRADE_DENIAL = "submission_transport_authenticity_downgrade_denied"
+NATIVE_IDENTITY_DOWNGRADE_DENIAL = (
+    "public_witness_wide_identity_downgrade_requires_empty"
+)
 PRIVATE_ARCHIVE_SUFFIXES = frozenset(
     {".token", ".key", ".pem", ".p12", ".pfx", ".kdbx", ".jks", ".keystore"}
 )
@@ -464,7 +470,7 @@ PUBLIC_RUNTIME_BUNDLE_SCHEMA_ABSENT = {
     "constraints": [],
 }
 
-MIGRATION_REVISION_PROBE = """
+MIGRATION_REVISION_READER = """
 import asyncio, json, sys
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -476,13 +482,20 @@ from scripts.verify_final_hermetic import (
     PUBLIC_RUNTIME_BUNDLE_SCHEMA_SQL,
     NATIVE_WITNESS_IDENTITY_SCHEMA_SQL,
     migration_revision_readback,
+    native_identity_empty_downgrade_readback,
+    native_identity_empty_before_readback,
+    NATIVE_WITNESS_OBJECT_CUSTODY_SQL,
+    NATIVE_WITNESS_RETENTION_SNAPSHOT_SQL,
+    native_identity_nonempty_snapshot,
 )
 from scripts.verify_migration_identity import database_head
 
-async def read_head():
+async def read_head(*, retain=False):
     engine = create_async_engine(get_settings().database_url, poolclass=NullPool)
     try:
         async with engine.connect() as connection:
+            connection = await connection.execution_options(isolation_level="REPEATABLE READ")
+            await connection.execute(text("SET TRANSACTION READ ONLY"))
             def read_state(sync_connection):
                 head = database_head(sync_connection)
                 witness_present = sync_connection.execute(text(
@@ -509,20 +522,52 @@ async def read_head():
                 native_catalog = sync_connection.execute(text(
                     NATIVE_WITNESS_IDENTITY_SCHEMA_SQL
                 )).scalar_one()
+                custody = sync_connection.execute(text(
+                    NATIVE_WITNESS_OBJECT_CUSTODY_SQL
+                )).scalar_one()
+                retention = sync_connection.execute(text(
+                    NATIVE_WITNESS_RETENTION_SNAPSHOT_SQL
+                )).scalar_one() if retain else None
                 return (head, witness_present, guard_present, trigger_catalog,
-                        hwm_present, hwm_guard_present, hwm_catalog, runtime_catalog, native_catalog)
+                        hwm_present, hwm_guard_present, hwm_catalog, runtime_catalog, native_catalog, retention, custody)
             return await connection.run_sync(read_state)
     finally:
         await engine.dispose()
 
-observed, witness_present, guard_present, trigger_catalog, hwm_present, hwm_guard_present, hwm_catalog, runtime_catalog, native_catalog = asyncio.run(read_head())
+"""
+
+MIGRATION_REVISION_PROBE = (
+    MIGRATION_REVISION_READER
+    + """
+observed, witness_present, guard_present, trigger_catalog, hwm_present, hwm_guard_present, hwm_catalog, runtime_catalog, native_catalog, _, custody = asyncio.run(read_head())
 expected = sys.argv[1]
 result = migration_revision_readback(
     expected, observed, witness_present, guard_present, trigger_catalog,
     hwm_present, hwm_guard_present, hwm_catalog, runtime_catalog, native_catalog,
 )
+if len(sys.argv) == 3:
+    if sys.argv[2] == 'native-identity-0047-empty-down' and expected == '0046':
+        result = native_identity_empty_downgrade_readback(result, native_catalog, custody)
+    elif sys.argv[2] == 'native-identity-0047-empty-before' and expected == '0047':
+        result = native_identity_empty_before_readback(result, custody)
+    else:
+        raise RuntimeError('native_identity_down_probe_scope_invalid')
 print(json.dumps(result, sort_keys=True))
 """
+)
+
+NATIVE_IDENTITY_RETENTION_PROBE = (
+    MIGRATION_REVISION_READER
+    + """
+observed, witness_present, guard_present, trigger_catalog, hwm_present, hwm_guard_present, hwm_catalog, runtime_catalog, native_catalog, retention, _ = asyncio.run(read_head(retain=True))
+revision = migration_revision_readback(
+    '0047', observed, witness_present, guard_present, trigger_catalog,
+    hwm_present, hwm_guard_present, hwm_catalog, runtime_catalog, native_catalog,
+)
+result = native_identity_nonempty_snapshot(revision, retention)
+print(json.dumps(result, sort_keys=True))
+"""
+)
 
 
 def expected_migration_revision_readback(revision: str) -> dict:
@@ -569,6 +614,128 @@ def expected_migration_revision_readback(revision: str) -> dict:
             NATIVE_WITNESS_IDENTITY_SCHEMA
         )
     return result
+
+
+def _require_native_object_digest(value: str) -> None:
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
+        raise RuntimeError("native_identity_object_custody_digest_invalid")
+
+
+def native_identity_empty_before_readback(revision: dict, custody_sha256: str) -> dict:
+    require_native_witness_identity_baseline()
+    _require_native_object_digest(custody_sha256)
+    if not native_migration_json_equal(
+        revision, expected_migration_revision_readback("0047")
+    ):
+        raise RuntimeError("native_identity_empty_before_readback_mismatch")
+    return {
+        "schema": "ctcc.public_witness_db0047_empty_before.v1",
+        "revision_readback": deepcopy(revision),
+        "object_custody_sha256": custody_sha256,
+        "execution_authority": False,
+    }
+
+
+def expected_native_identity_empty_downgrade_readback(custody_sha256: str) -> dict:
+    _require_native_object_digest(custody_sha256)
+    return {
+        "schema": "ctcc.public_witness_db0047_empty_downgrade.v1",
+        "source_head": "0047",
+        "target": "0046",
+        "legacy_revision_readback": expected_migration_revision_readback("0046"),
+        "legacy_witness_catalog": expected_legacy_witness_identity_schema(),
+        "object_custody_sha256": custody_sha256,
+        "execution_authority": False,
+    }
+
+
+def native_migration_json_equal(left: object, right: object) -> bool:
+    """Keep bool, int and float distinct in the new evidence contracts."""
+    try:
+        return json.dumps(
+            left, sort_keys=True, allow_nan=False, separators=(",", ":")
+        ) == json.dumps(right, sort_keys=True, allow_nan=False, separators=(",", ":"))
+    except (TypeError, ValueError):
+        return False
+
+
+def native_identity_empty_downgrade_readback(
+    legacy_revision: dict, catalog: dict, custody_sha256: str
+) -> dict:
+    result = {
+        **expected_native_identity_empty_downgrade_readback(custody_sha256),
+        "legacy_revision_readback": legacy_revision,
+        "legacy_witness_catalog": catalog,
+    }
+    if not native_migration_json_equal(
+        result, expected_native_identity_empty_downgrade_readback(custody_sha256)
+    ):
+        raise RuntimeError("native_identity_empty_downgrade_readback_mismatch")
+    return result
+
+
+def native_identity_nonempty_snapshot(revision: dict, snapshot: dict) -> dict:
+    require_native_witness_identity_baseline()
+    if not native_migration_json_equal(
+        revision, expected_migration_revision_readback("0047")
+    ) or not isinstance(snapshot, dict):
+        raise RuntimeError("native_identity_nonempty_snapshot_invalid")
+    if set(snapshot) != {
+        "row_count",
+        "small_row_count",
+        "wide_row_count",
+        "records_sha256",
+        "catalog_sha256",
+    }:
+        raise RuntimeError("native_identity_nonempty_snapshot_invalid")
+    if any(
+        type(snapshot[k]) is not int or not 1 <= snapshot[k] <= 100000
+        for k in ("row_count", "small_row_count", "wide_row_count")
+    ):
+        raise RuntimeError("native_identity_nonempty_snapshot_invalid")
+    if snapshot["small_row_count"] + snapshot["wide_row_count"] != snapshot[
+        "row_count"
+    ] or any(
+        not isinstance(snapshot[k], str)
+        or not re.fullmatch(r"[0-9a-f]{64}", snapshot[k])
+        for k in ("records_sha256", "catalog_sha256")
+    ):
+        raise RuntimeError("native_identity_nonempty_snapshot_invalid")
+    return {
+        "schema": "ctcc.public_witness_db0047_nonempty_snapshot.v1",
+        "revision_readback": deepcopy(revision),
+        "retention": deepcopy(snapshot),
+        "execution_authority": False,
+    }
+
+
+def native_identity_nonempty_downgrade_readback(before: dict, after: dict) -> dict:
+    for observed in (before, after):
+        if (
+            not isinstance(observed, dict)
+            or set(observed)
+            != {"schema", "revision_readback", "retention", "execution_authority"}
+            or not native_migration_json_equal(
+                observed,
+                native_identity_nonempty_snapshot(
+                    observed.get("revision_readback"), observed.get("retention")
+                ),
+            )
+        ):
+            raise RuntimeError("native_identity_nonempty_downgrade_readback_mismatch")
+    if not native_migration_json_equal(before, after):
+        raise RuntimeError("native_identity_nonempty_downgrade_readback_mismatch")
+    return {
+        "schema": "ctcc.public_witness_db0047_nonempty_downgrade.v1",
+        "source_head": "0047",
+        "target": "0046",
+        "result": "DENIED",
+        "policy_refusal": NATIVE_IDENTITY_DOWNGRADE_DENIAL,
+        "before": deepcopy(before),
+        "after": deepcopy(after),
+        "rollback": "EXACT",
+        "execution_authority": False,
+    }
 
 
 def migration_revision_readback(
@@ -654,6 +821,32 @@ def verify_downgrade_denial_log(path: Path) -> None:
         )
     ):
         raise ValueError("migration_downgrade_policy_refusal_unverified")
+
+
+def verify_native_identity_downgrade_denial_log(path: Path) -> None:
+    if path.is_symlink() or not path.is_file() or path.stat().st_size > 2 * 1024 * 1024:
+        raise ValueError("native_identity_downgrade_denial_log_missing_or_unsafe")
+    try:
+        output = path.read_bytes().decode("utf-8")
+    except UnicodeError as error:
+        raise ValueError("native_identity_downgrade_denial_log_invalid") from error
+    if (
+        re.findall(r"Running downgrade (\d{4} -> \d{4})", output) != ["0047 -> 0046"]
+        or "/app/migrations/versions/0047_public_witness_native_identity.py"
+        not in output
+        or len(
+            re.findall(
+                rf"(?m)^asyncpg\.exceptions\.RaiseError: {NATIVE_IDENTITY_DOWNGRADE_DENIAL}\r?$",
+                output,
+            )
+        )
+        != 1
+        or not re.search(
+            rf"(?m)^sqlalchemy\.exc\.DBAPIError: .*: {NATIVE_IDENTITY_DOWNGRADE_DENIAL}\r?$",
+            output,
+        )
+    ):
+        raise ValueError("native_identity_downgrade_policy_refusal_unverified")
 
 
 def git_object(kind: str, raw: bytes) -> bytes:
@@ -987,12 +1180,21 @@ class Run:
                 )
                 record["exit_code"] = result.returncode
                 if expected_refusal is not None:
-                    if expected_refusal != DOWNGRADE_DENIAL or result.returncode == 0:
+                    if (
+                        expected_refusal
+                        not in (DOWNGRADE_DENIAL, NATIVE_IDENTITY_DOWNGRADE_DENIAL)
+                        or result.returncode == 0
+                    ):
                         raise RuntimeError(
                             "migration_downgrade_policy_refusal_unverified"
                         )
-                    verify_downgrade_denial_log(self.output / f"{name}.log")
-                    record["policy_refusal"] = DOWNGRADE_DENIAL
+                    if expected_refusal == DOWNGRADE_DENIAL:
+                        verify_downgrade_denial_log(self.output / f"{name}.log")
+                    else:
+                        verify_native_identity_downgrade_denial_log(
+                            self.output / f"{name}.log"
+                        )
+                    record["policy_refusal"] = expected_refusal
         except Exception as error:
             record["failure_type"] = type(error).__name__
             raise
@@ -1432,17 +1634,49 @@ def main():
             raise RuntimeError("migration_downgrade_policy_head_unreviewed")
         container("migration-drift", ["alembic", "check"])
         container(
+            "migration-native-identity-empty-before",
+            [
+                "python",
+                "-c",
+                MIGRATION_REVISION_PROBE,
+                "0047",
+                "native-identity-0047-empty-before",
+            ],
+        )
+        native_empty_before = json.loads(
+            (args.output / "migration-native-identity-empty-before.log").read_text()
+        )
+        if not native_migration_json_equal(
+            native_empty_before,
+            native_identity_empty_before_readback(
+                native_empty_before.get("revision_readback"),
+                native_empty_before.get("object_custody_sha256"),
+            ),
+        ):
+            raise RuntimeError("native_identity_empty_before_readback_mismatch")
+        container(
             "migration-native-identity-empty-downgrade",
             ["alembic", "downgrade", "0046"],
         )
         container(
             "migration-native-identity-empty-readback",
-            ["python", "-c", MIGRATION_REVISION_PROBE, "0046"],
+            [
+                "python",
+                "-c",
+                MIGRATION_REVISION_PROBE,
+                "0046",
+                "native-identity-0047-empty-down",
+            ],
         )
         native_empty_readback = json.loads(
             (args.output / "migration-native-identity-empty-readback.log").read_text()
         )
-        if native_empty_readback != expected_migration_revision_readback("0046"):
+        if not native_migration_json_equal(
+            native_empty_readback,
+            expected_native_identity_empty_downgrade_readback(
+                native_empty_before["object_custody_sha256"]
+            ),
+        ):
             raise RuntimeError(
                 "migration_native_identity_empty_downgrade_readback_invalid"
             )
@@ -1511,6 +1745,7 @@ def main():
         container("migration-reupgrade-drift", ["alembic", "check"])
         identity["migration_empty_roundtrip"] = {
             "source_head": "0047",
+            "native_identity_before_readback": native_empty_before,
             "native_identity_down_revision": "0046",
             "native_identity_down_readback": native_empty_readback,
             "bundle_down_revision": "0045",
@@ -1665,6 +1900,37 @@ def main():
                         for path in POSTGRES_TEST_PATHS
                     )
                 ),
+            )
+            # This is a separate DB0047 nonempty refusal, after real migrated
+            # PostgreSQL tests have committed both small and wide synthetic IDs.
+            container(
+                "migration-native-identity-nonempty-before",
+                ["python", "-c", NATIVE_IDENTITY_RETENTION_PROBE],
+                timeout=60,
+            )
+            native_before = json.loads(
+                (
+                    args.output / "migration-native-identity-nonempty-before.log"
+                ).read_text()
+            )
+            container(
+                "migration-native-identity-nonempty-denial",
+                ["alembic", "downgrade", "0046"],
+                expected_refusal=NATIVE_IDENTITY_DOWNGRADE_DENIAL,
+                timeout=60,
+            )
+            container(
+                "migration-native-identity-nonempty-after",
+                ["python", "-c", NATIVE_IDENTITY_RETENTION_PROBE],
+                timeout=60,
+            )
+            native_after = json.loads(
+                (
+                    args.output / "migration-native-identity-nonempty-after.log"
+                ).read_text()
+            )
+            identity["native_identity_nonempty_downgrade_policy"] = (
+                native_identity_nonempty_downgrade_readback(native_before, native_after)
             )
             if args.suite == "postgres":
                 identity["collection"] = verify_linux_collection(

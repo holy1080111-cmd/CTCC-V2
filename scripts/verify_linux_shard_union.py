@@ -16,10 +16,16 @@ from pathlib import Path
 from scripts.verify_final_hermetic import (
     ARCHIVE_REQUIRED_CASES,
     DOWNGRADE_DENIAL,
+    NATIVE_IDENTITY_DOWNGRADE_DENIAL,
     RUNTIME_CUSTODY_PREFLIGHT_CASES,
     expected_migration_revision_readback,
+    expected_native_identity_empty_downgrade_readback,
+    native_identity_empty_before_readback,
+    native_identity_nonempty_downgrade_readback,
+    native_migration_json_equal,
     verify_downgrade_denial_log,
     verify_linux_collection,
+    verify_native_identity_downgrade_denial_log,
     verify_pytest_report,
 )
 from scripts.verify_linux_shard import POSTGRES_TEST_PATHS, SHARD_COUNT
@@ -46,6 +52,7 @@ COMMON_STAGES = (
     "migration-upgrade",
     "migration-identity",
     "migration-drift",
+    "migration-native-identity-empty-before",
     "migration-native-identity-empty-downgrade",
     "migration-native-identity-empty-readback",
     "migration-bundle-empty-downgrade",
@@ -87,6 +94,7 @@ def _verify_hashes(root: Path):
         "source-files.json",
         "migration-supported-readback.log",
         "migration-identity.log",
+        "migration-native-identity-empty-before.log",
         "migration-native-identity-empty-readback.log",
         "migration-bundle-empty-readback.log",
         "migration-guard-empty-readback.log",
@@ -154,6 +162,16 @@ def verify_union(
         hashes = _verify_hashes(root)
         identity = _json(root / "identity.json")
         stages = _json(root / "steps.json")
+        native_before = _json(root / "migration-native-identity-empty-before.log")
+        if not isinstance(native_before, dict) or not native_migration_json_equal(
+            native_before,
+            native_identity_empty_before_readback(
+                native_before.get("revision_readback"),
+                native_before.get("object_custody_sha256"),
+            ),
+        ):
+            raise ValueError("linux_union_native_identity_empty_before_invalid")
+        native_custody = native_before["object_custody_sha256"]
         if (
             identity.get("commit") != commit
             or identity.get("tree") != tree
@@ -176,25 +194,30 @@ def verify_union(
             or identity["migration"].get("status") != "PASS"
             or identity.get("migration_supported_roundtrip")
             != expected_migration_revision_readback("0001")
-            or identity.get("migration_empty_roundtrip")
-            != {
-                "source_head": "0047",
-                "native_identity_down_revision": "0046",
-                "native_identity_down_readback": expected_migration_revision_readback(
-                    "0046"
-                ),
-                "bundle_down_revision": "0045",
-                "bundle_down_readback": expected_migration_revision_readback("0045"),
-                "guard_down_revision": "0044",
-                "guard_down_readback": expected_migration_revision_readback("0044"),
-                "hwm_down_revision": "0043",
-                "hwm_down_readback": expected_migration_revision_readback("0043"),
-                "down_revision": "0042",
-                "down_readback": expected_migration_revision_readback("0042"),
-                "reupgrade_readback": expected_migration_revision_readback("0047"),
-                "reupgrade_identity": "PASS",
-                "schema_drift": "PASS",
-            }
+            or not native_migration_json_equal(
+                identity.get("migration_empty_roundtrip"),
+                {
+                    "source_head": "0047",
+                    "native_identity_before_readback": native_before,
+                    "native_identity_down_revision": "0046",
+                    "native_identity_down_readback": expected_native_identity_empty_downgrade_readback(
+                        native_custody
+                    ),
+                    "bundle_down_revision": "0045",
+                    "bundle_down_readback": expected_migration_revision_readback(
+                        "0045"
+                    ),
+                    "guard_down_revision": "0044",
+                    "guard_down_readback": expected_migration_revision_readback("0044"),
+                    "hwm_down_revision": "0043",
+                    "hwm_down_readback": expected_migration_revision_readback("0043"),
+                    "down_revision": "0042",
+                    "down_readback": expected_migration_revision_readback("0042"),
+                    "reupgrade_readback": expected_migration_revision_readback("0047"),
+                    "reupgrade_identity": "PASS",
+                    "schema_drift": "PASS",
+                },
+            )
             or identity.get("migration_downgrade_policy")
             != {
                 "source_head": "0047",
@@ -208,6 +231,13 @@ def verify_union(
             }
         ):
             raise ValueError(f"linux_union_component_identity_rejected:{name}")
+        if not native_migration_json_equal(
+            _json(root / "migration-native-identity-empty-readback.log"),
+            expected_native_identity_empty_downgrade_readback(native_custody),
+        ):
+            raise ValueError(
+                f"linux_union_native_identity_legacy_readback_changed:{name}"
+            )
         if (
             _json(root / "migration-supported-readback.log")
             != identity["migration_supported_roundtrip"]
@@ -263,6 +293,27 @@ def verify_union(
             for required in COMMON_STAGES
         ):
             raise ValueError(f"linux_union_common_stage_missing:{name}")
+        empty_positions = []
+        for required in (
+            "migration-native-identity-empty-before",
+            "migration-native-identity-empty-downgrade",
+            "migration-native-identity-empty-readback",
+            "migration-bundle-empty-downgrade",
+        ):
+            matches = [
+                (i, step)
+                for i, step in enumerate(stages)
+                if step.get("name") == required
+            ]
+            if (
+                len(matches) != 1
+                or type(matches[0][1].get("exit_code")) is not int
+                or matches[0][1]["exit_code"] != 0
+            ):
+                raise ValueError("linux_union_native_identity_empty_stage_invalid")
+            empty_positions.append(matches[0][0])
+        if empty_positions != sorted(empty_positions):
+            raise ValueError("linux_union_native_identity_empty_stage_order")
         verify_downgrade_denial_log(root / "migration-downgrade-denial.log")
         stage = "postgres-intent" if mode == "postgres" else f"linux-shard-{index}"
         if not any(
@@ -270,6 +321,58 @@ def verify_union(
         ):
             raise ValueError(f"linux_union_suite_stage_failed:{name}")
         if mode == "postgres":
+            retention_stages = (
+                stage,
+                "migration-native-identity-nonempty-before",
+                "migration-native-identity-nonempty-denial",
+                "migration-native-identity-nonempty-after",
+            )
+            positions = []
+            for required in retention_stages:
+                matches = [
+                    (i, step)
+                    for i, step in enumerate(stages)
+                    if step.get("name") == required
+                ]
+                if len(matches) != 1:
+                    raise ValueError(
+                        "linux_union_native_identity_nonempty_stage_missing"
+                    )
+                position, step_record = matches[0]
+                code = step_record.get("exit_code")
+                if type(code) is not int or (
+                    (
+                        code == 0
+                        or step_record.get("policy_refusal")
+                        != NATIVE_IDENTITY_DOWNGRADE_DENIAL
+                    )
+                    if required.endswith("-denial")
+                    else code != 0
+                ):
+                    raise ValueError(
+                        "linux_union_native_identity_nonempty_stage_failed"
+                    )
+                positions.append(position)
+            if positions != sorted(positions):
+                raise ValueError("linux_union_native_identity_nonempty_stage_order")
+            for required in retention_stages[1:]:
+                if f"{required}.log" not in hashes:
+                    raise ValueError(
+                        "linux_union_native_identity_nonempty_hash_missing"
+                    )
+            verify_native_identity_downgrade_denial_log(
+                root / f"{retention_stages[2]}.log"
+            )
+            retention = native_identity_nonempty_downgrade_readback(
+                _json(root / f"{retention_stages[1]}.log"),
+                _json(root / f"{retention_stages[3]}.log"),
+            )
+            if not native_migration_json_equal(
+                identity.get("native_identity_nonempty_downgrade_policy"), retention
+            ):
+                raise ValueError(
+                    "linux_union_native_identity_nonempty_readback_changed"
+                )
             preflight_stage = "runtime-bundle-custody-preflight"
             observed = [
                 (i, step)

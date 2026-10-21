@@ -15,6 +15,10 @@ from types import SimpleNamespace
 import pytest
 
 from scripts import diagnose_runtime_custody_postgres as diagnostic
+from scripts.verify_final_hermetic import (
+    NATIVE_WITNESS_IDENTITY_SCHEMA,
+    native_identity_nonempty_snapshot,
+)
 
 
 def _junit(*, omit=None, outcome=None, private="private-driver-detail"):
@@ -313,8 +317,19 @@ def test_catalog_rejects_nonallowlisted_metadata(mutation):
 
 
 def _mock_main(
-    tmp_path, monkeypatch, *, profile, fail_tests=False, migration_head="0047"
+    tmp_path,
+    monkeypatch,
+    *,
+    profile,
+    fail_tests=False,
+    migration_head="0047",
+    migration_damage=None,
+    cleanup_failure=False,
 ):
+    if profile == diagnostic.NATIVE_WITNESS_MIGRATION_PROFILE:
+        constraint = list(NATIVE_WITNESS_IDENTITY_SCHEMA["constraint"])
+        constraint[-1] = "9" * 64  # Synthetic, never a native baseline.
+        monkeypatch.setitem(NATIVE_WITNESS_IDENTITY_SCHEMA, "constraint", constraint)
     commit, tree = "a" * 40, "b" * 40
     archive_path = tmp_path / "exact-source.tar"
     raw = io.BytesIO()
@@ -334,6 +349,7 @@ def _mock_main(
         "scripts/diagnose_runtime_custody_postgres.py",
         "scripts/verify_final_hermetic.py",
         "scripts/verify_linux_shard.py",
+        "scripts/verify_native_witness_identity_schema.py",
     )
     files = {
         name: {"sha256": hashlib.sha256((source / name).read_bytes()).hexdigest()}
@@ -347,6 +363,8 @@ def _mock_main(
             "MANIFEST.sha256": {"sha256": "c" * 64},
         }
     )
+    if migration_damage == "source":
+        files["scripts/verify_native_witness_identity_schema.py"]["sha256"] = "0" * 64
     monkeypatch.setattr(diagnostic, "archive_tree", lambda _archive: tree)
     monkeypatch.setattr(diagnostic, "archive_files", lambda _archive: files)
     monkeypatch.setattr(
@@ -354,7 +372,11 @@ def _mock_main(
         "run",
         lambda *_args, **_kwargs: SimpleNamespace(returncode=0),
     )
-    monkeypatch.setattr(diagnostic, "cleanup_resources", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        diagnostic,
+        "cleanup_resources",
+        lambda *_args, **_kwargs: [{"status": "FAILED"}] if cleanup_failure else [],
+    )
     calls = []
 
     class FakeRun:
@@ -363,7 +385,12 @@ def _mock_main(
 
         def command(self, name, command, **_kwargs):
             calls.append((name, command))
-            self.steps.append({"name": name, "exit_code": 0})
+            self.steps.append(
+                {
+                    "name": name,
+                    "exit_code": 1 if name == "native-witness-nonempty-denial" else 0,
+                }
+            )
             raw = b""
             if name == "image-identity":
                 raw = b"sha256:" + b"d" * 64
@@ -380,6 +407,59 @@ def _mock_main(
                 ).encode()
             elif name == "native-witness-public-catalog":
                 raw = json.dumps(_catalog()).encode()
+            elif name == "native-witness-migration-before":
+                observed = diagnostic.native_identity_empty_before_readback(
+                    diagnostic.expected_migration_revision_readback("0047"), "f" * 64
+                )
+                if migration_damage == "before":
+                    observed["execution_authority"] = 0
+                elif migration_damage == "extra":
+                    observed["private_row"] = "private-driver-detail"
+                raw = json.dumps(observed).encode()
+                if migration_damage == "duplicate":
+                    raw = raw.replace(
+                        b'"execution_authority": false',
+                        b'"execution_authority": false,"execution_authority":true',
+                        1,
+                    )
+            elif name == "native-witness-empty-readback":
+                observed = diagnostic.expected_native_identity_empty_downgrade_readback(
+                    "f" * 64
+                )
+                if migration_damage == "legacy":
+                    observed["legacy_witness_catalog"]["columns"][0][1] = "numeric"
+                elif migration_damage == "custody":
+                    observed["object_custody_sha256"] = "e" * 64
+                raw = json.dumps(observed).encode()
+            elif name == "native-witness-reupgrade-readback":
+                observed = diagnostic.expected_migration_revision_readback("0047")
+                if migration_damage == "reupgrade":
+                    observed["observed"] = "0046"
+                raw = json.dumps(observed).encode()
+            elif name in (
+                "native-witness-nonempty-before",
+                "native-witness-nonempty-after",
+            ):
+                observed = native_identity_nonempty_snapshot(
+                    diagnostic.expected_migration_revision_readback("0047"),
+                    {
+                        "row_count": 4,
+                        "small_row_count": 1,
+                        "wide_row_count": 3,
+                        "records_sha256": "a" * 64,
+                        "catalog_sha256": "b" * 64,
+                    },
+                )
+                if migration_damage == "nonempty" and name.endswith("after"):
+                    observed["retention"]["records_sha256"] = "c" * 64
+                raw = json.dumps(observed).encode()
+            elif name == "native-witness-nonempty-denial":
+                assert (
+                    _kwargs["expected_refusal"]
+                    == diagnostic.NATIVE_IDENTITY_DOWNGRADE_DENIAL
+                )
+                if migration_damage == "denial":
+                    raise RuntimeError("private-driver-detail")
             elif name == "native-witness-identity-tests":
                 (
                     self.output / "test-results" / diagnostic.NATIVE_WITNESS_REPORT
@@ -507,7 +587,186 @@ def test_new_workflow_exact_branch_budget_pinned_actions_and_export_allowlist():
     assert (
         "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02" in workflow
     )
-    assert "--profile native-witness-identity-0047" in workflow
+    assert "--profile native-witness-migration-0047" in workflow
     assert 'test "$commit" = "$GITHUB_SHA"' in workflow
     assert "/export/*" in workflow and "/test-results" not in workflow
     assert "secrets." not in workflow and "--env-file" not in workflow
+
+
+def test_migration_profile_keeps_exact_seventeen_case_redactor_contract():
+    assert (
+        diagnostic.required_cases(diagnostic.NATIVE_WITNESS_MIGRATION_PROFILE)
+        == diagnostic.NATIVE_WITNESS_CASES
+    )
+    summary, clean = diagnostic.redacted_report(
+        _junit(), profile=diagnostic.NATIVE_WITNESS_MIGRATION_PROFILE
+    )
+    assert summary["profile"] == diagnostic.NATIVE_WITNESS_MIGRATION_PROFILE
+    assert summary["all_required_passed"] and summary["expected_case_count"] == 17
+    assert b"private-driver-detail" not in clean
+
+
+def test_migration_main_runs_empty_roundtrip_before_cases_then_one_nonempty_refusal(
+    tmp_path, monkeypatch
+):
+    result, calls, identity, export = _mock_main(
+        tmp_path, monkeypatch, profile=diagnostic.NATIVE_WITNESS_MIGRATION_PROFILE
+    )
+    assert result == 0 and identity["status"] == "PASS"
+    names = [name for name, _ in calls]
+    expected = [
+        "migration-upgrade",
+        "migration-identity",
+        "native-witness-migration-before",
+        "native-witness-empty-downgrade",
+        "native-witness-empty-readback",
+        "native-witness-reupgrade",
+        "native-witness-reupgrade-readback",
+        "native-witness-reupgrade-drift",
+        "native-witness-identity-tests",
+        "native-witness-nonempty-before",
+        "native-witness-nonempty-denial",
+        "native-witness-nonempty-after",
+    ]
+    assert [name for name in names if name in expected] == expected
+    assert all(names.count(name) == 1 for name in expected)
+    commands = dict(calls)
+    assert (
+        diagnostic.MIGRATION_REVISION_PROBE
+        in commands["native-witness-migration-before"]
+    )
+    assert (
+        commands["native-witness-empty-readback"][-1]
+        == "native-identity-0047-empty-down"
+    )
+    assert (
+        diagnostic.NATIVE_IDENTITY_RETENTION_PROBE
+        in commands["native-witness-nonempty-before"]
+    )
+    assert commands["native-witness-nonempty-denial"][-3:] == [
+        "alembic",
+        "downgrade",
+        "0046",
+    ]
+    path = export / "native-witness-migration-receipt.json"
+    receipt = json.loads(path.read_bytes())
+    assert (
+        hashlib.sha256(path.read_bytes()).hexdigest()
+        == identity["migration_diagnostic_receipt_sha256"]
+    )
+    assert receipt["status"] == "PASS" and receipt["phase"] == "COMPLETE"
+    assert receipt["required_case_count"] == 17
+    assert receipt["source"]["commit"] == identity["commit"]
+    assert receipt["source"]["source_files_sha256"] == identity["source_files_sha256"]
+    assert len(receipt["executed_source_sha256"]) == 4
+    assert receipt["nonempty_downgrade_policy"]["rollback"] == "EXACT"
+    assert (
+        receipt["nonempty_downgrade_policy"]["before"]
+        == receipt["nonempty_downgrade_policy"]["after"]
+    )
+    assert len(path.read_bytes()) <= 65536
+    assert receipt["full_postgresql_acceptance"] is False
+    assert (
+        receipt["execution_authority"] is False
+        and receipt["external_order_writes"] == 0
+    )
+
+
+@pytest.mark.parametrize(
+    "damage,phase",
+    (
+        ("before", "native-witness-migration-before"),
+        ("extra", "native-witness-migration-before"),
+        ("duplicate", "native-witness-migration-before"),
+        ("legacy", "native-witness-empty-readback"),
+        ("custody", "native-witness-empty-readback"),
+        ("reupgrade", "native-witness-reupgrade-readback"),
+        ("denial", "native-witness-nonempty-denial"),
+        ("nonempty", "native-witness-nonempty-after"),
+    ),
+)
+def test_migration_failure_exports_only_validated_partial_evidence_and_never_retries(
+    tmp_path, monkeypatch, damage, phase
+):
+    result, calls, identity, export = _mock_main(
+        tmp_path,
+        monkeypatch,
+        profile=diagnostic.NATIVE_WITNESS_MIGRATION_PROFILE,
+        migration_damage=damage,
+    )
+    assert result == 1 and identity["status"] == "FAIL"
+    receipt = json.loads(
+        (export / "native-witness-migration-receipt.json").read_bytes()
+    )
+    assert receipt["status"] == "FAIL" and receipt["phase"] == phase
+    assert phase not in receipt["observations"]
+    assert "nonempty_downgrade_policy" not in receipt
+    names = [name for name, _ in calls]
+    assert all(names.count(name) == 1 for name in set(names))
+    assert receipt["full_postgresql_acceptance"] is False
+
+
+def test_migration_test_failure_never_attempts_nonempty_downgrade(
+    tmp_path, monkeypatch
+):
+    result, calls, _, export = _mock_main(
+        tmp_path,
+        monkeypatch,
+        profile=diagnostic.NATIVE_WITNESS_MIGRATION_PROFILE,
+        fail_tests=True,
+    )
+    assert result == 1
+    names = [name for name, _ in calls]
+    assert "native-witness-nonempty-before" not in names
+    receipt = json.loads(
+        (export / "native-witness-migration-receipt.json").read_bytes()
+    )
+    assert (
+        receipt["status"] == "FAIL"
+        and receipt["phase"] == "native-witness-identity-tests"
+    )
+    assert "nonempty_downgrade_policy" not in receipt
+
+
+def test_migration_profile_pins_host_validator_dependency_before_any_runtime_launch(
+    tmp_path, monkeypatch
+):
+    with pytest.raises(ValueError, match="executed_runner_differs_from_archive"):
+        _mock_main(
+            tmp_path,
+            monkeypatch,
+            profile=diagnostic.NATIVE_WITNESS_MIGRATION_PROFILE,
+            migration_damage="source",
+        )
+    assert not (tmp_path / "output").exists()
+
+
+def test_migration_completed_observations_do_not_override_failed_cleanup(
+    tmp_path, monkeypatch
+):
+    result, _, identity, export = _mock_main(
+        tmp_path,
+        monkeypatch,
+        profile=diagnostic.NATIVE_WITNESS_MIGRATION_PROFILE,
+        cleanup_failure=True,
+    )
+    receipt = json.loads(
+        (export / "native-witness-migration-receipt.json").read_bytes()
+    )
+    assert result == 1 and identity["status"] == "FAIL"
+    assert receipt["phase"] == "COMPLETE" and receipt["status"] == "FAIL"
+    assert receipt["full_postgresql_acceptance"] is False
+
+
+@pytest.mark.parametrize(
+    "raw",
+    (b'{"a":1,"a":2}', b'{"a":{"b":1,"b":2}}', b"[]", b"x" * 65537),
+    ids=("duplicate_top", "duplicate_nested", "nonobject", "oversized"),
+)
+def test_migration_observation_reader_rejects_duplicates_nonobject_or_oversize(
+    tmp_path, raw
+):
+    path = tmp_path / "observation.log"
+    path.write_bytes(raw)
+    with pytest.raises(ValueError, match="diagnostic_migration_"):
+        diagnostic._migration_object(path)

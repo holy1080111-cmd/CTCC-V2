@@ -288,7 +288,9 @@ def test_schema_function_body_pins_are_source_derived_without_native_claim():
     ]
 
 
-def test_unsealed_native_baseline_denies_even_matching_template_and_union(tmp_path):
+def test_unsealed_native_baseline_denies_even_matching_template_and_union(
+    tmp_path, monkeypatch
+):
     from copy import deepcopy
 
     from scripts.verify_final_hermetic import (
@@ -303,7 +305,9 @@ def test_unsealed_native_baseline_denies_even_matching_template_and_union(tmp_pa
         require_native_witness_identity_baseline,
     )
 
-    assert NATIVE_WITNESS_IDENTITY_SCHEMA["constraint"][-1] is None
+    constraint = list(NATIVE_WITNESS_IDENTITY_SCHEMA["constraint"])
+    constraint[-1] = None
+    monkeypatch.setitem(NATIVE_WITNESS_IDENTITY_SCHEMA, "constraint", constraint)
     with pytest.raises(
         RuntimeError, match="native_witness_identity_schema_baseline_unsealed"
     ):

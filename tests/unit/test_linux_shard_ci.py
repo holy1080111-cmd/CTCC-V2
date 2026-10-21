@@ -16,9 +16,13 @@ from scripts.verify_final_hermetic import (
     ACCOUNT_REVISION_WITNESS_TRIGGERS,
     ARCHIVE_REQUIRED_CASES,
     DOWNGRADE_DENIAL,
+    NATIVE_IDENTITY_DOWNGRADE_DENIAL,
     NATIVE_WITNESS_IDENTITY_SCHEMA,
     PUBLIC_RUNTIME_BUNDLE_SCHEMA,
     RUNTIME_CUSTODY_PREFLIGHT_CASES,
+    expected_native_identity_empty_downgrade_readback,
+    native_identity_empty_before_readback,
+    native_identity_nonempty_downgrade_readback,
     verify_linux_collection,
     verify_pytest_report,
 )
@@ -41,7 +45,7 @@ SOURCE_FILES = b"{}"
 @pytest.fixture(autouse=True)
 def synthetic_sealed_native_identity_baseline(monkeypatch):
     # These filesystem fixtures test evidence rejection, not native PG DDL.
-    # Production stays unsealed until the independent native metadata review.
+    # The synthetic pin is distinct from the reviewed native deparser digest.
     constraint = list(NATIVE_WITNESS_IDENTITY_SCHEMA["constraint"])
     constraint[-1] = "9" * 64
     monkeypatch.setitem(NATIVE_WITNESS_IDENTITY_SCHEMA, "constraint", constraint)
@@ -313,8 +317,13 @@ def _artifacts(tmp_path: Path) -> tuple[Path, list[str]]:
             "migration_supported_roundtrip": _revision_readback("0001"),
             "migration_empty_roundtrip": {
                 "source_head": "0047",
+                "native_identity_before_readback": native_identity_empty_before_readback(
+                    _revision_readback("0047"), "c" * 64
+                ),
                 "native_identity_down_revision": "0046",
-                "native_identity_down_readback": _revision_readback("0046"),
+                "native_identity_down_readback": expected_native_identity_empty_downgrade_readback(
+                    "c" * 64
+                ),
                 "bundle_down_revision": "0045",
                 "bundle_down_readback": _revision_readback("0045"),
                 "guard_down_revision": "0044",
@@ -343,6 +352,41 @@ def _artifacts(tmp_path: Path) -> tuple[Path, list[str]]:
         if mode == "postgres":
             identity["synthetic_process_pg_redis_crash_durability"] = "PASS"
             identity["api_service_restart"] = "PASS"
+        retention_files = []
+        retention_stages = ()
+        if mode == "postgres":
+            retention_stages = (
+                "migration-native-identity-nonempty-before",
+                "migration-native-identity-nonempty-denial",
+                "migration-native-identity-nonempty-after",
+            )
+            snapshot = {
+                "schema": "ctcc.public_witness_db0047_nonempty_snapshot.v1",
+                "revision_readback": _revision_readback("0047"),
+                "retention": {
+                    "row_count": 4,
+                    "small_row_count": 1,
+                    "wide_row_count": 3,
+                    "records_sha256": "a" * 64,
+                    "catalog_sha256": "b" * 64,
+                },
+                "execution_authority": False,
+            }
+            identity["native_identity_nonempty_downgrade_policy"] = (
+                native_identity_nonempty_downgrade_readback(snapshot, snapshot)
+            )
+            for retained_stage in (retention_stages[0], retention_stages[2]):
+                path = root / f"{retained_stage}.log"
+                path.write_text(json.dumps(snapshot))
+                retention_files.append(path)
+            path = root / f"{retention_stages[1]}.log"
+            path.write_text(
+                "INFO Running downgrade 0047 -> 0046\n"
+                '  File "/app/migrations/versions/0047_public_witness_native_identity.py", line 320\n'
+                f"asyncpg.exceptions.RaiseError: {NATIVE_IDENTITY_DOWNGRADE_DENIAL}\n"
+                f"sqlalchemy.exc.DBAPIError: (asyncpg.Error): {NATIVE_IDENTITY_DOWNGRADE_DENIAL}\n"
+            )
+            retention_files.append(path)
         preflight_files = []
         if mode == "postgres":
             preflight_xml = results / "runtime-bundle-custody-preflight.xml"
@@ -370,11 +414,19 @@ def _artifacts(tmp_path: Path) -> tuple[Path, list[str]]:
                     {
                         "name": stage_name,
                         "exit_code": (
-                            1 if stage_name == "migration-downgrade-denial" else 0
+                            1
+                            if stage_name
+                            in (
+                                "migration-downgrade-denial",
+                                "migration-native-identity-nonempty-denial",
+                            )
+                            else 0
                         ),
                         **(
                             {"policy_refusal": DOWNGRADE_DENIAL}
                             if stage_name == "migration-downgrade-denial"
+                            else {"policy_refusal": NATIVE_IDENTITY_DOWNGRADE_DENIAL}
+                            if stage_name == "migration-native-identity-nonempty-denial"
                             else {}
                         ),
                     }
@@ -386,6 +438,7 @@ def _artifacts(tmp_path: Path) -> tuple[Path, list[str]]:
                             else ()
                         ),
                         stage,
+                        *retention_stages,
                     )
                 ]
             )
@@ -395,8 +448,16 @@ def _artifacts(tmp_path: Path) -> tuple[Path, list[str]]:
         supported_log.write_text(json.dumps(identity["migration_supported_roundtrip"]))
         migration_log = root / "migration-identity.log"
         migration_log.write_text(json.dumps(migration))
+        native_before_log = root / "migration-native-identity-empty-before.log"
+        native_before_log.write_text(
+            json.dumps(
+                identity["migration_empty_roundtrip"]["native_identity_before_readback"]
+            )
+        )
         native_empty_log = root / "migration-native-identity-empty-readback.log"
-        native_empty_log.write_text(json.dumps(_revision_readback("0046")))
+        native_empty_log.write_text(
+            json.dumps(expected_native_identity_empty_downgrade_readback("c" * 64))
+        )
         bundle_empty_log = root / "migration-bundle-empty-readback.log"
         bundle_empty_log.write_text(json.dumps(_revision_readback("0045")))
         guard_empty_log = root / "migration-guard-empty-readback.log"
@@ -447,6 +508,7 @@ def _artifacts(tmp_path: Path) -> tuple[Path, list[str]]:
             denial_log,
             *stage_logs,
             *preflight_files,
+            *retention_files,
             xml,
             collection_file,
         )
@@ -481,6 +543,127 @@ def test_exact_union_passes_and_missing_shard_fails(tmp_path):
     assert result["selected_cases"] == len(full)
     shutil.rmtree(artifacts / f"ctcc-linux-shard-7-{COMMIT}")
     with pytest.raises(ValueError, match="linux_union_component_set_incomplete"):
+        verify_union(
+            artifacts, commit=COMMIT, tree=TREE, manifest_sha256=_sha(MANIFEST)
+        )
+
+
+@pytest.mark.parametrize("drift", ("numeric", "bool_alias", "custody"))
+def test_union_checks_distinct_legacy_witness_catalog_even_with_matching_old_v3(
+    tmp_path, drift
+):
+    artifacts, _ = _artifacts(tmp_path)
+    root = artifacts / f"ctcc-linux-shard-0-{COMMIT}" / "ctcc-validation"
+    identity_path = root / "identity.json"
+    identity = json.loads(identity_path.read_text())
+    receipt = identity["migration_empty_roundtrip"]["native_identity_down_readback"]
+    if drift == "numeric":
+        receipt["legacy_witness_catalog"]["columns"][0][1] = "numeric"
+    elif drift == "bool_alias":
+        receipt["legacy_witness_catalog"]["table_present"] = 1
+    else:
+        receipt["object_custody_sha256"] = "d" * 64
+    identity_path.write_text(json.dumps(identity))
+    log = root / "migration-native-identity-empty-readback.log"
+    log.write_text(json.dumps(receipt))
+    _rehash(root, identity_path, log)
+    with pytest.raises(
+        ValueError,
+        match="linux_union_(component_identity_rejected|native_identity_legacy_readback_changed)",
+    ):
+        verify_union(
+            artifacts, commit=COMMIT, tree=TREE, manifest_sha256=_sha(MANIFEST)
+        )
+
+
+@pytest.mark.parametrize(
+    ("wrapper", "field", "alias"),
+    (
+        ("native_identity_before_readback", "execution_authority", 0),
+        ("native_identity_down_readback", "execution_authority", 0),
+        ("native_identity_down_readback", "legacy_table_present", 1),
+    ),
+)
+def test_union_rejects_rehashed_identity_only_native_wrapper_alias(
+    tmp_path, wrapper, field, alias
+):
+    artifacts, _ = _artifacts(tmp_path)
+    root = _pg_root(artifacts)
+    path = root / "identity.json"
+    identity = json.loads(path.read_text())
+    receipt = identity["migration_empty_roundtrip"][wrapper]
+    if field == "legacy_table_present":
+        receipt["legacy_witness_catalog"]["table_present"] = alias
+    else:
+        receipt[field] = alias
+    # Keep independently verified observation logs unchanged: only the identity
+    # copy and its envelope hash are modified. Python's False==0 must not link it.
+    path.write_text(json.dumps(identity))
+    _rehash(root, path)
+    with pytest.raises(ValueError, match="linux_union_component_identity_rejected"):
+        verify_union(
+            artifacts, commit=COMMIT, tree=TREE, manifest_sha256=_sha(MANIFEST)
+        )
+
+
+@pytest.mark.parametrize(
+    "damage", ("missing", "failed", "boolean", "duplicate", "early", "wrong_policy")
+)
+def test_union_requires_actual_post_pg47_nonempty_denial(tmp_path, damage):
+    artifacts, _ = _artifacts(tmp_path)
+    root = _pg_root(artifacts)
+    path = root / "steps.json"
+    stages = json.loads(path.read_text())
+    target = next(
+        s for s in stages if s["name"] == "migration-native-identity-nonempty-denial"
+    )
+    if damage == "missing":
+        stages.remove(target)
+    elif damage == "failed":
+        target["exit_code"] = 0
+    elif damage == "boolean":
+        target["exit_code"] = True
+    elif damage == "duplicate":
+        stages.append(dict(target))
+    elif damage == "early":
+        stages.remove(target)
+        stages.insert(0, target)
+    else:
+        target["policy_refusal"] = DOWNGRADE_DENIAL
+    path.write_text(json.dumps(stages))
+    _rehash(root, path)
+    with pytest.raises(ValueError, match="linux_union_native_identity_nonempty_stage"):
+        verify_union(
+            artifacts, commit=COMMIT, tree=TREE, manifest_sha256=_sha(MANIFEST)
+        )
+
+
+@pytest.mark.parametrize("damage", ("record", "catalog", "unhashed", "old42"))
+def test_union_rejects_rehashed_pg47_retention_changes_or_wrong_refusal(
+    tmp_path, damage
+):
+    artifacts, _ = _artifacts(tmp_path)
+    root = _pg_root(artifacts)
+    path = root / "migration-native-identity-nonempty-after.log"
+    if damage in ("record", "catalog"):
+        snapshot = json.loads(path.read_text())
+        snapshot["retention"][
+            f"{damage}s_sha256" if damage == "record" else "catalog_sha256"
+        ] = "d" * 64
+        path.write_text(json.dumps(snapshot))
+        _rehash(root, path)
+    elif damage == "old42":
+        path = root / "migration-native-identity-nonempty-denial.log"
+        path.write_text((root / "migration-downgrade-denial.log").read_text())
+        _rehash(root, path)
+    else:
+        hashes_path = root / "results.sha256.json"
+        hashes = json.loads(hashes_path.read_text())
+        del hashes[path.name]
+        hashes_path.write_text(json.dumps(hashes))
+    with pytest.raises(
+        (ValueError, RuntimeError), match="native_identity_(nonempty|downgrade)"
+    ):
         verify_union(
             artifacts, commit=COMMIT, tree=TREE, manifest_sha256=_sha(MANIFEST)
         )
@@ -743,6 +926,7 @@ def test_union_rejects_rehashed_roundtrip_or_rollback_tamper(
 @pytest.mark.parametrize(
     "stage",
     (
+        "migration-native-identity-empty-before",
         "migration-native-identity-empty-downgrade",
         "migration-native-identity-empty-readback",
         "migration-bundle-empty-downgrade",

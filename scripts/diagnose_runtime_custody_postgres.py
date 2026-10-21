@@ -1,7 +1,9 @@
 """Bounded, exact-source PostgreSQL diagnostics; never full validation or trading.
 
 The default runs the four existing DB0046 custody preflight cases. The explicit
-DB0047 profile migrates head and runs the complete reviewed witness module.
+DB0047 identity profile migrates head and runs the reviewed witness module.
+The separate migration profile also checks the empty roundtrip and a nonempty
+downgrade refusal using the full runner's fixed probes and strict validators.
 PostgreSQL and the app share an internal network, without host credentials.
 Native logs remain in runner temp; exported JUnit contains fixed categories
 only, including when an unexpected fixture error would expose driver text.
@@ -22,11 +24,19 @@ from pathlib import Path
 from uuid import uuid4
 
 from scripts.verify_final_hermetic import (
+    MIGRATION_REVISION_PROBE,
+    NATIVE_IDENTITY_DOWNGRADE_DENIAL,
+    NATIVE_IDENTITY_RETENTION_PROBE,
     RUNTIME_CUSTODY_PREFLIGHT_CASES,
     Run,
     archive_files,
     archive_tree,
     cleanup_resources,
+    expected_migration_revision_readback,
+    expected_native_identity_empty_downgrade_readback,
+    native_identity_empty_before_readback,
+    native_identity_nonempty_downgrade_readback,
+    native_migration_json_equal,
     run_runtime_bundle_custody_preflight,
     verify_pytest_report,
 )
@@ -35,6 +45,8 @@ POSTGRES_IMAGE = "postgres:17-alpine@sha256:f02121de6f74d30d8a94cd1d9584125e2178
 LOCK_SHA256 = "a44e649cb1d21d3790e132c21699cc172e77ed87682929320cf8f6190fe014e4"
 DEFAULT_PROFILE = "runtime-custody-0046"
 NATIVE_WITNESS_PROFILE = "native-witness-identity-0047"
+NATIVE_WITNESS_MIGRATION_PROFILE = "native-witness-migration-0047"
+NATIVE_WITNESS_PROFILES = (NATIVE_WITNESS_PROFILE, NATIVE_WITNESS_MIGRATION_PROFILE)
 NATIVE_WITNESS_MODULE = "tests.integration.test_public_receipt_witness_repository"
 NATIVE_WITNESS_CASES = tuple(
     (NATIVE_WITNESS_MODULE, name)
@@ -139,7 +151,7 @@ def _write(path, record):
 def required_cases(profile):
     if profile == DEFAULT_PROFILE:
         return RUNTIME_CUSTODY_PREFLIGHT_CASES
-    if profile == NATIVE_WITNESS_PROFILE:
+    if profile in NATIVE_WITNESS_PROFILES:
         return NATIVE_WITNESS_CASES
     raise ValueError("diagnostic_profile_invalid")
 
@@ -151,7 +163,7 @@ def redacted_report(raw, *, profile=DEFAULT_PROFILE):
     root = ET.fromstring(raw)
     if root.tag != "testsuites":
         raise ValueError("diagnostic_report_schema_invalid")
-    if profile == NATIVE_WITNESS_PROFILE:
+    if profile in NATIVE_WITNESS_PROFILES:
         if not len(root) or any(suite.tag != "testsuite" for suite in root):
             raise ValueError("diagnostic_report_schema_invalid")
         for source_suite in root:
@@ -226,7 +238,7 @@ def redacted_report(raw, *, profile=DEFAULT_PROFILE):
                 ):
                     category = match[1]
                     failed_conditions = checks
-            if profile == NATIVE_WITNESS_PROFILE:
+            if profile in NATIVE_WITNESS_PROFILES:
                 category = _NATIVE_CATEGORIES[status]
             suffix = (
                 ";checks=" + ",".join(failed_conditions) if failed_conditions else ""
@@ -310,6 +322,123 @@ def run_native_witness_identity_diagnostic(container, *, test_results: Path, mou
     return report
 
 
+def _migration_object(path: Path) -> tuple[dict, str]:
+    if path.is_symlink() or not path.is_file() or not 0 < path.stat().st_size <= 65536:
+        raise ValueError("diagnostic_migration_observation_unsafe")
+
+    def unique(pairs):
+        record = {}
+        for name, value in pairs:
+            if name in record:
+                raise ValueError("diagnostic_migration_duplicate_key")
+            record[name] = value
+        return record
+
+    raw = path.read_bytes()
+    record = json.loads(raw, object_pairs_hook=unique)
+    if type(record) is not dict:
+        raise ValueError("diagnostic_migration_observation_invalid")
+    return record, hashlib.sha256(raw).hexdigest()
+
+
+def run_native_witness_migration_diagnostic(
+    container, *, output: Path, test_results: Path, mounts, progress: dict
+):
+    """One empty roundtrip, seventeen cases, then one nonempty refusal.
+
+    Only fixed, validated observations enter progress. Raw logs remain private
+    runner-temp artifacts even when a SQL/driver failure interrupts the probe.
+    """
+
+    def observe(phase, command):
+        progress["phase"] = phase
+        container(phase, command, timeout=60)
+        return _migration_object(output / f"{phase}.log")
+
+    def retain(phase, record, digest):
+        progress["observations"][phase] = record
+        progress["observation_sha256"][phase] = digest
+
+    before, digest = observe(
+        "native-witness-migration-before",
+        [
+            "python",
+            "-c",
+            MIGRATION_REVISION_PROBE,
+            "0047",
+            "native-identity-0047-empty-before",
+        ],
+    )
+    expected = native_identity_empty_before_readback(
+        before.get("revision_readback"), before.get("object_custody_sha256")
+    )
+    if not native_migration_json_equal(before, expected):
+        raise ValueError("diagnostic_migration_empty_before_invalid")
+    retain(progress["phase"], expected, digest)
+    progress["phase"] = "native-witness-empty-downgrade"
+    container(progress["phase"], ["alembic", "downgrade", "0046"], timeout=60)
+    down, digest = observe(
+        "native-witness-empty-readback",
+        [
+            "python",
+            "-c",
+            MIGRATION_REVISION_PROBE,
+            "0046",
+            "native-identity-0047-empty-down",
+        ],
+    )
+    expected = expected_native_identity_empty_downgrade_readback(
+        before["object_custody_sha256"]
+    )
+    if not native_migration_json_equal(down, expected):
+        raise ValueError("diagnostic_migration_empty_down_invalid")
+    retain(progress["phase"], expected, digest)
+    progress["phase"] = "native-witness-reupgrade"
+    container(progress["phase"], ["alembic", "upgrade", "head"], timeout=60)
+    current, digest = observe(
+        "native-witness-reupgrade-readback",
+        ["python", "-c", MIGRATION_REVISION_PROBE, "0047"],
+    )
+    expected = expected_migration_revision_readback("0047")
+    if not native_migration_json_equal(current, expected):
+        raise ValueError("diagnostic_migration_reupgrade_invalid")
+    retain(progress["phase"], expected, digest)
+    progress["phase"] = "native-witness-reupgrade-drift"
+    container(progress["phase"], ["alembic", "check"], timeout=60)
+    progress["phase"] = "native-witness-identity-tests"
+    report = run_native_witness_identity_diagnostic(
+        container, test_results=test_results, mounts=mounts
+    )
+    progress["phase"] = "native-witness-nonempty-before"
+    nonempty_before, digest = observe(
+        progress["phase"], ["python", "-c", NATIVE_IDENTITY_RETENTION_PROBE]
+    )
+    # This validates the exact snapshot contract and both small/wide counts.
+    native_identity_nonempty_downgrade_readback(nonempty_before, nonempty_before)
+    retain(progress["phase"], nonempty_before, digest)
+    progress["phase"] = "native-witness-nonempty-denial"
+    container(
+        progress["phase"],
+        ["alembic", "downgrade", "0046"],
+        timeout=60,
+        expected_refusal=NATIVE_IDENTITY_DOWNGRADE_DENIAL,
+    )
+    nonempty_after, digest = observe(
+        "native-witness-nonempty-after",
+        ["python", "-c", NATIVE_IDENTITY_RETENTION_PROBE],
+    )
+    policy = native_identity_nonempty_downgrade_readback(
+        nonempty_before, nonempty_after
+    )
+    retain(progress["phase"], nonempty_after, digest)
+    progress["nonempty_downgrade_policy"] = policy
+    progress["required_case_count"] = len(NATIVE_WITNESS_CASES)
+    progress["required_junit_sha256"] = report["sha256"]
+    progress["phase"] = "COMPLETE"
+    progress["status"] = "PASS"
+    return report
+
+
 def native_witness_catalog(raw):
     """Allow fixed public DDL metadata, never rows, roles or driver text.
 
@@ -389,7 +518,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--profile",
-        choices=(DEFAULT_PROFILE, NATIVE_WITNESS_PROFILE),
+        choices=(DEFAULT_PROFILE, *NATIVE_WITNESS_PROFILES),
         default=DEFAULT_PROFILE,
     )
     parser.add_argument("--archive", type=Path, required=True)
@@ -417,6 +546,11 @@ def main():
         "scripts/diagnose_runtime_custody_postgres.py",
         "scripts/verify_final_hermetic.py",
         "scripts/verify_linux_shard.py",
+        *(
+            ("scripts/verify_native_witness_identity_schema.py",)
+            if args.profile == NATIVE_WITNESS_MIGRATION_PROFILE
+            else ()
+        ),
     )
     root = Path(__file__).resolve().parents[1]
     if any(
@@ -445,6 +579,8 @@ def main():
         "scope": (
             "db0046_four_case_diagnostic_only"
             if args.profile == DEFAULT_PROFILE
+            else "db0047_seventeen_case_migration_diagnostic_only"
+            if args.profile == NATIVE_WITNESS_MIGRATION_PROFILE
             else "db0047_seventeen_case_native_identity_diagnostic_only"
         ),
         "profile": args.profile,
@@ -463,6 +599,30 @@ def main():
         "execution_authority": False,
         "full_postgresql_acceptance": False,
         "status": "FAIL",
+    }
+    migration_progress = {
+        "schema": "ctcc.db0047_native_migration_diagnostic.v1",
+        "profile": NATIVE_WITNESS_MIGRATION_PROFILE,
+        "status": "FAIL",
+        "phase": "NOT_STARTED",
+        "observations": {},
+        "observation_sha256": {},
+        "source": {
+            key: identity[key]
+            for key in (
+                "commit",
+                "tree",
+                "archive_sha256",
+                "source_files_sha256",
+                "manifest_sha256",
+                "runner_sha256",
+                "dependency_lock_sha256",
+            )
+        },
+        "executed_source_sha256": {name: files[name]["sha256"] for name in executed},
+        "full_postgresql_acceptance": False,
+        "execution_authority": False,
+        "external_order_writes": 0,
     }
 
     def container(name, command, *, mounts=(), timeout=300, **kwargs):
@@ -577,7 +737,7 @@ def main():
             "--mount",
             f"type=bind,source={tests.resolve()},target=/validation-results",
         )
-        if args.profile == NATIVE_WITNESS_PROFILE:
+        if args.profile in NATIVE_WITNESS_PROFILES:
             container("migration-upgrade", ["alembic", "upgrade", "head"])
             container(
                 "migration-identity",
@@ -601,9 +761,18 @@ def main():
                 key: migration[key]
                 for key in ("source_head", "database_head", "migration_sha256")
             }
-            identity["test_report"] = run_native_witness_identity_diagnostic(
-                container, test_results=tests, mounts=mounts
-            )
+            if args.profile == NATIVE_WITNESS_MIGRATION_PROFILE:
+                identity["test_report"] = run_native_witness_migration_diagnostic(
+                    container,
+                    output=args.output,
+                    test_results=tests,
+                    mounts=mounts,
+                    progress=migration_progress,
+                )
+            else:
+                identity["test_report"] = run_native_witness_identity_diagnostic(
+                    container, test_results=tests, mounts=mounts
+                )
         else:
             identity["test_report"] = run_runtime_bundle_custody_preflight(
                 container, test_results=tests, mounts=mounts
@@ -636,7 +805,7 @@ def main():
                 identity["report_failure_type"] = type(error).__name__
         else:
             identity["status"] = "FAIL"
-        if args.profile == NATIVE_WITNESS_PROFILE and "migration" in identity:
+        if args.profile in NATIVE_WITNESS_PROFILES and "migration" in identity:
             try:
                 run.command(
                     "native-witness-public-catalog",
@@ -672,6 +841,14 @@ def main():
         if any(row["status"] not in {"ABSENT", "REMOVED"} for row in cleanup):
             identity["status"] = "FAIL"
         _write(export / "cleanup.json", cleanup)
+        if args.profile == NATIVE_WITNESS_MIGRATION_PROFILE:
+            if identity["status"] != "PASS":
+                migration_progress["status"] = "FAIL"
+            if len(json.dumps(migration_progress, sort_keys=True).encode()) > 65536:
+                raise ValueError("diagnostic_migration_receipt_oversized")
+            identity["migration_diagnostic_receipt_sha256"] = _write(
+                export / "native-witness-migration-receipt.json", migration_progress
+            )
         _write(export / "steps.json", run.steps)
         _write(export / "identity.json", identity)
         hashes = {

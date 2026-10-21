@@ -1,11 +1,12 @@
-"""DB0047 catalog pin. Native PG17 constraint baseline is not yet sealed.
+"""DB0047 catalog comparison pins, including the reviewed PG17 constraint.
 
-The pending value deliberately cannot match a real SHA256 catalog readback.
-Filling it requires reviewed native DDL metadata and the targeted PostgreSQL
-cases; source-only unit tests are not native schema acceptance.
+The constraint deparser digest comes from exact-source diagnostic 39690256720.
+It is a comparison input: every field in the full catalog query must still be
+read and matched. These pins alone are not deployed/native schema acceptance.
 """
 
 import re
+from copy import deepcopy
 
 
 def require_native_witness_identity_baseline() -> None:
@@ -65,7 +66,10 @@ SELECT jsonb_build_object(
 """
 
 # Function bodies are derived from the exact migration SQL. The constraint
-# deparser hash remains absent until the independent native diagnostic review.
+# deparser hash is the reviewed PG17.11 pretty=true result from run39690256720,
+# exact source 1fbbf170a962d46c3851e06b8f05f5aa129a4043. The integral u64/u128
+# bounds and unbounded NUMERIC shape were reviewed independently; all remaining
+# catalog/ownership/ACL/trigger predicates below remain mandatory.
 NATIVE_WITNESS_IDENTITY_SCHEMA = {
     "table_present": True,
     "table_shape": True,
@@ -152,6 +156,103 @@ NATIVE_WITNESS_IDENTITY_SCHEMA = {
         True,
         False,
         False,
-        None,  # PENDING_NATIVE_DB0047_CONSTRAINT_BASELINE: fail closed.
+        "b19f38740a3756948a3c17f97c4d4433d84010a7311a81a9bc3567eab1e5534b",
     ],
 }
+
+
+def expected_legacy_witness_identity_schema() -> dict:
+    """The DB0024 contract, separately checked after DB0047's empty downgrade."""
+    result = deepcopy(NATIVE_WITNESS_IDENTITY_SCHEMA)
+    result["columns"] = [
+        ["root_device", "bigint", -1, True, True, True],
+        ["root_inode", "bigint", -1, True, True, True],
+    ]
+    result["constraint"] = []
+    legacy_bodies = {
+        "public_receipt_witness_append": "32acf9da9cc4888b51737409f85e0d5411f96deba83dfe397fa7d8db5dcd82c8",
+        "public_receipt_witness_insert_guard": "60998175f712cafb5b7525691c060c42455ecf2658404a0fed22864b821f3d1f",
+    }
+    for row in result["functions"]:
+        if row[0] in legacy_bodies:
+            row[1] = legacy_bodies[row[0]]
+    return result
+
+
+# Attributes which the successful type/body change must preserve. Type OIDs,
+# changed bodies and constraints are deliberately validated separately rather
+# than compared for equality across the expected ALTER TYPE/guard replacement.
+NATIVE_WITNESS_OBJECT_CUSTODY_SQL = """
+SELECT encode(sha256(convert_to(jsonb_build_object(
+ 'table',(SELECT jsonb_build_array(oid,relowner,reltype,relacl::text)
+   FROM pg_catalog.pg_class WHERE oid=
+     pg_catalog.to_regclass('public.public_receipt_witness_revisions')),
+ 'columns',(SELECT jsonb_agg(jsonb_build_array(attnum,attname,attnotnull,
+   attidentity::text,attgenerated::text) ORDER BY attnum)
+   FROM pg_catalog.pg_attribute WHERE attrelid=
+     pg_catalog.to_regclass('public.public_receipt_witness_revisions')
+     AND attnum>0 AND NOT attisdropped),
+ 'functions',(SELECT jsonb_agg(jsonb_build_array(oid,proname,proowner,
+   proacl::text,prosecdef,proconfig,prorettype,proretset,proargtypes::text,
+   provolatile::text,proisstrict,proparallel::text,proleakproof,prokind::text,
+   prolang,prosupport) ORDER BY oid) FROM pg_catalog.pg_proc
+   WHERE pronamespace='public'::pg_catalog.regnamespace AND proname IN
+     ('public_receipt_witness_append','public_receipt_witness_insert_guard',
+      'public_receipt_witness_immutable','public_receipt_witness_read')),
+ 'triggers',(SELECT jsonb_agg(jsonb_build_array(oid,
+   pg_catalog.pg_get_triggerdef(oid,true),tgenabled::text,tgfoid) ORDER BY oid)
+   FROM pg_catalog.pg_trigger WHERE tgrelid=
+     pg_catalog.to_regclass('public.public_receipt_witness_revisions'))
+)::text,'UTF8')),'hex')
+"""
+
+
+# This bounded read returns only counts and digests. The digest includes all
+# stored columns, not just the self-reported record hash. Catalog custody covers
+# actual OIDs, ACLs, bodies, trigger definitions and constraints across refusal.
+NATIVE_WITNESS_RETENTION_SNAPSHOT_SQL = """
+WITH bounded AS MATERIALIZED (
+ SELECT * FROM public.public_receipt_witness_revisions
+ ORDER BY journal_key,revision LIMIT 100001
+), row_state AS (
+ SELECT count(*) AS row_count,
+ count(*) FILTER(WHERE root_device<=9223372036854775807
+   AND root_inode<=9223372036854775807) AS small_row_count,
+ count(*) FILTER(WHERE root_device>9223372036854775807
+   OR root_inode>9223372036854775807) AS wide_row_count,
+ encode(sha256(convert_to(COALESCE(string_agg(
+   encode(sha256(convert_to(row_to_json(b)::text,'UTF8')),'hex'),''
+   ORDER BY journal_key,revision),''),'UTF8')),'hex') AS records_sha256
+ FROM bounded b
+), catalog_state AS (
+ SELECT jsonb_build_object(
+ 'table',(SELECT jsonb_build_array(oid,relowner,relacl::text)
+   FROM pg_catalog.pg_class WHERE oid=
+     'public.public_receipt_witness_revisions'::pg_catalog.regclass),
+ 'columns',(SELECT jsonb_agg(jsonb_build_array(attnum,attname,atttypid,
+   atttypmod,attnotnull,attidentity::text,attgenerated::text) ORDER BY attnum)
+   FROM pg_catalog.pg_attribute WHERE attrelid=
+     'public.public_receipt_witness_revisions'::pg_catalog.regclass
+     AND attnum>0 AND NOT attisdropped),
+ 'functions',(SELECT jsonb_agg(jsonb_build_array(oid,proname,proowner,
+   proacl::text,prosecdef,proconfig,prorettype,proretset,proargtypes::text,
+   provolatile::text,proisstrict,proparallel::text,proleakproof,prokind::text,
+   prolang,prosupport,prosrc) ORDER BY oid) FROM pg_catalog.pg_proc
+   WHERE pronamespace='public'::pg_catalog.regnamespace AND proname IN
+     ('public_receipt_witness_append','public_receipt_witness_insert_guard',
+      'public_receipt_witness_immutable','public_receipt_witness_read')),
+ 'triggers',(SELECT jsonb_agg(jsonb_build_array(oid,
+   pg_catalog.pg_get_triggerdef(oid,true),tgenabled::text,tgfoid) ORDER BY oid)
+   FROM pg_catalog.pg_trigger WHERE tgrelid=
+     'public.public_receipt_witness_revisions'::pg_catalog.regclass),
+ 'constraints',(SELECT jsonb_agg(jsonb_build_array(oid,
+   pg_catalog.pg_get_constraintdef(oid,true),convalidated) ORDER BY oid)
+   FROM pg_catalog.pg_constraint WHERE conrelid=
+     'public.public_receipt_witness_revisions'::pg_catalog.regclass)
+ ) AS state
+)
+SELECT jsonb_build_object('row_count',row_count,'small_row_count',small_row_count,
+ 'wide_row_count',wide_row_count,'records_sha256',records_sha256,
+ 'catalog_sha256',encode(sha256(convert_to(state::text,'UTF8')),'hex'))
+FROM row_state CROSS JOIN catalog_state
+"""
