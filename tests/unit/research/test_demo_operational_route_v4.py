@@ -146,6 +146,140 @@ def _synthetic_lease(session, private_client):
     return observation
 
 
+def _native_config_fixture(monkeypatch, body):
+    """Keep native-client guard real; replace only network and TLS test seams."""
+    client = route_v4._native_client()
+    context = client._transport._pool._ssl_context
+
+    class SyntheticTLS:
+        server_hostname = "openapi.okx.com"
+
+        def __init__(self):
+            self.context = context
+
+        def version(self):
+            return "TLSv1.3"
+
+        def getpeercert(self, *, binary_form):
+            assert binary_form is True
+            return b"synthetic-test-certificate"
+
+    tls = SyntheticTLS()
+
+    class NetworkStream:
+        def get_extra_info(self, name):
+            return tls if name == "ssl_object" else None
+
+    response = httpx.Response(
+        200,
+        headers={"content-type": "application/json"},
+        stream=body,
+        extensions={"network_stream": NetworkStream()},
+    )
+
+    async def send(_request, **_kwargs):
+        response._request = _request
+        return response
+
+    monkeypatch.setattr(client, "send", send)
+    monkeypatch.setattr(route_v4, "_native_client", lambda: client)
+    monkeypatch.setattr(route_v4.ssl, "SSLObject", SyntheticTLS)
+    monkeypatch.setattr(route_v4, "native_os_clock", dict)
+    monkeypatch.setattr(route_v4, "validate_os_clock", lambda _value: None)
+    monkeypatch.setattr(
+        route_v4,
+        "native_stamp",
+        lambda: {"utc_ns": 1_760_000_000_000_000_000, "monotonic_ns": 100},
+    )
+    return client, response
+
+
+@pytest.mark.asyncio
+async def test_slow_drip_config_body_hits_full_wall_deadline_and_closes(monkeypatch):
+    class SlowBody(httpx.AsyncByteStream):
+        closed = False
+
+        async def __aiter__(self):
+            yield b"{"
+            for _ in range(20):
+                await asyncio.sleep(0.015)
+                yield b" "
+
+        async def aclose(self):
+            self.closed = True
+
+    body = SlowBody()
+    client, response = _native_config_fixture(monkeypatch, body)
+    monkeypatch.setattr(route_v4, "_MAX_CONFIG_WALL_SECONDS", 0.05)
+    session, private_client = _session(), _client()
+    with pytest.raises(route_v4.DemoOperationalRouteV4Error):
+        await route_v4.probe_initial_demo_operational_route_v4(session, private_client)
+    assert body.closed and response.is_closed and client.is_closed
+    with pytest.raises(
+        route_v4.DemoOperationalRouteV4Error,
+        match="demo_v4_session_already_probed",
+    ):
+        await route_v4.probe_initial_demo_operational_route_v4(session, private_client)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_config_body_shield_closes_response_and_client(monkeypatch):
+    entered = asyncio.Event()
+
+    class HangingBody(httpx.AsyncByteStream):
+        closed = False
+
+        async def __aiter__(self):
+            entered.set()
+            await asyncio.Event().wait()
+            yield _config()
+
+        async def aclose(self):
+            self.closed = True
+
+    body = HangingBody()
+    client, response = _native_config_fixture(monkeypatch, body)
+    session, private_client = _session(), _client()
+    task = asyncio.create_task(
+        route_v4.probe_initial_demo_operational_route_v4(session, private_client)
+    )
+    await asyncio.wait_for(entered.wait(), 1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, 2)
+    assert body.closed and response.is_closed and client.is_closed
+    assert route_v4._PROBES.get(session) is route_v4._STARTED
+
+
+@pytest.mark.asyncio
+async def test_client_close_failure_denies_even_valid_config(monkeypatch):
+    class OneBody(httpx.AsyncByteStream):
+        closed = False
+
+        async def __aiter__(self):
+            yield _config()
+
+        async def aclose(self):
+            self.closed = True
+
+    body = OneBody()
+    client, response = _native_config_fixture(monkeypatch, body)
+    original_close = client.aclose
+
+    async def close_then_fail():
+        await original_close()
+        raise RuntimeError("synthetic late close failure")
+
+    monkeypatch.setattr(client, "aclose", close_then_fail)
+    session, private_client = _session(), _client()
+    with pytest.raises(
+        route_v4.DemoOperationalRouteV4Error, match="demo_v4_cleanup_failed"
+    ):
+        await route_v4.probe_initial_demo_operational_route_v4(session, private_client)
+    assert body.closed and response.is_closed and client.is_closed
+    assert route_v4._PROBES.get(session) is route_v4._STARTED
+
+
 @pytest.mark.asyncio
 async def test_initial_lease_is_single_use_same_task_and_never_post_g12(monkeypatch):
     session, private_client = _session(), _client()

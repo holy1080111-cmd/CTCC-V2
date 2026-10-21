@@ -35,6 +35,7 @@ from app.trade_qualification.demo_session_route_preflight import (
 )
 
 _MAX_CONFIG_BYTES = 8192
+_MAX_CONFIG_WALL_SECONDS = 5
 _LEASE_NS = 5_000_000_000
 _CONFIG_PATH = "/api/v5/account/config"
 _LEASES: WeakKeyDictionary = WeakKeyDictionary()
@@ -176,6 +177,94 @@ def _native_client():
     return collector._new_client()
 
 
+async def _read_native_config_body(
+    *,
+    client,
+    request,
+    context,
+    route,
+    session,
+    private_client,
+    plan,
+    started,
+    holder,
+    raw,
+):
+    """Read one bounded signed config response under the caller's wall deadline."""
+    response = await client.send(
+        request, auth=None, follow_redirects=False, stream=True
+    )
+    holder["response"] = response
+    headers = native_stamp()
+    validate_stamps((started, headers))
+    if (
+        type(response) is not httpx.Response
+        or response.url != request.url
+        or response.history
+        or response.is_closed
+        or response.is_stream_consumed
+        or "set-cookie" in response.headers
+        or client.cookies
+    ):
+        raise DemoOperationalRouteV4Error("demo_v4_response_invalid")
+    network = response.extensions.get("network_stream")
+    tls = None if network is None else network.get_extra_info("ssl_object")
+    if (
+        type(tls) is not ssl.SSLObject
+        or tls.context is not context
+        or tls.server_hostname != route.rest_hostname
+        or tls.version() not in {"TLSv1.2", "TLSv1.3"}
+    ):
+        raise DemoOperationalRouteV4Error("demo_v4_native_tls_required")
+    certificate = tls.getpeercert(binary_form=True)
+    if type(certificate) is not bytes or not certificate:
+        raise DemoOperationalRouteV4Error("demo_v4_native_tls_required")
+    if (
+        response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        != "application/json"
+        or response.headers.get("content-encoding", "identity").lower() != "identity"
+    ):
+        raise DemoOperationalRouteV4Error("demo_v4_response_invalid")
+    length = response.headers.get("content-length")
+    if length is not None and (
+        not length.isascii()
+        or not length.isdigit()
+        or len(length) > 5
+        or int(length) > _MAX_CONFIG_BYTES
+    ):
+        raise DemoOperationalRouteV4Error("demo_v4_response_invalid")
+    async for chunk in response.aiter_raw():
+        _checked_objects(session, private_client)
+        if type(chunk) is not bytes or len(raw) + len(chunk) > _MAX_CONFIG_BYTES:
+            raise DemoOperationalRouteV4Error("demo_v4_response_invalid")
+        raw.extend(chunk)
+    body_completed = native_stamp()
+    validate_stamps((started, headers, body_completed))
+    if length is not None and len(raw) != int(length):
+        raise DemoOperationalRouteV4Error("demo_v4_response_invalid")
+    if response.status_code != 200:
+        auth_code = _read_only_auth_rejection(response.status_code, bytes(raw))
+        if auth_code in {"50110", "50119"}:
+            raise DemoOperationalRouteV4Error(
+                "demo_v4_account_route_rejected_" + auth_code
+            )
+        raise DemoOperationalRouteV4Error("demo_v4_response_invalid")
+    tokens = collector._credential_values(session._credentials)[:3]
+    collector._no_secrets(bytes(raw), tokens)
+    document, canon = capture._decode_json(
+        bytes(raw), limit=_MAX_CONFIG_BYTES, wire=True
+    )
+    collector._no_secret_json(canon, tokens)
+    _decode_accepted_config(
+        bytes(raw),
+        expected_uid=plan.expected_uid,
+        expected_main_uid=plan.expected_main_uid,
+    )
+    if document["data"][0]["uid"] != plan.expected_uid:
+        raise DemoOperationalRouteV4Error("demo_v4_config_invalid")
+    return headers, body_completed, sha(certificate)
+
+
 async def probe_initial_demo_operational_route_v4(
     session: ControlledDemoAccountSession,
     private_client: OkxDemoPrivateRestClient,
@@ -215,104 +304,64 @@ async def probe_initial_demo_operational_route_v4(
         ):
             raise DemoOperationalRouteV4Error("demo_v4_request_invalid")
         raw = bytearray()
-        response = None
+        holder = {"response": None}
         pending_cancel = False
-        async with _native_client() as client:
-            collector._client_guard(client)
-            # Account collector permits MockTransport for synthetic records;
-            # this issuer cannot turn such a record into an operational lease.
-            if type(client._transport) is not httpx.AsyncHTTPTransport:
-                raise DemoOperationalRouteV4Error("demo_v4_native_tls_required")
-            context = client._transport._pool._ssl_context
-            _checked_objects(session, private_client)
-            try:
-                response = await client.send(
-                    request, auth=None, follow_redirects=False, stream=True
-                )
-                headers = native_stamp()
-                validate_stamps((started, headers))
-                if (
-                    response.url != request.url
-                    or response.history
-                    or response.is_closed
-                    or response.is_stream_consumed
-                    or "set-cookie" in response.headers
-                    or client.cookies
-                ):
-                    raise DemoOperationalRouteV4Error("demo_v4_response_invalid")
-                network = response.extensions.get("network_stream")
-                tls = None if network is None else network.get_extra_info("ssl_object")
-                if (
-                    type(tls) is not ssl.SSLObject
-                    or tls.context is not context
-                    or tls.server_hostname != route.rest_hostname
-                    or tls.version() not in {"TLSv1.2", "TLSv1.3"}
-                ):
+        cleanup_failed = False
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + min(plan.max_request_seconds, _MAX_CONFIG_WALL_SECONDS)
+        client = _native_client()
+        try:
+            # The single monotonic deadline covers client enter, send and every
+            # raw-body chunk. The two later closes each have their own one-second
+            # bounded shield so cancellation cannot abandon a live connection.
+            async with asyncio.timeout_at(deadline):
+                await client.__aenter__()
+                collector._client_guard(client)
+                # MockTransport may be used by account fixtures but can never
+                # issue an operational route lease here.
+                if type(client._transport) is not httpx.AsyncHTTPTransport:
                     raise DemoOperationalRouteV4Error("demo_v4_native_tls_required")
-                certificate = tls.getpeercert(binary_form=True)
-                if type(certificate) is not bytes or not certificate:
-                    raise DemoOperationalRouteV4Error("demo_v4_native_tls_required")
+                context = client._transport._pool._ssl_context
+                checked_plan, checked_route = _checked_objects(session, private_client)
+                validate_os_clock(native_os_clock())
                 if (
-                    response.headers.get("content-type", "")
-                    .split(";", 1)[0]
-                    .strip()
-                    .lower()
-                    != "application/json"
-                    or response.headers.get("content-encoding", "identity").lower()
-                    != "identity"
+                    checked_route != route
+                    or checked_plan.origin != route.rest_origin
+                    or loop.time() >= deadline
+                    or task.cancelling()
                 ):
-                    raise DemoOperationalRouteV4Error("demo_v4_response_invalid")
-                length = response.headers.get("content-length")
-                if length is not None and (
-                    not length.isascii()
-                    or not length.isdigit()
-                    or len(length) > 5
-                    or int(length) > _MAX_CONFIG_BYTES
-                ):
-                    raise DemoOperationalRouteV4Error("demo_v4_response_invalid")
-                async for chunk in response.aiter_raw():
-                    _checked_objects(session, private_client)
-                    if (
-                        type(chunk) is not bytes
-                        or len(raw) + len(chunk) > _MAX_CONFIG_BYTES
-                    ):
-                        raise DemoOperationalRouteV4Error("demo_v4_response_invalid")
-                    raw.extend(chunk)
-                body_completed = native_stamp()
-                validate_stamps((started, headers, body_completed))
-                if length is not None and len(raw) != int(length):
-                    raise DemoOperationalRouteV4Error("demo_v4_response_invalid")
-                if response.status_code != 200:
-                    auth_code = _read_only_auth_rejection(
-                        response.status_code, bytes(raw)
-                    )
-                    if auth_code in {"50110", "50119"}:
-                        raise DemoOperationalRouteV4Error(
-                            "demo_v4_account_route_rejected_" + auth_code
-                        )
-                    raise DemoOperationalRouteV4Error("demo_v4_response_invalid")
-                tokens = collector._credential_values(session._credentials)[:3]
-                collector._no_secrets(bytes(raw), tokens)
-                document, canon = capture._decode_json(
-                    bytes(raw), limit=_MAX_CONFIG_BYTES, wire=True
+                    raise DemoOperationalRouteV4Error("demo_v4_request_invalid")
+                headers, body_completed, peer_sha256 = await _read_native_config_body(
+                    client=client,
+                    request=request,
+                    context=context,
+                    route=route,
+                    session=session,
+                    private_client=private_client,
+                    plan=plan,
+                    started=started,
+                    holder=holder,
+                    raw=raw,
                 )
-                collector._no_secret_json(canon, tokens)
-                _decode_accepted_config(
-                    bytes(raw),
-                    expected_uid=plan.expected_uid,
-                    expected_main_uid=plan.expected_main_uid,
-                )
-                if document["data"][0]["uid"] != plan.expected_uid:
-                    raise DemoOperationalRouteV4Error("demo_v4_config_invalid")
-                peer_sha256 = sha(certificate)
-            except asyncio.CancelledError:
-                pending_cancel = True
-                raise
-            finally:
-                if response is not None:
-                    await collector._close(response, pending_cancel=pending_cancel)
-            if client.cookies:
-                raise DemoOperationalRouteV4Error("demo_v4_response_invalid")
+                if client.cookies:
+                    raise DemoOperationalRouteV4Error("demo_v4_response_invalid")
+        except asyncio.CancelledError:
+            pending_cancel = True
+            raise
+        finally:
+            for resource in (holder["response"], client):
+                if resource is None:
+                    continue
+                try:
+                    await collector._close(resource)
+                except asyncio.CancelledError:
+                    pending_cancel = True
+                except Exception:  # noqa: BLE001 -- no transport detail escapes
+                    cleanup_failed = True
+            if pending_cancel:
+                raise asyncio.CancelledError
+            if cleanup_failed:
+                raise DemoOperationalRouteV4Error("demo_v4_cleanup_failed")
         validated = native_stamp()
         validate_stamps((started, headers, body_completed, validated))
         if (
