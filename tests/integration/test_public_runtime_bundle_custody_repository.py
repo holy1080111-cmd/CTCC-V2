@@ -12,6 +12,7 @@ import importlib.util
 import json
 import os
 import re
+from functools import wraps
 from pathlib import Path
 from uuid import uuid4
 
@@ -150,6 +151,22 @@ def consume(receipt, data):
     )
 
 
+def _safe_custody_diagnostic(case):
+    """Preserve a fixed category in tb=no JUnit without native error payloads."""
+
+    @wraps(case)
+    async def run(*args, **kwargs):
+        try:
+            return await case(*args, **kwargs)
+        except RuntimeBundleCustodyError as error:
+            pytest.fail(
+                f"runtime_custody_diagnostic:{error.diagnostic_category}", pytrace=False
+            )
+
+    return run
+
+
+@_safe_custody_diagnostic
 async def test_migrated_restricted_role_commit_then_new_transaction_exact_readback(
     runtime_custody_database,
 ):
@@ -226,6 +243,7 @@ async def test_duplicate_bytes_conflicting_proof_rejected_no_retry_and_one_row(
     assert replay.bundle_raw == data["bundle_raw"]
 
 
+@_safe_custody_diagnostic
 async def test_privileged_migration_login_and_missing_preflight_rejected(
     runtime_custody_database,
 ):
@@ -239,6 +257,7 @@ async def test_privileged_migration_login_and_missing_preflight_rejected(
         await privileged.verify_deployment()
 
 
+@_safe_custody_diagnostic
 async def test_committed_append_with_unknown_readback_never_retries_or_issues_receipt(
     runtime_custody_database, monkeypatch, tmp_path
 ):
@@ -303,6 +322,7 @@ async def test_committed_append_with_unknown_readback_never_retries_or_issues_re
     ]
 
 
+@_safe_custody_diagnostic
 async def test_direct_table_read_mutation_and_schema_changes_denied(
     runtime_custody_database,
 ):
