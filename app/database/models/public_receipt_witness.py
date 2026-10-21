@@ -1,12 +1,14 @@
 """Immutable public-minute checkpoint witness; no execution authority."""
 
 from datetime import datetime
+from decimal import Decimal
 
 from sqlalchemy import (
     BigInteger,
     CheckConstraint,
     DateTime,
     Index,
+    Numeric,
     String,
     Text,
     func,
@@ -36,6 +38,13 @@ class PublicReceiptWitnessRevision(Base):
             name="checkpoint_bound",
         ),
         CheckConstraint(
+            "root_device BETWEEN 0 AND 18446744073709551615 "
+            "AND root_device=trunc(root_device) "
+            "AND root_inode BETWEEN 1 AND 340282366920938463463374607431768211455 "
+            "AND root_inode=trunc(root_inode)",
+            name="native_identity_bounds",
+        ),
+        CheckConstraint(
             "transition IN ('initialize','open_attempt','append_attempt',"
             "'append_capture','close_rejected_attempt') "
             "AND state IN ('idle','open','attempt_anchored') "
@@ -55,8 +64,10 @@ class PublicReceiptWitnessRevision(Base):
     journal_key: Mapped[str] = mapped_column(String(64), primary_key=True)
     revision: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     journal_id: Mapped[str] = mapped_column(String(32), nullable=False)
-    root_device: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    root_inode: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    # No scale typmod: NUMERIC(p,0) would round invalid fractional inputs before
+    # the constraints/trigger could reject them. Repository replay returns ints.
+    root_device: Mapped[Decimal] = mapped_column(Numeric(), nullable=False)
+    root_inode: Mapped[Decimal] = mapped_column(Numeric(), nullable=False)
     transition: Mapped[str] = mapped_column(String(24), nullable=False)
     state: Mapped[str] = mapped_column(String(24), nullable=False)
     operation_id: Mapped[str | None] = mapped_column(String(32))

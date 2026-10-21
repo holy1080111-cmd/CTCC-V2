@@ -564,6 +564,7 @@ def test_migration_policy_refusal_requires_exact_database_error_and_failed_exit(
     tmp_path, monkeypatch, returncode, marker, passes
 ):
     output = (
+        "INFO Running downgrade 0047 -> 0046\n"
         "INFO Running downgrade 0046 -> 0045\n"
         "INFO Running downgrade 0045 -> 0044\n"
         "INFO Running downgrade 0044 -> 0043\n"
@@ -604,6 +605,7 @@ def test_migration_policy_refusal_requires_exact_database_error_and_failed_exit(
 @pytest.mark.parametrize(
     "missing_transition",
     (
+        "0047 -> 0046",
         "0046 -> 0045",
         "0045 -> 0044",
         "0044 -> 0043",
@@ -618,6 +620,7 @@ def test_migration_policy_refusal_rejects_missing_transition(
     transitions = "".join(
         f"INFO Running downgrade {transition}\n"
         for transition in (
+            "0047 -> 0046",
             "0046 -> 0045",
             "0045 -> 0044",
             "0044 -> 0043",

@@ -1,0 +1,43 @@
+name: DB0047 native witness identity diagnostic
+
+on:
+  push:
+    branches:
+      - work/native-file-identity-wide-20261022
+
+permissions:
+  contents: read
+
+jobs:
+  native-witness-diagnostic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Export exact source and run the complete native witness module
+        shell: bash
+        run: |
+          set -euo pipefail
+          commit=$(git rev-parse HEAD)
+          test "$commit" = "$GITHUB_SHA"
+          tree=$(git rev-parse 'HEAD^{tree}')
+          archive="$RUNNER_TEMP/ctcc-native-witness-diagnostic-source.tar"
+          git -c core.autocrlf=false -c core.eol=lf archive --format=tar --output="$archive" "$commit"
+          digest=$(sha256sum "$archive" | cut -d ' ' -f 1)
+          python3 -m scripts.diagnose_runtime_custody_postgres \
+            --profile native-witness-identity-0047 \
+            --archive "$archive" --archive-sha256 "$digest" \
+            --commit "$commit" --tree "$tree" \
+            --output "$RUNNER_TEMP/ctcc-native-witness-diagnostic"
+      - name: Preserve exact source and safe diagnostic categories only
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ctcc-db0047-native-witness-diagnostic-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/ctcc-native-witness-diagnostic-source.tar
+            ${{ runner.temp }}/ctcc-native-witness-diagnostic/export/*
+          if-no-files-found: error
+          retention-days: 30

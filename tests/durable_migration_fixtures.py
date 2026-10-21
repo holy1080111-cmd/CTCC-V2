@@ -34,6 +34,7 @@ MIGRATIONS = {
     "0044": "0044_demo_measured_hwm_continuation.py",
     "0045": "0045_demo_measured_hwm_first_sample_repair.py",
     "0046": "0046_public_runtime_bundle_custody.py",
+    "0047": "0047_public_witness_native_identity.py",
 }
 TABLES = {
     # 0023 is constraint/trigger-only and has dedicated upgrade/downgrade

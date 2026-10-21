@@ -40,6 +40,8 @@ from app.trade_evidence.storage import (
 
 MAX_CAPTURES = 1024
 MAX_JOURNAL_BYTES = 1024 * 1024 * 1024
+NATIVE_DEVICE_MAX = 2**64 - 1
+NATIVE_INODE_MAX = 2**128 - 1
 _JOURNAL_ISSUER = object()
 
 
@@ -48,8 +50,8 @@ class PublicJournalCheckpointV1(ReceiptContract):
         "ctcc.public.journal_checkpoint.v1"
     )
     genesis_sha256: Sha
-    root_device: int = Field(ge=0)
-    root_inode: int = Field(ge=1)
+    root_device: int = Field(ge=0, le=NATIVE_DEVICE_MAX)
+    root_inode: int = Field(ge=1, le=NATIVE_INODE_MAX)
     sequence: int = Field(ge=0, le=MAX_CAPTURES)
     head_sha256: Sha
     attempt_sequence: int = Field(ge=0, le=1024, default=0)

@@ -23,6 +23,9 @@ from scripts.verify_final_hermetic import (
     verify_pytest_report,
 )
 from scripts.verify_linux_shard import POSTGRES_TEST_PATHS, SHARD_COUNT
+from scripts.verify_native_witness_identity_schema import (
+    require_native_witness_identity_baseline,
+)
 
 COMMON_STAGES = (
     "build",
@@ -43,6 +46,8 @@ COMMON_STAGES = (
     "migration-upgrade",
     "migration-identity",
     "migration-drift",
+    "migration-native-identity-empty-downgrade",
+    "migration-native-identity-empty-readback",
     "migration-bundle-empty-downgrade",
     "migration-bundle-empty-readback",
     "migration-guard-empty-downgrade",
@@ -82,6 +87,7 @@ def _verify_hashes(root: Path):
         "source-files.json",
         "migration-supported-readback.log",
         "migration-identity.log",
+        "migration-native-identity-empty-readback.log",
         "migration-bundle-empty-readback.log",
         "migration-guard-empty-readback.log",
         "migration-hwm-empty-readback.log",
@@ -117,6 +123,7 @@ def _verify_hashes(root: Path):
 def verify_union(
     artifacts: Path, *, commit: str, tree: str, manifest_sha256: str
 ) -> dict:
+    require_native_witness_identity_baseline()
     if any(not re.fullmatch("[a-f0-9]{40}", value) for value in (commit, tree)):
         raise ValueError("linux_union_git_identity_invalid")
     if not re.fullmatch("[a-f0-9]{64}", manifest_sha256):
@@ -164,14 +171,18 @@ def verify_union(
             or identity.get("hermetic_regression") != "PENDING_UNION"
             or identity.get("cleanup") != "PASS"
             or not isinstance(identity.get("migration"), dict)
-            or identity["migration"].get("source_head") != "0046"
-            or identity["migration"].get("database_head") != "0046"
+            or identity["migration"].get("source_head") != "0047"
+            or identity["migration"].get("database_head") != "0047"
             or identity["migration"].get("status") != "PASS"
             or identity.get("migration_supported_roundtrip")
             != expected_migration_revision_readback("0001")
             or identity.get("migration_empty_roundtrip")
             != {
-                "source_head": "0046",
+                "source_head": "0047",
+                "native_identity_down_revision": "0046",
+                "native_identity_down_readback": expected_migration_revision_readback(
+                    "0046"
+                ),
                 "bundle_down_revision": "0045",
                 "bundle_down_readback": expected_migration_revision_readback("0045"),
                 "guard_down_revision": "0044",
@@ -180,19 +191,19 @@ def verify_union(
                 "hwm_down_readback": expected_migration_revision_readback("0043"),
                 "down_revision": "0042",
                 "down_readback": expected_migration_revision_readback("0042"),
-                "reupgrade_readback": expected_migration_revision_readback("0046"),
+                "reupgrade_readback": expected_migration_revision_readback("0047"),
                 "reupgrade_identity": "PASS",
                 "schema_drift": "PASS",
             }
             or identity.get("migration_downgrade_policy")
             != {
-                "source_head": "0046",
+                "source_head": "0047",
                 "target": "0041",
                 "result": "DENIED",
                 "denied_at": "0042",
                 "policy_refusal": DOWNGRADE_DENIAL,
-                "database_head_after": "0046",
-                "rollback_readback": expected_migration_revision_readback("0046"),
+                "database_head_after": "0047",
+                "rollback_readback": expected_migration_revision_readback("0047"),
                 "schema_drift": "PASS",
             }
         ):
@@ -201,6 +212,8 @@ def verify_union(
             _json(root / "migration-supported-readback.log")
             != identity["migration_supported_roundtrip"]
             or _json(root / "migration-identity.log") != identity["migration"]
+            or _json(root / "migration-native-identity-empty-readback.log")
+            != identity["migration_empty_roundtrip"]["native_identity_down_readback"]
             or _json(root / "migration-bundle-empty-readback.log")
             != identity["migration_empty_roundtrip"]["bundle_down_readback"]
             or _json(root / "migration-guard-empty-readback.log")

@@ -11,12 +11,17 @@ import json
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from decimal import Decimal
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.public_market_source.public_market_receipts import checked, sha
-from app.public_market_source.public_receipt_storage import PublicJournalCheckpointV1
+from app.public_market_source.public_receipt_storage import (
+    NATIVE_DEVICE_MAX,
+    NATIVE_INODE_MAX,
+    PublicJournalCheckpointV1,
+)
 
 _HEX32 = re.compile(r"[a-f0-9]{32}\Z")
 _HEX64 = re.compile(r"[a-f0-9]{64}\Z")
@@ -92,6 +97,29 @@ def _record_hash(row: WitnessRevision, checkpoint_json: str) -> str:
     return sha("\x1f".join(fields).encode("utf-8"))
 
 
+def _native_identity_integer(
+    value: int | Decimal, *, minimum: int, maximum: int
+) -> int:
+    """Decode PG NUMERIC exactly, without float conversion or fractional rounding."""
+    if type(value) is int:
+        result = value
+    elif type(value) is Decimal:
+        if not value.is_finite() or not minimum <= value <= maximum:
+            raise PublicWitnessError("witness_native_identity_invalid")
+        _, digits, exponent = value.as_tuple()
+        # Finite Decimal has an integer exponent. Nonzero fractional digits
+        # reject before int(); no context-sensitive quantize/round operation.
+        if type(exponent) is not int or exponent < 0 and any(digits[exponent:]):
+            raise PublicWitnessError("witness_native_identity_invalid")
+        result = 0 if value.is_zero() else int(value)
+    else:
+        # bool, floats, strings and user subclasses cannot impersonate an ID.
+        raise PublicWitnessError("witness_native_identity_invalid")
+    if not minimum <= result <= maximum:
+        raise PublicWitnessError("witness_native_identity_invalid")
+    return result
+
+
 def _decode_row(row) -> WitnessRevision:
     raw = row.checkpoint_json.encode("utf-8")
     try:
@@ -105,8 +133,12 @@ def _decode_row(row) -> WitnessRevision:
         journal_key=row.journal_key,
         revision=row.revision,
         journal_id=row.journal_id,
-        root_device=row.root_device,
-        root_inode=row.root_inode,
+        root_device=_native_identity_integer(
+            row.root_device, minimum=0, maximum=NATIVE_DEVICE_MAX
+        ),
+        root_inode=_native_identity_integer(
+            row.root_inode, minimum=1, maximum=NATIVE_INODE_MAX
+        ),
         transition=row.transition,
         state=row.state,
         operation_id=row.operation_id,

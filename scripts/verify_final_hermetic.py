@@ -23,6 +23,11 @@ from pathlib import Path, PurePosixPath
 from uuid import uuid4
 
 from scripts.verify_linux_shard import POSTGRES_TEST_PATHS, SHARD_COUNT, selected_for
+from scripts.verify_native_witness_identity_schema import (
+    NATIVE_WITNESS_IDENTITY_SCHEMA,
+    NATIVE_WITNESS_IDENTITY_SCHEMA_SQL,  # noqa: F401 -- probe/API re-export
+    require_native_witness_identity_baseline,
+)
 
 # The two full PostgreSQL-bearing test runs can exceed 90 minutes together.
 # Leave time for bounded cleanup and `if: always()` evidence upload before the
@@ -469,6 +474,7 @@ from scripts.verify_final_hermetic import (
     ACCOUNT_REVISION_WITNESS_TRIGGER_CATALOG_SQL,
     ACCOUNT_MEASURED_HWM_V2_TRIGGER_CATALOG_SQL,
     PUBLIC_RUNTIME_BUNDLE_SCHEMA_SQL,
+    NATIVE_WITNESS_IDENTITY_SCHEMA_SQL,
     migration_revision_readback,
 )
 from scripts.verify_migration_identity import database_head
@@ -500,17 +506,20 @@ async def read_head():
                 runtime_catalog = sync_connection.execute(text(
                     PUBLIC_RUNTIME_BUNDLE_SCHEMA_SQL
                 )).scalar_one()
+                native_catalog = sync_connection.execute(text(
+                    NATIVE_WITNESS_IDENTITY_SCHEMA_SQL
+                )).scalar_one()
                 return (head, witness_present, guard_present, trigger_catalog,
-                        hwm_present, hwm_guard_present, hwm_catalog, runtime_catalog)
+                        hwm_present, hwm_guard_present, hwm_catalog, runtime_catalog, native_catalog)
             return await connection.run_sync(read_state)
     finally:
         await engine.dispose()
 
-observed, witness_present, guard_present, trigger_catalog, hwm_present, hwm_guard_present, hwm_catalog, runtime_catalog = asyncio.run(read_head())
+observed, witness_present, guard_present, trigger_catalog, hwm_present, hwm_guard_present, hwm_catalog, runtime_catalog, native_catalog = asyncio.run(read_head())
 expected = sys.argv[1]
 result = migration_revision_readback(
     expected, observed, witness_present, guard_present, trigger_catalog,
-    hwm_present, hwm_guard_present, hwm_catalog, runtime_catalog,
+    hwm_present, hwm_guard_present, hwm_catalog, runtime_catalog, native_catalog,
 )
 print(json.dumps(result, sort_keys=True))
 """
@@ -518,15 +527,17 @@ print(json.dumps(result, sort_keys=True))
 
 def expected_migration_revision_readback(revision: str) -> dict:
     result = {
-        "schema": "ctcc.migration_revision_readback.v3"
+        "schema": "ctcc.migration_revision_readback.v4"
+        if revision == "0047"
+        else "ctcc.migration_revision_readback.v3"
         if revision == "0046"
         else "ctcc.migration_revision_readback.v2",
         "expected": revision,
         "observed": revision,
         "execution_authority": False,
     }
-    if revision in ("0001", "0042", "0043", "0044", "0045", "0046"):
-        witness_expected = revision in ("0043", "0044", "0045", "0046")
+    if revision in ("0001", "0042", "0043", "0044", "0045", "0046", "0047"):
+        witness_expected = revision in ("0043", "0044", "0045", "0046", "0047")
         result["account_revision_witness_table_present"] = witness_expected
         result["account_revision_witness_guard_present"] = witness_expected
         result["account_revision_witness_trigger_count"] = 3 if witness_expected else 0
@@ -535,7 +546,7 @@ def expected_migration_revision_readback(revision: str) -> dict:
             if witness_expected
             else []
         )
-        hwm_expected = revision in ("0044", "0045", "0046")
+        hwm_expected = revision in ("0044", "0045", "0046", "0047")
         result["account_measured_hwm_v2_table_present"] = hwm_expected
         result["account_measured_hwm_v2_guard_present"] = hwm_expected
         result["account_measured_hwm_v2_trigger_count"] = 3 if hwm_expected else 0
@@ -544,15 +555,19 @@ def expected_migration_revision_readback(revision: str) -> dict:
                 list(row)
                 for row in (
                     ACCOUNT_MEASURED_HWM_V2_TRIGGERS_0045
-                    if revision in ("0045", "0046")
+                    if revision in ("0045", "0046", "0047")
                     else ACCOUNT_MEASURED_HWM_V2_TRIGGERS
                 )
             ]
             if hwm_expected
             else []
         )
-    if revision == "0046":
+    if revision in ("0046", "0047"):
         result["public_runtime_bundle_schema"] = deepcopy(PUBLIC_RUNTIME_BUNDLE_SCHEMA)
+    if revision == "0047":
+        result["public_witness_native_identity_schema"] = deepcopy(
+            NATIVE_WITNESS_IDENTITY_SCHEMA
+        )
     return result
 
 
@@ -566,20 +581,23 @@ def migration_revision_readback(
     hwm_guard_present: bool = False,
     hwm_trigger_catalog: Iterable[Sequence[object]] = (),
     runtime_catalog: dict | None = None,
+    native_identity_catalog: dict | None = None,
 ) -> dict:
     """Deny schema drift, including extra or disabled non-internal triggers."""
-    if expected not in ("0001", "0042", "0043", "0044", "0045", "0046"):
+    if expected not in ("0001", "0042", "0043", "0044", "0045", "0046", "0047"):
         raise RuntimeError("migration_revision_readback_mismatch")
     if runtime_catalog is not None and runtime_catalog != (
         PUBLIC_RUNTIME_BUNDLE_SCHEMA
-        if expected == "0046"
+        if expected in ("0046", "0047")
         else PUBLIC_RUNTIME_BUNDLE_SCHEMA_ABSENT
     ):
         raise RuntimeError("migration_revision_readback_mismatch")
     catalog = [list(row) for row in trigger_catalog]
     hwm_catalog = [list(row) for row in hwm_trigger_catalog]
     result = {
-        "schema": "ctcc.migration_revision_readback.v3"
+        "schema": "ctcc.migration_revision_readback.v4"
+        if expected == "0047"
+        else "ctcc.migration_revision_readback.v3"
         if expected == "0046"
         else "ctcc.migration_revision_readback.v2",
         "expected": expected,
@@ -594,15 +612,20 @@ def migration_revision_readback(
         "account_measured_hwm_v2_trigger_count": len(hwm_catalog),
         "account_measured_hwm_v2_trigger_catalog": hwm_catalog,
     }
-    if expected == "0046":
+    if expected in ("0046", "0047"):
         result["public_runtime_bundle_schema"] = runtime_catalog
+    if expected == "0047":
+        # None is a deliberate unsealed native constraint baseline; even a
+        # caller-supplied DTO identical to the pending template cannot qualify.
+        require_native_witness_identity_baseline()
+        result["public_witness_native_identity_schema"] = native_identity_catalog
     if result != expected_migration_revision_readback(expected):
         raise RuntimeError("migration_revision_readback_mismatch")
     return result
 
 
 def verify_downgrade_denial_log(path: Path) -> None:
-    """Accept only DB0042's refusal after DB0046 through DB0043 downgrade."""
+    """Accept only DB0042's refusal after DB0047 through DB0043 downgrade."""
     if path.is_symlink() or not path.is_file() or path.stat().st_size > 2 * 1024 * 1024:
         raise ValueError("migration_downgrade_denial_log_missing_or_unsafe")
     try:
@@ -610,7 +633,8 @@ def verify_downgrade_denial_log(path: Path) -> None:
     except UnicodeError as error:
         raise ValueError("migration_downgrade_denial_log_invalid") from error
     if (
-        "Running downgrade 0046 -> 0045" not in output
+        "Running downgrade 0047 -> 0046" not in output
+        or "Running downgrade 0046 -> 0045" not in output
         or "Running downgrade 0045 -> 0044" not in output
         or "Running downgrade 0044 -> 0043" not in output
         or "Running downgrade 0043 -> 0042" not in output
@@ -1401,12 +1425,27 @@ def main():
             (args.output / "migration-identity.log").read_text()
         )
         if (
-            identity["migration"].get("source_head") != "0046"
-            or identity["migration"].get("database_head") != "0046"
+            identity["migration"].get("source_head") != "0047"
+            or identity["migration"].get("database_head") != "0047"
             or identity["migration"].get("status") != "PASS"
         ):
             raise RuntimeError("migration_downgrade_policy_head_unreviewed")
         container("migration-drift", ["alembic", "check"])
+        container(
+            "migration-native-identity-empty-downgrade",
+            ["alembic", "downgrade", "0046"],
+        )
+        container(
+            "migration-native-identity-empty-readback",
+            ["python", "-c", MIGRATION_REVISION_PROBE, "0046"],
+        )
+        native_empty_readback = json.loads(
+            (args.output / "migration-native-identity-empty-readback.log").read_text()
+        )
+        if native_empty_readback != expected_migration_revision_readback("0046"):
+            raise RuntimeError(
+                "migration_native_identity_empty_downgrade_readback_invalid"
+            )
         container("migration-bundle-empty-downgrade", ["alembic", "downgrade", "0045"])
         container(
             "migration-bundle-empty-readback",
@@ -1462,16 +1501,18 @@ def main():
             raise RuntimeError("migration_reupgrade_identity_changed")
         container(
             "migration-reupgrade-readback",
-            ["python", "-c", MIGRATION_REVISION_PROBE, "0046"],
+            ["python", "-c", MIGRATION_REVISION_PROBE, "0047"],
         )
         reupgrade_readback = json.loads(
             (args.output / "migration-reupgrade-readback.log").read_text()
         )
-        if reupgrade_readback != expected_migration_revision_readback("0046"):
+        if reupgrade_readback != expected_migration_revision_readback("0047"):
             raise RuntimeError("migration_reupgrade_readback_invalid")
         container("migration-reupgrade-drift", ["alembic", "check"])
         identity["migration_empty_roundtrip"] = {
-            "source_head": "0046",
+            "source_head": "0047",
+            "native_identity_down_revision": "0046",
+            "native_identity_down_readback": native_empty_readback,
             "bundle_down_revision": "0045",
             "bundle_down_readback": bundle_empty_readback,
             "guard_down_revision": "0044",
@@ -1499,21 +1540,21 @@ def main():
             raise RuntimeError("migration_denial_identity_changed")
         container(
             "migration-denial-readback",
-            ["python", "-c", MIGRATION_REVISION_PROBE, "0046"],
+            ["python", "-c", MIGRATION_REVISION_PROBE, "0047"],
         )
         denial_readback = json.loads(
             (args.output / "migration-denial-readback.log").read_text()
         )
-        if denial_readback != expected_migration_revision_readback("0046"):
+        if denial_readback != expected_migration_revision_readback("0047"):
             raise RuntimeError("migration_denial_transaction_rollback_unverified")
         container("migration-redrift", ["alembic", "check"])
         identity["migration_downgrade_policy"] = {
-            "source_head": "0046",
+            "source_head": "0047",
             "target": "0041",
             "result": "DENIED",
             "denied_at": "0042",
             "policy_refusal": DOWNGRADE_DENIAL,
-            "database_head_after": "0046",
+            "database_head_after": "0047",
             "rollback_readback": denial_readback,
             "schema_drift": "PASS",
         }
