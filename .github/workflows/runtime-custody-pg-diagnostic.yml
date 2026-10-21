@@ -1,0 +1,42 @@
+name: DB0046 restricted runtime diagnostic
+
+on:
+  push:
+    branches:
+      - validation/runtime-custody-pg-diagnostic-20261022
+
+permissions:
+  contents: read
+
+jobs:
+  custody-diagnostic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Export exact source and run only the four native custody cases
+        shell: bash
+        run: |
+          set -euo pipefail
+          commit=$(git rev-parse HEAD)
+          test "$commit" = "$GITHUB_SHA"
+          tree=$(git rev-parse 'HEAD^{tree}')
+          archive="$RUNNER_TEMP/ctcc-custody-diagnostic-source.tar"
+          git -c core.autocrlf=false -c core.eol=lf archive --format=tar --output="$archive" "$commit"
+          digest=$(sha256sum "$archive" | cut -d ' ' -f 1)
+          python3 -m scripts.diagnose_runtime_custody_postgres \
+            --archive "$archive" --archive-sha256 "$digest" \
+            --commit "$commit" --tree "$tree" \
+            --output "$RUNNER_TEMP/ctcc-custody-diagnostic"
+      - name: Preserve only exact source and safe category evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ctcc-db0046-diagnostic-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/ctcc-custody-diagnostic-source.tar
+            ${{ runner.temp }}/ctcc-custody-diagnostic/export/*
+          if-no-files-found: error
+          retention-days: 30

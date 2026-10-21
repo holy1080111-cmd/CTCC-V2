@@ -20,6 +20,14 @@ Live 維持預設關閉；只完成實際驗證的項目才能勾選 Done。
 在 Windows／Linux CI 揭露匯入邊界回歸；已修正並保留嚴格邊界測試，
 新來源仍須以新 commit 的完整 CI 與實際來源驗收為準。
 
+後續 `741a3c3` 完整 CI 仍為 FAIL。原生 PostgreSQL baseline 已證實
+internal `"char"` 被 pinned driver 解碼為 bytes；九個欄位明確轉為 text 後，
+原權限、schema、durability 與 hash 條件不變。精確 `ad1f227` 的四項早期
+PG 測試與獨立 artifact 讀回通過；這不等於完整 PostgreSQL 或新合併版 CI。
+Windows 的合成短 UID／雜湊偶合誤判只修測試，secret 全 bytes 掃描保留。
+Linux 實測只接受單次容器 kernel observation，主機 profile 拒絕照實保留；
+UTC、R5、Gate 3、完整帳戶、Demo 與 Live 均未因此取得資格。
+
 更新日期：2026-09-11。來源為「123」專案的
 [CTCC 開發進度](https://chatgpt.com/c/6a94fbd0-34e4-83ee-979c-519b5ecb1c66)。
 依 Asia/Taipei 時間，整理範圍為 9 月 9 日 22:51 起的討論，並包含同一段

@@ -27,6 +27,16 @@ log/JUnit readback; the full PostgreSQL suite is still required. The preceding
 `2366ec3` CI exposed an import-boundary regression on Windows and Linux. Its
 correction needs a new exact-source run; that failed run is not acceptance.
 
+The later `741a3c3` full CI also failed: three native DB0046 preflight cases
+rejected the catalog guard, and a Windows privacy assertion mistook a short
+synthetic UID fragment inside opaque hex for plaintext. The pinned driver
+returns PostgreSQL internal `"char"` as bytes. Nine explicit text projections
+retain the same security predicates; all four selected native preflight cases
+passed on exact `ad1f227`, with independent artifact readback. The Windows
+test-only repair retains whole-receipt secret scanning and validates schema
+and opaque-field formats. Full merged-source regression, all ten DB0046
+repository cases and the remaining acceptance chain are still required.
+
 Migration `0045` repairs the first-sample insert
 guard in the `0044` DENY-only sampled balance high-water-mark diagnostic over
 accepted observations. Its first sample is not exchange-account genesis, and

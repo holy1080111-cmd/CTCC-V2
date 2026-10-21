@@ -147,8 +147,8 @@ tag-2.41 is
 `feb7e3f78aadcf5aa89233175df74e74366b0a7e79bf70f29edd24b45e817a4b`.
 That review plus the retained native probe supports the limited ABI profile
 approval; it does not change the fact that container development headers were
-not compiled. The actual module's unmodified native acquisition still requires
-separate remote execution/readback. Unit seams do not supply that acceptance.
+not compiled. Unit seams do not supply native acceptance; the separate actual
+module observation below retains its exact source and narrower scope.
 
 ## One native module observation command
 
@@ -176,6 +176,30 @@ arguments before acquisition. UTC certification, upstream freshness, source
 authenticity, historical availability and execution authority remain false on
 every output. A workflow must retain a rejection as such and cannot substitute
 an expected result or a successful synthetic CLI test.
+
+## Actual observation on source `1ff3548`
+
+[Run 39660775735](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/39660775735)
+executed exact source `1ff3548531283e85a7f79ab7852822a66ea19438`, tree
+`399d193f9361874da543d3ace4452a8f743ccdc6`. Independent artifact readback
+verified the server SHA256, ZIP inventory, all 1277 Git blobs, 1276 manifest
+rows, image identity and original output hashes. The artifact SHA256 is
+`0cc0c4a278322f560e8389b2f7e4fa1601e9f7ec6eca7b2746c433b95fbc1f63`.
+
+The container acquired once, consumed its token and rejected reuse. Its
+original payload passed exact-source strict pure replay with a 40831 ns
+uncertainty bound. This accepts only that kernel observation. The host
+rejected `linux_clock_profile_unsupported`, consumed no token and supplied no
+raw status record. Its precise cause was not established, and no new profile
+was learned or automatically admitted. The workflow remains a failure with
+partial observations; neither the host nor UTC/upstream freshness is accepted.
+
+The nonsecret independent receipt is outside source at
+`../validation-results/linux-native-clock-1ff3548-20261022/receipt.json`,
+SHA256 `8e0c2ae461b5a9f0403ab622795d210644ed9f9d10ce83992a1bcf7c0258dd32`.
+No saved payload can recreate a source or execution token. A later integrated
+source requires its own matching regression; this result does not validate
+R5, Gate 3, Demo or Live.
 
 Primary references:
 

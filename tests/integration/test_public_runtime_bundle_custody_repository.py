@@ -12,6 +12,7 @@ import importlib.util
 import json
 import os
 import re
+from functools import wraps
 from pathlib import Path
 from uuid import uuid4
 
@@ -24,6 +25,7 @@ from sqlalchemy.exc import ArgumentError, DBAPIError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
+from app.database.repositories import public_runtime_bundle_custody as custody
 from app.database.repositories.public_runtime_bundle_custody import (
     OwnedRuntimeBundleCustodyReceipt,
     RuntimeBundleCustodyError,
@@ -150,10 +152,73 @@ def consume(receipt, data):
     )
 
 
+def _safe_custody_diagnostic(case):
+    """Preserve a fixed category in tb=no JUnit without native error payloads."""
+
+    @wraps(case)
+    async def run(*args, **kwargs):
+        try:
+            return await case(*args, **kwargs)
+        except RuntimeBundleCustodyError as error:
+            category = error.diagnostic_category
+            conditions = error.diagnostic_conditions
+        # Outside the handler, pytest's JUnit text cannot inherit the original
+        # exception chain. Keep the exported category a single fixed line.
+        checks = ";checks=" + ",".join(conditions) if conditions else ""
+        pytest.fail(f"runtime_custody_diagnostic:{category}{checks}", pytrace=False)
+
+    return run
+
+
+async def _assert_native_catalog_text_projection(engine):
+    """Compare real native internal-char decoding with the nine text projections.
+
+    This runs only on the disposable fixture's actual restricted connection.
+    Failures emit a fixed code, never an assertion representation of any row.
+    """
+    async with engine.connect() as connection:
+        await connection.execute(text("SET TRANSACTION READ ONLY"))
+        raw = (
+            await connection.execute(
+                text(
+                    "SELECT c.relkind AS raw_relkind,c.relpersistence AS raw_relpersistence,"
+                    "c.relkind::text AS text_relkind,c.relpersistence::text AS text_relpersistence "
+                    "FROM pg_catalog.pg_class c WHERE c.oid=pg_catalog.to_regclass("
+                    "'public.public_runtime_raw_bundles_v1')"
+                )
+            )
+        ).one()
+        raw_types_verified = (
+            type(raw.raw_relkind) is bytes
+            and type(raw.raw_relpersistence) is bytes
+            and type(raw.text_relkind) is str
+            and type(raw.text_relpersistence) is str
+            and raw.raw_relkind == raw.text_relkind.encode("utf-8")
+            and raw.raw_relpersistence == raw.text_relpersistence.encode("utf-8")
+        )
+        if not raw_types_verified:
+            pytest.fail("native_catalog_internal_char_type_contract", pytrace=False)
+        for statement, fields, expected_rows in (
+            (custody._ROLE_SQL, ("relkind", "relpersistence"), 1),
+            (custody._FUNCTION_SQL, ("provolatile", "proparallel", "prokind"), 4),
+            (custody._TRIGGER_SQL, ("tgenabled",), 3),
+            (custody._COLUMN_SQL, ("attidentity", "attgenerated"), 6),
+            (custody._CONSTRAINT_SQL, ("contype",), 4),
+        ):
+            rows = (await connection.execute(statement)).all()
+            canonical_types_verified = len(rows) == expected_rows and all(
+                type(getattr(row, field)) is str for row in rows for field in fields
+            )
+            if not canonical_types_verified:
+                pytest.fail("native_catalog_text_projection_contract", pytrace=False)
+
+
+@_safe_custody_diagnostic
 async def test_migrated_restricted_role_commit_then_new_transaction_exact_readback(
     runtime_custody_database,
 ):
-    repository, _engine, _admin = runtime_custody_database
+    repository, engine, _admin = runtime_custody_database
+    await _assert_native_catalog_text_projection(engine)
     await repository.verify_deployment()
     data = bundle()
     receipt = await repository.seal_bundle(**data)
@@ -226,6 +291,7 @@ async def test_duplicate_bytes_conflicting_proof_rejected_no_retry_and_one_row(
     assert replay.bundle_raw == data["bundle_raw"]
 
 
+@_safe_custody_diagnostic
 async def test_privileged_migration_login_and_missing_preflight_rejected(
     runtime_custody_database,
 ):
@@ -239,6 +305,7 @@ async def test_privileged_migration_login_and_missing_preflight_rejected(
         await privileged.verify_deployment()
 
 
+@_safe_custody_diagnostic
 async def test_committed_append_with_unknown_readback_never_retries_or_issues_receipt(
     runtime_custody_database, monkeypatch, tmp_path
 ):
@@ -303,6 +370,7 @@ async def test_committed_append_with_unknown_readback_never_retries_or_issues_re
     ]
 
 
+@_safe_custody_diagnostic
 async def test_direct_table_read_mutation_and_schema_changes_denied(
     runtime_custody_database,
 ):

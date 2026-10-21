@@ -1,5 +1,40 @@
 # Final completion validation state
 
+## 2026-10-22 catalog type repair and Windows privacy assertion
+
+The full [741a3c3 run 39657582516](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/39657582516)
+remains FAIL. Native DB0046 preflight had three failures and one passed
+negative case; Windows shard 2 had one failure. The database diagnostic
+located the original role guard. The actual native baseline subsequently
+proved that the pinned asyncpg driver returns raw PostgreSQL internal
+`"char"` values as bytes while the original guard compares strings. Nine
+catalog SELECT projections now use explicit text aliases. The original
+role/function/trigger/column/constraint predicates, hashes, migration and
+native-engine checks remain unchanged.
+
+On exact [ad1f227 run 39664362079](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/39664362079),
+all four preflight cases passed, including raw-bytes/canonical-text baseline,
+commit and new-transaction exact readback, uncertain-readback refusal and
+restricted-role denials. Independent source/artifact/JUnit readback passed.
+The [diagnostic record](runtime_custody_diagnostics.md) retains exact pins and
+scope. This is not all ten repository cases, full migration acceptance or
+validation of the later integrated source.
+
+The Windows failure was the test helper's whole-JSON search for a short
+synthetic UID. Schema elimination located the accidental fragment in opaque
+hex; the truncated failure log does not preserve the complete original hash.
+The test now validates the exact receipt schema/types and fixed-width hex
+fields, rejects plaintext UID outside those fields, and retains credential
+scanning across every original byte. Production redaction is unchanged.
+The repaired module passed 94/94 focused tests, including controlled digest
+collisions and plaintext/credential injection denials. These are local
+synthetic checks; Windows acceptance still requires new matching full CI.
+
+Linux observation, native initial account ownership and these repairs are
+being integrated without enabling exchange writes. The source migration head
+remains `0046`; the stopped deployment is unchanged. Engineering completion,
+Micro Live readiness and final completion all remain zero.
+
 ## 2026-10-22 Linux kernel-clock observation boundary
 
 [Linux clock observation V1](linux_native_clock_v1.md) adds a separate native
@@ -27,8 +62,19 @@ necessary. The exact role set includes executable, libc, loader, ctypes and
 libffi, plus shared libpython when present. All 73 focused module cases and
 18 CLI cases passed with synthetic seams. They are not native acceptance.
 The bounded CLI retains original successful payload or available failed raw
-status for independent replay and never retries. Actual native CLI acquisition
-on its own exact committed source remains to be read back.
+status for independent replay and never retries.
+
+The actual [module run 39660775735](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/39660775735)
+on exact source `1ff3548531283e85a7f79ab7852822a66ea19438` has now been read
+back independently. Its container acquired once, rejected token reuse and
+passed original-payload strict pure replay with a 40831 ns uncertainty bound.
+The host rejected `linux_clock_profile_unsupported`, with no raw status or
+consumed token. The workflow remains a failure with partial actual
+observations. This accepts only the container's kernel observation, with
+upstream, UTC certification, R5/Gate 3 and execution still unaccepted. The
+[clock document](linux_native_clock_v1.md#actual-observation-on-source-1ff3548)
+records exact artifact and receipt identities; this older source cannot
+validate subsequent integrated edits.
 
 The preceding `741a3c3` CI run's early DB0046 check observed three failed cases
 and one passed negative case. Migration/readback/drift completed before that

@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import re
 from datetime import datetime, timedelta
 
 import httpx
@@ -61,23 +62,177 @@ def private_bytes(events):
     )
 
 
+PUBLIC_RECEIPT_HEX = {
+    "capture_id": 32,
+    "event_sha256": 64,
+    "raw_sha256": 64,
+    "packet_sha256": 64,
+}
+PUBLIC_RECEIPT_KEYS = set(PUBLIC_RECEIPT_HEX) | {
+    "schema_version",
+    "event_sequence",
+    "stage",
+    "outcome",
+    "raw_retention",
+    "observed_bytes",
+    "db_recorded_at",
+    "readback_at",
+    "account_complete",
+    "execution_authority",
+    "admission",
+}
+
+
+def assert_public_receipt(raw, uid):
+    assert type(raw) is bytes
+    # Credentials remain forbidden across the entire serialized receipt, including hashes.
+    assert all(secret.encode() not in raw for secret in SECRETS)
+
+    def unique_fields(pairs):
+        assert len(pairs) == len({key for key, _ in pairs})
+        return dict(pairs)
+
+    value = json.loads(raw, object_pairs_hook=unique_fields)
+    assert type(value) is dict and set(value) == PUBLIC_RECEIPT_KEYS
+    for field, item in value.items():
+        assert uid not in field and all(secret not in field for secret in SECRETS)
+        # Short numeric UIDs can occur by chance inside an opaque digest or UUID.
+        # Only these schema-pinned, fixed-width hex fields permit such fragments.
+        if field not in PUBLIC_RECEIPT_HEX:
+            assert uid not in str(item)
+        if type(item) is str:
+            assert all(secret not in item for secret in SECRETS)
+    assert value["schema_version"] == "ctcc.demo_account_ingestion_receipt.v1"
+    assert value["account_complete"] is value["execution_authority"] is False
+    assert value["admission"] == "DENY"
+    assert type(value["event_sequence"]) is int and value["event_sequence"] > 0
+    assert value["observed_bytes"] is None or (
+        type(value["observed_bytes"]) is int and value["observed_bytes"] >= 0
+    )
+    for field, allowed in (("stage", journal.KINDS), ("outcome", journal.OUTCOMES)):
+        assert type(value[field]) is str and value[field] in allowed
+    assert value["raw_retention"] is None or (
+        type(value["raw_retention"]) is str
+        and value["raw_retention"] in journal.RETENTION
+    )
+    for field in ("db_recorded_at", "readback_at"):
+        assert type(value[field]) is str
+        assert datetime.fromisoformat(value[field]).utcoffset() == timedelta(0)
+    for field, length in PUBLIC_RECEIPT_HEX.items():
+        item = value[field]
+        if field in {"raw_sha256", "packet_sha256"} and item is None:
+            continue
+        assert type(item) is str and re.fullmatch(rf"[0-9a-f]{{{length}}}", item)
+        assert item != uid
+
+
 def assert_public(events, uid):
     for item in events:
-        raw = item.receipt_json
-        value = json.loads(raw)
-        assert value["account_complete"] is value["execution_authority"] is False
-        assert value["admission"] == "DENY"
-        assert uid.encode() not in raw
-        assert all(secret.encode() not in raw for secret in SECRETS)
-        assert not set(value) & {
-            "query",
-            "account_id",
-            "headers",
-            "raw_body",
-            "data",
-            "balance",
-            "position",
-        }
+        assert_public_receipt(item.receipt_json, uid)
+
+
+def public_receipt_fixture():
+    return {
+        "schema_version": "ctcc.demo_account_ingestion_receipt.v1",
+        "capture_id": "c" * 32,
+        "event_sequence": 1,
+        "event_sha256": "e" * 64,
+        "stage": "terminal",
+        "outcome": "failed",
+        "raw_retention": "withheld_secret",
+        "observed_bytes": None,
+        "raw_sha256": None,
+        "packet_sha256": None,
+        "db_recorded_at": "2026-09-12T10:00:00.001000+00:00",
+        "readback_at": "2026-09-12T10:00:00.002000+00:00",
+        "account_complete": False,
+        "execution_authority": False,
+        "admission": "DENY",
+    }
+
+
+@pytest.mark.parametrize("field", PUBLIC_RECEIPT_HEX)
+def test_public_receipt_accepts_short_synthetic_uid_fragment_in_opaque_hex(field):
+    uid = "123456"
+    value = public_receipt_fixture()
+    value[field] = "a" * 8 + uid + "b" * (PUBLIC_RECEIPT_HEX[field] - 14)
+    raw = journal.canonical(value)
+    assert uid.encode() in raw
+    assert_public_receipt(raw, uid)
+
+
+@pytest.mark.parametrize(
+    "field", sorted(PUBLIC_RECEIPT_KEYS - PUBLIC_RECEIPT_HEX.keys())
+)
+def test_public_receipt_rejects_plaintext_uid_in_every_nonopaque_field(field):
+    uid = "123456"
+    value = public_receipt_fixture()
+    value[field] = int(uid) if field in {"event_sequence", "observed_bytes"} else uid
+    with pytest.raises(AssertionError):
+        assert_public_receipt(journal.canonical(value), uid)
+
+
+@pytest.mark.parametrize("key", ["account_id", "unknown", "private_123456"])
+def test_public_receipt_rejects_uid_or_unknown_fields(key):
+    value = public_receipt_fixture()
+    value[key] = "123456"
+    with pytest.raises(AssertionError):
+        assert_public_receipt(journal.canonical(value), "123456")
+
+
+def test_public_receipt_rejects_uid_hidden_by_duplicate_json_field():
+    raw = journal.canonical(public_receipt_fixture()).replace(
+        b'"stage":', b'"stage":"123456","stage":'
+    )
+    with pytest.raises(AssertionError):
+        assert_public_receipt(raw, "123456")
+
+
+@pytest.mark.parametrize("field", PUBLIC_RECEIPT_HEX)
+def test_public_receipt_rejects_complete_uid_as_opaque_value(field):
+    value = public_receipt_fixture()
+    uid = "a" * PUBLIC_RECEIPT_HEX[field]
+    value[field] = uid
+    with pytest.raises(AssertionError):
+        assert_public_receipt(journal.canonical(value), uid)
+
+
+@pytest.mark.parametrize("field", PUBLIC_RECEIPT_HEX)
+@pytest.mark.parametrize(
+    "defect", ["type", "nested", "short", "long", "uppercase", "nonhex"]
+)
+def test_public_receipt_rejects_malformed_opaque_fields(field, defect):
+    value = public_receipt_fixture()
+    length = PUBLIC_RECEIPT_HEX[field]
+    value[field] = {
+        "type": False,
+        "nested": {"account_id": "123456"},
+        "short": "a" * (length - 1),
+        "long": "a" * (length + 1),
+        "uppercase": "A" * length,
+        "nonhex": "g" * length,
+    }[defect]
+    with pytest.raises(AssertionError):
+        assert_public_receipt(journal.canonical(value), "123456")
+
+
+@pytest.mark.parametrize("field", ["event_sequence", "observed_bytes"])
+def test_public_receipt_rejects_boolean_integer_fields(field):
+    value = public_receipt_fixture()
+    value[field] = True
+    with pytest.raises(AssertionError):
+        assert_public_receipt(journal.canonical(value), "123456")
+
+
+@pytest.mark.parametrize("secret_index", range(len(SECRETS)))
+def test_public_receipt_scans_credential_bytes_before_json(monkeypatch, secret_index):
+    decoded = []
+    value = public_receipt_fixture()
+    raw = journal.canonical(value) + SECRETS[secret_index].encode()
+    monkeypatch.setattr(json, "loads", lambda payload: decoded.append(payload) or value)
+    with pytest.raises(AssertionError):
+        assert_public_receipt(raw, "123456")
+    assert not decoded
 
 
 @pytest.mark.asyncio
