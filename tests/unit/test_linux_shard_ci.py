@@ -16,6 +16,8 @@ from scripts.verify_final_hermetic import (
     ACCOUNT_REVISION_WITNESS_TRIGGERS,
     ARCHIVE_REQUIRED_CASES,
     DOWNGRADE_DENIAL,
+    GATE3_PREFLIGHT_CASES,
+    LEDGER_SCHEMA_PREFLIGHT_CASES,
     NATIVE_IDENTITY_DOWNGRADE_DENIAL,
     NATIVE_WITNESS_IDENTITY_SCHEMA,
     PUBLIC_RUNTIME_BUNDLE_SCHEMA,
@@ -32,7 +34,12 @@ from scripts.verify_linux_shard import (
     module_shard,
     selected_for,
 )
-from scripts.verify_linux_shard_union import COMMON_STAGES, verify_union
+from scripts.verify_linux_shard_union import (
+    COMMON_STAGES,
+    POSTGRES_PREFLIGHT_STAGES,
+    POSTGRES_RESTART_STAGES,
+    verify_union,
+)
 from scripts.verify_windows_regression import POSTGRES_INTEGRATION
 
 COMMIT = "a" * 40
@@ -352,6 +359,75 @@ def _artifacts(tmp_path: Path) -> tuple[Path, list[str]]:
         if mode == "postgres":
             identity["synthetic_process_pg_redis_crash_durability"] = "PASS"
             identity["api_service_restart"] = "PASS"
+        restart_files = []
+        if mode == "postgres":
+            marker = root / "crash-probe" / "durable.json"
+            marker.parent.mkdir()
+            body = {
+                "schema": "ctcc.synthetic.qualification.crash-probe.v3",
+                "execution_authority": False,
+                "order_writes": 0,
+                "account_captures": [
+                    {"scenario": "safe_failed_capture"},
+                    {"scenario": "unfinished_ram_prefix"},
+                ],
+                "controls": [
+                    {"scenario": "arm_intent"},
+                    {"scenario": "estop"},
+                    {"scenario": "cold_estop"},
+                ],
+                "control_arm_intent_observed_before_publish": True,
+                "intent_version": "ctcc-demo-submit-intent-v2",
+                "exchange_request_sha256": "a" * 64,
+            }
+            marker.write_text(
+                json.dumps(
+                    {
+                        "body": body,
+                        "sha256": _sha(
+                            json.dumps(
+                                body, sort_keys=True, separators=(",", ":")
+                            ).encode()
+                        ),
+                    }
+                )
+            )
+            identity["crash_probe_marker_sha256"] = _sha(marker.read_bytes())
+            restart_files.append(marker)
+            for name in POSTGRES_RESTART_STAGES:
+                log = root / f"{name}.log"
+                if name == "crash-seed-readback-log":
+                    log.write_text("SYNTHETIC_DURABLE_COMMIT_READBACK_READY=1\n")
+                elif name == "crash-restart-independent-readback":
+                    log.write_text(
+                        "ACCOUNT_CAPTURE_RESTART_RAW_AND_UNKNOWN_PREFIX=PASS\n"
+                        "DEMO_CONTROL_RESTART_NO_ARM_ESTOP_PERSISTENCE=PASS\n"
+                        "PROCESS_KILL_POSTGRES_REDIS_RESTART_DURABILITY=PASS\n"
+                        "SYNTHETIC_CLAIMS=1;SOURCE_AUTHORITY=0;ORDER_WRITES=0\n"
+                    )
+                elif name in ("api-health", "api-restart-health"):
+                    log.write_text(
+                        json.dumps(
+                            {
+                                "liveness": {"status": "alive"},
+                                "readiness": {
+                                    "status": "ready",
+                                    "blockers": [],
+                                    "database": {"ok": True},
+                                    "redis": {"ok": True},
+                                },
+                                "api/version": {
+                                    "environment": "test",
+                                    "trading_mode": "analysis_only",
+                                    "auto_trade": False,
+                                    "live_trading": False,
+                                },
+                            }
+                        )
+                    )
+                else:
+                    log.write_text("synthetic-stage-fixture-only\n")
+                restart_files.append(log)
         retention_files = []
         retention_stages = ()
         if mode == "postgres":
@@ -407,6 +483,27 @@ def _artifacts(tmp_path: Path) -> tuple[Path, list[str]]:
             preflight_log = root / "runtime-bundle-custody-preflight.log"
             preflight_log.write_text("4 passed\n")
             preflight_files = [preflight_xml, preflight_log]
+            for name, field, cases in (
+                (
+                    "event-journal-schema-preflight",
+                    "event_journal_schema_preflight",
+                    LEDGER_SCHEMA_PREFLIGHT_CASES,
+                ),
+                ("gate3-postgres-preflight", "gate3_preflight", GATE3_PREFLIGHT_CASES),
+            ):
+                xml = results / f"{name}.xml"
+                _junit(
+                    xml,
+                    [
+                        f"{module.replace('.', '/')}.py::{case}"
+                        for module, case in cases
+                    ],
+                )
+                identity[field] = verify_pytest_report(xml, required_cases=cases)
+                log = root / f"{name}.log"
+                log.write_text("synthetic-preflight-fixture-only\n")
+                preflight_files.extend((xml, log))
+            xml = results / f"{stage}.xml"
         (root / "identity.json").write_text(json.dumps(identity))
         (root / "steps.json").write_text(
             json.dumps(
@@ -432,13 +529,10 @@ def _artifacts(tmp_path: Path) -> tuple[Path, list[str]]:
                     }
                     for stage_name in (
                         *COMMON_STAGES,
-                        *(
-                            ("runtime-bundle-custody-preflight",)
-                            if mode == "postgres"
-                            else ()
-                        ),
+                        *(POSTGRES_PREFLIGHT_STAGES if mode == "postgres" else ()),
                         stage,
                         *retention_stages,
+                        *(POSTGRES_RESTART_STAGES if mode == "postgres" else ()),
                     )
                 ]
             )
@@ -509,6 +603,7 @@ def _artifacts(tmp_path: Path) -> tuple[Path, list[str]]:
             *stage_logs,
             *preflight_files,
             *retention_files,
+            *restart_files,
             xml,
             collection_file,
         )
@@ -531,6 +626,116 @@ def test_every_case_has_one_deterministic_owner():
             int(selected_for("postgres", None, nodeid))
             + sum(selected_for("shard", index, nodeid) for index in range(SHARD_COUNT))
             == 1
+        )
+
+
+def test_rehashed_raw_json_cannot_hide_an_earlier_duplicate_failure_code(tmp_path):
+    artifacts, _ = _artifacts(tmp_path)
+    root = artifacts / f"ctcc-linux-shard-0-{COMMIT}" / "ctcc-validation"
+    path = root / "steps.json"
+    raw = path.read_text()
+    assert '"exit_code": 0' in raw
+    path.write_text(raw.replace('"exit_code": 0', '"exit_code":19,"exit_code":0', 1))
+    hashes_path = root / "results.sha256.json"
+    hashes = json.loads(hashes_path.read_text())
+    hashes[path.name] = _sha(path.read_bytes())
+    hashes_path.write_text(json.dumps(hashes))
+    with pytest.raises(ValueError, match="evidence_json_duplicate_key"):
+        verify_union(
+            artifacts, commit=COMMIT, tree=TREE, manifest_sha256=_sha(MANIFEST)
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("pytest_exitstatus", False),
+        ("pytest_exitstatus", 0.0),
+        ("shard_index", False),
+        ("shard_index", 0.0),
+        ("shard_count", 8.0),
+    ),
+)
+def test_linux_collection_requires_native_integer_fields(tmp_path, field, value):
+    full = _full_nodeids()
+    selected = [nodeid for nodeid in full if selected_for("shard", 0, nodeid)]
+    record = {
+        "schema": "ctcc.linux_full_collection_shard.v1",
+        "mode": "shard",
+        "shard_index": 0,
+        "shard_count": SHARD_COUNT,
+        "full_nodeids": full,
+        "selected_nodeids": selected,
+        "observed_nodeids": selected,
+        "pytest_exitstatus": 0,
+    }
+    path = tmp_path / "collection.json"
+    path.write_text(json.dumps(record))
+    report = {"tests": len(selected)}
+    verify_linux_collection(path, mode="shard", index=0, report=report)
+    record[field] = value
+    path.write_text(json.dumps(record))
+    with pytest.raises(ValueError, match="linux_collection_execution_incomplete"):
+        verify_linux_collection(path, mode="shard", index=0, report=report)
+
+
+@pytest.mark.parametrize(
+    "damage",
+    (
+        "bool_exit",
+        "float_exit",
+        "late_failure",
+        "duplicate_success",
+        "duplicate_failure",
+        "extra_failure",
+        "unexpected_refusal",
+        "reordered_common_stages",
+        "overlarge_refusal_exit",
+        "negative_elapsed",
+        "boolean_elapsed",
+        "unknown_record_field",
+    ),
+)
+def test_rehashed_steps_cannot_hide_an_unsuccessful_native_stage(tmp_path, damage):
+    artifacts, _ = _artifacts(tmp_path)
+    root = artifacts / f"ctcc-linux-shard-0-{COMMIT}" / "ctcc-validation"
+    path = root / "steps.json"
+    steps = json.loads(path.read_text())
+    target = next(item for item in steps if item["name"] == "ruff")
+    if damage == "bool_exit":
+        target["exit_code"] = False
+    elif damage == "float_exit":
+        target["exit_code"] = 0.0
+    elif damage == "late_failure":
+        target["failure_type"] = "RuntimeError"
+    elif damage == "duplicate_success":
+        steps.append(dict(target))
+    elif damage == "duplicate_failure":
+        steps.append({**target, "exit_code": 1})
+    elif damage == "extra_failure":
+        steps.append({"name": "extra-post-test-check", "exit_code": 1})
+    elif damage == "unexpected_refusal":
+        target["policy_refusal"] = DOWNGRADE_DENIAL
+    elif damage == "reordered_common_stages":
+        steps[0], steps[1] = steps[1], steps[0]
+    elif damage == "overlarge_refusal_exit":
+        next(item for item in steps if item["name"] == "migration-downgrade-denial")[
+            "exit_code"
+        ] = 2**32
+    elif damage == "negative_elapsed":
+        target["elapsed_seconds"] = -1
+    elif damage == "boolean_elapsed":
+        target["elapsed_seconds"] = True
+    elif damage == "unknown_record_field":
+        target["error"] = "unrecognized-native-error"
+    path.write_text(json.dumps(steps))
+    hashes_path = root / "results.sha256.json"
+    hashes = json.loads(hashes_path.read_text())
+    hashes[path.name] = _sha(path.read_bytes())
+    hashes_path.write_text(json.dumps(hashes))
+    with pytest.raises(ValueError, match="linux_union_stage_"):
+        verify_union(
+            artifacts, commit=COMMIT, tree=TREE, manifest_sha256=_sha(MANIFEST)
         )
 
 
@@ -632,7 +837,10 @@ def test_union_requires_actual_post_pg47_nonempty_denial(tmp_path, damage):
         target["policy_refusal"] = DOWNGRADE_DENIAL
     path.write_text(json.dumps(stages))
     _rehash(root, path)
-    with pytest.raises(ValueError, match="linux_union_native_identity_nonempty_stage"):
+    # The whole-journal guard can reject the same damage before retention parsing.
+    with pytest.raises(
+        ValueError, match="linux_union_(native_identity_nonempty_stage|stage_)"
+    ):
         verify_union(
             artifacts, commit=COMMIT, tree=TREE, manifest_sha256=_sha(MANIFEST)
         )
@@ -681,6 +889,215 @@ def _rehash(root, *paths):
     hashes_path.write_text(json.dumps(hashes))
 
 
+def test_paired_downgrade_policy_and_raw_log_alias_cannot_change_typed_baseline(
+    tmp_path,
+):
+    artifacts, _ = _artifacts(tmp_path)
+    root = _pg_root(artifacts)
+    identity_path = root / "identity.json"
+    identity = json.loads(identity_path.read_text())
+    identity["migration_downgrade_policy"]["rollback_readback"][
+        "execution_authority"
+    ] = 0
+    identity_path.write_text(json.dumps(identity))
+    log_path = root / "migration-denial-readback.log"
+    record = json.loads(log_path.read_text())
+    record["execution_authority"] = 0
+    log_path.write_text(json.dumps(record))
+    _rehash(root, identity_path, log_path)
+    with pytest.raises(ValueError, match="linux_union_component_identity_rejected"):
+        verify_union(
+            artifacts, commit=COMMIT, tree=TREE, manifest_sha256=_sha(MANIFEST)
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "counter", "value", "reason"),
+    (
+        (
+            "event_journal_schema_preflight",
+            "failures",
+            False,
+            "preflight_report_invalid",
+        ),
+        (
+            "runtime_bundle_custody_preflight",
+            "errors",
+            False,
+            "runtime_custody_preflight_readback_changed",
+        ),
+        ("postgres_tests", "failures", False, "test_report_readback_changed"),
+        ("collection", "selected_count", 1.0, "collection_readback_changed"),
+    ),
+)
+def test_recomputed_native_summaries_require_exact_json_types(
+    tmp_path, field, counter, value, reason
+):
+    artifacts, _ = _artifacts(tmp_path)
+    root = _pg_root(artifacts)
+    path = root / "identity.json"
+    identity = json.loads(path.read_text())
+    # A float of the real count preserves numerical equality and changes its type.
+    identity[field][counter] = (
+        float(identity[field][counter]) if field == "collection" else value
+    )
+    path.write_text(json.dumps(identity))
+    _rehash(root, path)
+    with pytest.raises(ValueError, match=reason):
+        verify_union(
+            artifacts, commit=COMMIT, tree=TREE, manifest_sha256=_sha(MANIFEST)
+        )
+
+
+@pytest.mark.parametrize("stage", POSTGRES_RESTART_STAGES)
+def test_restart_pass_flags_do_not_replace_actual_ordered_commands(tmp_path, stage):
+    artifacts, _ = _artifacts(tmp_path)
+    root = _pg_root(artifacts)
+    path = root / "steps.json"
+    stages = json.loads(path.read_text())
+    path.write_text(json.dumps([entry for entry in stages if entry["name"] != stage]))
+    _rehash(root, path)
+    with pytest.raises(ValueError, match="linux_union_restart_stage_missing"):
+        verify_union(
+            artifacts, commit=COMMIT, tree=TREE, manifest_sha256=_sha(MANIFEST)
+        )
+
+
+@pytest.mark.parametrize("damage", ("early", "unhashed_log", "changed_marker"))
+def test_rehashed_restart_summary_cannot_replace_retained_runtime_evidence(
+    tmp_path, damage
+):
+    artifacts, _ = _artifacts(tmp_path)
+    root = _pg_root(artifacts)
+    if damage == "early":
+        path = root / "steps.json"
+        stages = json.loads(path.read_text())
+        target = next(entry for entry in stages if entry["name"] == "process-sigkill")
+        stages.remove(target)
+        stages.insert(0, target)
+        path.write_text(json.dumps(stages))
+        _rehash(root, path)
+    elif damage == "unhashed_log":
+        path = root / "results.sha256.json"
+        hashes = json.loads(path.read_text())
+        hashes.pop("crash-restart-independent-readback.log")
+        path.write_text(json.dumps(hashes))
+    else:
+        path = root / "crash-probe" / "durable.json"
+        envelope = json.loads(path.read_text())
+        envelope["body"]["order_writes"] = False
+        envelope["sha256"] = _sha(
+            json.dumps(envelope["body"], sort_keys=True, separators=(",", ":")).encode()
+        )
+        path.write_text(json.dumps(envelope))
+        identity_path = root / "identity.json"
+        identity = json.loads(identity_path.read_text())
+        identity["crash_probe_marker_sha256"] = _sha(path.read_bytes())
+        identity_path.write_text(json.dumps(identity))
+        _rehash(root, path, identity_path)
+    with pytest.raises(ValueError, match="linux_union_restart_"):
+        verify_union(
+            artifacts, commit=COMMIT, tree=TREE, manifest_sha256=_sha(MANIFEST)
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("external_order_writes", False),
+        ("external_order_writes", 0.0),
+        ("shard_index", False),
+        ("shard_count", 8.0),
+    ),
+)
+def test_native_identity_counters_cannot_use_bool_or_float_aliases(
+    tmp_path, field, value
+):
+    artifacts, _ = _artifacts(tmp_path)
+    root = artifacts / f"ctcc-linux-shard-0-{COMMIT}" / "ctcc-validation"
+    path = root / "identity.json"
+    identity = json.loads(path.read_text())
+    identity[field] = value
+    path.write_text(json.dumps(identity))
+    _rehash(root, path)
+    with pytest.raises(ValueError, match="linux_union_component_identity_rejected"):
+        verify_union(
+            artifacts, commit=COMMIT, tree=TREE, manifest_sha256=_sha(MANIFEST)
+        )
+
+
+@pytest.mark.parametrize("mode", ("postgres", "shard"))
+def test_suite_cannot_execute_before_its_build_and_migrations(tmp_path, mode):
+    artifacts, _ = _artifacts(tmp_path)
+    root = (
+        _pg_root(artifacts)
+        if mode == "postgres"
+        else artifacts / f"ctcc-linux-shard-0-{COMMIT}" / "ctcc-validation"
+    )
+    path = root / "steps.json"
+    stages = json.loads(path.read_text())
+    common = [entry for entry in stages if entry["name"] in COMMON_STAGES]
+    rest = [entry for entry in stages if entry["name"] not in COMMON_STAGES]
+    path.write_text(json.dumps([*rest, *common]))
+    _rehash(root, path)
+    with pytest.raises(
+        ValueError, match="linux_union_stage_inventory_or_order_invalid"
+    ):
+        verify_union(
+            artifacts, commit=COMMIT, tree=TREE, manifest_sha256=_sha(MANIFEST)
+        )
+
+
+@pytest.mark.parametrize(
+    "damage",
+    (
+        "incomplete_marker",
+        "missing_readback_line",
+        "seed_ready_missing",
+        "api_live_enabled",
+    ),
+)
+def test_restart_pass_requires_producer_complete_marker_and_actual_success_logs(
+    tmp_path, damage
+):
+    artifacts, _ = _artifacts(tmp_path)
+    root = _pg_root(artifacts)
+    if damage == "incomplete_marker":
+        path = root / "crash-probe" / "durable.json"
+        envelope = json.loads(path.read_text())
+        envelope["body"] = {
+            key: envelope["body"][key]
+            for key in ("schema", "execution_authority", "order_writes")
+        }
+        envelope["sha256"] = _sha(
+            json.dumps(envelope["body"], sort_keys=True, separators=(",", ":")).encode()
+        )
+        path.write_text(json.dumps(envelope))
+        identity_path = root / "identity.json"
+        identity = json.loads(identity_path.read_text())
+        identity["crash_probe_marker_sha256"] = _sha(path.read_bytes())
+        identity_path.write_text(json.dumps(identity))
+        _rehash(root, path, identity_path)
+    elif damage == "missing_readback_line":
+        path = root / "crash-restart-independent-readback.log"
+        path.write_text("\n".join(path.read_text().splitlines()[1:]) + "\n")
+        _rehash(root, path)
+    elif damage == "seed_ready_missing":
+        path = root / "crash-seed-readback-log.log"
+        path.write_text("synthetic-seed-unconfirmed\n")
+        _rehash(root, path)
+    else:
+        path = root / "api-restart-health.log"
+        values = json.loads(path.read_text())
+        values["api/version"]["live_trading"] = True
+        path.write_text(json.dumps(values))
+        _rehash(root, path)
+    with pytest.raises(ValueError, match="linux_union_restart_"):
+        verify_union(
+            artifacts, commit=COMMIT, tree=TREE, manifest_sha256=_sha(MANIFEST)
+        )
+
+
 @pytest.mark.parametrize(
     "damage", ("missing", "failed", "boolean", "duplicate", "late")
 )
@@ -705,7 +1122,10 @@ def test_union_requires_actual_early_runtime_custody_preflight(tmp_path, damage)
         stages.append(target)
     path.write_text(json.dumps(stages))
     _rehash(root, path)
-    with pytest.raises(ValueError, match="runtime_custody_preflight_stage_missing"):
+    # A globally malformed or failed stage is now rejected before preflight parsing.
+    with pytest.raises(
+        ValueError, match="runtime_custody_preflight_stage_missing|linux_union_stage_"
+    ):
         verify_union(
             artifacts, commit=COMMIT, tree=TREE, manifest_sha256=_sha(MANIFEST)
         )

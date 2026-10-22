@@ -22,6 +22,7 @@ from copy import deepcopy
 from pathlib import Path, PurePosixPath
 from uuid import uuid4
 
+from scripts.evidence_json import read_evidence_json
 from scripts.verify_linux_shard import POSTGRES_TEST_PATHS, SHARD_COUNT, selected_for
 from scripts.verify_native_witness_identity_schema import (
     NATIVE_WITNESS_IDENTITY_SCHEMA,
@@ -951,7 +952,7 @@ def verify_copied_source(root: Path, manifest: Path, expected_sha256: str) -> in
     raw = manifest.read_bytes()
     if hashlib.sha256(raw).hexdigest() != expected_sha256:
         raise ValueError("source_file_map_digest_mismatch")
-    files = json.loads(raw)
+    files = read_evidence_json(raw)
     for name, expected in files.items():
         relative = PurePosixPath(name)
         if relative.is_absolute() or ".." in relative.parts or not relative.parts:
@@ -1053,15 +1054,18 @@ def verify_linux_collection(path: Path, *, mode: str, index: int | None, report:
     if path.is_symlink() or not 0 < path.stat().st_size <= 16 * 1024 * 1024:
         raise ValueError("linux_collection_missing_or_unsafe")
     raw = path.read_bytes()
-    record = json.loads(raw)
+    record = read_evidence_json(raw)
     full = record.get("full_nodeids")
     selected = record.get("selected_nodeids")
     observed = record.get("observed_nodeids")
     if (
         record.get("schema") != "ctcc.linux_full_collection_shard.v1"
         or record.get("mode") != mode
+        or (index is not None and type(record.get("shard_index")) is not int)
         or record.get("shard_index") != index
+        or type(record.get("shard_count")) is not int
         or record.get("shard_count") != SHARD_COUNT
+        or type(record.get("pytest_exitstatus")) is not int
         or record.get("pytest_exitstatus") != 0
         or not isinstance(full, list)
         or not full
@@ -1297,6 +1301,52 @@ def cleanup_resources(
     return results
 
 
+def verify_durable_seed_marker(raw: bytes) -> dict:
+    """Shared producer/reader contract for the synthetic durable seed marker.
+
+    This validates the captured protocol envelope, not the database state. The
+    separate post-restart process must still replay and verify that state.
+    """
+
+    try:
+        if type(raw) is not bytes or not 0 < len(raw) <= 32768:
+            raise ValueError
+        envelope = read_evidence_json(raw)
+        if type(envelope) is not dict or set(envelope) != {"body", "sha256"}:
+            raise ValueError
+        body = envelope["body"]
+        if type(body) is not dict:
+            raise ValueError
+        canonical = json.dumps(
+            body, sort_keys=True, separators=(",", ":"), allow_nan=False
+        ).encode()
+        if (
+            envelope["sha256"] != hashlib.sha256(canonical).hexdigest()
+            or body.get("schema") != "ctcc.synthetic.qualification.crash-probe.v3"
+            or type(body.get("account_captures")) is not list
+            or len(body["account_captures"]) != 2
+            or any(type(item) is not dict for item in body["account_captures"])
+            or {item.get("scenario") for item in body["account_captures"]}
+            != {"safe_failed_capture", "unfinished_ram_prefix"}
+            or type(body.get("controls")) is not list
+            or len(body["controls"]) != 3
+            or any(type(item) is not dict for item in body["controls"])
+            or {item.get("scenario") for item in body["controls"]}
+            != {"arm_intent", "estop", "cold_estop"}
+            or body.get("control_arm_intent_observed_before_publish") is not True
+            or body.get("intent_version") != "ctcc-demo-submit-intent-v2"
+            or type(body.get("exchange_request_sha256")) is not str
+            or re.fullmatch("[a-f0-9]{64}", body["exchange_request_sha256"]) is None
+            or body.get("execution_authority") is not False
+            or type(body.get("order_writes")) is not int
+            or body["order_writes"] != 0
+        ):
+            raise ValueError
+        return body
+    except (KeyError, TypeError, ValueError, RecursionError, OverflowError):
+        raise RuntimeError("durable_seed_marker_invalid") from None
+
+
 def wait_for_durable_seed(run: Run, container: str, marker: Path, *, timeout=120):
     """Require a live seed process and a complete durable readback marker."""
     deadline = time.monotonic() + timeout
@@ -1314,37 +1364,7 @@ def wait_for_durable_seed(run: Run, container: str, marker: Path, *, timeout=120
             run.command("crash-seed-exited-state", ["docker", "inspect", container])
             raise RuntimeError("durable_seed_process_exited")
         if marker.is_file():
-            raw = marker.read_bytes()
-            if len(raw) > 32768:
-                raise RuntimeError("durable_seed_marker_oversize")
-            envelope = json.loads(raw)
-            body = envelope["body"]
-            canonical = json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
-            if (
-                envelope["sha256"] != hashlib.sha256(canonical).hexdigest()
-                or body.get("schema") != "ctcc.synthetic.qualification.crash-probe.v3"
-                or type(body.get("account_captures")) is not list
-                or len(body["account_captures"]) != 2
-                or any(type(item) is not dict for item in body["account_captures"])
-                or {item.get("scenario") for item in body["account_captures"]}
-                != {"safe_failed_capture", "unfinished_ram_prefix"}
-                or type(body.get("controls")) is not list
-                or len(body["controls"]) != 3
-                or any(type(item) is not dict for item in body["controls"])
-                or {item.get("scenario") for item in body["controls"]}
-                != {"arm_intent", "estop", "cold_estop"}
-                or body.get("control_arm_intent_observed_before_publish") is not True
-                or body.get("intent_version") != "ctcc-demo-submit-intent-v2"
-                or type(body.get("exchange_request_sha256")) is not str
-                or len(body["exchange_request_sha256"]) != 64
-                or any(
-                    c not in "0123456789abcdef" for c in body["exchange_request_sha256"]
-                )
-                or body.get("execution_authority") is not False
-                or type(body.get("order_writes")) is not int
-                or body["order_writes"] != 0
-            ):
-                raise RuntimeError("durable_seed_marker_invalid")
+            verify_durable_seed_marker(marker.read_bytes())
             return
         if time.monotonic() >= deadline:
             run.command("crash-seed-timeout-log", ["docker", "logs", container])

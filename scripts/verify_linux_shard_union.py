@@ -13,9 +13,12 @@ import json
 import re
 from pathlib import Path
 
+from scripts.evidence_json import read_evidence_json
 from scripts.verify_final_hermetic import (
     ARCHIVE_REQUIRED_CASES,
     DOWNGRADE_DENIAL,
+    GATE3_PREFLIGHT_CASES,
+    LEDGER_SCHEMA_PREFLIGHT_CASES,
     NATIVE_IDENTITY_DOWNGRADE_DENIAL,
     RUNTIME_CUSTODY_PREFLIGHT_CASES,
     expected_migration_revision_readback,
@@ -24,6 +27,7 @@ from scripts.verify_final_hermetic import (
     native_identity_nonempty_downgrade_readback,
     native_migration_json_equal,
     verify_downgrade_denial_log,
+    verify_durable_seed_marker,
     verify_linux_collection,
     verify_native_identity_downgrade_denial_log,
     verify_pytest_report,
@@ -72,6 +76,24 @@ COMMON_STAGES = (
     "migration-denial-readback",
     "migration-redrift",
 )
+POSTGRES_RESTART_STAGES = (
+    "crash-probe-start",
+    "crash-seed-readback-log",
+    "process-sigkill",
+    "postgres-restart",
+    "redis-restart",
+    "crash-restart-independent-readback",
+    "api-start",
+    "api-health",
+    "api-restart",
+    "api-restart-health",
+    "api-logs",
+)
+POSTGRES_PREFLIGHT_STAGES = (
+    "runtime-bundle-custody-preflight",
+    "event-journal-schema-preflight",
+    "gate3-postgres-preflight",
+)
 
 
 def _json(path: Path):
@@ -81,7 +103,7 @@ def _json(path: Path):
         or not 0 < path.stat().st_size <= 16 * 1024 * 1024
     ):
         raise ValueError(f"linux_union_evidence_missing_or_unsafe:{path.name}")
-    return json.loads(path.read_bytes())
+    return read_evidence_json(path.read_bytes())
 
 
 def _verify_hashes(root: Path):
@@ -128,6 +150,178 @@ def _verify_hashes(root: Path):
     return recorded
 
 
+def _verify_stage_records(stages: object) -> None:
+    """Reject any failed, aliased or repeated native stage, even if rehashed.
+
+    A successful sibling record cannot erase a late failure or a second
+    execution. The two migration refusals still require their separate exact
+    driver-log checks; a nonzero code alone never establishes either refusal.
+    """
+    if type(stages) is not list or not 1 <= len(stages) <= 256:
+        raise ValueError("linux_union_stage_inventory_invalid")
+    refusals = {
+        "migration-downgrade-denial": DOWNGRADE_DENIAL,
+        "migration-native-identity-nonempty-denial": NATIVE_IDENTITY_DOWNGRADE_DENIAL,
+    }
+    names = set()
+    for step in stages:
+        if (
+            type(step) is not dict
+            or not set(step)
+            <= {
+                "name",
+                "exit_code",
+                "elapsed_seconds",
+                "timeout_scope",
+                "policy_refusal",
+            }
+            or type(step.get("name")) is not str
+            or not 1 <= len(step["name"]) <= 128
+            or re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", step["name"]) is None
+            or step["name"] in names
+            or type(step.get("exit_code")) is not int
+            or not -(2**31) <= step["exit_code"] < 2**31
+            or "timeout_scope" in step
+            and step["timeout_scope"] not in ("stage", "validation")
+            or "elapsed_seconds" in step
+            and (
+                type(step["elapsed_seconds"]) not in (int, float)
+                or not 0 <= step["elapsed_seconds"] <= 2**31
+            )
+        ):
+            raise ValueError("linux_union_stage_record_invalid")
+        name = step["name"]
+        names.add(name)
+        if name in refusals:
+            if step["exit_code"] == 0 or step.get("policy_refusal") != refusals[name]:
+                raise ValueError("linux_union_stage_policy_refusal_invalid")
+        elif step["exit_code"] != 0 or "policy_refusal" in step:
+            raise ValueError("linux_union_stage_unsuccessful")
+    positions = [
+        index for index, step in enumerate(stages) if step["name"] in COMMON_STAGES
+    ]
+    observed = [stages[index]["name"] for index in positions]
+    expected = [name for name in COMMON_STAGES if name in names]
+    if observed != expected:
+        raise ValueError("linux_union_stage_order_invalid")
+
+
+def _verify_restart_stages(root, stages, hashes, identity):
+    """Require the actual crash/restart commands after the PostgreSQL suite.
+
+    These remain synthetic crash-recovery evidence, not source or trading
+    acceptance. Identity PASS strings cannot replace their ordered commands,
+    hashed logs and retained durable seed marker.
+    """
+    names = [step["name"] for step in stages]
+    required = (
+        "migration-native-identity-nonempty-after",
+        *POSTGRES_RESTART_STAGES,
+    )
+    if any(name not in names for name in required):
+        raise ValueError("linux_union_restart_stage_missing")
+    positions = [names.index(name) for name in required]
+    if positions != sorted(positions):
+        raise ValueError("linux_union_restart_stage_order_invalid")
+    for name in POSTGRES_RESTART_STAGES:
+        if f"{name}.log" not in hashes:
+            raise ValueError("linux_union_restart_stage_log_missing")
+    marker = root / "crash-probe" / "durable.json"
+    if (
+        "crash-probe/durable.json" not in hashes
+        or marker.parent.is_symlink()
+        or marker.is_symlink()
+        or not marker.is_file()
+        or not 0 < marker.stat().st_size <= 32768
+        or hashlib.sha256(marker.read_bytes()).hexdigest()
+        != identity.get("crash_probe_marker_sha256")
+    ):
+        raise ValueError("linux_union_restart_marker_missing_or_changed")
+    try:
+        verify_durable_seed_marker(marker.read_bytes())
+    except RuntimeError:
+        raise ValueError("linux_union_restart_marker_invalid") from None
+    expected_lines = (
+        "ACCOUNT_CAPTURE_RESTART_RAW_AND_UNKNOWN_PREFIX=PASS",
+        "DEMO_CONTROL_RESTART_NO_ARM_ESTOP_PERSISTENCE=PASS",
+        "PROCESS_KILL_POSTGRES_REDIS_RESTART_DURABILITY=PASS",
+        "SYNTHETIC_CLAIMS=1;SOURCE_AUTHORITY=0;ORDER_WRITES=0",
+    )
+    lines = (root / "crash-restart-independent-readback.log").read_text().splitlines()
+    if tuple(lines) != expected_lines:
+        raise ValueError("linux_union_restart_independent_readback_incomplete")
+    ready = (root / "crash-seed-readback-log.log").read_text().splitlines()
+    if ready.count("SYNTHETIC_DURABLE_COMMIT_READBACK_READY=1") != 1:
+        raise ValueError("linux_union_restart_seed_readback_incomplete")
+    for name in ("api-health", "api-restart-health"):
+        values = _json(root / f"{name}.log")
+        if type(values) is not dict or set(values) != {
+            "liveness",
+            "readiness",
+            "api/version",
+        }:
+            raise ValueError("linux_union_restart_api_health_invalid")
+        live, ready, version = (
+            values[key] for key in ("liveness", "readiness", "api/version")
+        )
+        if (
+            any(type(value) is not dict for value in (live, ready, version))
+            or live.get("status") != "alive"
+            or ready.get("status") != "ready"
+            or ready.get("blockers") != []
+            or type(ready.get("database")) is not dict
+            or ready["database"].get("ok") is not True
+            or type(ready.get("redis")) is not dict
+            or ready["redis"].get("ok") is not True
+            or version.get("environment") != "test"
+            or version.get("trading_mode") != "analysis_only"
+            or version.get("auto_trade") is not False
+            or version.get("live_trading") is not False
+        ):
+            raise ValueError("linux_union_restart_api_health_invalid")
+
+
+def _verify_preflight_reports(root, hashes, identity):
+    for stage, field, cases in (
+        (
+            "event-journal-schema-preflight",
+            "event_journal_schema_preflight",
+            LEDGER_SCHEMA_PREFLIGHT_CASES,
+        ),
+        ("gate3-postgres-preflight", "gate3_preflight", GATE3_PREFLIGHT_CASES),
+    ):
+        relative = f"test-results/{stage}.xml"
+        if relative not in hashes or f"{stage}.log" not in hashes:
+            raise ValueError("linux_union_preflight_report_missing")
+        report = verify_pytest_report(root / relative, required_cases=cases)
+        if (
+            not native_migration_json_equal(report, identity.get(field))
+            or report["tests"] != len(cases)
+            or report["skipped"]
+        ):
+            raise ValueError("linux_union_preflight_report_invalid")
+
+
+def _verify_complete_stage_sequence(stages, mode, index):
+    expected = (
+        *COMMON_STAGES,
+        *(
+            (
+                *POSTGRES_PREFLIGHT_STAGES,
+                "postgres-intent",
+                "migration-native-identity-nonempty-before",
+                "migration-native-identity-nonempty-denial",
+                "migration-native-identity-nonempty-after",
+                *POSTGRES_RESTART_STAGES,
+            )
+            if mode == "postgres"
+            else (f"linux-shard-{index}",)
+        ),
+    )
+    if tuple(step["name"] for step in stages) != expected:
+        raise ValueError("linux_union_stage_inventory_or_order_invalid")
+
+
 def verify_union(
     artifacts: Path, *, commit: str, tree: str, manifest_sha256: str
 ) -> dict:
@@ -162,6 +356,7 @@ def verify_union(
         hashes = _verify_hashes(root)
         identity = _json(root / "identity.json")
         stages = _json(root / "steps.json")
+        _verify_stage_records(stages)
         native_before = _json(root / "migration-native-identity-empty-before.log")
         if not isinstance(native_before, dict) or not native_migration_json_equal(
             native_before,
@@ -179,10 +374,13 @@ def verify_union(
             or identity.get("source_files_sha256")
             != hashlib.sha256((root / "source-files.json").read_bytes()).hexdigest()
             or identity.get("suite") != mode
+            or (mode == "shard" and type(identity.get("shard_index")) is not int)
             or identity.get("shard_index") != index
+            or type(identity.get("shard_count")) is not int
             or identity.get("shard_count") != SHARD_COUNT
             or identity.get("host_credentials") is not False
             or identity.get("host_env") is not False
+            or type(identity.get("external_order_writes")) is not int
             or identity.get("external_order_writes") != 0
             or identity.get("trading_acceptance") is not False
             or identity.get("component_validation") != "PASS"
@@ -192,8 +390,10 @@ def verify_union(
             or identity["migration"].get("source_head") != "0047"
             or identity["migration"].get("database_head") != "0047"
             or identity["migration"].get("status") != "PASS"
-            or identity.get("migration_supported_roundtrip")
-            != expected_migration_revision_readback("0001")
+            or not native_migration_json_equal(
+                identity.get("migration_supported_roundtrip"),
+                expected_migration_revision_readback("0001"),
+            )
             or not native_migration_json_equal(
                 identity.get("migration_empty_roundtrip"),
                 {
@@ -218,17 +418,19 @@ def verify_union(
                     "schema_drift": "PASS",
                 },
             )
-            or identity.get("migration_downgrade_policy")
-            != {
-                "source_head": "0047",
-                "target": "0041",
-                "result": "DENIED",
-                "denied_at": "0042",
-                "policy_refusal": DOWNGRADE_DENIAL,
-                "database_head_after": "0047",
-                "rollback_readback": expected_migration_revision_readback("0047"),
-                "schema_drift": "PASS",
-            }
+            or not native_migration_json_equal(
+                identity.get("migration_downgrade_policy"),
+                {
+                    "source_head": "0047",
+                    "target": "0041",
+                    "result": "DENIED",
+                    "denied_at": "0042",
+                    "policy_refusal": DOWNGRADE_DENIAL,
+                    "database_head_after": "0047",
+                    "rollback_readback": expected_migration_revision_readback("0047"),
+                    "schema_drift": "PASS",
+                },
+            )
         ):
             raise ValueError(f"linux_union_component_identity_rejected:{name}")
         if not native_migration_json_equal(
@@ -238,26 +440,43 @@ def verify_union(
             raise ValueError(
                 f"linux_union_native_identity_legacy_readback_changed:{name}"
             )
-        if (
-            _json(root / "migration-supported-readback.log")
-            != identity["migration_supported_roundtrip"]
-            or _json(root / "migration-identity.log") != identity["migration"]
-            or _json(root / "migration-native-identity-empty-readback.log")
-            != identity["migration_empty_roundtrip"]["native_identity_down_readback"]
-            or _json(root / "migration-bundle-empty-readback.log")
-            != identity["migration_empty_roundtrip"]["bundle_down_readback"]
-            or _json(root / "migration-guard-empty-readback.log")
-            != identity["migration_empty_roundtrip"]["guard_down_readback"]
-            or _json(root / "migration-hwm-empty-readback.log")
-            != identity["migration_empty_roundtrip"]["hwm_down_readback"]
-            or _json(root / "migration-empty-readback.log")
-            != identity["migration_empty_roundtrip"]["down_readback"]
-            or _json(root / "migration-reupgrade-identity.log") != identity["migration"]
-            or _json(root / "migration-reupgrade-readback.log")
-            != identity["migration_empty_roundtrip"]["reupgrade_readback"]
-            or _json(root / "migration-reidentity.log") != identity["migration"]
-            or _json(root / "migration-denial-readback.log")
-            != identity["migration_downgrade_policy"]["rollback_readback"]
+        migration_logs = (
+            ("migration-supported-readback", identity["migration_supported_roundtrip"]),
+            ("migration-identity", identity["migration"]),
+            (
+                "migration-native-identity-empty-readback",
+                identity["migration_empty_roundtrip"]["native_identity_down_readback"],
+            ),
+            (
+                "migration-bundle-empty-readback",
+                identity["migration_empty_roundtrip"]["bundle_down_readback"],
+            ),
+            (
+                "migration-guard-empty-readback",
+                identity["migration_empty_roundtrip"]["guard_down_readback"],
+            ),
+            (
+                "migration-hwm-empty-readback",
+                identity["migration_empty_roundtrip"]["hwm_down_readback"],
+            ),
+            (
+                "migration-empty-readback",
+                identity["migration_empty_roundtrip"]["down_readback"],
+            ),
+            ("migration-reupgrade-identity", identity["migration"]),
+            (
+                "migration-reupgrade-readback",
+                identity["migration_empty_roundtrip"]["reupgrade_readback"],
+            ),
+            ("migration-reidentity", identity["migration"]),
+            (
+                "migration-denial-readback",
+                identity["migration_downgrade_policy"]["rollback_readback"],
+            ),
+        )
+        if any(
+            not native_migration_json_equal(_json(root / f"{stage}.log"), expected)
+            for stage, expected in migration_logs
         ):
             raise ValueError(f"linux_union_migration_readback_changed:{name}")
         archive = attachment / "ctcc-source.tar"
@@ -276,7 +495,7 @@ def verify_union(
         )
         if common_identity is None:
             common_identity = shared
-        elif shared != common_identity:
+        elif not native_migration_json_equal(shared, common_identity):
             raise ValueError("linux_union_source_or_migration_drift")
         if not isinstance(stages, list) or any(
             not any(
@@ -406,10 +625,15 @@ def verify_union(
                 ),
                 required_cases=RUNTIME_CUSTODY_PREFLIGHT_CASES,
             )
-            if preflight != identity.get("runtime_bundle_custody_preflight"):
+            if not native_migration_json_equal(
+                preflight, identity.get("runtime_bundle_custody_preflight")
+            ):
                 raise ValueError(
                     "linux_union_runtime_custody_preflight_readback_changed"
                 )
+            _verify_restart_stages(root, stages, hashes, identity)
+            _verify_preflight_reports(root, hashes, identity)
+        _verify_complete_stage_sequence(stages, mode, index)
         if mode == "postgres" and (
             identity.get("synthetic_process_pg_redis_crash_durability") != "PASS"
             or identity.get("api_service_restart") != "PASS"
@@ -449,7 +673,7 @@ def verify_union(
         recorded_report = identity.get(
             "postgres_tests" if mode == "postgres" else "linux_tests"
         )
-        if report != recorded_report:
+        if not native_migration_json_equal(report, recorded_report):
             raise ValueError("linux_union_test_report_readback_changed")
         collection = verify_linux_collection(
             collection_path,
@@ -457,7 +681,7 @@ def verify_union(
             index=index,
             report=report,
         )
-        if identity.get("collection") != collection:
+        if not native_migration_json_equal(identity.get("collection"), collection):
             raise ValueError("linux_union_collection_readback_changed")
         record = _json(collection_path)
         if full is None:

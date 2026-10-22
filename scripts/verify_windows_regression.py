@@ -18,6 +18,7 @@ import zipfile
 from pathlib import Path, PurePosixPath
 
 from scripts import manifest
+from scripts.evidence_json import read_evidence_json
 
 NO_DB_INTEGRATION = (
     "test_api.py",
@@ -234,7 +235,10 @@ def _json(path: Path) -> dict:
         or not 0 < path.stat().st_size <= 8 * 1024 * 1024
     ):
         raise WindowsRegressionError("json_evidence_missing_or_unsafe")
-    value = json.loads(path.read_text(encoding="utf-8-sig"))
+    try:
+        value = read_evidence_json(path.read_text(encoding="utf-8-sig"))
+    except (ValueError, RecursionError):
+        raise WindowsRegressionError("json_evidence_invalid") from None
     if not isinstance(value, dict):
         raise WindowsRegressionError("json_object_required")
     return value
@@ -591,6 +595,7 @@ def verify_evidence(
     if (
         dependency.get("target") != "windows"
         or dependency.get("lock_sha256") != lock_hash
+        or type(dependency.get("packages")) is not int
         or dependency.get("packages") != len(lock_manifest.get("packages", ()))
         or dependency.get("accepted_full_validation_baseline") is not False
         or not isinstance(installed, dict)

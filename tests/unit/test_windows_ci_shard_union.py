@@ -317,6 +317,51 @@ def test_module_shard_rejects_foreign_or_traversal_paths():
             module_shard(path)
 
 
+def test_windows_union_rejects_duplicate_raw_failure_code(tmp_path):
+    artifacts, root, manifest_hash, _ = _fixture(tmp_path)
+    path = artifacts / f"ctcc-windows-shard-0-{COMMIT}" / "windows-collection.json"
+    raw = path.read_text()
+    assert '"pytest_exitstatus": 0' in raw
+    path.write_text(
+        raw.replace(
+            '"pytest_exitstatus": 0', '"pytest_exitstatus":19,"pytest_exitstatus":0', 1
+        )
+    )
+    with pytest.raises(WindowsRegressionError, match="json_evidence_invalid"):
+        _verify(tmp_path, artifacts, root, manifest_hash)
+
+
+def test_consistent_float_package_count_is_not_native_dependency_readback(tmp_path):
+    artifacts, root, manifest_hash, _ = _fixture(tmp_path)
+    for index in range(SHARD_COUNT):
+        path = (
+            artifacts
+            / f"ctcc-windows-shard-{index}-{COMMIT}"
+            / "dependency-result.json"
+        )
+        record = json.loads(path.read_text())
+        record["packages"] = float(record["packages"])
+        path.write_text(json.dumps(record))
+    with pytest.raises(
+        WindowsRegressionError, match="windows_dependency_inventory_invalid"
+    ):
+        _verify(tmp_path, artifacts, root, manifest_hash)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (("pytest_exitstatus", False), ("pytest_exitstatus", 0.0), ("shard_index", False)),
+)
+def test_windows_union_rejects_non_integer_native_result_fields(tmp_path, field, value):
+    artifacts, root, manifest_hash, _ = _fixture(tmp_path)
+    path = artifacts / f"ctcc-windows-shard-0-{COMMIT}" / "windows-collection.json"
+    record = json.loads(path.read_text())
+    record[field] = value
+    path.write_text(json.dumps(record))
+    with pytest.raises(WindowsRegressionError, match="collection_identity_invalid"):
+        _verify(tmp_path, artifacts, root, manifest_hash)
+
+
 def test_pytest_hook_records_full_collection_before_module_deselection(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

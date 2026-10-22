@@ -1,5 +1,71 @@
 # Final completion validation state
 
+## 2026-10-22 native source smoke, write seams and evidence admission
+
+This work starts from exact source `52a4b1c2510356f5c2cc4091a4c4b36930cede5d`,
+tree `278ec9e46a98e52afbcce637e41df61cd4d67878`, with migration `0047`.
+Its [full CI run 39694847586](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/39694847586)
+was still running at this checkpoint. Subsequent changes require their own
+exact-source CI and independent artifact readback.
+
+One new isolated Windows/PostgreSQL lab completed an actual public one-minute
+source smoke. It stored the wide native filesystem identity through DB0047,
+retained one raw market row and completed restricted V3 readback/reconciliation.
+The same original PostgreSQL process handle spanned the source job; pre/post
+native and SQL identity agreed. The lab was subsequently stopped using the
+exact native/SQL guarded procedure, with all evidence retained. The wrapper
+receipt SHA256 is `6cd9bd433003987aab24408bc1e62662541a9b16509bae892f972e83366b807e`;
+the stop receipt is `a743c420f8f480b6a8f2d8947d5116466285a3022059b589732f9dc3cab19080`.
+This accepts one native source-storage smoke. Its trusted-clock,
+independently-protected and measured-availability eligibility fields remain
+false; its recorded availability basis is an unverified server clock.
+Stage1 post-read clock, historical PIT, full R5, Gate3 and OOS remain unaccepted.
+
+The [owned native write seams component](owned_write_seams_v1.md) exercises
+guarded native SSL writes and raw socket writes with actual localhost TLS.
+The fixed probe destination and synthetic payload have no qualified order
+authority. Existing shared transport, Demo/Live route and dispatch issuer
+denials remain in force. Source-earned qualification, durable coordinator
+ownership and intent-to-exchange dispatch still require integration.
+
+The final LF source bytes passed a new local run of 125 transport/authority
+cases without failures, errors or skips. All 52 originally requested cases
+occur once in that actual run; the JUnit remains an honest 125-case record.
+The temporary localhost TLS private key was removed by the bounded fixture.
+The independent subset readback receipt is
+`f367ae53f66befd347bcffa84544fbb7ad488b8743520045c43e31631a033ef4`.
+
+Adversarial evidence review reproduced stale extracted JUnit/log acceptance,
+boolean/float aliases for native exit fields, a late failed stage hidden by a
+successful record, repeated stages, and a PG block moved before build and
+migrations. It also found incomplete restart markers accepted by the consumer
+although the producer would reject them. The repaired source validators require
+duplicate-free JSON without NaN/Infinity and exact typed summary readback,
+native integer counters, one complete ordered stage sequence, both exact
+migration refusals, all three preflights, complete producer-compatible seed
+markers, actual restart-success lines and disabled-trading API health readback.
+Synthetic fixture results establish those parser/rejection properties only.
+The separate artifact readers now bind admitted official GitHub metadata to
+server-digested ZIPs and every retained extracted byte.
+
+The repaired evidence-validator Linux module passed 110 cases on Windows.
+Replacing its older 109-case result in the six-module scoped regression gives
+334 unique cases: 332 passed and two existing POSIX permission cases skipped.
+The other five modules retain their unchanged-source R4 results; this is not
+one new full-suite run. The case-union readback receipt is
+`7c2c2b670a3eb7ad45a0e8bdbe25c430442d44f49277eaa5d4cc9d3df98dadc8`.
+
+The older [EC2 full run 39681751654](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/39681751654)
+received a fresh independent supplemental check of all 19 server-digested ZIPs
+and their complete extracted file inventories. Its new byte-chain receipt is
+`737209a6100b8219978d2cd4af436c152e7897a5a805f3b0c1f9cea8202c1a8e`.
+That scope remains the exact EC2 source and its retained artifacts.
+
+Demo execution, real protection/reconciliation, complete account source, Gate3,
+sealed OOS, economic/chaos acceptance, controlled Micro Live, merge and release
+remain incomplete. Engineering completion, Micro Live readiness and final
+completion all remain zero. No acceptance checkbox is advanced by this update.
+
 ## 2026-10-22 catalog type repair and Windows privacy assertion
 
 The full [741a3c3 run 39657582516](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/39657582516)

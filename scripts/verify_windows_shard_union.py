@@ -90,12 +90,15 @@ def _zip_members(path: Path) -> dict[str, bytes]:
 def _shard_record(record: dict, *, index: int, root: Path) -> list[dict]:
     if (
         record.get("schema") != "ctcc.windows_full_collection_shard.v1"
+        or type(record.get("shard_index")) is not int
         or record.get("shard_index") != index
+        or type(record.get("shard_count")) is not int
         or record.get("shard_count") != SHARD_COUNT
         or record.get("requested_paths") != list(test_selection(root))
         or record.get("manifest_sha256") != _sha256(root / "MANIFEST.sha256")
         or record.get("python") != sys.version
         or record.get("selection_filters_absent") is not True
+        or type(record.get("pytest_exitstatus")) is not int
         or record.get("pytest_exitstatus") != 0
         or not isinstance(record.get("full_cases"), list)
         or not record["full_cases"]
