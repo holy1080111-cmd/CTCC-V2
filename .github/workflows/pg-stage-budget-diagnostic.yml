@@ -1,0 +1,57 @@
+name: Restricted PostgreSQL phase and wait diagnostic
+
+on:
+  push:
+    branches:
+      - validation/pg-stage-budget-diagnostic-20261022
+
+permissions:
+  contents: read
+
+jobs:
+  bounded-diagnostic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Verify narrow source delta and run the two diagnostic experiments
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/validation/pg-stage-budget-diagnostic-20261022
+          commit=$(git rev-parse HEAD)
+          test "$commit" = "$GITHUB_SHA"
+          baseline=4f21e104f505a89d50f0257d80b37f7cc480daba
+          test "$(git rev-parse HEAD^)" = "$baseline"
+          python3 - <<'PY'
+          import subprocess
+          from scripts.diagnose_pg_stage_budget_v1 import ADDED_PATHS, BASELINE
+          raw = subprocess.check_output(["git", "diff", "--no-renames", "--name-only", "-z", BASELINE, "HEAD"])
+          assert raw.endswith(b"\0")
+          changed = raw[:-1].decode("utf-8").split("\0")
+          assert all(changed) and len(set(changed)) == len(changed)
+          assert set(changed) == ADDED_PATHS | {"MANIFEST.sha256"}
+          for path in ADDED_PATHS:
+              assert subprocess.run(["git", "cat-file", "-e", BASELINE + ":" + path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode != 0
+          PY
+          tree=$(git rev-parse 'HEAD^{tree}')
+          archive="$RUNNER_TEMP/ctcc-pg-stage-diagnostic-source.tar"
+          git -c core.autocrlf=false -c core.eol=lf archive --format=tar --output="$archive" "$commit"
+          digest=$(sha256sum "$archive" | cut -d ' ' -f 1)
+          python3 -m scripts.diagnose_pg_stage_budget_v1 \
+            --archive "$archive" --archive-sha256 "$digest" \
+            --commit "$commit" --tree "$tree" \
+            --output "$RUNNER_TEMP/ctcc-pg-stage-diagnostic"
+      - name: Preserve exact source and rewritten safe evidence only
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ctcc-pg-stage-diagnostic-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/ctcc-pg-stage-diagnostic-source.tar
+            ${{ runner.temp }}/ctcc-pg-stage-diagnostic/export/*
+          if-no-files-found: error
+          retention-days: 30
