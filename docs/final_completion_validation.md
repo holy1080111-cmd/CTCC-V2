@@ -1,5 +1,52 @@
 # Final completion validation state
 
+## 2026-10-22 native availability and Windows TLS fixture repair
+
+The exact `52a4b1c2510356f5c2cc4091a4c4b36930cede5d` full
+[CI run 39694847586](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/39694847586)
+has completed successfully. Official metadata, all 19 server-digested artifact
+ZIPs, extracted bytes, exact source archives and actual JUnit inventories were
+read back. Linux recorded 17,023 passed and 77 skipped cases; Windows recorded
+16,587 passed and 29 skipped cases. The PostgreSQL component recorded 479
+passed cases without skips. These results apply only to that exact source.
+
+The subsequent `a94ada9b2bf782e235bb6bcf1211224b0e72a2ed`
+[run 39703190485](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/39703190485)
+is not accepted. Its Windows shard 7 recorded 1,461 passed cases and 13 setup
+errors: Windows could not launch the fixed Git OpenSSL executable. The official
+failed artifact was verified against its server digest and all 1,303 source
+file bytes against the preserved exact-source checkpoint. The original failed
+result remains evidence; later repairs do not change it.
+
+The fixture now selects between the two explicit Git installation paths and
+records the actual selected executable identity. Missing OpenSSL still fails
+on Windows. A fresh local run passed all 29 TLS cases without skips using the
+local `git-mingw64` profile. The alternative remote profile and this combined
+source require a new matching CI run.
+
+The new [V5 future availability component](mie_native_availability_v5.md) joins
+an original finite claim, actual source and native clock carriers, restricted
+catalog checks and DB0046 durable bundle custody. A native health return-type
+review caught an erroneous second encoding of already-canonical bytes. The
+fixed path retains the actual bounded bytes; its tests include the real bytes
+producer with only OS I/O substituted, plus rejected/malformed payload retention.
+The final LF source passed a fresh combined run of 211 cases without skips:
+64 V5 cases, 110 catalog custody cases, 29 native localhost TLS cases and eight
+source boundary cases. The native exit code, JUnit and unchanged before/after
+source hashes are retained in receipt
+`49384a3fa9300740c45acd933bacd4c5f2cd15e742fb6c6762967e76324923f5`.
+These remain component results. Twelve new PostgreSQL integration cases have only
+been collected locally; none has yet executed. Actual native clock, source,
+restricted PostgreSQL and V5 consumer acceptance remains pending.
+
+V5 can only earn future availability in the same measured native clock domain.
+It grants no historical PIT, Gate3, OOS, account, order or execution authority.
+The unchanged Stage1 issuer still does not return raw failed health/sample
+bytes for durable retention; that forensic gap remains open. Production write
+denials, default disarm, existing dependency identities and migration `0047`
+remain unchanged. Engineering completion, Micro Live readiness and final
+completion all remain zero.
+
 ## 2026-10-22 native source smoke, write seams and evidence admission
 
 This work starts from exact source `52a4b1c2510356f5c2cc4091a4c4b36930cede5d`,

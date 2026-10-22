@@ -78,6 +78,25 @@ def test_public_source_has_only_explicit_reviewed_consumers():
     current_account_consumer = (
         APP / "trade_qualification" / "account_current_source_v4.py"
     )
+    native_availability_bundle_consumer = (
+        APP / "mie" / "validation" / "native_availability_bundle_v5.py"
+    )
+    native_availability_bundle_imports = {
+        "app.public_market_source.public_attempt_journal",
+        "app.public_market_source.public_attempt_journal.bind_measured_attempt",
+        "app.public_market_source.public_attempt_journal.replay_attempt_chain",
+        "app.public_market_source.public_market_capture",
+        "app.public_market_source.public_market_capture.replay_public_capture",
+        "app.public_market_source.public_market_receipts",
+        "app.public_market_source.public_market_receipts.MeasuredPublicMinuteReceiptV1",
+        "app.public_market_source.public_market_receipts.decode",
+        "app.public_market_source.public_market_receipts.parsed_rows",
+        "app.public_market_source.public_market_receipts.utc_from_ns",
+        "app.public_market_source.public_receipt_storage",
+        "app.public_market_source.public_receipt_storage.ControlledPublicReceiptJournal",
+        "app.public_market_source.public_receipt_storage.PublicJournalCheckpointV1",
+        "app.public_market_source.public_receipt_storage._root_context",
+    }
     current_custody_imports = {
         current_market_consumer: {
             "app.public_market_source.public_runtime_custody_v4",
@@ -208,6 +227,14 @@ def test_public_source_has_only_explicit_reviewed_consumers():
         # Neither receives additional public capture or writable-journal APIs.
         current_market_consumer: ("public_runtime_custody_v4",),
         current_account_consumer: ("public_runtime_custody_v4",),
+        # MIE V5 retains an already owned native journal and purely replays every
+        # raw attempt/capture. No transport constructor or acquisition import.
+        native_availability_bundle_consumer: (
+            "public_attempt_journal",
+            "public_market_capture",
+            "public_market_receipts",
+            "public_receipt_storage",
+        ),
     }
     observed = set()
     observed_post_publication_imports = set()
@@ -221,6 +248,7 @@ def test_public_source_has_only_explicit_reviewed_consumers():
     observed_scheduled_pin_imports = set()
     observed_scheduled_four_hour_imports = set()
     observed_current_custody_imports = {path: set() for path in current_custody_imports}
+    observed_native_availability_bundle_imports = set()
     for path in APP.rglob("*.py"):
         if path.is_relative_to(SOURCE):
             continue
@@ -228,6 +256,12 @@ def test_public_source_has_only_explicit_reviewed_consumers():
             for name in names(node):
                 if name.startswith("app.public_market_source"):
                     assert path in allowed, (path, name)
+                    if path == native_availability_bundle_consumer:
+                        assert name in native_availability_bundle_imports, name
+                        assert isinstance(node, ast.ImportFrom) and all(
+                            alias.asname is None for alias in node.names
+                        ), name
+                        observed_native_availability_bundle_imports.add(name)
                     if path == devval_source_plan_consumer:
                         assert name in devval_source_plan_imports, name
                         assert isinstance(node, ast.ImportFrom) and all(
@@ -346,6 +380,10 @@ def test_public_source_has_only_explicit_reviewed_consumers():
                     ), name
                     observed.add(path)
     assert observed == set(allowed)
+    assert (
+        observed_native_availability_bundle_imports
+        == native_availability_bundle_imports
+    )
     # The V2 one-use publisher compares native nanoseconds directly. It must
     # remain present without gaining any public-source import capability.
     assert scheduled_minute_publication_consumer.is_file()
@@ -361,6 +399,32 @@ def test_public_source_has_only_explicit_reviewed_consumers():
     assert observed_scheduled_pin_imports == scheduled_pin_imports
     assert observed_scheduled_four_hour_imports == scheduled_four_hour_imports
     assert observed_current_custody_imports == current_custody_imports
+
+
+@pytest.mark.parametrize(
+    "import_line",
+    [
+        "from app.public_market_source.public_market_capture import capture_public_market",
+        "from app.public_market_source.public_receipt_storage import initialize_public_receipt_journal",
+        "from app.public_market_source.public_market_receipts import parsed_rows as caller_alias",
+        "import app.public_market_source.public_market_capture",
+    ],
+)
+def test_native_availability_bundle_rejects_extra_or_aliased_source_capability(
+    monkeypatch, import_line
+):
+    original_nodes = nodes
+    consumer = APP / "mie" / "validation" / "native_availability_bundle_v5.py"
+    unreviewed = ast.parse(import_line).body[0]
+
+    def changed(path):
+        yield from original_nodes(path)
+        if path == consumer:
+            yield unreviewed
+
+    monkeypatch.setattr(sys.modules[__name__], "nodes", changed)
+    with pytest.raises(AssertionError):
+        test_public_source_has_only_explicit_reviewed_consumers()
 
 
 @pytest.mark.parametrize(

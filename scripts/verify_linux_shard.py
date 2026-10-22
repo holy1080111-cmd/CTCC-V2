@@ -73,6 +73,7 @@ POSTGRES_TEST_PATHS = frozenset(
         "tests/integration/test_post_g12_local_portfolio_observation_v5_repository.py",
         "tests/integration/test_public_receipt_post_read_observation_repository.py",
         "tests/integration/test_public_runtime_bundle_custody_repository.py",
+        "tests/integration/test_public_receipt_clock_custody_v1.py",
     }
 )
 SHARD_COUNT = 8

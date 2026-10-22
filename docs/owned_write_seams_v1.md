@@ -92,12 +92,16 @@ positive TLS path or grant qualification. Separate synthetic SSLWantRead/Write
 cuts exercise the pinned native retry loop and are labelled synthetic.
 
 The fixture generates a temporary test-only key/cert with an existing OpenSSL
-CLI, no custom crypto/dependency/system certificate store. Windows uses the fixed
-Git installation path; tool binary SHA and version are recorded in JUnit. The
+CLI, no custom crypto/dependency/system certificate store. Windows selects the
+first existing executable at the two fixed Git installation paths,
+`C:/Program Files/Git/mingw64/bin/openssl.exe` and
+`C:/Program Files/Git/usr/bin/openssl.exe`; arbitrary PATH lookup is unavailable.
+Tool profile, binary SHA and version are recorded in JUnit. The
 reviewed local tool is OpenSSL 3.5.7, SHA256
 `822034da8a01558c17cbe53f42f33985a6eaf7c89e21273779f9c6560d8c4d78`.
 Other hosts record their own tool profile; an absent CLI is an explicit native
-test skip/incomplete profile, never a borrowed acceptance. No key or certificate
+test skip/incomplete profile on POSIX; Windows requires one of the fixed tools
+and fails if neither exists. No key or certificate
 is committed or included in evidence reports.
 
 Local Windows native results do not establish Linux/uvloop, PostgreSQL,

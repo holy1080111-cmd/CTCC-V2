@@ -23,7 +23,10 @@ from anyio._backends._asyncio import AsyncIOBackend
 from app.exchange.okx import owned_write_seams_v1 as seams
 from app.trade_qualification.dispatch_ownership import DispatchOwnership, DispatchSlot
 
-WINDOWS_OPENSSL = Path("C:/Program Files/Git/mingw64/bin/openssl.exe")
+WINDOWS_OPENSSL_PATHS = (
+    Path("C:/Program Files/Git/mingw64/bin/openssl.exe"),
+    Path("C:/Program Files/Git/usr/bin/openssl.exe"),
+)
 WINDOWS_OPENSSL_SHA = "822034da8a01558c17cbe53f42f33985a6eaf7c89e21273779f9c6560d8c4d78"
 
 
@@ -31,7 +34,10 @@ WINDOWS_OPENSSL_SHA = "822034da8a01558c17cbe53f42f33985a6eaf7c89e21273779f9c6560
 def tls_contexts(tmp_path_factory, record_testsuite_property):
     """An ephemeral test key/cert; no custom crypto or system certificate store."""
     if os.name == "nt":
-        binary = WINDOWS_OPENSSL
+        binary = next((path for path in WINDOWS_OPENSSL_PATHS if path.is_file()), None)
+        assert binary is not None, "native_loopback_git_openssl_required"
+        assert not binary.is_symlink()
+        binary = binary.resolve(strict=True)
     else:
         located = shutil.which("openssl")
         if located is None:
@@ -67,6 +73,10 @@ def tls_contexts(tmp_path_factory, record_testsuite_property):
         tool_sha = hashlib.sha256(binary.read_bytes()).hexdigest()
         record_testsuite_property("localhost_certificate_tool_sha256", tool_sha)
         record_testsuite_property("localhost_certificate_tool_version", safe_version)
+        record_testsuite_property(
+            "localhost_certificate_tool_profile",
+            "git-" + binary.parent.parent.name if os.name == "nt" else "native-posix",
+        )
         record_testsuite_property(
             "reviewed_local_Windows_tool_profile",
             os.name == "nt" and tool_sha == WINDOWS_OPENSSL_SHA,
