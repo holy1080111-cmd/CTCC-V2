@@ -705,3 +705,37 @@ def consume_owned_current_demo_account_v4(source):
         )
     except Exception:  # noqa: BLE001 -- burned owner stays burned on any failure
         raise CurrentAccountSourceV4Error("account_v4_consumption_failed") from None
+
+
+def _take_original_frame_v1(source, *, key):
+    """Burn the original native owner; no DTO or saved bundle is accepted."""
+    from app.trade_qualification.owned_current_original_frame_v1 import _HOOK_KEY
+
+    if key is not _HOOK_KEY:
+        _deny("account_v4_original_frame_required")
+    state = (
+        _CURRENT.pop(source, None)
+        if type(source) is OwnedCurrentDemoAccountSourceV4
+        else None
+    )
+    if state is None:
+        _deny()
+    _replay_original_frame_v1(state, key=key)
+    return state
+
+
+def _replay_original_frame_v1(state, *, key):
+    """Recheck the held original account at a new native clock, without IO."""
+    from app.trade_qualification.owned_current_original_frame_v1 import _HOOK_KEY
+
+    if key is not _HOOK_KEY:
+        _deny("account_v4_original_frame_required")
+    _check_owner(state)
+    now = native_stamp()
+    validate_stamps((state["last"], now))
+    replay = replay_current_account_bundle_v4(
+        state["bundle_raw"], expected_sha256=state["bundle_sha256"]
+    )
+    _check_current(replay, now)
+    state["last"] = now
+    return replay, now

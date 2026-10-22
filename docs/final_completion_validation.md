@@ -1,5 +1,35 @@
 # Final completion validation state
 
+## 2026-10-22 private current original-input frame integration
+
+The additive opt-in [current original-input frame](owned_current_original_frame_v1.md)
+uses two distinct unused V4 source sessions from the same current pinned Demo
+read lease. Private one-use hooks move the original public and account owners;
+retained raw evidence, G1 and the fixed original precursor are replayed before
+the internal handoff. Capture and consume claims remain burned on failure or
+cancellation. Saved bundles and ordinary DTOs cannot mint a replacement owner.
+Existing V4 public APIs, policy, expiry, native freshness and production `DENY`
+remain unchanged. No G12, reservation, intent, submission or default wiring is added.
+
+The five-file component freeze is
+`9dc2af7dba5362bb65f9822fa3d606c14ddc38a3c4bd8e6fc1366e866f070e26`;
+independent review
+`242228b9eca93895cb2e3278a8304cbecc9cf542f3c28cca0085d97bb6aeda32`
+permits component source integration only. Its earlier 24 synthetic cases
+retain their own exact-source receipts and are not a full regression for this
+combined source. Integration validation runs only the final V6 module, the
+frame positive path and the explicit public-source consumer architecture case.
+Their new results are recorded separately outside source.
+
+Native completion within the original five-second source freshness budget is
+unmeasured. Slow real acquisition or replay must reject without refresh or
+extension. Explicit close, failure and consume discard local claims; no prompt
+garbage-collection cleanup guarantee is made while a task result or traceback
+retains a strong reference. Complete account history/revision, final R7,
+Gate3/PIT/OOS, actual native TLS/clock/PostgreSQL, Demo, Live, new matching CI,
+engineering completion and final completion remain unearned by this integration.
+
+
 ## 2026-10-22 V6 original Stage1 failure-retention component
 
 The separate opt-in [V6 retention component](mie_stage1_original_retention_v6.md)
