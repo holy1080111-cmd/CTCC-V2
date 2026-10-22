@@ -160,6 +160,18 @@ async def acquire_native_post_read_clock_v4(
     expected_plan_sha256: str,
     observation_repository,
 ) -> NativePostReadClockSampleV4:
+    """Original V4 API: fixed driver without a retention owner or new authority."""
+    return await _acquire_native_post_read_clock(
+        service=service,
+        source=source,
+        expected_plan_sha256=expected_plan_sha256,
+        observation_repository=observation_repository,
+    )
+
+
+async def _acquire_native_post_read_clock(
+    *, service, source, expected_plan_sha256, observation_repository, _retention=None
+) -> NativePostReadClockSampleV4:
     """Burn native V3 input, exact-read DB0035, sample once, issue internal token.
 
     No retries, writes, environment/settings reads or caller SQL/native provider.
@@ -175,6 +187,11 @@ async def acquire_native_post_read_clock_v4(
     # The native input is consumed before any DB/native-health await or I/O here.
     frozen = _CONSUME_SOURCE(service, source, expected_plan_sha256=expected_plan_sha256)
     try:
+        retained = None
+        if _retention is not None:
+            from app.mie.validation import native_stage1_forensics_v6 as retained
+
+            retained.start(_retention, service, frozen)
         context = _owner()
         _require(os.name == "nt" and type(frozen) is FrozenGate3Artifact)
         recorded = _verify(
@@ -191,6 +208,8 @@ async def acquire_native_post_read_clock_v4(
             _require(_owner() == context)
             _source_database_pins(service._repository, observation_repository, original)
             _source_database_pins(witness, observation, private)
+            if retained is not None:
+                retained.require_live(_retention)
             if session is not None:
                 engine = private.engines[0 if witness_session else 1]
                 _require(
@@ -207,9 +226,19 @@ async def acquire_native_post_read_clock_v4(
             recheck(session, witness_session=witness_session)
             return result
 
-        before = _health()
+        if retained is None:
+            before = _health()
+        else:
+            retained.phase(_retention, "health_before")
+            raw = native_clock._native_observation_payload()
+            retained.health(_retention, "before", raw)
+            before = NativePostReadHealthV4(
+                raw_base64=base64.b64encode(raw).decode("ascii"), raw_sha256=sha(raw)
+            )
         recheck()
         expected = recorded.post_read_observation
+        if retained is not None:
+            retained.phase(_retention, "witness")
         async with (
             witness.session_factory() as witness_session,
             witness_session.begin(),
@@ -250,9 +279,13 @@ async def acquire_native_post_read_clock_v4(
             recheck(session)
             await observation._role_guard(session)
             recheck(session)
+            if retained is not None:
+                retained.phase(_retention, "identity")
             identity = PostReadDatabaseIdentityV4.model_validate(
                 _one_mapping(await execute(session, _IDENTITY_SQL))
             )
+            if retained is not None:
+                retained.phase(_retention, "observation")
             row = PostReadObservationV3.model_validate(
                 _one_mapping(
                     await execute(
@@ -268,20 +301,70 @@ async def acquire_native_post_read_clock_v4(
             _require(row == expected)
             readback_completed = _stamp()
             recheck(session)
-            stamp_a = _stamp()
-            # Fixed actual SQL only. Materialize completely and immediately stamp
-            # B, with no caller callback or additional await after result return.
-            returned = await session.execute(_SAMPLE_SQL)
-            sampled_row = _one_mapping(returned)
-            stamp_b = _stamp()
+            if retained is None:
+                stamp_a = _stamp()
+                # Preserve the original unretained V4 path exactly.
+                returned = await session.execute(_SAMPLE_SQL)
+                sampled_row = _one_mapping(returned)
+                stamp_b = _stamp()
+            else:
+                retained.phase(_retention, "sample_a")
+                stamp_a = stamp_b = sampled_rows = None
+                sql_requested = execute_returned = materialized = False
+                sample_phase, failure = "sample_a", None
+                try:
+                    stamp_a = _stamp()
+                    sample_phase = "sample_sql"
+                    sql_requested = True
+                    returned = await session.execute(_SAMPLE_SQL)
+                    execute_returned = True
+                    sample_phase = "sample_materialize"
+                    sampled_rows = tuple(returned.mappings().fetchmany(2))
+                    materialized = True
+                    sample_phase = "sample_b"
+                    stamp_b = _stamp()
+                    sample_phase = "sample_retained"
+                except BaseException as exc:  # noqa: BLE001 - Held only in memory, never serialized.
+                    failure = exc
+                # No filesystem action, recheck, callback or extra await occurs
+                # between A, fixed SQL, bounded materialization and the B attempt.
+                try:
+                    retained.sample(
+                        _retention,
+                        before=stamp_a,
+                        after=stamp_b,
+                        rows=sampled_rows,
+                        sql_requested=sql_requested,
+                        execute_returned=execute_returned,
+                        materialized=materialized,
+                        failed_phase=sample_phase,
+                    )
+                except Exception:
+                    if isinstance(failure, asyncio.CancelledError):
+                        raise failure
+                    raise
+                if failure is not None:
+                    raise failure
+                retained.require_native_sample_shape(sampled_rows)
+                sampled_row = dict(sampled_rows[0])
             recheck(session)
             sampled_at = sampled_row.pop("sampled_at")
             current_identity = PostReadDatabaseIdentityV4.model_validate(sampled_row)
             _require(current_identity == identity)
         recheck()
-        after = _health()
+        if retained is None:
+            after = _health()
+        else:
+            retained.phase(_retention, "health_after")
+            raw = native_clock._native_observation_payload()
+            retained.health(_retention, "after", raw)
+            after = NativePostReadHealthV4(
+                raw_base64=base64.b64encode(raw).decode("ascii"), raw_sha256=sha(raw)
+            )
         recheck()
         completed = _stamp()
+        if retained is not None:
+            retained.phase(_retention, "contract")
         contract = PostPublicationClockEvidenceV4(
             source_v3=recorded,
             source_v3_sha256=frozen.sha256,
@@ -298,13 +381,29 @@ async def acquire_native_post_read_clock_v4(
         sealed = _freeze(contract, contract_type=PostPublicationClockEvidenceV4)
         replay_post_read_clock_v4(sealed.payload, expected_sha256=sealed.sha256)
         recheck()
+        if retained is not None:
+            retained.completed(_retention, sealed.sha256)
         result = NativePostReadClockSampleV4(_ISSUER)
         with _LOCK:
             _RESULTS[result] = (context, sealed)
         return result
     except asyncio.CancelledError:
+        if _retention is not None:
+            try:
+                from app.mie.validation import native_stage1_forensics_v6
+
+                native_stage1_forensics_v6.failed(_retention, cancelled=True)
+            except Exception:  # noqa: BLE001, S110 - Preserve original cancellation and all partial bytes.
+                pass
         raise
     except Exception:  # noqa: BLE001 - Only fixed codes leave native/DB acquisition.
+        if _retention is not None:
+            try:
+                from app.mie.validation import native_stage1_forensics_v6
+
+                native_stage1_forensics_v6.failed(_retention, cancelled=False)
+            except Exception:  # noqa: BLE001, S110 - Never retry an uncertain publication.
+                pass
         raise NativePostReadClockError(
             "native_post_read_clock_acquisition_failed"
         ) from None

@@ -1,5 +1,35 @@
 # Final completion validation state
 
+## 2026-10-22 V6 original Stage1 failure-retention component
+
+The separate opt-in [V6 retention component](mie_stage1_original_retention_v6.md)
+retains original bounded Stage1 health bytes before validation and typed SQL
+sample operands after the fixed A/SQL/materialization/B interval. Missing,
+unsupported, cancelled and failed observations remain explicit. Late flush or
+publication failure preserves the claim, original files and journal; replaying
+saved completed-calculation bytes cannot issue a capability or resume an attempt.
+Successful V6 bundles bind the exact original transcript into the existing
+DB0046 custody/readback path. V5 saved contracts and production wiring are unchanged.
+
+The final nine-file component freeze is
+`47ac4fbc94f256b9cf4e0307c76fba90a9626b43f76e48705936aaacb0e440ad`.
+Independent source review
+`330ccd41d7a0a50d0152865389de1146b14cf77fac02d113da7fcc3efd03c04b`
+accepted component integration only. The final V6 synthetic module executed
+36 cases with zero skips and exit code 0 in 21.328 seconds. Separate retained
+V4 and V5 regression cohorts executed 39 and 64 cases; their per-run source
+pins remain explicit, and they are not a full regression for the new source.
+An independent AST derivation verifies the unchanged effective unretained V4
+driver, public signature and all other original V4 module nodes.
+
+The broader architecture selection reached its 60-second limit and remains
+unaccepted; its parent timeout does not prove transitive child termination.
+Failed and timed-out attempts remain retained. This integration envelope adds
+no real native-clock, PostgreSQL, source, CI, Gate3/OOS, Demo or Live acceptance.
+Real native V6 acceptance and a new committed-source matching CI run are pending.
+The older V5 failure-retention gap remains explicit for V5. Engineering completion,
+Micro Live readiness and final completion remain zero.
+
 ## 2026-10-22 strict test classification and collection repair
 
 The exact `c33270a4876161c19afcf89bf963fef0960afeea`
