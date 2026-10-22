@@ -1,5 +1,36 @@
 # Final completion validation state
 
+## 2026-10-22 strict test classification and collection repair
+
+The exact `c33270a4876161c19afcf89bf963fef0960afeea`
+[full CI run 39710045611](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/39710045611)
+failed and remains unaccepted. Windows correctly rejected the new integration
+module because it was missing from its explicit PostgreSQL classification.
+Linux and the PostgreSQL component stopped during pytest collection because
+the new unit and integration modules shared the same unqualified basename.
+Official server-digested artifacts retain the exact source and collection
+errors; the 12 new PostgreSQL test cases did not execute. Earlier successful
+preflights cannot substitute for those cases.
+
+The integration module now has the unique basename
+`test_public_receipt_clock_custody_repository_v1.py`. Its bytes are unchanged.
+Both Linux and Windows explicitly classify that module for PostgreSQL. Strict
+unknown-module denial, distinct module names, existing pytest import behavior,
+source-bound case inventories and execution requirements remain in force.
+No cache deletion or broad platform skip is part of this repair.
+
+A bounded local reproduction retained the original collection exit code 2.
+After the repair, actual collection completed with 122 unique cases, including
+12 PostgreSQL cases collected without executing their fixtures. Four existing
+classification, distinct-name and routing regression tests passed without
+skips; native exit codes, source pins, collection and JUnit are retained in
+receipt `00cdcd6f1050cf711b33596c5a542b5b4566771e736c688423312eecda2c4357`.
+The previous 211-case component run still applies to its unchanged component
+bytes; it is not a new full regression for this repair. New matching CI is
+required. Canonical remains the independently validated `52a4b1c` baseline.
+Dependencies, migration `0047`, production denials and all three zero
+completion/readiness flags remain unchanged.
+
 ## 2026-10-22 native availability and Windows TLS fixture repair
 
 The exact `52a4b1c2510356f5c2cc4091a4c4b36930cede5d` full
