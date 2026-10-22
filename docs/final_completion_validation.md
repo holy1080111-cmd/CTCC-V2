@@ -1,5 +1,55 @@
 # Final completion validation state
 
+## 2026-10-22 verified 4f21 baseline and isolated original prefix integration
+
+The exact `4f21e104f505a89d50f0257d80b37f7cc480daba` source and
+[full CI run 39723366642](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/39723366642)
+were independently read back: all 19 official server-digested ZIPs, source
+archives, raw stage logs, actual case inventories and JUnit were verified.
+Linux recorded 17,359 passed and 77 skipped cases (17,436 total), including
+491 PostgreSQL cases with zero skips; PostgreSQL is not added a second time.
+Windows recorded 16,911 passed and 29 skipped cases (16,940 total).
+Independent CI closure is
+`0224a9003affd0ed8c5d9a94c964aeb64d9f0e2f0b0b707be058a976419d1c22`.
+The source-only canonical fast-forward receipt is
+`e5b444837a3169b0ff45bf65dd5edee8747582f7e5fb9ee8d8fb5f63e0a00bcb`,
+with independent post-promotion readback
+`7b20c7248dec202cf26aca1aee096271fa09f265a6e654027d76067097b219da`.
+This accepts that exact engineering baseline, not actual market availability,
+Gate3/PIT/OOS, account completeness, Demo, Live, release or profit claims.
+No deployment/runtime, main, release, credentials or order state was changed.
+
+The new opt-in [original base G1–G5 prefix](owned_current_original_prefix_v1.md)
+consumes only a live current original frame, reuses the existing shared gate
+math, and preserves original entry/event/zone/expiry and native freshness.
+A successful one-use internal prefix remains uncalibrated and cannot publish
+an account revision, G12, reservation, intent or order authority. All complete
+history/risk/calibration dependencies after G5 remain explicitly unavailable.
+The four-file component freeze is
+`470ebbcbcc3a3cf8506b035858e5c7797e2a5c04db1a7fa58d7f03bf05b119ac`;
+independent source integration review is
+`e56f4bbd988bdec6b53ef32c5b48241758b51dcbc53d9f4bc430c51d35e232d5`.
+
+Local evidence is five unique scoped component cases across explicit test-only
+versions: one full synthetic-provider flow passed at unit bytes `6ee2879e...`,
+and four capture-free API/opaque rejection cases passed at final unit bytes
+`a8c861ca...`. The positive function and production bytes are unchanged between
+those versions. The two readbacks are
+`847c850f7f6019a5b1cdb6ecafb7efe99a420ef5a1272fe61ffba99513742854`
+and `a9771b1683a88fa2b6c18389131cf3ec2577527f0e63df853b83ea8d61b9f542`.
+There is no local full-module pass: 27 cases are estimated from AST only,
+without collection; the other 22 cases await final exact-commit remote CI.
+The earlier missing-intent failure and 60-second timeout remain preserved.
+The later diagnostic passed once in 57.954 seconds; it does not resolve the
+prior timeout or prove reliable 60-second or real native five-second completion.
+No expiry, source policy, score, risk limit or timeout was increased.
+
+This isolated integration requires its own exact source checkpoint and matching
+full CI. Prior 4f21 CI and scoped component results cannot qualify the new source.
+Engineering completion, Micro Live readiness and final completion remain zero.
+Older sections below retain the states and limits recorded at their own source
+checkpoints; this section records the later source-only baseline promotion.
+
 ## 2026-10-22 private current original-input frame integration
 
 The additive opt-in [current original-input frame](owned_current_original_frame_v1.md)

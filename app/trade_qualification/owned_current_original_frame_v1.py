@@ -521,3 +521,83 @@ def consume_current_original_inputs_v1(frame):
         raise CurrentOriginalFrameError("current_original_frame_unavailable") from None
     finally:
         _release(state)
+
+
+def _base_prefix_key_v1(key):
+    from app.trade_qualification.owned_current_original_prefix_v1 import _FRAME_KEY
+
+    if key is not _FRAME_KEY:
+        _deny()
+
+
+def _take_original_base_prefix_v1(frame, *, key):
+    """Move, never copy, the original frame into its fixed private continuation."""
+    _base_prefix_key_v1(key)
+    state = (
+        _FRAMES.pop(frame, None) if type(frame) is OwnedCurrentOriginalFrameV1 else None
+    )
+    if state is None:
+        _deny()
+    try:
+        return state, _replay(state)
+    except BaseException:
+        _release(state)
+        raise
+
+
+def _replay_original_base_prefix_v1(state, *, key):
+    _base_prefix_key_v1(key)
+    return _replay(state)
+
+
+def _check_original_base_prefix_v1(state, replay, *, key):
+    """Check current native ownership/freshness after math, without refreshing IO.
+
+    The raw inputs were independently replayed by the preceding private hook.
+    Compare the retained original bytes/pins and recheck the original owners at
+    the later native stamp. This does not repeat identical G1/precursor math.
+    """
+    _base_prefix_key_v1(key)
+    _context(state)
+    _check_database(state)
+    if _source_pins(state) != state["source_pins"] or any(
+        capture.plan_sha256(session._plan) != pin
+        for session, pin in zip(state["sessions"], state["plan_pins"], strict=True)
+    ):
+        _deny()
+    public, private, _, g1, original, created, deadline = replay
+    if (
+        created != state["created_at"]
+        or deadline != state["deadline"]
+        or market.data._canonical(g1) != state["g1_raw"]
+        or original.receipt_json != state["precursor_raw"]
+        or original.intent is None
+    ):
+        _deny()
+    market._check_owner(state["market_state"])
+    market.operational._owned_route_state_v4(
+        state["market_state"]["v4_route_claim"],
+        invocation=state["market_state"]["invocation"],
+        owner_task=state["market_state"]["parent"],
+    )
+    account._check_owner(state["account_state"])
+    now = native_stamp()
+    validate_stamps(
+        (state["market_state"]["last"], state["account_state"]["last"], now)
+    )
+    at = utc_from_ns(now["utc_ns"])
+    if at >= min(deadline, original.intent.expires_at):
+        _deny()
+    market.public_market_context_v2(
+        public, expected_bundle_sha256=public.bundle_sha256, evaluated_at=at
+    )
+    account._check_current(private, now)
+    state["market_state"]["last"] = now
+    state["account_state"]["last"] = now
+    _context(state)
+    _check_database(state)
+
+
+def _release_original_base_prefix_v1(state, *, key):
+    _base_prefix_key_v1(key)
+    _release(state)
