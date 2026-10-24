@@ -7,6 +7,7 @@ leaves its explicitly synthetic records in that database; no deployed fallback.
 import asyncio
 import hashlib
 import json
+from contextlib import AsyncExitStack
 from datetime import datetime, timedelta
 from decimal import Decimal
 from uuid import uuid4
@@ -56,6 +57,12 @@ from tests.integration.test_qualification_ledger_repository import (
 )
 from tests.integration.test_qualification_ledger_repository import (
     initialize,
+)
+from tests.original_account_tls_fixture import (
+    shared_history_original_tls_contexts as shared_history_original_tls_contexts,  # noqa: PLC0414 -- explicit test-only TLS fixture.
+)
+from tests.original_account_tls_fixture import (
+    shared_history_original_tls_harness,
 )
 from tests.unit.research.test_demo_session_route_preflight import _client
 from tests.unit.test_demo_control import PINS
@@ -900,7 +907,9 @@ async def test_local_read_includes_other_currency_expired_holds_and_consumed_int
     ].state == "consumed"
 
 
-async def _capture_shared_history_v5(monkeypatch, repository, scope):
+async def _capture_shared_history_v5(
+    monkeypatch, repository, scope, *, original_tls=None
+):
     """Acquire new original V5 bytes through MockTransport and real B1 SQL."""
     from app.trade_qualification import account_bootstrap_runtime as bootstrap
     from app.trade_qualification import account_capture as capture
@@ -935,31 +944,45 @@ async def _capture_shared_history_v5(monkeypatch, repository, scope):
             }
         return value
 
-    harness = Harness(monkeypatch, change=lambda stream, index, data: shift(data))
-    harness.script = all_product.script(source=source_pages())
-    harness.clock = now
-    selected = all_product.plan(
-        expected_uid=scope.account_id,
-        created_at=anchor,
-        history_start=anchor - timedelta(days=7),
-        history_end=anchor - timedelta(seconds=1),
-    )
-    assert type(selected) is capture.AllProductDemoAccountCapturePlan
-    session = ControlledDemoAccountSession(
-        credentials=credentials(),
-        plan=selected,
-        expected_plan_sha256=capture.plan_sha256(selected),
-    )
-    try:
-        result = await bootstrap.collect_bootstrap_query_verified(
-            session,
-            repository=repository.journal.ledger,
-            journal_repository=repository.journal,
-            clock=now,
-            barrier_completed_at=anchor - timedelta(seconds=2),
+    async with AsyncExitStack() as stack:
+        if original_tls is None:
+            harness = Harness(
+                monkeypatch, change=lambda stream, index, data: shift(data)
+            )
+        else:
+            harness = await stack.enter_async_context(
+                shared_history_original_tls_harness(
+                    monkeypatch,
+                    original_tls,
+                    change=lambda stream, index, data: shift(data),
+                )
+            )
+            assert harness.classification == "controlled_local_TLS_synthetic_account"
+            assert harness.native_acceptance is harness.execution_authority is False
+        harness.script = all_product.script(source=source_pages())
+        harness.clock = now
+        selected = all_product.plan(
+            expected_uid=scope.account_id,
+            created_at=anchor,
+            history_start=anchor - timedelta(days=7),
+            history_end=anchor - timedelta(seconds=1),
         )
-    finally:
-        harness.assert_closed()
+        assert type(selected) is capture.AllProductDemoAccountCapturePlan
+        session = ControlledDemoAccountSession(
+            credentials=credentials(),
+            plan=selected,
+            expected_plan_sha256=capture.plan_sha256(selected),
+        )
+        try:
+            result = await bootstrap.collect_bootstrap_query_verified(
+                session,
+                repository=repository.journal.ledger,
+                journal_repository=repository.journal,
+                clock=now,
+                barrier_completed_at=anchor - timedelta(seconds=2),
+            )
+        finally:
+            harness.assert_closed()
     packet = result.recorded.bootstrap.packet
     assert type(packet.plan) is capture.AllProductDemoAccountCapturePlan
     assert (
@@ -970,7 +993,11 @@ async def _capture_shared_history_v5(monkeypatch, repository, scope):
         tuple(dict.fromkeys(point.request.stream for point in packet.observations))
         == capture.V5_STREAMS
     )
-    assert result.recorded.bootstrap.transport_provenance == "synthetic_transport"
+    assert result.recorded.bootstrap.transport_provenance == (
+        "synthetic_transport" if original_tls is None else "owned_signed_verified_tls"
+    )
+    # The unchanged collector measured real local TLS. Rows, credentials and
+    # account identity are test inputs; this is never actual OKX acceptance.
     assert result.account_complete is result.execution_authority is False
     chain = await repository.journal.read_chain(
         scope, json.loads(result.receipt_json)["capture_id"]
@@ -987,14 +1014,16 @@ async def _capture_shared_history_v5(monkeypatch, repository, scope):
     )
 
 
-async def _stored_shared_history_v5(monkeypatch, database):
+async def _stored_shared_history_v5(monkeypatch, database, *, original_tls=None):
     """Create a fresh UID/source population without changing legacy fixtures."""
     uid = f"123456789{uuid4().int % 10**12:012d}"
     scope = LedgerScope(account_id=uid, settlement_currency="USDT")
     repository = AccountObservationIndexRepository(database[1], clock=now)
     before = await repository.journal.ledger.initialize_capture_scope(scope)
     assert before.state.account_revision == 0
-    reference, window = await _capture_shared_history_v5(monkeypatch, repository, scope)
+    reference, window = await _capture_shared_history_v5(
+        monkeypatch, repository, scope, original_tls=original_tls
+    )
     first = await repository.append(scope, reference, window, expected_revision=0)
     assert (
         await repository.journal.ledger.read_bootstrap_checkpoint(scope)
@@ -1031,15 +1060,18 @@ async def _read_shared_history_population(repository, scope, reference):
 
 
 async def test_shared_history_population_replays_full_committed_prefix_without_owner(
-    monkeypatch, database
+    monkeypatch, database, shared_history_original_tls_contexts
 ):
     """Shared full-prefix SQL mechanics; synthetic source, no opaque handoff."""
     repository, scope, first_ref, _, first = await _stored_shared_history_v5(
-        monkeypatch, database
+        monkeypatch, database, original_tls=shared_history_original_tls_contexts
     )
     first_chain = await repository.journal.read_chain(scope, first_ref.capture_id)
     second_ref, second_window = await _capture_shared_history_v5(
-        monkeypatch, repository, scope
+        monkeypatch,
+        repository,
+        scope,
+        original_tls=shared_history_original_tls_contexts,
     )
     assert second_ref.capture_id != first_ref.capture_id
     second = await repository.append(
@@ -1072,21 +1104,27 @@ async def test_shared_history_population_replays_full_committed_prefix_without_o
 
 
 async def test_shared_history_late_head_race_denies_and_retains_original_prefix(
-    monkeypatch, database
+    monkeypatch, database, shared_history_original_tls_contexts
 ):
     """An actual third commit during replay cannot be accepted as the old head."""
     repository, scope, first_ref, _, first = await _stored_shared_history_v5(
-        monkeypatch, database
+        monkeypatch, database, original_tls=shared_history_original_tls_contexts
     )
     second_ref, second_window = await _capture_shared_history_v5(
-        monkeypatch, repository, scope
+        monkeypatch,
+        repository,
+        scope,
+        original_tls=shared_history_original_tls_contexts,
     )
     second = await repository.append(
         scope, second_ref, second_window, expected_revision=1
     )
     original_chain = await repository.journal.read_chain(scope, first_ref.capture_id)
     third_ref, third_window = await _capture_shared_history_v5(
-        monkeypatch, repository, scope
+        monkeypatch,
+        repository,
+        scope,
+        original_tls=shared_history_original_tls_contexts,
     )
     assert len({first_ref.capture_id, second_ref.capture_id, third_ref.capture_id}) == 3
     reader = AccountObservationIndexRepository(database[1], clock=now)
@@ -1335,3 +1373,36 @@ async def test_actual_admin_catalog_cannot_certify_native_coverage_or_erase_sour
         (point.event, point.db_recorded_at)
         for point in await repository.journal.read_chain(scope, reference.capture_id)
     ]
+
+
+async def test_shared_history_v5_synthetic_transport_still_denies_and_retains_prefix(
+    monkeypatch, database
+):
+    """V5 JSON alone cannot repair original TLS provenance or issue authority."""
+    repository, scope, reference, _, first = await _stored_shared_history_v5(
+        monkeypatch, database
+    )
+    original_chain = await repository.journal.read_chain(scope, reference.capture_id)
+    owners, financial = tuple(history_source._OWNERS), tuple(history_source._FINANCIAL)
+    with pytest.raises(
+        history_source.proof.NativeAccountProofError,
+        match="^native_account_original_tls_required$",
+    ):
+        await _read_shared_history_population(
+            AccountObservationIndexRepository(database[1], clock=now), scope, reference
+        )
+    retained = await repository.journal.read_chain(scope, reference.capture_id)
+    assert [(p.event, p.db_recorded_at) for p in retained] == [
+        (p.event, p.db_recorded_at) for p in original_chain
+    ]
+    assert await AccountObservationIndexRepository(database[1], clock=now).read(
+        scope
+    ) == (first,)
+    assert (
+        await repository.journal.ledger.read_bootstrap_checkpoint(scope)
+    ).state.account_revision == 0
+    assert (
+        tuple(history_source._OWNERS) == owners
+        and tuple(history_source._FINANCIAL) == financial
+    )
+    assert first.execution_authority is False
