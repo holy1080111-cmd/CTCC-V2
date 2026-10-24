@@ -28,9 +28,20 @@ transitions, and keeps a one-use native fact separate from trading authority.
 No runtime database or deployment has been changed. The first isolated CI run
 for draft `d8fcc82` passed its migration smoke stages but failed before saving
 the actual catalog: its AsyncConnection was passed to a reader expecting
-AsyncSession.get_bind(). The interface correction needs targeted tests and a
-new exact-source run. The PG17 catalog baseline remains pending and denies
-native positive acceptance.
+AsyncSession.get_bind(). The correction in `585bd55` passed 88 local synthetic
+cases with zero skips. Its real PG17.11 catalog was then captured in CI
+`40070249709`; the next schema gate failed because it omitted the two actual
+constraint-trigger rows. Independent review also found string OID output at
+eight SQL projection sites despite the existing strict integer consumers.
+The new draft corrects those producer projections and the exact 22-constraint
+inventory. The genuine constraint/index projection was independently reviewed
+and explicitly sealed in source as
+`59c771896d4b7ea6b5e77f420fd0d242fdd13429a7ad0f0118c905cdd80e55e6`.
+Fresh numeric capture, restricted-role admission and matching full-source
+Windows/Linux/PostgreSQL acceptance remain pending; the admin observation is
+not execution authority. The older Windows shard also had 13 shared TLS setup
+errors from an OpenSSL version subprocess exceeding three seconds. Its deeper
+delay cause remains unknown; its timeout and safety checks were not relaxed.
 Bounded synthetic unit checks and ten targeted Linux-union fixture checks have
 passed on separately recorded draft identities. A local full 119-case cohort
 timed out and is incomplete; matching full CI for the new source is required.

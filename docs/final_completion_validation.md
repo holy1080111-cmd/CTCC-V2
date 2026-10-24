@@ -1,5 +1,66 @@
 # Final completion validation state
 
+## 2026-10-24 actual DB0048 catalog review and pending corrected-source regression
+
+The `585bd55102fd9c09e59a8d79c9b0414d0456316e` correction, tree
+`176bd89ee6cc406ce1748e7d42268da22254d6b7`, manifest
+`3e461c0d9d491f7c902515c731361c0a0c9671061d6ba3cd3475ede963d46ef2`,
+passed 54 migration/catalog and 34 controlled-boundary local synthetic cases,
+with 88 unique passes and no skips. The scoped lint, format and runtime lock
+checks passed. These observations do not establish native or full CI acceptance.
+
+[CI 40070249709](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/40070249709)
+successfully saved the real read-only REPEATABLE READ PostgreSQL 17.11 admin
+catalog before its next formal schema gate failed with
+`controlled_writer_coverage_constraint_drift`. Official artifact `12551315885`
+has ZIP SHA256
+`15f6ecb0b4bc2ab9bfbc97083d176502b56eeb5b80224089b923ecc12c076e38`.
+Raw catalog SHA256 is
+`ae1f16239950ea560bb3d2b04c15c3240b50db58634e3bc46874585975e2d68f`;
+diagnostic receipt
+`90ce42aa976f271bc1c79f9530945ce14842674f8ad551d0f88049db9ddd4fdf`
+binds the official archive, all 1,343 Git source blobs/modes, 1,342 manifest
+rows and Docker COPY. The raw observation was not normalized or rewritten.
+
+The genuine inventory has 27 columns, 22 constraints, seven indexes, six
+functions and eight triggers. The missing two constraints are the exact
+source-declared deferred pair triggers. All 20 ordinary constraints remain
+required; duplicate, missing, extra, retyped or malformed constraints are denied.
+Review also observed 39 string OID values across eight producer projection
+sites. Existing strict integer identity checks would reject those values after
+the earlier inventory defect was corrected. This is a producer/consumer defect
+identified from the actual raw values, not a claimed later executed failure.
+The producer now uses explicit bigint casts; raw evidence and integer guards
+remain unchanged. The existing real-PG catalog test checks all 39 actual values.
+
+The ordered constraint/index projection was independently reviewed against the
+source declarations and explicitly sealed as
+`59c771896d4b7ea6b5e77f420fd0d242fdd13429a7ad0f0118c905cdd80e55e6`.
+Root and independent semantic receipts are respectively
+`46253c5cc9bebed91c9ef5eb602d66f0ec9aa2d3d9b8a4832ff14089e90ed096`
+and `6dfb1c6b04f3278a434480b8566de988508ae2901ebe7b6498260451604ade5f`.
+The query changes do not change that projection, DDL or function bodies. Admin
+capture is not restricted runtime-role proof. Direct constraint-to-trigger OID
+links and external FK namespace OIDs were not exported and are not claimed.
+The final corrected source still requires numeric capture readback, complete
+PostgreSQL integration, migration/restart and Windows/Linux regression. No
+checks or overall acceptance flags are advanced by the literal seal.
+
+Separately, old `d8fcc82` Windows shard 7 recorded 1,461 passes and 13 setup
+errors, with zero skips. All errors share the TLS fixture's first OpenSSL
+version subprocess exceeding its three-second limit; the underlying delay is
+unknown. Source-bound diagnostic
+`375402066045a07354c32d7e096fcdab32939e2bf65339d00cf8de4ed1fc7ecb`
+retains the actual failure. No timeout increase, helper substitution or skip
+was applied. The newer shard was still running at its last observation.
+
+Canonical remains accepted `5c940d1` with source migration `0047`; the new
+`0048` source is isolated and unaccepted. Main, release and runtime deployment
+are unchanged. Exchange writes, Arm, Live and runtime outbox remain disabled;
+all engineering-complete, final-complete and Micro-Live-ready flags are zero.
+Earlier pending-baseline paragraphs below describe their historical checkpoint
+and are superseded only for this explicitly reviewed source literal.
+
 ## 2026-10-24 first DB0048 native catalog run: actual adapter failure
 
 The isolated draft was committed as

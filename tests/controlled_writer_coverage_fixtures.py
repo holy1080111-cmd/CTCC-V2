@@ -10,6 +10,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import text
 
 from app.database.repositories.controlled_writer_coverage import (
+    COVERAGE_TRIGGER_SPECS,
     EVENT_SCHEMA,
     FALSE_AUTHORITY_FIELDS,
     STATE_FIELDS,
@@ -354,3 +355,28 @@ def coverage_observation_fixture(
         else row(previous_terminal_anchor),
     }
     return _observation(ControlScope("demo", state["account_id"]), snapshot)
+
+
+def coverage_constraint_trigger_catalog_rows_fixture():
+    """Synthetic pair rows only, never an actual PG read or native baseline.
+
+    The small structural values follow the separately reviewed PG17 observation;
+    constructing these records does not provide catalog or role provenance.
+    """
+    return [
+        {
+            "table": table,
+            "name": name,
+            "kind": "t",
+            "validated": True,
+            "deferrable": True,
+            "deferred": True,
+            "columns": None,
+            "target": None,
+            "target_columns": None,
+            "definition": "TRIGGER DEFERRABLE INITIALLY DEFERRED",
+            "delete_action": " ",
+        }
+        for name, table, _events, _level, _function, deferred in COVERAGE_TRIGGER_SPECS
+        if deferred
+    ]

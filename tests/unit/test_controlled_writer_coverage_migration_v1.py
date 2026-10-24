@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession, create_async_engine
 from sqlalchemy.ext.asyncio.exc import AsyncContextNotStarted
@@ -20,6 +20,7 @@ from app.database.base import Base
 from app.database.repositories import controlled_writer_coverage as coverage
 from scripts import verify_controlled_writer_coverage_schema_v1 as adapter
 from tests.controlled_writer_coverage_fixtures import (
+    coverage_constraint_trigger_catalog_rows_fixture,
     coverage_observation_fixture,
     coverage_record_fixture,
 )
@@ -66,6 +67,10 @@ async def test_synthetic_catalog_read_supports_real_async_interfaces_without_dat
     monkeypatch, reader_kind
 ):
     """Synthetic scalar readback proves the interface, not a native PG catalog."""
+    baseline_before = (
+        coverage.PG17_DEPARSED_BASELINE,
+        coverage.PG17_DEPARSED_BASELINE_STATUS,
+    )
     catalog = {"synthetic_interface_only": True, "native_database_read": False}
     calls = []
 
@@ -84,10 +89,10 @@ async def test_synthetic_catalog_read_supports_real_async_interfaces_without_dat
             assert reader.get_bind().dialect.name == "postgresql"
         assert await coverage.read_controlled_writer_coverage_catalog(reader) is catalog
         assert calls == [(reader, coverage._CATALOG_SQL)]
-    assert coverage.PG17_DEPARSED_BASELINE is None
     assert (
-        coverage.PG17_DEPARSED_BASELINE_STATUS == "PENDING_NOT_ACQUIRED_UNSEALED_DENY"
-    )
+        coverage.PG17_DEPARSED_BASELINE,
+        coverage.PG17_DEPARSED_BASELINE_STATUS,
+    ) == baseline_before
 
 
 @pytest.mark.asyncio
@@ -641,6 +646,7 @@ def _synthetic_schema_catalog_for_identity_mutations():
             }
             for name, columns, unique, primary in indexes
         )
+    catalog["constraints"].extend(coverage_constraint_trigger_catalog_rows_fixture())
     for index, (name, _, returns, language, definer, volatility, body) in enumerate(
         coverage._FUNCTIONS
     ):
@@ -756,3 +762,159 @@ def test_catalog_rejects_unverified_public_function_namespace_identity(field, va
         match="controlled_writer_coverage_function_namespace_drift",
     ):
         adapter.verify_catalog(catalog, require_native_baseline=False)
+
+
+def test_synthetic_22_constraint_inventory_still_cannot_seal_native_pg(monkeypatch):
+    # Pure data semantics only, not a PG17 observation or runtime role proof.
+    catalog = _synthetic_schema_catalog_for_identity_mutations()
+    assert len(catalog["constraints"]) == 22
+    assert adapter.verify_catalog(catalog, require_native_baseline=False) == (
+        coverage.expected_controlled_writer_coverage_schema()
+    )
+    monkeypatch.setattr(coverage, "PG17_DEPARSED_BASELINE", None)
+    monkeypatch.setattr(
+        coverage, "PG17_DEPARSED_BASELINE_STATUS", "PENDING_NOT_ACQUIRED_UNSEALED_DENY"
+    )
+    with pytest.raises(
+        coverage.ControlledWriterCoverageError, match="native_baseline_unsealed"
+    ):
+        adapter.verify_catalog(catalog)
+
+
+@pytest.mark.parametrize(
+    "damage",
+    (
+        "missing",
+        "extra",
+        "duplicate",
+        "wrong_table",
+        "kind",
+        "not_validated",
+        "validated_int",
+        "not_deferrable",
+        "deferrable_int",
+        "not_deferred",
+        "deferred_int",
+        "columns",
+        "target",
+        "target_columns",
+        "missing_verified_pair_trigger",
+        "pair_trigger_wrong_function_oid",
+        "definition",
+        "delete_action",
+        "unknown_table",
+        "unknown_field",
+        "missing_field",
+        "name_type",
+        "columns_type",
+        "old_flag_int",
+    ),
+)
+def test_constraint_trigger_inventory_cannot_be_missing_aliased_or_retyped(damage):
+    # Explicit synthetic catalog mutation; no native PASS/captured digest implied.
+    catalog = _synthetic_schema_catalog_for_identity_mutations()
+    target = next(
+        row for row in catalog["constraints"] if row["name"] == "cwc_scope_pair"
+    )
+    if damage == "missing":
+        catalog["constraints"].remove(target)
+    elif damage == "extra":
+        catalog["constraints"].append({**target, "name": "unapproved_pair"})
+    elif damage == "duplicate":
+        catalog["constraints"].append(copy.deepcopy(target))
+    elif damage == "wrong_table":
+        target["table"] = coverage.COVERAGE_TABLES[1]
+    elif damage == "kind":
+        target["kind"] = "c"
+    elif damage == "not_validated":
+        target["validated"] = False
+    elif damage == "validated_int":
+        target["validated"] = 1
+    elif damage == "not_deferrable":
+        target["deferrable"] = False
+    elif damage == "deferrable_int":
+        target["deferrable"] = 1
+    elif damage == "not_deferred":
+        target["deferred"] = False
+    elif damage == "deferred_int":
+        target["deferred"] = 1
+    elif damage == "columns":
+        target["columns"] = []
+    elif damage == "target":
+        target["target"] = "unapproved_parent"
+    elif damage == "target_columns":
+        target["target_columns"] = []
+    elif damage == "definition":
+        target["definition"] = "TRIGGER NOT DEFERRABLE"
+    elif damage == "delete_action":
+        target["delete_action"] = "r"
+    elif damage == "unknown_table":
+        target["table"] = "unapproved_schema_table"
+    elif damage == "unknown_field":
+        target["unapproved"] = True
+    elif damage == "missing_field":
+        del target["columns"]
+    elif damage == "name_type":
+        target["name"] = [target["name"]]
+    elif damage == "columns_type":
+        target["columns"] = {}
+    elif damage == "old_flag_int":
+        ordinary = next(row for row in catalog["constraints"] if row["kind"] == "p")
+        ordinary["deferrable"] = 0
+    elif damage == "missing_verified_pair_trigger":
+        catalog["triggers"] = [
+            row for row in catalog["triggers"] if row["name"] != target["name"]
+        ]
+    else:
+        pair = next(row for row in catalog["triggers"] if row["name"] == target["name"])
+        pair["function_oid"] = 700000
+    for require_native in (False, True):
+        with pytest.raises(
+            coverage.ControlledWriterCoverageError,
+            match="controlled_writer_coverage_(constraint|trigger)",
+        ):
+            adapter.verify_catalog(catalog, require_native_baseline=require_native)
+
+
+@pytest.mark.parametrize(
+    "section,field,error_code",
+    (
+        ("functions", "oid", "function_namespace_drift"),
+        ("functions", "namespace_oid", "function_namespace_drift"),
+        ("triggers", "function_oid", "trigger_identity_drift"),
+        ("triggers", "function_namespace_oid", "trigger_identity_drift"),
+    ),
+)
+def test_catalog_oid_strings_never_become_integer_identity(section, field, error_code):
+    catalog = _synthetic_schema_catalog_for_identity_mutations()
+    target = catalog[section][0]
+    original = target[field]
+    assert type(original) is int
+    target[field] = str(original)
+    raw_before = coverage.canonical(catalog)
+    for require_native in (False, True):
+        with pytest.raises(
+            coverage.ControlledWriterCoverageError,
+            match="controlled_writer_coverage_" + error_code,
+        ):
+            adapter.verify_catalog(catalog, require_native_baseline=require_native)
+        assert coverage.canonical(catalog) == raw_before
+
+
+def test_catalog_sql_projects_all_eight_oid_sites_as_bigint_without_binds():
+    # A static SQL contract, not evidence that PostgreSQL executed this query.
+    projections = (
+        "'oid',CAST(oid AS bigint)",
+        "'oid',CAST(c.oid AS bigint)",
+        "'owner_oid',CAST(c.relowner AS bigint)",
+        "'oid',CAST(p.oid AS bigint)",
+        "'namespace_oid',CAST(n.oid AS bigint)",
+        "'owner_oid',CAST(p.proowner AS bigint)",
+        "'function_oid',CAST(t.tgfoid AS bigint)",
+        "'function_namespace_oid',CAST(fn.oid AS bigint)",
+    )
+    statement = text(coverage._CATALOG_SQL)
+    assert statement.compile().params == {}
+    assert str(statement) == coverage._CATALOG_SQL
+    for projection in projections:
+        assert coverage._CATALOG_SQL.count(projection) == 1

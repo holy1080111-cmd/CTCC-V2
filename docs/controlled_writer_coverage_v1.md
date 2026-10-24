@@ -1,11 +1,17 @@
 # Prospective controlled Demo writer coverage V1
 
-This component is authored for the isolated final-completion branch. Native,
-PostgreSQL, concurrency, migration and matching full CI acceptance remain
-unperformed for this change. The DB0048 PG17 deparser baseline is deliberately
-unsealed. A real acquisition refuses while that baseline is pending.
+This component remains an unaccepted isolated final-completion draft. The real
+PG17.11 admin catalog from source `585bd55` was retained and independently
+reviewed: 27 columns, 20 ordinary constraints plus two constraint triggers,
+seven indexes, six functions and eight triggers. Its ordered constraint/index
+projection is now explicitly sealed as
+`59c771896d4b7ea6b5e77f420fd0d242fdd13429a7ad0f0118c905cdd80e55e6`.
+This source declaration is not runtime-role, migration, concurrency or complete
+CI acceptance. The corrected typed OID capture and exact 22-constraint gate
+still require a fresh matching full-source run. See the actual observations
+and outstanding verification in [validation state](final_completion_validation.md).
 
-The narrow positive result is one process-owned fact that an explicitly
+The narrow contract permits one process-owned fact that an explicitly
 identified controlled CTCC Demo deployment observed its native current-query
 empty inventory and clean local state while establishing a prospective durable
 writer-coverage epoch. It supplies no full portfolio, owned account revision,

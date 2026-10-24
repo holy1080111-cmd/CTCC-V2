@@ -409,6 +409,37 @@ async def test_catalog_capture_retains_pending_native_baseline(coverage_child):
     admin, _ = coverage_child
     async with admin.begin() as connection:
         catalog = await coverage.read_controlled_writer_coverage_catalog(connection)
+    raw_before = coverage.canonical(catalog)
+    # Actual PG values from all eight SQL OID projections, never coerced here.
+    projected_oids = {
+        "role.oid": [catalog["role"]["oid"]],
+        "tables.oid": [row["oid"] for row in catalog["tables"]],
+        "tables.owner_oid": [row["owner_oid"] for row in catalog["tables"]],
+        "functions.oid": [row["oid"] for row in catalog["functions"]],
+        "functions.namespace_oid": [
+            row["namespace_oid"] for row in catalog["functions"]
+        ],
+        "functions.owner_oid": [row["owner_oid"] for row in catalog["functions"]],
+        "triggers.function_oid": [row["function_oid"] for row in catalog["triggers"]],
+        "triggers.function_namespace_oid": [
+            row["function_namespace_oid"] for row in catalog["triggers"]
+        ],
+    }
+    assert [len(values) for values in projected_oids.values()] == [
+        1,
+        2,
+        2,
+        6,
+        6,
+        6,
+        8,
+        8,
+    ]
+    assert sum(len(values) for values in projected_oids.values()) == 39
+    for field, values in projected_oids.items():
+        assert all(
+            type(value) is int and 1 <= value <= 2**32 - 1 for value in values
+        ), field
     expected = coverage.verify_controlled_writer_coverage_catalog(
         catalog, require_native_baseline=False
     )
@@ -427,6 +458,7 @@ async def test_catalog_capture_retains_pending_native_baseline(coverage_child):
         "source" in row and "definition" in row and "acl" in row
         for row in catalog["functions"]
     )
+    assert coverage.canonical(catalog) == raw_before
 
 
 @pytest.mark.parametrize(

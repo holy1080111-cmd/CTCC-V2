@@ -37,8 +37,10 @@ MAX_STATE_BYTES = 65536
 MAX_EVENT_BYTES = 32768
 MAX_AUDIT_BYTES = 262144
 MAX_SNAPSHOT_BYTES = 2097152
-PG17_DEPARSED_BASELINE = None
-PG17_DEPARSED_BASELINE_STATUS = "PENDING_NOT_ACQUIRED_UNSEALED_DENY"
+PG17_DEPARSED_BASELINE = (
+    "59c771896d4b7ea6b5e77f420fd0d242fdd13429a7ad0f0118c905cdd80e55e6"
+)
+PG17_DEPARSED_BASELINE_STATUS = "SEALED_FROM_REVIEWED_NATIVE_PG17"
 COVERAGE_TABLES = (
     "demo_controlled_writer_coverage_scopes",
     "demo_controlled_writer_coverage_journal",
@@ -1102,12 +1104,12 @@ SELECT jsonb_build_object(
     'isolation',current_setting('transaction_isolation'),'synchronous_commit',current_setting('synchronous_commit'),
     'fsync',current_setting('fsync'),'full_page_writes',current_setting('full_page_writes'),
     'replication_role',current_setting('session_replication_role'),'in_recovery',pg_is_in_recovery()),
-  'role',(SELECT jsonb_build_object('oid',oid,'name',rolname,'can_login',rolcanlogin,'superuser',rolsuper,
+  'role',(SELECT jsonb_build_object('oid',CAST(oid AS bigint),'name',rolname,'can_login',rolcanlogin,'superuser',rolsuper,
     'createdb',rolcreatedb,'createrole',rolcreaterole,'replication',rolreplication,'bypassrls',rolbypassrls,
     'other_membership',EXISTS(SELECT 1 FROM pg_roles x WHERE x.oid<>r.oid AND pg_has_role(current_user,x.oid,'MEMBER')),
     'can_create',has_schema_privilege(current_user,'public','CREATE') OR has_database_privilege(current_user,current_database(),'CREATE'))
     FROM pg_roles r WHERE rolname=current_user),
-  'tables',coalesce((SELECT jsonb_agg(jsonb_build_object('name',c.relname,'oid',c.oid,'owner_oid',c.relowner,
+  'tables',coalesce((SELECT jsonb_agg(jsonb_build_object('name',c.relname,'oid',CAST(c.oid AS bigint),'owner_oid',CAST(c.relowner AS bigint),
     'owner',pg_get_userbyid(c.relowner),'kind',c.relkind,'persistence',c.relpersistence,
     'rls',c.relrowsecurity,'force_rls',c.relforcerowsecurity,'acl',c.relacl::text,
     'table_access',has_table_privilege(current_user,c.oid,'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN')
@@ -1140,10 +1142,10 @@ SELECT jsonb_build_object(
     ORDER BY c.relname,ic.relname) FROM pg_index i JOIN pg_class c ON c.oid=i.indrelid
     JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_class ic ON ic.oid=i.indexrelid
     JOIN pg_am am ON am.oid=ic.relam WHERE n.nspname='public' AND c.relname=ANY(ARRAY[__TABLES__])), '[]'::jsonb),
-  'functions',coalesce((SELECT jsonb_agg(jsonb_build_object('name',p.proname,'oid',p.oid,
-    'namespace_oid',n.oid,'namespace',n.nspname,
+  'functions',coalesce((SELECT jsonb_agg(jsonb_build_object('name',p.proname,'oid',CAST(p.oid AS bigint),
+    'namespace_oid',CAST(n.oid AS bigint),'namespace',n.nspname,
     'arguments',oidvectortypes(p.proargtypes),'identity_arguments',pg_get_function_identity_arguments(p.oid),
-    'returns',pg_get_function_result(p.oid),'owner_oid',p.proowner,'owner',pg_get_userbyid(p.proowner),
+    'returns',pg_get_function_result(p.oid),'owner_oid',CAST(p.proowner AS bigint),'owner',pg_get_userbyid(p.proowner),
     'language',l.lanname,'security_definer',p.prosecdef,'volatility',p.provolatile,'config',p.proconfig,
     'kind',p.prokind,'leakproof',p.proleakproof,'strict',p.proisstrict,'parallel',p.proparallel,
     'source',p.prosrc,'definition',pg_get_functiondef(p.oid),'acl',p.proacl::text,
@@ -1152,8 +1154,8 @@ SELECT jsonb_build_object(
     ORDER BY p.proname,oidvectortypes(p.proargtypes)) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
     JOIN pg_language l ON l.oid=p.prolang WHERE n.nspname='public' AND p.proname LIKE 'controlled_writer_coverage_v1_%'), '[]'::jsonb),
   'triggers',coalesce((SELECT jsonb_agg(jsonb_build_object('table',c.relname,'name',t.tgname,
-    'function',p.proname,'function_oid',t.tgfoid,
-    'function_namespace_oid',fn.oid,'function_namespace',fn.nspname,
+    'function',p.proname,'function_oid',CAST(t.tgfoid AS bigint),
+    'function_namespace_oid',CAST(fn.oid AS bigint),'function_namespace',fn.nspname,
     'enabled',t.tgenabled,'type',t.tgtype,'deferrable',t.tgdeferrable,
     'deferred',t.tginitdeferred,'constraint',t.tgconstraint<>0,'arguments',encode(t.tgargs,'hex'),
     'when',pg_get_expr(t.tgqual,t.tgrelid),'definition',pg_get_triggerdef(t.oid,true))
@@ -1220,6 +1222,46 @@ def verify_controlled_writer_coverage_catalog(catalog, *, require_native_baselin
         for row in catalog["tables"]
     ):
         _deny("controlled_writer_coverage_table_drift")
+    if type(catalog["constraints"]) is not list or any(
+        type(row) is not dict
+        or set(row)
+        != {
+            "table",
+            "name",
+            "kind",
+            "definition",
+            "validated",
+            "deferrable",
+            "deferred",
+            "delete_action",
+            "columns",
+            "target",
+            "target_columns",
+        }
+        or type(row["table"]) is not str
+        or row["table"] not in COVERAGE_TABLES
+        or any(
+            type(row[field]) is not str or not row[field]
+            for field in ("name", "kind", "definition", "delete_action")
+        )
+        or len(row["kind"]) != 1
+        or len(row["delete_action"]) != 1
+        or any(
+            type(row[field]) is not bool
+            for field in ("validated", "deferrable", "deferred")
+        )
+        or (row["target"] is not None and type(row["target"]) is not str)
+        or any(
+            row[field] is not None
+            and (
+                type(row[field]) is not list
+                or any(type(value) is not str or not value for value in row[field])
+            )
+            for field in ("columns", "target_columns")
+        )
+        for row in catalog["constraints"]
+    ):
+        _deny("controlled_writer_coverage_constraint_drift")
     for table, spec in COVERAGE_TABLE_SPECS.items():
         columns = [row for row in catalog["columns"] if row["table"] == table]
         if [(row["name"], row["type"], row["nullable"]) for row in columns] != spec[
@@ -1234,17 +1276,26 @@ def verify_controlled_writer_coverage_catalog(catalog, *, require_native_baselin
             for row in columns
         ):
             _deny("controlled_writer_coverage_column_drift")
-        constraints = {
-            row["name"]: row for row in catalog["constraints"] if row["table"] == table
+        table_constraints = [
+            row for row in catalog["constraints"] if row["table"] == table
+        ]
+        constraints = {row["name"]: row for row in table_constraints}
+        constraint_trigger_names = {
+            name
+            for name, declared_table, _events, _level, _function, deferred in COVERAGE_TRIGGER_SPECS
+            if declared_table == table and deferred
         }
         expected_names = {
+            *constraint_trigger_names,
             f"pk_{table}",
             *spec["checks"],
             *(row[0] for row in spec["foreign_keys"]),
             *(row[0] for row in spec["unique"]),
         }
-        if set(constraints) != expected_names or any(
-            row["validated"] is not True for row in constraints.values()
+        if (
+            len(constraints) != len(table_constraints)
+            or set(constraints) != expected_names
+            or any(row["validated"] is not True for row in constraints.values())
         ):
             _deny("controlled_writer_coverage_constraint_drift")
         primary = constraints[f"pk_{table}"]
@@ -1258,6 +1309,22 @@ def verify_controlled_writer_coverage_catalog(catalog, *, require_native_baselin
         for name in spec["checks"]:
             row = constraints[name]
             if row["kind"] != "c" or row["deferrable"] or row["deferred"]:
+                _deny("controlled_writer_coverage_constraint_drift")
+        for name in constraint_trigger_names:
+            row = constraints[name]
+            # These exact rows correspond by declared table/name to the pair
+            # triggers whose flags and public function OID are verified below.
+            if (
+                row["kind"] != "t"
+                or row["validated"] is not True
+                or row["deferrable"] is not True
+                or row["deferred"] is not True
+                or row["columns"] is not None
+                or row["target"] is not None
+                or row["target_columns"] is not None
+                or row["definition"] != "TRIGGER DEFERRABLE INITIALLY DEFERRED"
+                or row["delete_action"] != " "
+            ):
                 _deny("controlled_writer_coverage_constraint_drift")
         for name, columns, target, target_columns, deferrable, deferred in spec[
             "foreign_keys"
