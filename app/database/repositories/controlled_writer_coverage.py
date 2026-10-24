@@ -16,7 +16,12 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from sqlalchemy import func, select, text
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import (
+    AsyncConnection,
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+)
 
 from app.database.repositories.demo_control import DemoControlRepository
 from app.database.repositories.public_runtime_bundle_custody import _native_engine
@@ -1162,7 +1167,13 @@ SELECT jsonb_build_object(
 
 async def read_controlled_writer_coverage_catalog(session):
     """Capture actual PG facts before admission, including a pending baseline."""
-    if session.get_bind().dialect.name != "postgresql":
+    if isinstance(session, AsyncConnection):
+        dialect = session.dialect
+    elif isinstance(session, AsyncSession):
+        dialect = session.get_bind().dialect
+    else:
+        _deny("controlled_writer_coverage_postgresql_required")
+    if dialect.name != "postgresql":
         _deny("controlled_writer_coverage_postgresql_required")
     result = await session.scalar(text(_CATALOG_SQL))
     if (

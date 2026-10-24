@@ -1,5 +1,37 @@
 # Final completion validation state
 
+## 2026-10-24 first DB0048 native catalog run: actual adapter failure
+
+The isolated draft was committed as
+`d8fcc8292474fcdea329bfce28c469c3fc5da014`, tree
+`6aad12440b9201f07fe7dc8a617fecdc11d771f0`, manifest
+`a0477f3b70320131fa2038463e93568905f47a3fbba2b74436b6268b95651e87`.
+Its exact 36-path staged patch had no scoped detector findings; this is not
+full-history secret acceptance. Source recovery archive and private incremental
+bundle are retained. Public main remains unchanged; canonical stays exact5c.
+
+The PostgreSQL component of
+[run 40067893793](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/40067893793)
+failed in `migration-coverage-native-catalog`. The reader called
+`session.get_bind()` on the real AsyncConnection passed by the existing
+read-only capture transaction, raising AttributeError. No
+`coverage-native-catalog.json` was produced and the formal v5 schema gate was
+not reached. This is an engineering defect, not an observed unsealed-baseline
+or constraint-drift refusal. The original failed evidence is retained.
+
+The official PostgreSQL artifact `12549987577` has ZIP SHA256
+`542e9c1687f1e824d5c180b120f91e89fb602c786021419c4adb7752a929cecd`.
+Independent diagnostic receipt
+`b096a083b5d0a283afdbcd350f4abe51442bcc9cc7509fc3e2d11d6198cc2a66`
+binds all 1,343 source files, Git blob identities/modes, source archive, Docker
+COPY and 1,342 manifest entries to that exact draft. Its 16 preceding stages,
+including isolated migration smoke, lint and formatting, succeeded; the
+component and hermetic acceptance remained FAIL. These stages are not a full
+PostgreSQL test pass. The connection-interface correction is undergoing new
+targeted verification. Actual catalog capture, the separately flagged trigger
+constraint inventory, independent baseline seal and complete new-source CI
+remain required. No runtime migration, exchange acquisition or order occurred.
+
 ## 2026-10-24 prospective controlled writer coverage under implementation
 
 The isolated `work/controlled-writer-coverage-20261024` branch starts from
@@ -45,7 +77,7 @@ alone is insufficient. Both corrections require their own real PostgreSQL
 conflict/drift falsification; source review is not execution evidence.
 This is an implementation checkpoint, not a runtime/database backup or
 acceptance receipt. Canonical is the exact5c source/CI baseline described below;
-the controlled-writer changes remain an isolated, uncommitted draft.
+the controlled-writer draft remains isolated and unaccepted.
 
 The additive `0048` design keeps the existing Control and qualification
 architecture. Prepared, active and revoked transitions are immutable journal
@@ -64,8 +96,9 @@ PG17 catalog baseline is still unsealed and must deny positive acceptance;
 genuine isolated exact-source diagnostics must precede any baseline seal.
 The current `0047` predecessor proof and current `0048` migration proof must
 remain distinct. Full-source regression and schema acceptance are pending.
-No migration, authenticated acquisition, Arm or order was executed for this
-work. All completion/readiness flags remain zero.
+No runtime migration, authenticated acquisition, Arm or order was executed for
+this work. The isolated failed CI described above did execute migration smoke
+stages. All completion/readiness flags remain zero.
 
 The actual bounded `cw24r10f` draft cohorts passed 34 new native-boundary unit
 cases using synthetic providers and 47 pure migration/catalog unit cases,

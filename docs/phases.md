@@ -25,8 +25,12 @@ An isolated source branch is implementing prospective controlled Demo writer
 coverage and additive migration `0048`. Its fixed contract preserves the
 existing UID lock, Control ownership and B5 audit, appends immutable coverage
 transitions, and keeps a one-use native fact separate from trading authority.
-No database migration or deployment has been executed for this work. The PG17
-catalog baseline remains pending and denies native positive acceptance.
+No runtime database or deployment has been changed. The first isolated CI run
+for draft `d8fcc82` passed its migration smoke stages but failed before saving
+the actual catalog: its AsyncConnection was passed to a reader expecting
+AsyncSession.get_bind(). The interface correction needs targeted tests and a
+new exact-source run. The PG17 catalog baseline remains pending and denies
+native positive acceptance.
 Bounded synthetic unit checks and ten targeted Linux-union fixture checks have
 passed on separately recorded draft identities. A local full 119-case cohort
 timed out and is incomplete; matching full CI for the new source is required.

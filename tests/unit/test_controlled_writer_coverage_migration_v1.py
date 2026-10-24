@@ -6,10 +6,15 @@ import ast
 import copy
 import hashlib
 import json
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.engine import Connection
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession, create_async_engine
+from sqlalchemy.ext.asyncio.exc import AsyncContextNotStarted
 
 from app.database.base import Base
 from app.database.repositories import controlled_writer_coverage as coverage
@@ -21,6 +26,142 @@ from tests.controlled_writer_coverage_fixtures import (
 from tests.durable_migration_fixtures import RecordedDowngrade, load_migration
 
 _ROOT = Path(__file__).resolve().parents[2]
+
+
+@asynccontextmanager
+async def _synthetic_catalog_reader(reader_kind, *, dialect="postgresql"):
+    """Exercise real SQLAlchemy proxies with no opened DBAPI connection."""
+    assert reader_kind in {"connection", "session"}
+    assert dialect in {"postgresql", "sqlite"}
+    engine = create_async_engine(
+        "postgresql+asyncpg://synthetic.invalid/synthetic_catalog_interface"
+    )
+    connection = engine.connect()
+    sync_engine = (
+        engine.sync_engine if dialect == "postgresql" else create_engine("sqlite://")
+    )
+    # connect() alone is unstarted. A real SQLAlchemy Connection with an explicit
+    # synthetic DBAPI placeholder exposes the original dialect property without
+    # opening a socket, entering a database context or patching dialect/get_bind.
+    connection.sync_connection = Connection(
+        sync_engine, connection=object(), _has_events=False
+    )
+    session = AsyncSession(bind=connection) if reader_kind == "session" else None
+    try:
+        assert engine.pool.checkedout() == 0
+        yield session if session is not None else connection
+        assert engine.pool.checkedout() == 0
+    finally:
+        if session is not None:
+            await session.close()
+        connection.sync_connection = None
+        await engine.dispose()
+        if sync_engine is not engine.sync_engine:
+            sync_engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reader_kind", ["connection", "session"])
+async def test_synthetic_catalog_read_supports_real_async_interfaces_without_database(
+    monkeypatch, reader_kind
+):
+    """Synthetic scalar readback proves the interface, not a native PG catalog."""
+    catalog = {"synthetic_interface_only": True, "native_database_read": False}
+    calls = []
+
+    async def scalar(reader, statement):
+        calls.append((reader, str(statement)))
+        return catalog
+
+    reader_type = AsyncConnection if reader_kind == "connection" else AsyncSession
+    monkeypatch.setattr(reader_type, "scalar", scalar)
+    async with _synthetic_catalog_reader(reader_kind) as reader:
+        assert type(reader) is reader_type
+        if reader_kind == "connection":
+            assert "get_bind" not in AsyncConnection.__dict__
+            assert reader.dialect.name == "postgresql"
+        else:
+            assert reader.get_bind().dialect.name == "postgresql"
+        assert await coverage.read_controlled_writer_coverage_catalog(reader) is catalog
+        assert calls == [(reader, coverage._CATALOG_SQL)]
+    assert coverage.PG17_DEPARSED_BASELINE is None
+    assert (
+        coverage.PG17_DEPARSED_BASELINE_STATUS == "PENDING_NOT_ACQUIRED_UNSEALED_DENY"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reader_kind", ["connection", "session"])
+async def test_synthetic_catalog_read_rejects_real_nonpostgres_interfaces_before_sql(
+    monkeypatch, reader_kind
+):
+    calls = []
+
+    async def scalar(reader, statement):
+        calls.append((reader, str(statement)))
+        raise AssertionError("non-PostgreSQL scalar must never run")
+
+    reader_type = AsyncConnection if reader_kind == "connection" else AsyncSession
+    monkeypatch.setattr(reader_type, "scalar", scalar)
+    async with _synthetic_catalog_reader(reader_kind, dialect="sqlite") as reader:
+        with pytest.raises(
+            coverage.ControlledWriterCoverageError,
+            match="^controlled_writer_coverage_postgresql_required$",
+        ):
+            await coverage.read_controlled_writer_coverage_catalog(reader)
+        assert calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("postgresql_shaped", [False, True])
+async def test_catalog_read_rejects_unknown_reader_even_if_postgresql_shaped(
+    postgresql_shaped,
+):
+    calls = []
+
+    class UnknownReader:
+        class dialect:
+            name = "postgresql"
+
+        def get_bind(self):
+            raise AssertionError("unknown readers must not be queried for a bind")
+
+        async def scalar(self, statement):
+            calls.append(str(statement))
+            raise AssertionError("unknown readers must not execute scalar")
+
+    reader = UnknownReader() if postgresql_shaped else object()
+    with pytest.raises(
+        coverage.ControlledWriterCoverageError,
+        match="^controlled_writer_coverage_postgresql_required$",
+    ):
+        await coverage.read_controlled_writer_coverage_catalog(reader)
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_catalog_read_does_not_start_an_unstarted_real_async_connection(
+    monkeypatch,
+):
+    calls = []
+
+    async def scalar(reader, statement):
+        calls.append((reader, str(statement)))
+        raise AssertionError("unstarted connection must not execute scalar")
+
+    monkeypatch.setattr(AsyncConnection, "scalar", scalar)
+    engine = create_async_engine(
+        "postgresql+asyncpg://synthetic.invalid/synthetic_catalog_interface"
+    )
+    connection = engine.connect()
+    try:
+        with pytest.raises(AsyncContextNotStarted):
+            await coverage.read_controlled_writer_coverage_catalog(connection)
+        assert connection.sync_connection is None
+        assert engine.pool.checkedout() == 0
+        assert calls == []
+    finally:
+        await engine.dispose()
 
 
 def test_registered_models_use_actual_single_metadata_graph():
