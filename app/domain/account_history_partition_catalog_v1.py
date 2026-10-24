@@ -1,7 +1,8 @@
-"""Sole DB0050 declarations and stdlib catalog policy; records grant no authority.
+"""Sole DB0050 declarations and reviewed native PG17 catalog baseline.
 
-The initial native baseline deliberately denies formal deployment. Structural
-DDL diagnostics permit a first real capture, never native or account admission.
+The deparser baseline is sealed from the reviewed 0403 native observation.
+Structural matching grants no runtime role, account or execution authority;
+restricted session, source custody and current account gates remain mandatory.
 """
 
 import copy
@@ -10,8 +11,10 @@ import re
 
 from app.domain import account_history_partition_v1 as records
 
-PG17_DEPARSED_BASELINE = None
-PG17_DEPARSED_BASELINE_STATUS = "PENDING_NATIVE_PG17_REVIEW"
+PG17_DEPARSED_BASELINE = (
+    "37190935d1b8e2807d26590225165779bb12e9684c260dd19fb61fba0d3c64c3"
+)
+PG17_DEPARSED_BASELINE_STATUS = "SEALED_FROM_REVIEWED_NATIVE_PG17"
 CATALOG_SCHEMA = "ctcc.account_history_partition_actual_catalog.v1"
 TABLES = (
     "demo_account_history_native_members",
