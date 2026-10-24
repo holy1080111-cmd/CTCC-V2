@@ -19,6 +19,7 @@ from scripts.verify_final_hermetic import (
     COVERAGE_PREFLIGHT_CASES,
     DOWNGRADE_DENIAL,
     GATE3_PREFLIGHT_CASES,
+    HISTORY_PARTITION_PREFLIGHT_CASES,
     LEDGER_SCHEMA_PREFLIGHT_CASES,
     NATIVE_IDENTITY_DOWNGRADE_DENIAL,
     NATIVE_WITNESS_IDENTITY_SCHEMA,
@@ -34,6 +35,7 @@ from scripts.verify_final_hermetic import (
     native_identity_empty_before_readback,
     native_identity_nonempty_downgrade_readback,
     run_controlled_writer_coverage_preflight,
+    run_history_partition_preflight,
     verify_linux_collection,
     verify_pytest_report,
 )
@@ -1848,6 +1850,31 @@ def test_0049_preflight_real_producer_report_roundtrips_through_union_reader(tmp
             mounts=(),
         )
     )
+    partition_calls = []
+
+    def partition_container(stage, command, **options):
+        partition_calls.append((stage, command, options))
+        assert stage == "account-history-partition-preflight"
+        expected = [
+            f"{module.replace('.', '/')}.py::{case}"
+            for module, case in HISTORY_PARTITION_PREFLIGHT_CASES
+        ]
+        assert command[-len(expected) :] == expected
+        _junit(results / f"{stage}.xml", expected)
+        (tmp_path / f"{stage}.log").write_text(
+            "synthetic-container-produced-reviewed-XML-only\n"
+        )
+
+    identity["account_history_partition_preflight"] = run_history_partition_preflight(
+        partition_container,
+        test_results=results,
+        mounts=(),
+    )
+    partition_module = HISTORY_PARTITION_PREFLIGHT_CASES[0][0]
+    assert identity["account_history_partition_preflight"][
+        "required_module_passed"
+    ] == {partition_module: len(HISTORY_PARTITION_PREFLIGHT_CASES)}
+    assert len(partition_calls) == 1
     module = COVERAGE_PREFLIGHT_CASES[0][0]
     assert identity["controlled_writer_coverage_preflight"][
         "required_module_passed"
@@ -1868,6 +1895,7 @@ def test_0049_preflight_real_producer_report_roundtrips_through_union_reader(tmp
         assert identity[field]["required_module_passed"] == {}
         (tmp_path / f"{stage}.log").write_text("synthetic-case-only-report\n")
     for stage in (
+        "account-history-partition-preflight",
         "controlled-writer-coverage-preflight",
         "event-journal-schema-preflight",
         "gate3-postgres-preflight",
@@ -1876,6 +1904,24 @@ def test_0049_preflight_real_producer_report_roundtrips_through_union_reader(tmp
             hashes[path.relative_to(tmp_path).as_posix()] = _sha(path.read_bytes())
     _verify_preflight_reports(tmp_path, hashes, identity)
     assert len(calls) == 1
+    # One passing partition case cannot stand in for the exact two-case proof,
+    # even when the altered XML is explicitly rehashed by this fixture.
+    relative = "test-results/account-history-partition-preflight.xml"
+    partition_xml = tmp_path / relative
+    complete_xml = partition_xml.read_bytes()
+    _junit(
+        partition_xml,
+        [
+            f"{module.replace('.', '/')}.py::{case}"
+            for module, case in HISTORY_PARTITION_PREFLIGHT_CASES[:1]
+        ],
+    )
+    hashes[relative] = _sha(partition_xml.read_bytes())
+    with pytest.raises(ValueError, match="pytest_required_execution_not_verified"):
+        _verify_preflight_reports(tmp_path, hashes, identity)
+    partition_xml.write_bytes(complete_xml)
+    hashes[relative] = _sha(complete_xml)
+    _verify_preflight_reports(tmp_path, hashes, identity)
     # The previous fixture's empty module mapping must no longer camouflage
     # this producer/consumer mismatch, even though all three cases still pass.
     identity["controlled_writer_coverage_preflight"]["required_module_passed"] = {}
@@ -2105,8 +2151,13 @@ def test_0050_partition_preflight_real_producer_report_roundtrips_through_union_
     hashes = json.loads((root / "results.sha256.json").read_bytes())
     reader._verify_preflight_reports(root, hashes, identity)
     report = identity["account_history_partition_preflight"]
-    assert report["required_modules"]
-    report["required_modules"] = {}
+    module = HISTORY_PARTITION_PREFLIGHT_CASES[0][0]
+    assert report["required_module_passed"] == {
+        module: len(HISTORY_PARTITION_PREFLIGHT_CASES)
+    }
+    assert report["tests"] == len(HISTORY_PARTITION_PREFLIGHT_CASES)
+    assert report["skipped"] == 0
+    report["required_module_passed"] = {}
     with pytest.raises(ValueError, match="linux_union_preflight_report_invalid"):
         reader._verify_preflight_reports(root, hashes, identity)
 
