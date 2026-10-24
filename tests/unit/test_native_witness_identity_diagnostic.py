@@ -325,6 +325,7 @@ def _mock_main(
     migration_head="0047",
     migration_damage=None,
     cleanup_failure=False,
+    current_upgrade_failure=None,
 ):
     if profile == diagnostic.NATIVE_WITNESS_MIGRATION_PROFILE:
         constraint = list(NATIVE_WITNESS_IDENTITY_SCHEMA["constraint"])
@@ -394,6 +395,13 @@ def _mock_main(
             raw = b""
             if name == "image-identity":
                 raw = b"sha256:" + b"d" * 64
+            elif (
+                name == "native-witness-current-upgrade"
+                and current_upgrade_failure is not None
+            ):
+                self.steps[-1]["exit_code"] = 1
+                (self.output / f"{name}.log").write_bytes(current_upgrade_failure)
+                raise RuntimeError("private-driver-detail")
             elif name == "migration-identity":
                 raw = json.dumps(
                     {
@@ -803,3 +811,260 @@ def test_migration_observation_reader_rejects_duplicates_nonobject_or_oversize(
     path.write_bytes(raw)
     with pytest.raises(ValueError, match="diagnostic_migration_"):
         diagnostic._migration_object(path)
+
+
+# Prepared appended unit tests; no test execution during authoring.
+_UPGRADE_FAILURE_PRIVATE = (
+    "never-persist-driver-password-3c9f4",
+    "postgresql+asyncpg://private-user:private-password@private-host/private-db",
+    "OK-ACCESS-SIGN: never-persist-private-signature",
+    "OK-ACCESS-PASSPHRASE: never-persist-private-passphrase",
+)
+_UPGRADE_FAILURE_SOURCE = {
+    "migrations/versions/0050_account_history_partition.py": "a" * 64
+}
+
+
+def _upgrade_failure_raw():
+    return (
+        "Traceback (most recent call last):\n"
+        '  File "/app/migrations/versions/0050_account_history_partition.py", line 123, in upgrade\n'
+        "asyncpg.exceptions.PostgresSyntaxError: "
+        + " | ".join(_UPGRADE_FAILURE_PRIVATE)
+        + "\nSQLSTATE: 42601\n"
+        + "sqlalchemy.exc.ProgrammingError: "
+        + " | ".join(_UPGRADE_FAILURE_PRIVATE)
+        + "\n[SQL: SELECT private_account_value]\n"
+        + '[parameters: {"password": "never-persist-driver-password-3c9f4"}]\n'
+    ).encode()
+
+
+def test_upgrade_failure_metadata_retains_only_observed_allowlisted_tokens(tmp_path):
+    path = tmp_path / "native-witness-current-upgrade.log"
+    raw = _upgrade_failure_raw()
+    path.write_bytes(raw)
+    value = diagnostic._read_upgrade_failure_metadata(
+        path, source_migrations=_UPGRADE_FAILURE_SOURCE, exit_code=1
+    )
+    assert value["status"] == "observed"
+    assert (
+        value["stage"] == "native-witness-current-upgrade" and value["exit_code"] == 1
+    )
+    assert value["exception_classes"] == ["PostgresSyntaxError", "ProgrammingError"]
+    assert value["sqlstates"] == ["42601"]
+    assert value["migration_frames"] == [
+        {
+            "file": "migrations/versions/0050_account_history_partition.py",
+            "line": 123,
+            "source_sha256": "a" * 64,
+        }
+    ]
+    assert value["log_sha256"] == hashlib.sha256(raw).hexdigest()
+    assert value["log_bytes"] == len(raw)
+    encoded = json.dumps(value)
+    assert all(private not in encoded for private in _UPGRADE_FAILURE_PRIVATE)
+    assert (
+        "private_account_value" not in encoded
+        and "parameters" not in encoded.replace("parameters_exported", "")
+    )
+    assert value["full_postgresql_acceptance"] is value["execution_authority"] is False
+    assert path.read_bytes() == raw
+
+
+@pytest.mark.parametrize(
+    "kind,status",
+    [
+        ("missing", "missing"),
+        ("empty", "malformed"),
+        ("utf8", "malformed"),
+        ("nul", "malformed"),
+        ("oversize", "oversize"),
+        ("unknown", "unclassified"),
+    ],
+)
+def test_upgrade_failure_missing_malformed_or_overbound_never_invents_cause(
+    tmp_path, kind, status
+):
+    path = tmp_path / "native-witness-current-upgrade.log"
+    if kind != "missing":
+        raw = {
+            "empty": b"",
+            "utf8": b"\xff",
+            "nul": b"RuntimeError: private\0detail",
+            "oversize": b"x" * (diagnostic._UPGRADE_FAILURE_LOG_LIMIT + 1),
+            "unknown": (
+                "UnknownSecretDriverError: " + " | ".join(_UPGRADE_FAILURE_PRIVATE)
+            ).encode(),
+        }[kind]
+        path.write_bytes(raw)
+    value = diagnostic._read_upgrade_failure_metadata(
+        path, source_migrations=_UPGRADE_FAILURE_SOURCE, exit_code=1
+    )
+    assert value["status"] == status
+    assert (
+        value["exception_classes"]
+        == value["sqlstates"]
+        == value["migration_frames"]
+        == []
+    )
+    assert all(private not in json.dumps(value) for private in _UPGRADE_FAILURE_PRIVATE)
+
+
+def test_upgrade_failure_does_not_accept_unknown_frame_sqlstate_or_exception():
+    value = diagnostic._upgrade_failure_metadata(
+        b'  File "/app/migrations/versions/9999_private_password.py", line 123, in upgrade\n'
+        b"FakePrivatePasswordError: do not export\nSQLSTATE: ABCDE\n",
+        source_migrations=_UPGRADE_FAILURE_SOURCE,
+        exit_code=None,
+    )
+    assert value["status"] == "unclassified"
+    assert (
+        value["exception_classes"]
+        == value["sqlstates"]
+        == value["migration_frames"]
+        == []
+    )
+    assert "private_password" not in json.dumps(value)
+
+
+def test_upgrade_failure_metadata_overbound_discards_partial_classification():
+    raw = "\n".join(
+        name + ": private" for name in sorted(diagnostic._UPGRADE_FAILURE_CLASSES)[:9]
+    ).encode()
+    value = diagnostic._upgrade_failure_metadata(
+        raw, source_migrations=_UPGRADE_FAILURE_SOURCE, exit_code=1
+    )
+    assert value["status"] == "metadata_bound_exceeded"
+    assert (
+        value["exception_classes"]
+        == value["sqlstates"]
+        == value["migration_frames"]
+        == []
+    )
+
+
+def test_upgrade_failure_unsafe_file_is_not_opened(tmp_path, monkeypatch):
+    path = tmp_path / "native-witness-current-upgrade.log"
+    path.write_bytes(_upgrade_failure_raw())
+    observed = path.lstat()
+    original = Path.lstat
+    unsafe = SimpleNamespace(
+        **{
+            name: getattr(observed, name)
+            for name in (
+                "st_mode",
+                "st_nlink",
+                "st_size",
+                "st_dev",
+                "st_ino",
+                "st_mtime_ns",
+            )
+        },
+        st_file_attributes=1024,
+    )
+    monkeypatch.setattr(
+        Path,
+        "lstat",
+        lambda selected: unsafe if selected == path else original(selected),
+    )
+
+    def refuse_open(*_args, **_kwargs):
+        raise AssertionError("unsafe log was opened")
+
+    monkeypatch.setattr(Path, "open", refuse_open)
+    value = diagnostic._read_upgrade_failure_metadata(
+        path, source_migrations=_UPGRADE_FAILURE_SOURCE, exit_code=1
+    )
+    assert value["status"] == "unsafe"
+    assert value["log_sha256"] is None and value["exception_classes"] == []
+
+
+def test_upgrade_failure_private_read_error_is_only_fixed_metadata(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "native-witness-current-upgrade.log"
+    path.write_bytes(_upgrade_failure_raw())
+
+    def private_error(*_args, **_kwargs):
+        raise OSError(" | ".join(_UPGRADE_FAILURE_PRIVATE))
+
+    monkeypatch.setattr(Path, "open", private_error)
+    value = diagnostic._read_upgrade_failure_metadata(
+        path, source_migrations=_UPGRADE_FAILURE_SOURCE, exit_code=1
+    )
+    assert value["status"] == "read_failed" and value["exception_classes"] == []
+    assert all(private not in json.dumps(value) for private in _UPGRADE_FAILURE_PRIVATE)
+
+
+def test_main_failed_current_upgrade_exports_safe_metadata_and_keeps_failure(
+    tmp_path, monkeypatch
+):
+    result, calls, identity, export = _mock_main(
+        tmp_path,
+        monkeypatch,
+        profile=diagnostic.NATIVE_WITNESS_MIGRATION_PROFILE,
+        current_upgrade_failure=_upgrade_failure_raw(),
+    )
+    assert (
+        result == 1
+        and identity["status"] == "FAIL"
+        and identity["failure_type"] == "RuntimeError"
+    )
+    names = [name for name, _ in calls]
+    assert names.count("native-witness-current-upgrade") == 1
+    assert (
+        "history-partition-native-catalog" not in names
+        and "history-partition-current-formal" not in names
+    )
+    record_path = export / "native-witness-current-upgrade-failure.json"
+    raw = record_path.read_bytes()
+    assert hashlib.sha256(raw).hexdigest() == identity["current_upgrade_failure_sha256"]
+    value = json.loads(raw)
+    assert value["exception_classes"] == ["PostgresSyntaxError", "ProgrammingError"]
+    assert value["sqlstates"] == ["42601"] and value["migration_frames"] == []
+    # _mock_main's admitted archive has no migration files. It cannot mint a
+    # source frame from a log path even though the pure parser case above can.
+    assert value["full_postgresql_acceptance"] is value["execution_authority"] is False
+    for item in export.iterdir():
+        assert all(
+            private.encode() not in item.read_bytes()
+            for private in _UPGRADE_FAILURE_PRIVATE
+        )
+    steps = json.loads((export / "steps.json").read_bytes())
+    assert (
+        next(s for s in steps if s["name"] == "native-witness-current-upgrade")[
+            "exit_code"
+        ]
+        == 1
+    )
+    receipt = json.loads((export / "receipt.json").read_bytes())
+    assert (
+        receipt["status"] == "FAIL"
+        and receipt["artifacts"][record_path.name] == hashlib.sha256(raw).hexdigest()
+    )
+
+
+def test_upgrade_failure_publisher_retains_private_log_and_is_no_clobber(tmp_path):
+    output, export = tmp_path / "private", tmp_path / "export"
+    output.mkdir()
+    export.mkdir()
+    raw = _upgrade_failure_raw()
+    log = output / "native-witness-current-upgrade.log"
+    log.write_bytes(raw)
+    run = SimpleNamespace(
+        steps=[{"name": "native-witness-current-upgrade", "exit_code": 1}]
+    )
+    files = {
+        name: {"sha256": digest} for name, digest in _UPGRADE_FAILURE_SOURCE.items()
+    }
+    pin = diagnostic._export_upgrade_failure(
+        run, output=output, export=export, source_files=files
+    )
+    path = export / "native-witness-current-upgrade-failure.json"
+    saved = path.read_bytes()
+    assert hashlib.sha256(saved).hexdigest() == pin and log.read_bytes() == raw
+    with pytest.raises(FileExistsError):
+        diagnostic._export_upgrade_failure(
+            run, output=output, export=export, source_files=files
+        )
+    assert path.read_bytes() == saved and log.read_bytes() == raw

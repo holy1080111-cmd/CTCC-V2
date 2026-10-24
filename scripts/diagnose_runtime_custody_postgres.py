@@ -17,6 +17,7 @@ import io
 import json
 import os
 import re
+import stat
 import subprocess
 import tarfile
 import time
@@ -143,6 +144,276 @@ _ROLE_CONDITIONS = frozenset(
         "not_recovery",
     }
 )
+
+
+# Prepared source fragment only; never imported or executed during authoring.
+_UPGRADE_FAILURE_STAGE = "native-witness-current-upgrade"
+_UPGRADE_FAILURE_LOG_LIMIT = 1024 * 1024
+_UPGRADE_FAILURE_CLASSES = frozenset(
+    {
+        "CheckViolationError",
+        "CommandError",
+        "ControlledWriterCoverageCatalogError",
+        "AccountHistoryPartitionCatalogError",
+        "DataError",
+        "DatatypeMismatchError",
+        "DeadlockDetectedError",
+        "DuplicateObjectError",
+        "FeatureNotSupportedError",
+        "ForeignKeyViolationError",
+        "InFailedSQLTransactionError",
+        "InsufficientPrivilegeError",
+        "IntegrityError",
+        "InterfaceError",
+        "InternalServerError",
+        "InvalidCatalogNameError",
+        "InvalidColumnReferenceError",
+        "InvalidFunctionDefinitionError",
+        "InvalidObjectDefinitionError",
+        "InvalidParameterValueError",
+        "InvalidSchemaNameError",
+        "InvalidTextRepresentationError",
+        "LockNotAvailableError",
+        "NotNullViolationError",
+        "OperationalError",
+        "PostgresSyntaxError",
+        "ProgrammingError",
+        "RuntimeError",
+        "SerializationError",
+        "SyntaxError",
+        "UndefinedColumnError",
+        "UndefinedFunctionError",
+        "UndefinedObjectError",
+        "UndefinedTableError",
+        "UniqueViolationError",
+        "ValueError",
+    }
+)
+_UPGRADE_FAILURE_SQLSTATES = frozenset(
+    {
+        "0A000",
+        "22023",
+        "22P02",
+        "23502",
+        "23503",
+        "23505",
+        "23514",
+        "25P02",
+        "40001",
+        "40P01",
+        "42501",
+        "42601",
+        "42703",
+        "42704",
+        "42804",
+        "42883",
+        "42P01",
+        "42P07",
+        "42P13",
+        "55P03",
+        "57014",
+        "P0001",
+        "XX000",
+    }
+)
+_UPGRADE_FAILURE_EXCEPTION_PREFIXES = (
+    "asyncpg.exceptions.",
+    "sqlalchemy.exc.",
+    "sqlalchemy.dialects.postgresql.asyncpg.AsyncAdapt_asyncpg_dbapi.",
+    "alembic.util.exc.",
+    "",
+)
+
+
+def _upgrade_failure_metadata(raw, *, source_migrations, exit_code):
+    """Extract finite observed tokens only; never export exception messages.
+
+    An unrecognized, malformed or overbound log does not identify a cause.
+    Tokens are diagnostic observations and confer no migration acceptance.
+    """
+    if (
+        type(source_migrations) is not dict
+        or len(source_migrations) > 128
+        or any(
+            type(name) is not str
+            or re.fullmatch(
+                r"migrations/(?:env\.py|versions/[0-9]{4}_[a-z0-9_]+\.py)", name
+            )
+            is None
+            or type(digest) is not str
+            or re.fullmatch(r"[a-f0-9]{64}", digest) is None
+            for name, digest in source_migrations.items()
+        )
+        or (
+            exit_code is not None
+            and (
+                type(exit_code) is not int
+                or not -255 <= exit_code <= 255
+                or exit_code == 0
+            )
+        )
+    ):
+        raise ValueError("diagnostic_upgrade_failure_configuration_invalid")
+    record = {
+        "schema": "ctcc.native_current_upgrade_failure.redacted.v1",
+        "stage": _UPGRADE_FAILURE_STAGE,
+        "exit_code": exit_code,
+        "status": "unclassified",
+        "log_sha256": None,
+        "log_bytes": None,
+        "exception_classes": [],
+        "sqlstates": [],
+        "migration_frames": [],
+        "observed_metadata_only": True,
+        "raw_driver_message_or_SQL_or_parameters_exported": False,
+        "full_postgresql_acceptance": False,
+        "execution_authority": False,
+    }
+    if type(raw) is not bytes or not raw:
+        record["status"] = "malformed"
+        return record
+    if len(raw) > _UPGRADE_FAILURE_LOG_LIMIT:
+        record["status"] = "oversize"
+        return record
+    record["log_bytes"] = len(raw)
+    record["log_sha256"] = hashlib.sha256(raw).hexdigest()
+    try:
+        text = raw.decode("utf-8", "strict")
+    except UnicodeError:
+        record["status"] = "malformed"
+        return record
+    if "\0" in text:
+        record["status"] = "malformed"
+        return record
+    classes, sqlstates, frames = set(), set(), []
+    for line in text.splitlines():
+        if len(line) > 8192:
+            continue
+        for prefix in _UPGRADE_FAILURE_EXCEPTION_PREFIXES:
+            if line.startswith(prefix):
+                candidate = line[len(prefix) :].partition(":")[0]
+                if candidate in _UPGRADE_FAILURE_CLASSES:
+                    classes.add(candidate)
+        state = re.fullmatch(r"SQLSTATE[:= ]+([A-Z0-9]{5})", line)
+        if state is not None and state[1] in _UPGRADE_FAILURE_SQLSTATES:
+            sqlstates.add(state[1])
+        frame = re.fullmatch(
+            r'  File "/app/(migrations/[^"\r\n]+\.py)", line ([1-9][0-9]{0,5}), in [A-Za-z_][A-Za-z0-9_]*',
+            line,
+        )
+        if frame is not None and frame[1] in source_migrations:
+            item = {
+                "file": frame[1],
+                "line": int(frame[2]),
+                "source_sha256": source_migrations[frame[1]],
+            }
+            if item not in frames:
+                frames.append(item)
+        if len(classes) > 8 or len(sqlstates) > 4 or len(frames) > 16:
+            record["status"] = "metadata_bound_exceeded"
+            return record
+    if classes or frames or sqlstates:
+        record.update(
+            status="observed",
+            exception_classes=sorted(classes),
+            sqlstates=sorted(sqlstates),
+            migration_frames=frames,
+        )
+    return record
+
+
+def _read_upgrade_failure_metadata(path, *, source_migrations, exit_code):
+    """Read the one fixed private log once, bounded, before runner cleanup."""
+    record = _upgrade_failure_metadata(
+        b"", source_migrations=source_migrations, exit_code=exit_code
+    )
+    try:
+        before = path.lstat()
+    except FileNotFoundError:
+        record["status"] = "missing"
+        return record
+    except OSError:
+        record["status"] = "read_failed"
+        return record
+    if (
+        not stat.S_ISREG(before.st_mode)
+        or before.st_nlink != 1
+        or getattr(before, "st_file_attributes", 0) & 1024
+        or path.is_symlink()
+    ):
+        record["status"] = "unsafe"
+        return record
+    if before.st_size > _UPGRADE_FAILURE_LOG_LIMIT:
+        record["status"] = "oversize"
+        return record
+    try:
+        with path.open("rb") as stream:
+            opened = os.fstat(stream.fileno())
+            if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+                record["status"] = "changed"
+                return record
+            raw = stream.read(_UPGRADE_FAILURE_LOG_LIMIT + 1)
+            completed = os.fstat(stream.fileno())
+        after = path.lstat()
+    except OSError:
+        record["status"] = "read_failed"
+        return record
+
+    def fields(info):
+        return (
+            info.st_dev,
+            info.st_ino,
+            info.st_mode,
+            info.st_nlink,
+            info.st_size,
+            info.st_mtime_ns,
+            getattr(info, "st_file_attributes", 0),
+        )
+
+    if (
+        fields(before) != fields(opened)
+        or fields(before) != fields(completed)
+        or fields(before) != fields(after)
+    ):
+        record["status"] = "changed"
+        return record
+    return _upgrade_failure_metadata(
+        raw, source_migrations=source_migrations, exit_code=exit_code
+    )
+
+
+def _export_upgrade_failure(run, *, output, export, source_files):
+    """No-clobber diagnostic artifact; preserves every failed stage and log."""
+    failed = [
+        step
+        for step in run.steps
+        if step.get("name") == _UPGRADE_FAILURE_STAGE and step.get("exit_code") != 0
+    ]
+    if not failed:
+        return None
+    if len(failed) != 1:
+        raise ValueError("diagnostic_upgrade_failure_stage_ambiguous")
+    source_migrations = {
+        name: item["sha256"]
+        for name, item in source_files.items()
+        if re.fullmatch(
+            r"migrations/(?:env\.py|versions/[0-9]{4}_[a-z0-9_]+\.py)", name
+        )
+    }
+    record = _read_upgrade_failure_metadata(
+        output / (_UPGRADE_FAILURE_STAGE + ".log"),
+        source_migrations=source_migrations,
+        exit_code=failed[0].get("exit_code"),
+    )
+    raw = json.dumps(record, sort_keys=True, indent=2).encode() + b"\n"
+    target = export / "native-witness-current-upgrade-failure.json"
+    with target.open("xb") as stream:
+        stream.write(raw)
+        stream.flush()
+        os.fsync(stream.fileno())
+    if target.read_bytes() != raw:
+        raise ValueError("diagnostic_upgrade_failure_export_readback_failed")
+    return hashlib.sha256(raw).hexdigest()
 
 
 def _write(path, record):
@@ -824,6 +1095,16 @@ def main():
     except Exception as error:  # noqa: BLE001 - Only a type/category reaches exported evidence.
         identity["failure_type"] = type(error).__name__
     finally:
+        try:
+            failure_pin = _export_upgrade_failure(
+                run, output=args.output, export=export, source_files=files
+            )
+            if failure_pin is not None:
+                identity["status"] = "FAIL"
+                identity["current_upgrade_failure_sha256"] = failure_pin
+        except Exception:  # noqa: BLE001 -- preserve failure; never export private errors.
+            identity["status"] = "FAIL"
+            identity["current_upgrade_failure_export_failed"] = True
         partition_capture = tests / "account-history-partition-native-catalog.json"
         current_upgrade_ran = any(
             step.get("name") == "native-witness-current-upgrade"
