@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - work/native-file-identity-wide-20261022
+      - work/history-partition-pg50-catalog-20261024
 
 permissions:
   contents: read

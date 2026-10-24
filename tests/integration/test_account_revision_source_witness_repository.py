@@ -133,11 +133,15 @@ async def _committed_migration_witness_state(engine, witness_sha256):
         native_catalog = await connection.scalar(
             text(NATIVE_WITNESS_IDENTITY_SCHEMA_SQL)
         )
+        from scripts.verify_account_history_partition_schema_v1 import (
+            read_account_history_partition_catalog,
+        )
         from scripts.verify_controlled_writer_coverage_schema_v1 import read_catalog
 
         coverage_catalog = await read_catalog(connection)
+        partition_catalog = await read_account_history_partition_catalog(connection)
     readback = migration_revision_readback(
-        "0049",
+        "0050",
         head,
         table_present,
         guard_present,
@@ -148,6 +152,7 @@ async def _committed_migration_witness_state(engine, witness_sha256):
         runtime_catalog,
         native_catalog,
         coverage_catalog=coverage_catalog,
+        partition_catalog=partition_catalog,
     )
     return row, readback
 
@@ -259,7 +264,7 @@ async def test_committed_denial_blocks_0043_downgrade_and_rolls_back(
     assert before[1]["account_revision_witness_trigger_count"] == 3
 
     def downgrade_after_committed_readback(sync_connection):
-        assert database_head(sync_connection) == "0049"
+        assert database_head(sync_connection) == "0050"
         assert (
             sync_connection.execute(
                 text(

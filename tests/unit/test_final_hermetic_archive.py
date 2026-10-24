@@ -1579,3 +1579,319 @@ def test_0049_early_preflight_requires_current_commit_and_two_native_role_cases(
                 container, test_results=tmp_path, mounts=()
             )
         assert len(calls) == 1
+
+
+def test_current_0050_adds_partition_policy_without_relabelling_prior_revisions():
+    from scripts import verify_final_hermetic as host
+
+    previous = {
+        revision: host.expected_migration_revision_readback(revision)
+        for revision in ("0047", "0048", "0049")
+    }
+    current = host.expected_migration_revision_readback("0050")
+    assert current["schema"] == "ctcc.migration_revision_readback.v7"
+    assert current["expected"] == current["observed"] == "0050"
+    assert (
+        current["controlled_writer_coverage_schema"]
+        == previous["0049"]["controlled_writer_coverage_schema"]
+    )
+    assert current["controlled_writer_coverage_schema"]["migration_revision"] == "0049"
+    assert "account_history_partition_schema" in current
+    assert {
+        revision: host.expected_migration_revision_readback(revision)
+        for revision in previous
+    } == previous
+
+
+def test_current_0050_formal_gate_never_falls_back_to_diagnostic_or_prior_catalog(
+    monkeypatch,
+):
+    from app.domain import account_history_partition_catalog_v1 as policy
+    from scripts import verify_final_hermetic as host
+
+    calls = []
+
+    def pending(catalog, *, require_native_baseline=True):
+        calls.append((catalog, require_native_baseline))
+        raise ValueError("actual_new_policy_pending_synthetic_gate")
+
+    monkeypatch.setattr(policy, "verify_account_history_partition_catalog", pending)
+    with pytest.raises(ValueError, match="actual_new_policy_pending_synthetic_gate"):
+        host.migration_revision_readback(
+            "0050",
+            "0050",
+            False,
+            False,
+            (),
+            partition_catalog={"original_observation": True},
+        )
+    assert calls == [({"original_observation": True}, True)]
+    with pytest.raises(RuntimeError, match="migration_revision_readback_mismatch"):
+        host.migration_revision_readback(
+            "0050", "0049", False, False, (), partition_catalog={}
+        )
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize(
+    "damage", ["source", "head", "manifest", "file", "true_admission", "string_version"]
+)
+def test_current_0050_capture_binds_new_source_before_formal_verification(
+    monkeypatch, damage
+):
+    from app.domain import account_history_partition_catalog_v1 as policy
+    from scripts import verify_final_hermetic as host
+
+    source = {
+        name: {"sha256": "a" * 64} for name in host.HISTORY_PARTITION_CAPTURE_PATHS
+    }
+    document = {
+        "schema": "ctcc.account_history_partition_native_catalog_observation.v1",
+        "source_head": "0050",
+        "database_head": "0050",
+        "source_migration_sha256": "b" * 64,
+        "manifest_sha256": "c" * 64,
+        "source_files": {name: "a" * 64 for name in source},
+        "session_facts": [
+            "17.6",
+            "170006",
+            "ctcc",
+            "ctcc",
+            "owned_synthetic",
+            "public",
+        ],
+        "catalog": {"synthetic_only": True},
+        "native_baseline_admission": False,
+        "execution_authority": False,
+    }
+
+    def observed(catalog, *, require_native_baseline=True):
+        assert catalog == {"synthetic_only": True} and require_native_baseline is True
+        return {"synthetic_projection_only": True}
+
+    monkeypatch.setattr(policy, "verify_account_history_partition_catalog", observed)
+    assert host.verify_history_partition_native_catalog_capture(
+        document,
+        migration_sha256="b" * 64,
+        manifest_sha256="c" * 64,
+        source_files=source,
+    ) == {"synthetic_projection_only": True}
+    if damage == "source":
+        document["source_head"] = "0049"
+    elif damage == "head":
+        document["database_head"] = "0049"
+    elif damage == "manifest":
+        document["manifest_sha256"] = "d" * 64
+    elif damage == "file":
+        document["source_files"][next(iter(source))] = "d" * 64
+    elif damage == "true_admission":
+        document["native_baseline_admission"] = True
+    else:
+        document["session_facts"][1] = "17.6"
+    with pytest.raises(
+        ValueError, match="history_partition_native_catalog_observation_invalid"
+    ):
+        host.verify_history_partition_native_catalog_capture(
+            document,
+            migration_sha256="b" * 64,
+            manifest_sha256="c" * 64,
+            source_files=source,
+        )
+
+
+@pytest.mark.parametrize(
+    "damage", ["bool_count", "empty", "changed_rows", "old_head", "old_target"]
+)
+def test_current_0050_nonempty_receipt_keeps_partial_member_and_refuses_substitution(
+    damage,
+):
+    from app.domain.account_history_partition_catalog_v1 import TABLES
+    from scripts import verify_final_hermetic as host
+
+    snapshot = {
+        "head": "0050",
+        "rows_sha256": "d" * 64,
+        "counts": {TABLES[0]: 1, TABLES[1]: 0},
+        "catalog_sha256": "e" * 64,
+    }
+    value = {
+        "schema_version": "ctcc.account_history_partition_migration_acceptance.v1",
+        "manifest_sha256": "a" * 64,
+        "repository_sha256": "b" * 64,
+        "migration_sha256": "c" * 64,
+        "server_major": 17,
+        "before": json.loads(json.dumps(snapshot)),
+        "after": json.loads(json.dumps(snapshot)),
+        "refusal_code": host.HISTORY_PARTITION_DOWNGRADE_DENIAL,
+        "downgrade_target": "0049",
+        "native_baseline_admission": False,
+        "execution_authority": False,
+    }
+    pins = {
+        "manifest_sha256": "a" * 64,
+        "repository_sha256": "b" * 64,
+        "migration_sha256": "c" * 64,
+    }
+    assert host.verify_history_partition_migration_receipt(value, **pins) == value
+    if damage == "bool_count":
+        value["after"]["counts"][TABLES[0]] = True
+    elif damage == "empty":
+        value["before"]["counts"][TABLES[0]] = 0
+        value["after"]["counts"][TABLES[0]] = 0
+    elif damage == "changed_rows":
+        value["after"]["rows_sha256"] = "f" * 64
+    elif damage == "old_head":
+        value["after"]["head"] = "0049"
+    else:
+        value["downgrade_target"] = "0048"
+    with pytest.raises(ValueError, match="history_partition_migration_receipt"):
+        host.verify_history_partition_migration_receipt(value, **pins)
+
+
+@pytest.mark.parametrize(
+    "damage", ["database", "edge", "source_frame", "rows", "missing"]
+)
+def test_historical_0049_requires_actual_owned_child_case_properties(tmp_path, damage):
+    import xml.etree.ElementTree as ET
+
+    from scripts import verify_final_hermetic as host
+
+    receipt = {"before": {"catalog_sha256": "d" * 64, "rows_sha256": "e" * 64}}
+    props = {
+        "owned49_database": "ctcc_cwc_" + "a" * 32,
+        "owned49_owner": "ctcc",
+        "owned49_schema": "public",
+        "owned49_head_before": "0049",
+        "owned49_head_after": "0049",
+        "owned49_edge": "0049 -> 0048",
+        "owned49_sqlstate": "P0001",
+        "owned49_refusal": host.PAIR_GUARD_DOWNGRADE_DENIAL,
+        "owned49_source_frame": "0049_controlled_writer_pair_guard_definer.py:downgrade",
+        "owned49_catalog_sha256": "d" * 64,
+        "owned49_rows_sha256": "e" * 64,
+    }
+
+    def save():
+        root = ET.Element("testsuites")
+        suite = ET.SubElement(root, "testsuite")
+        case = ET.SubElement(
+            suite,
+            "testcase",
+            classname="tests.integration.test_controlled_writer_coverage_repository",
+            name="test_nonempty_0049_downgrade_refuses_and_retains_exact_catalog",
+        )
+        properties = ET.SubElement(case, "properties")
+        for name, value in props.items():
+            ET.SubElement(properties, "property", name=name, value=value)
+        path = tmp_path / "actual.xml"
+        path.write_bytes(ET.tostring(root))
+        return path
+
+    assert (
+        host.verify_historical_0049_nonempty_case(save(), receipt)["edge"]
+        == "0049 -> 0048"
+    )
+    if damage == "database":
+        props["owned49_database"] = "ctcc"
+    elif damage == "edge":
+        props["owned49_edge"] = "0050 -> 0049"
+    elif damage == "source_frame":
+        props["owned49_source_frame"] = "0050_account_history_partition.py:downgrade"
+    elif damage == "rows":
+        props["owned49_rows_sha256"] = "f" * 64
+    else:
+        props.pop("owned49_database")
+    with pytest.raises(
+        ValueError, match="historical0049_actual_case_properties_invalid"
+    ):
+        host.verify_historical_0049_nonempty_case(save(), receipt)
+
+
+@pytest.mark.parametrize(
+    "damage",
+    (
+        "none",
+        "head",
+        "source",
+        "old_code",
+        "zero_exit",
+        "unknown_text",
+        "duplicate_refusal",
+    ),
+)
+def test_current_0050_run_command_records_only_exact_partition_policy_refusal(
+    tmp_path, monkeypatch, damage
+):
+    """Synthetic process IO exercises the real Run producer and strict log reader."""
+    from scripts import verify_final_hermetic as host
+
+    edge = "0050 -> 0049"
+    source = "/app/migrations/versions/0050_account_history_partition.py"
+    marker = host.HISTORY_PARTITION_DOWNGRADE_DENIAL
+    returncode = 1
+    if damage == "head":
+        edge = "0049 -> 0048"
+    elif damage == "source":
+        source = "/app/migrations/versions/0049_controlled_writer_pair_guard_definer.py"
+    elif damage == "old_code":
+        marker = host.PAIR_GUARD_DOWNGRADE_DENIAL
+    elif damage == "zero_exit":
+        returncode = 0
+    elif damage == "unknown_text":
+        marker = "synthetic_network_interruption"
+    output = (
+        f"INFO Running downgrade {edge}\n"
+        f'  File "{source}", line 167, in downgrade\n'
+        f"asyncpg.exceptions.RaiseError: {marker}\n"
+        f"sqlalchemy.exc.DBAPIError: (asyncpg.Error): {marker}\n"
+    ).encode()
+    if damage == "duplicate_refusal":
+        output += (
+            f"asyncpg.exceptions.RaiseError: {host.HISTORY_PARTITION_DOWNGRADE_DENIAL}\n"
+        ).encode()
+    calls = []
+
+    def synthetic_process(args, **kwargs):
+        calls.append(args)
+        assert args == ["docker", "run", "synthetic-isolated-downgrade"]
+        assert kwargs["input"] is None and kwargs["check"] is False
+        assert kwargs["stderr"] == subprocess.STDOUT
+        assert 0 < kwargs["timeout"] <= 7
+        kwargs["stdout"].write(output)
+        kwargs["stdout"].flush()
+        return SimpleNamespace(returncode=returncode)
+
+    monkeypatch.setattr(host.subprocess, "run", synthetic_process)
+    run = host.Run(tmp_path)
+    stage = "migration-history-partition-nonempty-denial"
+
+    def produce():
+        run.command(
+            stage,
+            ["docker", "run", "synthetic-isolated-downgrade"],
+            timeout=7,
+            expected_refusal=host.HISTORY_PARTITION_DOWNGRADE_DENIAL,
+        )
+
+    if damage == "none":
+        produce()
+    else:
+        with pytest.raises(
+            (RuntimeError, ValueError), match="downgrade_policy_refusal_unverified"
+        ):
+            produce()
+    assert len(calls) == 1
+    assert (tmp_path / f"{stage}.log").read_bytes() == output
+    steps = json.loads((tmp_path / "steps.json").read_bytes())
+    assert len(steps) == 1 and steps == run.steps
+    record = steps[0]
+    assert record["name"] == stage and record["exit_code"] == returncode
+    assert record["timeout_scope"] == "stage"
+    if damage == "none":
+        assert record["policy_refusal"] == host.HISTORY_PARTITION_DOWNGRADE_DENIAL
+        assert "failure_type" not in record
+    else:
+        assert "policy_refusal" not in record
+        assert record["failure_type"] == (
+            "RuntimeError" if damage == "zero_exit" else "ValueError"
+        )

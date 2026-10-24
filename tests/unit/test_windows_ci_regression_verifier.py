@@ -401,3 +401,13 @@ def test_exact_source_archive_rejects_traversal(tmp_path: Path):
         verifier.WindowsRegressionError, match="windows_source_archive_entry_unsafe"
     ):
         verifier.verify_archive_readback(archive, root)
+
+
+def test_account_history_partition_is_postgresql_only_without_skip_expansion():
+    name = "test_account_history_partition_repository.py"
+    assert verifier.POSTGRES_INTEGRATION.count(name) == 1
+    assert name not in verifier.NO_DB_INTEGRATION
+    assert all(
+        "account_history_partition" not in module
+        for module, _ in verifier.POSIX_SKIP_POLICY
+    )

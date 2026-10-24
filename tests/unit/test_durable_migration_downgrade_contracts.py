@@ -16,7 +16,11 @@ EPOCH_TABLE = "public.demo_event_history_epoch_events"
 def _migration_table_reference(revision, table):
     # The integration fixture retains unqualified catalog names. These
     # migrations deliberately lock their exact public-qualified references.
-    return f"public.{table}" if revision in {"0043", "0044", "0046", "0048"} else table
+    return (
+        f"public.{table}"
+        if revision in {"0043", "0044", "0046", "0048", "0050"}
+        else table
+    )
 
 
 @pytest.mark.parametrize("revision", TABLES)
@@ -71,6 +75,22 @@ def test_exclusive_nowait_locks_precede_any_read_or_drop(revision):
             ("execute", "DROP FUNCTION public.public_runtime_bundle_v1_immutable()"),
         ]
         return
+    if revision == "0050":
+        assert (
+            "RAISE EXCEPTION 'account_history_partition_downgrade_requires_empty'"
+            in guard
+        )
+        assert tuple(
+            statement
+            for kind, statement in commands[2:]
+            if kind == "execute" and statement.startswith("DROP TABLE ")
+        ) == tuple("DROP TABLE public." + table for table in reversed(TABLES[revision]))
+        assert all(
+            kind == "execute"
+            and statement.startswith(("DROP TABLE public.", "DROP FUNCTION public."))
+            for kind, statement in commands[2:]
+        )
+        return
     if revision == "0048":
         assert (
             "RAISE EXCEPTION 'controlled_writer_coverage_downgrade_requires_empty'"
@@ -104,7 +124,7 @@ def test_scheduled_write_between_guard_and_drop_cannot_be_lost(revision):
         elif (
             kind == "drop"
             or (
-                revision == "0048"
+                revision in {"0048", "0050"}
                 and kind == "execute"
                 and value
                 in {"DROP TABLE public." + table for table in TABLES[revision]}
@@ -124,7 +144,7 @@ def test_scheduled_write_between_guard_and_drop_cannot_be_lost(revision):
             assert guard_seen
             table = (
                 value.removeprefix("DROP TABLE public.")
-                if revision == "0048" and kind == "execute"
+                if revision in {"0048", "0050"} and kind == "execute"
                 else TABLES[revision][0]
                 if revision in {"0041", "0046"}
                 else value

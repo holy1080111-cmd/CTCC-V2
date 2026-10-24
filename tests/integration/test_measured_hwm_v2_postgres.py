@@ -149,7 +149,7 @@ async def test_b5_0045_roundtrip_or_nonempty_denial_keeps_catalog(database):
         row_count = await connection.scalar(
             text("SELECT count(*) FROM public.demo_account_measured_hwm_v2")
         )
-        assert await connection.run_sync(database_head) == "0049"
+        assert await connection.run_sync(database_head) == "0050"
         original = await catalog(connection)
         assert original[0][-1] == migration._NEW_BODY_SHA256
         assert original[0][-2] is False
@@ -167,7 +167,7 @@ async def test_b5_0045_roundtrip_or_nonempty_denial_keeps_catalog(database):
         assert legacy[1] == original[1]
         await connection.run_sync(invoke, "upgrade")
         assert await catalog(connection) == original
-        assert await connection.run_sync(database_head) == "0049"
+        assert await connection.run_sync(database_head) == "0050"
 
 
 def _first_append_diagnostic(stage: str, error: Exception) -> str:
@@ -743,11 +743,15 @@ async def test_b5_nonempty_downgrade_denies_and_rolls_back_exact_catalog(
             native_catalog = await connection.scalar(
                 text(NATIVE_WITNESS_IDENTITY_SCHEMA_SQL)
             )
+            from scripts.verify_account_history_partition_schema_v1 import (
+                read_account_history_partition_catalog,
+            )
             from scripts.verify_controlled_writer_coverage_schema_v1 import read_catalog
 
             coverage_catalog = await read_catalog(connection)
+            partition_catalog = await read_account_history_partition_catalog(connection)
         return migration_revision_readback(
-            "0049",
+            "0050",
             head,
             witness_table,
             witness_guard,
@@ -758,6 +762,7 @@ async def test_b5_nonempty_downgrade_denies_and_rolls_back_exact_catalog(
             runtime_catalog,
             native_catalog,
             coverage_catalog=coverage_catalog,
+            partition_catalog=partition_catalog,
         )
 
     before = await inspect()
@@ -797,4 +802,4 @@ async def test_b5_downgrade_nowait_refuses_concurrent_parent_reader(
             async with database[0].begin() as contender:
                 await contender.run_sync(downgrade)
     async with database[0].connect() as connection:
-        assert await connection.run_sync(database_head) == "0049"
+        assert await connection.run_sync(database_head) == "0050"

@@ -60,6 +60,10 @@ MANIFEST = b"reviewed-manifest\n"
 SOURCE_FILES = json.dumps(
     {
         "app/database/repositories/controlled_writer_coverage.py": {"sha256": "1" * 64},
+        "app/domain/account_history_partition_catalog_v1.py": {"sha256": "4" * 64},
+        "app/domain/account_history_partition_v1.py": {"sha256": "5" * 64},
+        "app/database/repositories/account_history_partition.py": {"sha256": "6" * 64},
+        "migrations/versions/0050_account_history_partition.py": {"sha256": "7" * 64},
         "migrations/versions/0048_controlled_writer_coverage.py": {"sha256": "2" * 64},
         "migrations/versions/0049_controlled_writer_pair_guard_definer.py": {
             "sha256": "3" * 64
@@ -88,9 +92,26 @@ def synthetic_sealed_native_identity_baseline(monkeypatch):
 
     # Invented union filesystem artifacts cannot seal a native PG17 baseline.
     monkeypatch.setattr(coverage_schema, "verify_catalog", synthetic_catalog)
+    from app.domain import account_history_partition_catalog_v1 as partition_policy
+
+    def synthetic_partition_catalog(catalog, *, require_native_baseline=True):
+        assert require_native_baseline is True
+        if catalog != {"synthetic_fixture_only": True}:
+            raise ValueError("synthetic_partition_catalog_mismatch")
+        return expected_migration_revision_readback("0050")[
+            "account_history_partition_schema"
+        ]
+
+    monkeypatch.setattr(
+        partition_policy,
+        "verify_account_history_partition_catalog",
+        synthetic_partition_catalog,
+    )
 
 
 def _revision_readback(revision: str) -> dict:
+    if revision == "0050":
+        return expected_migration_revision_readback("0050")
     if revision in ("0048", "0049"):
         return {
             **_revision_readback("0047"),
@@ -845,6 +866,7 @@ def _artifacts(tmp_path: Path) -> tuple[Path, list[str]]:
                 }
             )
         )
+    _current0050_synthetic_artifact_layer(artifacts)
     return artifacts, full
 
 
@@ -1714,16 +1736,10 @@ def test_current_0049_and_isolated_0047_evidence_cannot_substitute_each_other(
         value["database_head"] = "0048"
         path.write_text(json.dumps(value))
     elif damage == "changed_row":
-        path = root / "migration-coverage-nonempty-after.log"
+        # Own49 evidence now lives in its genuine child receipt, not a primary50 log.
+        path = root / "test-results/controlled-writer-pair-guard-migration.json"
         value = json.loads(path.read_text())
-        value["retention"]["rows"]["demo_controlled_writer_coverage_journal"][0][
-            "changed"
-        ] = True
-        value["retention"]["rows_sha256"] = _sha(
-            json.dumps(
-                value["retention"]["rows"], sort_keys=True, separators=(",", ":")
-            ).encode()
-        )
+        value["after"]["rows_sha256"] = "0" * 64
         path.write_text(json.dumps(value))
     elif damage == "extra_predecessor_case":
         path = root / "test-results/predecessor-0047-two-cases.xml"
@@ -1787,12 +1803,15 @@ def test_0049_union_requires_distinct_pair_guard_receipt_and_early_commit_proof(
         path = root / "migration-pair-guard-empty-before.log"
         path.write_text(json.dumps(_revision_readback("0048")))
     else:
-        path = root / "migration-coverage-nonempty-denial.log"
-        path.write_text(
-            path.read_text().replace(
-                PAIR_GUARD_DOWNGRADE_DENIAL, COVERAGE_DOWNGRADE_DENIAL
-            )
+        path = root / "test-results/postgres-intent.xml"
+        document = ET.fromstring(path.read_bytes())
+        item = next(
+            item
+            for item in document.iter("property")
+            if item.get("name") == "owned49_refusal"
         )
+        item.set("value", COVERAGE_DOWNGRADE_DENIAL)
+        path.write_bytes(ET.tostring(document))
     _rehash(root, path)
     with pytest.raises((ValueError, RuntimeError)):
         verify_union(
@@ -1862,3 +1881,241 @@ def test_0049_preflight_real_producer_report_roundtrips_through_union_reader(tmp
     identity["controlled_writer_coverage_preflight"]["required_module_passed"] = {}
     with pytest.raises(ValueError, match="linux_union_preflight_report_invalid"):
         _verify_preflight_reports(tmp_path, hashes, identity)
+
+
+def _current0050_synthetic_artifact_layer(artifacts):
+    """Only invented filesystem fixtures; never a retained or native receipt."""
+    from app.domain.account_history_partition_catalog_v1 import TABLES
+    from scripts import verify_final_hermetic as producer
+
+    source = json.loads(SOURCE_FILES)
+    for attachment in artifacts.iterdir():
+        root = attachment / "ctcc-validation"
+        results = root / "test-results"
+        identity = json.loads((root / "identity.json").read_bytes())
+        identity["migration"]["source_head"] = identity["migration"][
+            "database_head"
+        ] = "0050"
+        roundtrip = identity["migration_empty_roundtrip"]
+        roundtrip.update(
+            source_head="0050",
+            history_partition_before_readback=_revision_readback("0050"),
+            history_partition_down_revision="0049",
+            history_partition_down_readback=producer.expected_history_partition_absent_readback(),
+            reupgrade_readback=_revision_readback("0050"),
+        )
+        identity["migration_downgrade_policy"].update(
+            source_head="0050",
+            database_head_after="0050",
+            rollback_readback=_revision_readback("0050"),
+        )
+        for log in [
+            "migration-identity",
+            "migration-reupgrade-identity",
+            "migration-reidentity",
+        ]:
+            (root / f"{log}.log").write_text(
+                json.dumps(identity["migration"]), encoding="utf-8"
+            )
+        for log in [
+            "migration-reupgrade-readback",
+            "migration-denial-readback",
+            "migration-history-partition-empty-before",
+        ]:
+            (root / f"{log}.log").write_text(
+                json.dumps(_revision_readback("0050")), encoding="utf-8"
+            )
+        (root / "migration-history-partition-empty-readback.log").write_text(
+            json.dumps(producer.expected_history_partition_absent_readback()),
+            encoding="utf-8",
+        )
+        denial = root / "migration-downgrade-denial.log"
+        denial.write_bytes(
+            b"INFO Running downgrade 0050 -> 0049\n" + denial.read_bytes()
+        )
+        capture_path = results / "coverage-native-catalog.json"
+        coverage_capture = json.loads(capture_path.read_bytes())
+        coverage_capture["source_head"] = coverage_capture["database_head"] = "0050"
+        capture_path.write_text(json.dumps(coverage_capture), encoding="utf-8")
+        partition_capture = {
+            **coverage_capture,
+            "schema": "ctcc.account_history_partition_native_catalog_observation.v1",
+            "source_files": {
+                name: source[name]["sha256"]
+                for name in producer.HISTORY_PARTITION_CAPTURE_PATHS
+            },
+            "manifest_sha256": _sha(MANIFEST),
+        }
+        path = results / "account-history-partition-native-catalog.json"
+        path.write_text(json.dumps(partition_capture), encoding="utf-8")
+        for label, evidence_path in [
+            ("migration-history-partition-native-catalog", path),
+            ("migration-coverage-native-catalog", capture_path),
+        ]:
+            (root / f"{label}.log").write_text(
+                json.dumps(
+                    {
+                        "artifact": "test-results/" + evidence_path.name,
+                        "sha256": _sha(evidence_path.read_bytes()),
+                        "native_baseline_admission": False,
+                        "execution_authority": False,
+                    }
+                ),
+                encoding="utf-8",
+            )
+        for log in ["predecessor-0047-identity"]:
+            path = root / f"{log}.log"
+            if path.exists():
+                value = json.loads(path.read_bytes())
+                value["source_head"] = "0050"
+                path.write_text(json.dumps(value), encoding="utf-8")
+        if identity["suite"] == "postgres":
+            identity["predecessor_0047_validation"]["source_head"] = "0050"
+            cases = producer.HISTORY_PARTITION_PREFLIGHT_CASES
+            assert type(cases) is tuple and cases
+            stage = "account-history-partition-preflight"
+            xml = results / f"{stage}.xml"
+            _junit(
+                xml,
+                [f"{module.replace('.', '/')}.py::{case}" for module, case in cases],
+            )
+            identity["account_history_partition_preflight"] = (
+                producer.run_history_partition_preflight(
+                    lambda *_args, **_kwargs: None, test_results=results, mounts=()
+                )
+            )
+            (root / f"{stage}.log").write_text(
+                "synthetic-preflight-fixture-only\n", encoding="utf-8"
+            )
+            pair = identity["pair_guard_migration_acceptance"]
+            xml = results / "postgres-intent.xml"
+            tree = ET.fromstring(xml.read_bytes())
+            target = next(
+                c
+                for c in tree.iter("testcase")
+                if c.get("name")
+                == "test_nonempty_0049_downgrade_refuses_and_retains_exact_catalog"
+            )
+            properties = ET.SubElement(target, "properties")
+            values = {
+                "owned49_database": "ctcc_cwc_" + "a" * 32,
+                "owned49_owner": "ctcc",
+                "owned49_schema": "public",
+                "owned49_head_before": "0049",
+                "owned49_head_after": "0049",
+                "owned49_edge": "0049 -> 0048",
+                "owned49_sqlstate": "P0001",
+                "owned49_refusal": PAIR_GUARD_DOWNGRADE_DENIAL,
+                "owned49_source_frame": "0049_controlled_writer_pair_guard_definer.py:downgrade",
+                "owned49_catalog_sha256": pair["before"]["catalog_sha256"],
+                "owned49_rows_sha256": pair["before"]["rows_sha256"],
+            }
+            for name, value in values.items():
+                ET.SubElement(properties, "property", name=name, value=value)
+            xml.write_bytes(ET.tostring(tree))
+            identity["historical_0049_nonempty_actual_case"] = (
+                producer.verify_historical_0049_nonempty_case(xml, pair)
+            )
+            identity["postgres_tests"] = verify_pytest_report(
+                xml,
+                required_cases=ARCHIVE_REQUIRED_CASES,
+                required_modules=tuple(
+                    sorted(
+                        path.removesuffix(".py").replace("/", ".")
+                        for path in POSTGRES_TEST_PATHS
+                    )
+                ),
+            )
+            rows = {TABLES[0]: [{"synthetic_fixture_only": True}], TABLES[1]: []}
+            retention = {
+                "rows": rows,
+                "counts": {TABLES[0]: 1, TABLES[1]: 0},
+                "rows_sha256": _sha(
+                    json.dumps(rows, sort_keys=True, separators=(",", ":")).encode()
+                ),
+            }
+            snapshot = producer.history_partition_nonempty_snapshot(
+                _revision_readback("0050"), retention
+            )
+            identity["history_partition_nonempty_downgrade_policy"] = (
+                producer.history_partition_nonempty_downgrade_readback(
+                    snapshot, snapshot
+                )
+            )
+            for label in [
+                "migration-history-partition-nonempty-before",
+                "migration-history-partition-nonempty-after",
+            ]:
+                (root / f"{label}.log").write_text(
+                    json.dumps(snapshot), encoding="utf-8"
+                )
+            (root / "migration-history-partition-nonempty-denial.log").write_text(
+                "INFO Running downgrade 0050 -> 0049\n"
+                '  File "/app/migrations/versions/0050_account_history_partition.py", line 49\n'
+                f"asyncpg.exceptions.RaiseError: {producer.HISTORY_PARTITION_DOWNGRADE_DENIAL}\n"
+                f"sqlalchemy.exc.DBAPIError: (asyncpg.Error): {producer.HISTORY_PARTITION_DOWNGRADE_DENIAL}\n",
+                encoding="utf-8",
+            )
+            snap = {
+                "head": "0050",
+                "rows_sha256": retention["rows_sha256"],
+                "counts": retention["counts"],
+                "catalog_sha256": "f" * 64,
+            }
+            receipt = {
+                "schema_version": "ctcc.account_history_partition_migration_acceptance.v1",
+                "manifest_sha256": _sha(MANIFEST),
+                "repository_sha256": "6" * 64,
+                "migration_sha256": "7" * 64,
+                "server_major": 17,
+                "before": snap,
+                "after": snap,
+                "refusal_code": producer.HISTORY_PARTITION_DOWNGRADE_DENIAL,
+                "downgrade_target": "0049",
+                "native_baseline_admission": False,
+                "execution_authority": False,
+            }
+            (results / "account-history-partition-migration.json").write_text(
+                json.dumps(receipt), encoding="utf-8"
+            )
+            identity["history_partition_migration_acceptance"] = receipt
+        steps = json.loads((root / "steps.json").read_bytes())
+        for step in steps:
+            if step["name"] == "migration-history-partition-nonempty-denial":
+                step["exit_code"] = 1
+                step["policy_refusal"] = producer.HISTORY_PARTITION_DOWNGRADE_DENIAL
+        (root / "steps.json").write_text(json.dumps(steps), encoding="utf-8")
+        (root / "identity.json").write_text(json.dumps(identity), encoding="utf-8")
+        hashes = {
+            path.relative_to(root).as_posix(): _sha(path.read_bytes())
+            for path in root.rglob("*")
+            if path.is_file() and path.name != "results.sha256.json"
+        }
+        (root / "results.sha256.json").write_text(json.dumps(hashes), encoding="utf-8")
+
+
+def test_0050_partition_preflight_real_producer_report_roundtrips_through_union_reader(
+    tmp_path,
+):
+    from scripts import verify_linux_shard_union as reader
+
+    artifacts, _full = _artifacts(tmp_path)
+    root = artifacts / f"ctcc-linux-postgres-{COMMIT}" / "ctcc-validation"
+    identity = json.loads((root / "identity.json").read_bytes())
+    hashes = json.loads((root / "results.sha256.json").read_bytes())
+    reader._verify_preflight_reports(root, hashes, identity)
+    report = identity["account_history_partition_preflight"]
+    assert report["required_modules"]
+    report["required_modules"] = {}
+    with pytest.raises(ValueError, match="linux_union_preflight_report_invalid"):
+        reader._verify_preflight_reports(root, hashes, identity)
+
+
+def test_0050_partition_module_is_exclusively_postgres_selected():
+    path = "tests/integration/test_account_history_partition_repository.py"
+    assert path in POSTGRES_TEST_PATHS
+    assert selected_for("postgres", None, path + "::actual_case")
+    assert not any(
+        selected_for("shard", index, path + "::actual_case")
+        for index in range(SHARD_COUNT)
+    )

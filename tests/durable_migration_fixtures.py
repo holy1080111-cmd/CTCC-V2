@@ -37,6 +37,7 @@ MIGRATIONS = {
     "0047": "0047_public_witness_native_identity.py",
     "0048": "0048_controlled_writer_coverage.py",
     "0049": "0049_controlled_writer_pair_guard_definer.py",
+    "0050": "0050_account_history_partition.py",
 }
 TABLES = {
     # 0023 is constraint/trigger-only and has dedicated upgrade/downgrade
@@ -69,11 +70,22 @@ TABLES = {
         "demo_controlled_writer_coverage_scopes",
         "demo_controlled_writer_coverage_journal",
     ),
+    "0050": (
+        "demo_account_history_native_members",
+        "demo_account_history_partition_checkpoints",
+    ),
 }
 DOWNGRADE_LOCKS = {
     **TABLES,
     "0048": ("demo_account_controls",) + TABLES["0048"],
     "0049": ("demo_account_controls",) + TABLES["0048"],
+    "0050": (
+        "qualification_account_scopes",
+        "demo_account_controls",
+        "demo_account_observation_batches",
+        "demo_account_capture_events",
+    )
+    + TABLES["0050"],
     "0018": TABLES["0017"] + TABLES["0018"],
     "0020": ("qualification_account_scopes",) + TABLES["0020"],
     "0021": TABLES["0020"] + TABLES["0021"],
@@ -101,7 +113,16 @@ class RecordedDowngrade:
         self.commands = []
         module = load_migration(revision)
         module.op = self
-        if revision == "0049":
+        if revision == "0050":
+            # Explicit offline DDL-order fixture. Actual owner/ACL/catalog and
+            # native baseline admission remain real-PG tests, never stubbed there.
+            original = module._checked_catalog
+            module._checked_catalog = self._synthetic_partition_catalog
+            try:
+                module.downgrade()
+            finally:
+                module._checked_catalog = original
+        elif revision == "0049":
             # This offline ordering fixture explicitly stubs native catalog
             # acquisition; only real PG cases can verify owners/ACL/deparser.
             original = module._checked_catalog
@@ -115,6 +136,10 @@ class RecordedDowngrade:
 
     def get_bind(self):
         return self
+
+    def _synthetic_partition_catalog(self, bind):
+        assert bind is self
+        return {"explicit_synthetic_DDL_order_only": True}
 
     def _synthetic_catalog(self, bind, *, historical):
         assert bind is self and type(historical) is bool

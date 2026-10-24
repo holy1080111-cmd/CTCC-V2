@@ -1,8 +1,9 @@
 """Actual disposable-PG DB0049 and historical DB0048 tests; all source/account inputs are synthetic.
 
-The primary migrated hermetic database retains accepted rows for the runner's
-later real downgrade/retention experiment. Only child databases/roles created
-by this module are removed. No native source, exchange or execution is tested.
+The primary head50 fixture verifies the harness identity. Coverage49 and48
+experiments use separately owned historical child databases; their exact rows,
+refusals and receipts cannot stand in for current50 evidence. Only owned child
+databases/roles are removed. No native source, exchange or execution is tested.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ import hashlib
 import json
 import os
 import re
+import traceback
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -69,7 +71,7 @@ async def coverage_primary():
             assert 170000 <= version < 180000
             assert (
                 await connection.scalar(text("SELECT version_num FROM alembic_version"))
-                == "0049"
+                == "0050"
             )
         yield engine
     finally:
@@ -81,7 +83,7 @@ def _migrate(connection, target, direction):
     config = Config(str(_ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(_ROOT / "migrations"))
     script = ScriptDirectory.from_config(config)
-    assert script.get_current_head() == "0049"
+    assert script.get_current_head() == "0050"
     resolver = (
         script._upgrade_revs if direction == "upgrade" else script._downgrade_revs
     )
@@ -1768,26 +1770,58 @@ def _export_pair_guard_migration_receipt(before, after):
 
 
 async def test_nonempty_0049_downgrade_refuses_and_retains_exact_catalog(
-    coverage_primary,
+    coverage_child,
+    record_property,
 ):
-    # Retain actual rows in the primary harness-owned database for its later
-    # independent migration experiment. No source/native owner is fabricated.
-    async with coverage_primary.begin() as connection:
+    # Current primary is50. This experiment owns a real separately migrated49
+    # database and cannot borrow the primary50 refusal or its retained records.
+    admin, _restricted = coverage_child
+    async with admin.begin() as connection:
+        database, owner, schema = (
+            await connection.execute(
+                text("SELECT current_database(),current_user,current_schema()")
+            )
+        ).one()
+        assert re.fullmatch(r"ctcc_cwc_[a-f0-9]{32}", database)
+        assert database == admin.url.database and owner == "ctcc" and schema == "public"
         await seed_controlled_writer_coverage(
             connection, uid=str(730049000000 + uuid4().int % 10**9)
         )
-    before = await _snapshot(coverage_primary)
+    before = await _snapshot(admin)
     assert before[0] == "0049" and before[3] == 17
     assert all(count > 0 for count in before[2]["counts"].values())
     with pytest.raises(
         DBAPIError,
         match="controlled_writer_pair_guard_definer_downgrade_requires_empty",
-    ):
-        async with coverage_primary.begin() as connection:
+    ) as denied:
+        async with admin.begin() as connection:
             await connection.run_sync(_migrate, "0048", "downgrade")
-    after = await _snapshot(coverage_primary)
+    assert denied.value.orig.sqlstate == "P0001"
+    frames = traceback.extract_tb(denied.value.__traceback__)
+    assert any(
+        Path(frame.filename).name == "0049_controlled_writer_pair_guard_definer.py"
+        and frame.name == "downgrade"
+        for frame in frames
+    )
+    after = await _snapshot(admin)
     assert coverage.canonical(before) == coverage.canonical(after)
     _export_pair_guard_migration_receipt(before, after)
+    for key, value in {
+        "owned49_database": database,
+        "owned49_owner": owner,
+        "owned49_schema": schema,
+        "owned49_head_before": before[0],
+        "owned49_head_after": after[0],
+        "owned49_edge": "0049 -> 0048",
+        "owned49_sqlstate": denied.value.orig.sqlstate,
+        "owned49_refusal": "controlled_writer_pair_guard_definer_downgrade_requires_empty",
+        "owned49_source_frame": "0049_controlled_writer_pair_guard_definer.py:downgrade",
+        "owned49_catalog_sha256": hashlib.sha256(
+            coverage.canonical(before[1]).encode("ascii")
+        ).hexdigest(),
+        "owned49_rows_sha256": before[2]["rows_sha256"],
+    }.items():
+        record_property(key, value)
 
 
 async def test_empty_0049_downgrade_and_reupgrade(coverage_child):

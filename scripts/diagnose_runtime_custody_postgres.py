@@ -15,6 +15,7 @@ import argparse
 import hashlib
 import io
 import json
+import os
 import re
 import subprocess
 import tarfile
@@ -24,10 +25,12 @@ from pathlib import Path
 from uuid import uuid4
 
 from scripts.verify_final_hermetic import (
+    HISTORY_PARTITION_NATIVE_CATALOG_CAPTURE,
     MIGRATION_REVISION_PROBE,
+    MIGRATION_REVISION_PROBE_0050,
     NATIVE_IDENTITY_DOWNGRADE_DENIAL,
     NATIVE_IDENTITY_RETENTION_PROBE,
-    PREDECESSOR_0047_IDENTITY_PROBE,
+    PREDECESSOR_0047_IDENTITY_PROBE_0050,
     RUNTIME_CUSTODY_PREFLIGHT_CASES,
     Run,
     archive_files,
@@ -404,7 +407,7 @@ def run_native_witness_migration_diagnostic(
     if not native_migration_json_equal(current, expected):
         raise ValueError("diagnostic_migration_reupgrade_invalid")
     retain(progress["phase"], expected, digest)
-    # Current ORM metadata describes0049; no full drift claim at predecessor0047.
+    # Current ORM metadata describes0050; no full drift claim at predecessor0047.
     progress["phase"] = "native-witness-identity-tests"
     report = run_native_witness_identity_diagnostic(
         container, test_results=test_results, mounts=mounts
@@ -741,7 +744,7 @@ def main():
             container("migration-upgrade", ["alembic", "upgrade", "0047"])
             container(
                 "migration-identity",
-                ["python", "-c", PREDECESSOR_0047_IDENTITY_PROBE],
+                ["python", "-c", PREDECESSOR_0047_IDENTITY_PROBE_0050],
             )
             migration = json.loads(
                 (args.output / "migration-identity.log").read_bytes()
@@ -750,7 +753,7 @@ def main():
                 type(migration) is not dict
                 or migration.get("status") != "PASS"
                 or migration.get("schema") != "ctcc.migration_predecessor_identity.v1"
-                or migration.get("source_head") != "0049"
+                or migration.get("source_head") != "0050"
                 or migration.get("database_head") != "0047"
                 or migration.get("target_revision") != "0047"
                 or migration.get("execution_authority") is not False
@@ -781,6 +784,17 @@ def main():
                 timeout=60,
             )
             container(
+                "history-partition-native-catalog",
+                ["python", "-c", HISTORY_PARTITION_NATIVE_CATALOG_CAPTURE],
+                mounts=mounts,
+                timeout=60,
+            )
+            container(
+                "history-partition-current-formal",
+                ["python", "-c", MIGRATION_REVISION_PROBE_0050, "0050"],
+                timeout=60,
+            )
+            container(
                 "native-witness-current-identity",
                 ["python", "-m", "scripts.verify_migration_identity"],
                 timeout=60,
@@ -791,8 +805,8 @@ def main():
             if (
                 current.get("schema") != "ctcc.migration_identity.v1"
                 or current.get("status") != "PASS"
-                or current.get("source_head") != "0049"
-                or current.get("database_head") != "0049"
+                or current.get("source_head") != "0050"
+                or current.get("database_head") != "0050"
                 or current.get("migration_sha256") != migration["migration_sha256"]
                 or current.get("execution_authority") is not False
             ):
@@ -810,6 +824,46 @@ def main():
     except Exception as error:  # noqa: BLE001 - Only a type/category reaches exported evidence.
         identity["failure_type"] = type(error).__name__
     finally:
+        partition_capture = tests / "account-history-partition-native-catalog.json"
+        current_upgrade_ran = any(
+            step.get("name") == "native-witness-current-upgrade"
+            and step.get("exit_code") == 0
+            for step in run.steps
+        )
+        if partition_capture.exists():
+            try:
+                if (
+                    partition_capture.is_symlink()
+                    or not partition_capture.is_file()
+                    or not 0 < partition_capture.stat().st_size <= 2 * 1024 * 1024
+                ):
+                    raise ValueError("history_partition_diagnostic_capture_unsafe")
+                retained = partition_capture.read_bytes()
+                target = export / "account-history-partition-native-catalog.json"
+                with target.open("xb") as stream:
+                    stream.write(retained)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                if target.read_bytes() != retained:
+                    raise ValueError(
+                        "history_partition_diagnostic_capture_readback_failed"
+                    )
+                identity["history_partition_catalog_sha256"] = hashlib.sha256(
+                    retained
+                ).hexdigest()
+                identity["history_partition_catalog_is_observation_not_admission"] = (
+                    True
+                )
+            except Exception as error:  # noqa: BLE001 -- exact private capture remains retained
+                identity["status"] = "FAIL"
+                identity["history_partition_catalog_failure_type"] = type(
+                    error
+                ).__name__
+        elif current_upgrade_ran:
+            identity["status"] = "FAIL"
+            identity["history_partition_catalog_failure_type"] = (
+                "RequiredCaptureMissing"
+            )
         raw_path = tests / (
             "runtime-bundle-custody-preflight.xml"
             if args.profile == DEFAULT_PROFILE
