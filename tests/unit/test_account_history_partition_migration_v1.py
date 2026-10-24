@@ -1,8 +1,10 @@
 """Synthetic policy falsifications; no native catalog, account or PG acceptance."""
 
+import ast
 import copy
 import hashlib
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -491,3 +493,57 @@ def test_sqlalchemy_bind_parser_sees_only_named_entry_operands():
             *policy.TRIGGER_SQL,
         )
     )
+
+
+def test_member_inventory_case_preserves_native_plpgsql_then_boundary():
+    """Static grammar regression; the exact-source native PG upgrade is mandatory."""
+    statement = policy.FUNCTION_SQL["account_history_partition_v1_member_guard"]
+    condition = statement.split("IF (SELECT count(*) FROM jsonb_object_keys(l->k))", 1)[
+        1
+    ].split("RAISE EXCEPTION 'account_history_partition_inventory'", 1)[0]
+
+    def through_outer_then(value):
+        depth = 0
+        for token in re.finditer(r"'(?:''|[^'])*'|[A-Za-z_][A-Za-z_0-9]*|[()]", value):
+            word = token.group()
+            if word == "(":
+                depth += 1
+            elif word == ")":
+                depth -= 1
+                assert depth >= 0
+            elif word.upper() == "THEN" and depth == 0:
+                return value[: token.start()]
+        raise AssertionError("native_plpgsql_outer_then_missing")
+
+    expression = through_outer_then(condition)
+    assert re.search(
+        r"total\s*>\s*\(CASE WHEN k='raw_inventory' THEN 73531392 ELSE 4718592 END\)\s*$",
+        expression,
+    )
+    unparenthesized = condition.replace(
+        "(CASE WHEN k='raw_inventory' THEN 73531392 ELSE 4718592 END)",
+        "CASE WHEN k='raw_inventory' THEN 73531392 ELSE 4718592 END",
+        1,
+    )
+    assert unparenthesized != condition
+    assert (
+        through_outer_then(unparenthesized)
+        .rstrip()
+        .endswith("CASE WHEN k='raw_inventory'")
+    )
+
+
+def test_effective_0050_ddl_identity_matches_the_frozen_migration():
+    parsed = ast.parse(
+        (ROOT / "migrations/versions/0050_account_history_partition.py").read_bytes()
+    )
+    pins = [
+        ast.literal_eval(node.value)
+        for node in parsed.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "_FROZEN_DDL_SHA256"
+            for target in node.targets
+        )
+    ]
+    assert pins == [policy.ddl_identity()]

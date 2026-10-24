@@ -18,7 +18,7 @@ revision = "0050"
 down_revision = "0049"
 branch_labels = None
 depends_on = None
-_FROZEN_DDL_SHA256 = "8d65cd0ca4c602f30764bc97006fd91eeea141c01aa10885d55d9378ad617298"
+_FROZEN_DDL_SHA256 = "ea1673b244a9cdda216f49300045ef0f36633b292ac59da853b940291d7576bb"
 _PARENTS_LOCK = "LOCK TABLE public.qualification_account_scopes, public.demo_account_controls, public.demo_account_observation_batches, public.demo_account_capture_events IN ACCESS EXCLUSIVE MODE NOWAIT"
 _DOWNGRADE_LOCK = "LOCK TABLE public.qualification_account_scopes, public.demo_account_controls, public.demo_account_observation_batches, public.demo_account_capture_events, public.demo_account_history_native_members, public.demo_account_history_partition_checkpoints IN ACCESS EXCLUSIVE MODE NOWAIT"
 

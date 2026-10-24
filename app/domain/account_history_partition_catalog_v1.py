@@ -269,7 +269,7 @@ BEGIN
      total:=total+(item.value->>0)::numeric;
    END LOOP;
    IF (SELECT count(*) FROM jsonb_object_keys(l->k))<>(SELECT count(DISTINCT lower(key)) FROM jsonb_object_keys(l->k) key)
-     OR total>CASE WHEN k='raw_inventory' THEN 73531392 ELSE 4718592 END THEN RAISE EXCEPTION 'account_history_partition_inventory'; END IF;
+     OR total>(CASE WHEN k='raw_inventory' THEN 73531392 ELSE 4718592 END) THEN RAISE EXCEPTION 'account_history_partition_inventory'; END IF;
  END LOOP;
  IF NOT (l->'raw_inventory' ?& ARRAY['source.bundle.json','accepted.json','attempt.claim.json']) OR l->'raw_inventory'->'source.bundle.json'->>1 IS DISTINCT FROM l->>'bundle_sha256' THEN RAISE EXCEPTION 'account_history_partition_custody_locator'; END IF;
  previous_stamp:=NULL;
