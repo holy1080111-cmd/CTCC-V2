@@ -1144,6 +1144,19 @@ class QualificationLedgerRepository:
         after hashes detect observed changes, not exchange-wide atomicity or
         future writer exclusion. Missing legacy initialization remains unknown.
         """
+        scope = checked_bootstrap(scope, LedgerScope)
+        async with self.session_factory() as session, session.begin():
+            if session.get_bind().dialect.name != "postgresql":
+                raise QualificationLedgerError(
+                    "portfolio_checkpoint_postgresql_required"
+                )
+            selected = await self._locked(session, scope)
+            return await self._read_portfolio_checkpoint_locked(
+                session, scope, selected
+            )
+
+    async def _read_portfolio_checkpoint_locked(self, session, scope, selected):
+        """The original B5 body in the caller's same UID-locked transaction."""
         from app.database.models.demo_automation import DemoAutomationState
         from app.database.models.okx_demo import (
             OkxDemoAlgoOrderState,
@@ -1153,239 +1166,239 @@ class QualificationLedgerRepository:
         )
 
         scope = checked_bootstrap(scope, LedgerScope)
-        async with self.session_factory() as session, session.begin():
-            if session.get_bind().dialect.name != "postgresql":
-                raise QualificationLedgerError(
-                    "portfolio_checkpoint_postgresql_required"
+        if (
+            not session.in_transaction()
+            or session.get_bind().dialect.name != "postgresql"
+            or type(selected) is not QualificationAccountScope
+            or (selected.environment, selected.account_id, selected.settlement_currency)
+            != (scope.environment, scope.account_id, scope.settlement_currency)
+        ):
+            raise QualificationLedgerError("portfolio_checkpoint_locked_scope_required")
+        started = self._now(selected)
+        rows = (
+            await session.scalars(
+                select(QualificationAccountScope)
+                .where(
+                    QualificationAccountScope.environment == scope.environment,
+                    QualificationAccountScope.account_id == scope.account_id,
                 )
-            selected = await self._locked(session, scope)
-            started = self._now(selected)
-            rows = (
-                await session.scalars(
-                    select(QualificationAccountScope)
-                    .where(
-                        QualificationAccountScope.environment == scope.environment,
-                        QualificationAccountScope.account_id == scope.account_id,
-                    )
-                    .order_by(QualificationAccountScope.settlement_currency)
-                    .limit(129)
-                    .with_for_update()
-                )
-            ).all()
-            if not rows or len(rows) > 128:
-                raise QualificationLedgerError("portfolio_checkpoint_scope_bound")
-            states = []
-            for row in rows:
-                row_scope = LedgerScope(
-                    environment=row.environment,
-                    account_id=row.account_id,
-                    settlement_currency=row.settlement_currency,
-                )
-                point = await self._bootstrap_checkpoint(session, row_scope, row)
-                states.append(_plain(point.state))
-            # Every durable consumed intent remains unresolved until its own
-            # reservation explicitly transitions to reconciled_flat. No TTL.
-            intents = (
-                await session.execute(
-                    select(
-                        QualificationReservation.reservation_id,
-                        QualificationReservation.settlement_currency,
-                        QualificationReservation.state,
-                        QualificationReservationTransition.state_revision,
-                        QualificationReservationTransition.reason_code,
-                    )
-                    .join(
-                        QualificationReservationTransition,
-                        QualificationReservationTransition.reservation_id
-                        == QualificationReservation.reservation_id,
-                    )
-                    .where(
-                        QualificationReservation.environment == scope.environment,
-                        QualificationReservation.account_id == scope.account_id,
-                        QualificationReservation.state != "reconciled_flat",
-                        QualificationReservationTransition.to_state == "consumed",
-                    )
-                    .order_by(
-                        QualificationReservation.reservation_id,
-                        QualificationReservationTransition.state_revision,
-                    )
-                    .limit(2049)
-                )
-            ).all()
-            if len(intents) > 2048:
-                raise QualificationLedgerError("portfolio_checkpoint_intent_bound")
-            await session.execute(
-                text(
-                    "LOCK TABLE demo_automation_state, okx_demo_sync_checkpoints, "
-                    "okx_demo_order_state, okx_demo_position_state, okx_demo_algo_order_state IN SHARE MODE"
-                )
+                .order_by(QualificationAccountScope.settlement_currency)
+                .limit(129)
+                .with_for_update()
             )
-            automation_rows = (
-                await session.scalars(select(DemoAutomationState).limit(2))
-            ).all()
-            sync_rows = (
-                await session.scalars(select(OkxDemoSyncCheckpoint).limit(2))
-            ).all()
-            blocked = set()
-            legacy = {"automation": None, "sync_checkpoint": None}
-            if len(automation_rows) != 1 or automation_rows[0].id != 1:
-                blocked.add("legacy_automation_initialization_unknown")
-            else:
-                row = automation_rows[0]
-                legacy["automation"] = {
-                    name: getattr(row, name)
+        ).all()
+        if not rows or len(rows) > 128:
+            raise QualificationLedgerError("portfolio_checkpoint_scope_bound")
+        states = []
+        for row in rows:
+            row_scope = LedgerScope(
+                environment=row.environment,
+                account_id=row.account_id,
+                settlement_currency=row.settlement_currency,
+            )
+            point = await self._bootstrap_checkpoint(session, row_scope, row)
+            states.append(_plain(point.state))
+        # Every durable consumed intent remains unresolved until its own
+        # reservation explicitly transitions to reconciled_flat. No TTL.
+        intents = (
+            await session.execute(
+                select(
+                    QualificationReservation.reservation_id,
+                    QualificationReservation.settlement_currency,
+                    QualificationReservation.state,
+                    QualificationReservationTransition.state_revision,
+                    QualificationReservationTransition.reason_code,
+                )
+                .join(
+                    QualificationReservationTransition,
+                    QualificationReservationTransition.reservation_id
+                    == QualificationReservation.reservation_id,
+                )
+                .where(
+                    QualificationReservation.environment == scope.environment,
+                    QualificationReservation.account_id == scope.account_id,
+                    QualificationReservation.state != "reconciled_flat",
+                    QualificationReservationTransition.to_state == "consumed",
+                )
+                .order_by(
+                    QualificationReservation.reservation_id,
+                    QualificationReservationTransition.state_revision,
+                )
+                .limit(2049)
+            )
+        ).all()
+        if len(intents) > 2048:
+            raise QualificationLedgerError("portfolio_checkpoint_intent_bound")
+        await session.execute(
+            text(
+                "LOCK TABLE demo_automation_state, okx_demo_sync_checkpoints, "
+                "okx_demo_order_state, okx_demo_position_state, okx_demo_algo_order_state IN SHARE MODE"
+            )
+        )
+        automation_rows = (
+            await session.scalars(select(DemoAutomationState).limit(2))
+        ).all()
+        sync_rows = (
+            await session.scalars(select(OkxDemoSyncCheckpoint).limit(2))
+        ).all()
+        blocked = set()
+        legacy = {"automation": None, "sync_checkpoint": None}
+        if len(automation_rows) != 1 or automation_rows[0].id != 1:
+            blocked.add("legacy_automation_initialization_unknown")
+        else:
+            row = automation_rows[0]
+            legacy["automation"] = {
+                name: getattr(row, name)
+                for name in (
+                    "armed",
+                    "emergency_stop",
+                    "locked",
+                    "lock_reasons",
+                    "active_instrument_id",
+                    "active_client_order_id",
+                    "active_start_equity",
+                    "active_started_at",
+                    "active_trades",
+                    "last_started_at",
+                    "last_completed_at",
+                    "last_error",
+                    "updated_at",
+                )
+            }
+            if (
+                type(row.active_trades) not in (dict, list)
+                or len(row.active_trades) != 0
+                or any(
+                    getattr(row, name) is not None
                     for name in (
-                        "armed",
-                        "emergency_stop",
-                        "locked",
-                        "lock_reasons",
                         "active_instrument_id",
                         "active_client_order_id",
                         "active_start_equity",
                         "active_started_at",
-                        "active_trades",
-                        "last_started_at",
-                        "last_completed_at",
-                        "last_error",
-                        "updated_at",
                     )
-                }
-                if (
-                    type(row.active_trades) not in (dict, list)
-                    or len(row.active_trades) != 0
-                    or any(
-                        getattr(row, name) is not None
-                        for name in (
-                            "active_instrument_id",
-                            "active_client_order_id",
-                            "active_start_equity",
-                            "active_started_at",
-                        )
+                )
+            ):
+                blocked.add("legacy_tracked_exposure_unattributed")
+            if (
+                row.armed is not False
+                or row.locked is not False
+                or type(row.lock_reasons) is not list
+                or row.lock_reasons
+                or row.last_error not in (None, "")
+                or (
+                    row.last_started_at is not None
+                    and (
+                        row.last_completed_at is None
+                        or row.last_started_at > row.last_completed_at
                     )
-                ):
-                    blocked.add("legacy_tracked_exposure_unattributed")
-                if (
-                    row.armed is not False
-                    or row.locked is not False
-                    or type(row.lock_reasons) is not list
-                    or row.lock_reasons
-                    or row.last_error not in (None, "")
-                    or (
-                        row.last_started_at is not None
-                        and (
-                            row.last_completed_at is None
-                            or row.last_started_at > row.last_completed_at
-                        )
-                    )
-                ):
-                    blocked.add("legacy_inflight_or_uncertain")
-            if len(sync_rows) != 1 or sync_rows[0].id != 1:
-                blocked.add("legacy_reconciliation_initialization_unknown")
-            else:
-                row = sync_rows[0]
-                legacy["sync_checkpoint"] = {
-                    name: getattr(row, name)
+                )
+            ):
+                blocked.add("legacy_inflight_or_uncertain")
+        if len(sync_rows) != 1 or sync_rows[0].id != 1:
+            blocked.add("legacy_reconciliation_initialization_unknown")
+        else:
+            row = sync_rows[0]
+            legacy["sync_checkpoint"] = {
+                name: getattr(row, name)
+                for name in (
+                    "status",
+                    "order_count",
+                    "position_count",
+                    "algo_order_count",
+                    "last_error",
+                    "reconciled_at",
+                    "updated_at",
+                )
+            }
+            uid_bound = (
+                type(row.details) is dict
+                and row.details.get("account_uid_sha256")
+                == hashlib.sha256(scope.account_id.encode("ascii")).hexdigest()
+            )
+            legacy["sync_checkpoint"]["exact_uid_bound"] = uid_bound
+            binding_id, binding_shape_valid = _checkpoint_credential_session_binding(
+                row.details
+            )
+            legacy["sync_checkpoint"]["credential_session_binding_id"] = binding_id
+            if not uid_bound:
+                blocked.add("legacy_reconciliation_uid_unbound")
+            if not binding_shape_valid:
+                blocked.add("legacy_reconciliation_credential_session_unbound")
+            if (
+                row.status != "reconciled"
+                or row.reconciled_at is None
+                or row.last_error not in (None, "")
+                or any(
+                    type(getattr(row, name)) is not int or getattr(row, name) != 0
                     for name in (
-                        "status",
                         "order_count",
                         "position_count",
                         "algo_order_count",
-                        "last_error",
-                        "reconciled_at",
-                        "updated_at",
                     )
-                }
-                uid_bound = (
-                    type(row.details) is dict
-                    and row.details.get("account_uid_sha256")
-                    == hashlib.sha256(scope.account_id.encode("ascii")).hexdigest()
                 )
-                legacy["sync_checkpoint"]["exact_uid_bound"] = uid_bound
-                binding_id, binding_shape_valid = (
-                    _checkpoint_credential_session_binding(row.details)
-                )
-                legacy["sync_checkpoint"]["credential_session_binding_id"] = binding_id
-                if not uid_bound:
-                    blocked.add("legacy_reconciliation_uid_unbound")
-                if not binding_shape_valid:
-                    blocked.add("legacy_reconciliation_credential_session_unbound")
-                if (
-                    row.status != "reconciled"
-                    or row.reconciled_at is None
-                    or row.last_error not in (None, "")
-                    or any(
-                        type(getattr(row, name)) is not int or getattr(row, name) != 0
-                        for name in (
-                            "order_count",
-                            "position_count",
-                            "algo_order_count",
-                        )
-                    )
-                ):
-                    blocked.add("legacy_reconciliation_incomplete_or_exposed")
-            for name, model, key, condition in (
-                (
-                    "positions",
-                    OkxDemoPositionState,
-                    OkxDemoPositionState.position_key,
-                    None,
-                ),
-                (
-                    "orders",
-                    OkxDemoOrderState,
-                    OkxDemoOrderState.order_id,
-                    OkxDemoOrderState.state.not_in(
-                        ("filled", "canceled", "mmp_canceled")
-                    ),
-                ),
-                (
-                    "algos",
-                    OkxDemoAlgoOrderState,
-                    OkxDemoAlgoOrderState.algo_order_id,
-                    OkxDemoAlgoOrderState.state.not_in(
-                        ("canceled", "order_failed", "effective")
-                    ),
-                ),
             ):
-                statement = select(key).select_from(model).order_by(key).limit(2049)
-                if condition is not None:
-                    statement = statement.where(condition)
-                identities = (await session.scalars(statement)).all()
-                if len(identities) > 2048:
-                    raise QualificationLedgerError("portfolio_checkpoint_legacy_bound")
-                legacy[name] = list(identities)
-                if identities:
-                    blocked.add("legacy_unattributed_active_" + name)
-            if any(state["active"] for state in states):
-                blocked.add("all_currency_local_holds_unresolved")
-            if intents:
-                blocked.add("all_currency_local_intents_unresolved")
-            payload = json.dumps(
-                _portfolio_checkpoint_wire(
-                    {
-                        "schema_version": "ctcc.portfolio_local_checkpoint.v2",
-                        "environment": scope.environment,
-                        "account_id": scope.account_id,
-                        "requested_settlement_currency": scope.settlement_currency,
-                        "currency_states": states,
-                        "unresolved_intents": [list(item) for item in intents],
-                        "legacy": legacy,
-                        "blocking_reasons": sorted(blocked),
-                        "future_writer_exclusion": False,
-                        "execution_authority": False,
-                    }
+                blocked.add("legacy_reconciliation_incomplete_or_exposed")
+        for name, model, key, condition in (
+            (
+                "positions",
+                OkxDemoPositionState,
+                OkxDemoPositionState.position_key,
+                None,
+            ),
+            (
+                "orders",
+                OkxDemoOrderState,
+                OkxDemoOrderState.order_id,
+                OkxDemoOrderState.state.not_in(("filled", "canceled", "mmp_canceled")),
+            ),
+            (
+                "algos",
+                OkxDemoAlgoOrderState,
+                OkxDemoAlgoOrderState.algo_order_id,
+                OkxDemoAlgoOrderState.state.not_in(
+                    ("canceled", "order_failed", "effective")
                 ),
-                sort_keys=True,
-                separators=(",", ":"),
-                ensure_ascii=True,
-                allow_nan=False,
-            ).encode()
-            if len(payload) > 262144:
-                raise QualificationLedgerError("portfolio_checkpoint_byte_bound")
-            received = self._now(selected)
-            if received < started:
-                raise QualificationLedgerError("portfolio_checkpoint_clock_reversed")
-            return PortfolioLocalCheckpoint(payload, started, received)
+            ),
+        ):
+            statement = select(key).select_from(model).order_by(key).limit(2049)
+            if condition is not None:
+                statement = statement.where(condition)
+            identities = (await session.scalars(statement)).all()
+            if len(identities) > 2048:
+                raise QualificationLedgerError("portfolio_checkpoint_legacy_bound")
+            legacy[name] = list(identities)
+            if identities:
+                blocked.add("legacy_unattributed_active_" + name)
+        if any(state["active"] for state in states):
+            blocked.add("all_currency_local_holds_unresolved")
+        if intents:
+            blocked.add("all_currency_local_intents_unresolved")
+        payload = json.dumps(
+            _portfolio_checkpoint_wire(
+                {
+                    "schema_version": "ctcc.portfolio_local_checkpoint.v2",
+                    "environment": scope.environment,
+                    "account_id": scope.account_id,
+                    "requested_settlement_currency": scope.settlement_currency,
+                    "currency_states": states,
+                    "unresolved_intents": [list(item) for item in intents],
+                    "legacy": legacy,
+                    "blocking_reasons": sorted(blocked),
+                    "future_writer_exclusion": False,
+                    "execution_authority": False,
+                }
+            ),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        ).encode()
+        if len(payload) > 262144:
+            raise QualificationLedgerError("portfolio_checkpoint_byte_bound")
+        received = self._now(selected)
+        if received < started:
+            raise QualificationLedgerError("portfolio_checkpoint_clock_reversed")
+        return PortfolioLocalCheckpoint(payload, started, received)
 
     @staticmethod
     def _coverage_caps(request, claims, active, coverage):

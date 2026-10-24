@@ -15,13 +15,19 @@ from scripts.verify_final_hermetic import (
     ACCOUNT_MEASURED_HWM_V2_TRIGGERS_0045,
     ACCOUNT_REVISION_WITNESS_TRIGGERS,
     ARCHIVE_REQUIRED_CASES,
+    COVERAGE_DOWNGRADE_DENIAL,
     DOWNGRADE_DENIAL,
     GATE3_PREFLIGHT_CASES,
     LEDGER_SCHEMA_PREFLIGHT_CASES,
     NATIVE_IDENTITY_DOWNGRADE_DENIAL,
     NATIVE_WITNESS_IDENTITY_SCHEMA,
+    PREDECESSOR_0047_CASES,
     PUBLIC_RUNTIME_BUNDLE_SCHEMA,
     RUNTIME_CUSTODY_PREFLIGHT_CASES,
+    coverage_nonempty_downgrade_readback,
+    coverage_nonempty_snapshot,
+    expected_coverage_absent_readback,
+    expected_migration_revision_readback,
     expected_native_identity_empty_downgrade_readback,
     native_identity_empty_before_readback,
     native_identity_nonempty_downgrade_readback,
@@ -36,8 +42,10 @@ from scripts.verify_linux_shard import (
 )
 from scripts.verify_linux_shard_union import (
     COMMON_STAGES,
+    POSTGRES_COVERAGE_STAGES,
     POSTGRES_PREFLIGHT_STAGES,
     POSTGRES_RESTART_STAGES,
+    PREDECESSOR_0047_STAGES,
     verify_union,
 )
 from scripts.verify_windows_regression import POSTGRES_INTEGRATION
@@ -46,7 +54,13 @@ COMMIT = "a" * 40
 TREE = "b" * 40
 ARCHIVE = b"reviewed-git-archive"
 MANIFEST = b"reviewed-manifest\n"
-SOURCE_FILES = b"{}"
+SOURCE_FILES = json.dumps(
+    {
+        "app/database/repositories/controlled_writer_coverage.py": {"sha256": "1" * 64},
+        "migrations/versions/0048_controlled_writer_coverage.py": {"sha256": "2" * 64},
+    },
+    sort_keys=True,
+).encode()
 
 
 @pytest.fixture(autouse=True)
@@ -56,9 +70,31 @@ def synthetic_sealed_native_identity_baseline(monkeypatch):
     constraint = list(NATIVE_WITNESS_IDENTITY_SCHEMA["constraint"])
     constraint[-1] = "9" * 64
     monkeypatch.setitem(NATIVE_WITNESS_IDENTITY_SCHEMA, "constraint", constraint)
+    from scripts import verify_controlled_writer_coverage_schema_v1 as coverage_schema
+
+    def synthetic_catalog(catalog, *, require_native_baseline=True):
+        assert require_native_baseline is True
+        if catalog != {"synthetic_fixture_only": True}:
+            raise ValueError("synthetic_coverage_catalog_mismatch")
+        return expected_migration_revision_readback("0048")[
+            "controlled_writer_coverage_schema"
+        ]
+
+    # Invented union filesystem artifacts cannot seal a native PG17 baseline.
+    monkeypatch.setattr(coverage_schema, "verify_catalog", synthetic_catalog)
 
 
 def _revision_readback(revision: str) -> dict:
+    if revision == "0048":
+        return {
+            **_revision_readback("0047"),
+            "schema": "ctcc.migration_revision_readback.v5",
+            "expected": "0048",
+            "observed": "0048",
+            "controlled_writer_coverage_schema": expected_migration_revision_readback(
+                "0048"
+            )["controlled_writer_coverage_schema"],
+        }
     result = {
         "schema": (
             "ctcc.migration_revision_readback.v4"
@@ -242,8 +278,9 @@ def _artifacts(tmp_path: Path) -> tuple[Path, list[str]]:
     migration = {
         "schema": "ctcc.migration_identity.v1",
         "status": "PASS",
-        "source_head": "0047",
-        "database_head": "0047",
+        "source_head": "0048",
+        "database_head": "0048",
+        "migration_sha256": "e" * 64,
     }
     for mode, index in (
         ("postgres", None),
@@ -323,7 +360,10 @@ def _artifacts(tmp_path: Path) -> tuple[Path, list[str]]:
             "migration": migration,
             "migration_supported_roundtrip": _revision_readback("0001"),
             "migration_empty_roundtrip": {
-                "source_head": "0047",
+                "source_head": "0048",
+                "coverage_before_readback": _revision_readback("0048"),
+                "coverage_down_revision": "0047",
+                "coverage_down_readback": expected_coverage_absent_readback(),
                 "native_identity_before_readback": native_identity_empty_before_readback(
                     _revision_readback("0047"), "c" * 64
                 ),
@@ -339,18 +379,18 @@ def _artifacts(tmp_path: Path) -> tuple[Path, list[str]]:
                 "hwm_down_readback": _revision_readback("0043"),
                 "down_revision": "0042",
                 "down_readback": _revision_readback("0042"),
-                "reupgrade_readback": _revision_readback("0047"),
+                "reupgrade_readback": _revision_readback("0048"),
                 "reupgrade_identity": "PASS",
                 "schema_drift": "PASS",
             },
             "migration_downgrade_policy": {
-                "source_head": "0047",
+                "source_head": "0048",
                 "target": "0041",
                 "result": "DENIED",
                 "denied_at": "0042",
                 "policy_refusal": DOWNGRADE_DENIAL,
-                "database_head_after": "0047",
-                "rollback_readback": _revision_readback("0047"),
+                "database_head_after": "0048",
+                "rollback_readback": _revision_readback("0048"),
                 "schema_drift": "PASS",
             },
             "collection": collection,
@@ -504,6 +544,149 @@ def _artifacts(tmp_path: Path) -> tuple[Path, list[str]]:
                 log.write_text("synthetic-preflight-fixture-only\n")
                 preflight_files.extend((xml, log))
             xml = results / f"{stage}.xml"
+        coverage_files = []
+        capture_path = results / "coverage-native-catalog.json"
+        capture_path.write_text(
+            json.dumps(
+                {
+                    "schema": "ctcc.controlled_writer_coverage_native_catalog_observation.v1",
+                    "source_head": "0048",
+                    "source_migration_sha256": "e" * 64,
+                    "database_head": "0048",
+                    "session_facts": [
+                        "17.11",
+                        "170011",
+                        "ctcc",
+                        "ctcc",
+                        "ctcc",
+                        "public",
+                    ],
+                    "catalog": {"synthetic_fixture_only": True},
+                    "native_baseline_admission": False,
+                    "execution_authority": False,
+                }
+            )
+        )
+        capture_log = root / "migration-coverage-native-catalog.log"
+        capture_log.write_text(
+            json.dumps(
+                {
+                    "artifact": "test-results/coverage-native-catalog.json",
+                    "sha256": _sha(capture_path.read_bytes()),
+                    "native_baseline_admission": False,
+                    "execution_authority": False,
+                }
+            )
+        )
+        coverage_files.extend((capture_path, capture_log))
+        for name, body in (
+            ("migration-coverage-empty-before", _revision_readback("0048")),
+            ("migration-coverage-empty-readback", expected_coverage_absent_readback()),
+        ):
+            path = root / f"{name}.log"
+            path.write_text(json.dumps(body))
+            coverage_files.append(path)
+        if mode == "postgres":
+            rows = {
+                table: [{"synthetic_fixture_only": True}]
+                for table in (
+                    "demo_controlled_writer_coverage_scopes",
+                    "demo_controlled_writer_coverage_journal",
+                )
+            }
+            retention = {
+                "schema_version": "ctcc.controlled_writer_coverage_retention.v1",
+                "rows": rows,
+                "counts": {table: 1 for table in rows},
+                "rows_sha256": _sha(
+                    json.dumps(rows, sort_keys=True, separators=(",", ":")).encode()
+                ),
+            }
+            snapshot = coverage_nonempty_snapshot(_revision_readback("0048"), retention)
+            identity["coverage_nonempty_downgrade_policy"] = (
+                coverage_nonempty_downgrade_readback(snapshot, snapshot)
+            )
+            receipt_snapshot = {
+                "head": "0048",
+                "rows_sha256": retention["rows_sha256"],
+                "counts": retention["counts"],
+                "catalog_sha256": "f" * 64,
+            }
+            migration_receipt = {
+                "schema_version": "ctcc.controlled_writer_coverage_migration_acceptance.v1",
+                "manifest_sha256": _sha(MANIFEST),
+                "repository_sha256": "1" * 64,
+                "migration_sha256": "2" * 64,
+                "server_major": 17,
+                "before": receipt_snapshot,
+                "after": receipt_snapshot,
+                "refusal_code": COVERAGE_DOWNGRADE_DENIAL,
+                "downgrade_target": "0047",
+                "native_baseline_admission": False,
+                "execution_authority": False,
+            }
+            receipt_path = results / "controlled-writer-coverage-migration.json"
+            receipt_path.write_text(json.dumps(migration_receipt))
+            identity["coverage_migration_acceptance"] = migration_receipt
+            coverage_files.append(receipt_path)
+            for name in (POSTGRES_COVERAGE_STAGES[0], POSTGRES_COVERAGE_STAGES[2]):
+                path = root / f"{name}.log"
+                path.write_text(json.dumps(snapshot))
+                coverage_files.append(path)
+            denial = root / "migration-coverage-nonempty-denial.log"
+            denial.write_text(
+                "INFO Running downgrade 0048 -> 0047\n"
+                '  File "/app/migrations/versions/0048_controlled_writer_coverage.py", line 48\n'
+                f"asyncpg.exceptions.RaiseError: {COVERAGE_DOWNGRADE_DENIAL}\n"
+                f"sqlalchemy.exc.DBAPIError: (asyncpg.Error): {COVERAGE_DOWNGRADE_DENIAL}\n"
+            )
+            coverage_files.append(denial)
+            predecessor_xml = results / "predecessor-0047-two-cases.xml"
+            _junit(
+                predecessor_xml,
+                [
+                    f"{module.replace('.', '/')}.py::{case}"
+                    for module, case in PREDECESSOR_0047_CASES
+                ],
+            )
+            predecessor_report = verify_pytest_report(
+                predecessor_xml,
+                required_cases=PREDECESSOR_0047_CASES,
+                required_modules=(PREDECESSOR_0047_CASES[0][0],),
+            )
+            identity["predecessor_0047_validation"] = {
+                "schema": "ctcc.isolated_0047_predecessor_validation.v1",
+                "source_head": "0048",
+                "database_target": "0047",
+                "separate_from_full_suite_unique_count": True,
+                "test_report": predecessor_report,
+                "nonempty_downgrade_policy": identity[
+                    "native_identity_nonempty_downgrade_policy"
+                ],
+                "execution_authority": False,
+            }
+            coverage_files.append(predecessor_xml)
+            for name in PREDECESSOR_0047_STAGES:
+                path = root / f"{name}.log"
+                if name == "predecessor-0047-parent-identity":
+                    path.write_bytes(b"ctcc\n")
+                elif name == "predecessor-0047-identity":
+                    path.write_text(
+                        json.dumps(
+                            {
+                                "schema": "ctcc.migration_predecessor_identity.v1",
+                                "status": "PASS",
+                                "source_head": "0048",
+                                "database_head": "0047",
+                                "target_revision": "0047",
+                                "migration_sha256": "e" * 64,
+                                "execution_authority": False,
+                            }
+                        )
+                    )
+                elif not path.exists():
+                    path.write_text("synthetic-predecessor-stage-only\n")
+                coverage_files.append(path)
         (root / "identity.json").write_text(json.dumps(identity))
         (root / "steps.json").write_text(
             json.dumps(
@@ -516,6 +699,7 @@ def _artifacts(tmp_path: Path) -> tuple[Path, list[str]]:
                             in (
                                 "migration-downgrade-denial",
                                 "migration-native-identity-nonempty-denial",
+                                "migration-coverage-nonempty-denial",
                             )
                             else 0
                         ),
@@ -524,6 +708,8 @@ def _artifacts(tmp_path: Path) -> tuple[Path, list[str]]:
                             if stage_name == "migration-downgrade-denial"
                             else {"policy_refusal": NATIVE_IDENTITY_DOWNGRADE_DENIAL}
                             if stage_name == "migration-native-identity-nonempty-denial"
+                            else {"policy_refusal": COVERAGE_DOWNGRADE_DENIAL}
+                            if stage_name == "migration-coverage-nonempty-denial"
                             else {}
                         ),
                     }
@@ -531,7 +717,8 @@ def _artifacts(tmp_path: Path) -> tuple[Path, list[str]]:
                         *COMMON_STAGES,
                         *(POSTGRES_PREFLIGHT_STAGES if mode == "postgres" else ()),
                         stage,
-                        *retention_stages,
+                        *(POSTGRES_COVERAGE_STAGES if mode == "postgres" else ()),
+                        *(PREDECESSOR_0047_STAGES if mode == "postgres" else ()),
                         *(POSTGRES_RESTART_STAGES if mode == "postgres" else ()),
                     )
                 ]
@@ -563,13 +750,14 @@ def _artifacts(tmp_path: Path) -> tuple[Path, list[str]]:
         reupgrade_identity_log = root / "migration-reupgrade-identity.log"
         reupgrade_identity_log.write_text(json.dumps(migration))
         reupgrade_readback_log = root / "migration-reupgrade-readback.log"
-        reupgrade_readback_log.write_text(json.dumps(_revision_readback("0047")))
+        reupgrade_readback_log.write_text(json.dumps(_revision_readback("0048")))
         reidentity_log = root / "migration-reidentity.log"
         reidentity_log.write_text(json.dumps(migration))
         denial_readback_log = root / "migration-denial-readback.log"
-        denial_readback_log.write_text(json.dumps(_revision_readback("0047")))
+        denial_readback_log.write_text(json.dumps(_revision_readback("0048")))
         denial_log = root / "migration-downgrade-denial.log"
         denial_log.write_text(
+            "INFO Running downgrade 0048 -> 0047\n"
             "INFO Running downgrade 0047 -> 0046\n"
             "INFO Running downgrade 0046 -> 0045\n"
             "INFO Running downgrade 0045 -> 0044\n"
@@ -603,6 +791,7 @@ def _artifacts(tmp_path: Path) -> tuple[Path, list[str]]:
             *stage_logs,
             *preflight_files,
             *retention_files,
+            *coverage_files,
             *restart_files,
             xml,
             collection_file,
@@ -1419,6 +1608,98 @@ def test_tampered_result_hash_and_identity_drift_fail(tmp_path):
     hashes["identity.json"] = "0" * 64
     hash_map.write_text(json.dumps(hashes))
     with pytest.raises(ValueError, match="linux_union_hash_mismatch"):
+        verify_union(
+            artifacts, commit=COMMIT, tree=TREE, manifest_sha256=_sha(MANIFEST)
+        )
+
+
+@pytest.mark.parametrize(
+    "stage",
+    (
+        "migration-coverage-native-catalog",
+        "migration-coverage-empty-before",
+        "migration-coverage-empty-downgrade",
+        "migration-coverage-empty-readback",
+    ),
+)
+def test_current_0048_union_cannot_omit_new_transition(tmp_path, stage):
+    artifacts, _ = _artifacts(tmp_path)
+    root = _pg_root(artifacts)
+    path = root / "steps.json"
+    path.write_text(
+        json.dumps(
+            [row for row in json.loads(path.read_text()) if row["name"] != stage]
+        )
+    )
+    _rehash(root, path)
+    with pytest.raises(ValueError):
+        verify_union(
+            artifacts, commit=COMMIT, tree=TREE, manifest_sha256=_sha(MANIFEST)
+        )
+
+
+@pytest.mark.parametrize(
+    "damage",
+    (
+        "missing",
+        "wrong_profile",
+        "changed_row",
+        "extra_predecessor_case",
+        "admitted_capture",
+    ),
+)
+def test_current_0048_and_isolated_0047_evidence_cannot_substitute_each_other(
+    tmp_path, damage
+):
+    artifacts, _ = _artifacts(tmp_path)
+    root = _pg_root(artifacts)
+    if damage == "missing":
+        path = root / "steps.json"
+        path.write_text(
+            json.dumps(
+                [
+                    row
+                    for row in json.loads(path.read_text())
+                    if row["name"] != "predecessor-0047-drop"
+                ]
+            )
+        )
+    elif damage == "wrong_profile":
+        path = root / "predecessor-0047-identity.log"
+        value = json.loads(path.read_text())
+        value["database_head"] = "0048"
+        path.write_text(json.dumps(value))
+    elif damage == "changed_row":
+        path = root / "migration-coverage-nonempty-after.log"
+        value = json.loads(path.read_text())
+        value["retention"]["rows"]["demo_controlled_writer_coverage_journal"][0][
+            "changed"
+        ] = True
+        value["retention"]["rows_sha256"] = _sha(
+            json.dumps(
+                value["retention"]["rows"], sort_keys=True, separators=(",", ":")
+            ).encode()
+        )
+        path.write_text(json.dumps(value))
+    elif damage == "extra_predecessor_case":
+        path = root / "test-results/predecessor-0047-two-cases.xml"
+        _junit(
+            path,
+            [
+                *(
+                    f"{module.replace('.', '/')}.py::{case}"
+                    for module, case in PREDECESSOR_0047_CASES
+                ),
+                "tests/unit/test_synthetic.py::test_not_in_formal_two",
+            ],
+        )
+    else:
+        path = root / "test-results/coverage-native-catalog.json"
+        value = json.loads(path.read_text())
+        value["native_baseline_admission"] = True
+        path.write_text(json.dumps(value))
+    _rehash(root, path)
+    with pytest.raises((ValueError, RuntimeError)):
         verify_union(
             artifacts, commit=COMMIT, tree=TREE, manifest_sha256=_sha(MANIFEST)
         )

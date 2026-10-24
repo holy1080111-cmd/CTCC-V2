@@ -16,17 +16,24 @@ from pathlib import Path
 from scripts.evidence_json import read_evidence_json
 from scripts.verify_final_hermetic import (
     ARCHIVE_REQUIRED_CASES,
+    COVERAGE_DOWNGRADE_DENIAL,
     DOWNGRADE_DENIAL,
     GATE3_PREFLIGHT_CASES,
     LEDGER_SCHEMA_PREFLIGHT_CASES,
     NATIVE_IDENTITY_DOWNGRADE_DENIAL,
+    PREDECESSOR_0047_CASES,
     RUNTIME_CUSTODY_PREFLIGHT_CASES,
+    coverage_nonempty_downgrade_readback,
+    expected_coverage_absent_readback,
     expected_migration_revision_readback,
     expected_native_identity_empty_downgrade_readback,
     native_identity_empty_before_readback,
     native_identity_nonempty_downgrade_readback,
     native_migration_json_equal,
-    verify_downgrade_denial_log,
+    verify_coverage_downgrade_denial_log,
+    verify_coverage_migration_receipt,
+    verify_coverage_native_catalog_capture,
+    verify_current_downgrade_denial_log,
     verify_durable_seed_marker,
     verify_linux_collection,
     verify_native_identity_downgrade_denial_log,
@@ -54,8 +61,12 @@ COMMON_STAGES = (
     "migration-downgrade-supported",
     "migration-supported-readback",
     "migration-upgrade",
+    "migration-coverage-native-catalog",
     "migration-identity",
     "migration-drift",
+    "migration-coverage-empty-before",
+    "migration-coverage-empty-downgrade",
+    "migration-coverage-empty-readback",
     "migration-native-identity-empty-before",
     "migration-native-identity-empty-downgrade",
     "migration-native-identity-empty-readback",
@@ -94,6 +105,22 @@ POSTGRES_PREFLIGHT_STAGES = (
     "event-journal-schema-preflight",
     "gate3-postgres-preflight",
 )
+POSTGRES_COVERAGE_STAGES = (
+    "migration-coverage-nonempty-before",
+    "migration-coverage-nonempty-denial",
+    "migration-coverage-nonempty-after",
+)
+PREDECESSOR_0047_STAGES = (
+    "predecessor-0047-parent-identity",
+    "predecessor-0047-create",
+    "predecessor-0047-upgrade",
+    "predecessor-0047-identity",
+    "predecessor-0047-two-cases",
+    "migration-native-identity-nonempty-before",
+    "migration-native-identity-nonempty-denial",
+    "migration-native-identity-nonempty-after",
+    "predecessor-0047-drop",
+)
 
 
 def _json(path: Path):
@@ -114,6 +141,7 @@ def _verify_hashes(root: Path):
         "identity.json",
         "steps.json",
         "source-files.json",
+        "test-results/coverage-native-catalog.json",
         "migration-supported-readback.log",
         "migration-identity.log",
         "migration-native-identity-empty-before.log",
@@ -161,6 +189,7 @@ def _verify_stage_records(stages: object) -> None:
         raise ValueError("linux_union_stage_inventory_invalid")
     refusals = {
         "migration-downgrade-denial": DOWNGRADE_DENIAL,
+        "migration-coverage-nonempty-denial": COVERAGE_DOWNGRADE_DENIAL,
         "migration-native-identity-nonempty-denial": NATIVE_IDENTITY_DOWNGRADE_DENIAL,
     }
     names = set()
@@ -309,9 +338,8 @@ def _verify_complete_stage_sequence(stages, mode, index):
             (
                 *POSTGRES_PREFLIGHT_STAGES,
                 "postgres-intent",
-                "migration-native-identity-nonempty-before",
-                "migration-native-identity-nonempty-denial",
-                "migration-native-identity-nonempty-after",
+                *POSTGRES_COVERAGE_STAGES,
+                *PREDECESSOR_0047_STAGES,
                 *POSTGRES_RESTART_STAGES,
             )
             if mode == "postgres"
@@ -387,8 +415,8 @@ def verify_union(
             or identity.get("hermetic_regression") != "PENDING_UNION"
             or identity.get("cleanup") != "PASS"
             or not isinstance(identity.get("migration"), dict)
-            or identity["migration"].get("source_head") != "0047"
-            or identity["migration"].get("database_head") != "0047"
+            or identity["migration"].get("source_head") != "0048"
+            or identity["migration"].get("database_head") != "0048"
             or identity["migration"].get("status") != "PASS"
             or not native_migration_json_equal(
                 identity.get("migration_supported_roundtrip"),
@@ -397,7 +425,12 @@ def verify_union(
             or not native_migration_json_equal(
                 identity.get("migration_empty_roundtrip"),
                 {
-                    "source_head": "0047",
+                    "source_head": "0048",
+                    "coverage_before_readback": expected_migration_revision_readback(
+                        "0048"
+                    ),
+                    "coverage_down_revision": "0047",
+                    "coverage_down_readback": expected_coverage_absent_readback(),
                     "native_identity_before_readback": native_before,
                     "native_identity_down_revision": "0046",
                     "native_identity_down_readback": expected_native_identity_empty_downgrade_readback(
@@ -413,7 +446,7 @@ def verify_union(
                     "hwm_down_readback": expected_migration_revision_readback("0043"),
                     "down_revision": "0042",
                     "down_readback": expected_migration_revision_readback("0042"),
-                    "reupgrade_readback": expected_migration_revision_readback("0047"),
+                    "reupgrade_readback": expected_migration_revision_readback("0048"),
                     "reupgrade_identity": "PASS",
                     "schema_drift": "PASS",
                 },
@@ -421,18 +454,43 @@ def verify_union(
             or not native_migration_json_equal(
                 identity.get("migration_downgrade_policy"),
                 {
-                    "source_head": "0047",
+                    "source_head": "0048",
                     "target": "0041",
                     "result": "DENIED",
                     "denied_at": "0042",
                     "policy_refusal": DOWNGRADE_DENIAL,
-                    "database_head_after": "0047",
-                    "rollback_readback": expected_migration_revision_readback("0047"),
+                    "database_head_after": "0048",
+                    "rollback_readback": expected_migration_revision_readback("0048"),
                     "schema_drift": "PASS",
                 },
             )
         ):
             raise ValueError(f"linux_union_component_identity_rejected:{name}")
+        capture_path = root / "test-results/coverage-native-catalog.json"
+        if not 0 < capture_path.stat().st_size <= 2 * 1024 * 1024:
+            raise ValueError("linux_union_coverage_native_catalog_size_invalid")
+        capture = _json(capture_path)
+        coverage_schema = verify_coverage_native_catalog_capture(
+            capture, migration_sha256=identity["migration"].get("migration_sha256")
+        )
+        if not native_migration_json_equal(
+            coverage_schema,
+            expected_migration_revision_readback("0048")[
+                "controlled_writer_coverage_schema"
+            ],
+        ):
+            raise ValueError("linux_union_coverage_native_catalog_changed")
+        capture_log = _json(root / "migration-coverage-native-catalog.log")
+        if not native_migration_json_equal(
+            capture_log,
+            {
+                "artifact": "test-results/coverage-native-catalog.json",
+                "sha256": hashes["test-results/coverage-native-catalog.json"],
+                "native_baseline_admission": False,
+                "execution_authority": False,
+            },
+        ):
+            raise ValueError("linux_union_coverage_capture_receipt_changed")
         if not native_migration_json_equal(
             _json(root / "migration-native-identity-empty-readback.log"),
             expected_native_identity_empty_downgrade_readback(native_custody),
@@ -443,6 +501,11 @@ def verify_union(
         migration_logs = (
             ("migration-supported-readback", identity["migration_supported_roundtrip"]),
             ("migration-identity", identity["migration"]),
+            (
+                "migration-coverage-empty-before",
+                identity["migration_empty_roundtrip"]["coverage_before_readback"],
+            ),
+            ("migration-coverage-empty-readback", expected_coverage_absent_readback()),
             (
                 "migration-native-identity-empty-readback",
                 identity["migration_empty_roundtrip"]["native_identity_down_readback"],
@@ -514,6 +577,9 @@ def verify_union(
             raise ValueError(f"linux_union_common_stage_missing:{name}")
         empty_positions = []
         for required in (
+            "migration-coverage-empty-before",
+            "migration-coverage-empty-downgrade",
+            "migration-coverage-empty-readback",
             "migration-native-identity-empty-before",
             "migration-native-identity-empty-downgrade",
             "migration-native-identity-empty-readback",
@@ -533,13 +599,97 @@ def verify_union(
             empty_positions.append(matches[0][0])
         if empty_positions != sorted(empty_positions):
             raise ValueError("linux_union_native_identity_empty_stage_order")
-        verify_downgrade_denial_log(root / "migration-downgrade-denial.log")
+        verify_current_downgrade_denial_log(root / "migration-downgrade-denial.log")
         stage = "postgres-intent" if mode == "postgres" else f"linux-shard-{index}"
         if not any(
             step.get("name") == stage and step.get("exit_code") == 0 for step in stages
         ):
             raise ValueError(f"linux_union_suite_stage_failed:{name}")
         if mode == "postgres":
+            receipt_name = "test-results/controlled-writer-coverage-migration.json"
+            if receipt_name not in hashes:
+                raise ValueError("linux_union_coverage_migration_receipt_missing")
+            if not 0 < (root / receipt_name).stat().st_size <= 65536:
+                raise ValueError("linux_union_coverage_migration_receipt_size_invalid")
+            source_files = _json(root / "source-files.json")
+            required_sources = (
+                "app/database/repositories/controlled_writer_coverage.py",
+                "migrations/versions/0048_controlled_writer_coverage.py",
+            )
+            if type(source_files) is not dict or any(
+                type(source_files.get(path)) is not dict
+                or type(source_files[path].get("sha256")) is not str
+                for path in required_sources
+            ):
+                raise ValueError("linux_union_coverage_migration_source_pins_missing")
+            receipt = verify_coverage_migration_receipt(
+                _json(root / receipt_name),
+                manifest_sha256=manifest_sha256,
+                repository_sha256=source_files[required_sources[0]]["sha256"],
+                migration_sha256=source_files[required_sources[1]]["sha256"],
+            )
+            if not native_migration_json_equal(
+                identity.get("coverage_migration_acceptance"), receipt
+            ):
+                raise ValueError("linux_union_coverage_migration_receipt_changed")
+            for required in (
+                *POSTGRES_COVERAGE_STAGES,
+                *(
+                    name
+                    for name in PREDECESSOR_0047_STAGES
+                    if not name.startswith("migration-native-identity-")
+                ),
+            ):
+                if (
+                    f"{required}.log" not in hashes
+                    or sum(step["name"] == required for step in stages) != 1
+                ):
+                    raise ValueError(
+                        "linux_union_coverage_or_predecessor_stage_or_hash_missing"
+                    )
+            verify_coverage_downgrade_denial_log(
+                root / "migration-coverage-nonempty-denial.log"
+            )
+            coverage_retention = coverage_nonempty_downgrade_readback(
+                _json(root / "migration-coverage-nonempty-before.log"),
+                _json(root / "migration-coverage-nonempty-after.log"),
+            )
+            if not native_migration_json_equal(
+                identity.get("coverage_nonempty_downgrade_policy"), coverage_retention
+            ):
+                raise ValueError("linux_union_coverage_nonempty_readback_changed")
+            if (
+                root / "predecessor-0047-parent-identity.log"
+            ).read_bytes() != b"ctcc\n":
+                raise ValueError("linux_union_predecessor_parent_identity_changed")
+            predecessor_identity = _json(root / "predecessor-0047-identity.log")
+            if not native_migration_json_equal(
+                predecessor_identity,
+                {
+                    "schema": "ctcc.migration_predecessor_identity.v1",
+                    "status": "PASS",
+                    "source_head": "0048",
+                    "database_head": "0047",
+                    "target_revision": "0047",
+                    "migration_sha256": identity["migration"].get("migration_sha256"),
+                    "execution_authority": False,
+                },
+            ):
+                raise ValueError("linux_union_predecessor_source_or_target_changed")
+            predecessor_xml = "test-results/predecessor-0047-two-cases.xml"
+            if predecessor_xml not in hashes:
+                raise ValueError("linux_union_predecessor_two_case_junit_missing")
+            predecessor_report = verify_pytest_report(
+                root / predecessor_xml,
+                required_cases=PREDECESSOR_0047_CASES,
+                required_modules=(PREDECESSOR_0047_CASES[0][0],),
+            )
+            if (
+                predecessor_report["tests"] != 2
+                or predecessor_report["passed"] != 2
+                or predecessor_report["skipped"] != 0
+            ):
+                raise ValueError("linux_union_predecessor_two_case_inventory_invalid")
             retention_stages = (
                 stage,
                 "migration-native-identity-nonempty-before",
@@ -592,6 +742,19 @@ def verify_union(
                 raise ValueError(
                     "linux_union_native_identity_nonempty_readback_changed"
                 )
+            if not native_migration_json_equal(
+                identity.get("predecessor_0047_validation"),
+                {
+                    "schema": "ctcc.isolated_0047_predecessor_validation.v1",
+                    "source_head": "0048",
+                    "database_target": "0047",
+                    "separate_from_full_suite_unique_count": True,
+                    "test_report": predecessor_report,
+                    "nonempty_downgrade_policy": retention,
+                    "execution_authority": False,
+                },
+            ):
+                raise ValueError("linux_union_predecessor_validation_changed")
             preflight_stage = "runtime-bundle-custody-preflight"
             observed = [
                 (i, step)

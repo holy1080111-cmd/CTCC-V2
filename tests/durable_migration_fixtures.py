@@ -35,6 +35,7 @@ MIGRATIONS = {
     "0045": "0045_demo_measured_hwm_first_sample_repair.py",
     "0046": "0046_public_runtime_bundle_custody.py",
     "0047": "0047_public_witness_native_identity.py",
+    "0048": "0048_controlled_writer_coverage.py",
 }
 TABLES = {
     # 0023 is constraint/trigger-only and has dedicated upgrade/downgrade
@@ -63,9 +64,14 @@ TABLES = {
     "0043": ("demo_account_revision_source_witnesses",),
     "0044": ("demo_account_measured_hwm_v2",),
     "0046": ("public_runtime_raw_bundles_v1",),
+    "0048": (
+        "demo_controlled_writer_coverage_scopes",
+        "demo_controlled_writer_coverage_journal",
+    ),
 }
 DOWNGRADE_LOCKS = {
     **TABLES,
+    "0048": ("demo_account_controls",) + TABLES["0048"],
     "0018": TABLES["0017"] + TABLES["0018"],
     "0020": ("qualification_account_scopes",) + TABLES["0020"],
     "0021": TABLES["0020"] + TABLES["0021"],

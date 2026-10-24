@@ -176,7 +176,13 @@ def _catalog():
     return role, functions, triggers, columns, constraints
 
 
-async def _run_catalog(items):
+async def _run_catalog(
+    items,
+    *,
+    path_readback="pg_catalog, public, pg_temp",
+    path_failure=None,
+    trace=None,
+):
     class Result:
         def __init__(self, value):
             self.value = value
@@ -187,14 +193,251 @@ async def _run_catalog(items):
         def all(self):
             return self.value
 
+        def scalar_one(self):
+            return self.value
+
     class Session:
         def __init__(self):
             self.items = iter(items)
+            self.path = "untrusted, pg_catalog, public"
 
-        async def execute(self, _statement):
+        async def execute(self, statement):
+            if trace is not None:
+                trace.append(str(statement))
+            if statement is custody._SET_CATALOG_SEARCH_PATH_SQL:
+                if path_failure == "set":
+                    raise RuntimeError("private native detail must not escape")
+                self.path = "pg_catalog, public, pg_temp"
+                return Result(None)
+            if statement is custody._CATALOG_SEARCH_PATH_SQL:
+                if path_failure == "readback":
+                    raise RuntimeError("private native detail must not escape")
+                assert self.path == "pg_catalog, public, pg_temp"
+                return Result(path_readback)
+            assert self.path == "pg_catalog, public, pg_temp"
             return Result(next(self.items))
 
     return await custody.RuntimeBundleCustodyRepository._catalog(Session())
+
+
+def test_caller_path_is_forced_and_read_back_before_first_catalog_query():
+    trace = []
+    assert len(asyncio.run(_run_catalog(_catalog(), trace=trace))) == 64
+    assert trace[:3] == [
+        "SET LOCAL search_path = pg_catalog, public, pg_temp",
+        "SELECT pg_catalog.current_setting('search_path')",
+        str(custody._ROLE_SQL),
+    ]
+    # Stored DB0046 function settings and the nine catalog text projections
+    # remain their original contract; this is the caller transaction path.
+    assert all(
+        row.proconfig == ["search_path=pg_catalog, public"] for row in _catalog()[1]
+    )
+    assert "current_user,pg_catalog.current_database(),'CREATE'" in str(
+        custody._ROLE_SQL
+    )
+    assert "d.datname=pg_catalog.current_database()" in str(custody._ROLE_SQL)
+
+
+@pytest.mark.parametrize("phase", ["set", "readback"])
+def test_path_native_failure_stops_before_role_query_and_redacts(phase):
+    trace = []
+    with pytest.raises(custody.RuntimeBundleCustodyError) as error:
+        asyncio.run(_run_catalog(_catalog(), path_failure=phase, trace=trace))
+    assert str(error.value) == "runtime_bundle_custody_unavailable"
+    assert error.value.diagnostic_category == "role_query"
+    assert str(custody._ROLE_SQL) not in trace
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        None,
+        True,
+        "public",
+        "pg_temp, pg_catalog, public",
+        "pg_catalog, public",
+        ["pg_catalog, public, pg_temp"],
+    ],
+)
+def test_missing_or_changed_native_path_readback_cannot_start_catalog(path):
+    trace = []
+    with pytest.raises(custody.RuntimeBundleCustodyError, match="custody_unavailable"):
+        asyncio.run(_run_catalog(_catalog(), path_readback=path, trace=trace))
+    assert len(trace) == 2 and str(custody._ROLE_SQL) not in trace
+
+
+@pytest.mark.parametrize(
+    "operation", ["verify", "seal", "read", "recover", "recover_by_pins"]
+)
+def test_every_controlled_custody_transaction_guards_path_before_catalog(
+    monkeypatch, operation
+):
+    """Synthetic sessions test path placement only, never native DB acceptance."""
+    data = {
+        "bundle_raw": b"{}",
+        "expected_sha256": hashlib.sha256(b"{}").hexdigest(),
+        "proof_envelope_sha256": "a" * 64,
+    }
+    bundle_id = custody.runtime_bundle_id_v1(
+        bundle_sha256=data["expected_sha256"],
+        proof_envelope_sha256=data["proof_envelope_sha256"],
+    )
+    now = datetime(2026, 10, 24, tzinfo=UTC)
+    sessions = []
+
+    class Transaction:
+        def __init__(self, session):
+            self.session = session
+
+        async def __aenter__(self):
+            self.session.active = True
+
+        async def __aexit__(self, *_args):
+            self.session.active = False
+
+    class Session:
+        def __init__(self):
+            self.active = self.path_verified = False
+            self.path = "untrusted, pg_catalog, public"
+            self.trace = []
+            self.tx = str(len(sessions) + 1)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        def begin(self):
+            return Transaction(self)
+
+        async def execute(self, statement, _parameters=None):
+            assert self.active
+            query = str(statement)
+            self.trace.append(query)
+            if query in {
+                "SET LOCAL synchronous_commit = 'on'",
+                "SET TRANSACTION READ ONLY",
+            }:
+                return None
+            if statement is custody._SET_CATALOG_SEARCH_PATH_SQL:
+                self.path = "pg_catalog, public, pg_temp"
+                return None
+            if statement is custody._CATALOG_SEARCH_PATH_SQL:
+                self.path_verified = True
+                return SimpleNamespace(scalar_one=lambda: self.path)
+            assert self.path_verified and self.path == "pg_catalog, public, pg_temp"
+            catalog_queries = (
+                custody._ROLE_SQL,
+                custody._FUNCTION_SQL,
+                custody._TRIGGER_SQL,
+                custody._COLUMN_SQL,
+                custody._CONSTRAINT_SQL,
+            )
+            catalog_index = next(
+                (
+                    index
+                    for index, query in enumerate(catalog_queries)
+                    if statement is query
+                ),
+                None,
+            )
+            if catalog_index is not None:
+                value = _catalog()[catalog_index]
+                return SimpleNamespace(one_or_none=lambda: value, all=lambda: value)
+            if query.startswith("SELECT public.public_runtime_bundle_v1_append("):
+                return None
+            if query.startswith("SELECT * FROM public.public_runtime_bundle_v1_read("):
+                return SimpleNamespace(
+                    one_or_none=lambda: SimpleNamespace(
+                        bundle_id=bundle_id,
+                        bundle_sha256=data["expected_sha256"],
+                        proof_envelope_sha256=data["proof_envelope_sha256"],
+                        bundle_raw=data["bundle_raw"],
+                        contract_version=1,
+                        recorded_at=now,
+                    )
+                )
+            if query.startswith(
+                ("SELECT pg_backend_pid()", "SELECT clock_timestamp()")
+            ):
+                return SimpleNamespace(
+                    one=lambda: SimpleNamespace(
+                        backend_pid=100,
+                        transaction_id=self.tx,
+                        observed=now,
+                    )
+                )
+            raise AssertionError("unexpected synthetic statement")
+
+    def factory():
+        session = Session()
+        sessions.append(session)
+        return session
+
+    monkeypatch.setattr(
+        custody.RuntimeBundleCustodyRepository, "_check_factory", lambda _self: None
+    )
+
+    async def run():
+        repository = object.__new__(custody.RuntimeBundleCustodyRepository)
+        repository._factory, repository._poisoned, repository._deployment = (
+            factory,
+            False,
+            None,
+        )
+        await repository.verify_deployment()
+        if operation == "seal":
+            receipt = await repository.seal_bundle(**data)
+            assert (
+                custody._consume_runtime_bundle_custody_receipt(
+                    receipt,
+                    expected_bundle_sha256=data["expected_sha256"],
+                    expected_proof_envelope_sha256=data["proof_envelope_sha256"],
+                ).bundle_raw
+                == data["bundle_raw"]
+            )
+        elif operation in {"read", "recover", "recover_by_pins"}:
+            if operation.startswith("recover"):
+                fresh = object.__new__(custody.RuntimeBundleCustodyRepository)
+                fresh._factory, fresh._poisoned, fresh._deployment = (
+                    factory,
+                    False,
+                    None,
+                )
+                await fresh.verify_deployment()
+                repository = fresh
+            if operation == "recover_by_pins":
+                result = await repository.read_retained_bundle_by_pins(
+                    expected_sha256=data["expected_sha256"],
+                    proof_envelope_sha256=data["proof_envelope_sha256"],
+                )
+            else:
+                result = await repository.read_retained_bundle(
+                    bundle_id=bundle_id,
+                    expected_sha256=data["expected_sha256"],
+                    proof_envelope_sha256=data["proof_envelope_sha256"],
+                )
+            assert (
+                result.bundle_raw == data["bundle_raw"]
+                and not result.execution_authority
+            )
+
+    asyncio.run(run())
+    assert (
+        len(sessions)
+        == {"verify": 1, "seal": 3, "read": 2, "recover": 3, "recover_by_pins": 3}[
+            operation
+        ]
+    )
+    for session in sessions:
+        role_at = session.trace.index(str(custody._ROLE_SQL))
+        assert session.trace[role_at - 2 : role_at] == [
+            "SET LOCAL search_path = pg_catalog, public, pg_temp",
+            "SELECT pg_catalog.current_setting('search_path')",
+        ]
+        assert session.path_verified and not session.active
 
 
 def test_sql_function_bodies_are_pinned_to_reviewed_migration():

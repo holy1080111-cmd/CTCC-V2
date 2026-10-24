@@ -23,6 +23,10 @@ from app.database.models.analysis import (
     StrategyEvaluation,
     TimeframeAnalysis,
 )
+from app.database.models.controlled_writer_coverage import (
+    DemoControlledWriterCoverageJournal,
+    DemoControlledWriterCoverageScope,
+)
 from app.database.models.demo_automation import (
     DemoAutomationFingerprint,
     DemoAutomationRun,
@@ -138,6 +142,8 @@ __all__ = [
     "DemoAutomationRun",
     "DemoAutomationState",
     "DemoControlJournal",
+    "DemoControlledWriterCoverageJournal",
+    "DemoControlledWriterCoverageScope",
     "DemoDailyPerformanceReport",
     "DemoEventHistoryEpochEvent",
     "DemoObservabilityEvent",

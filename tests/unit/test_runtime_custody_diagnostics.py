@@ -157,10 +157,17 @@ def test_catalog_query_failure_redacts_driver_payload(collection, category):
         def all(self):
             return self.value
 
+        def scalar_one(self):
+            return self.value
+
     class Session:
         count = 0
 
         async def execute(self, _statement):
+            if _statement is custody._SET_CATALOG_SEARCH_PATH_SQL:
+                return Result(None)
+            if _statement is custody._CATALOG_SEARCH_PATH_SQL:
+                return Result("pg_catalog, public, pg_temp")
             index = self.count
             self.count += 1
             if index == collection:

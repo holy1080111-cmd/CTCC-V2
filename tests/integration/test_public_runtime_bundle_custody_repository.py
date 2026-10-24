@@ -12,6 +12,7 @@ import importlib.util
 import json
 import os
 import re
+from contextlib import asynccontextmanager
 from functools import wraps
 from pathlib import Path
 from uuid import uuid4
@@ -296,6 +297,192 @@ async def test_migrated_restricted_role_commit_then_new_transaction_exact_readba
             expected_sha256=data["expected_sha256"],
             proof_envelope_sha256="f" * 64,
         )
+
+
+@asynccontextmanager
+async def _shadow_current_database_connection(engine, admin):
+    """Owned hermetic database only; a real caller-path falsification fixture."""
+    role, database = engine.url.username, engine.url.database
+    assert re.fullmatch(r"ctcc_rt_[a-f0-9]{18}", role or "")
+    assert re.fullmatch(r"ctcc_rt_[a-f0-9]{18}", database or "")
+    schema = f"ctcc_shadow_{uuid4().hex[:18]}"
+    async with admin.begin() as connection:
+        assert not (
+            await connection.execute(
+                text(
+                    "SELECT pg_catalog.has_database_privilege(:role,'template1','CREATE')"
+                ),
+                {"role": role},
+            )
+        ).scalar_one()
+        await connection.execute(text(f"CREATE SCHEMA {schema} AUTHORIZATION {role}"))
+        await connection.execute(
+            text(
+                f"CREATE FUNCTION {schema}.current_database() RETURNS pg_catalog.name "
+                "LANGUAGE sql STABLE AS $ctcc$ SELECT 'template1'::pg_catalog.name $ctcc$"
+            )
+        )
+    unsafe_path = f"{schema}, pg_catalog, public"
+    shadow_engine = create_async_engine(
+        engine.url,
+        poolclass=NullPool,
+        connect_args={"server_settings": {"search_path": unsafe_path}},
+    )
+    try:
+        yield shadow_engine, unsafe_path, database
+    finally:
+        await shadow_engine.dispose()
+    # The parent fixture drops the owned database, then the restricted role.
+    # No shared schema, deployed role or production privileges are changed.
+
+
+@_safe_custody_diagnostic
+async def test_native_caller_path_is_local_and_safe_for_verify_seal_read_and_recovery(
+    runtime_custody_database,
+):
+    _repository, engine, admin = runtime_custody_database
+    async with _shadow_current_database_connection(engine, admin) as (
+        shadow_engine,
+        unsafe_path,
+        database,
+    ):
+        factory = async_sessionmaker(shadow_engine, expire_on_commit=False)
+        repository = RuntimeBundleCustodyRepository(factory)
+        async with factory() as session, session.begin():
+            await session.execute(text("SET LOCAL synchronous_commit = 'on'"))
+            await session.execute(text("SET TRANSACTION READ ONLY"))
+            before = (
+                await session.execute(
+                    text(
+                        "SELECT pg_catalog.current_setting('search_path') AS path,"
+                        "current_database()::pg_catalog.text AS shadow_database,"
+                        "pg_catalog.current_database()::pg_catalog.text AS actual_database"
+                    )
+                )
+            ).one()
+            assert before.path == unsafe_path
+            assert (
+                before.shadow_database == "template1"
+                and before.actual_database == database
+            )
+            assert len(await RuntimeBundleCustodyRepository._catalog(session)) == 64
+            assert (
+                await session.execute(
+                    text("SELECT pg_catalog.current_setting('search_path')")
+                )
+            ).scalar_one() == "pg_catalog, public, pg_temp"
+        # SET LOCAL ends with the controlled transaction. A new native session
+        # still starts hostile, so every later transaction must earn its guard.
+        async with factory() as session, session.begin():
+            assert (
+                await session.execute(
+                    text("SELECT pg_catalog.current_setting('search_path')")
+                )
+            ).scalar_one() == unsafe_path
+        await repository.verify_deployment()
+        data = bundle()
+        observed = consume(await repository.seal_bundle(**data), data)
+        assert observed.bundle_raw == data["bundle_raw"]
+        assert observed.append_transaction_id != observed.readback_transaction_id
+        replay = await repository.read_retained_bundle(
+            bundle_id=observed.bundle_id,
+            expected_sha256=data["expected_sha256"],
+            proof_envelope_sha256=data["proof_envelope_sha256"],
+        )
+        assert replay.bundle_raw == data["bundle_raw"]
+        fresh = RuntimeBundleCustodyRepository(factory)
+        await fresh.verify_deployment()
+        recovered = await fresh.read_retained_bundle_by_pins(
+            expected_sha256=data["expected_sha256"],
+            proof_envelope_sha256=data["proof_envelope_sha256"],
+        )
+        assert recovered.bundle_raw == data["bundle_raw"]
+        assert (
+            not recovered.execution_authority
+            and not recovered.historical_availability_verified
+        )
+        with pytest.raises(RuntimeBundleCustodyError, match="receipt_unavailable"):
+            consume(recovered, data)
+        async with admin.connect() as connection:
+            settings = (
+                (
+                    await connection.execute(
+                        text(
+                            "SELECT p.proconfig FROM pg_catalog.pg_proc p "
+                            "JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace "
+                            "WHERE n.nspname='public' AND p.proname LIKE 'public_runtime_bundle_v1_%'"
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        assert len(settings) == 4 and all(
+            value == ["search_path=pg_catalog, public"] for value in settings
+        )
+
+
+@_safe_custody_diagnostic
+async def test_shadow_current_database_cannot_hide_create_grant_or_privileged_login(
+    runtime_custody_database,
+):
+    _repository, engine, admin = runtime_custody_database
+    async with _shadow_current_database_connection(engine, admin) as (
+        shadow_engine,
+        unsafe_path,
+        database,
+    ):
+        role = engine.url.username
+        async with admin.begin() as connection:
+            await connection.execute(
+                text(f"GRANT CREATE ON DATABASE {database} TO {role}")
+            )
+        async with shadow_engine.connect() as connection:
+            actual = (
+                await connection.execute(
+                    text(
+                        "SELECT current_database()::pg_catalog.text AS shadow_database,"
+                        "pg_catalog.current_database()::pg_catalog.text AS actual_database,"
+                        "pg_catalog.has_database_privilege(current_user,current_database(),'CREATE') AS masked_create,"
+                        "pg_catalog.has_database_privilege(current_user,pg_catalog.current_database(),'CREATE') AS actual_create"
+                    )
+                )
+            ).one()
+        assert (
+            actual.shadow_database == "template1" and actual.actual_database == database
+        )
+        assert actual.actual_create and not actual.masked_create
+        repository = RuntimeBundleCustodyRepository(
+            async_sessionmaker(shadow_engine, expire_on_commit=False)
+        )
+        with pytest.raises(RuntimeBundleCustodyError) as refusal:
+            await repository.verify_deployment()
+        assert refusal.value.diagnostic_category == "role_scope"
+        assert "no_create" in refusal.value.diagnostic_conditions
+        assert repository._deployment is None
+        with pytest.raises(RuntimeBundleCustodyError, match="custody_unavailable"):
+            await repository.seal_bundle(**bundle())
+        privileged_engine = create_async_engine(
+            admin.url,
+            poolclass=NullPool,
+            connect_args={"server_settings": {"search_path": unsafe_path}},
+        )
+        try:
+            privileged = RuntimeBundleCustodyRepository(
+                async_sessionmaker(privileged_engine, expire_on_commit=False)
+            )
+            with pytest.raises(RuntimeBundleCustodyError) as refusal:
+                await privileged.verify_deployment()
+            assert "nonprivileged" in refusal.value.diagnostic_conditions
+            assert privileged._deployment is None
+        finally:
+            await privileged_engine.dispose()
+        async with admin.connect() as connection:
+            assert (
+                await connection.execute(
+                    text("SELECT count(*) FROM public.public_runtime_raw_bundles_v1")
+                )
+            ).scalar_one() == 0
 
 
 @pytest.mark.parametrize("proof_conflict", [False, True])

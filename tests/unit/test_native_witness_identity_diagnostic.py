@@ -397,12 +397,25 @@ def _mock_main(
             elif name == "migration-identity":
                 raw = json.dumps(
                     {
+                        "schema": "ctcc.migration_predecessor_identity.v1",
                         "status": "PASS",
-                        "source_head": migration_head,
+                        "source_head": "0048",
                         "database_head": migration_head,
+                        "target_revision": "0047",
                         "migration_sha256": "e" * 64,
                         "execution_authority": False,
                         "untrusted_extra": "private-driver-detail",
+                    }
+                ).encode()
+            elif name == "native-witness-current-identity":
+                raw = json.dumps(
+                    {
+                        "schema": "ctcc.migration_identity.v1",
+                        "status": "PASS",
+                        "source_head": "0048",
+                        "database_head": "0048",
+                        "migration_sha256": "e" * 64,
+                        "execution_authority": False,
                     }
                 ).encode()
             elif name == "native-witness-public-catalog":
@@ -622,15 +635,24 @@ def test_migration_main_runs_empty_roundtrip_before_cases_then_one_nonempty_refu
         "native-witness-empty-readback",
         "native-witness-reupgrade",
         "native-witness-reupgrade-readback",
-        "native-witness-reupgrade-drift",
         "native-witness-identity-tests",
         "native-witness-nonempty-before",
         "native-witness-nonempty-denial",
         "native-witness-nonempty-after",
+        "native-witness-current-upgrade",
+        "native-witness-current-identity",
+        "native-witness-current-drift",
     ]
     assert [name for name in names if name in expected] == expected
     assert all(names.count(name) == 1 for name in expected)
     commands = dict(calls)
+    assert commands["migration-upgrade"][-3:] == ["alembic", "upgrade", "0047"]
+    assert commands["native-witness-reupgrade"][-3:] == ["alembic", "upgrade", "0047"]
+    assert diagnostic.PREDECESSOR_0047_IDENTITY_PROBE in commands["migration-identity"]
+    assert "native-witness-reupgrade-drift" not in names
+    assert identity["migration"]["source_head"] == "0048"
+    assert identity["migration"]["database_head"] == "0047"
+    assert identity["current_source_migration"]["database_head"] == "0048"
     assert (
         diagnostic.MIGRATION_REVISION_PROBE
         in commands["native-witness-migration-before"]

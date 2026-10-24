@@ -1,7 +1,7 @@
 """Bounded, exact-source PostgreSQL diagnostics; never full validation or trading.
 
 The default runs the four existing DB0046 custody preflight cases. The explicit
-DB0047 identity profile migrates head and runs the reviewed witness module.
+DB0047 identity profile migrates explicitly to0047 and runs the witness module.
 The separate migration profile also checks the empty roundtrip and a nonempty
 downgrade refusal using the full runner's fixed probes and strict validators.
 PostgreSQL and the app share an internal network, without host credentials.
@@ -27,6 +27,7 @@ from scripts.verify_final_hermetic import (
     MIGRATION_REVISION_PROBE,
     NATIVE_IDENTITY_DOWNGRADE_DENIAL,
     NATIVE_IDENTITY_RETENTION_PROBE,
+    PREDECESSOR_0047_IDENTITY_PROBE,
     RUNTIME_CUSTODY_PREFLIGHT_CASES,
     Run,
     archive_files,
@@ -394,7 +395,7 @@ def run_native_witness_migration_diagnostic(
         raise ValueError("diagnostic_migration_empty_down_invalid")
     retain(progress["phase"], expected, digest)
     progress["phase"] = "native-witness-reupgrade"
-    container(progress["phase"], ["alembic", "upgrade", "head"], timeout=60)
+    container(progress["phase"], ["alembic", "upgrade", "0047"], timeout=60)
     current, digest = observe(
         "native-witness-reupgrade-readback",
         ["python", "-c", MIGRATION_REVISION_PROBE, "0047"],
@@ -403,8 +404,7 @@ def run_native_witness_migration_diagnostic(
     if not native_migration_json_equal(current, expected):
         raise ValueError("diagnostic_migration_reupgrade_invalid")
     retain(progress["phase"], expected, digest)
-    progress["phase"] = "native-witness-reupgrade-drift"
-    container(progress["phase"], ["alembic", "check"], timeout=60)
+    # Current ORM metadata describes0048; no full drift claim at predecessor0047.
     progress["phase"] = "native-witness-identity-tests"
     report = run_native_witness_identity_diagnostic(
         container, test_results=test_results, mounts=mounts
@@ -738,10 +738,10 @@ def main():
             f"type=bind,source={tests.resolve()},target=/validation-results",
         )
         if args.profile in NATIVE_WITNESS_PROFILES:
-            container("migration-upgrade", ["alembic", "upgrade", "head"])
+            container("migration-upgrade", ["alembic", "upgrade", "0047"])
             container(
                 "migration-identity",
-                ["python", "-m", "scripts.verify_migration_identity"],
+                ["python", "-c", PREDECESSOR_0047_IDENTITY_PROBE],
             )
             migration = json.loads(
                 (args.output / "migration-identity.log").read_bytes()
@@ -749,8 +749,10 @@ def main():
             if (
                 type(migration) is not dict
                 or migration.get("status") != "PASS"
-                or migration.get("source_head") != "0047"
+                or migration.get("schema") != "ctcc.migration_predecessor_identity.v1"
+                or migration.get("source_head") != "0048"
                 or migration.get("database_head") != "0047"
+                or migration.get("target_revision") != "0047"
                 or migration.get("execution_authority") is not False
                 or type(migration.get("migration_sha256")) is not str
                 or re.fullmatch(r"[a-f0-9]{64}", migration["migration_sha256"]) is None
@@ -773,6 +775,33 @@ def main():
                 identity["test_report"] = run_native_witness_identity_diagnostic(
                     container, test_results=tests, mounts=mounts
                 )
+            container(
+                "native-witness-current-upgrade",
+                ["alembic", "upgrade", "head"],
+                timeout=60,
+            )
+            container(
+                "native-witness-current-identity",
+                ["python", "-m", "scripts.verify_migration_identity"],
+                timeout=60,
+            )
+            current = json.loads(
+                (args.output / "native-witness-current-identity.log").read_bytes()
+            )
+            if (
+                current.get("schema") != "ctcc.migration_identity.v1"
+                or current.get("status") != "PASS"
+                or current.get("source_head") != "0048"
+                or current.get("database_head") != "0048"
+                or current.get("migration_sha256") != migration["migration_sha256"]
+                or current.get("execution_authority") is not False
+            ):
+                raise ValueError("diagnostic_current_migration_identity_invalid")
+            container("native-witness-current-drift", ["alembic", "check"], timeout=60)
+            identity["current_source_migration"] = {
+                key: current[key]
+                for key in ("source_head", "database_head", "migration_sha256")
+            }
         else:
             identity["test_report"] = run_runtime_bundle_custody_preflight(
                 container, test_results=tests, mounts=mounts

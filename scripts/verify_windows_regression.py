@@ -51,6 +51,7 @@ POSTGRES_INTEGRATION = (
     "test_measured_hwm_v2_catch_up_postgres.py",
     "test_complete_consumed_event_ledger_repository.py",
     "test_control_bound_ledger_repository.py",
+    "test_controlled_writer_coverage_repository.py",
     "test_dashboard_snapshot_audit_integration.py",
     "test_database_schema.py",
     "test_demo_adaptive_portfolio_schema_integration.py",

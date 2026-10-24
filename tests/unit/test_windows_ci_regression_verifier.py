@@ -64,6 +64,16 @@ def test_junit_accepts_actual_windows_cases_and_records_posix_skip(tmp_path: Pat
     assert result["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def test_controlled_writer_coverage_is_postgresql_only_without_skip_expansion():
+    name = "test_controlled_writer_coverage_repository.py"
+    assert verifier.POSTGRES_INTEGRATION.count(name) == 1
+    assert name not in verifier.NO_DB_INTEGRATION
+    assert all(
+        "controlled_writer_coverage" not in module
+        for module, _ in verifier.POSIX_SKIP_POLICY
+    )
+
+
 def test_junit_rejects_missing_or_extra_collected_case(tmp_path: Path):
     cases = _valid_cases()
     path = tmp_path / "windows.xml"

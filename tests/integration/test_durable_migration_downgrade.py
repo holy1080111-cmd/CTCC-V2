@@ -851,6 +851,7 @@ def durable_fixture():
         ("0020", "capture_start"),
         ("0020", "capture_raw"),
         ("0022", "archive_claim"),
+        ("0048", "coverage"),
     ],
 )
 async def test_nonempty_downgrade_retains_exact_durable_records(
@@ -858,7 +859,23 @@ async def test_nonempty_downgrade_retains_exact_durable_records(
 ):
     engine, sessions = sandbox
     fixture = durable_fixture
-    if record_type == "archive_claim":
+    if record_type == "coverage":
+        from app.database.repositories.controlled_writer_coverage import (
+            read_controlled_writer_coverage_retention,
+        )
+        from tests.controlled_writer_coverage_fixtures import (
+            seed_controlled_writer_coverage,
+        )
+
+        async with engine.begin() as connection:
+            await seed_controlled_writer_coverage(connection)
+
+        async def readback():
+            async with engine.connect() as connection:
+                return await read_controlled_writer_coverage_retention(connection)
+
+        expected = await readback()
+    elif record_type == "archive_claim":
         scope, _, _, _ = await capture_fixtures.initialize(sandbox)
         archive_repo = AccountBillArchiveClaimRepository(
             sessions, clock=lambda: datetime.now(UTC)

@@ -1,8 +1,125 @@
 # Final completion validation state
 
-## 2026-10-24 exact48 CI and native historical-source integration
+## 2026-10-24 prospective controlled writer coverage under implementation
 
-Canonical source remains exact `48eb2b6f54910387db19491e2db5fce11b5aad55`,
+The isolated `work/controlled-writer-coverage-20261024` branch starts from
+exact `5c940d1a868838d6d0cdd090f534076452962137`, tree
+`0561f41608b8ff18091d5021e28b481d5360e46c`. Its source recovery checkpoint is
+`eee71e50f9ef5d64d6a5b81e574f28de250c20531e3d5825bf62d557ea4c1829`.
+The fixed R3 interface contract is
+`4e02979ec86ca4c24dd55accab1ae2c11f1869ea6bbacb74a4efeee16a206ea5`;
+the source-only authoring authorization is
+`a8bb8fdd66365c49486c469bbfbe5fbee6be99fabe9e1b2b7665c24ed404b8c3`.
+Root addenda R4 and R5 retain that original contract and correct two discovered
+function-only role/locking contradictions. R5 is
+`086c3f66455a5c54a826869624454ca1f7c71eb98c9c6799647f1b8f253833e3`.
+The unpublished read API becomes a fixed PLpgSQL function with an explicit
+internal discover/append/readback mode. Its owner takes the actual head and
+late table locks in the required order; runtime table privileges do not grow.
+Append and separate readback transactions use distinct lock modes, avoiding
+an upgrade from a held shared read lock into a write lock. Genuine PG17
+restricted-role, selector and concurrency acceptance is still required.
+R6 (`3c2b987b71590acf55356e04c0df04d43b8bcc7d24c83bb12126d43c580389ab`)
+also distinguishes administrative migration schema diagnostics from the
+mandatory restricted native-role check on deployment preflight and every
+native transaction. Administrative schema readback cannot grant native source
+or runtime permission; the unsealed PG17 baseline still denies formal v5.
+R7 explicitly puts the temporary schema last in each new function's fixed
+search path. R8 preserves old clock-domain evidence during safety revocation
+after reboot; it records new actual UTC separately and never fabricates time.
+The separate read-only DB0046 audit is
+`59ec7285110801790432460f419fcd3e27a218793ffc49e8949912edb9b1cce4`.
+It found a caller-side role-query context gap, without proving a temporary
+schema exploit in the stored SECURITY DEFINER functions. R9 limits its repair
+to the existing repository and two test modules, extending the reviewed source
+scope to 35 paths. R10 adds one existing diagnostic test fixture to recognize
+the new exact session-path guard without changing its five original catalog
+failure cases, bringing the reviewed scope to 36 paths. No old migration or
+DB0046 function baseline is rewritten.
+R11 requires the existing Control parent table to be locked before the new
+scope and journal tables, all with ACCESS EXCLUSIVE NOWAIT, before downgrade
+reads or DDL. This covers foreign-key trigger removal without a later parent
+lock wait. R12 requires each actual trigger function OID and namespace to match
+the independently verified intended public function. A matching function name
+alone is insufficient. Both corrections require their own real PostgreSQL
+conflict/drift falsification; source review is not execution evidence.
+This is an implementation checkpoint, not a runtime/database backup or
+acceptance receipt. Canonical is the exact5c source/CI baseline described below;
+the controlled-writer changes remain an isolated, uncommitted draft.
+
+The additive `0048` design keeps the existing Control and qualification
+architecture. Prepared, active and revoked transitions are immutable journal
+events with an atomic hash-CAS current pointer. Acquisition must first reject
+conflicting Arm/ownership, use the existing atomically guarded Control acquire,
+read it back, then apply owner/epoch/revision-bound EStop and read it back.
+It cannot clear a latch, renew another lease, bypass B5 or invent a revision.
+The original native anchor and current/control/custody deadlines do not restart.
+Consuming the proposed opaque owner burns it synchronously at call time;
+persisted rows and receipts cannot recreate it after restart.
+
+Only a prospective controlled CTCC Demo coverage fact is intended. External
+writer absence, complete account history, portfolio/account revision, G6,
+reservation, intent, dispatch and Live authority are not granted. The native
+PG17 catalog baseline is still unsealed and must deny positive acceptance;
+genuine isolated exact-source diagnostics must precede any baseline seal.
+The current `0047` predecessor proof and current `0048` migration proof must
+remain distinct. Full-source regression and schema acceptance are pending.
+No migration, authenticated acquisition, Arm or order was executed for this
+work. All completion/readiness flags remain zero.
+
+The actual bounded `cw24r10f` draft cohorts passed 34 new native-boundary unit
+cases using synthetic providers and 47 pure migration/catalog unit cases,
+all without skips. Their source-preparation identity is
+`e2df60eb5f914f71218fea79e2bc72064eb2c1cb79206dbdb479e178c52ab7f0`;
+the whole targeted first-readback receipt is
+`21e84211adf9508af3a95b6502d32f2c6a540a3658e12037c050fbc09f30e5c1`.
+These are not native PostgreSQL or authenticated-source acceptance. The first
+Linux-union fixture cohort failed on retained Windows path-limit evidence.
+After a separately owned short fixture directory was introduced, the full
+119-case cohort timed out at 60.766 seconds and remains incomplete. A single
+diagnostic then identified default Windows newline translation in a fixture:
+`ctcc\r\n` failed the unchanged exact `ctcc\n` artifact requirement.
+Only that fixture switched to explicit bytes. At subsequent draft identity
+`6bf928544d5b4a2b4d191070516f5675404b3c43d691acf63429eb8906a19f38`,
+scoped Ruff/formatting and all ten selected original-positive/current-0048
+fixture cases passed without skips. Their regression receipt is
+`6703de0a6c974b59949eac008680f4af7c775636e6b8fdf81ff09762932c6e31`.
+The earlier failure and timeout records remain preserved. Neither cohort
+replaces full Windows/Linux CI at the eventual committed source.
+
+## 2026-10-24 exact5c full CI and canonical source acceptance
+
+Canonical source is `5c940d1a868838d6d0cdd090f534076452962137`, tree
+`0561f41608b8ff18091d5021e28b481d5360e46c`, manifest
+`016e8728488d80dc7f88208111f1464a9f868d040ee209c594ce6be4cc3da982`.
+[Matching CI run 40056397174](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/40056397174)
+completed all 19 jobs: Linux 17,450 passed and 77 skipped; Windows 17,001 passed
+and 29 skipped. Its 492 PostgreSQL passes have zero skips and are included in
+Linux. Migration remains `0047`; dependency identity remains
+`681966167b36f1f92d27a93d03f30518768178f34e9307bab46e526805c06da3`.
+The image ID is
+`sha256:38abd3a018f6c33e828593d1f1377bb1251d7f2bed28abbef17588b15eead81b`,
+not a registry digest. Independent closure is
+`d06caac593d62efe3ae745e4e760d97b1fdc8732847ff5b74dccda556dab9b4c`.
+It verifies the official artifact chain, exact source archives, disjoint
+case unions and PostgreSQL stages. Earlier reader refusals and their narrowly
+reviewed corrections remain evidence; none was overwritten into a pass.
+
+Source-only canonical fast-forward receipt is
+`b50b51a1694894f457ca7ccb9bb32c457d99396517218e320c8793576a050164`.
+All 1,333 Git/index/raw source entries and 1,332 manifest rows match the exact
+source archive. The exact48 rollback ref and source recovery archives remain.
+The first promotion tool refused before mutation because it recursively
+entered ignored historical long-path test evidence. Its corrected inventory
+uses actual Git source membership and verifies every tracked file/ancestor;
+ignored evidence is retained and is not claimed as an audited runtime backup.
+Public remote main remains `d3f206a59888ef3d72732fa30deaa8278ac72cc5`.
+No deployment, database, account, main merge, release or trading action occurs
+in this source acceptance. It does not accept the isolated DB0048 draft.
+
+## Previous exact48 CI and native historical-source construction
+
+The previous accepted source was `48eb2b6f54910387db19491e2db5fce11b5aad55`,
 tree `8c686bc64808b51fa703ef381e40ba8027fd2ece`, manifest
 `14f09782f4b2bf3c129ae9067e9f67e86dfc11c1a7a137dbf64290a1e3ccd577`.
 Its [matching full CI run 39736353798](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/39736353798)
@@ -30,8 +147,9 @@ It includes fresh acquisition/readback/one-use consume, original wire privacy
 checks, fixed failure evidence, strict archive/currency parsing and legacy API
 regression. Scoped Ruff and formatting pass. The readback SHA256 is
 `cd20e8d3f2b15f799bad7b9cba9b14c5fbadb485b58c6acd9dab72b7a7d9dea3`.
-Other new mutation and PostgreSQL cases require fresh full matching-source CI;
-the exact48 counts above are historical evidence and cannot be borrowed.
+At that construction checkpoint, other new mutation and PostgreSQL cases still
+required matching-source CI. The exact5c acceptance above records their later
+full run; the exact48 counts remain historical and cannot be borrowed.
 
 The bundled local interpreter changed to signed Python 3.12.14. The old pin
 failed closed before source freeze or application imports; its failure remains.

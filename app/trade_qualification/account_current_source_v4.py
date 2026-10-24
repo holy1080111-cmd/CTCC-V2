@@ -739,3 +739,41 @@ def _replay_original_frame_v1(state, *, key):
     _check_current(replay, now)
     state["last"] = now
     return replay, now
+
+
+def _take_controlled_writer_coverage_v1(source, *, key):
+    """MOVE the real native owner only to the fixed coverage issuer."""
+    from app.trade_qualification.controlled_writer_coverage_v1 import _HOOK_KEY
+
+    if key is not _HOOK_KEY:
+        _deny("account_v4_controlled_writer_required")
+    state = (
+        _CURRENT.pop(source, None)
+        if type(source) is OwnedCurrentDemoAccountSourceV4
+        else None
+    )
+    if state is None:
+        _deny()
+    _replay_controlled_writer_coverage_v1(state, key=key)
+    return state
+
+
+def _replay_controlled_writer_coverage_v1(state, *, key):
+    """Keep the original anchor and source deadlines after the private MOVE."""
+    from app.trade_qualification.controlled_writer_coverage_v1 import _HOOK_KEY
+
+    if key is not _HOOK_KEY:
+        _deny("account_v4_controlled_writer_required")
+    _check_owner(state)
+    replay = replay_current_account_bundle_v4(
+        state["bundle_raw"], expected_sha256=state["bundle_sha256"]
+    )
+    document = decode(state["bundle_raw"], custody.MAX_BUNDLE_BYTES)
+    original = proof._canonical_document(
+        _unhex(document["native_proof_hex"], proof.MAX_PROOF)
+    )["stage"]["started"]
+    now = native_stamp()
+    validate_stamps((original, state["last"], now))
+    _check_current(replay, now)
+    state["last"] = now
+    return replay, now

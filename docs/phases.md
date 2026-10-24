@@ -12,12 +12,33 @@ offline Gate 3 prerequisite; its PostgreSQL role tests and decision-time
 availability proof remain pending. It does not advance Gate 3 or trading
 authority.
 
-The current source migration head is `0046`. It adds restricted application-role
-raw-bundle custody with exact committed readback and retained-only crash recovery.
-The [V4 current-source owner](public_current_source_v4.md) and
-[V8 closed-run arithmetic](account_history_risk_v8.md) remain separate from
+As of 2026-10-24, the accepted canonical source is exact `5c940d1`, tree
+`0561f41608b8ff18091d5021e28b481d5360e46c`, with migration head `0047`.
+Its independently verified full-source CI run `40056397174` completed all 19
+jobs: Linux 17,450 passed and 77 skipped; Windows 17,001 passed and 29 skipped.
+The 492 PostgreSQL passes have zero skips and are already included in Linux.
+The local source fast-forward preserves the exact48 rollback point. This
+accepts that source/CI baseline only; real native account acquisition, complete
+portfolio risk and trading acceptance remain unavailable.
+
+An isolated source branch is implementing prospective controlled Demo writer
+coverage and additive migration `0048`. Its fixed contract preserves the
+existing UID lock, Control ownership and B5 audit, appends immutable coverage
+transitions, and keeps a one-use native fact separate from trading authority.
+No database migration or deployment has been executed for this work. The PG17
+catalog baseline remains pending and denies native positive acceptance.
+Bounded synthetic unit checks and ten targeted Linux-union fixture checks have
+passed on separately recorded draft identities. A local full 119-case cohort
+timed out and is incomplete; matching full CI for the new source is required.
+Complete portfolio risk, historical availability and execution authority remain
+unavailable. All current private exchange writes remain denied.
+
+The following DB0046 and earlier entries record their historical construction
+state. They do not supersede the exact canonical identity above. DB0046 adds
+restricted application-role raw-bundle custody with exact committed readback
+and retained-only crash recovery. The [V4 current-source owner](public_current_source_v4.md)
+and [V8 closed-run arithmetic](account_history_risk_v8.md) remain separate from
 complete portfolio risk, historical availability and execution authority.
-Matching native PostgreSQL and full-source CI acceptance are pending.
 
 The initial [V4 current account owner](account_current_source_v4.md) now binds
 the native B1/9549 chain to exact DB0046 retained bytes. History, account-wide

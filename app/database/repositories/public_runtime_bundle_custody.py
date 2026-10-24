@@ -42,6 +42,11 @@ _ISSUER = object()
 _RECEIPTS = WeakKeyDictionary()
 _RECEIPT_LIFETIME_NS = 5_000_000_000
 _BUNDLE_ID_DOMAIN = b"ctcc.public_runtime_bundle_custody.bundle_id.v1\x00"
+_SAFE_CATALOG_SEARCH_PATH = "pg_catalog, public, pg_temp"
+_SET_CATALOG_SEARCH_PATH_SQL = text(
+    "SET LOCAL search_path = pg_catalog, public, pg_temp"
+)
+_CATALOG_SEARCH_PATH_SQL = text("SELECT pg_catalog.current_setting('search_path')")
 
 
 def _code(function, name):
@@ -244,7 +249,7 @@ SELECT session_user=current_user AS direct_login,
     OR pg_catalog.has_any_column_privilege(current_user,c.oid,'UPDATE')
     OR pg_catalog.has_any_column_privilege(current_user,c.oid,'REFERENCES') AS table_access,
   pg_catalog.has_schema_privilege(current_user,'public','CREATE')
-    OR pg_catalog.has_database_privilege(current_user,current_database(),'CREATE') AS can_create,
+    OR pg_catalog.has_database_privilege(current_user,pg_catalog.current_database(),'CREATE') AS can_create,
   pg_catalog.current_setting('fsync') AS fsync,
   pg_catalog.current_setting('full_page_writes') AS full_page_writes,
   pg_catalog.current_setting('synchronous_commit') AS synchronous_commit,
@@ -255,7 +260,7 @@ SELECT session_user=current_user AS direct_login,
   pg_catalog.inet_server_port() AS server_port,
   pg_catalog.pg_postmaster_start_time() AS server_started
 FROM pg_catalog.pg_roles r,pg_catalog.pg_class c,pg_catalog.pg_database d
-WHERE r.rolname=current_user AND d.datname=current_database()
+WHERE r.rolname=current_user AND d.datname=pg_catalog.current_database()
   AND c.oid=pg_catalog.to_regclass('public.public_runtime_raw_bundles_v1')
 """)
 _FUNCTION_SQL = text("""
@@ -580,6 +585,21 @@ class RuntimeBundleCustodyRepository:
 
     @staticmethod
     async def _catalog(session):
+        # This shared entry runs inside every controlled custody transaction,
+        # before its first role/catalog query. Native caller/pooled settings
+        # cannot choose the identities, operators or cast types it resolves.
+        await _catalog_query(
+            session, _SET_CATALOG_SEARCH_PATH_SQL, category="role_query"
+        )
+        path = (
+            await _catalog_query(
+                session, _CATALOG_SEARCH_PATH_SQL, category="role_query"
+            )
+        ).scalar_one()
+        if type(path) is not str or path != _SAFE_CATALOG_SEARCH_PATH:
+            raise RuntimeBundleCustodyError(
+                "runtime_bundle_custody_unavailable", diagnostic_category="role_query"
+            )
         role = (
             await _catalog_query(session, _ROLE_SQL, category="role_query")
         ).one_or_none()

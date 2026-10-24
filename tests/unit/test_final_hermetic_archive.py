@@ -1082,3 +1082,204 @@ def test_runtime_custody_no_actual_report_is_not_a_preflight_pass(tmp_path):
         run_runtime_bundle_custody_preflight(
             lambda *args, **kwargs: None, test_results=tmp_path, mounts=()
         )
+
+
+def test_current_0048_readback_preserves_exact_0047_predecessor_contract(monkeypatch):
+    from scripts import verify_controlled_writer_coverage_schema_v1 as coverage_schema
+    from scripts.verify_final_hermetic import NATIVE_WITNESS_IDENTITY_SCHEMA
+
+    old = expected_migration_revision_readback("0047")
+    assert old["schema"] == "ctcc.migration_revision_readback.v4"
+    assert "controlled_writer_coverage_schema" not in old
+    current = expected_migration_revision_readback("0048")
+    assert current["schema"] == "ctcc.migration_revision_readback.v5"
+    assert {
+        key: value
+        for key, value in current.items()
+        if key
+        not in {"schema", "expected", "observed", "controlled_writer_coverage_schema"}
+    } == {
+        key: value
+        for key, value in old.items()
+        if key not in {"schema", "expected", "observed"}
+    }
+
+    def synthetic_catalog(catalog, *, require_native_baseline=True):
+        assert require_native_baseline is True
+        if catalog != {"synthetic_only": True}:
+            raise ValueError("synthetic_catalog_required")
+        return current["controlled_writer_coverage_schema"]
+
+    monkeypatch.setattr(coverage_schema, "verify_catalog", synthetic_catalog)
+    arguments = (
+        "0048",
+        "0048",
+        True,
+        True,
+        ACCOUNT_REVISION_WITNESS_TRIGGERS,
+        True,
+        True,
+        ACCOUNT_MEASURED_HWM_V2_TRIGGERS_0045,
+        PUBLIC_RUNTIME_BUNDLE_SCHEMA,
+        NATIVE_WITNESS_IDENTITY_SCHEMA,
+    )
+    assert (
+        migration_revision_readback(
+            *arguments, coverage_catalog={"synthetic_only": True}
+        )
+        == current
+    )
+    with pytest.raises(ValueError, match="synthetic_catalog_required"):
+        migration_revision_readback(*arguments)
+    with pytest.raises(RuntimeError, match="migration_revision_readback_mismatch"):
+        migration_revision_readback(
+            "0048", "0047", *arguments[2:], coverage_catalog={"synthetic_only": True}
+        )
+    assert expected_migration_revision_readback("0047") == old
+
+
+@pytest.mark.parametrize(
+    "damage",
+    (None, "missing_outer", "duplicate_outer", "reordered", "wrong_predecessor"),
+)
+def test_current_0048_db0042_outer_refusal_requires_exact_order(tmp_path, damage):
+    from scripts.verify_final_hermetic import verify_current_downgrade_denial_log
+
+    edges = [
+        "0048 -> 0047",
+        "0047 -> 0046",
+        "0046 -> 0045",
+        "0045 -> 0044",
+        "0044 -> 0043",
+        "0043 -> 0042",
+        "0042 -> 0041",
+    ]
+    if damage == "missing_outer":
+        edges.pop(0)
+    elif damage == "duplicate_outer":
+        edges.insert(0, edges[0])
+    elif damage == "reordered":
+        edges[0], edges[1] = edges[1], edges[0]
+    elif damage == "wrong_predecessor":
+        edges[0] = "0048 -> 0046"
+    log = tmp_path / "current-refusal.log"
+    log.write_text(
+        "".join(f"INFO Running downgrade {edge}\n" for edge in edges)
+        + '  File "/app/migrations/versions/0042_submission_transport_authenticity_denial.py", line 42\n'
+        + f"asyncpg.exceptions.RaiseError: {DOWNGRADE_DENIAL}\n"
+        + f"sqlalchemy.exc.DBAPIError: (asyncpg.Error): {DOWNGRADE_DENIAL}\n"
+    )
+    if damage is None:
+        verify_current_downgrade_denial_log(log)
+    else:
+        with pytest.raises(ValueError):
+            verify_current_downgrade_denial_log(log)
+
+
+@pytest.mark.parametrize(
+    "damage", (None, "old47", "wrong_code", "duplicate", "success_text")
+)
+def test_0048_nonempty_refusal_cannot_be_replaced_by_predecessor(tmp_path, damage):
+    from scripts.verify_final_hermetic import (
+        COVERAGE_DOWNGRADE_DENIAL,
+        verify_coverage_downgrade_denial_log,
+    )
+
+    body = (
+        "INFO Running downgrade 0048 -> 0047\n"
+        '  File "/app/migrations/versions/0048_controlled_writer_coverage.py", line 48\n'
+        f"asyncpg.exceptions.RaiseError: {COVERAGE_DOWNGRADE_DENIAL}\n"
+        f"sqlalchemy.exc.DBAPIError: (asyncpg.Error): {COVERAGE_DOWNGRADE_DENIAL}\n"
+    )
+    if damage == "old47":
+        body = body.replace("0048 -> 0047", "0047 -> 0046")
+    elif damage == "wrong_code":
+        body = body.replace(COVERAGE_DOWNGRADE_DENIAL, DOWNGRADE_DENIAL)
+    elif damage == "duplicate":
+        body += "INFO Running downgrade 0048 -> 0047\n"
+    elif damage == "success_text":
+        body = "INFO Running downgrade 0048 -> 0047\nPASS\n"
+    log = tmp_path / "coverage-refusal.log"
+    log.write_text(body)
+    if damage is None:
+        verify_coverage_downgrade_denial_log(log)
+    else:
+        with pytest.raises(ValueError):
+            verify_coverage_downgrade_denial_log(log)
+
+
+@pytest.mark.parametrize(
+    "damage",
+    (
+        None,
+        "source",
+        "head47",
+        "changed_rows",
+        "bool_count",
+        "zero_count",
+        "admitted",
+        "bool_flag_alias",
+    ),
+)
+def test_0048_actual_migration_receipt_requires_bound_sources_and_exact_retention(
+    damage,
+):
+    from scripts.verify_final_hermetic import (
+        COVERAGE_DOWNGRADE_DENIAL,
+        verify_coverage_migration_receipt,
+    )
+
+    snapshot = {
+        "head": "0048",
+        "rows_sha256": "a" * 64,
+        "catalog_sha256": "b" * 64,
+        "counts": {
+            "demo_controlled_writer_coverage_scopes": 1,
+            "demo_controlled_writer_coverage_journal": 2,
+        },
+    }
+    value = {
+        "schema_version": "ctcc.controlled_writer_coverage_migration_acceptance.v1",
+        "manifest_sha256": "c" * 64,
+        "repository_sha256": "d" * 64,
+        "migration_sha256": "e" * 64,
+        "server_major": 17,
+        "before": copy.deepcopy(snapshot),
+        "after": copy.deepcopy(snapshot),
+        "refusal_code": COVERAGE_DOWNGRADE_DENIAL,
+        "downgrade_target": "0047",
+        "native_baseline_admission": False,
+        "execution_authority": False,
+    }
+    if damage == "source":
+        value["repository_sha256"] = "f" * 64
+    elif damage == "head47":
+        value["after"]["head"] = "0047"
+    elif damage == "changed_rows":
+        value["after"]["rows_sha256"] = "f" * 64
+    elif damage in {"bool_count", "zero_count"}:
+        value["after"]["counts"]["demo_controlled_writer_coverage_scopes"] = (
+            True if damage == "bool_count" else 0
+        )
+    elif damage == "admitted":
+        value["native_baseline_admission"] = True
+    elif damage == "bool_flag_alias":
+        value["execution_authority"] = 0
+    if damage is None:
+        assert (
+            verify_coverage_migration_receipt(
+                value,
+                manifest_sha256="c" * 64,
+                repository_sha256="d" * 64,
+                migration_sha256="e" * 64,
+            )
+            == value
+        )
+    else:
+        with pytest.raises(ValueError):
+            verify_coverage_migration_receipt(
+                value,
+                manifest_sha256="c" * 64,
+                repository_sha256="d" * 64,
+                migration_sha256="e" * 64,
+            )
