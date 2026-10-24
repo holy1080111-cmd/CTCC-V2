@@ -1,6 +1,6 @@
 """Durable prospective controlled Demo writer coverage; never trade authority.
 
-The shared stdlib domain module owns the sole DB0048 catalog policy. This
+The shared stdlib domain module owns the sole historical/current catalog policy. This
 repository retains native role, transaction and readback checks; diagnostic
 catalog and row observations cannot mint an owner.
 """
@@ -53,6 +53,7 @@ REVOCATION_REASONS = _catalog_policy.REVOCATION_REASONS
 STATE_FIELDS = _catalog_policy.STATE_FIELDS
 _APPEND_BODY = _catalog_policy._APPEND_BODY
 _CATALOG_SQL = _catalog_policy._CATALOG_SQL
+_FUNCTIONS_0048 = _catalog_policy._FUNCTIONS_0048
 _FUNCTIONS = _catalog_policy._FUNCTIONS
 _IMMUTABLE_BODY = _catalog_policy._IMMUTABLE_BODY
 _JOURNAL_BODY = _catalog_policy._JOURNAL_BODY
@@ -72,6 +73,13 @@ expected_controlled_writer_coverage_schema = (
 )
 verify_controlled_writer_coverage_catalog = (
     _catalog_policy.verify_controlled_writer_coverage_catalog
+)
+
+expected_controlled_writer_coverage_schema_v48 = (
+    _catalog_policy.expected_controlled_writer_coverage_schema_v48
+)
+verify_controlled_writer_coverage_catalog_v48 = (
+    _catalog_policy.verify_controlled_writer_coverage_catalog_v48
 )
 
 MAX_STATE_BYTES = 65536

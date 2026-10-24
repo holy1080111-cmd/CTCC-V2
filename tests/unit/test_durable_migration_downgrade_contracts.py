@@ -141,3 +141,51 @@ def test_scheduled_write_between_guard_and_drop_cannot_be_lost(revision):
                     tables[TABLES[revision][0]].append("synthetic-durable-record")
             lost_durable_record |= bool(tables.pop(table))
     assert writer_attempted and writer_blocked and not lost_durable_record
+
+
+def test_0049_empty_only_definer_downgrade_locks_before_catalog_and_guard():
+    """Recorded DDL and explicit synthetic catalog only; no PG acceptance."""
+    commands = RecordedDowngrade("0049").commands
+    assert commands[0] == (
+        "execute",
+        "LOCK TABLE public.demo_account_controls, public.demo_controlled_writer_coverage_scopes, public.demo_controlled_writer_coverage_journal IN ACCESS EXCLUSIVE MODE NOWAIT",
+    )
+    assert commands[1] == ("synthetic_catalog", False)
+    assert commands[2][0] == "execute"
+    assert (
+        "controlled_writer_pair_guard_definer_downgrade_requires_empty"
+        in commands[2][1]
+    )
+    assert tuple(
+        re.findall(r"EXISTS\s*\(SELECT 1 FROM ([\w.]+)\)", commands[2][1])
+    ) == (
+        "public.demo_controlled_writer_coverage_scopes",
+        "public.demo_controlled_writer_coverage_journal",
+    )
+    assert commands[3] == (
+        "execute",
+        "ALTER FUNCTION public.controlled_writer_coverage_v1_pair_guard() SECURITY INVOKER",
+    )
+    assert commands[-1] == ("synthetic_catalog", True)
+    assert not any(
+        kind == "drop" or kind == "execute" and "DROP " in value
+        for kind, value in commands
+    )
+
+
+def test_0049_writer_cannot_race_empty_guard_before_security_context_change():
+    """Finite synthetic schedule at first ALTER, distinct from0048 table DROP."""
+    locked = set()
+    guard_seen = False
+    attempted = False
+    for kind, value in RecordedDowngrade("0049").commands:
+        if kind == "execute" and value.startswith("LOCK TABLE "):
+            names = re.search(r"LOCK TABLE (.*?) IN ACCESS", value, re.DOTALL)[1]
+            locked.update(name.strip() for name in names.split(","))
+        elif kind == "execute" and "RAISE EXCEPTION" in value:
+            guard_seen = True
+        elif kind == "execute" and "SECURITY INVOKER" in value:
+            assert guard_seen
+            assert locked == {"public." + name for name in DOWNGRADE_LOCKS["0049"]}
+            attempted = True
+    assert attempted

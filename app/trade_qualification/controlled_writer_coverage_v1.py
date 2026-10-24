@@ -1,7 +1,7 @@
 """Native prospective controlled Demo writer coverage, never order authority.
 
 Only original V4 acquisition, the existing Control owner guards, the actual B5
-audit and committed DB0048 readback can issue the private live owner. Saved
+audit and committed DB0049 readback can issue the private live owner. Saved
 rows and measured receipts are audit data. No source deadline is restarted.
 """
 
@@ -11,6 +11,7 @@ import asyncio
 import os
 import re
 import secrets
+import sys
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -22,7 +23,9 @@ from weakref import WeakKeyDictionary, ref
 from app.database.repositories import demo_control as controls
 from app.database.repositories import public_runtime_bundle_custody as custody
 from app.database.repositories.qualification_ledger import QualificationLedgerRepository
+from app.domain import controlled_writer_coverage_catalog_v1 as catalog_policy
 from app.domain import native_clock
+from app.domain import source_primitives as primitives
 from app.domain.source_primitives import (
     canonical,
     decode,
@@ -82,6 +85,8 @@ WRITER_PATHS = (
     "app/trade_qualification/controlled_writer_coverage_v1.py",
     "app/database/repositories/controlled_writer_coverage.py",
     "app/domain/controlled_writer_coverage_catalog_v1.py",
+    "migrations/versions/0048_controlled_writer_coverage.py",
+    "migrations/versions/0049_controlled_writer_pair_guard_definer.py",
     "scripts/execute_okx_live_micro_order.ps1",
     "scripts/run_okx_live_automation_once.ps1",
     "scripts/start_controlled_demo_execution_soak.ps1",
@@ -101,7 +106,7 @@ POLICY_BYTES = canonical(
         "account_source_policy_sha256": account.POLICY_SHA256,
         "control": "read_acquire_separate_readback_owner_bound_estop_readback",
         "local": "same_UID_all_currency_original_B5_no_claim_revision_fabrication",
-        "custody": "DB0048_prepared_active_commit_separate_exact_readback",
+        "custody": "DB0049_prepared_active_commit_separate_exact_readback",
         "original_native_anchor_ns": 60_000_000_000,
         "native_drift_ns": 5_000_000,
         "original_current_ns": 30_000_000_000,
@@ -936,7 +941,43 @@ async def _replay_financial_assembly_v1(binding, *, key):
         raise
 
 
+def _catalog_policy_digest():
+    """Finite current gate inputs, not an observed or caller-reported seal."""
+    return sha(
+        catalog_policy.canonical(
+            {
+                "expected_schema": catalog_policy.expected_controlled_writer_coverage_schema(),
+                "functions": catalog_policy._FUNCTIONS,
+                "function_signatures": catalog_policy.COVERAGE_FUNCTION_SIGNATURES,
+                "catalog_query": catalog_policy._CATALOG_SQL,
+            }
+        ).encode("ascii")
+    )
+
+
+_CATALOG_POLICY_SHA256 = _catalog_policy_digest()
+
+
 _FUNCTION_PINS = (
+    (sys.modules[__name__], "_catalog_policy_digest", _catalog_policy_digest),
+    (primitives, "sha", primitives.sha),
+    (primitives, "canonical", primitives.canonical),
+    (catalog_policy, "_verify_catalog", catalog_policy._verify_catalog),
+    (catalog_policy, "_expected_schema", catalog_policy._expected_schema),
+    (
+        catalog_policy,
+        "verify_controlled_writer_coverage_catalog",
+        catalog_policy.verify_controlled_writer_coverage_catalog,
+    ),
+    (
+        catalog_policy,
+        "expected_controlled_writer_coverage_schema",
+        catalog_policy.expected_controlled_writer_coverage_schema,
+    ),
+    (catalog_policy, "canonical", catalog_policy.canonical),
+    (catalog_policy, "_digest", catalog_policy._digest),
+    (catalog_policy, "_keys", catalog_policy._keys),
+    (catalog_policy, "_deny", catalog_policy._deny),
     (native_clock, "native_stamp", native_clock.native_stamp),
     (runtime, "_configured_factory", runtime._configured_factory),
     (custody, "_native_engine", custody._native_engine),
@@ -1008,7 +1049,14 @@ _FUNCTION_PINS = (
 
 
 def _check_function_pins():
-    if any(
-        getattr(owner, name) is not function for owner, name, function in _FUNCTION_PINS
+    if (
+        sha is not primitives.sha
+        or canonical is not primitives.canonical
+        or any(
+            getattr(owner, name) is not function
+            for owner, name, function in _FUNCTION_PINS
+        )
     ):
         _deny("controlled_writer_coverage_native_function_changed")
+    if _catalog_policy_digest() != _CATALOG_POLICY_SHA256:
+        _deny("controlled_writer_coverage_catalog_policy_changed")

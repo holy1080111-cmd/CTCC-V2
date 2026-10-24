@@ -16,11 +16,13 @@ from scripts.verify_final_hermetic import (
     ACCOUNT_REVISION_WITNESS_TRIGGERS,
     ARCHIVE_REQUIRED_CASES,
     COVERAGE_DOWNGRADE_DENIAL,
+    COVERAGE_PREFLIGHT_CASES,
     DOWNGRADE_DENIAL,
     GATE3_PREFLIGHT_CASES,
     LEDGER_SCHEMA_PREFLIGHT_CASES,
     NATIVE_IDENTITY_DOWNGRADE_DENIAL,
     NATIVE_WITNESS_IDENTITY_SCHEMA,
+    PAIR_GUARD_DOWNGRADE_DENIAL,
     PREDECESSOR_0047_CASES,
     PUBLIC_RUNTIME_BUNDLE_SCHEMA,
     RUNTIME_CUSTODY_PREFLIGHT_CASES,
@@ -31,6 +33,7 @@ from scripts.verify_final_hermetic import (
     expected_native_identity_empty_downgrade_readback,
     native_identity_empty_before_readback,
     native_identity_nonempty_downgrade_readback,
+    run_controlled_writer_coverage_preflight,
     verify_linux_collection,
     verify_pytest_report,
 )
@@ -58,6 +61,9 @@ SOURCE_FILES = json.dumps(
     {
         "app/database/repositories/controlled_writer_coverage.py": {"sha256": "1" * 64},
         "migrations/versions/0048_controlled_writer_coverage.py": {"sha256": "2" * 64},
+        "migrations/versions/0049_controlled_writer_pair_guard_definer.py": {
+            "sha256": "3" * 64
+        },
     },
     sort_keys=True,
 ).encode()
@@ -76,7 +82,7 @@ def synthetic_sealed_native_identity_baseline(monkeypatch):
         assert require_native_baseline is True
         if catalog != {"synthetic_fixture_only": True}:
             raise ValueError("synthetic_coverage_catalog_mismatch")
-        return expected_migration_revision_readback("0048")[
+        return expected_migration_revision_readback("0049")[
             "controlled_writer_coverage_schema"
         ]
 
@@ -85,14 +91,16 @@ def synthetic_sealed_native_identity_baseline(monkeypatch):
 
 
 def _revision_readback(revision: str) -> dict:
-    if revision == "0048":
+    if revision in ("0048", "0049"):
         return {
             **_revision_readback("0047"),
-            "schema": "ctcc.migration_revision_readback.v5",
-            "expected": "0048",
-            "observed": "0048",
+            "schema": "ctcc.migration_revision_readback.v6"
+            if revision == "0049"
+            else "ctcc.migration_revision_readback.v5",
+            "expected": revision,
+            "observed": revision,
             "controlled_writer_coverage_schema": expected_migration_revision_readback(
-                "0048"
+                revision
             )["controlled_writer_coverage_schema"],
         }
     result = {
@@ -278,8 +286,8 @@ def _artifacts(tmp_path: Path) -> tuple[Path, list[str]]:
     migration = {
         "schema": "ctcc.migration_identity.v1",
         "status": "PASS",
-        "source_head": "0048",
-        "database_head": "0048",
+        "source_head": "0049",
+        "database_head": "0049",
         "migration_sha256": "e" * 64,
     }
     for mode, index in (
@@ -360,7 +368,10 @@ def _artifacts(tmp_path: Path) -> tuple[Path, list[str]]:
             "migration": migration,
             "migration_supported_roundtrip": _revision_readback("0001"),
             "migration_empty_roundtrip": {
-                "source_head": "0048",
+                "source_head": "0049",
+                "pair_guard_before_readback": _revision_readback("0049"),
+                "pair_guard_down_revision": "0048",
+                "pair_guard_down_readback": _revision_readback("0048"),
                 "coverage_before_readback": _revision_readback("0048"),
                 "coverage_down_revision": "0047",
                 "coverage_down_readback": expected_coverage_absent_readback(),
@@ -379,18 +390,18 @@ def _artifacts(tmp_path: Path) -> tuple[Path, list[str]]:
                 "hwm_down_readback": _revision_readback("0043"),
                 "down_revision": "0042",
                 "down_readback": _revision_readback("0042"),
-                "reupgrade_readback": _revision_readback("0048"),
+                "reupgrade_readback": _revision_readback("0049"),
                 "reupgrade_identity": "PASS",
                 "schema_drift": "PASS",
             },
             "migration_downgrade_policy": {
-                "source_head": "0048",
+                "source_head": "0049",
                 "target": "0041",
                 "result": "DENIED",
                 "denied_at": "0042",
                 "policy_refusal": DOWNGRADE_DENIAL,
-                "database_head_after": "0048",
-                "rollback_readback": _revision_readback("0048"),
+                "database_head_after": "0049",
+                "rollback_readback": _revision_readback("0049"),
                 "schema_drift": "PASS",
             },
             "collection": collection,
@@ -525,6 +536,11 @@ def _artifacts(tmp_path: Path) -> tuple[Path, list[str]]:
             preflight_files = [preflight_xml, preflight_log]
             for name, field, cases in (
                 (
+                    "controlled-writer-coverage-preflight",
+                    "controlled_writer_coverage_preflight",
+                    COVERAGE_PREFLIGHT_CASES,
+                ),
+                (
                     "event-journal-schema-preflight",
                     "event_journal_schema_preflight",
                     LEDGER_SCHEMA_PREFLIGHT_CASES,
@@ -539,7 +555,16 @@ def _artifacts(tmp_path: Path) -> tuple[Path, list[str]]:
                         for module, case in cases
                     ],
                 )
-                identity[field] = verify_pytest_report(xml, required_cases=cases)
+                if name == "controlled-writer-coverage-preflight":
+                    # Exercise the actual producer's module/case report shape;
+                    # the synthetic container has already authored this XML.
+                    identity[field] = run_controlled_writer_coverage_preflight(
+                        lambda *_args, **_options: None,
+                        test_results=results,
+                        mounts=(),
+                    )
+                else:
+                    identity[field] = verify_pytest_report(xml, required_cases=cases)
                 log = root / f"{name}.log"
                 log.write_text("synthetic-preflight-fixture-only\n")
                 preflight_files.extend((xml, log))
@@ -550,9 +575,9 @@ def _artifacts(tmp_path: Path) -> tuple[Path, list[str]]:
             json.dumps(
                 {
                     "schema": "ctcc.controlled_writer_coverage_native_catalog_observation.v1",
-                    "source_head": "0048",
+                    "source_head": "0049",
                     "source_migration_sha256": "e" * 64,
-                    "database_head": "0048",
+                    "database_head": "0049",
                     "session_facts": [
                         "17.11",
                         "170011",
@@ -580,6 +605,8 @@ def _artifacts(tmp_path: Path) -> tuple[Path, list[str]]:
         )
         coverage_files.extend((capture_path, capture_log))
         for name, body in (
+            ("migration-pair-guard-empty-before", _revision_readback("0049")),
+            ("migration-pair-guard-empty-readback", _revision_readback("0048")),
             ("migration-coverage-empty-before", _revision_readback("0048")),
             ("migration-coverage-empty-readback", expected_coverage_absent_readback()),
         ):
@@ -602,7 +629,7 @@ def _artifacts(tmp_path: Path) -> tuple[Path, list[str]]:
                     json.dumps(rows, sort_keys=True, separators=(",", ":")).encode()
                 ),
             }
-            snapshot = coverage_nonempty_snapshot(_revision_readback("0048"), retention)
+            snapshot = coverage_nonempty_snapshot(_revision_readback("0049"), retention)
             identity["coverage_nonempty_downgrade_policy"] = (
                 coverage_nonempty_downgrade_readback(snapshot, snapshot)
             )
@@ -629,16 +656,29 @@ def _artifacts(tmp_path: Path) -> tuple[Path, list[str]]:
             receipt_path.write_text(json.dumps(migration_receipt))
             identity["coverage_migration_acceptance"] = migration_receipt
             coverage_files.append(receipt_path)
+            pair_receipt = {
+                **migration_receipt,
+                "schema_version": "ctcc.controlled_writer_pair_guard_migration_acceptance.v1",
+                "migration_sha256": "3" * 64,
+                "before": {**receipt_snapshot, "head": "0049"},
+                "after": {**receipt_snapshot, "head": "0049"},
+                "refusal_code": PAIR_GUARD_DOWNGRADE_DENIAL,
+                "downgrade_target": "0048",
+            }
+            pair_path = results / "controlled-writer-pair-guard-migration.json"
+            pair_path.write_text(json.dumps(pair_receipt))
+            identity["pair_guard_migration_acceptance"] = pair_receipt
+            coverage_files.append(pair_path)
             for name in (POSTGRES_COVERAGE_STAGES[0], POSTGRES_COVERAGE_STAGES[2]):
                 path = root / f"{name}.log"
                 path.write_text(json.dumps(snapshot))
                 coverage_files.append(path)
             denial = root / "migration-coverage-nonempty-denial.log"
             denial.write_text(
-                "INFO Running downgrade 0048 -> 0047\n"
-                '  File "/app/migrations/versions/0048_controlled_writer_coverage.py", line 48\n'
-                f"asyncpg.exceptions.RaiseError: {COVERAGE_DOWNGRADE_DENIAL}\n"
-                f"sqlalchemy.exc.DBAPIError: (asyncpg.Error): {COVERAGE_DOWNGRADE_DENIAL}\n"
+                "INFO Running downgrade 0049 -> 0048\n"
+                '  File "/app/migrations/versions/0049_controlled_writer_pair_guard_definer.py", line 49\n'
+                f"asyncpg.exceptions.RaiseError: {PAIR_GUARD_DOWNGRADE_DENIAL}\n"
+                f"sqlalchemy.exc.DBAPIError: (asyncpg.Error): {PAIR_GUARD_DOWNGRADE_DENIAL}\n"
             )
             coverage_files.append(denial)
             predecessor_xml = results / "predecessor-0047-two-cases.xml"
@@ -656,7 +696,7 @@ def _artifacts(tmp_path: Path) -> tuple[Path, list[str]]:
             )
             identity["predecessor_0047_validation"] = {
                 "schema": "ctcc.isolated_0047_predecessor_validation.v1",
-                "source_head": "0048",
+                "source_head": "0049",
                 "database_target": "0047",
                 "separate_from_full_suite_unique_count": True,
                 "test_report": predecessor_report,
@@ -676,7 +716,7 @@ def _artifacts(tmp_path: Path) -> tuple[Path, list[str]]:
                             {
                                 "schema": "ctcc.migration_predecessor_identity.v1",
                                 "status": "PASS",
-                                "source_head": "0048",
+                                "source_head": "0049",
                                 "database_head": "0047",
                                 "target_revision": "0047",
                                 "migration_sha256": "e" * 64,
@@ -708,7 +748,7 @@ def _artifacts(tmp_path: Path) -> tuple[Path, list[str]]:
                             if stage_name == "migration-downgrade-denial"
                             else {"policy_refusal": NATIVE_IDENTITY_DOWNGRADE_DENIAL}
                             if stage_name == "migration-native-identity-nonempty-denial"
-                            else {"policy_refusal": COVERAGE_DOWNGRADE_DENIAL}
+                            else {"policy_refusal": PAIR_GUARD_DOWNGRADE_DENIAL}
                             if stage_name == "migration-coverage-nonempty-denial"
                             else {}
                         ),
@@ -750,13 +790,14 @@ def _artifacts(tmp_path: Path) -> tuple[Path, list[str]]:
         reupgrade_identity_log = root / "migration-reupgrade-identity.log"
         reupgrade_identity_log.write_text(json.dumps(migration))
         reupgrade_readback_log = root / "migration-reupgrade-readback.log"
-        reupgrade_readback_log.write_text(json.dumps(_revision_readback("0048")))
+        reupgrade_readback_log.write_text(json.dumps(_revision_readback("0049")))
         reidentity_log = root / "migration-reidentity.log"
         reidentity_log.write_text(json.dumps(migration))
         denial_readback_log = root / "migration-denial-readback.log"
-        denial_readback_log.write_text(json.dumps(_revision_readback("0048")))
+        denial_readback_log.write_text(json.dumps(_revision_readback("0049")))
         denial_log = root / "migration-downgrade-denial.log"
         denial_log.write_text(
+            "INFO Running downgrade 0049 -> 0048\n"
             "INFO Running downgrade 0048 -> 0047\n"
             "INFO Running downgrade 0047 -> 0046\n"
             "INFO Running downgrade 0046 -> 0045\n"
@@ -1617,12 +1658,15 @@ def test_tampered_result_hash_and_identity_drift_fail(tmp_path):
     "stage",
     (
         "migration-coverage-native-catalog",
+        "migration-pair-guard-empty-before",
+        "migration-pair-guard-empty-downgrade",
+        "migration-pair-guard-empty-readback",
         "migration-coverage-empty-before",
         "migration-coverage-empty-downgrade",
         "migration-coverage-empty-readback",
     ),
 )
-def test_current_0048_union_cannot_omit_new_transition(tmp_path, stage):
+def test_current_0049_union_cannot_omit_new_transition(tmp_path, stage):
     artifacts, _ = _artifacts(tmp_path)
     root = _pg_root(artifacts)
     path = root / "steps.json"
@@ -1648,7 +1692,7 @@ def test_current_0048_union_cannot_omit_new_transition(tmp_path, stage):
         "admitted_capture",
     ),
 )
-def test_current_0048_and_isolated_0047_evidence_cannot_substitute_each_other(
+def test_current_0049_and_isolated_0047_evidence_cannot_substitute_each_other(
     tmp_path, damage
 ):
     artifacts, _ = _artifacts(tmp_path)
@@ -1703,3 +1747,118 @@ def test_current_0048_and_isolated_0047_evidence_cannot_substitute_each_other(
         verify_union(
             artifacts, commit=COMMIT, tree=TREE, manifest_sha256=_sha(MANIFEST)
         )
+
+
+@pytest.mark.parametrize(
+    "damage",
+    (
+        "old48_receipt",
+        "missing_preflight",
+        "old48_current_head",
+        "rehashed_wrong_refusal",
+    ),
+)
+def test_0049_union_requires_distinct_pair_guard_receipt_and_early_commit_proof(
+    tmp_path, damage
+):
+    """Rehashed synthetic artifacts cannot relabel0048 or omit the preflight."""
+    artifacts, _ = _artifacts(tmp_path)
+    root = _pg_root(artifacts)
+    if damage == "old48_receipt":
+        path = root / "test-results/controlled-writer-pair-guard-migration.json"
+        path.write_bytes(
+            (
+                root / "test-results/controlled-writer-coverage-migration.json"
+            ).read_bytes()
+        )
+    elif damage == "missing_preflight":
+        path = root / "steps.json"
+        steps = json.loads(path.read_text())
+        path.write_text(
+            json.dumps(
+                [
+                    row
+                    for row in steps
+                    if row["name"] != "controlled-writer-coverage-preflight"
+                ]
+            )
+        )
+    elif damage == "old48_current_head":
+        path = root / "migration-pair-guard-empty-before.log"
+        path.write_text(json.dumps(_revision_readback("0048")))
+    else:
+        path = root / "migration-coverage-nonempty-denial.log"
+        path.write_text(
+            path.read_text().replace(
+                PAIR_GUARD_DOWNGRADE_DENIAL, COVERAGE_DOWNGRADE_DENIAL
+            )
+        )
+    _rehash(root, path)
+    with pytest.raises((ValueError, RuntimeError)):
+        verify_union(
+            artifacts, commit=COMMIT, tree=TREE, manifest_sha256=_sha(MANIFEST)
+        )
+
+
+def test_0049_preflight_real_producer_report_roundtrips_through_union_reader(tmp_path):
+    """Actual producer/parser functions with synthetic XML only; no PG run."""
+    from scripts.verify_linux_shard_union import _verify_preflight_reports
+
+    results = tmp_path / "test-results"
+    results.mkdir()
+    identity, hashes, calls = {}, {}, []
+
+    def container(stage, command, **options):
+        calls.append((stage, command, options))
+        assert stage == "controlled-writer-coverage-preflight"
+        _junit(
+            results / f"{stage}.xml",
+            [
+                f"{module.replace('.', '/')}.py::{case}"
+                for module, case in COVERAGE_PREFLIGHT_CASES
+            ],
+        )
+        (tmp_path / f"{stage}.log").write_text(
+            "synthetic-container-produced-reviewed-XML-only\n"
+        )
+
+    identity["controlled_writer_coverage_preflight"] = (
+        run_controlled_writer_coverage_preflight(
+            container,
+            test_results=results,
+            mounts=(),
+        )
+    )
+    module = COVERAGE_PREFLIGHT_CASES[0][0]
+    assert identity["controlled_writer_coverage_preflight"][
+        "required_module_passed"
+    ] == {module: 3}
+    for stage, field, cases in (
+        (
+            "event-journal-schema-preflight",
+            "event_journal_schema_preflight",
+            LEDGER_SCHEMA_PREFLIGHT_CASES,
+        ),
+        ("gate3-postgres-preflight", "gate3_preflight", GATE3_PREFLIGHT_CASES),
+    ):
+        xml = results / f"{stage}.xml"
+        _junit(
+            xml, [f"{module.replace('.', '/')}.py::{case}" for module, case in cases]
+        )
+        identity[field] = verify_pytest_report(xml, required_cases=cases)
+        assert identity[field]["required_module_passed"] == {}
+        (tmp_path / f"{stage}.log").write_text("synthetic-case-only-report\n")
+    for stage in (
+        "controlled-writer-coverage-preflight",
+        "event-journal-schema-preflight",
+        "gate3-postgres-preflight",
+    ):
+        for path in (results / f"{stage}.xml", tmp_path / f"{stage}.log"):
+            hashes[path.relative_to(tmp_path).as_posix()] = _sha(path.read_bytes())
+    _verify_preflight_reports(tmp_path, hashes, identity)
+    assert len(calls) == 1
+    # The previous fixture's empty module mapping must no longer camouflage
+    # this producer/consumer mismatch, even though all three cases still pass.
+    identity["controlled_writer_coverage_preflight"]["required_module_passed"] = {}
+    with pytest.raises(ValueError, match="linux_union_preflight_report_invalid"):
+        _verify_preflight_reports(tmp_path, hashes, identity)

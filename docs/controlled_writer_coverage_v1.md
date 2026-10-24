@@ -1,5 +1,18 @@
 # Prospective controlled Demo writer coverage V1
 
+The current draft adds DB0049 after immutable DB0048. Exact-source CI
+`40075407841` on `23464c4` recorded 518 PostgreSQL passes and seven failures.
+The deferred pair trigger ran after the append function returned, under the
+restricted caller, and its required internal reads were denied at commit.
+DB0049 changes only that existing guard's execution context to its verified
+administrative owner, with its fixed search path and public execution revoked.
+It adds no table, column or helper execution grants. Both stored bodies and
+DB0048's effective fresh-install DDL remain unchanged. Current runtime admission
+requires the 0049 catalog; the separate historical 0048 reader grants no native
+authority. Restricted-role commit/readback, ACL falsification, CAS, and separate
+0049/0048 migration experiments are authored; matching actual PostgreSQL and
+complete Windows/Linux CI acceptance remain pending.
+
 This component remains an unaccepted isolated final-completion draft. The real
 PG17.11 admin catalog from source `585bd55` was retained and independently
 reviewed: 27 columns, 20 ordinary constraints plus two constraint triggers,
@@ -18,8 +31,9 @@ repository reexports the identical objects and retains all native role,
 transaction and readback checks. The adapter imports database readers only
 when actual I/O is awaited; host verification uses the same pure policy.
 The new policy file is also held in the issuer's source inventory, so moving
-the implementation cannot escape package custody. DDL, SQL function bodies,
-catalog query projections and the sealed comparison remain unchanged. Fresh
+the implementation cannot escape package custody. Historical DB0048 DDL, SQL
+function bodies, catalog query projections and the sealed constraint/index
+comparison remain unchanged. Fresh
 source-bound regression is required; see [validation state](final_completion_validation.md).
 
 The narrow contract permits one process-owned fact that an explicitly
@@ -126,7 +140,8 @@ acceptance. Root's R6 contract requires the fixed native role/session/effective
 privilege gate in deployment verification and every native transaction. Correct
 schema hashes under an owner, superuser or SET ROLE session cannot prepare,
 activate, consume or issue a native owner. Diagnostic structural comparison
-cannot replace that gate; an unsealed PG17 baseline also cannot pass formal v5.
+cannot replace that gate; an unsealed PG17 baseline cannot pass current formal
+v6 (0049) or the separate historical v5 (0048) comparison.
 
 Public repository `read()` returns a diagnostic observation; safety-only
 `revoke_observed()` can append an exact-CAS revocation. Neither certifies a

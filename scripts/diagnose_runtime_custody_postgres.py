@@ -404,7 +404,7 @@ def run_native_witness_migration_diagnostic(
     if not native_migration_json_equal(current, expected):
         raise ValueError("diagnostic_migration_reupgrade_invalid")
     retain(progress["phase"], expected, digest)
-    # Current ORM metadata describes0048; no full drift claim at predecessor0047.
+    # Current ORM metadata describes0049; no full drift claim at predecessor0047.
     progress["phase"] = "native-witness-identity-tests"
     report = run_native_witness_identity_diagnostic(
         container, test_results=test_results, mounts=mounts
@@ -750,7 +750,7 @@ def main():
                 type(migration) is not dict
                 or migration.get("status") != "PASS"
                 or migration.get("schema") != "ctcc.migration_predecessor_identity.v1"
-                or migration.get("source_head") != "0048"
+                or migration.get("source_head") != "0049"
                 or migration.get("database_head") != "0047"
                 or migration.get("target_revision") != "0047"
                 or migration.get("execution_authority") is not False
@@ -791,8 +791,8 @@ def main():
             if (
                 current.get("schema") != "ctcc.migration_identity.v1"
                 or current.get("status") != "PASS"
-                or current.get("source_head") != "0048"
-                or current.get("database_head") != "0048"
+                or current.get("source_head") != "0049"
+                or current.get("database_head") != "0049"
                 or current.get("migration_sha256") != migration["migration_sha256"]
                 or current.get("execution_authority") is not False
             ):

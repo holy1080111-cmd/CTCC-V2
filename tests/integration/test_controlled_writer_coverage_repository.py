@@ -1,4 +1,4 @@
-"""Actual disposable-PG DB0048 tests; all source/account inputs are synthetic.
+"""Actual disposable-PG DB0049 and historical DB0048 tests; all source/account inputs are synthetic.
 
 The primary migrated hermetic database retains accepted rows for the runner's
 later real downgrade/retention experiment. Only child databases/roles created
@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import re
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
@@ -24,7 +25,7 @@ from alembic.script import ScriptDirectory
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError
-from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from app.database.repositories import controlled_writer_coverage as coverage
@@ -68,7 +69,7 @@ async def coverage_primary():
             assert 170000 <= version < 180000
             assert (
                 await connection.scalar(text("SELECT version_num FROM alembic_version"))
-                == "0048"
+                == "0049"
             )
         yield engine
     finally:
@@ -80,7 +81,7 @@ def _migrate(connection, target, direction):
     config = Config(str(_ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(_ROOT / "migrations"))
     script = ScriptDirectory.from_config(config)
-    assert script.get_current_head() == "0048"
+    assert script.get_current_head() == "0049"
     resolver = (
         script._upgrade_revs if direction == "upgrade" else script._downgrade_revs
     )
@@ -91,9 +92,9 @@ def _migrate(connection, target, direction):
         context.run_migrations()
 
 
-@pytest.fixture
-async def coverage_child(coverage_primary):
-    parent = coverage_primary
+@asynccontextmanager
+async def _coverage_child(parent, target):
+    assert target in {"0048", "0049"}
     name = "ctcc_cwc_" + uuid4().hex
     role = "ctcc_cwc_" + uuid4().hex
     assert re.fullmatch(r"ctcc_cwc_[a-f0-9]{32}", name)
@@ -112,7 +113,7 @@ async def coverage_child(coverage_primary):
             created_database = True
         child = create_async_engine(parent.url.set(database=name), poolclass=NullPool)
         async with child.begin() as connection:
-            await connection.run_sync(_migrate, "0048", "upgrade")
+            await connection.run_sync(_migrate, target, "upgrade")
             await connection.execute(text(f'CREATE ROLE "{role}" LOGIN'))
             created_role = True
             await connection.execute(text(f'GRANT USAGE ON SCHEMA public TO "{role}"'))
@@ -148,6 +149,19 @@ async def coverage_child(coverage_primary):
         if created_role:
             async with parent.begin() as connection:
                 await connection.execute(text(f'DROP ROLE IF EXISTS "{role}"'))
+
+
+@pytest.fixture
+async def coverage_child(coverage_primary):
+    async with _coverage_child(coverage_primary, "0049") as child:
+        yield child
+
+
+@pytest.fixture
+async def coverage_child_v48(coverage_primary):
+    """Genuine separate owned database at exactly historical 0048."""
+    async with _coverage_child(coverage_primary, "0048") as child:
+        yield child
 
 
 async def _append(connection, uid, fixture, expected_sequence=0, expected_sha256=None):
@@ -356,28 +370,29 @@ def _export_migration_receipt(before, after):
 
 
 async def test_nonempty_0048_downgrade_refuses_and_retains_exact_catalog(
-    coverage_primary,
+    coverage_child_v48,
 ):
-    # These rows deliberately remain in the primary harness-owned database.
-    async with coverage_primary.begin() as connection:
+    # Genuine historical experiment, not current 0049 refusing on its behalf.
+    admin, _ = coverage_child_v48
+    async with admin.begin() as connection:
         await seed_controlled_writer_coverage(
             connection, uid=str(730048000000 + uuid4().int % 10**9)
         )
-    before = await _snapshot(coverage_primary)
+    before = await _snapshot(admin)
     assert before[0] == "0048" and before[3] == 17
     assert all(count > 0 for count in before[2]["counts"].values())
     with pytest.raises(
         DBAPIError, match="controlled_writer_coverage_downgrade_requires_empty"
     ):
-        async with coverage_primary.begin() as connection:
+        async with admin.begin() as connection:
             await connection.run_sync(_migrate, "0047", "downgrade")
-    after = await _snapshot(coverage_primary)
+    after = await _snapshot(admin)
     assert coverage.canonical(before) == coverage.canonical(after)
     _export_migration_receipt(before, after)
 
 
-async def test_empty_0048_downgrade_and_reupgrade(coverage_child):
-    admin, _ = coverage_child
+async def test_empty_0048_downgrade_and_reupgrade(coverage_child_v48):
+    admin, _ = coverage_child_v48
     before = await _snapshot(admin)
     assert before[0] == "0048" and all(
         count == 0 for count in before[2]["counts"].values()
@@ -399,7 +414,7 @@ async def test_empty_0048_downgrade_and_reupgrade(coverage_child):
         await connection.run_sync(_migrate, "0048", "upgrade")
     after = await _snapshot(admin)
     assert after[0] == "0048"
-    coverage.verify_controlled_writer_coverage_catalog(
+    coverage.verify_controlled_writer_coverage_catalog_v48(
         after[1], require_native_baseline=False
     )
     assert before[2] == after[2]
@@ -949,9 +964,9 @@ async def _parent_control_snapshot(engine):
 
 
 async def test_parent_control_writer_denies_0048_downgrade_nowait_without_partial_change(
-    coverage_child,
+    coverage_child_v48,
 ):
-    admin, _ = coverage_child
+    admin, _ = coverage_child_v48
     async with admin.begin() as connection:
         await seed_controlled_writer_coverage(connection, uid="730048118")
     before = await _snapshot(admin)
@@ -987,7 +1002,8 @@ async def test_parent_control_writer_denies_0048_downgrade_nowait_without_partia
             assert denied.value.orig.sqlstate == "55P03"
             message = str(denied.value.orig)
             assert (
-                'could not obtain lock on relation "demo_account_controls"' in message
+                'could not obtain lock on relation "public.demo_account_controls"'
+                in message
             )
             assert "lock timeout" not in message and "statement timeout" not in message
         finally:
@@ -1090,3 +1106,707 @@ async def test_other_schema_same_name_trigger_function_is_rejected_before_native
             # Do not commit a removed guard or alter any production declaration.
             await transaction.rollback()
     assert coverage.canonical(await _snapshot(admin)) == coverage.canonical(before)
+
+
+async def _restricted_deployment_catalog_readback(repository, factory):
+    """New native session/transaction; retain actual catalog and effective ACLs."""
+    async with factory() as session, session.begin():
+        await repository._setup(session)
+        catalog = await coverage.read_controlled_writer_coverage_catalog(session)
+        rights = await session.scalar(
+            text("""
+WITH protected AS (
+  SELECT c.oid,c.relname FROM pg_catalog.pg_class c
+  JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+  WHERE n.nspname='public' AND c.relname::text=ANY(CAST(:tables AS text[]))
+)
+SELECT jsonb_build_object(
+  'table_privileges',(SELECT jsonb_agg(jsonb_build_object(
+    'table',c.relname,'privilege',v.privilege,
+    'allowed',pg_catalog.has_table_privilege(current_user,c.oid,v.privilege))
+    ORDER BY c.relname,v.privilege)
+    FROM protected c CROSS JOIN unnest(ARRAY[
+      'SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER','MAINTAIN'
+    ]) AS v(privilege)),
+  'column_privileges',(SELECT jsonb_agg(jsonb_build_object(
+    'table',c.relname,'column',a.attname,'privilege',v.privilege,
+    'allowed',pg_catalog.has_column_privilege(current_user,c.oid,a.attnum,v.privilege))
+    ORDER BY c.relname,a.attnum,v.privilege)
+    FROM protected c JOIN pg_catalog.pg_attribute a ON a.attrelid=c.oid
+    CROSS JOIN unnest(ARRAY['SELECT','INSERT','UPDATE','REFERENCES']) AS v(privilege)
+    WHERE a.attnum>0 AND NOT a.attisdropped),
+  'function_privileges',(SELECT jsonb_agg(jsonb_build_object(
+    'name',p.proname,'allowed',pg_catalog.has_function_privilege(current_user,p.oid,'EXECUTE'),
+    'owner_oid',CAST(p.proowner AS bigint),'acl',p.proacl::text)
+    ORDER BY p.proname)
+    FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+    WHERE n.nspname='public' AND p.proname::text=ANY(CAST(:functions AS text[]))),
+  'column_acl',(SELECT jsonb_agg(jsonb_build_object(
+    'table',c.relname,'column',a.attname,'acl',a.attacl::text)
+    ORDER BY c.relname,a.attnum)
+    FROM protected c JOIN pg_catalog.pg_attribute a ON a.attrelid=c.oid
+    WHERE a.attnum>0 AND NOT a.attisdropped),
+  'backend_pid',pg_catalog.pg_backend_pid(),
+  'transaction_id',pg_catalog.txid_current()::text,
+  'statement_timeout',pg_catalog.current_setting('statement_timeout'),
+  'lock_timeout',pg_catalog.current_setting('lock_timeout')
+)
+"""),
+            {
+                "tables": list(coverage.COVERAGE_TABLES),
+                "functions": sorted(coverage.COVERAGE_FUNCTION_SIGNATURES),
+            },
+        )
+    return catalog, rights
+
+
+def _assert_restricted_deployment_role_and_schema(catalog, rights, expected_role):
+    """Assert actual native role separately from the default sealed schema gate."""
+    before = coverage.canonical(catalog)
+    coverage._verify_native_role_catalog(catalog)
+    schema = coverage.verify_controlled_writer_coverage_catalog(catalog)
+    assert coverage.canonical(catalog) == before
+    assert schema["native_baseline_status"] == "SEALED_FROM_REVIEWED_NATIVE_PG17"
+    assert schema["native_deparser_baseline"] == coverage.PG17_DEPARSED_BASELINE
+    assert schema["native_source_acceptance"] is False
+    assert schema["migration_revision"] == "0049"
+    pair = next(
+        row
+        for row in catalog["functions"]
+        if row["name"] == "controlled_writer_coverage_v1_pair_guard"
+    )
+    assert pair["security_definer"] is True
+    assert pair["config"] == ["search_path=pg_catalog, public, pg_temp"]
+    role, server = catalog["role"], catalog["server"]
+    assert type(role["oid"]) is int and role["oid"] > 0
+    assert (
+        role["name"]
+        == server["current_user"]
+        == server["session_user"]
+        == expected_role
+    )
+    assert server["role_setting"] == "none" and role["can_login"] is True
+    assert all(
+        role[field] is False
+        for field in (
+            "superuser",
+            "createdb",
+            "createrole",
+            "replication",
+            "bypassrls",
+            "other_membership",
+            "can_create",
+        )
+    )
+    assert 170000 <= int(server["version_num"]) < 180000
+    assert server["timezone"] == "UTC"
+    assert server["isolation"] == "read committed"
+    assert server["search_path"] == "pg_catalog, public, pg_temp"
+    assert all(
+        server[field] == "on"
+        for field in (
+            "synchronous_commit",
+            "fsync",
+            "full_page_writes",
+        )
+    )
+    assert server["replication_role"] == "origin" and server["in_recovery"] is False
+    assert {row["name"] for row in catalog["tables"]} == set(coverage.COVERAGE_TABLES)
+    owners = {row["owner_oid"] for row in catalog["tables"]}
+    assert len(owners) == 1 and role["oid"] not in owners
+    assert all(
+        type(row["owner_oid"]) is int and row["owner_oid"] in owners
+        for row in catalog["functions"]
+    )
+    assert all(
+        row["kind"] == "r"
+        and row["persistence"] == "p"
+        and row["rls"] is False
+        and row["force_rls"] is False
+        and row["public_access"] is False
+        and row["table_access"] is False
+        for row in catalog["tables"]
+    )
+    assert len(catalog["columns"]) == 27 and len(catalog["constraints"]) == 22
+    assert len(catalog["indexes"]) == 7 and len(catalog["functions"]) == 6
+    assert len(catalog["triggers"]) == 8
+    assert sum(row["kind"] == "t" for row in catalog["constraints"]) == 2
+    assert all(row["public_execute"] is False for row in catalog["functions"])
+    intended = {
+        "controlled_writer_coverage_v1_append",
+        "controlled_writer_coverage_v1_read",
+    }
+    assert {
+        row["name"] for row in catalog["functions"] if row["can_execute"] is True
+    } == intended
+    assert all(type(row["can_execute"]) is bool for row in catalog["functions"])
+    assert type(rights) is dict and set(rights) == {
+        "table_privileges",
+        "column_privileges",
+        "function_privileges",
+        "column_acl",
+        "backend_pid",
+        "transaction_id",
+        "statement_timeout",
+        "lock_timeout",
+    }
+    assert type(rights["backend_pid"]) is int and rights["backend_pid"] > 0
+    assert type(rights["transaction_id"]) is str and rights["transaction_id"].isdigit()
+    assert rights["statement_timeout"] in {"1s", "1000ms"}
+    assert rights["lock_timeout"] in {"1s", "1000ms"}
+    assert len(rights["table_privileges"]) == 2 * 8
+    assert len(rights["column_privileges"]) == 27 * 4
+    assert len(rights["column_acl"]) == 27
+    assert len(rights["function_privileges"]) == 6
+    assert all(row["allowed"] is False for row in rights["table_privileges"])
+    assert all(row["allowed"] is False for row in rights["column_privileges"])
+    assert {
+        row["name"] for row in rights["function_privileges"] if row["allowed"] is True
+    } == intended
+    assert all(type(row["allowed"]) is bool for row in rights["function_privileges"])
+    assert all(row["owner_oid"] in owners for row in rights["function_privileges"])
+    projection = {"constraints": catalog["constraints"], "indexes": catalog["indexes"]}
+    projection_sha = hashlib.sha256(
+        coverage.canonical(projection).encode("ascii")
+    ).hexdigest()
+    assert projection_sha == coverage.PG17_DEPARSED_BASELINE
+    return projection_sha
+
+
+def _record_restricted_deployment_evidence(
+    record_property, phase, observation, catalog, rights
+):
+    """Only disposable catalog/ACL facts; no credentials, account rows or owners."""
+    raw = coverage.canonical(catalog)
+    record_property(phase + "_deployment_observation", coverage.canonical(observation))
+    record_property(phase + "_restricted_catalog_raw", raw)
+    record_property(
+        phase + "_restricted_catalog_sha256",
+        hashlib.sha256(raw.encode("ascii")).hexdigest(),
+    )
+    record_property(
+        phase + "_actual_effective_privileges_raw", coverage.canonical(rights)
+    )
+    record_property(
+        "source_manifest_sha256",
+        hashlib.sha256((_ROOT / "MANIFEST.sha256").read_bytes()).hexdigest(),
+    )
+    record_property(
+        "source_db0048_migration_sha256",
+        hashlib.sha256(
+            (
+                _ROOT / "migrations/versions/0048_controlled_writer_coverage.py"
+            ).read_bytes()
+        ).hexdigest(),
+    )
+    record_property(
+        "source_db0049_migration_sha256",
+        hashlib.sha256(
+            (
+                _ROOT
+                / "migrations/versions/0049_controlled_writer_pair_guard_definer.py"
+            ).read_bytes()
+        ).hexdigest(),
+    )
+    record_property("native_source_account_or_execution_acceptance", "false")
+
+
+async def test_actual_restricted_role_verify_deployment_uses_sealed_catalog(
+    coverage_child,
+    record_property,
+):
+    admin, restricted = coverage_child
+    role = restricted.url.username
+    assert type(role) is str and re.fullmatch(r"ctcc_cwc_[a-f0-9]{32}", role)
+    async with admin.begin() as connection:
+        before = await coverage.read_controlled_writer_coverage_retention(connection)
+    assert before["counts"] == {table: 0 for table in coverage.COVERAGE_TABLES}
+    factory = async_sessionmaker(restricted, autoflush=False, expire_on_commit=False)
+    repository = coverage.ControlledWriterCoverageRepository(factory)
+    observation = await repository.verify_deployment()
+    catalog, rights = await _restricted_deployment_catalog_readback(repository, factory)
+    _record_restricted_deployment_evidence(
+        record_property, "positive", observation, catalog, rights
+    )
+    assert set(observation) == {
+        "schema_version",
+        "catalog_sha256",
+        "execution_authority",
+    }
+    assert (
+        observation["schema_version"]
+        == "ctcc.controlled_writer_coverage_deployment_observation.v1"
+    )
+    assert observation["execution_authority"] is False
+    assert type(observation["catalog_sha256"]) is str
+    assert re.fullmatch(r"[a-f0-9]{64}", observation["catalog_sha256"])
+    assert (
+        hashlib.sha256(coverage.canonical(catalog).encode("ascii")).hexdigest()
+        == observation["catalog_sha256"]
+    )
+    projection_sha = _assert_restricted_deployment_role_and_schema(
+        catalog, rights, role
+    )
+    record_property("positive_native_deparser_projection_sha256", projection_sha)
+    # Each rejected statement gets a fresh actual transaction. No native source
+    # binding or synthetic accepted row is needed to test direct privilege denial.
+    for table in coverage.COVERAGE_TABLES:
+        for statement in (
+            f"SELECT * FROM public.{table}",
+            f"INSERT INTO public.{table} DEFAULT VALUES",
+            f"UPDATE public.{table} SET environment=environment WHERE false",
+            f"DELETE FROM public.{table} WHERE false",
+        ):
+            with pytest.raises(DBAPIError) as denied:
+                async with factory() as session, session.begin():
+                    await session.execute(text(statement))
+            assert denied.value.orig.sqlstate == "42501"
+    async with admin.begin() as connection:
+        after = await coverage.read_controlled_writer_coverage_retention(connection)
+    assert after == before
+    record_property("new_coverage_rows_before_after", coverage.canonical(before))
+
+
+async def test_actual_restricted_role_column_grant_denies_then_exact_revoke_restores_deployment(
+    coverage_child,
+    record_property,
+):
+    admin, restricted = coverage_child
+    role = restricted.url.username
+    assert type(role) is str and re.fullmatch(r"ctcc_cwc_[a-f0-9]{32}", role)
+    factory = async_sessionmaker(restricted, autoflush=False, expire_on_commit=False)
+    repository = coverage.ControlledWriterCoverageRepository(factory)
+    async with admin.begin() as connection:
+        before = await coverage.read_controlled_writer_coverage_retention(connection)
+    assert before["counts"] == {table: 0 for table in coverage.COVERAGE_TABLES}
+    positive = await repository.verify_deployment()
+    original, original_rights = await _restricted_deployment_catalog_readback(
+        repository, factory
+    )
+    original_projection_sha = _assert_restricted_deployment_role_and_schema(
+        original, original_rights, role
+    )
+    assert (
+        positive["catalog_sha256"]
+        == hashlib.sha256(coverage.canonical(original).encode("ascii")).hexdigest()
+    )
+    assert positive["execution_authority"] is False
+    _record_restricted_deployment_evidence(
+        record_property, "before_grant", positive, original, original_rights
+    )
+    granted = False
+    try:
+        async with admin.begin() as connection:
+            await connection.execute(
+                text(
+                    f'GRANT SELECT(environment) ON public.demo_controlled_writer_coverage_scopes TO "{role}"'
+                )
+            )
+        granted = True
+        mutated, mutated_rights = await _restricted_deployment_catalog_readback(
+            repository, factory
+        )
+        _record_restricted_deployment_evidence(
+            record_property, "column_grant", None, mutated, mutated_rights
+        )
+        assert (
+            next(
+                row
+                for row in mutated["tables"]
+                if row["name"] == "demo_controlled_writer_coverage_scopes"
+            )["table_access"]
+            is True
+        )
+        # Exact schema/DDL seal stays valid; effective runtime role must still deny.
+        schema = coverage.verify_controlled_writer_coverage_catalog(mutated)
+        assert schema["native_deparser_baseline"] == original_projection_sha
+        assert {
+            "constraints": mutated["constraints"],
+            "indexes": mutated["indexes"],
+        } == {
+            "constraints": original["constraints"],
+            "indexes": original["indexes"],
+        }
+        assert all(
+            row["allowed"] is False for row in mutated_rights["table_privileges"]
+        )
+        column_grants = [
+            row for row in mutated_rights["column_privileges"] if row["allowed"] is True
+        ]
+        assert column_grants == [
+            {
+                "table": "demo_controlled_writer_coverage_scopes",
+                "column": "environment",
+                "privilege": "SELECT",
+                "allowed": True,
+            }
+        ]
+        with pytest.raises(
+            coverage.ControlledWriterCoverageError,
+            match="^controlled_writer_coverage_role_denied$",
+        ):
+            coverage._verify_native_role_catalog(mutated)
+        with pytest.raises(
+            coverage.ControlledWriterCoverageError,
+            match="^controlled_writer_coverage_role_denied$",
+        ):
+            await repository.verify_deployment()
+    finally:
+        if granted:
+            async with admin.begin() as connection:
+                await connection.execute(
+                    text(
+                        f'REVOKE SELECT(environment) ON public.demo_controlled_writer_coverage_scopes FROM "{role}"'
+                    )
+                )
+    restored = await repository.verify_deployment()
+    final, final_rights = await _restricted_deployment_catalog_readback(
+        repository, factory
+    )
+    _record_restricted_deployment_evidence(
+        record_property, "after_revoke", restored, final, final_rights
+    )
+    assert (
+        _assert_restricted_deployment_role_and_schema(final, final_rights, role)
+        == original_projection_sha
+    )
+    assert coverage.canonical(final) == coverage.canonical(original)
+    assert restored == positive
+    for key in ("table_privileges", "column_privileges", "function_privileges"):
+        assert final_rights[key] == original_rights[key]
+    # PostgreSQL may retain an empty column ACL after exact REVOKE. Preserve
+    # both raw ACL documents instead of erasing/normalizing that history.
+    async with admin.begin() as connection:
+        after = await coverage.read_controlled_writer_coverage_retention(connection)
+    assert after == before
+    record_property("new_coverage_rows_before_after", coverage.canonical(before))
+
+
+def _export_pair_guard_migration_receipt(before, after):
+    root = os.environ.get("CTCC_COVERAGE_RECEIPT_DIR")
+    if root is None:
+        return
+    destination = Path(root)
+    if (
+        destination != Path("/validation-results")
+        or destination.is_symlink()
+        or not destination.is_dir()
+    ):
+        raise RuntimeError("coverage_receipt_export_root_invalid")
+
+    def projection(value):
+        head, catalog, retention, _ = value
+        return {
+            "head": head,
+            "rows_sha256": retention["rows_sha256"],
+            "counts": retention["counts"],
+            "catalog_sha256": hashlib.sha256(
+                coverage.canonical(catalog).encode("ascii")
+            ).hexdigest(),
+        }
+
+    receipt = {
+        "schema_version": "ctcc.controlled_writer_pair_guard_migration_acceptance.v1",
+        "manifest_sha256": hashlib.sha256(
+            (_ROOT / "MANIFEST.sha256").read_bytes()
+        ).hexdigest(),
+        "repository_sha256": hashlib.sha256(
+            (
+                _ROOT / "app/database/repositories/controlled_writer_coverage.py"
+            ).read_bytes()
+        ).hexdigest(),
+        "migration_sha256": hashlib.sha256(
+            (
+                _ROOT
+                / "migrations/versions/0049_controlled_writer_pair_guard_definer.py"
+            ).read_bytes()
+        ).hexdigest(),
+        "server_major": before[3],
+        "before": projection(before),
+        "after": projection(after),
+        "refusal_code": "controlled_writer_pair_guard_definer_downgrade_requires_empty",
+        "downgrade_target": "0048",
+        "native_baseline_admission": False,
+        "execution_authority": False,
+    }
+    raw = coverage.canonical(receipt).encode("ascii") + b"\n"
+    target = destination / "controlled-writer-pair-guard-migration.json"
+    with target.open("xb") as stream:
+        stream.write(raw)
+        stream.flush()
+        os.fsync(stream.fileno())
+    assert target.read_bytes() == raw
+
+
+async def test_nonempty_0049_downgrade_refuses_and_retains_exact_catalog(
+    coverage_primary,
+):
+    # Retain actual rows in the primary harness-owned database for its later
+    # independent migration experiment. No source/native owner is fabricated.
+    async with coverage_primary.begin() as connection:
+        await seed_controlled_writer_coverage(
+            connection, uid=str(730049000000 + uuid4().int % 10**9)
+        )
+    before = await _snapshot(coverage_primary)
+    assert before[0] == "0049" and before[3] == 17
+    assert all(count > 0 for count in before[2]["counts"].values())
+    with pytest.raises(
+        DBAPIError,
+        match="controlled_writer_pair_guard_definer_downgrade_requires_empty",
+    ):
+        async with coverage_primary.begin() as connection:
+            await connection.run_sync(_migrate, "0048", "downgrade")
+    after = await _snapshot(coverage_primary)
+    assert coverage.canonical(before) == coverage.canonical(after)
+    _export_pair_guard_migration_receipt(before, after)
+
+
+async def test_empty_0049_downgrade_and_reupgrade(coverage_child):
+    admin, _ = coverage_child
+    before = await _snapshot(admin)
+    assert before[0] == "0049" and all(
+        count == 0 for count in before[2]["counts"].values()
+    )
+    async with admin.begin() as connection:
+        await connection.run_sync(_migrate, "0048", "downgrade")
+    historical = await _snapshot(admin)
+    assert historical[0] == "0048"
+    coverage.verify_controlled_writer_coverage_catalog_v48(historical[1])
+    with pytest.raises(
+        coverage.ControlledWriterCoverageError,
+        match="controlled_writer_coverage_function_drift",
+    ):
+        coverage.verify_controlled_writer_coverage_catalog(historical[1])
+    assert historical[2] == before[2]
+    async with admin.begin() as connection:
+        await connection.run_sync(_migrate, "0049", "upgrade")
+    after = await _snapshot(admin)
+    coverage.verify_controlled_writer_coverage_catalog(after[1])
+    assert coverage.canonical(before) == coverage.canonical(after)
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "body",
+        "owner",
+        "search_path",
+        "public_execute",
+        "table_grant",
+        "column_grant",
+        "helper_execute",
+    ],
+)
+async def test_0049_upgrade_refuses_historical_catalog_or_acl_drift_without_repair(
+    coverage_child_v48, damage
+):
+    admin, restricted = coverage_child_v48
+    role = restricted.url.username
+    pair = "public.controlled_writer_coverage_v1_pair_guard()"
+    async with admin.begin() as connection:
+        if damage == "body":
+            original = coverage.COVERAGE_FUNCTION_SQL[
+                "controlled_writer_coverage_v1_pair_guard"
+            ]
+            statement = original.replace(
+                "CREATE FUNCTION", "CREATE OR REPLACE FUNCTION", 1
+            ).replace(
+                coverage._PAIR_BODY,
+                coverage._PAIR_BODY + "\n-- deliberate synthetic drift\n",
+            )
+        elif damage == "owner":
+            statement = f'ALTER FUNCTION {pair} OWNER TO "{role}"'
+        elif damage == "search_path":
+            statement = f"ALTER FUNCTION {pair} SET search_path TO pg_catalog"
+        elif damage == "public_execute":
+            statement = f"GRANT EXECUTE ON FUNCTION {pair} TO PUBLIC"
+        elif damage == "table_grant":
+            statement = f'GRANT SELECT ON public.demo_controlled_writer_coverage_scopes TO "{role}"'
+        elif damage == "column_grant":
+            statement = f'GRANT SELECT(environment) ON public.demo_controlled_writer_coverage_scopes TO "{role}"'
+        else:
+            statement = f'GRANT EXECUTE ON FUNCTION {pair} TO "{role}"'
+        await connection.execute(text(statement))
+    before = await _snapshot(admin)
+    assert before[0] == "0048"
+    with pytest.raises(
+        (coverage.ControlledWriterCoverageError, RuntimeError),
+        match="controlled_writer_(coverage_|pair_guard_migration_)",
+    ):
+        async with admin.begin() as connection:
+            await connection.run_sync(_migrate, "0049", "upgrade")
+    after = await _snapshot(admin)
+    assert coverage.canonical(before) == coverage.canonical(after)
+
+
+async def test_actual_restricted_role_historical_0048_is_not_current_deployment(
+    coverage_child_v48,
+):
+    _admin, restricted = coverage_child_v48
+    factory = async_sessionmaker(restricted, autoflush=False, expire_on_commit=False)
+    repository = coverage.ControlledWriterCoverageRepository(factory)
+    async with factory() as session, session.begin():
+        await repository._setup(session)
+        catalog = await coverage.read_controlled_writer_coverage_catalog(session)
+    coverage._verify_native_role_catalog(catalog)
+    coverage.verify_controlled_writer_coverage_catalog_v48(catalog)
+    with pytest.raises(
+        coverage.ControlledWriterCoverageError,
+        match="controlled_writer_coverage_function_drift",
+    ):
+        await repository.verify_deployment()
+
+
+async def test_restricted_append_commits_deferred_pair_without_table_or_helper_grants(
+    coverage_child, record_property
+):
+    admin, restricted = coverage_child
+    uid = "730049120"
+    async with admin.begin() as connection:
+        control, event_sha = await seed_controlled_writer_control(connection, uid=uid)
+    fixture = coverage_record_fixture(
+        uid=uid, now=control.updated_at, control=control, control_event_sha256=event_sha
+    )
+    factory = async_sessionmaker(restricted, autoflush=False, expire_on_commit=False)
+    repository = coverage.ControlledWriterCoverageRepository(factory)
+    before_observation = await repository.verify_deployment()
+    before_catalog, before_rights = await _restricted_deployment_catalog_readback(
+        repository, factory
+    )
+    _assert_restricted_deployment_role_and_schema(
+        before_catalog, before_rights, restricted.url.username
+    )
+    # The old INVOKER pair trigger failed here, at __aexit__/COMMIT, after the
+    # SECURITY DEFINER append function had returned. Do not grant direct access.
+    async with restricted.begin() as connection:
+        submitted = await _append(connection, uid, fixture)
+        assert submitted.journal_sequence == 1
+        assert submitted.event_sha256 == fixture["event_sha256"]
+    async with restricted.begin() as connection:
+        readback = await _head(connection, uid, 1, fixture["event_sha256"], "readback")
+    assert readback["head"]["journal_sha256"] == fixture["event_sha256"]
+    assert len(readback["records"]) == 1
+    after_observation = await repository.verify_deployment()
+    after_catalog, after_rights = await _restricted_deployment_catalog_readback(
+        repository, factory
+    )
+    _assert_restricted_deployment_role_and_schema(
+        after_catalog, after_rights, restricted.url.username
+    )
+    assert after_observation == before_observation
+    assert coverage.canonical(after_catalog) == coverage.canonical(before_catalog)
+    for key in (
+        "table_privileges",
+        "column_privileges",
+        "function_privileges",
+        "column_acl",
+    ):
+        assert after_rights[key] == before_rights[key]
+    pair = next(
+        row
+        for row in after_catalog["functions"]
+        if row["name"] == "controlled_writer_coverage_v1_pair_guard"
+    )
+    assert (
+        pair["security_definer"] is True
+        and pair["can_execute"] is False
+        and pair["public_execute"] is False
+    )
+    assert all(
+        row["deferrable"] is True and row["deferred"] is True
+        for row in after_catalog["triggers"]
+        if row["function"] == pair["name"]
+    )
+    async with admin.begin() as connection:
+        retention = await coverage.read_controlled_writer_coverage_retention(connection)
+    assert retention["counts"] == {table: 1 for table in coverage.COVERAGE_TABLES}
+    _record_restricted_deployment_evidence(
+        record_property,
+        "after_deferred_commit",
+        after_observation,
+        after_catalog,
+        after_rights,
+    )
+    record_property("committed_exact_event_sha256", fixture["event_sha256"])
+    record_property("committed_rows_sha256", retention["rows_sha256"])
+
+
+async def test_parent_control_writer_denies_0049_downgrade_nowait_without_partial_change(
+    coverage_child,
+):
+    admin, _ = coverage_child
+    async with admin.begin() as connection:
+        await seed_controlled_writer_coverage(connection, uid="730048118")
+    before = await _snapshot(admin)
+    parent_before = await _parent_control_snapshot(admin)
+    async with admin.connect() as writer:
+        writer_transaction = await writer.begin()
+        try:
+            # Real valid uncommitted parent writes acquire the conflicting lock.
+            # Their rollback below leaves the previously retained parent intact.
+            await seed_controlled_writer_control(writer, uid="730048119")
+            writer_pid = await writer.scalar(text("SELECT pg_backend_pid()"))
+            assert (
+                await writer.scalar(
+                    text("""
+              SELECT EXISTS(SELECT 1 FROM pg_catalog.pg_locks
+                WHERE pid=pg_backend_pid() AND granted AND mode='RowExclusiveLock'
+                  AND relation='public.demo_account_controls'::regclass)
+            """)
+                )
+                is True
+            )
+            with pytest.raises(DBAPIError) as denied:
+                async with admin.begin() as migration:
+                    assert (
+                        await migration.scalar(text("SELECT pg_backend_pid()"))
+                        != writer_pid
+                    )
+                    await migration.execute(text("SET LOCAL lock_timeout='1500ms'"))
+                    await migration.execute(
+                        text("SET LOCAL statement_timeout='2000ms'")
+                    )
+                    await migration.run_sync(_migrate, "0048", "downgrade")
+            assert denied.value.orig.sqlstate == "55P03"
+            message = str(denied.value.orig)
+            assert (
+                'could not obtain lock on relation "public.demo_account_controls"'
+                in message
+            )
+            assert "lock timeout" not in message and "statement timeout" not in message
+        finally:
+            await writer_transaction.rollback()
+    assert coverage.canonical(await _snapshot(admin)) == coverage.canonical(before)
+    assert coverage.canonical(
+        await _parent_control_snapshot(admin)
+    ) == coverage.canonical(parent_before)
+
+
+async def test_historical_0048_retains_original_restricted_deferred_commit_denial(
+    coverage_child_v48, record_property
+):
+    admin, restricted = coverage_child_v48
+    uid = "730048121"
+    async with admin.begin() as connection:
+        control, event_sha = await seed_controlled_writer_control(connection, uid=uid)
+    fixture = coverage_record_fixture(
+        uid=uid, now=control.updated_at, control=control, control_event_sha256=event_sha
+    )
+    before = await _snapshot(admin)
+    coverage.verify_controlled_writer_coverage_catalog_v48(before[1])
+    with pytest.raises(DBAPIError) as denied:
+        async with restricted.begin() as connection:
+            result = await _append(connection, uid, fixture)
+            assert tuple(result) == (1, fixture["event_sha256"])
+    assert denied.value.orig.sqlstate == "42501"
+    after = await _snapshot(admin)
+    assert coverage.canonical(before) == coverage.canonical(after)
+    pair = next(
+        row
+        for row in after[1]["functions"]
+        if row["name"] == "controlled_writer_coverage_v1_pair_guard"
+    )
+    assert pair["security_definer"] is False
+    record_property("historical_head", "0048")
+    record_property("historical_commit_sqlstate", denied.value.orig.sqlstate)
+    record_property("historical_schema_is_runtime_authority", "false")

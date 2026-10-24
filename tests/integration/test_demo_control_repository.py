@@ -5,6 +5,7 @@ No exchange, service restart, legacy Arm, or deployed database is involved.
 """
 
 import asyncio
+import json
 from dataclasses import replace
 from datetime import timedelta
 from uuid import uuid4
@@ -332,3 +333,150 @@ async def test_cold_estop_is_durable_without_owner_or_fabricated_pins(database, 
             command_id=command(),
             arm_expires_at=clock() + timedelta(seconds=10),
         )
+
+
+async def test_actual_native_full_lineage_readback_retains_old_owner_epochs(
+    database,
+    setup,
+    record_property,
+):
+    """Real rows/factories/transactions; still no owned session or trade permit."""
+    repo, scope, clock = setup
+    first = await acquire(setup)
+    armed = await change(
+        setup,
+        first,
+        "arm_requested",
+        arm_expires_at=clock() + timedelta(seconds=20),
+    )
+    clock.value += timedelta(seconds=1)
+    stopped = await repo.latch_stop(scope, command_id=command())
+    clock.value = stopped.state.lease_until
+    newer = await repo.acquire(
+        scope, owner_token=OTHER, pins=PINS, command_id=command()
+    )
+    clock.value += timedelta(seconds=31)
+    final = await repo.revoke_arm(scope, command_id=command())
+    before = final
+
+    def untrusted_clock():
+        raise AssertionError("native lineage must observe actual database read time")
+
+    reader = DemoControlRepository(database[1], clock=untrusted_clock)
+    observed = await reader.read_lineage(scope)
+    assert (
+        observed.lineage.state == before.state
+        and observed.current_state == before.state
+    )
+    assert observed.current_lineage.receipt_json == observed.lineage.receipt_json
+    assert (
+        observed.lineage.head_sha256
+        == observed.current_event_sha256
+        == before.event_sha256
+    )
+    assert [row.revision for row in observed.lineage.source_rows] == list(
+        range(1, final.state.revision + 1)
+    )
+    assert [
+        json.loads(row.event_json)["state"]["owner_epoch"]
+        for row in observed.lineage.source_rows
+    ] == [1, 1, 1, 2, 2]
+    assert observed.execution_authority is observed.lineage.execution_authority is False
+    assert observed.lineage.state.emergency_stop is True
+    wire = json.loads(observed.receipt_json)
+    assert wire["first"]["transaction_id"] != wire["readback"]["transaction_id"]
+    assert wire["control_mutated"] is wire["execution_authority"] is False
+    # Exact historical prefix crosses no inferred owner binding. The current
+    # epoch remains distinct and no saved historical result can inherit Arm.
+    historical = await reader.read_lineage(scope, through_revision=armed.state.revision)
+    assert historical.lineage.state == armed.state
+    assert historical.current_state == final.state
+    assert (
+        historical.current_lineage.receipt_json == observed.current_lineage.receipt_json
+    )
+    assert len(historical.current_lineage.source_rows) == final.state.revision
+    assert (
+        json.loads(historical.receipt_json)["current_complete_lineage_receipt_sha256"]
+        == historical.current_lineage.receipt_sha256
+    )
+    assert historical.lineage.state.owner_epoch < historical.current_state.owner_epoch
+    async with database[1]() as session, session.begin():
+        prefix = await DemoControlRepository.verify_historical_binding(
+            session,
+            armed.state,
+            armed.event_sha256,
+        )
+    assert prefix.state == armed.state and len(prefix.source_rows) == 2
+    assert await repo.read(scope) == before
+    assert newer.state.owner_epoch == 2
+    record_property("actual_full_lineage_receipt", observed.receipt_json)
+    record_property("actual_historical_prefix_receipt", historical.receipt_json)
+
+
+async def test_actual_lineage_head_change_between_native_transactions_denies_without_retry(
+    database,
+    setup,
+):
+    repo, scope, clock = setup
+    first = await acquire(setup)
+    calls = []
+
+    class RacingReader(DemoControlRepository):
+        async def _read_native_lineage_transaction(self, selected, through_revision):
+            result = await super()._read_native_lineage_transaction(
+                selected, through_revision
+            )
+            calls.append(through_revision)
+            if len(calls) == 1:
+                clock.value += timedelta(seconds=1)
+                await change(setup, first, "renew")
+            return result
+
+    reader = RacingReader(database[1], clock=clock)
+    with pytest.raises(c.DemoControlError, match="independent_readback_conflict"):
+        await reader.read_lineage(scope)
+    assert len(calls) == 2
+    retained = await repo.read(scope)
+    assert retained.state.revision == first.state.revision + 1
+    async with database[1]() as session:
+        count = await session.scalar(
+            select(func.count())
+            .select_from(DemoControlJournal)
+            .filter_by(
+                environment=scope.environment,
+                account_id=scope.account_id,
+            )
+        )
+    assert count == 2
+    assert (
+        retained.state.emergency_stop is False and retained.state.arm_request_id is None
+    )
+    assert retained.execution_authority is False
+
+
+async def test_actual_native_lineage_out_of_range_target_is_not_empty_or_partial(
+    database,
+    setup,
+):
+    repo, scope, _clock = setup
+    first = await acquire(setup)
+    with pytest.raises(c.DemoControlError, match="target_revision_invalid"):
+        await repo.read_lineage(scope, through_revision=first.state.revision + 1)
+    async with database[1]() as session, session.begin():
+        with pytest.raises(c.DemoControlError, match="historical_binding_invalid"):
+            await DemoControlRepository.verify_historical_binding(
+                session,
+                replace(first.state, revision=2),
+                first.event_sha256,
+            )
+    assert await repo.read(scope) == first
+    async with database[1]() as session:
+        count = await session.scalar(
+            select(func.count())
+            .select_from(DemoControlJournal)
+            .filter_by(
+                environment=scope.environment,
+                account_id=scope.account_id,
+            )
+        )
+    assert count == 1

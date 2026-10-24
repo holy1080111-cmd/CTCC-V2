@@ -137,7 +137,7 @@ async def _committed_migration_witness_state(engine, witness_sha256):
 
         coverage_catalog = await read_catalog(connection)
     readback = migration_revision_readback(
-        "0048",
+        "0049",
         head,
         table_present,
         guard_present,
@@ -259,7 +259,7 @@ async def test_committed_denial_blocks_0043_downgrade_and_rolls_back(
     assert before[1]["account_revision_witness_trigger_count"] == 3
 
     def downgrade_after_committed_readback(sync_connection):
-        assert database_head(sync_connection) == "0048"
+        assert database_head(sync_connection) == "0049"
         assert (
             sync_connection.execute(
                 text(

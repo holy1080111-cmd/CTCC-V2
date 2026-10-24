@@ -1,4 +1,4 @@
-"""Pure DB0048 contract falsification. No PostgreSQL/native acceptance claim."""
+"""Pure historical DB0048 and current DB0049 contract falsification. No PostgreSQL/native acceptance claim."""
 
 from __future__ import annotations
 
@@ -936,3 +936,227 @@ def test_catalog_sql_projects_all_eight_oid_sites_as_bigint_without_binds():
     assert str(statement) == coverage._CATALOG_SQL
     for projection in projections:
         assert coverage._CATALOG_SQL.count(projection) == 1
+
+
+def test_current_0049_policy_cannot_admit_historical_invoker_0048():
+    current = _synthetic_schema_catalog_for_identity_mutations()
+    before = coverage.canonical(current)
+    policy = adapter.verify_catalog(current, require_native_baseline=False)
+    assert (
+        policy["schema_version"] == "ctcc.controlled_writer_coverage_catalog_policy.v2"
+    )
+    assert policy["migration_revision"] == "0049"
+    historical = copy.deepcopy(current)
+    pair = next(
+        row
+        for row in historical["functions"]
+        if row["name"] == "controlled_writer_coverage_v1_pair_guard"
+    )
+    pair["security_definer"] = False
+    assert (
+        adapter.verify_catalog_v48(historical, require_native_baseline=False)
+        == coverage.expected_controlled_writer_coverage_schema_v48()
+    )
+    assert (
+        coverage.expected_controlled_writer_coverage_schema_v48()["schema_version"]
+        == "ctcc.controlled_writer_coverage_catalog_policy.v1"
+    )
+    for native_gate in (False, True):
+        with pytest.raises(
+            coverage.ControlledWriterCoverageError,
+            match="controlled_writer_coverage_function_drift",
+        ):
+            adapter.verify_catalog(historical, require_native_baseline=native_gate)
+        with pytest.raises(
+            coverage.ControlledWriterCoverageError,
+            match="controlled_writer_coverage_function_drift",
+        ):
+            adapter.verify_catalog_v48(current, require_native_baseline=native_gate)
+    assert coverage.canonical(current) == before
+
+
+def test_0048_effective_function_ddl_remains_invoker_while_current_pair_is_definer():
+    historical = coverage._FUNCTIONS_0048
+    current = coverage._FUNCTIONS
+    assert len(historical) == len(current) == len(coverage.COVERAGE_FUNCTION_SQL) == 6
+    changed = []
+    for old, new in zip(historical, current, strict=True):
+        if old != new:
+            changed.append(old[0])
+            assert old[4] is False and new[4] is True
+            assert old[:4] == new[:4] and old[5:] == new[5:]
+        name, args, returns, language, definer, volatility, body = old
+        expected = f"CREATE FUNCTION public.{name}({args}) RETURNS {returns} LANGUAGE {language} {volatility} SECURITY {'DEFINER' if definer else 'INVOKER'} SET search_path=pg_catalog,public,pg_temp AS $cwc${body}$cwc$"
+        assert coverage.COVERAGE_FUNCTION_SQL[name] == expected
+    assert changed == ["controlled_writer_coverage_v1_pair_guard"]
+    assert "SECURITY INVOKER" in coverage.COVERAGE_FUNCTION_SQL[changed[0]]
+
+
+def _synthetic_pair_guard_migration(
+    monkeypatch, *, historical, nonempty=False, damage=None, after_drift=False
+):
+    """Synthetic SQL recording only: no actual PG, DDL or native acceptance."""
+    module = load_migration("0049")
+    catalog = _synthetic_schema_catalog_for_identity_mutations()
+    catalog["server"].update(
+        current_user="synthetic_owner",
+        session_user="synthetic_owner",
+        role_setting="none",
+    )
+    catalog["role"] = {"oid": 900000, "name": "synthetic_owner"}
+    for row in catalog["functions"]:
+        row["definition"] = "SYNTHETIC_RECORDED_DEFINITION_NOT_POSTGRES"
+    pair = next(
+        row
+        for row in catalog["functions"]
+        if row["name"] == "controlled_writer_coverage_v1_pair_guard"
+    )
+    pair["security_definer"] = not historical
+    # This explicit synthetic seal tests migration control flow only. Production
+    # never learns its reviewed PG17 expected hash from observations.
+    projection = {"constraints": catalog["constraints"], "indexes": catalog["indexes"]}
+    monkeypatch.setattr(
+        catalog_policy,
+        "PG17_DEPARSED_BASELINE",
+        hashlib.sha256(coverage.canonical(projection).encode("ascii")).hexdigest(),
+    )
+    monkeypatch.setattr(
+        catalog_policy,
+        "PG17_DEPARSED_BASELINE_STATUS",
+        "SEALED_FROM_REVIEWED_NATIVE_PG17",
+    )
+    acl = {"table_grants": 0, "column_grants": 0, "helper_grants": 0}
+    if damage in acl:
+        acl[damage] = 1
+    elif damage == "owner":
+        catalog["role"]["oid"] = 900001
+    elif damage == "body":
+        pair["source"] += "-- synthetic drift"
+    elif damage == "search_path":
+        pair["config"] = ["search_path=pg_catalog"]
+    elif damage == "public_execute":
+        pair["public_execute"] = True
+    elif damage == "pair_context":
+        pair["security_definer"] = not pair["security_definer"]
+    commands = []
+
+    class Recorder:
+        def get_bind(self):
+            return self
+
+        def scalar(self, statement):
+            commands.append(("read", str(statement)))
+            if str(statement) == catalog_policy._CATALOG_SQL:
+                return copy.deepcopy(catalog)
+            assert str(statement) == module._ACL_SQL
+            return copy.deepcopy(acl)
+
+        def execute(self, statement):
+            statement = str(statement)
+            commands.append(("execute", statement))
+            if (
+                "RAISE EXCEPTION 'controlled_writer_pair_guard_definer_downgrade_requires_empty'"
+                in statement
+                and nonempty
+            ):
+                raise RuntimeError(
+                    "controlled_writer_pair_guard_definer_downgrade_requires_empty"
+                )
+            if statement == f"ALTER FUNCTION {module._PAIR_SIGNATURE} SECURITY DEFINER":
+                pair["security_definer"] = True
+                pair["definition"] += " SECURITY DEFINER"
+                if after_drift:
+                    catalog["server"]["version"] = "synthetic_unexpected_other_change"
+            elif (
+                statement == f"ALTER FUNCTION {module._PAIR_SIGNATURE} SECURITY INVOKER"
+            ):
+                pair["security_definer"] = False
+                pair["definition"] += " SECURITY INVOKER"
+
+    monkeypatch.setattr(module, "op", Recorder())
+    return module, commands
+
+
+@pytest.mark.parametrize("direction", ["upgrade", "downgrade"])
+def test_additive_0049_checks_exact_catalog_acl_and_lock_before_only_pair_context_change(
+    monkeypatch, direction
+):
+    module, commands = _synthetic_pair_guard_migration(
+        monkeypatch, historical=direction == "upgrade"
+    )
+    assert module.revision == "0049" and module.down_revision == "0048"
+    getattr(module, direction)()
+    assert commands[0] == ("execute", module._LOCK_SQL)
+    statements = [statement for kind, statement in commands if kind == "execute"]
+    assert all(
+        not any(
+            word in statement
+            for word in ("CREATE ROLE", "GRANT ", "DROP ", "DELETE FROM", "TRUNCATE")
+        )
+        for statement in statements
+    )
+    first_alter = next(
+        index
+        for index, (_, statement) in enumerate(commands)
+        if statement.startswith("ALTER FUNCTION")
+    )
+    assert [kind for kind, _ in commands[1:3]] == ["read", "read"]
+    assert first_alter >= 3
+    assert (
+        sum(statement == catalog_policy._CATALOG_SQL for _, statement in commands) == 2
+    )
+    assert sum(statement == module._ACL_SQL for _, statement in commands) == 2
+    assert f"REVOKE ALL ON FUNCTION {module._PAIR_SIGNATURE} FROM PUBLIC" in statements
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "owner",
+        "body",
+        "search_path",
+        "public_execute",
+        "pair_context",
+        "table_grants",
+        "column_grants",
+        "helper_grants",
+    ],
+)
+def test_0049_upgrade_never_repairs_drift_or_grants_before_original_catalog_admission(
+    monkeypatch, damage
+):
+    module, commands = _synthetic_pair_guard_migration(
+        monkeypatch, historical=True, damage=damage
+    )
+    with pytest.raises(
+        (coverage.ControlledWriterCoverageError, RuntimeError),
+        match="controlled_writer_(coverage_|pair_guard_migration_)",
+    ):
+        module.upgrade()
+    assert commands[0] == ("execute", module._LOCK_SQL)
+    assert not any(statement.startswith("ALTER FUNCTION") for _, statement in commands)
+
+
+def test_0049_nonempty_downgrade_retains_pair_context_in_synthetic_control_flow(
+    monkeypatch,
+):
+    module, commands = _synthetic_pair_guard_migration(
+        monkeypatch, historical=False, nonempty=True
+    )
+    with pytest.raises(
+        RuntimeError,
+        match="^controlled_writer_pair_guard_definer_downgrade_requires_empty$",
+    ):
+        module.downgrade()
+    assert commands[0] == ("execute", module._LOCK_SQL)
+    assert not any(statement.startswith("ALTER FUNCTION") for _, statement in commands)
+
+
+def test_0049_postcondition_rejects_unexpected_other_catalog_change(monkeypatch):
+    module, _ = _synthetic_pair_guard_migration(
+        monkeypatch, historical=True, after_drift=True
+    )
+    with pytest.raises(
+        RuntimeError, match="^controlled_writer_pair_guard_migration_unexpected_drift$"
+    ):
+        module.upgrade()

@@ -6,6 +6,7 @@ live owner and cannot issue execution authority.
 """
 
 import asyncio
+import copy
 import hashlib
 import json
 import os
@@ -51,12 +52,19 @@ assert expected['schema'] == 'ctcc.migration_revision_readback.v5'
 assert expected['expected'] == expected['observed'] == '0048'
 assert expected['execution_authority'] is False
 assert expected['controlled_writer_coverage_schema'] == (
-    policy.expected_controlled_writer_coverage_schema()
+    policy.expected_controlled_writer_coverage_schema_v48()
 )
 assert expected['controlled_writer_coverage_schema']['native_source_acceptance'] is False
 assert union.expected_migration_revision_readback is host.expected_migration_revision_readback
 assert adapter.verify_catalog is policy.verify_controlled_writer_coverage_catalog
-completed.append('expected_0048')
+completed.append('expected_0048_historical')
+current = host.expected_migration_revision_readback('0049')
+assert current['schema'] == 'ctcc.migration_revision_readback.v6'
+assert current['expected'] == current['observed'] == '0049'
+assert current['controlled_writer_coverage_schema'] == policy.expected_controlled_writer_coverage_schema()
+assert current['controlled_writer_coverage_schema']['migration_revision'] == '0049'
+assert adapter.verify_catalog_v48 is policy.verify_controlled_writer_coverage_catalog_v48
+completed.append('expected_0049')
 
 def refuses(label, operation, expected_type, expected_code):
     try:
@@ -92,7 +100,7 @@ refuses(
 refuses(
     'migration_revision_readback',
     lambda: host.migration_revision_readback(
-        '0048', '0048', False, False, (), coverage_catalog={},
+        '0049', '0049', False, False, (), coverage_catalog={},
     ),
     policy.ControlledWriterCoverageError,
     'controlled_writer_coverage_shape',
@@ -125,7 +133,8 @@ def test_all_five_host_readers_execute_in_a_cold_stdlib_only_process(tmp_path):
     assert result.stderr == ""
     assert json.loads(result.stdout) == {
         "completed": [
-            "expected_0048",
+            "expected_0048_historical",
+            "expected_0049",
             "native_catalog_capture",
             "nonempty_snapshot",
             "migration_receipt",
@@ -149,6 +158,8 @@ def test_runtime_and_host_share_the_same_policy_objects_and_baseline_owner(monke
         "canonical",
         "expected_controlled_writer_coverage_schema",
         "verify_controlled_writer_coverage_catalog",
+        "expected_controlled_writer_coverage_schema_v48",
+        "verify_controlled_writer_coverage_catalog_v48",
     ):
         assert getattr(repository, name) is getattr(policy, name)
     assert adapter.ControlledWriterCoverageError is policy.ControlledWriterCoverageError
@@ -156,6 +167,10 @@ def test_runtime_and_host_share_the_same_policy_objects_and_baseline_owner(monke
         policy.expected_controlled_writer_coverage_schema
     )
     assert adapter.verify_catalog is policy.verify_controlled_writer_coverage_catalog
+    assert (
+        adapter.verify_catalog_v48
+        is policy.verify_controlled_writer_coverage_catalog_v48
+    )
     for function in (
         repository.expected_controlled_writer_coverage_schema,
         repository.verify_controlled_writer_coverage_catalog,
@@ -224,11 +239,16 @@ def actual_packaged_source_provider(monkeypatch):
     )
 
 
+@pytest.mark.parametrize(
+    "relative",
+    [_POLICY_PATH, "migrations/versions/0049_controlled_writer_pair_guard_definer.py"],
+)
 def test_real_package_inventory_rejects_only_policy_file_tampering(
     actual_packaged_source_provider,
+    relative,
 ):
     source = actual_packaged_source_provider
-    source.files[_POLICY_PATH] += b"\n# synthetic unit tamper\n"
+    source.files[relative] += b"\n# synthetic unit tamper\n"
     with pytest.raises(
         source.issuer.ControlledWriterCoverageError,
         match=r"^controlled_writer_coverage_packaged_source_changed$",
@@ -237,15 +257,19 @@ def test_real_package_inventory_rejects_only_policy_file_tampering(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "relative",
+    [_POLICY_PATH, "migrations/versions/0049_controlled_writer_pair_guard_definer.py"],
+)
 async def test_coherent_policy_and_manifest_change_invalidates_held_binding(
-    actual_packaged_source_provider, monkeypatch
+    actual_packaged_source_provider, monkeypatch, relative
 ):
     source = actual_packaged_source_provider
     issuer = source.issuer
-    source.files[_POLICY_PATH] += b"\n# synthetic coherent update\n"
+    source.files[relative] += b"\n# synthetic coherent update\n"
     source.refresh_manifest()
     current = issuer._package_inventory()
-    assert current["files"][_POLICY_PATH] != source.held["files"][_POLICY_PATH]
+    assert current["files"][relative] != source.held["files"][relative]
     assert current["manifest_sha256"] != source.held["manifest_sha256"]
     assert current["writer_sha256"] != source.held["writer_sha256"]
 
@@ -286,3 +310,116 @@ async def test_coherent_policy_and_manifest_change_invalidates_held_binding(
         issuer._BINDINGS.pop(binding, None)
     assert factory_checks == [True]
     assert tuple(issuer._OWNERS) == owners_before
+
+
+@pytest.mark.parametrize(
+    "helper",
+    [
+        "_verify_catalog",
+        "_expected_schema",
+        "verify_controlled_writer_coverage_catalog",
+        "expected_controlled_writer_coverage_schema",
+        "canonical",
+        "_digest",
+        "_keys",
+        "_deny",
+    ],
+)
+def test_current_catalog_callable_replacement_invalidates_held_native_function_pins(
+    monkeypatch, helper
+):
+    from app.domain import controlled_writer_coverage_catalog_v1 as policy
+    from app.trade_qualification import controlled_writer_coverage_v1 as issuer
+
+    assert any(
+        owner is policy and name == helper and function is getattr(policy, helper)
+        for owner, name, function in issuer._FUNCTION_PINS
+    )
+    monkeypatch.setattr(policy, helper, lambda *args, **kwargs: None)
+    with pytest.raises(
+        issuer.ControlledWriterCoverageError,
+        match="^controlled_writer_coverage_native_function_changed$",
+    ):
+        issuer._check_function_pins()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "field",
+    [
+        "functions",
+        "baseline",
+        "table_policy",
+        "query",
+        "digest",
+        "local_hash",
+        "primitive_hash",
+    ],
+)
+async def test_current_catalog_data_replacement_denies_held_binding_before_native_or_database_work(
+    actual_packaged_source_provider, monkeypatch, field
+):
+    from app.domain import controlled_writer_coverage_catalog_v1 as policy
+
+    source = actual_packaged_source_provider
+    issuer = source.issuer
+    binding = object.__new__(issuer._ActivationBindingV1)
+    native_calls = []
+
+    def forbidden_factory(*args):
+        native_calls.append(True)
+        raise AssertionError("policy drift must deny before native factory access")
+
+    monkeypatch.setattr(issuer, "_factory_pins", forbidden_factory)
+    issuer._BINDINGS[binding] = {
+        "context": (
+            os.getpid(),
+            get_ident(),
+            asyncio.get_running_loop(),
+            ref(asyncio.current_task()),
+        ),
+        "factory": object(),
+        "custody": object(),
+        "inventory": source.held,
+    }
+    owners_before = tuple(issuer._OWNERS)
+    expected_code = "controlled_writer_coverage_catalog_policy_changed"
+    if field == "digest":
+        monkeypatch.setattr(
+            issuer, "_catalog_policy_digest", lambda: issuer._CATALOG_POLICY_SHA256
+        )
+        expected_code = "controlled_writer_coverage_native_function_changed"
+    elif field == "local_hash":
+        monkeypatch.setattr(issuer, "sha", lambda raw: issuer._CATALOG_POLICY_SHA256)
+        expected_code = "controlled_writer_coverage_native_function_changed"
+    elif field == "primitive_hash":
+        monkeypatch.setattr(
+            issuer.primitives, "sha", lambda raw: issuer._CATALOG_POLICY_SHA256
+        )
+        expected_code = "controlled_writer_coverage_native_function_changed"
+    elif field == "functions":
+        changed = tuple(
+            row[:4] + (False,) + row[5:]
+            if row[0] == "controlled_writer_coverage_v1_pair_guard"
+            else row
+            for row in policy._FUNCTIONS
+        )
+        monkeypatch.setattr(policy, "_FUNCTIONS", changed)
+    elif field == "baseline":
+        monkeypatch.setattr(policy, "PG17_DEPARSED_BASELINE", None)
+    elif field == "table_policy":
+        changed = copy.deepcopy(policy.COVERAGE_TABLE_SPECS)
+        changed[policy.COVERAGE_TABLES[0]]["checks"]["ck_cwc_scope_identity"] = "true"
+        monkeypatch.setattr(policy, "COVERAGE_TABLE_SPECS", changed)
+    else:
+        monkeypatch.setattr(
+            policy, "_CATALOG_SQL", policy._CATALOG_SQL + "\n-- synthetic replacement"
+        )
+    try:
+        with pytest.raises(
+            issuer.ControlledWriterCoverageError, match="^" + expected_code + "$"
+        ):
+            issuer._check_binding(binding)
+    finally:
+        issuer._BINDINGS.pop(binding, None)
+    assert native_calls == [] and tuple(issuer._OWNERS) == owners_before

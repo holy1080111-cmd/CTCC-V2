@@ -44,6 +44,17 @@ NATIVE_IDENTITY_DOWNGRADE_DENIAL = (
     "public_witness_wide_identity_downgrade_requires_empty"
 )
 COVERAGE_DOWNGRADE_DENIAL = "controlled_writer_coverage_downgrade_requires_empty"
+PAIR_GUARD_DOWNGRADE_DENIAL = (
+    "controlled_writer_pair_guard_definer_downgrade_requires_empty"
+)
+COVERAGE_PREFLIGHT_CASES = tuple(
+    ("tests.integration.test_controlled_writer_coverage_repository", name)
+    for name in (
+        "test_restricted_append_commits_deferred_pair_without_table_or_helper_grants",
+        "test_actual_restricted_role_verify_deployment_uses_sealed_catalog",
+        "test_actual_restricted_role_column_grant_denies_then_exact_revoke_restores_deployment",
+    )
+)
 PREDECESSOR_0047_CASES = (
     (
         "tests.integration.test_public_receipt_witness_repository",
@@ -93,6 +104,22 @@ POSTGRES_TEST_TIMEOUT_SECONDS = 120 * 60
 FULL_TEST_TIMEOUT_SECONDS = 100 * 60
 
 ARCHIVE_REQUIRED_CASES = (
+    (
+        "tests.integration.test_controlled_writer_coverage_repository",
+        "test_restricted_append_commits_deferred_pair_without_table_or_helper_grants",
+    ),
+    (
+        "tests.integration.test_controlled_writer_coverage_repository",
+        "test_nonempty_0049_downgrade_refuses_and_retains_exact_catalog",
+    ),
+    (
+        "tests.integration.test_controlled_writer_coverage_repository",
+        "test_empty_0049_downgrade_and_reupgrade",
+    ),
+    (
+        "tests.integration.test_controlled_writer_coverage_repository",
+        "test_historical_0048_retains_original_restricted_deferred_commit_denial",
+    ),
     (
         "tests.integration.test_controlled_writer_coverage_repository",
         "test_function_only_append_read_and_restricted_table_denial",
@@ -560,7 +587,7 @@ async def read_head(*, retain=False, coverage_retain=False):
                 return (head, witness_present, guard_present, trigger_catalog,
                         hwm_present, hwm_guard_present, hwm_catalog, runtime_catalog, native_catalog, retention, custody)
             observed = await connection.run_sync(read_state)
-            coverage = await read_catalog(connection) if observed[0] == '0048' else None
+            coverage = await read_catalog(connection) if observed[0] in ('0048', '0049') else None
             if coverage_retain:
                 from app.database.repositories.controlled_writer_coverage import read_controlled_writer_coverage_retention
                 coverage_rows = await read_controlled_writer_coverage_retention(connection)
@@ -630,7 +657,7 @@ async def capture():
             ))).one()
             catalog = await read_catalog(connection)
         after = source_identity(SOURCE_ROOT)
-        if before != after or before.head != '0048' or head != '0048':
+        if before != after or before.head != '0049' or head != '0049':
             raise RuntimeError('coverage_capture_source_or_database_identity_changed')
         result = {'schema':'ctcc.controlled_writer_coverage_native_catalog_observation.v1',
                   'source_head':before.head, 'source_migration_sha256':before.sha256,
@@ -680,7 +707,7 @@ COVERAGE_RETENTION_PROBE = (
     MIGRATION_REVISION_READER
     + """
 observed,witness,guard,triggers,hwm,hwm_guard,hwm_triggers,runtime,native,_,_,coverage,retention=asyncio.run(read_head(coverage_retain=True))
-revision=migration_revision_readback('0048',observed,witness,guard,triggers,hwm,hwm_guard,hwm_triggers,runtime,native,coverage_catalog=coverage)
+revision=migration_revision_readback('0049',observed,witness,guard,triggers,hwm,hwm_guard,hwm_triggers,runtime,native,coverage_catalog=coverage)
 from scripts.verify_final_hermetic import coverage_nonempty_snapshot
 print(json.dumps(coverage_nonempty_snapshot(revision,retention),sort_keys=True))
 """
@@ -699,7 +726,7 @@ async def inspect():
     config=Config(str(SOURCE_ROOT/'alembic.ini'))
     config.set_main_option('script_location',str(SOURCE_ROOT/'migrations'))
     graph=ScriptDirectory.from_config(config)
-    if before.head!='0048' or graph.get_revision('0048').down_revision!='0047':
+    if before.head!='0049' or graph.get_revision('0049').down_revision!='0048' or graph.get_revision('0048').down_revision!='0047':
         raise RuntimeError('predecessor_source_graph_mismatch')
     engine=create_async_engine(get_settings().database_url,poolclass=NullPool)
     try:
@@ -717,17 +744,24 @@ asyncio.run(inspect())
 
 
 def expected_migration_revision_readback(revision: str) -> dict:
-    if revision == "0048":
+    if revision in ("0048", "0049"):
         from app.domain.controlled_writer_coverage_catalog_v1 import (
             expected_controlled_writer_coverage_schema,
+            expected_controlled_writer_coverage_schema_v48,
         )
 
         return {
             **expected_migration_revision_readback("0047"),
-            "schema": "ctcc.migration_revision_readback.v5",
-            "expected": "0048",
-            "observed": "0048",
-            "controlled_writer_coverage_schema": expected_controlled_writer_coverage_schema(),
+            "schema": "ctcc.migration_revision_readback.v6"
+            if revision == "0049"
+            else "ctcc.migration_revision_readback.v5",
+            "expected": revision,
+            "observed": revision,
+            "controlled_writer_coverage_schema": (
+                expected_controlled_writer_coverage_schema()
+                if revision == "0049"
+                else expected_controlled_writer_coverage_schema_v48()
+            ),
         }
     result = {
         "schema": "ctcc.migration_revision_readback.v4"
@@ -810,8 +844,8 @@ def verify_coverage_native_catalog_capture(
         }
         or document.get("schema")
         != "ctcc.controlled_writer_coverage_native_catalog_observation.v1"
-        or document.get("source_head") != "0048"
-        or document.get("database_head") != "0048"
+        or document.get("source_head") != "0049"
+        or document.get("database_head") != "0049"
         or document.get("source_migration_sha256") != migration_sha256
         or document.get("native_baseline_admission") is not False
         or document.get("execution_authority") is not False
@@ -831,9 +865,12 @@ def verify_coverage_native_catalog_capture(
 def coverage_nonempty_snapshot(revision: dict, retention: dict) -> dict:
     from app.domain.controlled_writer_coverage_catalog_v1 import COVERAGE_TABLES
 
+    head = revision.get("expected") if type(revision) is dict else None
     if (
-        not native_migration_json_equal(
-            revision, expected_migration_revision_readback("0048")
+        type(head) is not str
+        or head not in ("0048", "0049")
+        or not native_migration_json_equal(
+            revision, expected_migration_revision_readback(head)
         )
         or type(retention) is not dict
         or set(retention) != {"schema_version", "rows", "counts", "rows_sha256"}
@@ -864,7 +901,7 @@ def coverage_nonempty_snapshot(revision: dict, retention: dict) -> dict:
     ):
         raise RuntimeError("coverage_nonempty_snapshot_invalid")
     return {
-        "schema": "ctcc.controlled_writer_coverage_db0048_nonempty_snapshot.v1",
+        "schema": f"ctcc.controlled_writer_coverage_db{head}_nonempty_snapshot.v1",
         "revision_readback": deepcopy(revision),
         "retention": deepcopy(retention),
         "execution_authority": False,
@@ -887,12 +924,15 @@ def coverage_nonempty_downgrade_readback(before: dict, after: dict) -> dict:
             raise RuntimeError("coverage_nonempty_downgrade_readback_mismatch")
     if not native_migration_json_equal(before, after):
         raise RuntimeError("coverage_nonempty_downgrade_readback_mismatch")
+    head = before["revision_readback"]["expected"]
     return {
-        "schema": "ctcc.controlled_writer_coverage_db0048_nonempty_downgrade.v1",
-        "source_head": "0048",
-        "target": "0047",
+        "schema": f"ctcc.controlled_writer_coverage_db{head}_nonempty_downgrade.v1",
+        "source_head": head,
+        "target": "0048" if head == "0049" else "0047",
         "result": "DENIED",
-        "policy_refusal": COVERAGE_DOWNGRADE_DENIAL,
+        "policy_refusal": PAIR_GUARD_DOWNGRADE_DENIAL
+        if head == "0049"
+        else COVERAGE_DOWNGRADE_DENIAL,
         "before": deepcopy(before),
         "after": deepcopy(after),
         "rollback": "EXACT",
@@ -900,11 +940,19 @@ def coverage_nonempty_downgrade_readback(before: dict, after: dict) -> dict:
     }
 
 
-def verify_coverage_migration_receipt(
-    value: dict, *, manifest_sha256: str, repository_sha256: str, migration_sha256: str
+def _verify_coverage_migration_receipt(
+    value: dict,
+    *,
+    manifest_sha256: str,
+    repository_sha256: str,
+    migration_sha256: str,
+    revision: str,
 ) -> dict:
     from app.domain.controlled_writer_coverage_catalog_v1 import COVERAGE_TABLES
 
+    if revision not in ("0048", "0049"):
+        raise ValueError("coverage_migration_receipt_revision_invalid")
+    current = revision == "0049"
     if (
         type(value) is not dict
         or set(value)
@@ -922,7 +970,11 @@ def verify_coverage_migration_receipt(
             "execution_authority",
         }
         or value.get("schema_version")
-        != "ctcc.controlled_writer_coverage_migration_acceptance.v1"
+        != (
+            "ctcc.controlled_writer_pair_guard_migration_acceptance.v1"
+            if current
+            else "ctcc.controlled_writer_coverage_migration_acceptance.v1"
+        )
         or value.get("manifest_sha256") != manifest_sha256
         or value.get("repository_sha256") != repository_sha256
         or value.get("migration_sha256") != migration_sha256
@@ -932,8 +984,9 @@ def verify_coverage_migration_receipt(
         )
         or type(value.get("server_major")) is not int
         or value["server_major"] != 17
-        or value.get("refusal_code") != COVERAGE_DOWNGRADE_DENIAL
-        or value.get("downgrade_target") != "0047"
+        or value.get("refusal_code")
+        != (PAIR_GUARD_DOWNGRADE_DENIAL if current else COVERAGE_DOWNGRADE_DENIAL)
+        or value.get("downgrade_target") != ("0048" if current else "0047")
         or value.get("native_baseline_admission") is not False
         or value.get("execution_authority") is not False
     ):
@@ -942,7 +995,7 @@ def verify_coverage_migration_receipt(
         if (
             type(snapshot) is not dict
             or set(snapshot) != {"head", "rows_sha256", "counts", "catalog_sha256"}
-            or snapshot.get("head") != "0048"
+            or snapshot.get("head") != revision
             or type(snapshot.get("counts")) is not dict
             or set(snapshot["counts"]) != set(COVERAGE_TABLES)
             or any(
@@ -959,6 +1012,32 @@ def verify_coverage_migration_receipt(
     if not native_migration_json_equal(value["before"], value["after"]):
         raise ValueError("coverage_migration_receipt_retention_changed")
     return deepcopy(value)
+
+
+def verify_coverage_migration_receipt(
+    value: dict, *, manifest_sha256: str, repository_sha256: str, migration_sha256: str
+) -> dict:
+    """Exact historical0048 own-database experiment; never a0049 substitute."""
+    return _verify_coverage_migration_receipt(
+        value,
+        manifest_sha256=manifest_sha256,
+        repository_sha256=repository_sha256,
+        migration_sha256=migration_sha256,
+        revision="0048",
+    )
+
+
+def verify_pair_guard_migration_receipt(
+    value: dict, *, manifest_sha256: str, repository_sha256: str, migration_sha256: str
+) -> dict:
+    """Current0049 own refusal, independently from0048 original table guards."""
+    return _verify_coverage_migration_receipt(
+        value,
+        manifest_sha256=manifest_sha256,
+        repository_sha256=repository_sha256,
+        migration_sha256=migration_sha256,
+        revision="0049",
+    )
 
 
 def native_identity_empty_before_readback(revision: dict, custody_sha256: str) -> dict:
@@ -1093,17 +1172,24 @@ def migration_revision_readback(
     coverage_catalog: dict | None = None,
 ) -> dict:
     """Deny schema drift, including extra or disabled non-internal triggers."""
-    if expected == "0048":
-        from scripts.verify_controlled_writer_coverage_schema_v1 import verify_catalog
+    if expected in ("0048", "0049"):
+        from scripts.verify_controlled_writer_coverage_schema_v1 import (
+            verify_catalog,
+            verify_catalog_v48,
+        )
 
         require_native_witness_identity_baseline()
         # The separately captured catalog is an observation. A pending native
         # baseline must still refuse here, even if structural checks succeed.
-        coverage = verify_catalog(coverage_catalog, require_native_baseline=True)
+        coverage = (verify_catalog if expected == "0049" else verify_catalog_v48)(
+            coverage_catalog, require_native_baseline=True
+        )
         catalog = [list(row) for row in trigger_catalog]
         hwm_catalog = [list(row) for row in hwm_trigger_catalog]
         result = {
-            "schema": "ctcc.migration_revision_readback.v5",
+            "schema": "ctcc.migration_revision_readback.v6"
+            if expected == "0049"
+            else "ctcc.migration_revision_readback.v5",
             "expected": expected,
             "observed": observed,
             "execution_authority": False,
@@ -1236,6 +1322,53 @@ def verify_current_downgrade_denial_log(path: Path) -> None:
         "0042 -> 0041",
     ]:
         raise ValueError("current_migration_downgrade_policy_refusal_unverified")
+
+
+def verify_current_0049_downgrade_denial_log(path: Path) -> None:
+    """Current0049 outer transaction with every original predecessor edge."""
+    verify_downgrade_denial_log(path)
+    output = path.read_bytes().decode("utf-8")
+    if re.findall(r"Running downgrade (\d{4} -> \d{4})", output) != [
+        "0049 -> 0048",
+        "0048 -> 0047",
+        "0047 -> 0046",
+        "0046 -> 0045",
+        "0045 -> 0044",
+        "0044 -> 0043",
+        "0043 -> 0042",
+        "0042 -> 0041",
+    ]:
+        raise ValueError("current_0049_downgrade_policy_refusal_unverified")
+
+
+def verify_pair_guard_downgrade_denial_log(path: Path) -> None:
+    if (
+        path.is_symlink()
+        or not path.is_file()
+        or not 0 < path.stat().st_size <= 2 * 1024 * 1024
+    ):
+        raise ValueError("pair_guard_downgrade_denial_log_missing_or_unsafe")
+    try:
+        output = path.read_bytes().decode("utf-8")
+    except UnicodeError as error:
+        raise ValueError("pair_guard_downgrade_denial_log_invalid") from error
+    if (
+        re.findall(r"Running downgrade (\d{4} -> \d{4})", output) != ["0049 -> 0048"]
+        or "/app/migrations/versions/0049_controlled_writer_pair_guard_definer.py"
+        not in output
+        or len(
+            re.findall(
+                rf"(?m)^asyncpg\.exceptions\.RaiseError: {PAIR_GUARD_DOWNGRADE_DENIAL}\r?$",
+                output,
+            )
+        )
+        != 1
+        or not re.search(
+            rf"(?m)^sqlalchemy\.exc\.DBAPIError: .*: {PAIR_GUARD_DOWNGRADE_DENIAL}\r?$",
+            output,
+        )
+    ):
+        raise ValueError("pair_guard_downgrade_policy_refusal_unverified")
 
 
 def verify_coverage_downgrade_denial_log(path: Path) -> None:
@@ -1505,6 +1638,44 @@ def verify_linux_collection(path: Path, *, mode: str, index: int | None, report:
     }
 
 
+def run_controlled_writer_coverage_preflight(container, *, test_results: Path, mounts):
+    """Actual current-head commit and native restricted-role tests, before full PG.
+
+    Its independent report is never added to full-suite collection counts.
+    Receipt-exporting migration experiments remain in the full suite only.
+    """
+    stage = "controlled-writer-coverage-preflight"
+    container(
+        stage,
+        [
+            "python",
+            "-m",
+            "scripts.hermetic_pytest",
+            "-p",
+            "no:cacheprovider",
+            "--tb=no",
+            "--show-capture=no",
+            "-o",
+            "junit_logging=no",
+            f"--junitxml=/validation-results/{stage}.xml",
+            *(
+                f"{module.replace('.', '/')}.py::{case}"
+                for module, case in COVERAGE_PREFLIGHT_CASES
+            ),
+        ],
+        mounts=mounts,
+        timeout=5 * 60,
+    )
+    report = verify_pytest_report(
+        test_results / f"{stage}.xml",
+        required_cases=COVERAGE_PREFLIGHT_CASES,
+        required_modules=(COVERAGE_PREFLIGHT_CASES[0][0],),
+    )
+    if report["tests"] != len(COVERAGE_PREFLIGHT_CASES) or report["skipped"]:
+        raise RuntimeError("coverage_preflight_exact_case_inventory_required")
+    return report
+
+
 def run_runtime_bundle_custody_preflight(container, *, test_results: Path, mounts):
     """Exercise native DB0046 protocol before any long PostgreSQL test run.
 
@@ -1654,7 +1825,7 @@ def run_predecessor_0047_validation(
         )
         return {
             "schema": "ctcc.isolated_0047_predecessor_validation.v1",
-            "source_head": "0048",
+            "source_head": "0049",
             "database_target": "0047",
             "separate_from_full_suite_unique_count": True,
             "test_report": report,
@@ -1747,6 +1918,7 @@ class Run:
                             DOWNGRADE_DENIAL,
                             NATIVE_IDENTITY_DOWNGRADE_DENIAL,
                             COVERAGE_DOWNGRADE_DENIAL,
+                            PAIR_GUARD_DOWNGRADE_DENIAL,
                         )
                         or result.returncode == 0
                     ):
@@ -1757,6 +1929,10 @@ class Run:
                         verify_downgrade_denial_log(self.output / f"{name}.log")
                     elif expected_refusal == COVERAGE_DOWNGRADE_DENIAL:
                         verify_coverage_downgrade_denial_log(
+                            self.output / f"{name}.log"
+                        )
+                    elif expected_refusal == PAIR_GUARD_DOWNGRADE_DENIAL:
+                        verify_pair_guard_downgrade_denial_log(
                             self.output / f"{name}.log"
                         )
                     else:
@@ -2218,12 +2394,41 @@ def main():
             (args.output / "migration-identity.log").read_text()
         )
         if (
-            identity["migration"].get("source_head") != "0048"
-            or identity["migration"].get("database_head") != "0048"
+            identity["migration"].get("source_head") != "0049"
+            or identity["migration"].get("database_head") != "0049"
             or identity["migration"].get("status") != "PASS"
         ):
             raise RuntimeError("migration_downgrade_policy_head_unreviewed")
         container("migration-drift", ["alembic", "check"])
+        container(
+            "migration-pair-guard-empty-before",
+            ["python", "-c", MIGRATION_REVISION_PROBE, "0049"],
+            timeout=60,
+        )
+        pair_empty_before = json.loads(
+            (args.output / "migration-pair-guard-empty-before.log").read_bytes()
+        )
+        if not native_migration_json_equal(
+            pair_empty_before, expected_migration_revision_readback("0049")
+        ):
+            raise RuntimeError("pair_guard_current_head_readback_invalid")
+        container(
+            "migration-pair-guard-empty-downgrade",
+            ["alembic", "downgrade", "0048"],
+            timeout=60,
+        )
+        container(
+            "migration-pair-guard-empty-readback",
+            ["python", "-c", MIGRATION_REVISION_PROBE, "0048"],
+            timeout=60,
+        )
+        pair_empty_down = json.loads(
+            (args.output / "migration-pair-guard-empty-readback.log").read_bytes()
+        )
+        if not native_migration_json_equal(
+            pair_empty_down, expected_migration_revision_readback("0048")
+        ):
+            raise RuntimeError("pair_guard_empty_downgrade_readback_invalid")
         container(
             "migration-coverage-empty-before",
             ["python", "-c", MIGRATION_REVISION_PROBE, "0048"],
@@ -2355,16 +2560,19 @@ def main():
             raise RuntimeError("migration_reupgrade_identity_changed")
         container(
             "migration-reupgrade-readback",
-            ["python", "-c", MIGRATION_REVISION_PROBE, "0048"],
+            ["python", "-c", MIGRATION_REVISION_PROBE, "0049"],
         )
         reupgrade_readback = json.loads(
             (args.output / "migration-reupgrade-readback.log").read_text()
         )
-        if reupgrade_readback != expected_migration_revision_readback("0048"):
+        if reupgrade_readback != expected_migration_revision_readback("0049"):
             raise RuntimeError("migration_reupgrade_readback_invalid")
         container("migration-reupgrade-drift", ["alembic", "check"])
         identity["migration_empty_roundtrip"] = {
-            "source_head": "0048",
+            "source_head": "0049",
+            "pair_guard_before_readback": pair_empty_before,
+            "pair_guard_down_revision": "0048",
+            "pair_guard_down_readback": pair_empty_down,
             "coverage_before_readback": coverage_empty_before,
             "coverage_down_revision": "0047",
             "coverage_down_readback": coverage_empty_down,
@@ -2388,7 +2596,7 @@ def main():
             ["alembic", "downgrade", "0041"],
             expected_refusal=DOWNGRADE_DENIAL,
         )
-        verify_current_downgrade_denial_log(
+        verify_current_0049_downgrade_denial_log(
             args.output / "migration-downgrade-denial.log"
         )
         container(
@@ -2401,25 +2609,32 @@ def main():
             raise RuntimeError("migration_denial_identity_changed")
         container(
             "migration-denial-readback",
-            ["python", "-c", MIGRATION_REVISION_PROBE, "0048"],
+            ["python", "-c", MIGRATION_REVISION_PROBE, "0049"],
         )
         denial_readback = json.loads(
             (args.output / "migration-denial-readback.log").read_text()
         )
-        if denial_readback != expected_migration_revision_readback("0048"):
+        if denial_readback != expected_migration_revision_readback("0049"):
             raise RuntimeError("migration_denial_transaction_rollback_unverified")
         container("migration-redrift", ["alembic", "check"])
         identity["migration_downgrade_policy"] = {
-            "source_head": "0048",
+            "source_head": "0049",
             "target": "0041",
             "result": "DENIED",
             "denied_at": "0042",
             "policy_refusal": DOWNGRADE_DENIAL,
-            "database_head_after": "0048",
+            "database_head_after": "0049",
             "rollback_readback": denial_readback,
             "schema_drift": "PASS",
         }
         if args.suite in ("full", "postgres"):
+            identity["controlled_writer_coverage_preflight"] = (
+                run_controlled_writer_coverage_preflight(
+                    container,
+                    test_results=test_results,
+                    mounts=test_results_mount,
+                )
+            )
             identity["runtime_bundle_custody_preflight"] = (
                 run_runtime_bundle_custody_preflight(
                     container, test_results=test_results, mounts=test_results_mount
@@ -2550,8 +2765,30 @@ def main():
                     ]["sha256"],
                 )
             )
-            # Current 0048 rows must survive its own refusal. The historical
-            # small/wide 0047 experiment owns an independent database below.
+            pair_receipt_path = (
+                test_results / "controlled-writer-pair-guard-migration.json"
+            )
+            if (
+                pair_receipt_path.is_symlink()
+                or not pair_receipt_path.is_file()
+                or not 0 < pair_receipt_path.stat().st_size <= 65536
+            ):
+                raise RuntimeError("pair_guard_migration_receipt_missing_or_unsafe")
+            identity["pair_guard_migration_acceptance"] = (
+                verify_pair_guard_migration_receipt(
+                    read_evidence_json(pair_receipt_path.read_bytes()),
+                    manifest_sha256=identity["manifest_sha256"],
+                    repository_sha256=files[
+                        "app/database/repositories/controlled_writer_coverage.py"
+                    ]["sha256"],
+                    migration_sha256=files[
+                        "migrations/versions/0049_controlled_writer_pair_guard_definer.py"
+                    ]["sha256"],
+                )
+            )
+            # Current0049 rows must survive its own refusal. Historical0048
+            # table guards run on a genuine0048 child and retain their own
+            # separate receipt above;0047 also owns a separate database.
             container(
                 "migration-coverage-nonempty-before",
                 ["python", "-c", COVERAGE_RETENTION_PROBE],
@@ -2562,8 +2799,8 @@ def main():
             )
             container(
                 "migration-coverage-nonempty-denial",
-                ["alembic", "downgrade", "0047"],
-                expected_refusal=COVERAGE_DOWNGRADE_DENIAL,
+                ["alembic", "downgrade", "0048"],
+                expected_refusal=PAIR_GUARD_DOWNGRADE_DENIAL,
                 timeout=60,
             )
             container(

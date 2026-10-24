@@ -7,7 +7,7 @@ reconciliation producer. Hash-shaped pins bind identity, not source authenticity
 import hashlib
 import json
 import re
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 
 LEASE_SECONDS = 30
@@ -327,3 +327,225 @@ def advance(
         elif action == "release":
             changes["lease_until"] = now
     return replace(previous, **changes)
+
+
+# Fixed resource limits for a complete prefix. Overflow is never a suffix or a
+# successful partial history; a larger supported policy needs explicit review.
+MAX_CONTROL_LINEAGE_ROWS = 4096
+MAX_CONTROL_LINEAGE_BYTES = 4 * 1024 * 1024
+MAX_CONTROL_EVENT_BYTES = 12288
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class ControlJournalSourceRowV1:
+    """Original DB columns, or explicitly synthetic pure input; never a permit."""
+
+    scope: ControlScope
+    revision: int
+    command_id: str
+    action: str
+    previous_sha256: str | None
+    event_sha256: str
+    state_sha256: str
+    event_json: str = field(repr=False)
+    occurred_at: datetime
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class ControlLineageV1:
+    """Complete bounded prefix replay; caller construction grants no authority."""
+
+    scope: ControlScope
+    state: ControlState = field(repr=False)
+    head_sha256: str
+    source_rows: tuple[ControlJournalSourceRowV1, ...] = field(repr=False)
+    receipt_json: str = field(repr=False)
+    execution_authority: bool = field(default=False, init=False)
+
+    @property
+    def receipt_sha256(self):
+        return digest(self.receipt_json)
+
+
+def _lineage_transition(previous, state, *, action, command_id):
+    """Replay both owned transitions and the existing safety-tightening path."""
+    if action == "acquire":
+        return acquire(
+            previous,
+            scope=state.scope,
+            owner_sha256=state.owner_sha256,
+            pins=state.pins,
+            now=state.updated_at,
+        )
+    if previous is None:
+        if action != "estop":
+            raise DemoControlError("control_lineage_genesis_invalid")
+        return stopped_genesis(state.scope, state.updated_at)
+    if action in {"estop", "disarm"}:
+        # _tighten intentionally remains valid after lease expiry, including
+        # unowned stopped genesis. It does not acquire, renew or clear a stop.
+        if state.updated_at < previous.updated_at:
+            raise DemoControlError("control_lineage_clock_regressed")
+        return replace(
+            previous,
+            revision=previous.revision + 1,
+            emergency_stop=previous.emergency_stop or action == "estop",
+            arm_request_id=None,
+            arm_expires_at=None,
+            lease_until=max(state.updated_at, previous.lease_until),
+            updated_at=state.updated_at,
+        )
+    return advance(
+        previous,
+        owner_sha256=previous.owner_sha256,
+        owner_epoch=previous.owner_epoch,
+        expected_revision=previous.revision,
+        action=action,
+        command_id=command_id,
+        now=state.updated_at,
+        arm_expires_at=state.arm_expires_at if action == "arm_requested" else None,
+        pins=state.pins if action == "rebind" else None,
+    )
+
+
+def replay_control_journal_lineage_v1(
+    rows,
+    *,
+    scope,
+    target_state,
+    expected_head_sha256,
+):
+    """Verify every source row from revision1 through the exact target head.
+
+    Expected pins are comparison inputs, not authentication. This pure function
+    cannot mint source ownership, clear-stop, Arm, risk or dispatch authority.
+    """
+    checked(scope, ControlScope)
+    checked(target_state, ControlState)
+    sha(expected_head_sha256)
+    if (
+        type(rows) is not tuple
+        or not 1 <= len(rows) <= MAX_CONTROL_LINEAGE_ROWS
+        or target_state.scope != scope
+        or target_state.revision != len(rows)
+    ):
+        raise DemoControlError("control_lineage_complete_prefix_required")
+    previous = None
+    previous_sha = None
+    commands = set()
+    total_bytes = 0
+    original = []
+    try:
+        for revision, row in enumerate(rows, start=1):
+            if (
+                type(row) is not ControlJournalSourceRowV1
+                or type(row.scope) is not ControlScope
+                or type(row.revision) is not int
+                or row.revision != revision
+                or type(row.action) is not str
+                or row.action
+                not in {
+                    "acquire",
+                    "renew",
+                    "arm_requested",
+                    "disarm",
+                    "estop",
+                    "rebind",
+                    "release",
+                }
+                or (
+                    row.previous_sha256 is not None
+                    and type(row.previous_sha256) is not str
+                )
+                or type(row.event_json) is not str
+            ):
+                raise DemoControlError("control_lineage_row_invalid")
+            checked(row.scope, ControlScope)
+            if row.previous_sha256 is not None:
+                sha(row.previous_sha256)
+            if row.scope != scope or row.previous_sha256 != previous_sha:
+                raise DemoControlError("control_lineage_row_invalid")
+            sha(row.command_id)
+            sha(row.event_sha256)
+            sha(row.state_sha256)
+            utc(row.occurred_at)
+            raw_bytes = row.event_json.encode("ascii")
+            total_bytes += len(raw_bytes)
+            if (
+                not 1 <= len(raw_bytes) <= MAX_CONTROL_EVENT_BYTES
+                or total_bytes > MAX_CONTROL_LINEAGE_BYTES
+                or row.command_id in commands
+            ):
+                raise DemoControlError("control_lineage_bound_or_duplicate_command")
+            value = json.loads(row.event_json)
+            if type(value) is not dict or set(value) != {
+                "version",
+                "command_id",
+                "action",
+                "previous_sha256",
+                "state",
+            }:
+                raise DemoControlError("control_lineage_event_invalid")
+            state = decode(canonical(value["state"]))
+            if state.scope != scope or state.revision != revision:
+                raise DemoControlError("control_lineage_state_invalid")
+            expected_event = canonical(
+                {
+                    "version": "ctcc.demo_control_event.v1",
+                    "command_id": row.command_id,
+                    "action": row.action,
+                    "previous_sha256": previous_sha,
+                    "state": document(state),
+                }
+            )
+            if (
+                row.event_json != expected_event
+                or digest(row.event_json) != row.event_sha256
+                or digest(canonical(document(state))) != row.state_sha256
+                or row.occurred_at != state.updated_at
+            ):
+                raise DemoControlError("control_lineage_event_binding_invalid")
+            expected_state = _lineage_transition(
+                previous,
+                state,
+                action=row.action,
+                command_id=row.command_id,
+            )
+            # Compare canonical typed values, never dict/dataclass equality that
+            # could conflate a nested bool with an integer.
+            if canonical(document(expected_state)) != canonical(document(state)):
+                raise DemoControlError("control_lineage_transition_invalid")
+            commands.add(row.command_id)
+            original.append(row)
+            previous, previous_sha = state, row.event_sha256
+        if previous_sha != expected_head_sha256 or canonical(
+            document(previous)
+        ) != canonical(document(target_state)):
+            raise DemoControlError("control_lineage_target_head_invalid")
+        receipt = canonical(
+            {
+                "schema_version": "ctcc.demo_control_complete_lineage.v1",
+                "scope": [scope.environment, scope.account_id],
+                "first_revision": 1,
+                "through_revision": target_state.revision,
+                "row_count": len(original),
+                "original_event_bytes": total_bytes,
+                "head_sha256": previous_sha,
+                "state_sha256": digest(canonical(document(target_state))),
+                "event_sha256_chain": [row.event_sha256 for row in original],
+                "native_source_owned": False,
+                "execution_authority": False,
+            }
+        )
+        return ControlLineageV1(scope, previous, previous_sha, tuple(original), receipt)
+    except DemoControlError:
+        raise
+    except (
+        KeyError,
+        TypeError,
+        ValueError,
+        UnicodeError,
+        OverflowError,
+        RecursionError,
+    ):
+        raise DemoControlError("control_lineage_source_invalid") from None

@@ -399,7 +399,7 @@ def _mock_main(
                     {
                         "schema": "ctcc.migration_predecessor_identity.v1",
                         "status": "PASS",
-                        "source_head": "0048",
+                        "source_head": "0049",
                         "database_head": migration_head,
                         "target_revision": "0047",
                         "migration_sha256": "e" * 64,
@@ -412,8 +412,8 @@ def _mock_main(
                     {
                         "schema": "ctcc.migration_identity.v1",
                         "status": "PASS",
-                        "source_head": "0048",
-                        "database_head": "0048",
+                        "source_head": "0049",
+                        "database_head": "0049",
                         "migration_sha256": "e" * 64,
                         "execution_authority": False,
                     }
@@ -650,9 +650,9 @@ def test_migration_main_runs_empty_roundtrip_before_cases_then_one_nonempty_refu
     assert commands["native-witness-reupgrade"][-3:] == ["alembic", "upgrade", "0047"]
     assert diagnostic.PREDECESSOR_0047_IDENTITY_PROBE in commands["migration-identity"]
     assert "native-witness-reupgrade-drift" not in names
-    assert identity["migration"]["source_head"] == "0048"
+    assert identity["migration"]["source_head"] == "0049"
     assert identity["migration"]["database_head"] == "0047"
-    assert identity["current_source_migration"]["database_head"] == "0048"
+    assert identity["current_source_migration"]["database_head"] == "0049"
     assert (
         diagnostic.MIGRATION_REVISION_PROBE
         in commands["native-witness-migration-before"]

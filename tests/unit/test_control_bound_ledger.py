@@ -254,12 +254,41 @@ def test_expectation_is_detached_and_token_not_printed_or_pickled(records):
 async def test_historical_control_binding_compares_nested_types_exactly(
     records, mutation
 ):
+    from app.database.models.demo_control import DemoControlJournal
+
     state = records[1]
+    initial = control.acquire(
+        None,
+        scope=state.scope,
+        owner_sha256=state.owner_sha256,
+        pins=state.pins,
+        now=state.created_at,
+    )
+    first_value = {
+        "version": "ctcc.demo_control_event.v1",
+        "command_id": "c" * 64,
+        "action": "acquire",
+        "previous_sha256": None,
+        "state": control.document(initial),
+    }
+    first_raw = control.canonical(first_value)
+    first = DemoControlJournal(
+        environment=state.scope.environment,
+        account_id=state.scope.account_id,
+        control_revision=1,
+        command_id=first_value["command_id"],
+        action="acquire",
+        previous_sha256=None,
+        event_sha256=control.digest(first_raw),
+        state_sha256=control.digest(control.canonical(control.document(initial))),
+        event_json=first_raw,
+        occurred_at=initial.updated_at,
+    )
     value = {
         "version": "ctcc.demo_control_event.v1",
         "command_id": "d" * 64,
         "action": "arm_requested",
-        "previous_sha256": "f" * 64,
+        "previous_sha256": first.event_sha256,
         "state": control.document(state),
     }
     if mutation == "epoch_bool":
@@ -267,7 +296,10 @@ async def test_historical_control_binding_compares_nested_types_exactly(
     elif mutation == "stop_int":
         value["state"]["emergency_stop"] = 0
     raw = control.canonical(value)
-    event = SimpleNamespace(
+    event = DemoControlJournal(
+        environment=state.scope.environment,
+        account_id=state.scope.account_id,
+        control_revision=2,
         event_json=raw,
         event_sha256=control.digest(raw),
         state_sha256=control.digest(control.canonical(control.document(state))),
@@ -278,12 +310,19 @@ async def test_historical_control_binding_compares_nested_types_exactly(
     )
 
     class Session:
-        async def get(self, _model, key):
-            return (
-                event
-                if key[-1] == state.revision
-                else SimpleNamespace(event_sha256="f" * 64)
+        """Synthetic complete original rows; never native/PG acceptance."""
+
+        async def execute(self, _statement):
+            return SimpleNamespace(
+                one=lambda: (
+                    2,
+                    len(first.event_json.encode("ascii"))
+                    + len(event.event_json.encode("ascii")),
+                )
             )
+
+        async def scalars(self, _statement):
+            return SimpleNamespace(all=lambda: [first, event])
 
     if mutation is None:
         await DemoControlRepository.verify_historical_binding(

@@ -10,10 +10,14 @@ from app.domain.controlled_writer_coverage_catalog_v1 import (
     PG17_DEPARSED_BASELINE_STATUS,
     ControlledWriterCoverageError,
     expected_controlled_writer_coverage_schema,
+    expected_controlled_writer_coverage_schema_v48,
     verify_controlled_writer_coverage_catalog,
+    verify_controlled_writer_coverage_catalog_v48,
 )
 
 verify_catalog = verify_controlled_writer_coverage_catalog
+# Historical evidence only, never used by the native repository deployment gate.
+verify_catalog_v48 = verify_controlled_writer_coverage_catalog_v48
 
 
 async def read_catalog(session):
@@ -36,7 +40,9 @@ __all__ = [
     "PG17_DEPARSED_BASELINE_STATUS",
     "ControlledWriterCoverageError",
     "expected_controlled_writer_coverage_schema",
+    "expected_controlled_writer_coverage_schema_v48",
     "read_catalog",
     "read_retention",
     "verify_catalog",
+    "verify_catalog_v48",
 ]

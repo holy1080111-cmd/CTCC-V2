@@ -1,4 +1,4 @@
-"""Sole stdlib-only DB0048 catalog declaration and comparison policy.
+"""Sole stdlib-only historical DB0048 and current DB0049 catalog policy.
 
 Shared by the production repository and independent host evidence readers.
 SQL and policy data grant no native, account, execution or trading authority.
@@ -732,7 +732,7 @@ END
 """.replace("__UID_SQL__", _UID_SQL)
 
 
-_FUNCTIONS = (
+_FUNCTIONS_0048 = (
     (
         "controlled_writer_coverage_v1_journal_guard",
         "",
@@ -790,9 +790,25 @@ _FUNCTIONS = (
 )
 
 
+# 0048 imports COVERAGE_FUNCTION_SQL at execution time. Keep its effective DDL
+# byte-exact even after current runtime policy advances to 0049.
+_FUNCTIONS = tuple(
+    (
+        name,
+        args,
+        returns,
+        language,
+        True if name == "controlled_writer_coverage_v1_pair_guard" else definer,
+        volatility,
+        body,
+    )
+    for name, args, returns, language, definer, volatility, body in _FUNCTIONS_0048
+)
+
+
 COVERAGE_FUNCTION_SQL = {
     name: f"CREATE FUNCTION public.{name}({args}) RETURNS {returns} LANGUAGE {language} {volatility} SECURITY {'DEFINER' if definer else 'INVOKER'} SET search_path=pg_catalog,public,pg_temp AS $cwc${body}$cwc$"
-    for name, args, returns, language, definer, volatility, body in _FUNCTIONS
+    for name, args, returns, language, definer, volatility, body in _FUNCTIONS_0048
 }
 
 
@@ -878,17 +894,30 @@ COVERAGE_TRIGGER_SQL = tuple(
 )
 
 
-def expected_controlled_writer_coverage_schema():
+def _expected_schema(functions, *, historical):
     """Source policy only. Pending native hashes never become observed truth."""
     return json.loads(
         canonical(
             {
-                "schema_version": "ctcc.controlled_writer_coverage_catalog_policy.v1",
+                "schema_version": (
+                    "ctcc.controlled_writer_coverage_catalog_policy.v1"
+                    if historical
+                    else "ctcc.controlled_writer_coverage_catalog_policy.v2"
+                ),
+                **(
+                    {}
+                    if historical
+                    else {
+                        "migration_revision": "0049",
+                        "pair_guard_context": "admin_owner_security_definer_fixed_search_path_no_caller_execute",
+                    }
+                ),
                 "tables": COVERAGE_TABLE_SPECS,
                 "functions": [
                     {
                         "name": name,
                         "arguments": COVERAGE_FUNCTION_SIGNATURES[name],
+                        **({} if historical else {"returns": returns}),
                         "namespace": "public",
                         "body_sha256": _digest(body),
                         "language": language,
@@ -896,7 +925,7 @@ def expected_controlled_writer_coverage_schema():
                         "volatility": volatility,
                         "search_path": ["search_path=pg_catalog, public, pg_temp"],
                     }
-                    for name, _, _, language, definer, volatility, body in _FUNCTIONS
+                    for name, _, returns, language, definer, volatility, body in functions
                 ],
                 "triggers": COVERAGE_TRIGGER_SPECS,
                 "native_baseline_status": PG17_DEPARSED_BASELINE_STATUS,
@@ -905,6 +934,16 @@ def expected_controlled_writer_coverage_schema():
             }
         )
     )
+
+
+def expected_controlled_writer_coverage_schema():
+    """Current 0049 source policy; its seal is not runtime/source acceptance."""
+    return _expected_schema(_FUNCTIONS, historical=False)
+
+
+def expected_controlled_writer_coverage_schema_v48():
+    """Historical 0048 evidence only; never the runtime deployment policy."""
+    return _expected_schema(_FUNCTIONS_0048, historical=True)
 
 
 _CATALOG_SQL = r"""
@@ -979,7 +1018,7 @@ SELECT jsonb_build_object(
 """.replace("__TABLES__", _array(COVERAGE_TABLES))
 
 
-def verify_controlled_writer_coverage_catalog(catalog, *, require_native_baseline=True):
+def _verify_catalog(catalog, *, functions_policy, require_native_baseline):
     """Independently compare captured facts; never learn a desired baseline."""
     if type(require_native_baseline) is not bool:
         _deny("controlled_writer_coverage_catalog_invalid")
@@ -1183,7 +1222,7 @@ def verify_controlled_writer_coverage_catalog(catalog, *, require_native_baselin
         _deny("controlled_writer_coverage_function_drift")
     namespace_oids = set()
     function_oids = set()
-    for name, _, returns, language, definer, volatility, body in _FUNCTIONS:
+    for name, _, returns, language, definer, volatility, body in functions_policy:
         row = functions[name]
         if (
             type(row["oid"]) is not int
@@ -1279,4 +1318,25 @@ def verify_controlled_writer_coverage_catalog(catalog, *, require_native_baselin
         actual = {"constraints": catalog["constraints"], "indexes": catalog["indexes"]}
         if _digest(canonical(actual)) != PG17_DEPARSED_BASELINE:
             _deny("controlled_writer_coverage_deparser_drift")
+
+
+def verify_controlled_writer_coverage_catalog(catalog, *, require_native_baseline=True):
+    """Current 0049 schema gate. Invoker-pair 0048 cannot pass this gate."""
+    _verify_catalog(
+        catalog,
+        functions_policy=_FUNCTIONS,
+        require_native_baseline=require_native_baseline,
+    )
     return expected_controlled_writer_coverage_schema()
+
+
+def verify_controlled_writer_coverage_catalog_v48(
+    catalog, *, require_native_baseline=True
+):
+    """Exact historical 0048 comparison for migration evidence, not authority."""
+    _verify_catalog(
+        catalog,
+        functions_policy=_FUNCTIONS_0048,
+        require_native_baseline=require_native_baseline,
+    )
+    return expected_controlled_writer_coverage_schema_v48()

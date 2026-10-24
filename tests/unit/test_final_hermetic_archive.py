@@ -1110,7 +1110,7 @@ def test_current_0048_readback_preserves_exact_0047_predecessor_contract(monkeyp
             raise ValueError("synthetic_catalog_required")
         return current["controlled_writer_coverage_schema"]
 
-    monkeypatch.setattr(coverage_schema, "verify_catalog", synthetic_catalog)
+    monkeypatch.setattr(coverage_schema, "verify_catalog_v48", synthetic_catalog)
     arguments = (
         "0048",
         "0048",
@@ -1283,3 +1283,299 @@ def test_0048_actual_migration_receipt_requires_bound_sources_and_exact_retentio
                 repository_sha256="d" * 64,
                 migration_sha256="e" * 64,
             )
+
+
+def test_current_0049_readback_preserves_distinct_0048_and_0047_contracts(monkeypatch):
+    from scripts import verify_controlled_writer_coverage_schema_v1 as coverage_schema
+    from scripts.verify_final_hermetic import NATIVE_WITNESS_IDENTITY_SCHEMA
+
+    old = expected_migration_revision_readback("0047")
+    assert old["schema"] == "ctcc.migration_revision_readback.v4"
+    assert "controlled_writer_coverage_schema" not in old
+    current = expected_migration_revision_readback("0049")
+    assert current["schema"] == "ctcc.migration_revision_readback.v6"
+    historical = expected_migration_revision_readback("0048")
+    assert historical["schema"] == "ctcc.migration_revision_readback.v5"
+    assert historical["observed"] == "0048"
+    new_policy = current["controlled_writer_coverage_schema"]
+    old_policy = historical["controlled_writer_coverage_schema"]
+    assert new_policy["migration_revision"] == "0049"
+    assert "migration_revision" not in old_policy
+    pair = "controlled_writer_coverage_v1_pair_guard"
+    assert (
+        next(row for row in new_policy["functions"] if row["name"] == pair)[
+            "security_definer"
+        ]
+        is True
+    )
+    assert (
+        next(row for row in old_policy["functions"] if row["name"] == pair)[
+            "security_definer"
+        ]
+        is False
+    )
+    assert (
+        new_policy["native_deparser_baseline"] == old_policy["native_deparser_baseline"]
+    )
+    assert {
+        key: value
+        for key, value in current.items()
+        if key
+        not in {"schema", "expected", "observed", "controlled_writer_coverage_schema"}
+    } == {
+        key: value
+        for key, value in old.items()
+        if key not in {"schema", "expected", "observed"}
+    }
+
+    def synthetic_catalog(catalog, *, require_native_baseline=True):
+        assert require_native_baseline is True
+        if catalog != {"synthetic_only": True}:
+            raise ValueError("synthetic_catalog_required")
+        return current["controlled_writer_coverage_schema"]
+
+    monkeypatch.setattr(coverage_schema, "verify_catalog", synthetic_catalog)
+    arguments = (
+        "0049",
+        "0049",
+        True,
+        True,
+        ACCOUNT_REVISION_WITNESS_TRIGGERS,
+        True,
+        True,
+        ACCOUNT_MEASURED_HWM_V2_TRIGGERS_0045,
+        PUBLIC_RUNTIME_BUNDLE_SCHEMA,
+        NATIVE_WITNESS_IDENTITY_SCHEMA,
+    )
+    assert (
+        migration_revision_readback(
+            *arguments, coverage_catalog={"synthetic_only": True}
+        )
+        == current
+    )
+    with pytest.raises(ValueError, match="synthetic_catalog_required"):
+        migration_revision_readback(*arguments)
+    with pytest.raises(RuntimeError, match="migration_revision_readback_mismatch"):
+        migration_revision_readback(
+            "0049", "0047", *arguments[2:], coverage_catalog={"synthetic_only": True}
+        )
+    assert expected_migration_revision_readback("0047") == old
+
+
+@pytest.mark.parametrize(
+    "damage",
+    (None, "missing_outer", "duplicate_outer", "reordered", "wrong_predecessor"),
+)
+def test_current_0049_db0042_outer_refusal_requires_both_coverage_edges(
+    tmp_path, damage
+):
+    from scripts.verify_final_hermetic import verify_current_0049_downgrade_denial_log
+
+    edges = [
+        "0049 -> 0048",
+        "0048 -> 0047",
+        "0047 -> 0046",
+        "0046 -> 0045",
+        "0045 -> 0044",
+        "0044 -> 0043",
+        "0043 -> 0042",
+        "0042 -> 0041",
+    ]
+    if damage == "missing_outer":
+        edges.pop(0)
+    elif damage == "duplicate_outer":
+        edges.insert(0, edges[0])
+    elif damage == "reordered":
+        edges[0], edges[1] = edges[1], edges[0]
+    elif damage == "wrong_predecessor":
+        edges[0] = "0048 -> 0046"
+    log = tmp_path / "current-refusal.log"
+    log.write_text(
+        "".join(f"INFO Running downgrade {edge}\n" for edge in edges)
+        + '  File "/app/migrations/versions/0042_submission_transport_authenticity_denial.py", line 42\n'
+        + f"asyncpg.exceptions.RaiseError: {DOWNGRADE_DENIAL}\n"
+        + f"sqlalchemy.exc.DBAPIError: (asyncpg.Error): {DOWNGRADE_DENIAL}\n"
+    )
+    if damage is None:
+        verify_current_0049_downgrade_denial_log(log)
+    else:
+        with pytest.raises(ValueError):
+            verify_current_0049_downgrade_denial_log(log)
+
+
+@pytest.mark.parametrize(
+    "damage", (None, "old47", "wrong_code", "duplicate", "success_text")
+)
+def test_0049_pair_guard_refusal_cannot_be_replaced_by_0048_or_0047(tmp_path, damage):
+    from scripts.verify_final_hermetic import (
+        PAIR_GUARD_DOWNGRADE_DENIAL,
+        verify_pair_guard_downgrade_denial_log,
+    )
+
+    body = (
+        "INFO Running downgrade 0049 -> 0048\n"
+        '  File "/app/migrations/versions/0049_controlled_writer_pair_guard_definer.py", line 48\n'
+        f"asyncpg.exceptions.RaiseError: {PAIR_GUARD_DOWNGRADE_DENIAL}\n"
+        f"sqlalchemy.exc.DBAPIError: (asyncpg.Error): {PAIR_GUARD_DOWNGRADE_DENIAL}\n"
+    )
+    if damage == "old47":
+        body = body.replace("0049 -> 0048", "0047 -> 0046")
+    elif damage == "wrong_code":
+        body = body.replace(PAIR_GUARD_DOWNGRADE_DENIAL, DOWNGRADE_DENIAL)
+    elif damage == "duplicate":
+        body += "INFO Running downgrade 0049 -> 0048\n"
+    elif damage == "success_text":
+        body = "INFO Running downgrade 0049 -> 0048\nPASS\n"
+    log = tmp_path / "coverage-refusal.log"
+    log.write_text(body)
+    if damage is None:
+        verify_pair_guard_downgrade_denial_log(log)
+    else:
+        with pytest.raises(ValueError):
+            verify_pair_guard_downgrade_denial_log(log)
+
+
+@pytest.mark.parametrize(
+    "damage",
+    (
+        None,
+        "source",
+        "head47",
+        "changed_rows",
+        "bool_count",
+        "zero_count",
+        "admitted",
+        "bool_flag_alias",
+    ),
+)
+def test_0049_pair_guard_receipt_requires_own_sources_head_and_exact_retention(
+    damage,
+):
+    from scripts.verify_final_hermetic import (
+        PAIR_GUARD_DOWNGRADE_DENIAL,
+        verify_pair_guard_migration_receipt,
+    )
+
+    snapshot = {
+        "head": "0049",
+        "rows_sha256": "a" * 64,
+        "catalog_sha256": "b" * 64,
+        "counts": {
+            "demo_controlled_writer_coverage_scopes": 1,
+            "demo_controlled_writer_coverage_journal": 2,
+        },
+    }
+    value = {
+        "schema_version": "ctcc.controlled_writer_pair_guard_migration_acceptance.v1",
+        "manifest_sha256": "c" * 64,
+        "repository_sha256": "d" * 64,
+        "migration_sha256": "e" * 64,
+        "server_major": 17,
+        "before": copy.deepcopy(snapshot),
+        "after": copy.deepcopy(snapshot),
+        "refusal_code": PAIR_GUARD_DOWNGRADE_DENIAL,
+        "downgrade_target": "0048",
+        "native_baseline_admission": False,
+        "execution_authority": False,
+    }
+    if damage == "source":
+        value["repository_sha256"] = "f" * 64
+    elif damage == "head47":
+        value["after"]["head"] = "0047"
+    elif damage == "changed_rows":
+        value["after"]["rows_sha256"] = "f" * 64
+    elif damage in {"bool_count", "zero_count"}:
+        value["after"]["counts"]["demo_controlled_writer_coverage_scopes"] = (
+            True if damage == "bool_count" else 0
+        )
+    elif damage == "admitted":
+        value["native_baseline_admission"] = True
+    elif damage == "bool_flag_alias":
+        value["execution_authority"] = 0
+    if damage is None:
+        assert (
+            verify_pair_guard_migration_receipt(
+                value,
+                manifest_sha256="c" * 64,
+                repository_sha256="d" * 64,
+                migration_sha256="e" * 64,
+            )
+            == value
+        )
+    else:
+        with pytest.raises(ValueError):
+            verify_pair_guard_migration_receipt(
+                value,
+                manifest_sha256="c" * 64,
+                repository_sha256="d" * 64,
+                migration_sha256="e" * 64,
+            )
+
+
+@pytest.mark.parametrize(
+    "damage",
+    (None, "missing_commit", "old_48_case", "skipped", "extra", "stage_failure"),
+)
+def test_0049_early_preflight_requires_current_commit_and_two_native_role_cases(
+    tmp_path, damage
+):
+    """Synthetic XML tests reader behavior; no native SQL or commit is run."""
+    import xml.etree.ElementTree as ET
+
+    from scripts.verify_final_hermetic import (
+        COVERAGE_PREFLIGHT_CASES,
+        run_controlled_writer_coverage_preflight,
+    )
+
+    calls = []
+
+    def container(name, command, **options):
+        calls.append((name, command, options))
+        if damage == "stage_failure":
+            raise RuntimeError(
+                "validation_step_failed:controlled-writer-coverage-preflight"
+            )
+        document = ET.Element("testsuites")
+        suite = ET.SubElement(
+            document, "testsuite", tests="3", errors="0", failures="0", skipped="0"
+        )
+        for module, case in COVERAGE_PREFLIGHT_CASES:
+            ET.SubElement(suite, "testcase", classname=module, name=case)
+        if damage == "missing_commit":
+            suite.remove(suite[0])
+            suite.set("tests", "2")
+        elif damage == "old_48_case":
+            suite[0].set(
+                "name", "test_nonempty_0048_downgrade_refuses_and_retains_exact_catalog"
+            )
+        elif damage == "skipped":
+            ET.SubElement(suite[0], "skipped")
+            suite.set("skipped", "1")
+        elif damage == "extra":
+            ET.SubElement(
+                suite,
+                "testcase",
+                classname="unrelated.synthetic",
+                name="test_not_preregistered",
+            )
+            suite.set("tests", "4")
+        (tmp_path / f"{name}.xml").write_bytes(ET.tostring(document))
+
+    if damage is None:
+        report = run_controlled_writer_coverage_preflight(
+            container, test_results=tmp_path, mounts=()
+        )
+        assert report["passed"] == report["tests"] == 3
+        assert len(calls) == 1 and calls[0][0] == "controlled-writer-coverage-preflight"
+        assert calls[0][2] == {"mounts": (), "timeout": 300}
+        assert calls[0][1][-3:] == [
+            f"{module.replace('.', '/')}.py::{case}"
+            for module, case in COVERAGE_PREFLIGHT_CASES
+        ]
+        assert not any("nonempty_004" in arg for arg in calls[0][1])
+    else:
+        with pytest.raises((ValueError, RuntimeError)):
+            run_controlled_writer_coverage_preflight(
+                container, test_results=tmp_path, mounts=()
+            )
+        assert len(calls) == 1

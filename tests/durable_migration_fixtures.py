@@ -36,6 +36,7 @@ MIGRATIONS = {
     "0046": "0046_public_runtime_bundle_custody.py",
     "0047": "0047_public_witness_native_identity.py",
     "0048": "0048_controlled_writer_coverage.py",
+    "0049": "0049_controlled_writer_pair_guard_definer.py",
 }
 TABLES = {
     # 0023 is constraint/trigger-only and has dedicated upgrade/downgrade
@@ -72,6 +73,7 @@ TABLES = {
 DOWNGRADE_LOCKS = {
     **TABLES,
     "0048": ("demo_account_controls",) + TABLES["0048"],
+    "0049": ("demo_account_controls",) + TABLES["0048"],
     "0018": TABLES["0017"] + TABLES["0018"],
     "0020": ("qualification_account_scopes",) + TABLES["0020"],
     "0021": TABLES["0020"] + TABLES["0021"],
@@ -99,7 +101,33 @@ class RecordedDowngrade:
         self.commands = []
         module = load_migration(revision)
         module.op = self
-        module.downgrade()
+        if revision == "0049":
+            # This offline ordering fixture explicitly stubs native catalog
+            # acquisition; only real PG cases can verify owners/ACL/deparser.
+            original = module._checked_catalog
+            module._checked_catalog = self._synthetic_catalog
+            try:
+                module.downgrade()
+            finally:
+                module._checked_catalog = original
+        else:
+            module.downgrade()
+
+    def get_bind(self):
+        return self
+
+    def _synthetic_catalog(self, bind, *, historical):
+        assert bind is self and type(historical) is bool
+        self.commands.append(("synthetic_catalog", historical))
+        return {
+            "functions": [
+                {
+                    "name": "controlled_writer_coverage_v1_pair_guard",
+                    "definition": "explicit-synthetic-placeholder",
+                    "security_definer": not historical,
+                }
+            ]
+        }
 
     def execute(self, sql):
         self.commands.append(("execute", str(sql).strip()))
