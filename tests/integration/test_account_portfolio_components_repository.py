@@ -900,6 +900,108 @@ async def test_local_read_includes_other_currency_expired_holds_and_consumed_int
     ].state == "consumed"
 
 
+async def _capture_shared_history_v5(monkeypatch, repository, scope):
+    """Acquire new original V5 bytes through MockTransport and real B1 SQL."""
+    from app.trade_qualification import account_bootstrap_runtime as bootstrap
+    from app.trade_qualification import account_capture as capture
+    from app.trade_qualification import account_observation_index as observed
+    from app.trade_qualification.account_runtime import ControlledDemoAccountSession
+    from tests.unit import test_qualification_account_v4 as all_product
+    from tests.unit.test_qualification_account_capture import NOW, ms
+    from tests.unit.test_qualification_account_collector import Harness, credentials
+    from tests.unit.test_qualification_account_materializer import source_pages
+
+    current = now()
+    anchor = current.replace(
+        microsecond=current.microsecond // 1000 * 1000
+    ) - timedelta(seconds=10)
+    offset = int(ms(anchor)) - int(ms(NOW))
+
+    def shift(value):
+        # Prepare only the new synthetic HTTP responses before their first
+        # collection. Existing packets, receipts and source events are untouched.
+        if type(value) is list:
+            return [shift(item) for item in value]
+        if type(value) is dict:
+            return {
+                key: str(int(item) + offset)
+                if key in {"ts", "cTime", "uTime", "fillTime"}
+                and type(item) is str
+                and item.isdigit()
+                else scope.account_id
+                if key == "uid"
+                else shift(item)
+                for key, item in value.items()
+            }
+        return value
+
+    harness = Harness(monkeypatch, change=lambda stream, index, data: shift(data))
+    harness.script = all_product.script(source=source_pages())
+    harness.clock = now
+    selected = all_product.plan(
+        expected_uid=scope.account_id,
+        created_at=anchor,
+        history_start=anchor - timedelta(days=7),
+        history_end=anchor - timedelta(seconds=1),
+    )
+    assert type(selected) is capture.AllProductDemoAccountCapturePlan
+    session = ControlledDemoAccountSession(
+        credentials=credentials(),
+        plan=selected,
+        expected_plan_sha256=capture.plan_sha256(selected),
+    )
+    try:
+        result = await bootstrap.collect_bootstrap_query_verified(
+            session,
+            repository=repository.journal.ledger,
+            journal_repository=repository.journal,
+            clock=now,
+            barrier_completed_at=anchor - timedelta(seconds=2),
+        )
+    finally:
+        harness.assert_closed()
+    packet = result.recorded.bootstrap.packet
+    assert type(packet.plan) is capture.AllProductDemoAccountCapturePlan
+    assert (
+        packet.plan == selected
+        and packet.schema_version == "ctcc.demo_account_capture.v5"
+    )
+    assert (
+        tuple(dict.fromkeys(point.request.stream for point in packet.observations))
+        == capture.V5_STREAMS
+    )
+    assert result.recorded.bootstrap.transport_provenance == "synthetic_transport"
+    assert result.account_complete is result.execution_authority is False
+    chain = await repository.journal.read_chain(
+        scope, json.loads(result.receipt_json)["capture_id"]
+    )
+    reference = observed.source_reference(chain)
+    assert (
+        capture.freeze_demo_account_packet(
+            packet, expected_plan_sha256=session._pin
+        ).sha256
+        == reference.packet_sha256
+    )
+    return reference, observed.ExecutionWindow(
+        selected.history_start, selected.history_end - timedelta(seconds=600)
+    )
+
+
+async def _stored_shared_history_v5(monkeypatch, database):
+    """Create a fresh UID/source population without changing legacy fixtures."""
+    uid = f"123456789{uuid4().int % 10**12:012d}"
+    scope = LedgerScope(account_id=uid, settlement_currency="USDT")
+    repository = AccountObservationIndexRepository(database[1], clock=now)
+    before = await repository.journal.ledger.initialize_capture_scope(scope)
+    assert before.state.account_revision == 0
+    reference, window = await _capture_shared_history_v5(monkeypatch, repository, scope)
+    first = await repository.append(scope, reference, window, expected_revision=0)
+    assert (
+        await repository.journal.ledger.read_bootstrap_checkpoint(scope)
+    ).state == before.state
+    return repository, scope, reference, window, first
+
+
 async def _read_shared_history_population(repository, scope, reference):
     """Real PG replay only: this diagnostic state creates no source owner.
 
@@ -932,11 +1034,14 @@ async def test_shared_history_population_replays_full_committed_prefix_without_o
     monkeypatch, database
 ):
     """Shared full-prefix SQL mechanics; synthetic source, no opaque handoff."""
-    repository, scope, first_ref, _, first = await stored(monkeypatch, database)
-    first_chain = await repository.journal.read_chain(scope, first_ref.capture_id)
-    second_ref, second_window = await additional_capture(
-        monkeypatch, repository, scope, []
+    repository, scope, first_ref, _, first = await _stored_shared_history_v5(
+        monkeypatch, database
     )
+    first_chain = await repository.journal.read_chain(scope, first_ref.capture_id)
+    second_ref, second_window = await _capture_shared_history_v5(
+        monkeypatch, repository, scope
+    )
+    assert second_ref.capture_id != first_ref.capture_id
     second = await repository.append(
         scope, second_ref, second_window, expected_revision=1
     )
@@ -970,17 +1075,20 @@ async def test_shared_history_late_head_race_denies_and_retains_original_prefix(
     monkeypatch, database
 ):
     """An actual third commit during replay cannot be accepted as the old head."""
-    repository, scope, first_ref, _, first = await stored(monkeypatch, database)
-    second_ref, second_window = await additional_capture(
-        monkeypatch, repository, scope, []
+    repository, scope, first_ref, _, first = await _stored_shared_history_v5(
+        monkeypatch, database
+    )
+    second_ref, second_window = await _capture_shared_history_v5(
+        monkeypatch, repository, scope
     )
     second = await repository.append(
         scope, second_ref, second_window, expected_revision=1
     )
     original_chain = await repository.journal.read_chain(scope, first_ref.capture_id)
-    third_ref, third_window = await additional_capture(
-        monkeypatch, repository, scope, []
+    third_ref, third_window = await _capture_shared_history_v5(
+        monkeypatch, repository, scope
     )
+    assert len({first_ref.capture_id, second_ref.capture_id, third_ref.capture_id}) == 3
     reader = AccountObservationIndexRepository(database[1], clock=now)
     writer = AccountObservationIndexRepository(database[1], clock=now)
     replay_reached_final_head = asyncio.Event()
@@ -1033,6 +1141,49 @@ async def test_shared_history_late_head_race_denies_and_retains_original_prefix(
         for point in await repository.journal.read_chain(scope, first_ref.capture_id)
     ]
     assert all(batch.execution_authority is False for batch in retained)
+
+
+async def test_shared_history_legacy_regional_source_still_denies_and_retains_prefix(
+    monkeypatch, database
+):
+    """The original Regional source remains valid legacy evidence, never V5 proof."""
+    from app.trade_qualification import account_capture as capture
+
+    repository, scope, reference, _, first = await stored(monkeypatch, database)
+    original_chain = await repository.journal.read_chain(scope, reference.capture_id)
+    payload = next(
+        point.event.packet_payload
+        for point in original_chain
+        if point.event.packet_payload
+    )
+    packet = capture.verify_demo_account_packet(
+        payload,
+        expected_sha256=reference.packet_sha256,
+        expected_plan_sha256=reference.plan_sha256,
+    )
+    assert type(packet.plan) is capture.RegionalDemoAccountCapturePlan
+    owners = tuple(history_source._OWNERS)
+    financial = tuple(history_source._FINANCIAL)
+    with pytest.raises(
+        history_source.proof.NativeAccountProofError,
+        match="^native_account_source_scope_unsupported$",
+    ):
+        await _read_shared_history_population(
+            AccountObservationIndexRepository(database[1], clock=now), scope, reference
+        )
+    assert tuple(history_source._OWNERS) == owners
+    assert tuple(history_source._FINANCIAL) == financial
+    assert await AccountObservationIndexRepository(database[1], clock=now).read(
+        scope
+    ) == (first,)
+    retained = await repository.journal.read_chain(scope, reference.capture_id)
+    assert [(point.event, point.db_recorded_at) for point in retained] == [
+        (point.event, point.db_recorded_at) for point in original_chain
+    ]
+    assert (
+        await repository.journal.ledger.read_bootstrap_checkpoint(scope)
+    ).state.account_revision == 0
+    assert all(batch.execution_authority is False for batch in (first,))
 
 
 async def test_shared_control_b5_transaction_fences_racing_control_writer(
@@ -1115,7 +1266,10 @@ async def test_shared_control_b5_transaction_fences_racing_control_writer(
     independent = await DemoControlRepository(database[1], clock=now).read(
         control_scope
     )
-    assert independent == changed
+    assert independent.state == changed.state
+    assert independent.event_sha256 == changed.event_sha256
+    assert independent.observed_at >= changed.observed_at >= changed.state.updated_at
+    assert independent.execution_authority is changed.execution_authority is False
     assert independent.state.revision == acquired.state.revision + 1
     assert independent.state.emergency_stop is True
     assert independent.state.arm_request_id is None

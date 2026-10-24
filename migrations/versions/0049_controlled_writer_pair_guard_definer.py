@@ -24,15 +24,15 @@ _PAIR_SIGNATURE = "public.controlled_writer_coverage_v1_pair_guard()"
 _ACL_SQL = r"""
 SELECT jsonb_build_object(
   'table_grants',(SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
-    CROSS JOIN LATERAL aclexplode(coalesce(c.relacl,acldefault('r',c.relowner))) x
+    CROSS JOIN LATERAL aclexplode(nullif(coalesce(c.relacl,acldefault('r',c.relowner)),'{}'::aclitem[])) x
     WHERE n.nspname='public' AND c.relname=ANY(ARRAY[__TABLES__]) AND x.grantee<>c.relowner),
   'column_grants',(SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
     JOIN pg_attribute a ON a.attrelid=c.oid
-    CROSS JOIN LATERAL aclexplode(coalesce(a.attacl,'{}'::aclitem[])) x
+    CROSS JOIN LATERAL aclexplode(nullif(a.attacl,'{}'::aclitem[])) x
     WHERE n.nspname='public' AND c.relname=ANY(ARRAY[__TABLES__])
       AND a.attnum>0 AND NOT a.attisdropped AND x.grantee<>c.relowner),
   'helper_grants',(SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
-    CROSS JOIN LATERAL aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) x
+    CROSS JOIN LATERAL aclexplode(nullif(coalesce(p.proacl,acldefault('f',p.proowner)),'{}'::aclitem[])) x
     WHERE n.nspname='public' AND p.proname=ANY(ARRAY[__HELPERS__])
       AND x.privilege_type='EXECUTE' AND x.grantee<>p.proowner)
 )

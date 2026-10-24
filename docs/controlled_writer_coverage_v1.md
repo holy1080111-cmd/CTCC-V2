@@ -189,3 +189,38 @@ selected passes do not replace it. Actual PG17/catalog baseline, real
 concurrency, hermetic migration/full-source CI and native source evidence remain
 required. No engineering, Micro Live or final completion flag is raised by this
 document.
+
+## Unreleased 0049 ACL inspection correction
+
+The matching CI run for source `2fb88b8a4f8b9b0930383a099563f94e27d9cc0e`
+failed during migration upgrade, before PostgreSQL tests or native catalog
+capture. Its actual PostgreSQL error was `ACL arrays must be one-dimensional`:
+the column ACL query supplied a zero-dimensional empty `aclitem[]` to
+`aclexplode`. The failed source, official artifact and log remain preserved.
+
+The corrected 0049 query applies `NULLIF` to the typed empty ACL before invoking
+the strict PostgreSQL set-returning function. Catalog NULL or an explicit empty
+column ACL means no additional column grants. Table and function ACLs retain
+their original `COALESCE(..., acldefault(...))` first: in particular, a NULL
+function ACL retains default PUBLIC EXECUTE and must still be rejected. Nonempty
+ACLs are unchanged. Multidimensional arrays and arrays containing NULL elements
+still reach PostgreSQL's original rejection; the query does not flatten them.
+This is defined PostgreSQL catalog semantics, not permission to turn missing
+account history or financial evidence into zero.
+
+The authored real-PG regression executes the actual migration's `_ACL_SQL` on
+disposable, named child databases. It checks the server's strict-function catalog,
+fresh NULL column ACLs, typed empty ACLs, preserved default grants, real nonowner
+grant/revoke, and exact PostgreSQL errors for malformed arrays. Deliberate catalog
+damage is confined to an asserted owned child and an explicit transaction that
+always rolls back; a separate session must read back the unchanged full catalog,
+head, rows and original target ACL. The existing early deployment preflight also
+executes the original production query on fresh NULL column ACLs. No test uses
+a copied query, relaxed baseline, extra runtime privileges or fabricated owner.
+
+This correction changes only the unreleased 0049 inspection query. Migration
+0048 and its effective DDL, 0047, role grants, the pair-guard body, owner checks,
+default-deny policy and all execution boundaries remain unchanged. Source
+authoring and official PostgreSQL 17 source review do not establish actual PG
+acceptance. The new cases, full migration path and matching full CI still need
+to execute successfully on the corrected exact commit.

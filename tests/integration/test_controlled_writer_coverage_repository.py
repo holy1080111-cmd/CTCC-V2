@@ -1311,6 +1311,234 @@ def _record_restricted_deployment_evidence(
     record_property("native_source_account_or_execution_acceptance", "false")
 
 
+def _pair_guard_migration0049():
+    """Use the actual migration module/SQL, not a test copy of its ACL query."""
+    config = Config(str(_ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(_ROOT / "migrations"))
+    revision = ScriptDirectory.from_config(config).get_revision("0049")
+    assert revision is not None and revision.down_revision == "0048"
+    assert (
+        Path(revision.path).resolve()
+        == (
+            _ROOT / "migrations/versions/0049_controlled_writer_pair_guard_definer.py"
+        ).resolve()
+    )
+    return revision.module
+
+
+async def _owned_acl_target(connection, admin, kind):
+    """Before any corruption/GRANT, prove this is our disposable owned child."""
+    assert kind in {"column", "table", "helper"}
+    identity = (
+        await connection.execute(
+            text("SELECT current_database(),current_user,session_user")
+        )
+    ).one()
+    assert re.fullmatch(r"ctcc_cwc_[a-f0-9]{32}", identity[0])
+    assert identity[0] == admin.url.database and identity[0] != "ctcc"
+    assert identity[1] == identity[2] == admin.url.username == "ctcc"
+    if kind == "helper":
+        row = (
+            await connection.execute(
+                text("""
+SELECT CAST(proowner AS bigint),pg_get_userbyid(proowner),proacl::text
+FROM pg_catalog.pg_proc
+WHERE oid='public.controlled_writer_coverage_v1_pair_guard()'::regprocedure
+""")
+            )
+        ).one()
+    elif kind == "table":
+        row = (
+            await connection.execute(
+                text("""
+SELECT CAST(relowner AS bigint),pg_get_userbyid(relowner),relacl::text
+FROM pg_catalog.pg_class
+WHERE oid='public.demo_controlled_writer_coverage_scopes'::regclass
+""")
+            )
+        ).one()
+    else:
+        row = (
+            await connection.execute(
+                text("""
+SELECT CAST(c.relowner AS bigint),pg_get_userbyid(c.relowner),a.attacl::text
+FROM pg_catalog.pg_attribute a JOIN pg_catalog.pg_class c ON c.oid=a.attrelid
+WHERE a.attrelid='public.demo_controlled_writer_coverage_scopes'::regclass
+  AND a.attname='environment' AND a.attnum>0 AND NOT a.attisdropped
+""")
+            )
+        ).one()
+    assert type(row[0]) is int and row[0] > 0 and row[1] == identity[1]
+    return row
+
+
+async def _assert_fresh_migration_acl_query(admin, record_property):
+    """Early preflight executes the production SQL on a real fresh NULL column."""
+    migration = _pair_guard_migration0049()
+    async with admin.begin() as connection:
+        target = await _owned_acl_target(connection, admin, "column")
+        assert target[2] is None
+        assert (
+            await connection.scalar(
+                text("""
+SELECT proisstrict FROM pg_catalog.pg_proc
+WHERE oid='pg_catalog.aclexplode(aclitem[])'::regprocedure
+""")
+            )
+            is True
+        )
+        assert (
+            await connection.scalar(
+                text("SELECT count(*) FROM pg_catalog.aclexplode(NULL::aclitem[])")
+            )
+            == 0
+        )
+        acl = await connection.scalar(text(migration._ACL_SQL))
+        assert acl == {"table_grants": 0, "column_grants": 0, "helper_grants": 0}
+    record_property(
+        "migration0049_fresh_NULL_column_actual_ACL_SQL", coverage.canonical(acl)
+    )
+    record_property("pg17_aclexplode_actual_catalog_strict_and_NULL_empty_set", "true")
+
+
+@pytest.mark.parametrize("kind", ["column", "table", "helper"])
+@pytest.mark.parametrize("shape", ["null", "empty", "multidimensional", "null_element"])
+async def test_actual_migration0049_acl_sql_null_empty_and_malformed_arrays(
+    coverage_child, record_property, kind, shape
+):
+    """Owned-child-only catalog damage; execute the unchanged production SQL."""
+    admin, _restricted = coverage_child
+    migration = _pair_guard_migration0049()
+    before = await _snapshot(admin)
+    assert before[0] == "0049" and all(v == 0 for v in before[2]["counts"].values())
+    async with admin.connect() as connection:
+        transaction = await connection.begin()
+        try:
+            original = await _owned_acl_target(connection, admin, kind)
+            expressions = {
+                "null": "NULL::aclitem[]",
+                "empty": "'{}'::aclitem[]",
+                "multidimensional": "ARRAY[ARRAY[pg_catalog.makeaclitem(CAST(:owner AS oid),CAST(:owner AS oid),'SELECT',false)]]",
+                "null_element": "ARRAY[NULL::aclitem]",
+            }
+            expression = expressions[shape]
+            # Direct catalog corruption is confined to this asserted, synthetic,
+            # owned child and rolled back even when PostgreSQL aborts the query.
+            # No source/production catalog is targeted, and nothing is committed.
+            updates = {
+                "column": "UPDATE pg_catalog.pg_attribute SET attacl="
+                + expression
+                + " WHERE attrelid='public.demo_controlled_writer_coverage_scopes'::regclass AND attname='environment' AND attnum>0 AND NOT attisdropped",
+                "table": "UPDATE pg_catalog.pg_class SET relacl="
+                + expression
+                + " WHERE oid='public.demo_controlled_writer_coverage_scopes'::regclass",
+                "helper": "UPDATE pg_catalog.pg_proc SET proacl="
+                + expression
+                + " WHERE oid='public.controlled_writer_coverage_v1_pair_guard()'::regprocedure",
+            }
+            changed = await connection.execute(
+                text(updates[kind]), {"owner": original[0]}
+            )
+            assert changed.rowcount == 1
+            if shape in {"multidimensional", "null_element"}:
+                with pytest.raises(DBAPIError) as denied:
+                    await connection.scalar(text(migration._ACL_SQL))
+                expected = "22023" if shape == "multidimensional" else "22004"
+                assert denied.value.orig.sqlstate == expected
+                record_property("actual_production_ACL_SQL_denied_sqlstate", expected)
+            else:
+                acl = await connection.scalar(text(migration._ACL_SQL))
+                expected = {"table_grants": 0, "column_grants": 0, "helper_grants": 0}
+                if kind == "helper" and shape == "null":
+                    # NULL function ACL is its defined default, including PUBLIC
+                    # EXECUTE. It must never be silently treated as no grants.
+                    expected["helper_grants"] = 1
+                    with pytest.raises(
+                        coverage.ControlledWriterCoverageError,
+                        match="^controlled_writer_coverage_function_drift$",
+                    ):
+                        await connection.run_sync(
+                            lambda bind: migration._checked_catalog(
+                                bind, historical=False
+                            )
+                        )
+                assert acl == expected
+                record_property(
+                    "actual_production_ACL_SQL_inventory", coverage.canonical(acl)
+                )
+        finally:
+            await transaction.rollback()
+    # A different real session must recover the exact head/full catalog/rows,
+    # including the original target ACL, not a normalized substitute.
+    after = await _snapshot(admin)
+    assert coverage.canonical(after) == coverage.canonical(before)
+    async with admin.begin() as connection:
+        assert await _owned_acl_target(connection, admin, kind) == original
+    record_property("owned_child_corruption_rolled_back_exactly", "true")
+    record_property("native_source_or_execution_acceptance", "false")
+
+
+@pytest.mark.parametrize("kind", ["column", "table", "helper"])
+async def test_actual_migration0049_acl_sql_grant_denial_and_exact_revoke(
+    coverage_child, record_property, kind
+):
+    """Real nonowner grants reach the production guard; precise revoke restores it."""
+    admin, restricted = coverage_child
+    role = restricted.url.username
+    assert type(role) is str and re.fullmatch(r"ctcc_cwc_[a-f0-9]{32}", role)
+    migration = _pair_guard_migration0049()
+    before = await _snapshot(admin)
+    async with admin.connect() as connection:
+        transaction = await connection.begin()
+        try:
+            original = await _owned_acl_target(connection, admin, kind)
+            assert await connection.scalar(text(migration._ACL_SQL)) == {
+                "table_grants": 0,
+                "column_grants": 0,
+                "helper_grants": 0,
+            }
+            privileges = {
+                "column": "SELECT(environment) ON public.demo_controlled_writer_coverage_scopes",
+                "table": "SELECT ON public.demo_controlled_writer_coverage_scopes",
+                "helper": "EXECUTE ON FUNCTION public.controlled_writer_coverage_v1_pair_guard()",
+            }
+            await connection.execute(text(f'GRANT {privileges[kind]} TO "{role}"'))
+            acl = await connection.scalar(text(migration._ACL_SQL))
+            key = "helper_grants" if kind == "helper" else kind + "_grants"
+            assert acl[key] == 1 and all(v == 0 for k, v in acl.items() if k != key)
+            with pytest.raises(
+                RuntimeError,
+                match="^controlled_writer_pair_guard_migration_acl_denied$",
+            ):
+                await connection.run_sync(
+                    lambda bind: migration._checked_catalog(bind, historical=False)
+                )
+            # Re-assert the actual disposable database/owner before the second
+            # ACL mutation. No grant is left behind or repaired by policy bypass.
+            await _owned_acl_target(connection, admin, kind)
+            await connection.execute(text(f'REVOKE {privileges[kind]} FROM "{role}"'))
+            restored = await connection.scalar(text(migration._ACL_SQL))
+            assert restored == {
+                "table_grants": 0,
+                "column_grants": 0,
+                "helper_grants": 0,
+            }
+            catalog = await connection.run_sync(
+                lambda bind: migration._checked_catalog(bind, historical=False)
+            )
+            coverage.verify_controlled_writer_coverage_catalog(catalog)
+            record_property(
+                "grant_denied_then_exact_revoke_production_ACL_SQL",
+                coverage.canonical(acl),
+            )
+        finally:
+            await transaction.rollback()
+    assert coverage.canonical(await _snapshot(admin)) == coverage.canonical(before)
+    async with admin.begin() as connection:
+        assert await _owned_acl_target(connection, admin, kind) == original
+    record_property("whole_child_catalog_head_rows_and_original_ACL_retained", "true")
+
+
 async def test_actual_restricted_role_verify_deployment_uses_sealed_catalog(
     coverage_child,
     record_property,
@@ -1318,6 +1546,7 @@ async def test_actual_restricted_role_verify_deployment_uses_sealed_catalog(
     admin, restricted = coverage_child
     role = restricted.url.username
     assert type(role) is str and re.fullmatch(r"ctcc_cwc_[a-f0-9]{32}", role)
+    await _assert_fresh_migration_acl_query(admin, record_property)
     async with admin.begin() as connection:
         before = await coverage.read_controlled_writer_coverage_retention(connection)
     assert before["counts"] == {table: 0 for table in coverage.COVERAGE_TABLES}
