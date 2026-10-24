@@ -1895,3 +1895,140 @@ def test_current_0050_run_command_records_only_exact_partition_policy_refusal(
         assert record["failure_type"] == (
             "RuntimeError" if damage == "zero_exit" else "ValueError"
         )
+
+
+def _execute_current_0050_host_readback_boundary(variable, document):
+    """Execute the actual main branch without starting the Docker orchestration."""
+    import ast
+    from pathlib import Path
+
+    from scripts import verify_final_hermetic as host
+
+    source = ast.parse(Path(host.__file__).read_text(encoding="utf-8"))
+    main = next(
+        node
+        for node in source.body
+        if isinstance(node, ast.FunctionDef) and node.name == "main"
+    )
+    branches = [
+        node
+        for node in ast.walk(main)
+        if isinstance(node, ast.If)
+        and any(
+            isinstance(child, ast.Name) and child.id == variable
+            for child in ast.walk(node.test)
+        )
+        and any(
+            isinstance(child, ast.Call)
+            and isinstance(child.func, ast.Name)
+            and child.func.id == "expected_migration_revision_readback"
+            and len(child.args) == 1
+            and isinstance(child.args[0], ast.Constant)
+            and child.args[0].value == "0050"
+            for child in ast.walk(node.test)
+        )
+    ]
+    assert len(branches) == 1
+    branch = branches[0]
+    assert not branch.orelse
+    assert len(branch.body) == 1 and isinstance(branch.body[0], ast.Raise)
+    isolated = ast.fix_missing_locations(
+        ast.Module(body=[copy.deepcopy(branch)], type_ignores=[])
+    )
+    # The original condition and original refusal execute unchanged. Only the
+    # surrounding Docker setup is omitted; no reconstructed comparison is used.
+    exec(  # noqa: S102 - execute only the pinned production If AST
+        compile(isolated, host.__file__, "exec"),
+        {
+            "__builtins__": {},
+            "RuntimeError": RuntimeError,
+            "expected_migration_revision_readback": host.expected_migration_revision_readback,
+            "native_migration_json_equal": host.native_migration_json_equal,
+            variable: document,
+        },
+    )
+
+
+@pytest.mark.parametrize("variable", ("reupgrade_readback", "denial_readback"))
+def test_current_0050_host_boundaries_accept_exact_json_roundtrip(variable):
+    from scripts import verify_final_hermetic as host
+
+    expected = host.expected_migration_revision_readback("0050")
+    document = json.loads(json.dumps(expected, allow_nan=False))
+    # DB0050 declares tuple-bearing columns, keys and triggers. JSON preserves
+    # their order and values as arrays; Python container equality cannot admit it.
+    assert document != expected
+    assert host.native_migration_json_equal(document, expected)
+    _execute_current_0050_host_readback_boundary(variable, document)
+
+
+@pytest.mark.parametrize(
+    "variable,refusal",
+    (
+        ("reupgrade_readback", "migration_reupgrade_readback_invalid"),
+        ("denial_readback", "migration_denial_transaction_rollback_unverified"),
+    ),
+)
+@pytest.mark.parametrize(
+    "damage",
+    (
+        "schema",
+        "observed_revision",
+        "authority_integer",
+        "authority_float",
+        "trigger_count_float",
+        "column_nullable_integer",
+        "trigger_order",
+        "column_order",
+        "missing_field",
+        "extra_field",
+        "ddl_hash",
+        "native_baseline",
+        "function_source",
+        "nonfinite_value",
+    ),
+)
+def test_current_0050_host_boundaries_reject_json_or_schema_damage(
+    variable, refusal, damage
+):
+    from scripts import verify_final_hermetic as host
+
+    expected = host.expected_migration_revision_readback("0050")
+    document = json.loads(json.dumps(expected, allow_nan=False))
+    partition = document["account_history_partition_schema"]
+    member = partition["tables"]["demo_account_history_native_members"]
+    if damage == "schema":
+        document["schema"] = "ctcc.migration_revision_readback.v6"
+    elif damage == "observed_revision":
+        document["observed"] = "0049"
+    elif damage == "authority_integer":
+        document["execution_authority"] = 0
+    elif damage == "authority_float":
+        document["execution_authority"] = 0.0
+    elif damage == "trigger_count_float":
+        count = document["account_revision_witness_trigger_count"]
+        document["account_revision_witness_trigger_count"] = float(count)
+    elif damage == "column_nullable_integer":
+        assert member["columns"][0][2] is False
+        member["columns"][0][2] = 0
+    elif damage == "trigger_order":
+        partition["triggers"].reverse()
+    elif damage == "column_order":
+        member["columns"].reverse()
+    elif damage == "missing_field":
+        del partition["native_acceptance"]
+    elif damage == "extra_field":
+        partition["unexpected_field"] = False
+    elif damage == "ddl_hash":
+        partition["ddl_sha256"] = "0" * 64
+    elif damage == "native_baseline":
+        partition["native_deparser_baseline"] = None
+    elif damage == "function_source":
+        name = next(iter(partition["functions"]))
+        partition["functions"][name]["source"] += "\n"
+    else:
+        assert damage == "nonfinite_value"
+        document["execution_authority"] = float("nan")
+    assert not host.native_migration_json_equal(document, expected)
+    with pytest.raises(RuntimeError, match=refusal):
+        _execute_current_0050_host_readback_boundary(variable, document)

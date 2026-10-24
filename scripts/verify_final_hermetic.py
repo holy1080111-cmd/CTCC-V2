@@ -3139,7 +3139,9 @@ def main():
         reupgrade_readback = json.loads(
             (args.output / "migration-reupgrade-readback.log").read_text()
         )
-        if reupgrade_readback != expected_migration_revision_readback("0050"):
+        if not native_migration_json_equal(
+            reupgrade_readback, expected_migration_revision_readback("0050")
+        ):
             raise RuntimeError("migration_reupgrade_readback_invalid")
         container("migration-reupgrade-drift", ["alembic", "check"])
         identity["migration_empty_roundtrip"] = {
@@ -3191,7 +3193,9 @@ def main():
         denial_readback = json.loads(
             (args.output / "migration-denial-readback.log").read_text()
         )
-        if denial_readback != expected_migration_revision_readback("0050"):
+        if not native_migration_json_equal(
+            denial_readback, expected_migration_revision_readback("0050")
+        ):
             raise RuntimeError("migration_denial_transaction_rollback_unverified")
         container("migration-redrift", ["alembic", "check"])
         identity["migration_downgrade_policy"] = {
