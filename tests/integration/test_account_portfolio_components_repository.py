@@ -10,6 +10,7 @@ import json
 from datetime import datetime, timedelta
 from decimal import Decimal
 from uuid import uuid4
+from weakref import ref
 
 import pytest
 from sqlalchemy import delete, select, text
@@ -24,9 +25,11 @@ from app.database.models.okx_demo import (
     OkxDemoPositionState,
     OkxDemoSyncCheckpoint,
 )
+from app.database.repositories import controlled_writer_coverage as coverage_repository
 from app.database.repositories.account_observation_index import (
     AccountObservationIndexRepository,
 )
+from app.database.repositories.demo_control import DemoControlRepository
 from app.database.repositories.okx_demo import OkxDemoRepository
 from app.database.repositories.qualification_ledger import QualificationLedgerRepository
 from app.domain.okx_demo import (
@@ -35,7 +38,9 @@ from app.domain.okx_demo import (
     OkxDemoBalanceSnapshot,
     OkxDemoOrderView,
 )
+from app.trade_qualification import account_history_source_v1 as history_source
 from app.trade_qualification import account_portfolio_components as components
+from app.trade_qualification import demo_control as control
 from app.trade_qualification.account_observation_index import AccountObservationError
 from app.trade_qualification.reservations import LedgerScope
 from tests.integration.test_account_history_query_verifier_repository import now
@@ -52,6 +57,8 @@ from tests.integration.test_qualification_ledger_repository import (
 from tests.integration.test_qualification_ledger_repository import (
     initialize,
 )
+from tests.unit.research.test_demo_session_route_preflight import _client
+from tests.unit.test_demo_control import PINS
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
@@ -891,3 +898,286 @@ async def test_local_read_includes_other_currency_expired_holds_and_consumed_int
     assert (await restarted.read_scope(fixture.request.scope)).active[
         0
     ].state == "consumed"
+
+
+async def _read_shared_history_population(repository, scope, reference):
+    """Real PG replay only: this diagnostic state creates no source owner.
+
+    Keep the shared helper's actual context, native clock, factory and lease
+    checks. The unconnected client has only the test helper's synthetic tokens;
+    neither account acquisition nor a signed HTTP request is performed.
+    """
+    client = _client()
+    with client.pinned_read_session() as lease:
+        context = history_source._context()
+        stamp = history_source.native.clock.native_stamp()
+        state = {
+            "context": (*context[:3], ref(context[3])),
+            "factory_pins": (history_source._factory_pin(repository.session_factory),),
+            "lease": lease,
+            "private_client": client,
+            "original": stamp,
+            "last": stamp,
+        }
+        return await history_source._population(
+            state,
+            repository,
+            repository.journal,
+            scope,
+            fresh_reference=reference,
+        )
+
+
+async def test_shared_history_population_replays_full_committed_prefix_without_owner(
+    monkeypatch, database
+):
+    """Shared full-prefix SQL mechanics; synthetic source, no opaque handoff."""
+    repository, scope, first_ref, _, first = await stored(monkeypatch, database)
+    first_chain = await repository.journal.read_chain(scope, first_ref.capture_id)
+    second_ref, second_window = await additional_capture(
+        monkeypatch, repository, scope, []
+    )
+    second = await repository.append(
+        scope, second_ref, second_window, expected_revision=1
+    )
+    original_owners = tuple(history_source._OWNERS)
+    original_financial = tuple(history_source._FINANCIAL)
+    restarted = AccountObservationIndexRepository(database[1], clock=now)
+    before = await _read_shared_history_population(restarted, scope, second_ref)
+    after = await _read_shared_history_population(
+        AccountObservationIndexRepository(database[1], clock=now), scope, second_ref
+    )
+    history_source._same_population(before, after)
+    sources, batches = after
+    assert [batch.sequence for batch in batches] == [1, 2]
+    assert [batch.event_sha256 for batch in batches] == [
+        first.event_sha256,
+        second.event_sha256,
+    ]
+    assert [reference for _, reference in sources] == [first_ref, second_ref]
+    assert [(point.event, point.db_recorded_at) for point in sources[0][0]] == [
+        (point.event, point.db_recorded_at) for point in first_chain
+    ]
+    assert all(batch.execution_authority is False for batch in batches)
+    assert tuple(history_source._OWNERS) == original_owners
+    assert tuple(history_source._FINANCIAL) == original_financial
+    assert (
+        await repository.journal.ledger.read_bootstrap_checkpoint(scope)
+    ).state.account_revision == 0
+
+
+async def test_shared_history_late_head_race_denies_and_retains_original_prefix(
+    monkeypatch, database
+):
+    """An actual third commit during replay cannot be accepted as the old head."""
+    repository, scope, first_ref, _, first = await stored(monkeypatch, database)
+    second_ref, second_window = await additional_capture(
+        monkeypatch, repository, scope, []
+    )
+    second = await repository.append(
+        scope, second_ref, second_window, expected_revision=1
+    )
+    original_chain = await repository.journal.read_chain(scope, first_ref.capture_id)
+    third_ref, third_window = await additional_capture(
+        monkeypatch, repository, scope, []
+    )
+    reader = AccountObservationIndexRepository(database[1], clock=now)
+    writer = AccountObservationIndexRepository(database[1], clock=now)
+    replay_reached_final_head = asyncio.Event()
+    writer_finished = asyncio.Event()
+    actual_head = reader._batch
+    head_reads = 0
+
+    async def pause_final_head(selected_scope, sequence=None):
+        nonlocal head_reads
+        if sequence is None:
+            head_reads += 1
+            if head_reads == 2:
+                replay_reached_final_head.set()
+                await asyncio.wait_for(writer_finished.wait(), timeout=10)
+        return await actual_head(selected_scope, sequence)
+
+    async def append_later_batch():
+        await asyncio.wait_for(replay_reached_final_head.wait(), timeout=10)
+        try:
+            return await writer.append(
+                scope, third_ref, third_window, expected_revision=2
+            )
+        finally:
+            writer_finished.set()
+
+    monkeypatch.setattr(reader, "_batch", pause_final_head)
+    task = asyncio.create_task(append_later_batch())
+    try:
+        with pytest.raises(
+            history_source.NativeHistorySourceError,
+            match="^native_history_latest_head_changed$",
+        ):
+            await _read_shared_history_population(reader, scope, second_ref)
+        third = await asyncio.wait_for(task, timeout=10)
+    finally:
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    assert head_reads == 2 and third.sequence == 3
+    retained = await AccountObservationIndexRepository(database[1], clock=now).read(
+        scope
+    )
+    assert [batch.event_sha256 for batch in retained] == [
+        first.event_sha256,
+        second.event_sha256,
+        third.event_sha256,
+    ]
+    assert [(point.event, point.db_recorded_at) for point in original_chain] == [
+        (point.event, point.db_recorded_at)
+        for point in await repository.journal.read_chain(scope, first_ref.capture_id)
+    ]
+    assert all(batch.execution_authority is False for batch in retained)
+
+
+async def test_shared_control_b5_transaction_fences_racing_control_writer(
+    monkeypatch, database
+):
+    """Real same-factory Control/B5 locks, followed by independent readback."""
+    repository, scope, reference, _, first = await stored(monkeypatch, database)
+    original_chain = await repository.journal.read_chain(scope, reference.capture_id)
+    control_scope = control.ControlScope(scope.environment, scope.account_id)
+    owner_token = bytes.fromhex(uuid4().hex + uuid4().hex)
+    controls = DemoControlRepository(database[1], clock=now)
+    acquired = await controls.acquire(
+        control_scope,
+        owner_token=owner_token,
+        pins=PINS,
+        command_id=uuid4().hex + uuid4().hex,
+    )
+    ledger = QualificationLedgerRepository(database[1], clock=now)
+    writer = DemoControlRepository(database[1], clock=now)
+    actual_locked = writer._locked
+    writer_attempted = asyncio.Event()
+    writer_pid = None
+
+    async def observe_real_writer(session, selected_scope):
+        nonlocal writer_pid
+        writer_pid = await session.scalar(text("SELECT pg_backend_pid()"))
+        writer_attempted.set()
+        return await actual_locked(session, selected_scope)
+
+    monkeypatch.setattr(writer, "_locked", observe_real_writer)
+    task = None
+    try:
+        async with database[1]() as session, session.begin():
+            reader_pid = await session.scalar(text("SELECT pg_backend_pid()"))
+            observed, event_sha256 = await controls.read_in_transaction(
+                session, control_scope
+            )
+            selected = await ledger._locked(session, scope)
+            checkpoint = await ledger._read_portfolio_checkpoint_locked(
+                session, scope, selected
+            )
+            assert observed == acquired.state
+            assert event_sha256 == acquired.event_sha256
+            # Missing legacy reconciliation remains unknown, never repaired to
+            # a flat account merely because the B1/B3 source rows were empty.
+            assert checkpoint.known_flat is False
+            task = asyncio.create_task(
+                writer.change(
+                    control_scope,
+                    owner_token=owner_token,
+                    owner_epoch=acquired.state.owner_epoch,
+                    expected_revision=acquired.state.revision,
+                    action="estop",
+                    command_id=uuid4().hex + uuid4().hex,
+                )
+            )
+            await asyncio.wait_for(writer_attempted.wait(), timeout=10)
+            assert writer_pid != reader_pid
+            for _ in range(80):
+                async with database[0].connect() as observer:
+                    waiting = await observer.scalar(
+                        text(
+                            "SELECT count(*) FROM pg_stat_activity "
+                            "WHERE pid=:pid AND wait_event_type='Lock'"
+                        ),
+                        {"pid": writer_pid},
+                    )
+                if waiting == 1:
+                    break
+                await asyncio.sleep(0.05)
+            else:
+                pytest.fail("Control writer did not wait on the shared UID lock")
+            assert not task.done()
+        changed = await asyncio.wait_for(task, timeout=10)
+    finally:
+        if task is not None:
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+    independent = await DemoControlRepository(database[1], clock=now).read(
+        control_scope
+    )
+    assert independent == changed
+    assert independent.state.revision == acquired.state.revision + 1
+    assert independent.state.emergency_stop is True
+    assert independent.state.arm_request_id is None
+    assert (await ledger.read_portfolio_checkpoint(scope)).known_flat is False
+    assert (
+        await AccountObservationIndexRepository(database[1], clock=now).read(scope)
+    ) == (first,)
+    assert [(point.event, point.db_recorded_at) for point in original_chain] == [
+        (point.event, point.db_recorded_at)
+        for point in await repository.journal.read_chain(scope, reference.capture_id)
+    ]
+
+
+async def test_actual_admin_catalog_cannot_certify_native_coverage_or_erase_source(
+    monkeypatch, database
+):
+    """Administrative schema evidence must fail the real native-role gate."""
+    repository, scope, reference, _, first = await stored(monkeypatch, database)
+    original_chain = await repository.journal.read_chain(scope, reference.capture_id)
+    counts = []
+    for _ in range(2):
+        async with database[1]() as session:
+            role_is_superuser = await session.scalar(
+                text(
+                    "SELECT rolsuper FROM pg_catalog.pg_roles "
+                    "WHERE rolname=current_user"
+                )
+            )
+            assert role_is_superuser is True, (
+                "isolated administrative PG fixture required"
+            )
+            counts.append(
+                tuple(
+                    [
+                        await session.scalar(
+                            text(
+                                "SELECT count(*) FROM public."
+                                + table
+                                + " WHERE environment='demo' AND account_id=:uid"
+                            ),
+                            {"uid": scope.account_id},
+                        )
+                        for table in (
+                            "demo_controlled_writer_coverage_scopes",
+                            "demo_controlled_writer_coverage_journal",
+                        )
+                    ]
+                )
+            )
+        if len(counts) == 1:
+            with pytest.raises(
+                coverage_repository.ControlledWriterCoverageError,
+                match="^controlled_writer_coverage_role_denied$",
+            ):
+                await coverage_repository.ControlledWriterCoverageRepository(
+                    database[1]
+                ).verify_deployment()
+    assert counts == [(0, 0), (0, 0)]
+    assert (
+        await AccountObservationIndexRepository(database[1], clock=now).read(scope)
+    ) == (first,)
+    assert [(point.event, point.db_recorded_at) for point in original_chain] == [
+        (point.event, point.db_recorded_at)
+        for point in await repository.journal.read_chain(scope, reference.capture_id)
+    ]

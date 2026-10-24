@@ -20,6 +20,7 @@ from app.database.repositories import demo_control as controls
 from app.domain.source_primitives import canonical, decode, utc_from_ns
 from app.trade_qualification import controlled_writer_coverage_v1 as coverage
 from app.trade_qualification import demo_control as control
+from app.trade_qualification import native_account_risk_assembly_v1 as financial
 from tests.controlled_writer_coverage_fixtures import (
     coverage_observation_fixture,
     coverage_record_fixture,
@@ -380,6 +381,63 @@ async def test_call_time_burn_before_first_await_even_if_awaitable_discarded(
     with pytest.raises(coverage.ControlledWriterCoverageError):
         coverage.consume_owned_controlled_demo_writer_coverage_v1(owner)
     pending.close()
+
+
+@pytest.mark.asyncio
+async def test_financial_private_move_burns_public_coverage_owner_once(synthetic_io):
+    io = synthetic_io
+    owner = await io.open_owner()
+    with pytest.raises(
+        coverage.ControlledWriterCoverageError, match="assembler_required"
+    ):
+        coverage._take_financial_assembly_v1(owner, key=object())
+    assert owner in coverage._OWNERS
+    binding = coverage._take_financial_assembly_v1(owner, key=financial._HOOK_KEY)
+    assert owner not in coverage._OWNERS and coverage._FINANCIAL[binding] is True
+    with pytest.raises(
+        coverage.ControlledWriterCoverageError, match="owner_unavailable"
+    ):
+        coverage.consume_owned_controlled_demo_writer_coverage_v1(owner)
+    coverage._release_financial_assembly_v1(binding, key=financial._HOOK_KEY)
+    assert binding not in coverage._BINDINGS and binding not in coverage._FINANCIAL
+    assert io.prepare_calls == io.active_calls == 1 and len(io.durable) == 2
+
+
+@pytest.mark.asyncio
+async def test_financial_release_burns_unmoved_owner_without_readback(synthetic_io):
+    io = synthetic_io
+    owner = await io.open_owner()
+    binding = coverage._OWNERS[owner]
+    readbacks = io.readback_calls
+    coverage._release_financial_assembly_v1(owner, key=financial._HOOK_KEY)
+    assert owner not in coverage._OWNERS and binding not in coverage._BINDINGS
+    assert io.readback_calls == readbacks and len(io.durable) == 2
+
+
+@pytest.mark.asyncio
+async def test_financial_foreign_task_move_cannot_keep_original_owner(synthetic_io):
+    owner = await synthetic_io.open_owner()
+    binding = coverage._OWNERS[owner]
+
+    async def foreign():
+        return coverage._take_financial_assembly_v1(owner, key=financial._HOOK_KEY)
+
+    with pytest.raises(coverage.ControlledWriterCoverageError, match="context_changed"):
+        await asyncio.create_task(foreign())
+    assert owner not in coverage._OWNERS and binding not in coverage._BINDINGS
+
+
+@pytest.mark.asyncio
+async def test_financial_late_source_change_burns_binding_retains_journal(synthetic_io):
+    io = synthetic_io
+    owner = await io.open_owner()
+    binding = coverage._take_financial_assembly_v1(owner, key=financial._HOOK_KEY)
+    durable = tuple(io.durable)
+    io.file_revision += 1
+    with pytest.raises(coverage.ControlledWriterCoverageError):
+        await coverage._replay_financial_assembly_v1(binding, key=financial._HOOK_KEY)
+    assert binding not in coverage._BINDINGS and binding not in coverage._FINANCIAL
+    assert tuple(io.durable) == durable
 
 
 @pytest.mark.asyncio

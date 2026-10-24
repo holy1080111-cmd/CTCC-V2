@@ -44,6 +44,7 @@ from app.trade_qualification.reservations import LedgerScope
 _HOOK_KEY = object()
 _BINDINGS = WeakKeyDictionary()
 _OWNERS = WeakKeyDictionary()
+_FINANCIAL = WeakKeyDictionary()
 _MAX_OWNERS = 256
 _MAX_SOURCE_FILE = 4 * 1024 * 1024
 _ROOT = Path(__file__).resolve().parents[2]
@@ -834,10 +835,116 @@ def consume_owned_controlled_demo_writer_coverage_v1(owner):
     return consume()
 
 
+def _financial_key_v1(key):
+    from app.trade_qualification.native_account_risk_assembly_v1 import _HOOK_KEY
+
+    if key is not _HOOK_KEY:
+        _deny("controlled_writer_coverage_financial_assembler_required")
+
+
+def _take_financial_assembly_v1(owner, *, key):
+    """MOVE the existing binding, including its already-MOVEd V4 source."""
+    _financial_key_v1(key)
+    binding = (
+        _OWNERS.pop(owner, None)
+        if type(owner) is OwnedControlledDemoWriterCoverageV1
+        else None
+    )
+    if binding is None:
+        _deny("controlled_writer_coverage_owner_unavailable")
+    try:
+        _check_binding(binding)
+        _FINANCIAL[binding] = True
+        return binding
+    except BaseException:
+        released = _BINDINGS.pop(binding, None)
+        if released is not None:
+            released.clear()
+        raise
+
+
+def _release_financial_assembly_v1(binding, *, key):
+    _financial_key_v1(key)
+    unmoved = type(binding) is OwnedControlledDemoWriterCoverageV1
+    if unmoved:
+        binding = _OWNERS.pop(binding, None)
+    if type(binding) is _ActivationBindingV1 and (
+        unmoved or _FINANCIAL.pop(binding, None) is True
+    ):
+        _FINANCIAL.pop(binding, None)
+        released = _BINDINGS.pop(binding, None)
+        if released is not None:
+            released.clear()
+
+
+async def _replay_financial_assembly_v1(binding, *, key):
+    """Bootstrap only: exact active epoch, Control/B5 and original V4 custody."""
+    _financial_key_v1(key)
+    if type(binding) is not _ActivationBindingV1 or _FINANCIAL.get(binding) is not True:
+        _deny("controlled_writer_coverage_financial_binding_unavailable")
+    try:
+        state, _stamp = _check_binding(binding)
+        active = state["active"]
+        observed = await _checked_await(
+            binding,
+            state["repository"]._readback_native(binding, active, key=_HOOK_KEY),
+        )
+        _observation(binding, observed, expected_state="active", previous=active)
+        state, _stamp = _check_binding(binding)
+        retained = await _checked_await(
+            binding,
+            custody.RuntimeBundleCustodyRepository.read_retained_bundle(
+                state["custody"],
+                bundle_id=state["template"]["source_custody_id"],
+                expected_sha256=state["template"]["source_bundle_sha256"],
+                proof_envelope_sha256=state["template"]["source_proof_envelope_sha256"],
+            ),
+        )
+        if (
+            type(retained) is not custody.RetainedRuntimeBundleReadback
+            or retained.bundle_id != state["template"]["source_custody_id"]
+            or retained.bundle_sha256 != state["template"]["source_bundle_sha256"]
+            or retained.proof_envelope_sha256
+            != state["template"]["source_proof_envelope_sha256"]
+            or retained.bundle_raw != state["account"]["bundle_raw"]
+        ):
+            _deny("controlled_writer_coverage_financial_custody_changed")
+        state, stamp = _check_binding(binding)
+        replay, stamp = account._replay_controlled_writer_coverage_v1(
+            state["account"], key=_HOOK_KEY
+        )
+        _bundle, _anchor, identity = _source_material(state["account"], replay)
+        # Recheck Control/B5 after the additional custody await too.
+        observed = await _checked_await(
+            binding,
+            state["repository"]._readback_native(binding, active, key=_HOOK_KEY),
+        )
+        _observation(binding, observed, expected_state="active", previous=active)
+        state, stamp = _check_binding(binding)
+        return {
+            "current": replay,
+            "identity": identity,
+            "control": state["control"],
+            "scope": state["ledger_scope"],
+            "coverage": active,
+            "activation_complete": dict(state["activation_complete"]),
+            "checked": dict(stamp),
+            "custody_id": state["template"]["source_custody_id"],
+        }
+    except BaseException:
+        _release_financial_assembly_v1(binding, key=key)
+        raise
+
+
 _FUNCTION_PINS = (
     (native_clock, "native_stamp", native_clock.native_stamp),
     (runtime, "_configured_factory", runtime._configured_factory),
     (custody, "_native_engine", custody._native_engine),
+    (
+        custody.RuntimeBundleCustodyRepository,
+        "read_retained_bundle",
+        custody.RuntimeBundleCustodyRepository.read_retained_bundle,
+    ),
     (
         account,
         "acquire_initial_demo_account_source_v4",

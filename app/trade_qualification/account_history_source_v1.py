@@ -47,6 +47,7 @@ from app.trade_qualification.account_runtime import ControlledDemoAccountSession
 from app.trade_qualification.reservations import LedgerScope
 
 _OWNERS = WeakKeyDictionary()
+_FINANCIAL = WeakKeyDictionary()
 _SESSION_USES = set()
 _MAX_SESSION_TOMBSTONES = 4096
 _MAX_RAW_ROOT_BYTES = (
@@ -104,6 +105,16 @@ class OwnedNativeHistorySourceFactsV1:
 
     def __deepcopy__(self, memo):
         _deny("native_history_owner_not_transferable")
+
+    def __reduce_ex__(self, protocol):
+        _deny("native_history_owner_not_transferable")
+
+
+class _FinancialHistoryBindingV1:
+    __slots__ = ("__weakref__",)
+
+    def __new__(cls):
+        _deny("native_history_financial_binding_not_constructible")
 
     def __reduce_ex__(self, protocol):
         _deny("native_history_owner_not_transferable")
@@ -462,6 +473,7 @@ async def acquire_native_history_source_facts_v1(
             "last": original,
             "factory_pins": (main_pin, private_pin, custody_pin, private_custody_pin),
             "factory": factory,
+            "custody_factory": custody_factory,
             "raw_root": raw_root,
             "companion_root": companion_root,
         }
@@ -781,6 +793,8 @@ async def acquire_native_history_source_facts_v1(
                         companion_inventory=expected_companions,
                         source_sha256=sha(raw),
                         claim_sha256=sha(claim),
+                        custody_id=retained.bundle_id,
+                        custody_proof_sha256=proof_pin,
                     )
                     _check_pins(state)
                     owner = object.__new__(OwnedNativeHistorySourceFactsV1)
@@ -814,6 +828,64 @@ async def acquire_native_history_source_facts_v1(
         _deny()
 
 
+async def _replay_history_state_v1(state):
+    """Shared original full-prefix/files replay, without issuing an owner."""
+
+    def clock():
+        return utc_from_ns(_check_pins(state)["utc_ns"])
+
+    _check_pins(state)
+    with storage._root_context(state["raw_root"]) as directory:
+        if storage._root_identity(directory.path) != state["root_identity"]:
+            _deny("native_history_original_files_changed")
+        _inventory(
+            state,
+            directory,
+            state["raw_inventory"],
+            max_total_bytes=_MAX_RAW_ROOT_BYTES,
+        )
+    with storage._root_context(state["companion_root"]) as directory:
+        if storage._root_identity(directory.path) != state["companion_identity"]:
+            _deny("native_history_original_files_changed")
+        _inventory(
+            state,
+            directory,
+            state["companion_inventory"],
+            max_total_bytes=_MAX_COMPANION_ROOT_BYTES,
+        )
+    factory = state["factory"]
+    journal_repo = AccountCaptureJournalRepository(factory, clock=clock)
+    index_repo = AccountObservationIndexRepository(factory, clock=clock)
+    current = await _population(
+        state,
+        index_repo,
+        journal_repo,
+        state["scope"],
+        fresh_reference=state["reference"],
+    )
+    _same_population(state["population"], current)
+    facts = bundle.replay_history_source_bundle_v1(
+        state["facts"].bundle_raw, expected_sha256=state["source_sha256"]
+    )
+    for root_key, identity_key, inventory_key in (
+        ("raw_root", "root_identity", "raw_inventory"),
+        ("companion_root", "companion_identity", "companion_inventory"),
+    ):
+        with storage._root_context(state[root_key]) as directory:
+            if storage._root_identity(directory.path) != state[identity_key]:
+                _deny("native_history_original_files_changed")
+            _inventory(
+                state,
+                directory,
+                state[inventory_key],
+                max_total_bytes=_MAX_RAW_ROOT_BYTES
+                if root_key == "raw_root"
+                else _MAX_COMPANION_ROOT_BYTES,
+            )
+    _check_pins(state)
+    return facts
+
+
 def consume_owned_native_history_source_facts_v1(owner):
     """Synchronously burn before any consumer await; all late failures stay burned."""
     state = (
@@ -831,63 +903,7 @@ def consume_owned_native_history_source_facts_v1(owner):
 
     async def consume():
         try:
-
-            def clock():
-                return utc_from_ns(_check_pins(state)["utc_ns"])
-
-            _check_pins(state)
-            with storage._root_context(state["raw_root"]) as directory:
-                if storage._root_identity(directory.path) != state["root_identity"]:
-                    _deny("native_history_original_files_changed")
-                _inventory(
-                    state,
-                    directory,
-                    state["raw_inventory"],
-                    max_total_bytes=_MAX_RAW_ROOT_BYTES,
-                )
-            with storage._root_context(state["companion_root"]) as directory:
-                if (
-                    storage._root_identity(directory.path)
-                    != state["companion_identity"]
-                ):
-                    _deny("native_history_original_files_changed")
-                _inventory(
-                    state,
-                    directory,
-                    state["companion_inventory"],
-                    max_total_bytes=_MAX_COMPANION_ROOT_BYTES,
-                )
-            factory = state["factory"]
-            journal_repo = AccountCaptureJournalRepository(factory, clock=clock)
-            index_repo = AccountObservationIndexRepository(factory, clock=clock)
-            current = await _population(
-                state,
-                index_repo,
-                journal_repo,
-                state["scope"],
-                fresh_reference=state["reference"],
-            )
-            _same_population(state["population"], current)
-            facts = bundle.replay_history_source_bundle_v1(
-                state["facts"].bundle_raw, expected_sha256=state["source_sha256"]
-            )
-            for root_key, identity_key, inventory_key in (
-                ("raw_root", "root_identity", "raw_inventory"),
-                ("companion_root", "companion_identity", "companion_inventory"),
-            ):
-                with storage._root_context(state[root_key]) as directory:
-                    if storage._root_identity(directory.path) != state[identity_key]:
-                        _deny("native_history_original_files_changed")
-                    _inventory(
-                        state,
-                        directory,
-                        state[inventory_key],
-                        max_total_bytes=_MAX_RAW_ROOT_BYTES
-                        if root_key == "raw_root"
-                        else _MAX_COMPANION_ROOT_BYTES,
-                    )
-            _check_pins(state)
-            return facts
+            return await _replay_history_state_v1(state)
         except asyncio.CancelledError:
             raise
         except NativeHistorySourceError:
@@ -898,3 +914,95 @@ def consume_owned_native_history_source_facts_v1(owner):
             state.clear()
 
     return consume()
+
+
+def _financial_key_v1(key):
+    from app.trade_qualification.native_account_risk_assembly_v1 import _HOOK_KEY
+
+    if key is not _HOOK_KEY:
+        _deny("native_history_financial_assembler_required")
+
+
+def _take_financial_assembly_v1(owner, *, key):
+    """MOVE once; no second public consumer or saved DTO can recover it."""
+    _financial_key_v1(key)
+    state = (
+        _OWNERS.pop(owner, None)
+        if type(owner) is OwnedNativeHistorySourceFactsV1
+        else None
+    )
+    if state is None:
+        _deny("native_history_owner_unavailable")
+    try:
+        _check_pins(state)
+        binding = object.__new__(_FinancialHistoryBindingV1)
+        _FINANCIAL[binding] = state
+        return binding
+    except BaseException:
+        state.clear()
+        raise
+
+
+def _financial_state_v1(binding, *, key):
+    _financial_key_v1(key)
+    state = (
+        _FINANCIAL.get(binding) if type(binding) is _FinancialHistoryBindingV1 else None
+    )
+    if state is None:
+        _deny("native_history_financial_binding_unavailable")
+    _check_pins(state)
+    return state
+
+
+def _release_financial_assembly_v1(binding, *, key):
+    _financial_key_v1(key)
+    if type(binding) is _FinancialHistoryBindingV1:
+        state = _FINANCIAL.pop(binding, None)
+    elif type(binding) is OwnedNativeHistorySourceFactsV1:
+        state = _OWNERS.pop(binding, None)
+    else:
+        state = None
+    if state is not None:
+        state.clear()
+
+
+async def _replay_financial_assembly_v1(binding, *, key):
+    """Original full B1/B3 population, companions and fresh DB0046 readback."""
+    _financial_key_v1(key)
+    try:
+        state = _financial_state_v1(binding, key=key)
+        stamp = _check_pins(state)
+        remaining = (
+            state["original"]["monotonic_ns"] + 60_000_000_000 - stamp["monotonic_ns"]
+        ) / 1e9
+        if remaining <= 0:
+            _deny("native_history_financial_source_expired")
+        async with asyncio.timeout(remaining):
+            facts = await _replay_history_state_v1(state)
+            repository = custody.RuntimeBundleCustodyRepository(
+                state["custody_factory"]
+            )
+            await _checked_await(state, repository.verify_deployment())
+            retained = await _checked_await(
+                state,
+                repository.read_retained_bundle(
+                    bundle_id=state["custody_id"],
+                    expected_sha256=state["source_sha256"],
+                    proof_envelope_sha256=state["custody_proof_sha256"],
+                ),
+            )
+            if (
+                type(retained) is not custody.RetainedRuntimeBundleReadback
+                or retained.bundle_id != state["custody_id"]
+                or retained.bundle_sha256 != state["source_sha256"]
+                or retained.proof_envelope_sha256 != state["custody_proof_sha256"]
+                or retained.bundle_raw != facts.bundle_raw
+            ):
+                _deny("native_history_financial_custody_changed")
+            again = await _replay_history_state_v1(state)
+            if again.bundle_raw != facts.bundle_raw:
+                _deny("native_history_financial_source_changed")
+            return again, _check_pins(state)
+    except BaseException:
+        _release_financial_assembly_v1(binding, key=key)
+        raise

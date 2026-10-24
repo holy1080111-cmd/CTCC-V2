@@ -17,6 +17,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Context, Decimal, DecimalException, localcontext
 from fractions import Fraction
 from typing import Annotated, Literal
+from weakref import WeakKeyDictionary
 
 from pydantic import BaseModel, Field, TypeAdapter, field_validator, model_validator
 
@@ -319,7 +320,7 @@ def _display(value: Fraction) -> Decimal:
         return Decimal(value.numerator) / Decimal(value.denominator)
 
 
-def evaluate_portfolio(
+def _evaluate_portfolio(
     *,
     report_id: str,
     instrument_id: str,
@@ -334,6 +335,7 @@ def evaluate_portfolio(
     policy: PortfolioRiskPolicy | None,
     authority: DemoRiskAuthority | None,
     current_time: datetime,
+    _financial=None,
 ) -> PortfolioRiskResult:
     """Assess fixed linear-contract risk against fresh complete scoped evidence.
 
@@ -410,6 +412,15 @@ def evaluate_portfolio(
     spec, state, limits, guard = (
         checked[name] for name in ("instrument", "account", "policy", "authority")
     )
+    if _financial is not None and (
+        _financial.scope.account_id != state.account_id
+        or _financial.scope.settlement_currency != state.settlement_currency
+        or _financial.checked_at != now
+        or _financial.started_at != state.history_start
+        or _financial.ended_at != state.history_end
+    ):
+        causes.append("financial_window_scope_or_cutoff_mismatch")
+        return finish()
     stamps = (
         state.balance_stamp,
         state.positions_stamp,
@@ -526,6 +537,15 @@ def evaluate_portfolio(
                 "policy": limits,
                 "authority": guard,
                 "current_time": now,
+                **(
+                    {}
+                    if _financial is None
+                    else {
+                        "financial_window_receipt_sha256": hashlib.sha256(
+                            _financial.receipt_json
+                        ).hexdigest()
+                    }
+                ),
             }
         )
         quantity = Fraction(contracts) * Fraction(spec.contract_value)
@@ -546,20 +566,27 @@ def evaluate_portfolio(
             (Fraction(row.realized_pnl) for row in rows if row.closed_at > week_start),
             Fraction(0),
         )
-        daily_loss = max(Fraction(0), -daily_pnl)
-        weekly_loss = max(Fraction(0), -weekly_pnl)
+        if _financial is not None:
+            daily_pnl = _financial.daily_net_pnl
+            weekly_pnl = _financial.weekly_net_pnl
+        daily_loss = None if daily_pnl is None else max(Fraction(0), -daily_pnl)
+        weekly_loss = None if weekly_pnl is None else max(Fraction(0), -weekly_pnl)
         drawdown = (Fraction(state.peak_equity) - equity) / Fraction(state.peak_equity)
         outputs.update(
             {
-                name: _display(value)
+                name: None if value is None else _display(value)
                 for name, value in {
                     "base_quantity": quantity,
                     "notional": notional,
                     "required_margin": margin,
                     "max_loss_amount": max_loss,
                     "risk_pct": max_loss / equity,
-                    "daily_loss_pct": daily_loss / equity,
-                    "weekly_loss_pct": weekly_loss / equity,
+                    "daily_loss_pct": None
+                    if daily_loss is None
+                    else daily_loss / equity,
+                    "weekly_loss_pct": None
+                    if weekly_loss is None
+                    else weekly_loss / equity,
                     "drawdown_pct": drawdown,
                 }.items()
             }
@@ -577,12 +604,20 @@ def evaluate_portfolio(
         if leverage > min(spec.max_leverage, limits.max_leverage):
             causes.append("leverage_limit_exceeded")
         streak = state.loss_streak_at_history_start
-        for row in rows:
-            if row.realized_pnl < 0:
-                streak += 1
-            elif row.realized_pnl > 0:
-                streak = 0
-        if streak >= limits.max_consecutive_losses:
+        if _financial is None:
+            for row in rows:
+                if row.realized_pnl < 0:
+                    streak += 1
+                elif row.realized_pnl > 0:
+                    streak = 0
+        else:
+            streak = _financial.loss_streak
+            causes.extend(_financial.missing_obligations)
+            if daily_loss is None or weekly_loss is None:
+                causes.append("financial_net_loss_window_unknown")
+            if streak is None:
+                causes.append("financial_lifecycle_streak_unknown")
+        if streak is not None and streak >= limits.max_consecutive_losses:
             causes.append("consecutive_loss_limit_reached")
         if len(exposures) + 1 > limits.max_open_positions:
             causes.append("open_position_limit_exceeded")
@@ -640,11 +675,13 @@ def evaluate_portfolio(
         )
         for violation, code in (
             (
-                daily_loss / equity >= Fraction(limits.max_daily_loss_pct),
+                daily_loss is not None
+                and daily_loss / equity >= Fraction(limits.max_daily_loss_pct),
                 "daily_loss_limit_reached",
             ),
             (
-                weekly_loss / equity >= Fraction(limits.max_weekly_loss_pct),
+                weekly_loss is not None
+                and weekly_loss / equity >= Fraction(limits.max_weekly_loss_pct),
                 "weekly_loss_limit_reached",
             ),
             (drawdown >= Fraction(limits.max_drawdown_pct), "drawdown_limit_reached"),
@@ -703,3 +740,244 @@ def evaluate_portfolio(
     except _INVALID:
         causes.append("risk_computation_invalid")
     return finish()
+
+
+def evaluate_portfolio(
+    *,
+    report_id: str,
+    instrument_id: str,
+    direction: Literal["long", "short"],
+    candidate_entry: Decimal,
+    stop_loss: Decimal,
+    round_trip_cost_per_base: Decimal,
+    requested_contracts: Decimal,
+    requested_leverage: int,
+    instrument: ContractRiskSpec | None,
+    account: PortfolioRiskSnapshot | None,
+    policy: PortfolioRiskPolicy | None,
+    authority: DemoRiskAuthority | None,
+    current_time: datetime,
+) -> PortfolioRiskResult:
+    """Legacy source-claim diagnostic; never an owned account issuer."""
+    return _evaluate_portfolio(**locals())
+
+
+def evaluate_portfolio_with_risk_windows_v2(
+    *,
+    financial_windows,
+    report_id: str,
+    instrument_id: str,
+    direction: Literal["long", "short"],
+    candidate_entry: Decimal,
+    stop_loss: Decimal,
+    round_trip_cost_per_base: Decimal,
+    requested_contracts: Decimal,
+    requested_leverage: int,
+    instrument: ContractRiskSpec | None,
+    account: PortfolioRiskSnapshot | None,
+    policy: PortfolioRiskPolicy | None,
+    authority: DemoRiskAuthority | None,
+    current_time: datetime,
+) -> PortfolioRiskResult:
+    """Use the same caps with separately source-replayed financial windows.
+
+    This does not create a native source owner or accept a caller complete flag.
+    Unproved full net/streak/HWM obligations remain denying causes even when
+    every fixed candidate geometry and margin calculation is otherwise valid.
+    """
+    from app.trade_qualification.account_risk_windows_v1 import _checked_result
+
+    arguments = dict(locals())
+    arguments.pop("_checked_result")
+    arguments.pop("financial_windows")
+    return _evaluate_portfolio(
+        **arguments, _financial=_checked_result(financial_windows)
+    )
+
+
+_NATIVE_FINANCIAL_EVALUATIONS = WeakKeyDictionary()
+
+
+class NativeAccountRiskWindowsEvaluationV1:
+    """Measured financial-adoption diagnostic, never a portfolio capability."""
+
+    __slots__ = ("__weakref__",)
+
+    def __new__(cls):
+        raise ValueError("native_account_risk_evaluation_not_constructible")
+
+    @property
+    def receipt_json(self):
+        receipt = _NATIVE_FINANCIAL_EVALUATIONS.get(self)
+        if receipt is None:
+            raise ValueError("native_account_risk_evaluation_unavailable")
+        return receipt
+
+    @property
+    def receipt_sha256(self):
+        return hashlib.sha256(self.receipt_json).hexdigest()
+
+
+def evaluate_native_account_risk_windows_v1(
+    financial_windows, *, current_account_operands
+):
+    """Check original current balance against the held source-window operands.
+
+    The native assembler owns the source lifetime. This consumer neither trusts
+    the DTO's native flags nor fabricates a candidate, policy, HWM or snapshot.
+    Fill-only ratios are observations; unproved net amounts cannot pass caps.
+    """
+    from app.domain.source_primitives import canonical, decode, sha
+    from app.trade_qualification import account_capture as capture
+    from app.trade_qualification import account_current_source_verifier as current
+    from app.trade_qualification import account_materializer as mapping
+    from app.trade_qualification import account_observation_index as observed
+    from app.trade_qualification.account_current_source_v4 import (
+        CurrentAccountOperandsV4,
+    )
+    from app.trade_qualification.account_risk_windows_v1 import (
+        AccountRiskWindowsError,
+        _checked_result,
+        _ratio,
+        _read_ratio,
+    )
+
+    facts = _checked_result(financial_windows)
+    try:
+        if type(current_account_operands) is not CurrentAccountOperandsV4:
+            raise ValueError
+        packet = current_account_operands.packet
+        reference = current_account_operands.reference
+        frozen = capture.freeze_demo_account_packet(
+            packet, expected_plan_sha256=reference.plan_sha256
+        )
+        if frozen.sha256 != reference.packet_sha256:
+            raise ValueError
+        packet = capture.verify_demo_account_packet(
+            frozen.payload,
+            expected_sha256=reference.packet_sha256,
+            expected_plan_sha256=reference.plan_sha256,
+        )
+        receipt = decode(
+            current_account_operands.current_receipt_json, capture.MAX_PACKET_BYTES
+        )
+        if (
+            receipt["schema_version"] != "ctcc.current_account_source_observation.v6"
+            or receipt["policy_sha256"] != current.V7_POLICY_SHA256
+            or receipt["scope_sha256"]
+            != sha(
+                canonical(
+                    [
+                        facts.scope.environment,
+                        facts.scope.account_id,
+                        facts.scope.settlement_currency,
+                    ]
+                )
+            )
+            or receipt["source_reference"] != observed.reference_document(reference)
+            or receipt["identity"]["environment"] != facts.scope.environment
+            or receipt["identity"]["uid"] != facts.scope.account_id
+            or receipt["identity"]["settlement_currency"]
+            != facts.scope.settlement_currency
+            or packet.plan.expected_uid != facts.scope.account_id
+            or packet.completed_at > facts.checked_at
+            or facts.ended_at
+            > min(page.request_started_at for page in packet.observations)
+        ):
+            raise ValueError
+        validated_at = _utc(
+            datetime.fromisoformat(receipt["observation_interval"]["validated_at"])
+        )
+        if not packet.completed_at <= validated_at <= facts.checked_at:
+            raise ValueError
+        configs = [
+            page
+            for page in packet.observations
+            if page.request.stream == "config_after"
+        ]
+        if len(configs) != 1 or len(configs[0].rows) != 1:
+            raise ValueError
+        config = json.loads(configs[0].rows[0].canonical_json)
+        if receipt["identity"] != {
+            "environment": facts.scope.environment,
+            "uid": config["uid"],
+            "main_uid": config["mainUid"],
+            "account_level": config["acctLv"],
+            "position_mode": config["posMode"],
+            "settlement_currency": facts.scope.settlement_currency,
+        }:
+            raise ValueError
+        pages = [
+            page for page in packet.observations if page.request.stream == "balance"
+        ]
+        if len(pages) != 1 or len(pages[0].rows) != 1:
+            raise ValueError
+        raw_balance = json.loads(pages[0].rows[0].canonical_json)
+        equity, available, gap = mapping._balance(
+            raw_balance, facts.scope.settlement_currency
+        )
+        if (
+            gap is not None
+            or equity is None
+            or available is None
+            or _read_ratio(receipt["balance"]["equity"]) != equity
+            or _read_ratio(receipt["balance"]["available_equity"]) != available
+            or receipt["balance"]["currency"] != facts.scope.settlement_currency
+        ):
+            raise ValueError
+        current_gaps = receipt["blocking_reasons"]
+        if type(current_gaps) is not list or any(
+            type(item) is not str or not 1 <= len(item) <= 512 for item in current_gaps
+        ):
+            raise ValueError
+        missing = (
+            set(facts.missing_obligations)
+            | set(current_gaps)
+            | {
+                "candidate_and_instrument_risk_geometry_missing",
+                "source_bound_portfolio_risk_policy_missing",
+                "complete_current_portfolio_snapshot_missing",
+                "owned_account_revision_missing",
+                "current_protection_and_local_risk_reservations_unavailable",
+                "durable_demo_risk_authority_missing",
+            }
+        )
+        payload = canonical(
+            {
+                "schema_version": "ctcc.native_account_risk_windows_evaluation.v1",
+                "financial_window_receipt_sha256": financial_windows.receipt_sha256,
+                "current_packet_sha256": reference.packet_sha256,
+                "current_receipt_sha256": sha(
+                    current_account_operands.current_receipt_json
+                ),
+                "checked_at": facts.checked_at.isoformat(),
+                "history_end": facts.ended_at.isoformat(),
+                "settlement_currency": facts.scope.settlement_currency,
+                "scope_sha256": receipt["scope_sha256"],
+                "equity": _ratio(equity),
+                "available_margin": _ratio(available),
+                "observed_fill_daily_loss_pct": None
+                if facts.daily_fill_pnl is None
+                else _ratio(max(Fraction(0), -facts.daily_fill_pnl) / equity),
+                "observed_fill_weekly_loss_pct": None
+                if facts.weekly_fill_pnl is None
+                else _ratio(max(Fraction(0), -facts.weekly_fill_pnl) / equity),
+                "complete_net_daily_loss_pct": None,
+                "complete_net_weekly_loss_pct": None,
+                "evaluated_candidate_caps": [],
+                "missing_obligations": sorted(missing),
+                "snapshot": None,
+                "account_revision": None,
+                "account_complete": False,
+                "passed": False,
+                "execution_authority": False,
+                "admission": "DENY",
+            }
+        )
+        result = object.__new__(NativeAccountRiskWindowsEvaluationV1)
+        _NATIVE_FINANCIAL_EVALUATIONS[result] = payload
+        return result
+    except (ValueError, TypeError, AttributeError, KeyError, ArithmeticError):
+        raise AccountRiskWindowsError(
+            "account_risk_windows_current_source_invalid"
+        ) from None

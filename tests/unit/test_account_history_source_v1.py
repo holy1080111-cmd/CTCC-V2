@@ -32,6 +32,7 @@ from app.trade_qualification import account_native_proof_storage as storage
 from app.trade_qualification import account_native_runtime as runtime
 from app.trade_qualification import account_observation_index as observed
 from app.trade_qualification import account_positions_history_collector_v1 as positions
+from app.trade_qualification import native_account_risk_assembly_v1 as financial
 from tests.unit.research.test_demo_session_route_preflight import _client
 from tests.unit.research.test_public_journal_contracts import MemoryDirectory
 from tests.unit.test_account_ingestion_journal_contracts import setup as journal_setup
@@ -515,3 +516,102 @@ def test_final_secret_union_scans_older_original_bodies_before_encoded_archives(
             (((older, None), (latest, None)), ()), None, None, [signature]
         )
     assert encoded == []
+
+
+@pytest.mark.asyncio
+async def test_financial_move_replays_original_population_and_separate_custody(
+    monkeypatch, tmp_path
+):
+    """Fixed synthetic OS/TLS/DB providers, never native/PostgreSQL acceptance."""
+    with acquisition_fixture(monkeypatch, tmp_path) as value:
+        owner = await source.acquire_native_history_source_facts_v1(**value.args)
+        binding = source._take_financial_assembly_v1(owner, key=financial._HOOK_KEY)
+        with pytest.raises(source.NativeHistorySourceError, match="owner_unavailable"):
+            source.consume_owned_native_history_source_facts_v1(owner)
+        calls = []
+
+        async def deployment(self):
+            calls.append("deployment")
+
+        async def read(self, *, bundle_id, expected_sha256, proof_envelope_sha256):
+            calls.append("separate_read")
+            raw = value.saved["raw"]
+            assert bundle_id == "a" * 32 and source.sha(raw) == expected_sha256
+            now = datetime.now(UTC)
+            return custody.RetainedRuntimeBundleReadback(
+                bundle_id, expected_sha256, proof_envelope_sha256, now, now, raw
+            )
+
+        monkeypatch.setattr(
+            custody.RuntimeBundleCustodyRepository, "verify_deployment", deployment
+        )
+        monkeypatch.setattr(
+            custody.RuntimeBundleCustodyRepository, "read_retained_bundle", read
+        )
+        facts, _stamp = await source._replay_financial_assembly_v1(
+            binding, key=financial._HOOK_KEY
+        )
+        assert calls == ["deployment", "separate_read"]
+        assert len(facts.sources) == len(facts.batches) == 1
+        assert facts.native_history_prefix_verified is False
+        assert (
+            facts.account_complete is False
+            and facts.funding_source_status == "NOT_ACQUIRED"
+        )
+        source._release_financial_assembly_v1(binding, key=financial._HOOK_KEY)
+        assert binding not in source._FINANCIAL
+        assert value.saved["raw"] and value.files["raw"]["source.bundle.json"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("defect", ["late_head", "custody_bytes"])
+async def test_financial_late_history_or_custody_change_burns_without_erasing(
+    monkeypatch, tmp_path, defect
+):
+    with acquisition_fixture(monkeypatch, tmp_path) as value:
+        owner = await source.acquire_native_history_source_facts_v1(**value.args)
+        binding = source._take_financial_assembly_v1(owner, key=financial._HOOK_KEY)
+        before = {name: dict(items) for name, items in value.files.items()}
+        if defect == "late_head":
+            value.saved["late_head"] = True
+
+        async def deployment(self):
+            return None
+
+        async def read(self, *, bundle_id, expected_sha256, proof_envelope_sha256):
+            now = datetime.now(UTC)
+            return custody.RetainedRuntimeBundleReadback(
+                bundle_id,
+                expected_sha256,
+                proof_envelope_sha256,
+                now,
+                now,
+                value.saved["raw"] + b"changed",
+            )
+
+        monkeypatch.setattr(
+            custody.RuntimeBundleCustodyRepository, "verify_deployment", deployment
+        )
+        monkeypatch.setattr(
+            custody.RuntimeBundleCustodyRepository, "read_retained_bundle", read
+        )
+        with pytest.raises(source.NativeHistorySourceError):
+            await source._replay_financial_assembly_v1(binding, key=financial._HOOK_KEY)
+        assert binding not in source._FINANCIAL and owner not in source._OWNERS
+        assert value.files == before
+
+
+@pytest.mark.asyncio
+async def test_financial_unmoved_history_owner_cleanup_is_synchronous(
+    monkeypatch, tmp_path
+):
+    with acquisition_fixture(monkeypatch, tmp_path) as value:
+        owner = await source.acquire_native_history_source_facts_v1(**value.args)
+        with pytest.raises(source.NativeHistorySourceError, match="assembler_required"):
+            source._release_financial_assembly_v1(owner, key=object())
+        assert owner in source._OWNERS
+        source._release_financial_assembly_v1(owner, key=financial._HOOK_KEY)
+        assert owner not in source._OWNERS
+        with pytest.raises(source.NativeHistorySourceError, match="owner_unavailable"):
+            source.consume_owned_native_history_source_facts_v1(owner)
+        assert value.saved["raw"]
