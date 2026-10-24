@@ -1,5 +1,58 @@
 # Final completion validation state
 
+## 2026-10-24 exact48 CI and native historical-source integration
+
+Canonical source remains exact `48eb2b6f54910387db19491e2db5fce11b5aad55`,
+tree `8c686bc64808b51fa703ef381e40ba8027fd2ece`, manifest
+`14f09782f4b2bf3c129ae9067e9f67e86dfc11c1a7a137dbf64290a1e3ccd577`.
+Its [matching full CI run 39736353798](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/39736353798)
+completed all 19 jobs: Linux 17,386 passed and 77 skipped; Windows 16,938
+passed and 29 skipped. The 491 PostgreSQL cases had zero skips and are already
+included in Linux. Migration is 0047. The accepted Docker image ID is
+`sha256:996691099a6ca3c48ea274725f36ecbae4c6d7679616553d456dad3d0b94d3fa`;
+this is not a registry digest. Independent CI closure is
+`a810476377eaf24a849eff875a4fbad1b7cbcb525407f6b791d52c18e3987507`.
+The Oct24 independent canonical readback is
+`9056431b670c16104505400b9d4a53da2b9b3cb29588cb457e3449fd200579b0`.
+Earlier tool comparison failures remain retained alongside their corrections.
+
+The additive [native historical-source contract](account_history_source_v1.md)
+acquires/replays original B1/B3 and positions bytes, consumes existing DB0046
+custody, and issues a one-use source-facts owner. It does not issue a complete
+portfolio, account revision, qualification or order authority. Funding remains
+not acquired. Config currency and positions margin currency remain distinct
+source facts, with missing values unknown. The old public positions collector
+retains its behavior and budget.
+
+The actual local bounded readback records 63 unique passing unit cases and
+zero skips: 31 new synthetic-provider cases plus 32 legacy positions cases.
+It includes fresh acquisition/readback/one-use consume, original wire privacy
+checks, fixed failure evidence, strict archive/currency parsing and legacy API
+regression. Scoped Ruff and formatting pass. The readback SHA256 is
+`cd20e8d3f2b15f799bad7b9cba9b14c5fbadb485b58c6acd9dab72b7a7d9dea3`.
+Other new mutation and PostgreSQL cases require fresh full matching-source CI;
+the exact48 counts above are historical evidence and cannot be borrowed.
+
+The bundled local interpreter changed to signed Python 3.12.14. The old pin
+failed closed before source freeze or application imports; its failure remains.
+The new actual executable SHA256 is
+`5640e9be2fd33d05a1a9ae1228e2354609a69ab831605995ec4e2bd6da8fff5e`.
+The actual 41-package dependency identity was rechecked unchanged at
+`681966167b36f1f92d27a93d03f30518768178f34e9307bab46e526805c06da3`.
+The first draft's import collection failure and six lint findings are retained;
+subsequent fixes passed the stated bounded cohorts. Synthetic providers do not
+prove real native TLS, authenticated account history or the native 60-second
+budget. No local PostgreSQL/full-suite/native acquisition was run on this host.
+
+Notion's three existing progress pages were updated and read back, preserving
+their entire prior content, all 257 checkboxes and existing child pages.
+Documentation receipt is
+`7146ff93dcac37363f02f097f246bed044220ac57acd1c62a3d0dbea73c2dc2b`;
+this is not runtime outbox delivery. Actual evidence examples remain 0/4.
+Full portfolio/recheck, PIT/Gate3, sealed OOS, Shadow, economics, stress/chaos,
+Demo, Micro Live, main merge and release remain unaccepted. Trading, runtime
+outbox and Live default stay off. All completion/readiness flags remain zero.
+
 ## 2026-10-22 verified 4f21 baseline and isolated original prefix integration
 
 The exact `4f21e104f505a89d50f0257d80b37f7cc480daba` source and

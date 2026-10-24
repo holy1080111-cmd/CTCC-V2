@@ -462,6 +462,7 @@ async def _signed_get(
     *,
     previous_completed: datetime,
     secret_tokens: list[str],
+    _native_observer=None,
 ) -> _RawPage:
     _checked_read_session(
         read_session,
@@ -472,7 +473,20 @@ async def _signed_get(
     owned._client_guard(client)
     loop = asyncio.get_running_loop()
     deadline = loop.time() + 15
-    started = _utc(clock())
+    if _native_observer is not None:
+        from app.trade_qualification import account_history_native_stage_v1 as stage
+
+        if stage._clock(_native_observer) is not clock:
+            _deny("native_observer_clock_changed")
+        stage._transport(_native_observer, client)
+        maximum = (
+            MAX_CONFIG_BYTES
+            if spec.endpoint == CONFIG_ENDPOINT
+            else history.MAX_PAGE_BYTES
+        )
+        started = stage._begin(_native_observer, spec, maximum, secret_tokens)
+    else:
+        started = _utc(clock())
     if started < previous_completed:
         _deny("request_clock_reversed")
     request, signature = owned._signed_request(spec, credentials, started, 15)
@@ -492,11 +506,17 @@ async def _signed_get(
             origin=spec.origin,
             session_binding_sha256=session_binding_sha256,
         )
+        if _native_observer is not None:
+            stage._phase(_native_observer, "request_dispatch")
         response = await client.send(
             request, auth=None, follow_redirects=False, stream=True
         )
         try:
-            headers = _utc(clock())
+            headers = (
+                stage._phase(_native_observer, "headers_received")
+                if _native_observer is not None
+                else _utc(clock())
+            )
             _checked_read_session(
                 read_session,
                 credentials,
@@ -528,6 +548,10 @@ async def _signed_get(
                 if type(certificate) is not bytes or not certificate:
                     _deny("tls_evidence_missing")
                 certificate_sha256 = _hash(certificate)
+            if _native_observer is not None:
+                stage._phase(
+                    _native_observer, "tls_verified", certificate=certificate_sha256
+                )
             if (
                 response.headers.get("content-type", "")
                 .split(";", 1)[0]
@@ -553,9 +577,22 @@ async def _signed_get(
                 if type(chunk) is not bytes or len(body) + len(chunk) > maximum:
                     _deny("response_bytes_limit")
                 body.extend(chunk)
-            completed = _utc(clock())
+                if _native_observer is not None:
+                    stage._chunk(_native_observer, chunk)
+            completed = (
+                stage._phase(_native_observer, "body_exhausted")
+                if _native_observer is not None
+                else _utc(clock())
+            )
         finally:
-            await owned._close(response)
+            if _native_observer is None:
+                await owned._close(response)
+            else:
+                try:
+                    await owned._close(response)
+                finally:
+                    if response.is_closed:
+                        stage._response_closed(_native_observer)
     _checked_read_session(
         read_session,
         credentials,
@@ -573,6 +610,8 @@ async def _signed_get(
     except capture.AccountCaptureError:
         _deny("response_json_invalid")
     owned._no_secret_json(canonical, secret_tokens)
+    if _native_observer is not None:
+        stage._phase(_native_observer, "validated")
     return _RawPage(raw, started, headers, completed, certificate_sha256)
 
 
@@ -733,3 +772,512 @@ async def collect_demo_position_history(
     finally:
         if client is not None and type(client) is httpx.AsyncClient:
             await owned._close(client, pending_cancel=cancelled)
+
+
+async def _signed_get_native(*args, _native_observer, **kwargs):
+    """Private phase-bound path; retain safe partial evidence on every exit."""
+    from app.trade_qualification import account_history_native_stage_v1 as stage
+
+    failed, cancelled = True, False
+    try:
+        result = await _signed_get(*args, _native_observer=_native_observer, **kwargs)
+        failed = False
+        return result
+    except asyncio.CancelledError:
+        cancelled = True
+        raise
+    finally:
+        try:
+            stage._retain(_native_observer, failed=failed)
+        except Exception:
+            if not cancelled:
+                raise
+
+
+async def _collect_native_position_history(
+    *,
+    credentials: owned.DemoAccountCredentials,
+    read_session: DemoPinnedReadSession,
+    clock: Callable[[], datetime],
+    plan: history.PositionHistoryPlanV1,
+    identity: _NativePositionIdentityV1,
+    barrier_completed_at: datetime,
+    _native_observer,
+) -> tuple[_NativePositionArchiveV1, dict]:
+    """Private fixed acquisition plus explicit native trace, no public DTO grant.
+
+    The original diagnostic API and its 240s budget remain unchanged. Every
+    native phase independently enforces the original stage's 60s/5ms bound.
+    """
+    from app.trade_qualification import account_history_native_stage_v1 as stage
+
+    if stage._clock(_native_observer) is not clock:
+        _deny("native_observer_clock_changed")
+    client = None
+    cancelled = False
+    try:
+        if (
+            type(plan) is not history.PositionHistoryPlanV1
+            or type(identity) is not _NativePositionIdentityV1
+        ):
+            _deny("binding_invalid")
+        plan.__post_init__()
+        if identity.sha256 != plan.account_binding_sha256:
+            _deny("binding_invalid")
+        values = owned._credential_values(credentials)
+        credentials = owned.DemoAccountCredentials(*values)
+        _checked_read_session(
+            read_session,
+            credentials,
+            origin=plan.origin,
+            session_binding_sha256=plan.session_binding_sha256,
+        )
+        barrier = _utc(barrier_completed_at)
+        if not callable(clock) or barrier < plan.created_at:
+            _deny("barrier_invalid")
+        first_clock = _utc(clock())
+        if first_clock <= barrier:
+            _deny("barrier_not_crossed")
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + MAX_BATCH_SECONDS
+        client = _new_client()
+        owned._client_guard(client)
+        secrets = stage._known_tokens(_native_observer)
+        if type(secrets) is not list or secrets[:4] != [
+            credentials.api_key,
+            credentials.api_secret,
+            credentials.passphrase,
+            read_session.binding_id,
+        ]:
+            _deny("native_secret_inventory_invalid")
+        config_spec = _GetSpec(plan.origin, CONFIG_ENDPOINT, ())
+        async with asyncio.timeout_at(deadline):
+            before = await _signed_get_native(
+                client,
+                credentials,
+                read_session,
+                plan.session_binding_sha256,
+                clock,
+                config_spec,
+                previous_completed=first_clock,
+                secret_tokens=secrets,
+                _native_observer=_native_observer,
+            )
+            _native_config_page(before, plan, identity)
+            pages = []
+            certs = []
+            after_cursor = None
+            previous = None
+            previous_completed = before.completed
+            for index in range(history.MAX_PAGES):
+                method, origin, endpoint, parameters = history.request_for_page(
+                    plan, after_cursor
+                )
+                if method != "GET":
+                    _deny("request_invalid")
+                raw = await _signed_get_native(
+                    client,
+                    credentials,
+                    read_session,
+                    plan.session_binding_sha256,
+                    clock,
+                    _GetSpec(origin, endpoint, parameters),
+                    previous_completed=previous_completed,
+                    secret_tokens=secrets,
+                    _native_observer=_native_observer,
+                )
+                page = history.parse_page(
+                    plan,
+                    raw.raw,
+                    page_index=index,
+                    after=after_cursor,
+                    previous_page_sha256=None
+                    if previous is None
+                    else previous.page_sha256,
+                    request_started_at=raw.started,
+                    headers_received_at=raw.headers,
+                    body_completed_at=raw.completed,
+                )
+                pages.append(page)
+                certs.append(raw.certificate_sha256)
+                previous_completed, previous = raw.completed, page
+                if page.terminal:
+                    break
+                after_cursor = page.next_after
+            chain = history.verify_chain(plan, tuple(pages))
+            after = await _signed_get_native(
+                client,
+                credentials,
+                read_session,
+                plan.session_binding_sha256,
+                clock,
+                config_spec,
+                previous_completed=previous_completed,
+                secret_tokens=secrets,
+                _native_observer=_native_observer,
+            )
+            _native_config_page(after, plan, identity)
+            # Later signatures must not have appeared in an earlier page.
+            for raw, limit in (
+                (before.raw, MAX_CONFIG_BYTES),
+                *((page.raw_body, history.MAX_PAGE_BYTES) for page in pages),
+                (after.raw, MAX_CONFIG_BYTES),
+            ):
+                owned._no_secrets(raw, secrets)
+                _, canonical = capture._decode_json(raw, limit=limit, wire=True)
+                owned._no_secret_json(canonical, secrets)
+            archive = _freeze_native_source_archive(
+                plan, identity, before, tuple(pages), after, tuple(certs)
+            )
+            result = _verify_native_source_archive(
+                plan, identity, archive, expected_sha256=_hash(archive)
+            )
+            if result.chain != chain:
+                _deny("readback_mismatch")
+            _checked_read_session(
+                read_session,
+                credentials,
+                origin=plan.origin,
+                session_binding_sha256=plan.session_binding_sha256,
+            )
+        if loop.time() > deadline:
+            _deny("batch_deadline_exceeded")
+        return result, stage._finished(_native_observer)
+    except asyncio.CancelledError:
+        cancelled = True
+        raise
+    except OwnedPositionHistoryError:
+        raise
+    except (
+        owned.AccountCollectionError,
+        history.PositionHistoryError,
+        capture.AccountCaptureError,
+    ):
+        _deny("source_rejected")
+    except Exception:  # noqa: BLE001 - never stringify credential-bearing errors
+        _deny("source_failed")
+    finally:
+        try:
+            if client is not None and type(client) is httpx.AsyncClient:
+                await owned._close(client, pending_cancel=cancelled)
+        finally:
+            try:
+                stage._abort(_native_observer)
+            except Exception:
+                if not cancelled:
+                    raise
+
+
+NATIVE_POSITION_VERSION = "ctcc.native_positions_history_raw.v1"
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class _NativePositionIdentityV1:
+    """Four sourced identity/mode keys; USDT below is only a scope declaration."""
+
+    uid: str
+    main_uid: str
+    account_level: str
+    position_mode: str
+    declared_scope_currency: str = field(default="USDT", init=False)
+
+    def __post_init__(self):
+        if (
+            type(self.uid) is not str
+            or _IDENTIFIER.fullmatch(self.uid) is None
+            or type(self.main_uid) is not str
+            or _IDENTIFIER.fullmatch(self.main_uid) is None
+            or type(self.account_level) is not str
+            or self.account_level not in {"1", "2", "3", "4"}
+            or type(self.position_mode) is not str
+            or self.position_mode not in {"net_mode", "long_short_mode"}
+            or self.declared_scope_currency != "USDT"
+        ):
+            _deny("native_identity_pin_invalid")
+
+    @property
+    def sha256(self):
+        self.__post_init__()
+        return _hash(
+            _canonical(
+                {
+                    "schema_version": "ctcc.native_position_identity.v1",
+                    "environment": "demo",
+                    "uid": self.uid,
+                    "mainUid": self.main_uid,
+                    "acctLv": self.account_level,
+                    "posMode": self.position_mode,
+                    "declared_scope_currency": self.declared_scope_currency,
+                    "account_settlement_currency": None,
+                }
+            )
+        )
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class _NativePositionArchiveV1:
+    raw_archive: bytes = field(repr=False)
+    archive_sha256: str
+    chain: history.PositionHistoryChainV1
+    peer_certificate_sha256: tuple[str, ...]
+    account_usd_contract_settle_currency: str | None
+    observed_margin_currencies: tuple[str | None, ...]
+    declared_scope_currency: str = field(default="USDT", init=False)
+    account_complete: bool = field(default=False, init=False)
+    source_authenticity_verified: bool = field(default=False, init=False)
+    execution_authority: bool = field(default=False, init=False)
+    admission: str = field(default="DENY", init=False)
+
+
+def _native_config_currency(raw):
+    row = capture._decode_json(raw.raw, limit=MAX_CONFIG_BYTES, wire=True)[0]["data"][0]
+    value = row.get("settleCcy")
+    if value is None or value == "":
+        return None
+    if type(value) is not str or _CURRENCY.fullmatch(value) is None:
+        _deny("native_config_currency_invalid")
+    return value
+
+
+def _native_margin_currencies(pages):
+    values = []
+    for page in pages:
+        rows = capture._decode_json(
+            page.raw_body, limit=history.MAX_PAGE_BYTES, wire=True
+        )[0]["data"]
+        for row in rows:
+            value = row.get("ccy")
+            if value is None or value == "":
+                values.append(None)
+            elif type(value) is str and _CURRENCY.fullmatch(value) is not None:
+                values.append(value)
+            else:
+                _deny("native_position_currency_invalid")
+    return tuple(values)
+
+
+def _native_config_page(
+    raw: _RawPage,
+    plan: history.PositionHistoryPlanV1,
+    identity: _NativePositionIdentityV1,
+) -> str:
+    started, headers, completed = map(_utc, (raw.started, raw.headers, raw.completed))
+    if not plan.created_at < started <= headers <= completed:
+        _deny("config_clock_invalid")
+    if (completed - started).total_seconds() > 15:
+        _deny("config_clock_invalid")
+    try:
+        value, _ = capture._decode_json(raw.raw, limit=MAX_CONFIG_BYTES, wire=True)
+        if (
+            type(value) is not dict
+            or set(value) - {"code", "msg", "data", "inTime", "outTime"}
+            or value.get("code") != "0"
+            or type(value.get("msg")) is not str
+            or type(value.get("data")) is not list
+            or len(value["data"]) != 1
+            or type(value["data"][0]) is not dict
+        ):
+            _deny("config_invalid")
+        if ("inTime" in value) != ("outTime" in value):
+            _deny("config_gateway_clock_invalid")
+        if "inTime" in value:
+            start = capture._gateway_time(value["inTime"])
+            end = capture._gateway_time(value["outTime"])
+            if not started <= start <= end <= headers:
+                _deny("config_gateway_clock_invalid")
+        row = value["data"][0]
+        if (
+            row.get("uid") != identity.uid
+            or row.get("mainUid") != identity.main_uid
+            or row.get("acctLv") != identity.account_level
+            or row.get("posMode") != identity.position_mode
+            or any(
+                type(row.get(key)) is not str
+                for key in ("uid", "mainUid", "acctLv", "posMode")
+            )
+        ):
+            _deny("account_identity_mismatch")
+        return _hash(_canonical(row))
+    except capture.AccountCaptureError:
+        _deny("config_invalid")
+
+
+def _freeze_native_source_archive(
+    plan: history.PositionHistoryPlanV1,
+    identity: _NativePositionIdentityV1,
+    before: _RawPage,
+    pages: tuple[history.PositionHistoryPageV1, ...],
+    after: _RawPage,
+    certificates: tuple[str | None, ...],
+) -> bytes:
+    """Retain raw signed-GET response bodies; hashes alone do not attest TLS."""
+    if (
+        type(plan) is not history.PositionHistoryPlanV1
+        or type(identity) is not _NativePositionIdentityV1
+        or type(before) is not _RawPage
+        or type(after) is not _RawPage
+        or type(pages) is not tuple
+        or any(type(page) is not history.PositionHistoryPageV1 for page in pages)
+    ):
+        _deny("binding_invalid")
+    plan.__post_init__()
+    if (
+        identity.sha256 != plan.account_binding_sha256
+        or type(certificates) is not tuple
+        or len(certificates) != len(pages)
+    ):
+        _deny("binding_invalid")
+    first_config = _native_config_page(before, plan, identity)
+    second_config = _native_config_page(after, plan, identity)
+    if first_config != second_config:
+        _deny("config_changed")
+    if (
+        not pages
+        or not before.completed <= pages[0].request_started_at
+        or not pages[-1].body_completed_at <= after.started
+    ):
+        _deny("source_order_invalid")
+    if any(
+        type(cert) is not str or _SHA.fullmatch(cert) is None
+        for cert in (before.certificate_sha256, *certificates, after.certificate_sha256)
+    ):
+        _deny("native_tls_evidence_missing")
+    _native_config_currency(before)
+    _native_margin_currencies(pages)
+    chain_bytes = history.freeze_chain(plan, pages)
+    payload = _canonical(
+        {
+            "version": NATIVE_POSITION_VERSION,
+            "declared_scope_currency": identity.declared_scope_currency,
+            "plan_sha256": plan.sha256,
+            "identity_sha256": identity.sha256,
+            "session_binding_sha256": plan.session_binding_sha256,
+            "config_before": _record(before),
+            "history_archive": json.loads(chain_bytes),
+            "history_archive_sha256": _hash(chain_bytes),
+            "page_certificate_sha256": certificates,
+            "config_after": _record(after),
+        }
+    )
+    if len(payload) > MAX_ARCHIVE_BYTES:
+        _deny("archive_byte_limit")
+    return payload
+
+
+def _verify_native_source_archive(
+    plan: history.PositionHistoryPlanV1,
+    identity: _NativePositionIdentityV1,
+    archive: bytes,
+    *,
+    expected_sha256: str,
+) -> _NativePositionArchiveV1:
+    """Replay a pinned archive; even a matching archive remains DENY-only."""
+    try:
+        if (
+            type(plan) is not history.PositionHistoryPlanV1
+            or type(identity) is not _NativePositionIdentityV1
+        ):
+            _deny("binding_invalid")
+        plan.__post_init__()
+        if identity.sha256 != plan.account_binding_sha256:
+            _deny("binding_invalid")
+        if type(expected_sha256) is not str or _SHA.fullmatch(expected_sha256) is None:
+            _deny("archive_pin_invalid")
+        if type(archive) is not bytes or not 1 <= len(archive) <= MAX_ARCHIVE_BYTES:
+            _deny("archive_byte_limit")
+        if _hash(archive) != expected_sha256:
+            _deny("archive_pin_mismatch")
+        value, canonical = capture._decode_json(
+            archive, limit=MAX_ARCHIVE_BYTES, wire=False
+        )
+        if (
+            canonical.encode("utf-8") != archive
+            or type(value) is not dict
+            or set(value)
+            != {
+                "version",
+                "declared_scope_currency",
+                "plan_sha256",
+                "identity_sha256",
+                "session_binding_sha256",
+                "config_before",
+                "config_after",
+                "history_archive",
+                "history_archive_sha256",
+                "page_certificate_sha256",
+            }
+        ):
+            _deny("archive_invalid")
+        if (
+            value["version"] != NATIVE_POSITION_VERSION
+            or value["declared_scope_currency"] != "USDT"
+            or value["plan_sha256"] != plan.sha256
+            or value["identity_sha256"] != identity.sha256
+            or value["session_binding_sha256"] != plan.session_binding_sha256
+        ):
+            _deny("archive_binding_mismatch")
+        before, after = (
+            _read_record(value["config_before"]),
+            _read_record(value["config_after"]),
+        )
+        if _native_config_page(before, plan, identity) != _native_config_page(
+            after, plan, identity
+        ):
+            _deny("config_changed")
+        if type(value["history_archive"]) is not dict:
+            _deny("archive_invalid")
+        chain_bytes = _canonical(value["history_archive"])
+        chain = history.verify_archived_chain(
+            plan, chain_bytes, expected_sha256=value["history_archive_sha256"]
+        )
+        record = json.loads(chain_bytes)
+        first_start = _utc(
+            datetime.fromisoformat(record["pages"][0]["request_started_at"])
+        )
+        last_complete = _utc(
+            datetime.fromisoformat(record["pages"][-1]["body_completed_at"])
+        )
+        if not before.completed <= first_start or not last_complete <= after.started:
+            _deny("source_order_invalid")
+        certs = value["page_certificate_sha256"]
+        if (
+            type(certs) is not list
+            or len(certs) != len(chain.page_hashes)
+            or any(
+                cert is not None
+                and (type(cert) is not str or _SHA.fullmatch(cert) is None)
+                for cert in certs
+            )
+        ):
+            _deny("archive_invalid")
+        if (
+            _freeze_native_source_archive(
+                plan,
+                identity,
+                before,
+                _unfreeze_pages(plan, record),
+                after,
+                tuple(certs),
+            )
+            != archive
+        ):
+            _deny("archive_invalid")
+        return _NativePositionArchiveV1(
+            archive,
+            expected_sha256,
+            chain,
+            tuple(certs),
+            _native_config_currency(before),
+            _native_margin_currencies(_unfreeze_pages(plan, record)),
+        )
+    except OwnedPositionHistoryError:
+        raise
+    except (
+        capture.AccountCaptureError,
+        history.PositionHistoryError,
+        ValueError,
+        TypeError,
+        KeyError,
+        OverflowError,
+    ):
+        _deny("archive_invalid")

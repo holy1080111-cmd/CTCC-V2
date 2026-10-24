@@ -144,6 +144,51 @@ def bundle():
     }
 
 
+async def test_history_source_envelope_bytes_use_existing_custody_without_source_kind_gate(
+    runtime_custody_database,
+):
+    """DB0046 byte retention only, not native historical-source acceptance."""
+    from app.trade_qualification.account_history_source_bundle_v1 import (
+        POLICY_SHA256,
+        SCHEMA,
+    )
+
+    repository, _, _ = runtime_custody_database
+    await repository.verify_deployment()
+    # Deliberately not a valid source bundle: SQL custody is generic bytes and
+    # must not be misreported as a semantic/native source authentication test.
+    raw = json.dumps(
+        {
+            "schema_version": SCHEMA,
+            "policy_sha256": POLICY_SHA256,
+            "fixture_id": uuid4().hex,
+            "fixture_scope": "opaque_byte_retention_only",
+            "execution_authority": False,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    data = {
+        "bundle_raw": raw,
+        "expected_sha256": hashlib.sha256(raw).hexdigest(),
+        "proof_envelope_sha256": hashlib.sha256(b"synthetic-history-proof").hexdigest(),
+    }
+    receipt = await repository.seal_bundle(**data)
+    retained = consume(receipt, data)
+    assert retained.bundle_raw == raw
+    assert retained.append_transaction_id != retained.readback_transaction_id
+    assert retained.recorded_at <= retained.database_readback_at
+    replay = await repository.read_retained_bundle(
+        bundle_id=retained.bundle_id,
+        expected_sha256=data["expected_sha256"],
+        proof_envelope_sha256=data["proof_envelope_sha256"],
+    )
+    assert replay.bundle_raw == raw
+    assert replay.execution_authority is False
+    with pytest.raises(RuntimeBundleCustodyError):
+        consume(receipt, data)
+
+
 def consume(receipt, data):
     return _consume_runtime_bundle_custody_receipt(
         receipt,
