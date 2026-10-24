@@ -37,9 +37,14 @@ The new draft corrects those producer projections and the exact 22-constraint
 inventory. The genuine constraint/index projection was independently reviewed
 and explicitly sealed in source as
 `59c771896d4b7ea6b5e77f420fd0d242fdd13429a7ad0f0118c905cdd80e55e6`.
-Fresh numeric capture, restricted-role admission and matching full-source
-Windows/Linux/PostgreSQL acceptance remain pending; the admin observation is
-not execution authority. The older Windows shard also had 13 shared TLS setup
+The subsequent `baaffa12` CI `40072095772` saved 39 actual integer OIDs and
+passed the formal schema gate. Its host verifier then failed with
+`ModuleNotFoundError`; isolated local reproduction identified SQLAlchemy being
+imported from the database repository. A single shared stdlib-only domain
+policy now removes that coupling, with lazy database I/O adapters and the new
+file included in held source custody. Restricted-role admission and matching
+full-source Windows/Linux/PostgreSQL acceptance remain pending; the admin
+observation is not execution authority. The older Windows shard had 13 shared TLS setup
 errors from an OpenSSL version subprocess exceeding three seconds. Its deeper
 delay cause remains unknown; its timeout and safety checks were not relaxed.
 Bounded synthetic unit checks and ten targeted Linux-union fixture checks have

@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio.exc import AsyncContextNotStarted
 
 from app.database.base import Base
 from app.database.repositories import controlled_writer_coverage as coverage
+from app.domain import controlled_writer_coverage_catalog_v1 as catalog_policy
 from scripts import verify_controlled_writer_coverage_schema_v1 as adapter
 from tests.controlled_writer_coverage_fixtures import (
     coverage_constraint_trigger_catalog_rows_fixture,
@@ -304,8 +305,23 @@ def test_adapter_uses_sole_policy_and_does_not_learn_observed_baseline():
     tree = ast.parse(source)
     imports = [node for node in tree.body if isinstance(node, ast.ImportFrom)]
     assert any(
+        node.module == "app.domain.controlled_writer_coverage_catalog_v1"
+        for node in imports
+    )
+    assert not any(
         node.module == "app.database.repositories.controlled_writer_coverage"
         for node in imports
+    )
+    assert (
+        adapter.verify_catalog
+        is catalog_policy.verify_controlled_writer_coverage_catalog
+    )
+    assert coverage.verify_controlled_writer_coverage_catalog is adapter.verify_catalog
+    assert coverage.canonical is catalog_policy.canonical
+    assert (
+        adapter.ControlledWriterCoverageError
+        is coverage.ControlledWriterCoverageError
+        is catalog_policy.ControlledWriterCoverageError
     )
     assert (
         adapter.expected_controlled_writer_coverage_schema
@@ -771,9 +787,11 @@ def test_synthetic_22_constraint_inventory_still_cannot_seal_native_pg(monkeypat
     assert adapter.verify_catalog(catalog, require_native_baseline=False) == (
         coverage.expected_controlled_writer_coverage_schema()
     )
-    monkeypatch.setattr(coverage, "PG17_DEPARSED_BASELINE", None)
+    monkeypatch.setattr(catalog_policy, "PG17_DEPARSED_BASELINE", None)
     monkeypatch.setattr(
-        coverage, "PG17_DEPARSED_BASELINE_STATUS", "PENDING_NOT_ACQUIRED_UNSEALED_DENY"
+        catalog_policy,
+        "PG17_DEPARSED_BASELINE_STATUS",
+        "PENDING_NOT_ACQUIRED_UNSEALED_DENY",
     )
     with pytest.raises(
         coverage.ControlledWriterCoverageError, match="native_baseline_unsealed"

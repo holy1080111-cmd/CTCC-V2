@@ -80,6 +80,7 @@ WRITER_PATHS = (
     "app/database/repositories/okx_live_execution.py",
     "app/trade_qualification/controlled_writer_coverage_v1.py",
     "app/database/repositories/controlled_writer_coverage.py",
+    "app/domain/controlled_writer_coverage_catalog_v1.py",
     "scripts/execute_okx_live_micro_order.ps1",
     "scripts/run_okx_live_automation_once.ps1",
     "scripts/start_controlled_demo_execution_soak.ps1",

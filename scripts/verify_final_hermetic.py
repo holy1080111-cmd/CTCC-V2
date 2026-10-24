@@ -718,7 +718,7 @@ asyncio.run(inspect())
 
 def expected_migration_revision_readback(revision: str) -> dict:
     if revision == "0048":
-        from app.database.repositories.controlled_writer_coverage import (
+        from app.domain.controlled_writer_coverage_catalog_v1 import (
             expected_controlled_writer_coverage_schema,
         )
 
@@ -829,7 +829,7 @@ def verify_coverage_native_catalog_capture(
 
 
 def coverage_nonempty_snapshot(revision: dict, retention: dict) -> dict:
-    from app.database.repositories.controlled_writer_coverage import COVERAGE_TABLES
+    from app.domain.controlled_writer_coverage_catalog_v1 import COVERAGE_TABLES
 
     if (
         not native_migration_json_equal(
@@ -903,7 +903,7 @@ def coverage_nonempty_downgrade_readback(before: dict, after: dict) -> dict:
 def verify_coverage_migration_receipt(
     value: dict, *, manifest_sha256: str, repository_sha256: str, migration_sha256: str
 ) -> dict:
-    from app.database.repositories.controlled_writer_coverage import COVERAGE_TABLES
+    from app.domain.controlled_writer_coverage_catalog_v1 import COVERAGE_TABLES
 
     if (
         type(value) is not dict

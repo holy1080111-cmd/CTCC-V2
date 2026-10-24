@@ -1,5 +1,41 @@
 # Final completion validation state
 
+## 2026-10-24 DB0048 host dependency correction under validation
+
+Exact source `baaffa12d59e409ae6318fe7f19d162a8af6829a`, tree
+`461724b616dd660b9a059703d61e6e0155b850b8`, manifest
+`4332cef198b2c97baee63d0a135ab4936d11e7f7e6b7f4e01554ba1bbe579339`,
+passed 118 local synthetic cases with zero skips before its matching
+[CI 40072095772](https://github.com/holy1080111-cmd/CTCC-V2/actions/runs/40072095772).
+Official artifact `12551498705`, ZIP SHA256
+`b48dd6822b31affe1c3d7b16acad6a0d79b6c6aa009ce911c52c61f878fec39c`,
+retains the genuine PostgreSQL catalog, raw SHA256
+`fc24bbf92b5a5f7032ac00d13012c48000e792faf60045e441b899939f90bc23`.
+All 39 OIDs are exact integers and the constraint/index projection remains
+the sealed `59c771896d4b7ea6b5e77f420fd0d242fdd13429a7ad0f0118c905cdd80e55e6`.
+All 20 recorded stages passed, including the formal empty-before v5 schema
+gate; complete hermetic validation then failed with `ModuleNotFoundError`.
+The official identity records the exception type only. A separate cold local
+stdlib-only reproduction identified `sqlalchemy` on the host's first DB0048
+expected-schema call; it is not an observed remote module-name traceback.
+
+The correction extracts the identical pure declaration/comparison nodes into
+one stdlib-only domain module. Database and host readers use the same objects;
+actual database I/O stays in the repository behind lazy adapter imports.
+All five affected host readers are covered, including their Linux-union
+callers. The new executable policy is explicitly added to held issuer source
+custody. Native role, transaction, source, clock, Control, default-deny and
+one-use authority rules are retained. Baseline overrides are not runtime
+inputs. Fresh exact-source local and full CI results remain required.
+
+The pre-edit checkpoint rechecked all 1,343 source files against Git blob
+identities and the retained exact archive and incremental bundle. Receipt
+`../validation-results/host-policy-extraction-20261024/preedit-checkpoint.json`
+has SHA256 `18595127981ebe003059296782bcc1bbee6e1c4a080bb4d4d50c3dff679fe4a2`.
+The source-only correction changes no deployed database, process, account or
+order state. Existing failure evidence and recovery points remain preserved.
+Engineering, Micro Live readiness and final completion flags remain zero.
+
 ## 2026-10-24 actual DB0048 catalog review and pending corrected-source regression
 
 The `585bd55102fd9c09e59a8d79c9b0414d0456316e` correction, tree

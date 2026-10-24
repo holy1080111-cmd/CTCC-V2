@@ -6,10 +6,21 @@ reviewed: 27 columns, 20 ordinary constraints plus two constraint triggers,
 seven indexes, six functions and eight triggers. Its ordered constraint/index
 projection is now explicitly sealed as
 `59c771896d4b7ea6b5e77f420fd0d242fdd13429a7ad0f0118c905cdd80e55e6`.
-This source declaration is not runtime-role, migration, concurrency or complete
-CI acceptance. The corrected typed OID capture and exact 22-constraint gate
-still require a fresh matching full-source run. See the actual observations
-and outstanding verification in [validation state](final_completion_validation.md).
+CI `40072095772` on exact `baaffa12` then saved 39 correctly typed integer OIDs
+and passed the formal schema gate. Its next host-side validation failed with
+`ModuleNotFoundError`; a separate isolated local reproduction identified the
+repository's SQLAlchemy import. These observations do not establish complete
+CI, runtime-role, migration/restart or concurrency acceptance.
+
+The catalog declarations and comparator now have one standard-library-only
+owner, `app/domain/controlled_writer_coverage_catalog_v1.py`. The database
+repository reexports the identical objects and retains all native role,
+transaction and readback checks. The adapter imports database readers only
+when actual I/O is awaited; host verification uses the same pure policy.
+The new policy file is also held in the issuer's source inventory, so moving
+the implementation cannot escape package custody. DDL, SQL function bodies,
+catalog query projections and the sealed comparison remain unchanged. Fresh
+source-bound regression is required; see [validation state](final_completion_validation.md).
 
 The narrow contract permits one process-owned fact that an explicitly
 identified controlled CTCC Demo deployment observed its native current-query
