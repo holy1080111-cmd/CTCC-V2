@@ -386,7 +386,12 @@ def test_actual_phase_reader_accepts_baseline_then_refuses_context_fabrication(
     }
     path = tmp_path / "fixed-node-phases.json"
     path.write_text(json.dumps(report))
-    assert diagnostic.read_phase_report(path, "original-current")["phases"] == phases
+    assert (
+        diagnostic.read_phase_report(
+            path, "original-current", reader_profile=diagnostic.HISTORICAL_PHASE_PROFILE
+        )["phases"]
+        == phases
+    )
     target = phases[1]
     if damage == "extra_private_field":
         target["raw_account"] = "CANARY_ONLY_PRIVATE_DETAIL"
@@ -406,7 +411,9 @@ def test_actual_phase_reader_accepts_baseline_then_refuses_context_fabrication(
         target["deadline_observation"]["observations"][0]["kind"] = "caller_passed"
     path.write_text(json.dumps(report))
     with pytest.raises(ValueError):
-        diagnostic.read_phase_report(path, "original-current")
+        diagnostic.read_phase_report(
+            path, "original-current", reader_profile=diagnostic.HISTORICAL_PHASE_PROFILE
+        )
 
 
 def test_allowlist_readback_reuses_actual_main_without_importing_host_pytest(
@@ -416,7 +423,7 @@ def test_allowlist_readback_reuses_actual_main_without_importing_host_pytest(
 
     from scripts import diagnose_native_financial_original_node as original
 
-    baseline = original._owned_deny_codes()
+    baseline = original._owned_deny_codes(source_profile=diagnostic.TIMING_PROFILE)
     monkeypatch.setitem(
         sys.modules, "scripts.diagnose_native_financial_original_node", None
     )

@@ -1,6 +1,6 @@
 """One exact Windows original unit node in an owned, bounded process Job.
 
-No application function, TTL or regression gate is changed. The source is a
+Source-owned timing changes instrumented function bytes; TTL and regression gates remain. The source is a
 fresh Git archive and the fresh CPython3.12 environment must match all41 locked
 Windows dependencies. This program is diagnostic evidence, never acceptance.
 """
@@ -26,6 +26,8 @@ from scripts.native_financial_fixed_node_diagnostics import (
     SCOPED_REF,
     SOURCE,
     SOURCE_SHA,
+    TIMING_INPUT_PINS,
+    TIMING_PROFILE,
     fixed_junit_result,
     read_phase_report,
     selected_node,
@@ -97,6 +99,11 @@ def source_identity(archive, root, commit, tree):
     ).encode()
     if files.get("MANIFEST.sha256", (None, None))[1] != manifest:
         raise ValueError("windows_fixed_manifest_unverified")
+    if any(
+        name not in files or _sha(files[name][1]) != digest
+        for name, digest in TIMING_INPUT_PINS.items()
+    ):
+        raise ValueError("windows_timing_source_closure_changed")
     if _sha(files[SOURCE][1]) != SOURCE_SHA or _sha(files[NODE_FILE][1]) != TEST_SHA:
         raise ValueError("windows_fixed_original_source_changed")
     own = "scripts/diagnose_native_financial_fixed_node_windows.py"
@@ -521,6 +528,9 @@ def main():
     parser.add_argument("--commit", required=True)
     parser.add_argument("--tree", required=True)
     parser.add_argument("--fixed-node", choices=SCOPED_CHOICES, required=True)
+    parser.add_argument(
+        "--source-timing-profile", choices=(TIMING_PROFILE,), required=True
+    )
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if (
@@ -576,7 +586,10 @@ def main():
         "sterile_environment_keys": sorted(environment),
         "host_credentials_or_env_loaded": False,
         "Linux_results_substituted": False,
-        "runtime_functions_or_deadlines_modified": False,
+        "application_source_instrumented": True,
+        "source_timing_profile": args.source_timing_profile,
+        "runtime_functions_monkeypatched": False,
+        "application_clocks_or_deadlines_modified": False,
         "execution_authority": False,
         "external_order_writes": 0,
         "full_CI_or_Demo_Live_acceptance": False,
@@ -597,6 +610,8 @@ def main():
         "scripts.native_financial_fixed_node_plugin",
         "--ctcc-financial-fixed-node",
         args.fixed_node,
+        "--ctcc-financial-source-timing-profile",
+        args.source_timing_profile,
         "--ctcc-financial-phase-json",
         str((args.output / "fixed-node-phases.json").resolve()),
         "-vv",
@@ -626,7 +641,7 @@ def main():
                 raise ValueError("windows_fixed_execution_disabled_unverified")
             phases = args.output / "fixed-node-phases.json"
             identity["actual_original_phase_report"] = read_phase_report(
-                phases, args.fixed_node
+                phases, args.fixed_node, reader_profile=TIMING_PROFILE
             )
             identity["actual_original_node_result"] = result
             identity["trusted_result_artifacts"] = {

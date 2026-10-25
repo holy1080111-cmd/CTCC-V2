@@ -309,7 +309,9 @@ def test_actual_versioned_phase_reader_roundtrip_and_legacy_unknown_are_preserve
     }
     path = tmp_path / "fixed-node-phases.json"
     path.write_text(json.dumps(record))
-    result = diagnostic.read_phase_report(path, "original-current")
+    result = diagnostic.read_phase_report(
+        path, "original-current", reader_profile=diagnostic.HISTORICAL_PHASE_PROFILE
+    )
     assert result["phase_wire_schema"].endswith(".v2")
     assert result["phases"][1]["traceback_projection"] == projection
     assert result["unobserved_traceback_frames_are_unknown"] is True
@@ -318,7 +320,9 @@ def test_actual_versioned_phase_reader_roundtrip_and_legacy_unknown_are_preserve
     for row in legacy["phases"]:
         del row["traceback_projection"]
     path.write_text(json.dumps(legacy))
-    old = diagnostic.read_phase_report(path, "original-current")
+    old = diagnostic.read_phase_report(
+        path, "original-current", reader_profile=diagnostic.HISTORICAL_PHASE_PROFILE
+    )
     assert "phase_wire_schema" not in old
     assert all("traceback_projection" not in row for row in old["phases"])
     if damage == "missing_projection":
@@ -335,7 +339,9 @@ def test_actual_versioned_phase_reader_roundtrip_and_legacy_unknown_are_preserve
         projection["SQL"] = "CANARY_PRIVATE_DETAIL"
     path.write_text(json.dumps(record))
     with pytest.raises(ValueError):
-        diagnostic.read_phase_report(path, "original-current")
+        diagnostic.read_phase_report(
+            path, "original-current", reader_profile=diagnostic.HISTORICAL_PHASE_PROFILE
+        )
 
 
 @pytest.mark.parametrize("damage", ["old_pin", "source_drift", "missing_member"])

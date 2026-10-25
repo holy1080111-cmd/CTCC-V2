@@ -71,6 +71,7 @@ from app.trade_qualification import account_materializer as mapping
 from app.trade_qualification import account_observation_index as observed
 from app.trade_qualification import account_risk_windows_v1 as windows
 from app.trade_qualification import controlled_writer_coverage_v1 as coverage
+from app.trade_qualification import native_financial_timing_v1 as _native_timing
 from app.trade_qualification import portfolio
 from app.trade_qualification import reservations as financial_reservations
 from app.trade_qualification.account_runtime import ControlledDemoAccountSession
@@ -179,6 +180,8 @@ def _context():
 
 def _package_inventory():
     """Pin the union, without treating the old writer list as financial proof."""
+    if _native_timing.ENABLED:
+        _native_timing.begin("inventory.financial")
     writer = coverage._package_inventory()
     manifest, manifest_pin = coverage._read_file(
         _ROOT / "MANIFEST.sha256", 2 * 1024 * 1024
@@ -192,9 +195,13 @@ def _package_inventory():
     files = {}
     for name in SOURCE_PATHS:
         raw, pin = coverage._read_file(_ROOT / name, 4 * 1024 * 1024)
+        if _native_timing.ENABLED:
+            _native_timing.source_file("inventory.financial", len(raw))
         if rows.get(name) != sha(raw):
             _deny("native_financial_packaged_source_changed")
         files[name] = pin
+    if _native_timing.ENABLED:
+        _native_timing.end("inventory.financial")
     return {
         "writer": writer,
         "manifest": manifest_pin,
@@ -1354,6 +1361,8 @@ def _v3_check_declared():
 
 
 def _package_inventory_v3():
+    if _native_timing.ENABLED:
+        _native_timing.begin("inventory.v3")
     original = _package_inventory()
     manifest, manifest_pin = coverage._read_file(
         _ROOT / "MANIFEST.sha256", 2 * 1024 * 1024
@@ -1367,9 +1376,13 @@ def _package_inventory_v3():
     files = {}
     for name in _V3_SOURCE_PATHS:
         raw, pin = coverage._read_file(_ROOT / name, 4 * 1024 * 1024)
+        if _native_timing.ENABLED:
+            _native_timing.source_file("inventory.v3", len(raw))
         if rows.get(name) != sha(raw):
             _deny("native_financial_v3_packaged_source_changed")
         files[name] = pin
+    if _native_timing.ENABLED:
+        _native_timing.end("inventory.v3")
     return {
         "original": original,
         "manifest": manifest_pin,
@@ -1835,6 +1848,8 @@ async def _consume_financial_v3(state):
         if remaining <= 0:
             _deny("native_financial_v3_original_deadline_expired")
         async with asyncio.timeout(remaining):
+            if _native_timing.ENABLED:
+                _native_timing.begin("v3.register")
             (
                 facts,
                 view,
@@ -1842,18 +1857,36 @@ async def _consume_financial_v3(state):
                 checkpoint,
                 final,
             ) = await _register_latest_partition_v3(state, facts, view)
+            if _native_timing.ENABLED:
+                _native_timing.end("v3.register")
             _check_v3(state)
+            if _native_timing.ENABLED:
+                _native_timing.begin("v3.calculate")
             operands, derived, evaluated, anchors = _calculate_financial_operands_v2(
                 state, facts, view
             )
+            if _native_timing.ENABLED:
+                _native_timing.end("v3.calculate")
+            if _native_timing.ENABLED:
+                _native_timing.begin("v3.replay")
             await _replay_partition_sources_v3(state, facts, view)
+            if _native_timing.ENABLED:
+                _native_timing.end("v3.replay")
+            if _native_timing.ENABLED:
+                _native_timing.begin("v3.original_sources")
             original_sources = _v3_original_b1_sources(state, facts, view)
+            if _native_timing.ENABLED:
+                _native_timing.end("v3.original_sources")
+            if _native_timing.ENABLED:
+                _native_timing.begin("v3.final_fence")
             fence = await state["v3_repository"].read_final_source_fence(
                 _v3_scope(facts),
                 capture_ids=tuple(
                     reference.capture_id for _chain, reference in original_sources
                 ),
             )
+            if _native_timing.ENABLED:
+                _native_timing.end("v3.final_fence")
             # This is the sole last main DB observation. No later separate
             # database await can make these original B1/B3/DB50 fences stale.
             final = _v3_verify_final_main_fence(
@@ -4058,6 +4091,79 @@ _V3_DECLARED_DATA = (
         ),
     ),
 )
+_V3_DECLARED_BINDINGS = (
+    *_V3_DECLARED_BINDINGS,
+    (
+        _native_timing,
+        (
+            "begin",
+            "end",
+            "source_file",
+            "snapshot",
+            "_self_pinned",
+            "_tick",
+            "_valid_state",
+            "_label_index",
+            "_FACTORY_INIT_PIN",
+            "_CLOCK",
+            "_NS",
+            "_time",
+            "_types",
+        ),
+    ),
+    (_native_timing._types, ("FunctionType", "CodeType", "ModuleType")),
+)
+_V3_DECLARED_DATA = (
+    *_V3_DECLARED_DATA,
+    (
+        _native_timing,
+        (
+            "ENABLED",
+            "PROFILE",
+            "SCHEMA",
+            "LABELS",
+            "MAX_INVOCATIONS",
+            "MAX_READS",
+            "MAX_TOTAL_PUBLIC_BYTES",
+            "MAX_DEPTH",
+            "_CLOCK",
+            "_State",
+            "_FACTORY",
+            "_STATE",
+            "_CLOCK_PIN",
+            "_FACTORY_PIN",
+            "_FACTORY_INIT_PIN",
+            "_FACTORY_INIT_CODE",
+            "_STATE_PIN",
+            "_TIME_PIN",
+            "_DATA_PIN",
+            "_FUNCTION_PINS",
+            "_SLOT_PINS",
+            "_BUILTIN_PINS",
+            "_NS_ID",
+            "_FN_TYPE",
+            "_CODE_TYPE",
+            "_MODULE_TYPE",
+            "_SELF_CHECK_PIN",
+            "_SELF_CHECK_CODE",
+            "_SELF_CHECK_DEFAULTS",
+            "_TYPE",
+            "_LEN",
+            "_RANGE",
+            "_ALL",
+            "_ID",
+            "_INT",
+            "_STR",
+            "_BOOL",
+            "_LIST",
+            "_TUPLE",
+            "_GET",
+            "_SET",
+            "_NS_GET",
+        ),
+    ),
+)
+
 _V3_PIN_FUNCTIONS = tuple(
     (owner, name, _v3_callable_pin(getattr(owner, name)))
     for owner, names in _V3_DECLARED_BINDINGS

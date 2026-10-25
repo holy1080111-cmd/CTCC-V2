@@ -40,6 +40,15 @@ INPUT_PINS = {
     "app/trade_qualification/account_history_source_bundle_v1.py": "06a993d5b10961f302107ff2a45dc5cbfb282384793cb4b1b317563b35c460ac",
     "app/database/repositories/public_runtime_bundle_custody.py": "69cca49251e9bce5f97261a8171aeefabac208a4d1244d864380727dd1597d30",
 }
+SCOPED_TIMING_INPUT_PINS = {
+    **INPUT_PINS,
+    **{  # noqa: PIE800 -- keep the explicit historical versus timing overlay.
+        "app/trade_qualification/native_account_risk_assembly_v1.py": "77f42fa304da8a26464aac94af80490062a79412a5e0953de61ad5be5e05df4f",
+        "app/trade_qualification/controlled_writer_coverage_v1.py": "b70a80ad501597c8c0a7218f80920b741cd87ed4555f1686fb9909cc856e90f5",
+        "app/trade_qualification/native_financial_timing_v1.py": "8b53a2b9af851e65c2670abb325d77fb0e5c8628898bf5499ea59c7dcb9b71c8",
+    },
+}
+TIMING_PROFILE = "source-owned-timing-v1"
 EXECUTION_OFF = (
     "ENVIRONMENT=test",
     "TRADING_MODE=analysis_only",
@@ -63,11 +72,14 @@ def sha(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
-def _owned_deny_codes() -> dict:
+def _owned_deny_codes(*, source_profile=None) -> dict:
     """Called only after an exception; source literals, never error text."""
     global _DENY_ALLOWLIST
-    if _DENY_ALLOWLIST is not None:
-        return _DENY_ALLOWLIST
+    if source_profile not in (None, TIMING_PROFILE):
+        raise ValueError("diagnostic_source_profile_unverified")
+    input_pins = INPUT_PINS if source_profile is None else SCOPED_TIMING_INPUT_PINS
+    if _DENY_ALLOWLIST is not None and _DENY_ALLOWLIST[0] == source_profile:
+        return _DENY_ALLOWLIST[1]
     root = Path(__file__).resolve().parents[1]
     allowed = {}
     for name in (
@@ -76,7 +88,7 @@ def _owned_deny_codes() -> dict:
         "app/trade_qualification/account_history_source_bundle_v1.py",
     ):
         raw = (root / name).read_bytes()
-        if len(raw) > 4 * 1024 * 1024 or sha(raw) != INPUT_PINS[name]:
+        if len(raw) > 4 * 1024 * 1024 or sha(raw) != input_pins[name]:
             raise ValueError("owned_deny_source_identity_changed")
         tree = ast.parse(raw)
         local_classes = {
@@ -112,13 +124,13 @@ def _owned_deny_codes() -> dict:
         }
         module = name.removesuffix(".py").replace("/", ".")
         allowed[(module, next(iter(raised)))] = frozenset(literals)
-    _DENY_ALLOWLIST = allowed
+    _DENY_ALLOWLIST = source_profile, allowed
     return allowed
 
 
-def _failure_chain_record(error, phase):
+def _failure_chain_record(error, phase, *, source_profile=None):
     try:
-        allowed = _owned_deny_codes()
+        allowed = _owned_deny_codes(source_profile=source_profile)
         verified = True
     except Exception:  # noqa: BLE001 -- no unsafe fallback to exception text.
         allowed, verified = {}, False
@@ -468,6 +480,7 @@ def main() -> int:
     from scripts.native_financial_fixed_node_diagnostics import (
         NODES,
         SCOPED_REF,
+        TIMING_PROFILE,
         fixed_junit_result,
         read_phase_report,
         selected_node,
@@ -480,12 +493,20 @@ def main() -> int:
     parser.add_argument("--tree", required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--fixed-node", choices=tuple(NODES), default="original")
+    parser.add_argument(
+        "--source-timing-profile", choices=(TIMING_PROFILE,), default=None
+    )
     args = parser.parse_args()
     scoped = args.fixed_node != "original"
+    if (scoped and args.source_timing_profile != TIMING_PROFILE) or (
+        not scoped and args.source_timing_profile is not None
+    ):
+        raise ValueError("diagnostic_source_timing_requires_explicit_scoped_opt_in")
     node = selected_node(args.fixed_node)
     expected_ref = SCOPED_REF if scoped else EXPECTED_REF
     input_pins = dict(INPUT_PINS)
     if scoped:
+        input_pins.update(SCOPED_TIMING_INPUT_PINS)
         input_pins["scripts/verify_final_hermetic.py"] = (
             "dc8e887927052a2b932a12ba8424eb6f926c9ced04b9e6d68f91a8492eb3fcb5"
         )
@@ -493,7 +514,7 @@ def main() -> int:
             "50b8305a1d0ddefac32717626d1d0dc55145e2024ac65e5104890a4aefb43789"
         )
         input_pins["scripts/native_financial_fixed_node_diagnostics.py"] = (
-            "a8318180305b9bfb136f6c43447b586033be6e1ed9e5a42551da93defba8916a"
+            "cf3cba50889975a6c0c537c8987dbab780f3b34fc00bcd159d832b521880b752"
         )
         input_pins["scripts/native_financial_fixed_node_plugin.py"] = (
             "658595a65d3ec85449f3572b74675f4f832ebd800caaaeb781adaef5f2506e15"
@@ -559,7 +580,10 @@ def main() -> int:
         "node": node,
         "workflow_ref_checked": expected_ref,
         "fixed_node_choice": args.fixed_node,
-        "runtime_functions_or_timers_modified": False,
+        "application_source_instrumented": scoped,
+        "source_timing_profile": args.source_timing_profile,
+        "runtime_functions_monkeypatched": False,
+        "application_clocks_or_deadlines_modified": False,
         "original_node_docker_CLI_timeout_seconds": CONTAINER_DEADLINE_SECONDS,
         "shared_cleanup_deadline_budget_seconds": CLEANUP_SECONDS,
         "hard300second_container_termination_deadline_claimed": False,
@@ -709,6 +733,8 @@ def main() -> int:
                         [
                             "--ctcc-financial-fixed-node",
                             args.fixed_node,
+                            "--ctcc-financial-source-timing-profile",
+                            args.source_timing_profile,
                             "--ctcc-financial-phase-json",
                             "/validation-results/fixed-node-phases.json",
                         ]
@@ -753,7 +779,9 @@ def main() -> int:
             )
             if scoped:
                 identity["actual_original_phase_report"] = read_phase_report(
-                    result_root / "fixed-node-phases.json", args.fixed_node
+                    result_root / "fixed-node-phases.json",
+                    args.fixed_node,
+                    reader_profile=TIMING_PROFILE,
                 )
             log = (args.output / "original-node.log").read_bytes()
             if log.count(b"HERMETIC_EXECUTION_AUTHORITY=0") != 1:

@@ -42,6 +42,7 @@ from app.trade_qualification import account_native_proof_storage as storage
 from app.trade_qualification import account_native_runtime as runtime
 from app.trade_qualification import demo_control as control
 from app.trade_qualification import execution_authority, private_write_authority
+from app.trade_qualification import native_financial_timing_v1 as _native_timing
 from app.trade_qualification.reservations import LedgerScope
 
 _HOOK_KEY = object()
@@ -100,6 +101,7 @@ WRITER_PATHS = (
     "scripts/run_okx_live_automation_once.ps1",
     "scripts/start_controlled_demo_execution_soak.ps1",
 )
+WRITER_PATHS = (*WRITER_PATHS, "app/trade_qualification/native_financial_timing_v1.py")
 _DENY_SOURCE = {
     "app/exchange/okx/private_rest.py": "3edcc729215665251b22a28d6e6e14b234d03182e0bb9a227fe595d1b692b438",
     "app/trade_qualification/private_write_authority.py": "58b7049b19db5f28f36e03736d6874cceaba98917f3e44122ea965ac65d91738",
@@ -236,6 +238,8 @@ def _guard_denials():
 
 
 def _package_inventory():
+    if _native_timing.ENABLED:
+        _native_timing.begin("inventory.writer")
     _guard_denials()
     manifest, manifest_pin = _read_file(_ROOT / "MANIFEST.sha256", 2 * 1024 * 1024)
     rows = {}
@@ -253,11 +257,15 @@ def _package_inventory():
     files = {}
     for relative in WRITER_PATHS:
         raw, pin = _read_file(_ROOT / relative, _MAX_SOURCE_FILE)
+        if _native_timing.ENABLED:
+            _native_timing.source_file("inventory.writer", len(raw))
         if rows.get(relative) != sha(raw) or (
             relative in _DENY_SOURCE and _DENY_SOURCE[relative] != sha(raw)
         ):
             _deny("controlled_writer_coverage_packaged_source_changed")
         files[relative] = pin
+    if _native_timing.ENABLED:
+        _native_timing.end("inventory.writer")
     return {
         "manifest": manifest_pin,
         "files": files,
@@ -1054,6 +1062,17 @@ _FUNCTION_PINS = (
         "_read_portfolio_checkpoint_locked",
         QualificationLedgerRepository._read_portfolio_checkpoint_locked,
     ),
+)
+_FUNCTION_PINS = (
+    *_FUNCTION_PINS,
+    (_native_timing, "begin", _native_timing.begin),
+    (_native_timing, "end", _native_timing.end),
+    (_native_timing, "source_file", _native_timing.source_file),
+    (_native_timing, "snapshot", _native_timing.snapshot),
+    (_native_timing, "_self_pinned", _native_timing._self_pinned),
+    (_native_timing, "_valid_state", _native_timing._valid_state),
+    (_native_timing, "_tick", _native_timing._tick),
+    (_native_timing, "_label_index", _native_timing._label_index),
 )
 
 

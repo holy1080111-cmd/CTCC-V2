@@ -1,4 +1,4 @@
-"""Fixed original-node diagnostics only. Never changes application functions.
+"""Fixed original-node diagnostics only. Source-owned opt-in timing build; original policy/deadlines remain.
 
 Exception text, arbitrary locals, account objects and driver parameters are not
 serialized. Only source-bound scalar deadline locals and the actual standard
@@ -33,11 +33,30 @@ NODE_NAMES = {
 }
 NODES = {key: NODE_FILE + "::" + name for key, name in NODE_NAMES.items()}
 SCOPED_CHOICES = tuple(key for key in NODES if key != "original")
-SCOPED_REF = "refs/heads/work/prospective-event-cutover-pg51-catalog-20261025"
+SCOPED_REF = "refs/heads/diagnostic/native-financial-source-timing-20261026"
 SOURCE = "app/trade_qualification/native_account_risk_assembly_v1.py"
-SOURCE_SHA = "e74f4565d2c93b54fd85c588959493d8384fd8e2ffd6fbb3cfdb4526c31fd317"
+SOURCE_SHA = "77f42fa304da8a26464aac94af80490062a79412a5e0953de61ad5be5e05df4f"
 _PHASES = []
 _COLLECTED = None
+_TIMING_CAPTURE = None
+TIMING_PROFILE = "source-owned-timing-v1"
+HISTORICAL_PHASE_PROFILE = "historical-phases-v1-v2"
+TIMING_LEAF = "app/trade_qualification/native_financial_timing_v1.py"
+TIMING_INPUT_PINS = {
+    "app/trade_qualification/native_account_risk_assembly_v1.py": "77f42fa304da8a26464aac94af80490062a79412a5e0953de61ad5be5e05df4f",
+    "app/trade_qualification/controlled_writer_coverage_v1.py": "b70a80ad501597c8c0a7218f80920b741cd87ed4555f1686fb9909cc856e90f5",
+    "app/trade_qualification/native_financial_timing_v1.py": "8b53a2b9af851e65c2670abb325d77fb0e5c8628898bf5499ea59c7dcb9b71c8",
+}
+TIMING_LABELS = (
+    "v3.register",
+    "v3.calculate",
+    "v3.replay",
+    "v3.original_sources",
+    "v3.final_fence",
+    "inventory.v3",
+    "inventory.financial",
+    "inventory.writer",
+)
 
 
 def selected_node(choice):
@@ -144,10 +163,11 @@ def deadline_projection(error):
 
 
 _TRACE_SOURCE_PINS = {
-    "app/trade_qualification/native_account_risk_assembly_v1.py": "e74f4565d2c93b54fd85c588959493d8384fd8e2ffd6fbb3cfdb4526c31fd317",
+    "app/trade_qualification/native_financial_timing_v1.py": "8b53a2b9af851e65c2670abb325d77fb0e5c8628898bf5499ea59c7dcb9b71c8",
+    "app/trade_qualification/native_account_risk_assembly_v1.py": "77f42fa304da8a26464aac94af80490062a79412a5e0953de61ad5be5e05df4f",
     "app/trade_qualification/account_history_source_v1.py": "fb06524a1ee540e36bc3b1366acfc647edd587b06bb8bd517ef22267fbcb6e79",
     "app/trade_qualification/account_history_source_bundle_v1.py": "06a993d5b10961f302107ff2a45dc5cbfb282384793cb4b1b317563b35c460ac",
-    "app/trade_qualification/controlled_writer_coverage_v1.py": "06c5221b4a9aa4f1fcea241881f6fcfd573b0b0b92a752f4b85bcf94700065bf",
+    "app/trade_qualification/controlled_writer_coverage_v1.py": "b70a80ad501597c8c0a7218f80920b741cd87ed4555f1686fb9909cc856e90f5",
     "app/trade_qualification/account_current_source_v4.py": "7d2ce189d92449035d6542386c656b8a37a6b1115ade636b5c7dc7b9afd1e177",
     "app/trade_qualification/account_observation_index.py": "b2184bf6806e6ad978a8d6b74e533e5f866e56579fcc9a176aff7f95920bdec9",
     "app/trade_qualification/account_bootstrap_runtime.py": "39bc6cd29a44ad442fee7e5a7f0e2410b262b7540aae565e3a91ea9836b0397e",
@@ -458,9 +478,425 @@ def _validate_traceback_projection(value, chain):
                 raise ValueError("fixed_traceback_readback_frame_source_unverified")
 
 
+def _timing_source_bytes_verified():
+    root = Path(__file__).resolve().parents[1]
+    for name, digest in TIMING_INPUT_PINS.items():
+        source = root / name
+        before = source.lstat()
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or source.is_symlink()
+            or before.st_nlink != 1
+            or getattr(before, "st_file_attributes", 0) & 0x400
+            or not 0 < before.st_size <= 4 * 1024 * 1024
+        ):
+            raise ValueError("timing_public_source_file_unverified")
+        raw = source.read_bytes()
+        after = source.lstat()
+        fields = (
+            "st_dev",
+            "st_ino",
+            "st_mode",
+            "st_nlink",
+            "st_size",
+            "st_mtime_ns",
+            "st_ctime_ns",
+        )
+        if (
+            tuple(getattr(before, key) for key in fields)
+            != tuple(getattr(after, key) for key in fields)
+            or len(raw) != before.st_size
+            or hashlib.sha256(raw).hexdigest() != digest
+        ):
+            raise ValueError("timing_public_source_identity_changed")
+
+
+def _validate_timing_snapshot(value):
+    if type(value) is not dict or any(type(key) is not str for key in value):
+        raise ValueError("timing_snapshot_type_unverified")
+    if (
+        set(value) == {"schema", "status"}
+        and type(value["schema"]) is str
+        and type(value["status"]) is str
+        and value["schema"] == "ctcc.native_financial_source_timing.v1"
+        and value["status"] == "UNAVAILABLE_SOURCE_OR_STATE_CHANGED"
+    ):
+        return
+    required = {
+        "schema",
+        "profile",
+        "status",
+        "invalid_code",
+        "open_span_labels",
+        "spans",
+        "cpu_time_measured",
+        "application_clocks_modified",
+        "execution_authority",
+    }
+    if (
+        set(value) != required
+        or type(value["schema"]) is not str
+        or value["schema"] != "ctcc.native_financial_source_timing.v1"
+        or type(value["profile"]) is not str
+        or value["profile"] != TIMING_PROFILE
+        or type(value["status"]) is not str
+        or value["status"] not in ("INCOMPLETE", "CLOSED_SPANS_OBSERVED")
+        or value["cpu_time_measured"] is not False
+        or value["application_clocks_modified"] is not False
+        or value["execution_authority"] is not False
+        or (
+            value["invalid_code"] is not None
+            and (
+                type(value["invalid_code"]) is not str
+                or value["invalid_code"]
+                not in (
+                    "CLOCK_READ_INVALID",
+                    "LABEL_INVALID",
+                    "BOUND_EXCEEDED",
+                    "BALANCE_INVALID",
+                    "PUBLIC_SOURCE_COUNTER_INVALID",
+                )
+            )
+        )
+        or type(value["open_span_labels"]) not in (list, tuple)
+        or len(value["open_span_labels"]) > 16
+        or any(
+            type(label) is not str or label not in TIMING_LABELS
+            for label in value["open_span_labels"]
+        )
+        or type(value["spans"]) not in (list, tuple)
+        or len(value["spans"]) != 8
+    ):
+        raise ValueError("timing_snapshot_envelope_unverified")
+    starts = reads = byte_count = 0
+    for index, row in enumerate(value["spans"]):
+        if (
+            type(row) is not dict
+            or set(row)
+            != {
+                "label",
+                "starts",
+                "closed",
+                "closed_inclusive_elapsed_ns",
+                "public_source_reads",
+                "public_source_bytes",
+            }
+            or type(row["label"]) is not str
+            or row["label"] != TIMING_LABELS[index]
+            or any(
+                type(row[key]) is not int or row[key] < 0
+                for key in (
+                    "starts",
+                    "closed",
+                    "closed_inclusive_elapsed_ns",
+                    "public_source_reads",
+                    "public_source_bytes",
+                )
+            )
+            or not row["closed"] <= row["starts"] <= 65536
+            or row["starts"] - row["closed"]
+            != value["open_span_labels"].count(row["label"])
+            or row["closed_inclusive_elapsed_ns"] >= 65536 * (1 << 63)
+            or row["public_source_reads"] > 1 << 24
+            or row["public_source_bytes"] > 1 << 34
+            or (
+                index < 5
+                and (row["public_source_reads"] != 0 or row["public_source_bytes"] != 0)
+            )
+        ):
+            raise ValueError("timing_fixed_span_unverified")
+        starts += row["starts"]
+        reads += row["public_source_reads"]
+        byte_count += row["public_source_bytes"]
+    if starts > 65536 or reads > 1 << 24 or byte_count > 1 << 34:
+        raise ValueError("timing_aggregate_bound_unverified")
+    closed = value["invalid_code"] is None and not value["open_span_labels"]
+    if (value["status"] == "CLOSED_SPANS_OBSERVED") is not closed:
+        raise ValueError("timing_completion_status_conflict")
+
+
+def _timing_loaded_source_verified(timing):
+    import builtins
+
+    if type(timing) is not types.ModuleType:
+        raise ValueError("timing_loaded_module_type_unverified")
+    namespace = vars(timing)
+    expected_file = Path(__file__).resolve().parents[1] / TIMING_LEAF
+    filename = namespace.get("__file__")
+    if type(filename) is not str or Path(filename).resolve() != expected_file.resolve():
+        raise ValueError("timing_loaded_source_filename_unverified")
+    catalog, _filenames = _trace_source_catalog()
+    source = catalog[TIMING_LEAF]
+    if source["sha256"] != TIMING_INPUT_PINS[TIMING_LEAF]:
+        raise ValueError("timing_compiled_leaf_source_unverified")
+    if (
+        namespace.get("__builtins__") is not vars(builtins)
+        or namespace.get("_NS") is not namespace
+        or type(namespace.get("_NS_ID")) is not int
+        or namespace["_NS_ID"] != id(namespace)
+    ):
+        raise ValueError("timing_loaded_builtin_namespace_unverified")
+    clock = vars(time).get("perf_counter_ns")
+    if (
+        type(clock) is not types.BuiltinFunctionType
+        or clock.__module__ != "time"
+        or clock.__name__ != "perf_counter_ns"
+        or clock.__self__ is not time
+    ):
+        raise ValueError("timing_native_perf_counter_builtin_unverified")
+    aliases = {
+        "_TYPE": type,
+        "_LEN": len,
+        "_RANGE": range,
+        "_ALL": all,
+        "_ID": id,
+        "_INT": int,
+        "_STR": str,
+        "_BOOL": bool,
+        "_LIST": list,
+        "_TUPLE": tuple,
+        "_GET": object.__getattribute__,
+        "_SET": object.__setattr__,
+        "_NS_GET": dict.get,
+        "_FN_TYPE": types.FunctionType,
+        "_CODE_TYPE": types.CodeType,
+        "_MODULE_TYPE": types.ModuleType,
+        "_time": time,
+        "_types": types,
+        "_CLOCK": clock,
+        "_CLOCK_PIN": clock,
+        "_TIME_PIN": time,
+    }
+    for name, original in (
+        ("globals", globals),
+        ("type", type),
+        ("len", len),
+        ("any", any),
+        ("dict", dict),
+    ):
+        if name in namespace and namespace[name] is not original:
+            raise ValueError("timing_loaded_builtin_shadow_unverified")
+    if any(namespace.get(name) is not original for name, original in aliases.items()):
+        raise ValueError("timing_loaded_global_alias_unverified")
+    expected_values = {
+        "ENABLED": True,
+        "PROFILE": TIMING_PROFILE,
+        "SCHEMA": "ctcc.native_financial_source_timing.v1",
+        "MAX_INVOCATIONS": 65536,
+        "MAX_READS": 1 << 24,
+        "MAX_TOTAL_PUBLIC_BYTES": 1 << 34,
+        "MAX_DEPTH": 16,
+    }
+    if any(
+        type(namespace.get(name)) is not type(value) or namespace[name] != value
+        for name, value in expected_values.items()
+    ):
+        raise ValueError("timing_loaded_source_configuration_unverified")
+    labels = namespace.get("LABELS")
+    if (
+        type(labels) is not tuple
+        or any(type(label) is not str for label in labels)
+        or labels != TIMING_LABELS
+    ):
+        raise ValueError("timing_loaded_source_labels_unverified")
+    factory = namespace.get("_State")
+    if type(factory) is not type:
+        raise ValueError("timing_loaded_source_factory_unverified")
+    factory_values = vars(factory)
+    slots = ("stack", "stats", "invalid", "last_tick", "invocations", "public_bytes")
+    if (
+        len(factory.__bases__) != 1
+        or factory.__bases__[0] is not object
+        or any(
+            name in factory_values
+            for name in ("__new__", "__getattribute__", "__setattr__")
+        )
+        or namespace.get("_FACTORY") is not factory
+        or namespace.get("_FACTORY_PIN") is not factory
+        or type(factory_values.get("__slots__")) is not tuple
+        or any(type(name) is not str for name in factory_values["__slots__"])
+        or factory_values["__slots__"] != slots
+    ):
+        raise ValueError("timing_loaded_source_factory_unverified")
+    for name in slots:
+        descriptor = vars(factory).get(name)
+        if (
+            type(descriptor) is not types.MemberDescriptorType
+            or descriptor.__objclass__ is not factory
+            or descriptor.__name__ != name
+        ):
+            raise ValueError("timing_loaded_source_slot_unverified")
+    state = namespace.get("_STATE")
+    if type(state) is not factory or namespace.get("_STATE_PIN") is not state:
+        raise ValueError("timing_loaded_original_buffer_unverified")
+    critical = (
+        ("_valid_state", namespace.get("_valid_state")),
+        ("_self_pinned", namespace.get("_self_pinned")),
+        ("_tick", namespace.get("_tick")),
+        ("_label_index", namespace.get("_label_index")),
+        ("begin", namespace.get("begin")),
+        ("end", namespace.get("end")),
+        ("source_file", namespace.get("source_file")),
+        ("snapshot", namespace.get("snapshot")),
+        ("__init__", vars(factory).get("__init__")),
+    )
+    checked = []
+    for name, function in critical:
+        if (
+            type(function) is not types.FunctionType
+            or function.__globals__ is not namespace
+            or function.__builtins__ is not vars(builtins)
+            or function.__closure__ is not None
+            or function.__kwdefaults__ is not None
+            or Path(function.__code__.co_filename).resolve() != expected_file.resolve()
+        ):
+            raise ValueError("timing_loaded_callable_namespace_unverified")
+        expected_defaults = (
+            (dict.get, globals, type, len, any, dict)
+            if name == "_self_pinned"
+            else (namespace["_self_pinned"],)
+            if name in ("begin", "end", "source_file", "snapshot")
+            else None
+        )
+        actual_defaults = function.__defaults__
+        if expected_defaults is None:
+            if actual_defaults is not None:
+                raise ValueError("timing_loaded_callable_defaults_unverified")
+        elif (
+            type(actual_defaults) is not tuple
+            or len(actual_defaults) != len(expected_defaults)
+            or any(
+                actual is not expected
+                for actual, expected in zip(
+                    actual_defaults, expected_defaults, strict=True
+                )
+            )
+        ):
+            raise ValueError("timing_loaded_callable_defaults_unverified")
+        code_key = _trace_code_key(function.__code__)
+        expected = source["code"].get(code_key)
+        if expected is None or expected["function"] != name:
+            raise ValueError("timing_loaded_callable_not_exact_compiled_source")
+        checked.append((name, function, function.__code__))
+    if (
+        namespace.get("_SELF_CHECK_PIN") is not namespace["_self_pinned"]
+        or namespace.get("_SELF_CHECK_CODE") is not namespace["_self_pinned"].__code__
+        or namespace.get("_SELF_CHECK_DEFAULTS")
+        is not namespace["_self_pinned"].__defaults__
+        or namespace.get("_FACTORY_INIT_PIN") is not vars(factory)["__init__"]
+        or namespace.get("_FACTORY_INIT_CODE") is not vars(factory)["__init__"].__code__
+    ):
+        raise ValueError("timing_loaded_source_code_baseline_unverified")
+    return factory, state, clock, tuple(checked)
+
+
+def _same_timing_loaded_pin(before, after):
+    if any(before[index] is not after[index] for index in (0, 1, 2)):
+        return False
+    return len(before[3]) == len(after[3]) == 9 and all(
+        old[0] == new[0] and old[1] is new[1] and old[2] is new[2]
+        for old, new in zip(before[3], after[3], strict=True)
+    )
+
+
+def _capture_timing_baseline_before_acquire(profile):
+    global _TIMING_CAPTURE
+    if profile != TIMING_PROFILE or _TIMING_CAPTURE is not None:
+        raise ValueError("timing_exact_source_opt_in_before_acquire_required")
+    _timing_source_bytes_verified()
+    from app.trade_qualification import native_financial_timing_v1 as timing
+
+    expected = Path(__file__).resolve().parents[1] / TIMING_LEAF
+    loaded_pin = _timing_loaded_source_verified(timing)
+    function = timing.snapshot
+    if (
+        type(timing) is not types.ModuleType
+        or Path(timing.__file__).resolve() != expected.resolve()
+        or timing.PROFILE != TIMING_PROFILE
+        or timing.ENABLED is not True
+        or type(function) is not types.FunctionType
+        or function.__globals__ is not vars(timing)
+        or Path(function.__code__.co_filename).resolve() != expected.resolve()
+    ):
+        raise ValueError("timing_original_source_factory_unverified")
+    value = function()
+    _validate_timing_snapshot(value)
+    if value.get("status") != "CLOSED_SPANS_OBSERVED" or any(
+        row["starts"] or row["public_source_reads"] or row["public_source_bytes"]
+        for row in value["spans"]
+    ):
+        raise ValueError("timing_baseline_not_before_original_acquire")
+    _TIMING_CAPTURE = timing, function, function.__code__, loaded_pin
+
+
+def _timing_snapshot_before_parent_settlement():
+    # The sole test process observes its source-owned buffer before exiting.
+    # Parents may read/export this envelope only after their existing owned
+    # process/container settlement barrier. This is not a post-cleanup callback.
+    if type(_TIMING_CAPTURE) is not tuple or len(_TIMING_CAPTURE) != 4:
+        raise ValueError("timing_pre_acquire_baseline_missing")
+    timing, function, code, loaded_pin = _TIMING_CAPTURE
+    _timing_source_bytes_verified()
+    if (
+        sys.modules.get("app.trade_qualification.native_financial_timing_v1")
+        is not timing
+        or timing.snapshot is not function
+        or function.__code__ is not code
+        or function.__globals__ is not vars(timing)
+    ):
+        raise ValueError("timing_original_snapshot_changed")
+    if not _same_timing_loaded_pin(loaded_pin, _timing_loaded_source_verified(timing)):
+        raise ValueError("timing_original_transitive_binding_changed")
+    value = function()
+    _validate_timing_snapshot(value)
+    return value
+
+
+def _validate_timing_phase_record(record):
+    if (
+        type(record) is not dict
+        or set(record)
+        != {
+            "schema",
+            "node",
+            "source_sha256",
+            "phases",
+            "source_timing",
+            "source_timing_profile",
+            "timing_source_pins",
+            "application_source_instrumented",
+            "runtime_functions_monkeypatched",
+            "application_clocks_or_deadlines_modified",
+            "captured_before_parent_settlement",
+            "parent_read_requires_owned_settlement",
+            "execution_authority",
+            "diagnostic_only",
+        }
+        or record["schema"] != "ctcc.native_financial_fixed_node.phases.v3"
+        or record["source_sha256"] != SOURCE_SHA
+        or record["source_timing_profile"] != TIMING_PROFILE
+        or record["timing_source_pins"] != TIMING_INPUT_PINS
+        or record["application_source_instrumented"] is not True
+        or record["runtime_functions_monkeypatched"] is not False
+        or record["application_clocks_or_deadlines_modified"] is not False
+        or record["captured_before_parent_settlement"] is not True
+        or record["parent_read_requires_owned_settlement"] is not True
+        or record["execution_authority"] is not False
+        or record["diagnostic_only"] is not True
+    ):
+        raise ValueError("timing_phase_profile_or_source_unverified")
+    _timing_source_bytes_verified()
+    _validate_timing_snapshot(record["source_timing"])
+
+
 def pytest_addoption(parser):
     parser.addoption("--ctcc-financial-fixed-node", choices=tuple(NODES), default=None)
     parser.addoption("--ctcc-financial-phase-json", default=None)
+    parser.addoption(
+        "--ctcc-financial-source-timing-profile",
+        choices=(TIMING_PROFILE,),
+        default=None,
+    )
 
 
 def pytest_collection_finish(session):
@@ -477,6 +913,9 @@ def pytest_collection_finish(session):
         if getattr(session.config.option, name, None) not in (None, "", [], ()):
             raise ValueError("fixed_original_collection_filter_denied")
     _PHASES.clear()
+    _capture_timing_baseline_before_acquire(
+        session.config.getoption("--ctcc-financial-source-timing-profile")
+    )
     _COLLECTED = node
 
 
@@ -518,7 +957,9 @@ def pytest_runtest_makereport(item, call):
                 "status": "UNAVAILABLE_SOURCE_BOUND_TRACEBACK_PROJECTION"
             }
         try:
-            row["failure_chain"] = _failure_chain_record(error, call.when)
+            row["failure_chain"] = _failure_chain_record(
+                error, call.when, source_profile=TIMING_PROFILE
+            )
         except Exception:  # noqa: BLE001 -- preserve original failure without private text.
             row["failure_chain"] = {
                 "status": "UNAVAILABLE_FIXED_CHAIN_OBSERVATION_FAILED"
@@ -551,12 +992,26 @@ def pytest_sessionfinish(session):
         or {row["phase"] for row in _PHASES} != {"setup", "call", "teardown"}
     ):
         raise ValueError("fixed_original_phase_report_incomplete")
+    try:
+        source_timing = _timing_snapshot_before_parent_settlement()
+    except Exception:  # noqa: BLE001 -- fixed public fallback, no exception text.
+        source_timing = {
+            "schema": "ctcc.native_financial_source_timing.v1",
+            "status": "UNAVAILABLE_SOURCE_OR_STATE_CHANGED",
+        }
     record = {
-        "schema": "ctcc.native_financial_fixed_node.phases.v2",
+        "schema": "ctcc.native_financial_fixed_node.phases.v3",
         "node": _COLLECTED,
         "source_sha256": SOURCE_SHA,
         "phases": _PHASES,
-        "runtime_functions_or_clocks_modified": False,
+        "source_timing": source_timing,
+        "source_timing_profile": TIMING_PROFILE,
+        "timing_source_pins": TIMING_INPUT_PINS,
+        "application_source_instrumented": True,
+        "runtime_functions_monkeypatched": False,
+        "application_clocks_or_deadlines_modified": False,
+        "captured_before_parent_settlement": True,
+        "parent_read_requires_owned_settlement": True,
         "execution_authority": False,
         "diagnostic_only": True,
     }
@@ -647,7 +1102,7 @@ def _owned_denies_for_readback():
         or Path(function.__code__.co_filename).resolve() != expected
     ):
         raise ValueError("fixed_original_loaded_deny_interpreter_unverified")
-    return function()
+    return function(source_profile=TIMING_PROFILE)
 
 
 def _validate_phase_row(row, *, wire_version=1):
@@ -824,12 +1279,40 @@ def _validate_phase_row(row, *, wire_version=1):
             raise ValueError("fixed_original_deadline_row_unverified")
 
 
-def read_phase_report(path, choice):
+def read_phase_report(path, choice, *, reader_profile):
     from scripts.evidence_json import read_evidence_json
     from scripts.prospective_capture_custody import stable_read
 
+    if type(reader_profile) is not str or reader_profile not in (
+        HISTORICAL_PHASE_PROFILE,
+        TIMING_PROFILE,
+    ):
+        raise ValueError("fixed_phase_explicit_reader_profile_required")
     raw, _identity = stable_read(path, 256 * 1024)
     record = read_evidence_json(raw.decode())
+    if reader_profile == TIMING_PROFILE:
+        _validate_timing_phase_record(record)
+        if (
+            record["node"] != selected_node(choice)
+            or type(record["phases"]) is not list
+            or [row.get("phase") for row in record["phases"]]
+            != ["setup", "call", "teardown"]
+        ):
+            raise ValueError("timing_original_phase_identity_unverified")
+        for row in record["phases"]:
+            _validate_phase_row(row, wire_version=2)
+        return {
+            "sha256": hashlib.sha256(raw).hexdigest(),
+            "phases": record["phases"],
+            "phase_wire_schema": record["schema"],
+            "source_timing": record["source_timing"],
+            "source_timing_profile": TIMING_PROFILE,
+            "timing_source_pins": TIMING_INPUT_PINS,
+            "application_source_instrumented": True,
+            "unobserved_deadlines_are_unknown": True,
+            "unobserved_traceback_frames_are_unknown": True,
+            "incomplete_or_unavailable_timing_is_not_zero_or_acceptance": True,
+        }
     if (
         type(record) is not dict
         or set(record)
@@ -864,6 +1347,8 @@ def read_phase_report(path, choice):
         "sha256": hashlib.sha256(raw).hexdigest(),
         "phases": record["phases"],
         "unobserved_deadlines_are_unknown": True,
+        "reader_profile": HISTORICAL_PHASE_PROFILE,
+        "historical_wire_readback_only_not_runtime_acceptance": True,
     }
     if wire_version == 2:
         result["phase_wire_schema"] = record["schema"]
