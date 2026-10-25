@@ -50,6 +50,13 @@ def test_public_source_has_only_explicit_reviewed_consumers():
     post_read_batch_consumer = APP / "mie" / "validation" / "post_read_batch_v3.py"
     post_read_stitch_consumer = APP / "mie" / "validation" / "post_read_stitch_v1.py"
     native_devval_consumer = APP / "mie" / "validation" / "native_devval_cohort_v1.py"
+    native_devval_dataset_consumer = (
+        APP / "mie" / "validation" / "native_devval_dataset_v6.py"
+    )
+    native_devval_dataset_imports = {
+        "app.public_market_source.public_market_receipts",
+        "app.public_market_source.public_market_receipts.PublicMinuteCapturePlanV1",
+    }
     devval_source_plan_consumer = (
         APP / "mie" / "validation" / "development_validation_source_plan_v1.py"
     )
@@ -188,6 +195,9 @@ def test_public_source_has_only_explicit_reviewed_consumers():
         # The D/V cohort replays retained journal bytes only. It may name this
         # exact read-only journal type, but owns no acquisition or publisher.
         native_devval_consumer: ("public_receipt_storage",),
+        # V6 uses only the exact immutable minute-plan data contract.
+        # Runtime binding inventories do not admit capture/storage APIs.
+        native_devval_dataset_consumer: ("public_market_receipts",),
         # A portable batch plan names only exact request/limit contracts. The
         # separate owner reaches acquisition through the reviewed MIE service.
         devval_source_plan_consumer: (
@@ -243,6 +253,8 @@ def test_public_source_has_only_explicit_reviewed_consumers():
     post_read_stitch_import_count = 0
     observed_native_devval_imports = set()
     native_devval_import_count = 0
+    observed_native_devval_dataset_imports = set()
+    native_devval_dataset_import_count = 0
     observed_devval_source_plan_imports = set()
     observed_scheduled_minute_imports = set()
     observed_scheduled_pin_imports = set()
@@ -253,6 +265,11 @@ def test_public_source_has_only_explicit_reviewed_consumers():
         if path.is_relative_to(SOURCE):
             continue
         for node in nodes(path):
+            # Resolve this exact owner before names() can omit relative scope.
+            if path == native_devval_dataset_consumer and isinstance(
+                node, ast.ImportFrom
+            ):
+                assert node.level == 0, (path, node.module, node.level)
             for name in names(node):
                 if name.startswith("app.public_market_source"):
                     assert path in allowed, (path, name)
@@ -325,6 +342,24 @@ def test_public_source_has_only_explicit_reviewed_consumers():
                             and node.names[0].asname is None
                         ), name
                         observed_native_devval_imports.add(name)
+                    if path == native_devval_dataset_consumer:
+                        if (
+                            isinstance(node, ast.ImportFrom)
+                            and name
+                            == "app.public_market_source.public_market_receipts"
+                        ):
+                            native_devval_dataset_import_count += 1
+                        assert name in native_devval_dataset_imports, name
+                        assert (
+                            isinstance(node, ast.ImportFrom)
+                            and node.level == 0
+                            and node.module
+                            == "app.public_market_source.public_market_receipts"
+                            and len(node.names) == 1
+                            and node.names[0].name == "PublicMinuteCapturePlanV1"
+                            and node.names[0].asname is None
+                        ), name
+                        observed_native_devval_dataset_imports.add(name)
                     if path == scheduled_minute_consumer:
                         assert name in scheduled_minute_imports, name
                         assert (
@@ -394,6 +429,8 @@ def test_public_source_has_only_explicit_reviewed_consumers():
     assert post_read_stitch_import_count == 1
     assert observed_native_devval_imports == post_read_batch_imports
     assert native_devval_import_count == 1
+    assert observed_native_devval_dataset_imports == native_devval_dataset_imports
+    assert native_devval_dataset_import_count == 1
     assert observed_devval_source_plan_imports == devval_source_plan_imports
     assert observed_scheduled_minute_imports == scheduled_minute_imports
     assert observed_scheduled_pin_imports == scheduled_pin_imports
@@ -759,3 +796,58 @@ def test_public_source_package_init_has_no_import_side_effects():
     assert isinstance(body[0], ast.Expr)
     assert isinstance(body[0].value, ast.Constant)
     assert isinstance(body[0].value.value, str)
+
+
+@pytest.mark.parametrize(
+    "import_line",
+    [
+        "from app.public_market_source.public_market_capture import capture_public_market",
+        "from app.public_market_source.public_receipt_storage import ControlledPublicReceiptJournal",
+        "from app.public_market_source.public_market_receipts import checked",
+        "from app.public_market_source.public_market_receipts import PublicMinuteCapturePlanV1 as caller_alias",
+        "from app.public_market_source.public_market_receipts import PublicMinuteCapturePlanV1",
+        "from app.public_market_source.public_market_receipts import *",
+        "import app.public_market_source.public_market_receipts",
+        "from app.public_market_source import public_market_receipts",
+        "from ...public_market_source.public_market_capture import capture_public_market",
+        "from ...public_market_source.public_market_receipts import PublicMinuteCapturePlanV1",
+    ],
+)
+def test_native_devval_dataset_rejects_extra_aliased_or_duplicate_source_import(
+    monkeypatch, import_line
+):
+    # Prove this exact source passes before injecting the prohibited import.
+    # The duplicate-plan case must also fail the single-import count.
+    test_public_source_has_only_explicit_reviewed_consumers()
+    original_nodes = nodes
+    consumer = APP / "mie" / "validation" / "native_devval_dataset_v6.py"
+    unreviewed = ast.parse(import_line).body[0]
+
+    def with_unreviewed_import(path):
+        yield from original_nodes(path)
+        if path == consumer:
+            yield unreviewed
+
+    monkeypatch.setattr(sys.modules[__name__], "nodes", with_unreviewed_import)
+    with pytest.raises(AssertionError):
+        test_public_source_has_only_explicit_reviewed_consumers()
+
+
+def test_native_devval_dataset_requires_its_exact_reviewed_plan_import(monkeypatch):
+    test_public_source_has_only_explicit_reviewed_consumers()
+    original_nodes = nodes
+    consumer = APP / "mie" / "validation" / "native_devval_dataset_v6.py"
+
+    def without_reviewed_import(path):
+        for node in original_nodes(path):
+            if (
+                path == consumer
+                and isinstance(node, ast.ImportFrom)
+                and node.module == "app.public_market_source.public_market_receipts"
+            ):
+                continue
+            yield node
+
+    monkeypatch.setattr(sys.modules[__name__], "nodes", without_reviewed_import)
+    with pytest.raises(AssertionError):
+        test_public_source_has_only_explicit_reviewed_consumers()
