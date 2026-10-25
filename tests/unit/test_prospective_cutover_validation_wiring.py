@@ -43,6 +43,15 @@ def test_all_current_union_migration_logs_are_pairs_and_partition_remains0050():
 
 
 def _capture(monkeypatch):
+    assert (
+        policy.PG17_DEPARSED_BASELINE
+        == "531b56a9680701a6f1bd462c52d0c57edb883194cbf88c75b84bfa7b391b66fd"
+    )
+    assert policy.PG17_DEPARSED_BASELINE_STATUS == "SEALED_FROM_REVIEWED_NATIVE_PG17"
+    monkeypatch.setattr(policy, "PG17_DEPARSED_BASELINE", None)
+    monkeypatch.setattr(
+        policy, "PG17_DEPARSED_BASELINE_STATUS", "UNSEALED_REQUIRES_NATIVE_PG17_CAPTURE"
+    )
     pins = {
         name: {"sha256": "a" * 64} for name in host.PROSPECTIVE_CUTOVER_CAPTURE_PATHS
     }
@@ -86,7 +95,10 @@ def test_actual_capture_contract_can_retain_observation_while_formal_gate_refuse
 ):
     from app.domain.prospective_event_cutover_v2 import ProspectiveCutoverError
 
-    assert policy.PG17_DEPARSED_BASELINE is None
+    assert (
+        policy.PG17_DEPARSED_BASELINE
+        == "531b56a9680701a6f1bd462c52d0c57edb883194cbf88c75b84bfa7b391b66fd"
+    )
     value, pins, calls = _capture(monkeypatch)
     before = copy.deepcopy(value)
     observed = host.verify_prospective_cutover_native_catalog_capture(

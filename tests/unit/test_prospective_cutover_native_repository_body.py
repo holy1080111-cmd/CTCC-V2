@@ -6,7 +6,7 @@ _record and all original source/context/deadline fences execute unchanged.
 
 Explicit synthetic seams are SQL/session observations, the upstream V1 native
 DB provider, ledger observations and catalog observation verifiers. No synthetic
-native catalog seal is installed: baseline None and UNSEALED remain unchanged.
+native catalog seal is installed: the reviewed source seal remains unchanged.
 The fake store cannot prove PostgreSQL uniqueness, ACL, durability or locking.
 The ordinary V1 synthetic fixture obtains its owner through the real issuer;
 this file never builds an owner from a saved receipt or writes owner registries.
@@ -47,12 +47,13 @@ _ACTUAL_METHODS = {
     name: getattr(repository.NativeProspectiveCutoverRepository, name)
     for name in _METHOD_NAMES
 }
-_UNSEALED = "UNSEALED_REQUIRES_NATIVE_PG17_CAPTURE"
+_SOURCE_SEAL = "531b56a9680701a6f1bd462c52d0c57edb883194cbf88c75b84bfa7b391b66fd"
+_SOURCE_SEAL_STATUS = "SEALED_FROM_REVIEWED_NATIVE_PG17"
 
 
-def _assert_unsealed():
-    assert catalog.PG17_DEPARSED_BASELINE is None
-    assert catalog.PG17_DEPARSED_BASELINE_STATUS == _UNSEALED
+def _assert_source_seal_unchanged():
+    assert catalog.PG17_DEPARSED_BASELINE == _SOURCE_SEAL
+    assert catalog.PG17_DEPARSED_BASELINE_STATUS == _SOURCE_SEAL_STATUS
 
 
 class _SyntheticTransaction:
@@ -188,7 +189,7 @@ class _SyntheticFactory:
 @pytest.fixture
 def native_repository_io(monkeypatch, synthetic_io):
     """Explicit test-only observations; no native source/catalog assertion."""
-    _assert_unsealed()
+    _assert_source_seal_unchanged()
     io = synthetic_io
     db = SimpleNamespace(
         io=io,
@@ -218,13 +219,13 @@ def native_repository_io(monkeypatch, synthetic_io):
     role_verify = catalog.verify_runtime_role
 
     def parent_observation(value):
-        _assert_unsealed()
+        _assert_source_seal_unchanged()
         if value is not db.parent_catalog_sentinel:
             return parent_verify(value)
         return None
 
     def cutover_observation(value, *, require_native_baseline=True):
-        _assert_unsealed()
+        _assert_source_seal_unchanged()
         assert require_native_baseline is True
         if value is not db.cutover_catalog_sentinel:
             return cutover_verify(
@@ -233,7 +234,7 @@ def native_repository_io(monkeypatch, synthetic_io):
         return None
 
     def runtime_role_observation(value):
-        _assert_unsealed()
+        _assert_source_seal_unchanged()
         if value is not db.cutover_catalog_sentinel:
             return role_verify(value)
         return None
@@ -318,7 +319,7 @@ def native_repository_io(monkeypatch, synthetic_io):
     finally:
         for owner in set(issuer._OWNERS) - owners_before:
             owner.close()
-        _assert_unsealed()
+        _assert_source_seal_unchanged()
         for name, original in _ACTUAL_METHODS.items():
             assert (
                 getattr(repository.NativeProspectiveCutoverRepository, name) is original

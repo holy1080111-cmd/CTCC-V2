@@ -143,6 +143,321 @@ def deadline_projection(error):
     }
 
 
+_TRACE_SOURCE_PINS = {
+    "app/trade_qualification/native_account_risk_assembly_v1.py": "e74f4565d2c93b54fd85c588959493d8384fd8e2ffd6fbb3cfdb4526c31fd317",
+    "app/trade_qualification/account_history_source_v1.py": "fb06524a1ee540e36bc3b1366acfc647edd587b06bb8bd517ef22267fbcb6e79",
+    "app/trade_qualification/account_history_source_bundle_v1.py": "06a993d5b10961f302107ff2a45dc5cbfb282384793cb4b1b317563b35c460ac",
+    "app/trade_qualification/controlled_writer_coverage_v1.py": "06c5221b4a9aa4f1fcea241881f6fcfd573b0b0b92a752f4b85bcf94700065bf",
+    "app/trade_qualification/account_current_source_v4.py": "7d2ce189d92449035d6542386c656b8a37a6b1115ade636b5c7dc7b9afd1e177",
+    "app/trade_qualification/account_observation_index.py": "b2184bf6806e6ad978a8d6b74e533e5f866e56579fcc9a176aff7f95920bdec9",
+    "app/trade_qualification/account_bootstrap_runtime.py": "39bc6cd29a44ad442fee7e5a7f0e2410b262b7540aae565e3a91ea9836b0397e",
+    "app/trade_qualification/account_native_clock.py": "61b1d50304d34c9c1790c85c948eaf849298ee617764c7c2ec65911f314ecb0f",
+    "app/trade_qualification/account_native_proof_storage.py": "0081e24c454dbe85beff1a53c28066f02b8a92d394cb1e23b4888b69360c292d",
+    "app/trade_qualification/account_native_runtime.py": "32cb9e1fde514ef0e91b447b7c0dfef459ce276cd08bf4b9a293cce896d3615c",
+    "app/trade_qualification/account_history_native_stage_v1.py": "18086123e3226f27718f23ac3a21df22509ce0debfb057061d00dee7c8f5b7ba",
+    "app/database/repositories/account_history_partition.py": "9fb11f4daed67ee970834fa5a5e4d7d1cc1c3533dc2b69862697c6f7777d4629",
+    "app/database/repositories/public_runtime_bundle_custody.py": "69cca49251e9bce5f97261a8171aeefabac208a4d1244d864380727dd1597d30",
+    "app/domain/source_primitives.py": "660a18a2bab787297c370d5316fa08cbf0ecf01273ea95ed990b949c4953420d",
+    "tests/unit/test_native_account_financial_operands_v3.py": "0879abd5ce8170203bc8c3a8b969d0f73e4e6f66701169067e53d45caba16fbf",
+    "tests/unit/test_account_history_source_v1.py": "0abc9de525d36cfb8adbbb17a4e7880939ecfc6535aa1bde6ac2a427a3b8df13",
+    "tests/unit/test_account_current_source_v7.py": "2f306107444f5d637f348fe5ec21dbd6c447aed791e501648d3765c2f3774c98",
+}
+
+
+def _trace_constant_key(value, budget, depth=0):
+    """Only exact compiler constants; no arbitrary str/repr or object methods."""
+    budget[0] -= 1
+    if depth > 64 or budget[0] < 0:
+        raise ValueError("fixed_traceback_code_constant_bound")
+    kind = type(value)
+    if value is None or value is Ellipsis:
+        return ("none",) if value is None else ("ellipsis",)
+    if kind in (bool, int, str):
+        return kind.__name__, value
+    if kind is bytes:
+        return "bytes", value.hex()
+    if kind is float:
+        return "float", value.hex()
+    if kind is complex:
+        return "complex", value.real.hex(), value.imag.hex()
+    if kind is tuple:
+        return "tuple", tuple(
+            _trace_constant_key(item, budget, depth + 1) for item in value
+        )
+    if kind is frozenset:
+        items = [
+            json.dumps(
+                _trace_constant_key(item, budget, depth + 1),
+                separators=(",", ":"),
+                ensure_ascii=True,
+            )
+            for item in value
+        ]
+        return "frozenset", tuple(sorted(items))
+    if kind is types.CodeType:
+        return (
+            "code",
+            value.co_name,
+            value.co_qualname,
+            value.co_firstlineno,
+            value.co_argcount,
+            value.co_posonlyargcount,
+            value.co_kwonlyargcount,
+            value.co_nlocals,
+            value.co_stacksize,
+            value.co_flags,
+            value.co_code.hex(),
+            value.co_linetable.hex(),
+            value.co_exceptiontable.hex(),
+            value.co_names,
+            value.co_varnames,
+            value.co_freevars,
+            value.co_cellvars,
+            tuple(
+                _trace_constant_key(item, budget, depth + 1) for item in value.co_consts
+            ),
+        )
+    raise ValueError("fixed_traceback_unknown_code_constant")
+
+
+def _trace_code_key(code):
+    if type(code) is not types.CodeType:
+        raise ValueError("fixed_traceback_code_type_unverified")
+    value = _trace_constant_key(code, [16384])
+    return hashlib.sha256(
+        json.dumps(value, separators=(",", ":"), ensure_ascii=True).encode()
+    ).hexdigest()
+
+
+def _trace_source_catalog():
+    """Compile pinned source as data; no execution or application imports."""
+    root = Path(__file__).resolve().parents[1]
+    catalog, filenames = {}, {}
+    if type(_TRACE_SOURCE_PINS) is not dict or not 1 <= len(_TRACE_SOURCE_PINS) <= 24:
+        raise ValueError("fixed_traceback_source_inventory_bound")
+    for name, digest in _TRACE_SOURCE_PINS.items():
+        if (
+            type(name) is not str
+            or re.fullmatch(r"(?:app|tests)/[A-Za-z0-9_/]+\.py", name) is None
+            or type(digest) is not str
+            or re.fullmatch("[a-f0-9]{64}", digest) is None
+        ):
+            raise ValueError("fixed_traceback_source_inventory_unverified")
+        source = root / name
+        before = source.lstat()
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or source.is_symlink()
+            or before.st_nlink != 1
+            or getattr(before, "st_file_attributes", 0) & 0x400
+            or not 0 < before.st_size <= 4 * 1024 * 1024
+        ):
+            raise ValueError("fixed_traceback_source_file_unverified")
+        raw = source.read_bytes()
+        after = source.lstat()
+        fields = (
+            "st_dev",
+            "st_ino",
+            "st_mode",
+            "st_nlink",
+            "st_size",
+            "st_mtime_ns",
+            "st_ctime_ns",
+        )
+        if (
+            tuple(getattr(before, key) for key in fields)
+            != tuple(getattr(after, key) for key in fields)
+            or len(raw) != before.st_size
+            or hashlib.sha256(raw).hexdigest() != digest
+        ):
+            raise ValueError("fixed_traceback_source_identity_changed")
+        # Source is compiled only to compare real frame bytecode/constant/
+        # exception/line tables; no compiled top-level code is executed.
+        compiled = compile(
+            raw, str(source), "exec", dont_inherit=True, optimize=sys.flags.optimize
+        )
+        pending, keys = [compiled], {}
+        while pending:
+            code = pending.pop()
+            if len(keys) >= 4096:
+                raise ValueError("fixed_traceback_source_code_count_bound")
+            keys[_trace_code_key(code)] = {
+                "function": code.co_name,
+                "lines": frozenset(
+                    line for _start, _stop, line in code.co_lines() if line is not None
+                ),
+            }
+            pending.extend(
+                item for item in code.co_consts if type(item) is types.CodeType
+            )
+        catalog[name] = {"sha256": digest, "code": keys}
+        filenames[os.path.normcase(os.path.normpath(str(source)))] = name
+    return catalog, filenames
+
+
+def traceback_projection(error):
+    """Post-failure, bounded original tracebacks; never reads frame locals."""
+    catalog, filenames = _trace_source_catalog()
+    nodes, seen = [], set()
+    current = error
+    while current is not None and len(nodes) < 8 and id(current) not in seen:
+        seen.add(id(current))
+        trace = BaseException.__traceback__.__get__(current)
+        frames, visited, omitted, mismatched = [], 0, 0, 0
+        while trace is not None and visited < 64:
+            if type(trace) is not types.TracebackType:
+                raise ValueError("fixed_traceback_runtime_type_unverified")
+            visited += 1
+            code = trace.tb_frame.f_code
+            filename = code.co_filename
+            name = (
+                filenames.get(os.path.normcase(os.path.normpath(filename)))
+                if type(filename) is str and os.path.isabs(filename)
+                else None
+            )
+            if name is None:
+                omitted += 1
+            else:
+                known = catalog[name]["code"].get(_trace_code_key(code))
+                if (
+                    known is None
+                    or known["function"] != code.co_name
+                    or trace.tb_lineno not in known["lines"]
+                ):
+                    mismatched += 1
+                else:
+                    frames.append(
+                        {
+                            "source": name,
+                            "source_sha256": catalog[name]["sha256"],
+                            "function": known["function"],
+                            "line": trace.tb_lineno,
+                        }
+                    )
+            trace = trace.tb_next
+        nodes.append(
+            {
+                "chain_index": len(nodes),
+                "frames": frames,
+                "visited_frames": visited,
+                "unlisted_frames_omitted": omitted,
+                "code_mismatch_frames_omitted": mismatched,
+                "frames_truncated": trace is not None,
+            }
+        )
+        cause = BaseException.__cause__.__get__(current)
+        current = (
+            cause if cause is not None else BaseException.__context__.__get__(current)
+        )
+    return {
+        "schema": "ctcc.native_financial_fixed_node.traceback_projection.v1",
+        "exception_nodes": nodes,
+        "chain_truncated_or_cycle": current is not None,
+        "source_files_verified": True,
+        "unobserved_frames_are_unknown": True,
+        "runtime_functions_or_clocks_modified": False,
+        "diagnostic_only": True,
+    }
+
+
+def _validate_traceback_projection(value, chain):
+    if type(value) is not dict:
+        raise ValueError("fixed_traceback_readback_envelope_unverified")
+    if (
+        set(value) == {"status"}
+        and type(value["status"]) is str
+        and value["status"] == "UNAVAILABLE_SOURCE_BOUND_TRACEBACK_PROJECTION"
+    ):
+        return
+    if (
+        type(value) is not dict
+        or set(value)
+        != {
+            "schema",
+            "exception_nodes",
+            "chain_truncated_or_cycle",
+            "source_files_verified",
+            "unobserved_frames_are_unknown",
+            "runtime_functions_or_clocks_modified",
+            "diagnostic_only",
+        }
+        or type(value["schema"]) is not str
+        or value["schema"] != "ctcc.native_financial_fixed_node.traceback_projection.v1"
+        or type(value["chain_truncated_or_cycle"]) is not bool
+        or value["source_files_verified"] is not True
+        or value["unobserved_frames_are_unknown"] is not True
+        or value["runtime_functions_or_clocks_modified"] is not False
+        or value["diagnostic_only"] is not True
+        or type(value["exception_nodes"]) is not list
+        or not 1 <= len(value["exception_nodes"]) <= 8
+    ):
+        raise ValueError("fixed_traceback_readback_envelope_unverified")
+    if (
+        type(chain) is dict
+        and "chain" in chain
+        and (
+            len(chain["chain"]) != len(value["exception_nodes"])
+            or chain["truncated_or_cycle"] != value["chain_truncated_or_cycle"]
+        )
+    ):
+        raise ValueError("fixed_traceback_readback_chain_mismatch")
+    catalog, _filenames = _trace_source_catalog()
+    for index, node in enumerate(value["exception_nodes"]):
+        if (
+            type(node) is not dict
+            or set(node)
+            != {
+                "chain_index",
+                "frames",
+                "visited_frames",
+                "unlisted_frames_omitted",
+                "code_mismatch_frames_omitted",
+                "frames_truncated",
+            }
+            or type(node["chain_index"]) is not int
+            or node["chain_index"] != index
+            or type(node["frames"]) is not list
+            or len(node["frames"]) > 64
+            or type(node["frames_truncated"]) is not bool
+            or any(
+                type(node[name]) is not int or not 0 <= node[name] <= 64
+                for name in (
+                    "visited_frames",
+                    "unlisted_frames_omitted",
+                    "code_mismatch_frames_omitted",
+                )
+            )
+            or node["visited_frames"]
+            != len(node["frames"])
+            + node["unlisted_frames_omitted"]
+            + node["code_mismatch_frames_omitted"]
+            or (node["frames_truncated"] and node["visited_frames"] != 64)
+        ):
+            raise ValueError("fixed_traceback_readback_node_unverified")
+        for frame in node["frames"]:
+            if type(frame) is not dict or set(frame) != {
+                "source",
+                "source_sha256",
+                "function",
+                "line",
+            }:
+                raise ValueError("fixed_traceback_readback_frame_fields")
+            name, function, line = frame["source"], frame["function"], frame["line"]
+            if (
+                type(name) is not str
+                or name not in catalog
+                or type(frame["source_sha256"]) is not str
+                or frame["source_sha256"] != catalog[name]["sha256"]
+                or type(function) is not str
+                or type(line) is not int
+                or not any(
+                    row["function"] == function and line in row["lines"]
+                    for row in catalog[name]["code"].values()
+                )
+            ):
+                raise ValueError("fixed_traceback_readback_frame_source_unverified")
+
+
 def pytest_addoption(parser):
     parser.addoption("--ctcc-financial-fixed-node", choices=tuple(NODES), default=None)
     parser.addoption("--ctcc-financial-phase-json", default=None)
@@ -188,6 +503,7 @@ def pytest_runtest_makereport(item, call):
         "failure_chain": None,
         "deadline_observation": None,
         "deadline_status": "UNKNOWN_NO_FAILURE_FRAME_OBSERVED",
+        "traceback_projection": None,
     }
     if call.excinfo is not None:
         from scripts.diagnose_native_financial_original_node import (
@@ -195,6 +511,12 @@ def pytest_runtest_makereport(item, call):
         )
 
         error = call.excinfo.value
+        try:
+            row["traceback_projection"] = traceback_projection(error)
+        except Exception:  # noqa: BLE001 -- preserve original failure; no private text.
+            row["traceback_projection"] = {
+                "status": "UNAVAILABLE_SOURCE_BOUND_TRACEBACK_PROJECTION"
+            }
         try:
             row["failure_chain"] = _failure_chain_record(error, call.when)
         except Exception:  # noqa: BLE001 -- preserve original failure without private text.
@@ -213,7 +535,7 @@ def pytest_runtest_makereport(item, call):
     _PHASES.append(row)
     print(
         json.dumps(
-            {"schema": "ctcc.native_financial_fixed_node.phase.v1", **row},
+            {"schema": "ctcc.native_financial_fixed_node.phase.v2", **row},
             sort_keys=True,
         ),
         flush=True,
@@ -230,7 +552,7 @@ def pytest_sessionfinish(session):
     ):
         raise ValueError("fixed_original_phase_report_incomplete")
     record = {
-        "schema": "ctcc.native_financial_fixed_node.phases.v1",
+        "schema": "ctcc.native_financial_fixed_node.phases.v2",
         "node": _COLLECTED,
         "source_sha256": SOURCE_SHA,
         "phases": _PHASES,
@@ -328,7 +650,7 @@ def _owned_denies_for_readback():
     return function()
 
 
-def _validate_phase_row(row):
+def _validate_phase_row(row, *, wire_version=1):
     keys = {
         "phase",
         "start_wall_seconds",
@@ -339,6 +661,10 @@ def _validate_phase_row(row):
         "deadline_observation",
         "deadline_status",
     }
+    if wire_version == 2:
+        keys.add("traceback_projection")
+    elif wire_version != 1:
+        raise ValueError("fixed_original_phase_wire_version_unverified")
     if (
         type(row) is not dict
         or set(row) != keys
@@ -421,6 +747,15 @@ def _validate_phase_row(row):
                 )
             ):
                 raise ValueError("fixed_original_failure_link_unverified")
+    if wire_version == 2:
+        projection = row["traceback_projection"]
+        if chain is None:
+            if projection is not None:
+                raise ValueError("fixed_traceback_projection_without_failure")
+        elif projection is None:
+            raise ValueError("fixed_traceback_projection_missing")
+        else:
+            _validate_traceback_projection(projection, chain)
     observation = row["deadline_observation"]
     if observation is None:
         return
@@ -507,7 +842,11 @@ def read_phase_report(path, choice):
             "execution_authority",
             "diagnostic_only",
         }
-        or record["schema"] != "ctcc.native_financial_fixed_node.phases.v1"
+        or record["schema"]
+        not in {
+            "ctcc.native_financial_fixed_node.phases.v1",
+            "ctcc.native_financial_fixed_node.phases.v2",
+        }
         or record["node"] != selected_node(choice)
         or record["source_sha256"] != SOURCE_SHA
         or record["runtime_functions_or_clocks_modified"] is not False
@@ -518,10 +857,15 @@ def read_phase_report(path, choice):
         != ["setup", "call", "teardown"]
     ):
         raise ValueError("fixed_original_phase_report_unverified")
+    wire_version = 2 if record["schema"].endswith(".v2") else 1
     for row in record["phases"]:
-        _validate_phase_row(row)
-    return {
+        _validate_phase_row(row, wire_version=wire_version)
+    result = {
         "sha256": hashlib.sha256(raw).hexdigest(),
         "phases": record["phases"],
         "unobserved_deadlines_are_unknown": True,
     }
+    if wire_version == 2:
+        result["phase_wire_schema"] = record["schema"]
+        result["unobserved_traceback_frames_are_unknown"] = True
+    return result

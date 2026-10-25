@@ -255,23 +255,43 @@ async def _append(restricted, uid, raw):
         )
 
 
-async def test_fresh0051_preserves_parent_catalog_and_denies_unsealed_runtime(child):
+async def test_fresh0051_preserves_parent_catalog_and_denies_unsealed_runtime(
+    child, monkeypatch
+):
     admin, restricted, _ = child
+    original = (catalog.PG17_DEPARSED_BASELINE, catalog.PG17_DEPARSED_BASELINE_STATUS)
+    assert original == (
+        "531b56a9680701a6f1bd462c52d0c57edb883194cbf88c75b84bfa7b391b66fd",
+        "SEALED_FROM_REVIEWED_NATIVE_PG17",
+    )
     async with admin.begin() as connection:
         await _settings(connection)
         previous.verify_controlled_writer_coverage_catalog(
             await connection.scalar(text(previous._CATALOG_SQL))
         )
         observed = await connection.scalar(text(catalog.CATALOG_SQL))
-        catalog.verify_catalog(observed, require_native_baseline=False)
-        with pytest.raises(
-            records.ProspectiveCutoverError, match="native_baseline_pending"
-        ):
-            catalog.verify_catalog(observed)
+        # A real current catalog must pass before the explicit pending defect.
+        catalog.verify_catalog(observed)
+        with monkeypatch.context() as pending:
+            pending.setattr(catalog, "PG17_DEPARSED_BASELINE", None)
+            pending.setattr(
+                catalog,
+                "PG17_DEPARSED_BASELINE_STATUS",
+                "UNSEALED_REQUIRES_NATIVE_PG17_CAPTURE",
+            )
+            catalog.verify_catalog(observed, require_native_baseline=False)
+            with pytest.raises(
+                records.ProspectiveCutoverError, match="native_baseline_pending"
+            ):
+                catalog.verify_catalog(observed)
+        assert (
+            catalog.PG17_DEPARSED_BASELINE,
+            catalog.PG17_DEPARSED_BASELINE_STATUS,
+        ) == original
     async with restricted.begin() as connection:
         await _settings(connection)
         observed = await connection.scalar(text(catalog.CATALOG_SQL))
-        catalog.verify_catalog(observed, require_native_baseline=False)
+        catalog.verify_catalog(observed)
         catalog.verify_runtime_role(observed)
 
 

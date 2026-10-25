@@ -2208,10 +2208,11 @@ def _current0051_synthetic_artifact_layer(artifacts):
     from app.domain import prospective_event_cutover_catalog_v2 as policy
     from scripts import verify_final_hermetic as producer
 
-    assert policy.PG17_DEPARSED_BASELINE is None
     assert (
-        policy.PG17_DEPARSED_BASELINE_STATUS == "UNSEALED_REQUIRES_NATIVE_PG17_CAPTURE"
+        policy.PG17_DEPARSED_BASELINE
+        == "531b56a9680701a6f1bd462c52d0c57edb883194cbf88c75b84bfa7b391b66fd"
     )
+    assert policy.PG17_DEPARSED_BASELINE_STATUS == "SEALED_FROM_REVIEWED_NATIVE_PG17"
     source_files = json.loads(SOURCE_FILES)
     for attachment in artifacts.iterdir():
         root = attachment / "ctcc-validation"
@@ -2351,7 +2352,10 @@ def _current0051_synthetic_artifact_layer(artifacts):
             if path.is_file() and path.name != "results.sha256.json"
         }
         (root / "results.sha256.json").write_text(json.dumps(hashes), encoding="utf-8")
-    assert policy.PG17_DEPARSED_BASELINE is None
+    assert (
+        policy.PG17_DEPARSED_BASELINE
+        == "531b56a9680701a6f1bd462c52d0c57edb883194cbf88c75b84bfa7b391b66fd"
+    )
 
 
 @pytest.mark.parametrize(

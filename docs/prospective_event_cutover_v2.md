@@ -44,18 +44,25 @@ public `inspect_consumed_event_journal` still requires initialized claims and
 still cannot grant an absence permit. Both paths share the identical existing
 row-chain validator; this preparation does not replace it with a second one.
 
-## Genuine native acceptance still required
+## Reviewed native schema observation; runtime acceptance remains separate
 
-Native0050 declarations and its reviewed catalog baseline are unchanged.
-The new0051 catalog baseline is explicitly unsealed. Migration-only structural
-inspection can support a genuine capture; runtime requires the separately
-reviewed native PG17 seal and exact restricted-role checks. Synthetic fixtures
-must never supply that release seal. No native0051 execution has occurred.
+The genuine capture workflow40193690798/artifact12599575430 observed PG17.11
+from source`16d3100fa8767036f8423c360e706fe2bf0bb426`/tree`ebf0ea152495389b03c37d7c19f00112e2295591`.
+Its retained ZIP is `a8150c13e68c28c9917316cdf5be2a96fd5b36c658a4f46688c54361326f89ff`.
+The original source/manifest and all false authority fields remain preserved.
+Independent source/DDL/custody review supports only the new0051 deparser seal
+`531b56a9680701a6f1bd462c52d0c57edb883194cbf88c75b84bfa7b391b66fd`. Effective0051 DDL remains
+`dba77c3af835900e4d49ff9aa17f5d47031aeb2c40cdc4f84566e9c08e020924`.
+Native0050 declarations/seal and historical0048/49 coverage policies are unchanged.
 
-Prepared unit and PostgreSQL tests have not been executed. The retained R2
-preparation includes current0051 producer/readback/union wiring and module
-ownership. Root review, formatting/lint, actual native catalog capture,
-PostgreSQL failure/concurrency tests and regression remain required.
+The capture uses the schema-owner role and a repeatable-read snapshot. It is
+not restricted-writer, native-account, namespace-completeness, G6 or execution
+acceptance. The retained JSON fixture tests actual catalog/deparser/fence logic;
+it cannot install a missing seal or issue a runtime owner. Synthetic pending
+tests explicitly scope None/status faults and restore the real source seal.
+Actual exact-source native0051 role/concurrency/recovery, full regression and
+fresh post-seal native capture/formal verification remain required. The old
+unsealed full-CI refusal is retained and is not attributed to sealed source.
 
 The current0051 empty migration experiment first verifies0051, descends to0050,
 checks actual cutover absence, then runs the unchanged historical0050 and older
@@ -75,8 +82,8 @@ The new catalog capture pins all eight cutover source operands and the manifest
 before and after the measured query, with source graph/database head0051 on
 both sides. Capture bytes are saved without clobber and read back independently.
 
-Structural verification may retain a genuine capture while the new baseline is
-None. A separate actual catalog probe must then observe the formal
+Structural verification may retain a genuine capture while a baseline is
+None (as in the retained16d310 observation). A separate actual catalog probe must then observe the formal
 `prospective_cutover_native_baseline_pending` refusal; it does not convert that
 refusal into native admission. The profile emits no synthetic JUnit or test
 counts. Its artifact metadata keeps native admission, G6 and execution false.

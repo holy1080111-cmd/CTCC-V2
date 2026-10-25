@@ -2041,7 +2041,11 @@ def test_current0051_formal_reader_cannot_accept_structural_only_pending_catalog
     from app.domain.prospective_event_cutover_v2 import ProspectiveCutoverError
     from scripts import verify_final_hermetic as host
 
-    assert policy.PG17_DEPARSED_BASELINE is None
+    original = (policy.PG17_DEPARSED_BASELINE, policy.PG17_DEPARSED_BASELINE_STATUS)
+    assert original == (
+        "531b56a9680701a6f1bd462c52d0c57edb883194cbf88c75b84bfa7b391b66fd",
+        "SEALED_FROM_REVIEWED_NATIVE_PG17",
+    )
     marker = object()
     calls = []
 
@@ -2051,15 +2055,26 @@ def test_current0051_formal_reader_cannot_accept_structural_only_pending_catalog
         if require_native_baseline:
             raise ProspectiveCutoverError("prospective_cutover_native_baseline_pending")
 
-    monkeypatch.setattr(policy, "verify_catalog", actual_seam)
-    with pytest.raises(
-        ProspectiveCutoverError, match="prospective_cutover_native_baseline_pending"
-    ):
-        host.migration_revision_readback(
-            "0051", "0051", False, False, (), cutover_catalog=marker
+    with monkeypatch.context() as pending:
+        pending.setattr(policy, "PG17_DEPARSED_BASELINE", None)
+        pending.setattr(
+            policy,
+            "PG17_DEPARSED_BASELINE_STATUS",
+            "UNSEALED_REQUIRES_NATIVE_PG17_CAPTURE",
         )
-    assert calls == [True]
-    assert policy.PG17_DEPARSED_BASELINE is None
+        pending.setattr(policy, "verify_catalog", actual_seam)
+        with pytest.raises(
+            ProspectiveCutoverError, match="prospective_cutover_native_baseline_pending"
+        ):
+            host.migration_revision_readback(
+                "0051", "0051", False, False, (), cutover_catalog=marker
+            )
+        assert calls == [True]
+        assert policy.PG17_DEPARSED_BASELINE is None
+    assert (
+        policy.PG17_DEPARSED_BASELINE,
+        policy.PG17_DEPARSED_BASELINE_STATUS,
+    ) == original
     with pytest.raises(RuntimeError, match="migration_revision_readback_mismatch"):
         host.migration_revision_readback(
             "0050", "0050", False, False, (), cutover_catalog=marker

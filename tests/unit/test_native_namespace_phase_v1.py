@@ -36,12 +36,13 @@ _ACTUAL = (
     repository.NativeNamespacePhaseRepositoryV1._read_once,
     repository.NativeNamespacePhaseRepositoryV1.read_native,
 )
-_UNSEALED = "UNSEALED_REQUIRES_NATIVE_PG17_CAPTURE"
+_SOURCE_SEAL = "531b56a9680701a6f1bd462c52d0c57edb883194cbf88c75b84bfa7b391b66fd"
+_SOURCE_SEAL_STATUS = "SEALED_FROM_REVIEWED_NATIVE_PG17"
 
 
-def _unsealed():
-    assert catalog.PG17_DEPARSED_BASELINE is None
-    assert catalog.PG17_DEPARSED_BASELINE_STATUS == _UNSEALED
+def _source_seal_unchanged():
+    assert catalog.PG17_DEPARSED_BASELINE == _SOURCE_SEAL
+    assert catalog.PG17_DEPARSED_BASELINE_STATUS == _SOURCE_SEAL_STATUS
 
 
 class _Transaction:
@@ -129,7 +130,7 @@ class _Factory:
 
 @pytest.fixture
 def native_phase_io(monkeypatch, synthetic_io):
-    _unsealed()
+    _source_seal_unchanged()
     io = synthetic_io
     db = SimpleNamespace(
         io=io,
@@ -153,14 +154,14 @@ def native_phase_io(monkeypatch, synthetic_io):
     original_role = catalog.verify_runtime_role
 
     def observed_catalog(value, *, require_native_baseline=True):
-        _unsealed()
+        _source_seal_unchanged()
         assert require_native_baseline is True
         if value is not db.catalog_sentinel:
             return original_catalog(value, require_native_baseline=True)
         return None
 
     def observed_role(value):
-        _unsealed()
+        _source_seal_unchanged()
         if value is not db.catalog_sentinel:
             return original_role(value)
         return None
@@ -257,7 +258,7 @@ def native_phase_io(monkeypatch, synthetic_io):
     yield db
     if hasattr(db, "binding"):
         coverage._release_namespace_phase_v1(db.binding, key=phase._HOOK_KEY)
-    _unsealed()
+    _source_seal_unchanged()
     assert _ACTUAL == (
         repository.NativeNamespacePhaseRepositoryV1._read_once,
         repository.NativeNamespacePhaseRepositoryV1.read_native,

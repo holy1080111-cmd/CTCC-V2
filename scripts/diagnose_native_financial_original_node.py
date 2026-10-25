@@ -493,7 +493,7 @@ def main() -> int:
             "50b8305a1d0ddefac32717626d1d0dc55145e2024ac65e5104890a4aefb43789"
         )
         input_pins["scripts/native_financial_fixed_node_diagnostics.py"] = (
-            "d9fbc3296869b5975b6b27628ade795dd91a06c7e4f3f54c0ae22a723017f8c4"
+            "a8318180305b9bfb136f6c43447b586033be6e1ed9e5a42551da93defba8916a"
         )
         input_pins["scripts/native_financial_fixed_node_plugin.py"] = (
             "658595a65d3ec85449f3572b74675f4f832ebd800caaaeb781adaef5f2506e15"

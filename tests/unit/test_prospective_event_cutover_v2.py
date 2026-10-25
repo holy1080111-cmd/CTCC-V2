@@ -364,13 +364,14 @@ async def test_forged_or_saved_cutover_objects_cannot_create_native_owner():
             issuer.commit_prospective_event_cutover_v2(value)
 
 
-def test_new_native_seal_is_explicitly_unsealed_and0050_is_not_replaced():
+def test_new_native_seal_is_reviewed_and0050_is_not_replaced():
     from app.domain import account_history_partition_catalog_v1 as parent
 
-    assert catalog.PG17_DEPARSED_BASELINE is None
     assert (
-        catalog.PG17_DEPARSED_BASELINE_STATUS == "UNSEALED_REQUIRES_NATIVE_PG17_CAPTURE"
+        catalog.PG17_DEPARSED_BASELINE
+        == "531b56a9680701a6f1bd462c52d0c57edb883194cbf88c75b84bfa7b391b66fd"
     )
+    assert catalog.PG17_DEPARSED_BASELINE_STATUS == "SEALED_FROM_REVIEWED_NATIVE_PG17"
     assert (
         parent.PG17_DEPARSED_BASELINE
         == "37190935d1b8e2807d26590225165779bb12e9684c260dd19fb61fba0d3c64c3"

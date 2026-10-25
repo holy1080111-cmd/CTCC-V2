@@ -78,7 +78,15 @@ class FakeDocker:
 
 def _capture_bundle(monkeypatch, files=None):
     """Exact metadata contracts with sentinel-only native catalog IO seams."""
-    assert policy.PG17_DEPARSED_BASELINE is None
+    assert (
+        policy.PG17_DEPARSED_BASELINE
+        == "531b56a9680701a6f1bd462c52d0c57edb883194cbf88c75b84bfa7b391b66fd"
+    )
+    assert policy.PG17_DEPARSED_BASELINE_STATUS == "SEALED_FROM_REVIEWED_NATIVE_PG17"
+    monkeypatch.setattr(policy, "PG17_DEPARSED_BASELINE", None)
+    monkeypatch.setattr(
+        policy, "PG17_DEPARSED_BASELINE_STATUS", "UNSEALED_REQUIRES_NATIVE_PG17_CAPTURE"
+    )
     files = {} if files is None else dict(files)
     for name in (
         *host.PROSPECTIVE_CUTOVER_CAPTURE_PATHS,

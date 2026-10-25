@@ -1,4 +1,4 @@
-"""DB0051 extension of DB0048/49 coverage custody; native seal starts pending.
+"""DB0051 coverage custody with the reviewed 16d310 native PG17 catalog seal.
 
 No original event, reservation, intent, transition or historical coverage row is
 rewritten. The single immutable marker references an existing active epoch.
@@ -6,8 +6,10 @@ rewritten. The single immutable marker references an existing active epoch.
 
 from app.domain import prospective_event_cutover_v2 as records
 
-PG17_DEPARSED_BASELINE = None
-PG17_DEPARSED_BASELINE_STATUS = "UNSEALED_REQUIRES_NATIVE_PG17_CAPTURE"
+PG17_DEPARSED_BASELINE = (
+    "531b56a9680701a6f1bd462c52d0c57edb883194cbf88c75b84bfa7b391b66fd"
+)
+PG17_DEPARSED_BASELINE_STATUS = "SEALED_FROM_REVIEWED_NATIVE_PG17"
 TABLE = "demo_controlled_writer_coverage_cutovers"
 PARENTS = (
     "demo_account_controls",
