@@ -1,0 +1,47 @@
+name: Native financial original node Linux diagnostic
+
+on:
+  push:
+    branches:
+      - validation/native-financial-v3-original-node-20261025
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  original-node:
+    if: github.ref == 'refs/heads/validation/native-financial-v3-original-node-20261025'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout exact diagnostic feature source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Export exact source and run one original node without exchange access
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -C
+          commit=$(git rev-parse HEAD)
+          test "$commit" = "$GITHUB_SHA"
+          tree=$(git rev-parse 'HEAD^{tree}')
+          archive="$RUNNER_TEMP/ctcc-financial-original-node-source.tar"
+          git -c core.autocrlf=false -c core.eol=lf archive --format=tar --output="$archive" "$commit"
+          digest=$(sha256sum "$archive" | cut -d ' ' -f 1)
+          python3 -m scripts.diagnose_native_financial_original_node \
+            --archive "$archive" --archive-sha256 "$digest" \
+            --commit "$commit" --tree "$tree" \
+            --output "$RUNNER_TEMP/ctcc-financial-original-node"
+      - name: Preserve original-node status, exact source, identity and raw evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ctcc-native-financial-original-node-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/ctcc-financial-original-node-source.tar
+            ${{ runner.temp }}/ctcc-financial-original-node/**
+          if-no-files-found: error
+          retention-days: 30

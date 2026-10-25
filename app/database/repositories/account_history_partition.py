@@ -5,14 +5,24 @@ before this write and after its distinct-session readback. There is no callback,
 distributed transaction, retry, replacement owner, or account revision mutation.
 """
 
+import asyncio as _final_fence_asyncio
+import re as _final_fence_re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession, async_sessionmaker
 
+from app.database.repositories.account_capture_journal import (
+    AccountCaptureJournalRepository as _FinalFenceJournalRepository,
+)
 from app.domain import account_history_partition_catalog_v1 as policy
 from app.domain import account_history_partition_v1 as records
+from app.trade_qualification import account_observation_index as _final_fence_observed
+from app.trade_qualification.reservations import LedgerScope as _FinalFenceLedgerScope
+from app.trade_qualification.reservations import (
+    checked_bootstrap as _final_fence_checked_bootstrap,
+)
 
 AccountHistoryPartitionError = policy.AccountHistoryPartitionError
 expected_account_history_partition_schema = (
@@ -501,3 +511,119 @@ class AccountHistoryPartitionRepository:
             # main commit may have succeeded. The native owner must also burn.
             self._poisoned = True
             raise
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class HistoryFinalSourceFenceReadbackV1:
+    """One main transaction's B1/B3/DB0050 observation, never authority."""
+
+    partition: HistoryPartitionReadbackV1
+    b1_chains: tuple
+    observed_at: datetime
+
+    @property
+    def account_complete(self):
+        return False
+
+    @property
+    def execution_authority(self):
+        return False
+
+
+async def _read_final_source_fence_controlled_v1(self, scope, *, capture_ids):
+    """Read original B1 and DB0050/B3 under the SAME real UID transaction.
+
+    The existing formal DB0050 reader obtains the exact SHA256 signed-bigint
+    UID lock used by B1/B3 repositories. Its parent Control/scope row locks are
+    retained while the original B1 reader uses this very session. No portable
+    expected values, passed flag, callback or alternate SQL admission is used.
+    Commit/session-close may follow this observation; it is not a promise that
+    another legitimate writer cannot advance after the transaction releases.
+    """
+    records._scope(scope)
+    if (
+        type(capture_ids) is not tuple
+        or not 1 <= len(capture_ids) <= _final_fence_observed.MAX_CAPTURES + 1
+        or any(
+            type(value) is not str
+            or _final_fence_re.fullmatch(r"[a-f0-9]{32}", value) is None
+            for value in capture_ids
+        )
+        or len(set(capture_ids)) != len(capture_ids)
+    ):
+        policy.deny("account_history_partition_final_capture_bound")
+    ledger_scope = _FinalFenceLedgerScope(
+        environment=scope.environment,
+        account_id=scope.account_id,
+        settlement_currency=scope.settlement_currency,
+    )
+    _final_fence_checked_bootstrap(ledger_scope, _FinalFenceLedgerScope)
+    journal = _FinalFenceJournalRepository(self.session_factory, clock=self.clock)
+    async with self.session_factory() as session, session.begin():
+        # _settings retains the exact strict native baseline/runtime-role gate.
+        await self._settings(session)
+        first = await self._read_in_session(session, scope)
+        chains, total_bytes = [], 0
+        for capture_id in capture_ids:
+            chain = await journal._read_chain_locked(session, ledger_scope, capture_id)
+            for point in chain:
+                total_bytes += sum(
+                    len(raw)
+                    for raw in (
+                        point.event.event_json,
+                        point.event.raw_body,
+                        point.event.packet_payload,
+                    )
+                    if raw is not None
+                )
+            if total_bytes > _final_fence_observed.MAX_SOURCE_BYTES:
+                policy.deny("account_history_partition_final_source_bound")
+            chains.append((capture_id, chain))
+        # Same session/transaction and still the original UID lock. A separate
+        # repository.read after releasing the B1 transaction would race.
+        final = await self._read_in_session(session, scope)
+        if (
+            _final_fence_partition_identity_v1(first)
+            != _final_fence_partition_identity_v1(final)
+            or final.observed_at < first.observed_at
+        ):
+            policy.deny("account_history_partition_final_main_changed")
+        observed_at = _utc(self.clock())
+        if observed_at < final.observed_at:
+            policy.deny("account_history_partition_final_clock_changed")
+        return HistoryFinalSourceFenceReadbackV1(final, tuple(chains), observed_at)
+
+
+def _final_fence_partition_identity_v1(value):
+    return (
+        value.scope,
+        value.members,
+        value.checkpoints,
+        value.b3_documents,
+        value.head_sequence,
+        value.head_sha256,
+        value.control_revision,
+        value.account_revision,
+        value.ledger_revision,
+        value.backend_pid,
+        value.transaction_id,
+    )
+
+
+async def _read_final_source_fence_v1(self, scope, *, capture_ids):
+    """Fixed private-error boundary around the same formal read transaction."""
+    try:
+        return await _read_final_source_fence_controlled_v1(
+            self, scope, capture_ids=capture_ids
+        )
+    except _final_fence_asyncio.CancelledError:
+        raise
+    except policy.AccountHistoryPartitionError:
+        raise
+    except Exception:  # noqa: BLE001 -- no private SQL, source or adapter text escapes.
+        policy.deny("account_history_partition_final_read_uncertain")
+
+
+# Additive public method. All original methods and ordered declarations above
+# are exact. The fixed function globals remain in this repository module.
+AccountHistoryPartitionRepository.read_final_source_fence = _read_final_source_fence_v1
