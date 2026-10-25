@@ -1216,7 +1216,474 @@ def run_history_partition_preflight(container, *, test_results: Path, mounts):
     return report
 
 
+# Current0051 variants; historical0050 capture/probe bytes remain unchanged.
+MIGRATION_REVISION_PROBE_0051 = (
+    MIGRATION_REVISION_PROBE_0050.replace(
+        "('0048', '0049', '0050')", "('0048', '0049', '0050', '0051')"
+    )
+    .replace("observed[0] == '0050'", "observed[0] in ('0050', '0051')")
+    .replace(
+        "return (*observed, coverage, coverage_rows, partition)",
+        "from app.domain.prospective_event_cutover_catalog_v2 import CATALOG_SQL as CUTOVER_SQL\n"
+        "            cutover = await connection.scalar(text(CUTOVER_SQL)) if observed[0] == '0051' else None\n"
+        "            return (*observed, coverage, coverage_rows, partition, cutover)",
+    )
+    .replace(
+        "custody, coverage, _coverage_rows, partition = asyncio.run(read_head())",
+        "custody, coverage, _coverage_rows, partition, cutover = asyncio.run(read_head())",
+    )
+    .replace(
+        "partition_catalog=partition,",
+        "partition_catalog=partition, cutover_catalog=cutover,",
+    )
+)
+COVERAGE_NATIVE_CATALOG_CAPTURE_0051 = COVERAGE_NATIVE_CATALOG_CAPTURE_0050.replace(
+    "before.head != '0050' or head != '0050'", "before.head != '0051' or head != '0051'"
+)
+HISTORY_PARTITION_NATIVE_CATALOG_CAPTURE_0051 = (
+    HISTORY_PARTITION_NATIVE_CATALOG_CAPTURE.replace(
+        "before.head != '0050' or head != '0050'",
+        "before.head != '0051' or head != '0051'",
+    ).replace(
+        "ctcc.account_history_partition_native_catalog_observation.v1",
+        "ctcc.account_history_partition_native_catalog_observation.v2",
+    )
+)
+PREDECESSOR_0047_IDENTITY_PROBE_0051 = PREDECESSOR_0047_IDENTITY_PROBE_0050.replace(
+    "before.head!='0050'",
+    "before.head!='0051' or graph.get_revision('0051').down_revision!='0050'",
+)
+PROSPECTIVE_CUTOVER_CAPTURE_PATHS = (
+    "app/domain/prospective_event_cutover_catalog_v2.py",
+    "app/domain/prospective_event_cutover_v2.py",
+    "app/database/repositories/prospective_event_cutover_v2.py",
+    "app/database/repositories/qualification_ledger.py",
+    "app/trade_qualification/prospective_event_cutover_v2.py",
+    "app/trade_qualification/controlled_writer_coverage_v1.py",
+    "app/database/models/controlled_writer_coverage.py",
+    "migrations/versions/0051_prospective_event_cutover.py",
+)
+PROSPECTIVE_CUTOVER_NATIVE_CATALOG_CAPTURE = """
+import asyncio,hashlib,json,os
+from pathlib import Path
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.pool import NullPool
+from app.config.settings import get_settings
+from app.domain import prospective_event_cutover_catalog_v2 as policy
+from scripts.verify_final_hermetic import PROSPECTIVE_CUTOVER_CAPTURE_PATHS
+from scripts.verify_migration_identity import database_head,source_identity,SOURCE_ROOT
+def pins():
+    paths=(*PROSPECTIVE_CUTOVER_CAPTURE_PATHS,'MANIFEST.sha256')
+    if any((SOURCE_ROOT/name).is_symlink() for name in paths):
+        raise RuntimeError('prospective_cutover_capture_source_symlink')
+    return {name:hashlib.sha256((SOURCE_ROOT/name).read_bytes()).hexdigest() for name in paths}
+async def capture():
+    before=source_identity(SOURCE_ROOT); before_files=pins()
+    engine=create_async_engine(get_settings().database_url,poolclass=NullPool)
+    try:
+        async with engine.connect() as connection:
+            connection=await connection.execution_options(isolation_level='REPEATABLE READ')
+            await connection.execute(text('SET TRANSACTION READ ONLY'))
+            await connection.execute(text("SET LOCAL TIME ZONE 'UTC'"))
+            await connection.execute(text('SET LOCAL search_path TO pg_catalog,public,pg_temp'))
+            head=await connection.run_sync(database_head)
+            facts=(await connection.execute(text("SELECT current_setting('server_version'),current_setting('server_version_num'),current_user,session_user,current_database(),current_schema()"))).one()
+            observed=await connection.scalar(text(policy.CATALOG_SQL))
+            policy.verify_catalog(observed,require_native_baseline=False)
+        after=source_identity(SOURCE_ROOT); after_files=pins()
+        if before!=after or before.head!='0051' or head!='0051' or before_files!=after_files:
+            raise RuntimeError('prospective_cutover_capture_identity_changed')
+        result={'schema':'ctcc.prospective_cutover_native_catalog_observation.v2',
+            'source_head':before.head,'source_migration_sha256':before.sha256,'database_head':head,
+            'session_facts':list(facts),'catalog':observed,
+            'source_files':{name:before_files[name] for name in PROSPECTIVE_CUTOVER_CAPTURE_PATHS},
+            'manifest_sha256':before_files['MANIFEST.sha256'],
+            'effective_ddl_sha256':policy.ddl_identity(),
+            'observed_deparser_sha256':policy.deparser_sha256(observed),
+            'native_baseline_admission':False,'g6_qualified':False,'execution_authority':False}
+        raw=(json.dumps(result,sort_keys=True,allow_nan=False,separators=(',',':'))+'\\n').encode('ascii')
+        if not 0<len(raw)<=2*1024*1024: raise RuntimeError('prospective_cutover_capture_size')
+        path=Path('/validation-results/prospective-cutover-native-catalog.json')
+        with path.open('xb') as stream:
+            stream.write(raw);stream.flush();os.fsync(stream.fileno())
+        if path.read_bytes()!=raw: raise RuntimeError('prospective_cutover_capture_readback')
+        print(json.dumps({'artifact':'test-results/prospective-cutover-native-catalog.json',
+            'sha256':hashlib.sha256(raw).hexdigest(),'native_baseline_admission':False,
+            'g6_qualified':False,'execution_authority':False},sort_keys=True))
+    finally: await engine.dispose()
+asyncio.run(capture())
+"""
+PROSPECTIVE_CUTOVER_ABSENT_PROBE = """
+import asyncio,json
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.pool import NullPool
+from app.config.settings import get_settings
+from scripts.verify_migration_identity import database_head
+async def read():
+    engine=create_async_engine(get_settings().database_url,poolclass=NullPool)
+    try:
+        async with engine.connect() as connection:
+            head=await connection.run_sync(database_head)
+            present=await connection.scalar(text("SELECT to_regclass('public.demo_controlled_writer_coverage_cutovers') IS NOT NULL"))
+            functions=(await connection.execute(text("SELECT proname FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND proname LIKE 'controlled_writer_coverage_v2_cutover_%' ORDER BY proname"))).scalars().all()
+        result={'schema':'ctcc.prospective_cutover_absent.v2','database_head':head,
+                'table_present':present,'functions_present':functions,'execution_authority':False}
+        if head!='0050' or present is not False or functions: raise RuntimeError('prospective_cutover_absence_unverified')
+        print(json.dumps(result,sort_keys=True))
+    finally: await engine.dispose()
+asyncio.run(read())
+"""
+
+
+def expected_prospective_cutover_absent_readback():
+    return {
+        "schema": "ctcc.prospective_cutover_absent.v2",
+        "database_head": "0050",
+        "table_present": False,
+        "functions_present": [],
+        "execution_authority": False,
+    }
+
+
+def verify_coverage_native_catalog_capture_0051(document, *, migration_sha256):
+    return _verify_coverage_native_catalog_capture_for_head(
+        document, migration_sha256=migration_sha256, source_head="0051"
+    )
+
+
+def verify_prospective_cutover_native_catalog_capture(
+    document,
+    *,
+    migration_sha256,
+    manifest_sha256,
+    source_files,
+    require_native_baseline=True,
+):
+    from app.domain import prospective_event_cutover_catalog_v2 as policy
+
+    fields = {
+        "schema",
+        "source_head",
+        "source_migration_sha256",
+        "database_head",
+        "session_facts",
+        "catalog",
+        "source_files",
+        "manifest_sha256",
+        "effective_ddl_sha256",
+        "observed_deparser_sha256",
+        "native_baseline_admission",
+        "g6_qualified",
+        "execution_authority",
+    }
+    pins = {
+        name: source_files[name]["sha256"] for name in PROSPECTIVE_CUTOVER_CAPTURE_PATHS
+    }
+    if (
+        type(require_native_baseline) is not bool
+        or type(document) is not dict
+        or set(document) != fields
+        or document.get("schema")
+        != "ctcc.prospective_cutover_native_catalog_observation.v2"
+        or document.get("source_head") != "0051"
+        or document.get("database_head") != "0051"
+        or document.get("source_migration_sha256") != migration_sha256
+        or document.get("manifest_sha256") != manifest_sha256
+        or document.get("source_files") != pins
+        or any(
+            type(pin) is not str or re.fullmatch(r"[a-f0-9]{64}", pin) is None
+            for pin in (*pins.values(), manifest_sha256, migration_sha256)
+        )
+        or any(
+            document.get(key) is not False
+            for key in (
+                "native_baseline_admission",
+                "g6_qualified",
+                "execution_authority",
+            )
+        )
+        or type(document.get("session_facts")) is not list
+        or len(document["session_facts"]) != 6
+        or any(
+            type(value) is not str or not value for value in document["session_facts"]
+        )
+        or not document["session_facts"][1].isdigit()
+        or not 170000 <= int(document["session_facts"][1]) < 180000
+        or document["session_facts"][-1] != "pg_catalog"
+        or document.get("effective_ddl_sha256") != policy.ddl_identity()
+        or document.get("observed_deparser_sha256")
+        != policy.deparser_sha256(document["catalog"])
+    ):
+        raise ValueError("prospective_cutover_native_catalog_observation_invalid")
+    policy.verify_catalog(
+        document["catalog"], require_native_baseline=require_native_baseline
+    )
+    return policy.expected_schema()
+
+
+def verify_history_partition_native_catalog_capture_0051(
+    document: dict, *, migration_sha256: str, manifest_sha256: str, source_files: dict
+) -> dict:
+    from app.domain.account_history_partition_catalog_v1 import (
+        verify_account_history_partition_catalog,
+    )
+
+    required = {
+        "schema",
+        "source_head",
+        "source_migration_sha256",
+        "database_head",
+        "session_facts",
+        "catalog",
+        "source_files",
+        "manifest_sha256",
+        "native_baseline_admission",
+        "execution_authority",
+    }
+    pins = {
+        name: source_files[name]["sha256"]
+        for name in HISTORY_PARTITION_CAPTURE_PATHS
+        if name in source_files and type(source_files[name]) is dict
+    }
+    if (
+        type(document) is not dict
+        or set(document) != required
+        or document.get("schema")
+        != "ctcc.account_history_partition_native_catalog_observation.v2"
+        or document.get("source_head") != "0051"
+        or document.get("database_head") != "0051"
+        or document.get("source_migration_sha256") != migration_sha256
+        or document.get("manifest_sha256") != manifest_sha256
+        or set(pins) != set(HISTORY_PARTITION_CAPTURE_PATHS)
+        or document.get("source_files") != pins
+        or any(
+            type(pin) is not str or re.fullmatch(r"[a-f0-9]{64}", pin) is None
+            for pin in (*pins.values(), manifest_sha256, migration_sha256)
+        )
+        or document.get("native_baseline_admission") is not False
+        or document.get("execution_authority") is not False
+        or type(document.get("session_facts")) is not list
+        or len(document["session_facts"]) != 6
+        or any(
+            type(value) is not str or not value for value in document["session_facts"]
+        )
+        or not document["session_facts"][1].isdigit()
+        or not 170000 <= int(document["session_facts"][1]) < 180000
+        or document["session_facts"][-1] != "public"
+    ):
+        raise ValueError("history_partition_native_catalog_observation_invalid")
+    return verify_account_history_partition_catalog(
+        document["catalog"], require_native_baseline=True
+    )
+
+
+def verify_history_partition_migration_receipt_0051(
+    value, *, manifest_sha256, repository_sha256, migration_sha256
+):
+    from app.domain.account_history_partition_catalog_v1 import TABLES
+
+    if (
+        type(value) is not dict
+        or set(value)
+        != {
+            "schema_version",
+            "manifest_sha256",
+            "repository_sha256",
+            "migration_sha256",
+            "server_major",
+            "before",
+            "after",
+            "refusal_code",
+            "downgrade_target",
+            "native_baseline_admission",
+            "execution_authority",
+        }
+        or value.get("schema_version")
+        != "ctcc.account_history_partition_migration_acceptance.v2"
+        or value.get("manifest_sha256") != manifest_sha256
+        or value.get("repository_sha256") != repository_sha256
+        or value.get("migration_sha256") != migration_sha256
+        or any(
+            type(pin) is not str or re.fullmatch(r"[a-f0-9]{64}", pin) is None
+            for pin in (manifest_sha256, repository_sha256, migration_sha256)
+        )
+        or type(value.get("server_major")) is not int
+        or value["server_major"] != 17
+        or value.get("refusal_code") != HISTORY_PARTITION_DOWNGRADE_DENIAL
+        or value.get("downgrade_target") != "0049"
+        or value.get("native_baseline_admission") is not False
+        or value.get("execution_authority") is not False
+    ):
+        raise ValueError("history_partition_migration_receipt_invalid")
+    for snap in (value["before"], value["after"]):
+        if (
+            type(snap) is not dict
+            or set(snap) != {"head", "rows_sha256", "counts", "catalog_sha256"}
+            or snap.get("head") != "0051"
+            or type(snap.get("counts")) is not dict
+            or set(snap["counts"]) != set(TABLES)
+            or any(
+                type(n) is not int or not 0 <= n <= 8192
+                for n in snap["counts"].values()
+            )
+            or sum(snap["counts"].values()) < 1
+            or any(
+                type(snap.get(k)) is not str
+                or re.fullmatch(r"[a-f0-9]{64}", snap[k]) is None
+                for k in ("rows_sha256", "catalog_sha256")
+            )
+        ):
+            raise ValueError("history_partition_migration_receipt_snapshot_invalid")
+    if not native_migration_json_equal(value["before"], value["after"]):
+        raise ValueError("history_partition_migration_receipt_retention_changed")
+    return deepcopy(value)
+
+
+def history_partition_nonempty_snapshot_0051(revision, retention):
+    from app.domain.account_history_partition_catalog_v1 import TABLES
+
+    if (
+        not native_migration_json_equal(
+            revision, expected_migration_revision_readback("0051")
+        )
+        or type(retention) is not dict
+        or set(retention) != {"rows", "counts", "rows_sha256"}
+        or type(retention["rows"]) is not dict
+        or set(retention["rows"]) != set(TABLES)
+        or type(retention["counts"]) is not dict
+        or set(retention["counts"]) != set(TABLES)
+    ):
+        raise RuntimeError("history_partition_nonempty_snapshot_invalid")
+    for name in TABLES:
+        count = retention["counts"][name]
+        if (
+            type(count) is not int
+            or not 0 <= count <= 8192
+            or type(retention["rows"][name]) is not list
+            or len(retention["rows"][name]) != count
+            or any(type(row) is not dict for row in retention["rows"][name])
+        ):
+            raise RuntimeError("history_partition_nonempty_snapshot_invalid")
+    body = json.dumps(
+        retention["rows"], sort_keys=True, allow_nan=False, separators=(",", ":")
+    ).encode("ascii")
+    if (
+        sum(retention["counts"].values()) < 1
+        or len(body) > 64 * 1024 * 1024
+        or hashlib.sha256(body).hexdigest() != retention["rows_sha256"]
+    ):
+        raise RuntimeError("history_partition_nonempty_snapshot_invalid")
+    return {
+        "schema": "ctcc.account_history_partition_db0051_nonempty_snapshot.v1",
+        "revision_readback": deepcopy(revision),
+        "retention": deepcopy(retention),
+        "execution_authority": False,
+    }
+
+
+def history_partition_nonempty_downgrade_readback_0051(before, after):
+    for value in (before, after):
+        if (
+            type(value) is not dict
+            or set(value)
+            != {"schema", "revision_readback", "retention", "execution_authority"}
+            or not native_migration_json_equal(
+                value,
+                history_partition_nonempty_snapshot_0051(
+                    value.get("revision_readback"), value.get("retention")
+                ),
+            )
+        ):
+            raise RuntimeError("history_partition_nonempty_downgrade_readback_mismatch")
+    if not native_migration_json_equal(before, after):
+        raise RuntimeError("history_partition_nonempty_downgrade_readback_mismatch")
+    return {
+        "schema": "ctcc.account_history_partition_db0051_nonempty_downgrade.v1",
+        "source_head": "0051",
+        "target": "0049",
+        "result": "DENIED",
+        "policy_refusal": HISTORY_PARTITION_DOWNGRADE_DENIAL,
+        "before": deepcopy(before),
+        "after": deepcopy(after),
+        "rollback": "EXACT",
+        "execution_authority": False,
+    }
+
+
+def verify_history_partition_downgrade_denial_log_0051(path):
+    if (
+        path.is_symlink()
+        or not path.is_file()
+        or not 0 < path.stat().st_size <= 2 * 1024 * 1024
+    ):
+        raise ValueError("history_partition_downgrade_denial_log_missing_or_unsafe")
+    output = path.read_bytes().decode("utf-8")
+    if (
+        re.findall(r"Running downgrade (\d{4} -> \d{4})", output)
+        != ["0051 -> 0050", "0050 -> 0049"]
+        or "/app/migrations/versions/0050_account_history_partition.py" not in output
+        or len(
+            re.findall(
+                rf"(?m)^asyncpg\.exceptions\.RaiseError: {HISTORY_PARTITION_DOWNGRADE_DENIAL}\r?$",
+                output,
+            )
+        )
+        != 1
+        or not re.search(
+            rf"(?m)^sqlalchemy\.exc\.DBAPIError: .*: {HISTORY_PARTITION_DOWNGRADE_DENIAL}\r?$",
+            output,
+        )
+    ):
+        raise ValueError("history_partition_downgrade_policy_refusal_unverified")
+
+
+def verify_current_0051_downgrade_denial_log(path):
+    verify_downgrade_denial_log(path)
+    output = path.read_bytes().decode("utf-8")
+    if re.findall(r"Running downgrade (\d{4} -> \d{4})", output) != [
+        "0051 -> 0050",
+        "0050 -> 0049",
+        "0049 -> 0048",
+        "0048 -> 0047",
+        "0047 -> 0046",
+        "0046 -> 0045",
+        "0045 -> 0044",
+        "0044 -> 0043",
+        "0043 -> 0042",
+        "0042 -> 0041",
+    ]:
+        raise ValueError("current_0050_downgrade_policy_refusal_unverified")
+
+
+HISTORY_PARTITION_RETENTION_PROBE_0051 = (
+    MIGRATION_REVISION_PROBE_0051.split("\nobserved, witness_present", 1)[0].replace(
+        "return (*observed, coverage, coverage_rows, partition, cutover)",
+        "from app.database.repositories.account_history_partition import read_account_history_partition_retention\n"
+        "            partition_rows=await read_account_history_partition_retention(connection)\n"
+        "            return (*observed, coverage, coverage_rows, partition, cutover, partition_rows)",
+    )
+    + """
+observed,witness,guard,triggers,hwm,hwm_guard,hwm_triggers,runtime,native,_,_,coverage,_,partition,cutover,retention=asyncio.run(read_head())
+revision=migration_revision_readback('0051',observed,witness,guard,triggers,hwm,hwm_guard,hwm_triggers,runtime,native,coverage_catalog=coverage,partition_catalog=partition,cutover_catalog=cutover)
+from scripts.verify_final_hermetic import history_partition_nonempty_snapshot_0051
+print(json.dumps(history_partition_nonempty_snapshot_0051(revision,retention),sort_keys=True))
+"""
+)
+
+
 def expected_migration_revision_readback(revision: str) -> dict:
+    if revision == "0051":
+        from app.domain.prospective_event_cutover_catalog_v2 import expected_schema
+
+        return {
+            **expected_migration_revision_readback("0050"),
+            "schema": "ctcc.migration_revision_readback.v8",
+            "expected": "0051",
+            "observed": "0051",
+            "prospective_cutover_schema": expected_schema(),
+        }
     if revision == "0050":
         from app.domain.account_history_partition_catalog_v1 import (
             expected_account_history_partition_schema,
@@ -1315,7 +1782,7 @@ def _verify_coverage_native_catalog_capture_for_head(
     from scripts.verify_controlled_writer_coverage_schema_v1 import verify_catalog
 
     if (
-        source_head not in ("0049", "0050")
+        source_head not in ("0049", "0050", "0051")
         or type(document) is not dict
         or set(document)
         != {
@@ -1665,8 +2132,48 @@ def migration_revision_readback(
     *,
     coverage_catalog: dict | None = None,
     partition_catalog: dict | None = None,
+    cutover_catalog: dict | None = None,
 ) -> dict:
     """Deny schema drift, including extra or disabled non-internal triggers."""
+    if expected == "0051":
+        from app.domain.prospective_event_cutover_catalog_v2 import (
+            expected_schema,
+            verify_catalog,
+        )
+
+        if observed != "0051":
+            raise RuntimeError("migration_revision_readback_mismatch")
+        # The separate capture retains actual PG output before this formal gate.
+        # None/pending never confers admission, even with valid structural DDL.
+        verify_catalog(cutover_catalog, require_native_baseline=True)
+        previous = migration_revision_readback(
+            "0050",
+            "0050",
+            witness_present,
+            guard_present,
+            trigger_catalog,
+            hwm_present,
+            hwm_guard_present,
+            hwm_trigger_catalog,
+            runtime_catalog,
+            native_identity_catalog,
+            coverage_catalog=coverage_catalog,
+            partition_catalog=partition_catalog,
+        )
+        result = {
+            **previous,
+            "schema": "ctcc.migration_revision_readback.v8",
+            "expected": "0051",
+            "observed": "0051",
+            "prospective_cutover_schema": expected_schema(),
+        }
+        if not native_migration_json_equal(
+            result, expected_migration_revision_readback("0051")
+        ):
+            raise RuntimeError("migration_revision_readback_mismatch")
+        return result
+    if cutover_catalog is not None:
+        raise RuntimeError("migration_revision_readback_mismatch")
     if expected == "0050":
         from app.domain.account_history_partition_catalog_v1 import (
             verify_account_history_partition_catalog,
@@ -2301,7 +2808,7 @@ def run_predecessor_0047_validation(
         )
         separate(
             "predecessor-0047-identity",
-            ["python", "-c", PREDECESSOR_0047_IDENTITY_PROBE_0050],
+            ["python", "-c", PREDECESSOR_0047_IDENTITY_PROBE_0051],
             timeout=60,
         )
         report_name = "predecessor-0047-two-cases.xml"
@@ -2357,7 +2864,7 @@ def run_predecessor_0047_validation(
         )
         return {
             "schema": "ctcc.isolated_0047_predecessor_validation.v1",
-            "source_head": "0050",
+            "source_head": "0051",
             "database_target": "0047",
             "separate_from_full_suite_unique_count": True,
             "test_report": report,
@@ -2403,7 +2910,14 @@ class Run:
         self.heartbeat_seconds = heartbeat_seconds
 
     def command(
-        self, name, args, *, timeout=3600, input_bytes=None, expected_refusal=None
+        self,
+        name,
+        args,
+        *,
+        timeout=3600,
+        input_bytes=None,
+        expected_refusal=None,
+        refusal_source_head=None,
     ):
         start = self.clock()
         record = {"name": name, "exit_code": None}
@@ -2458,6 +2972,11 @@ class Run:
                         raise RuntimeError(
                             "migration_downgrade_policy_refusal_unverified"
                         )
+                    if (
+                        refusal_source_head is not None
+                        and expected_refusal != HISTORY_PARTITION_DOWNGRADE_DENIAL
+                    ):
+                        raise RuntimeError("migration_refusal_source_head_out_of_scope")
                     if expected_refusal == DOWNGRADE_DENIAL:
                         verify_downgrade_denial_log(self.output / f"{name}.log")
                     elif expected_refusal == COVERAGE_DOWNGRADE_DENIAL:
@@ -2469,9 +2988,16 @@ class Run:
                             self.output / f"{name}.log"
                         )
                     elif expected_refusal == HISTORY_PARTITION_DOWNGRADE_DENIAL:
-                        verify_history_partition_downgrade_denial_log(
-                            self.output / f"{name}.log"
+                        if refusal_source_head not in (None, "0051"):
+                            raise RuntimeError(
+                                "history_partition_refusal_source_head_invalid"
+                            )
+                        verifier = (
+                            verify_history_partition_downgrade_denial_log_0051
+                            if refusal_source_head == "0051"
+                            else verify_history_partition_downgrade_denial_log
                         )
+                        verifier(self.output / f"{name}.log")
                     else:
                         verify_native_identity_downgrade_denial_log(
                             self.output / f"{name}.log"
@@ -2772,6 +3298,7 @@ def main():
         extra_environment=(),
         timeout=3600,
         expected_refusal=None,
+        refusal_source_head=None,
     ):
         container_name = f"ctcc-final-{suffix}-{name}"
         resources.append(("container", container_name))
@@ -2795,6 +3322,7 @@ def main():
             ],
             timeout=timeout,
             expected_refusal=expected_refusal,
+            refusal_source_head=refusal_source_head,
         )
 
     try:
@@ -2919,14 +3447,20 @@ def main():
             raise RuntimeError("migration_supported_roundtrip_readback_invalid")
         container("migration-upgrade", ["alembic", "upgrade", "head"])
         container(
+            "migration-prospective-cutover-native-catalog",
+            ["python", "-c", PROSPECTIVE_CUTOVER_NATIVE_CATALOG_CAPTURE],
+            mounts=test_results_mount,
+            timeout=60,
+        )
+        container(
             "migration-history-partition-native-catalog",
-            ["python", "-c", HISTORY_PARTITION_NATIVE_CATALOG_CAPTURE],
+            ["python", "-c", HISTORY_PARTITION_NATIVE_CATALOG_CAPTURE_0051],
             mounts=test_results_mount,
             timeout=60,
         )
         container(
             "migration-coverage-native-catalog",
-            ["python", "-c", COVERAGE_NATIVE_CATALOG_CAPTURE_0050],
+            ["python", "-c", COVERAGE_NATIVE_CATALOG_CAPTURE_0051],
             mounts=test_results_mount,
             timeout=60,
         )
@@ -2937,12 +3471,45 @@ def main():
             (args.output / "migration-identity.log").read_text()
         )
         if (
-            identity["migration"].get("source_head") != "0050"
-            or identity["migration"].get("database_head") != "0050"
+            identity["migration"].get("source_head") != "0051"
+            or identity["migration"].get("database_head") != "0051"
             or identity["migration"].get("status") != "PASS"
         ):
             raise RuntimeError("migration_downgrade_policy_head_unreviewed")
         container("migration-drift", ["alembic", "check"])
+        container(
+            "migration-prospective-cutover-empty-before",
+            ["python", "-c", MIGRATION_REVISION_PROBE_0051, "0051"],
+            timeout=60,
+        )
+        cutover_empty_before = read_evidence_json(
+            (
+                args.output / "migration-prospective-cutover-empty-before.log"
+            ).read_bytes()
+        )
+        if not native_migration_json_equal(
+            cutover_empty_before, expected_migration_revision_readback("0051")
+        ):
+            raise RuntimeError("prospective_cutover_current_head_readback_invalid")
+        container(
+            "migration-prospective-cutover-empty-downgrade",
+            ["alembic", "downgrade", "0050"],
+            timeout=60,
+        )
+        container(
+            "migration-prospective-cutover-empty-readback",
+            ["python", "-c", PROSPECTIVE_CUTOVER_ABSENT_PROBE],
+            timeout=60,
+        )
+        cutover_absent = read_evidence_json(
+            (
+                args.output / "migration-prospective-cutover-empty-readback.log"
+            ).read_bytes()
+        )
+        if not native_migration_json_equal(
+            cutover_absent, expected_prospective_cutover_absent_readback()
+        ):
+            raise RuntimeError("prospective_cutover_empty_downgrade_readback_invalid")
         container(
             "migration-history-partition-empty-before",
             ["python", "-c", MIGRATION_REVISION_PROBE_0050, "0050"],
@@ -3134,18 +3701,21 @@ def main():
             raise RuntimeError("migration_reupgrade_identity_changed")
         container(
             "migration-reupgrade-readback",
-            ["python", "-c", MIGRATION_REVISION_PROBE_0050, "0050"],
+            ["python", "-c", MIGRATION_REVISION_PROBE_0051, "0051"],
         )
         reupgrade_readback = json.loads(
             (args.output / "migration-reupgrade-readback.log").read_text()
         )
         if not native_migration_json_equal(
-            reupgrade_readback, expected_migration_revision_readback("0050")
+            reupgrade_readback, expected_migration_revision_readback("0051")
         ):
             raise RuntimeError("migration_reupgrade_readback_invalid")
         container("migration-reupgrade-drift", ["alembic", "check"])
         identity["migration_empty_roundtrip"] = {
-            "source_head": "0050",
+            "source_head": "0051",
+            "prospective_cutover_before_readback": cutover_empty_before,
+            "prospective_cutover_down_revision": "0050",
+            "prospective_cutover_down_readback": cutover_absent,
             "history_partition_before_readback": partition_empty_before,
             "history_partition_down_revision": "0049",
             "history_partition_down_readback": partition_absent,
@@ -3175,7 +3745,7 @@ def main():
             ["alembic", "downgrade", "0041"],
             expected_refusal=DOWNGRADE_DENIAL,
         )
-        verify_current_0050_downgrade_denial_log(
+        verify_current_0051_downgrade_denial_log(
             args.output / "migration-downgrade-denial.log"
         )
         container(
@@ -3188,23 +3758,23 @@ def main():
             raise RuntimeError("migration_denial_identity_changed")
         container(
             "migration-denial-readback",
-            ["python", "-c", MIGRATION_REVISION_PROBE_0050, "0050"],
+            ["python", "-c", MIGRATION_REVISION_PROBE_0051, "0051"],
         )
         denial_readback = json.loads(
             (args.output / "migration-denial-readback.log").read_text()
         )
         if not native_migration_json_equal(
-            denial_readback, expected_migration_revision_readback("0050")
+            denial_readback, expected_migration_revision_readback("0051")
         ):
             raise RuntimeError("migration_denial_transaction_rollback_unverified")
         container("migration-redrift", ["alembic", "check"])
         identity["migration_downgrade_policy"] = {
-            "source_head": "0050",
+            "source_head": "0051",
             "target": "0041",
             "result": "DENIED",
             "denied_at": "0042",
             "policy_refusal": DOWNGRADE_DENIAL,
-            "database_head_after": "0050",
+            "database_head_after": "0051",
             "rollback_readback": denial_readback,
             "schema_drift": "PASS",
         }
@@ -3392,7 +3962,7 @@ def main():
                     "history_partition_migration_receipt_missing_or_unsafe"
                 )
             identity["history_partition_migration_acceptance"] = (
-                verify_history_partition_migration_receipt(
+                verify_history_partition_migration_receipt_0051(
                     read_evidence_json(partition_receipt.read_bytes()),
                     manifest_sha256=identity["manifest_sha256"],
                     repository_sha256=files[
@@ -3404,10 +3974,10 @@ def main():
                 )
             )
             # Own49 and own48 experiments are the separately retained, actual
-            # child receipts validated above. This primary experiment is50 only.
+            # child receipts validated above. This primary experiment is51; child49/48 remain historical.
             container(
                 "migration-history-partition-nonempty-before",
-                ["python", "-c", HISTORY_PARTITION_RETENTION_PROBE],
+                ["python", "-c", HISTORY_PARTITION_RETENTION_PROBE_0051],
                 timeout=60,
             )
             partition_before = read_evidence_json(
@@ -3419,14 +3989,15 @@ def main():
                 "migration-history-partition-nonempty-denial",
                 ["alembic", "downgrade", "0049"],
                 expected_refusal=HISTORY_PARTITION_DOWNGRADE_DENIAL,
+                refusal_source_head="0051",
                 timeout=60,
             )
-            verify_history_partition_downgrade_denial_log(
+            verify_history_partition_downgrade_denial_log_0051(
                 args.output / "migration-history-partition-nonempty-denial.log"
             )
             container(
                 "migration-history-partition-nonempty-after",
-                ["python", "-c", HISTORY_PARTITION_RETENTION_PROBE],
+                ["python", "-c", HISTORY_PARTITION_RETENTION_PROBE_0051],
                 timeout=60,
             )
             partition_after = read_evidence_json(
@@ -3435,7 +4006,7 @@ def main():
                 ).read_bytes()
             )
             identity["history_partition_nonempty_downgrade_policy"] = (
-                history_partition_nonempty_downgrade_readback(
+                history_partition_nonempty_downgrade_readback_0051(
                     partition_before, partition_after
                 )
             )

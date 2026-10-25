@@ -140,8 +140,13 @@ async def _committed_migration_witness_state(engine, witness_sha256):
 
         coverage_catalog = await read_catalog(connection)
         partition_catalog = await read_account_history_partition_catalog(connection)
+        from app.domain.prospective_event_cutover_catalog_v2 import (
+            CATALOG_SQL as CUTOVER_SQL,
+        )
+
+        cutover_catalog = await connection.scalar(text(CUTOVER_SQL))
     readback = migration_revision_readback(
-        "0050",
+        "0051",
         head,
         table_present,
         guard_present,
@@ -153,6 +158,7 @@ async def _committed_migration_witness_state(engine, witness_sha256):
         native_catalog,
         coverage_catalog=coverage_catalog,
         partition_catalog=partition_catalog,
+        cutover_catalog=cutover_catalog,
     )
     return row, readback
 
@@ -264,7 +270,7 @@ async def test_committed_denial_blocks_0043_downgrade_and_rolls_back(
     assert before[1]["account_revision_witness_trigger_count"] == 3
 
     def downgrade_after_committed_readback(sync_connection):
-        assert database_head(sync_connection) == "0050"
+        assert database_head(sync_connection) == "0051"
         assert (
             sync_connection.execute(
                 text(

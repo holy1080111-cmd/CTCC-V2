@@ -38,6 +38,7 @@ MIGRATIONS = {
     "0048": "0048_controlled_writer_coverage.py",
     "0049": "0049_controlled_writer_pair_guard_definer.py",
     "0050": "0050_account_history_partition.py",
+    "0051": "0051_prospective_event_cutover.py",
 }
 TABLES = {
     # 0023 is constraint/trigger-only and has dedicated upgrade/downgrade
@@ -75,8 +76,18 @@ TABLES = {
         "demo_account_history_partition_checkpoints",
     ),
 }
+TABLES["0051"] = ("demo_controlled_writer_coverage_cutovers",)
 DOWNGRADE_LOCKS = {
     **TABLES,
+    "0051": (
+        "demo_account_controls",
+        "qualification_account_scopes",
+        "qualification_reservations",
+        "qualification_reservation_transitions",
+        "demo_controlled_writer_coverage_scopes",
+        "demo_controlled_writer_coverage_journal",
+    )
+    + TABLES["0051"],
     "0048": ("demo_account_controls",) + TABLES["0048"],
     "0049": ("demo_account_controls",) + TABLES["0048"],
     "0050": (
@@ -113,7 +124,16 @@ class RecordedDowngrade:
         self.commands = []
         module = load_migration(revision)
         module.op = self
-        if revision == "0050":
+        if revision == "0051":
+            # Only the explicit offline SQL-order fixture omits acquisition.
+            # Real-PG migration tests retain actual structural/owner checks.
+            original = module._structural
+            module._structural = self._synthetic_cutover_catalog
+            try:
+                module.downgrade()
+            finally:
+                module._structural = original
+        elif revision == "0050":
             # Explicit offline DDL-order fixture. Actual owner/ACL/catalog and
             # native baseline admission remain real-PG tests, never stubbed there.
             original = module._checked_catalog
@@ -136,6 +156,9 @@ class RecordedDowngrade:
 
     def get_bind(self):
         return self
+
+    def _synthetic_cutover_catalog(self, bind):
+        assert bind is self
 
     def _synthetic_partition_catalog(self, bind):
         assert bind is self

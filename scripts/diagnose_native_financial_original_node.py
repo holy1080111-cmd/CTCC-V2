@@ -465,15 +465,41 @@ def _evidence_inventory_after_settlement(output, *, readable):
 
 
 def main() -> int:
+    from scripts.native_financial_fixed_node_diagnostics import (
+        NODES,
+        SCOPED_REF,
+        fixed_junit_result,
+        read_phase_report,
+        selected_node,
+    )
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--archive", type=Path, required=True)
     parser.add_argument("--archive-sha256", required=True)
     parser.add_argument("--commit", required=True)
     parser.add_argument("--tree", required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--fixed-node", choices=tuple(NODES), default="original")
     args = parser.parse_args()
+    scoped = args.fixed_node != "original"
+    node = selected_node(args.fixed_node)
+    expected_ref = SCOPED_REF if scoped else EXPECTED_REF
+    input_pins = dict(INPUT_PINS)
+    if scoped:
+        input_pins["scripts/verify_final_hermetic.py"] = (
+            "6b3ed4a605fbfcb6d28d5f5114fedae7bdb9613775c1cf73fcc68a4587cd9d80"
+        )
+        input_pins["scripts/prospective_capture_custody.py"] = (
+            "50b8305a1d0ddefac32717626d1d0dc55145e2024ac65e5104890a4aefb43789"
+        )
+        input_pins["scripts/native_financial_fixed_node_diagnostics.py"] = (
+            "d9fbc3296869b5975b6b27628ade795dd91a06c7e4f3f54c0ae22a723017f8c4"
+        )
+        input_pins["scripts/native_financial_fixed_node_plugin.py"] = (
+            "658595a65d3ec85449f3572b74675f4f832ebd800caaaeb781adaef5f2506e15"
+        )
     if (
-        os.environ.get("GITHUB_REF") != EXPECTED_REF
+        os.environ.get("GITHUB_REF") != expected_ref
         or os.environ.get("GITHUB_SHA") != args.commit
         or os.environ.get("GITHUB_EVENT_NAME") not in ("push", "workflow_dispatch")
     ):
@@ -507,7 +533,7 @@ def main() -> int:
     ).encode()
     if manifest_raw != expected_manifest:
         raise ValueError("diagnostic_manifest_inventory_mismatch")
-    for name, pin in INPUT_PINS.items():
+    for name, pin in input_pins.items():
         if files.get(name, {}).get("sha256") != pin:
             raise ValueError("diagnostic_reviewed_input_changed")
     own_name = "scripts/diagnose_native_financial_original_node.py"
@@ -529,9 +555,11 @@ def main() -> int:
         "source_file_map_sha256": sha(map_raw),
         "source_count": len(files),
         "runner_sha256": sha(Path(__file__).read_bytes()),
-        "reviewed_input_pins": INPUT_PINS,
-        "node": NODE,
-        "workflow_ref_checked": EXPECTED_REF,
+        "reviewed_input_pins": input_pins,
+        "node": node,
+        "workflow_ref_checked": expected_ref,
+        "fixed_node_choice": args.fixed_node,
+        "runtime_functions_or_timers_modified": False,
         "original_node_docker_CLI_timeout_seconds": CONTAINER_DEADLINE_SECONDS,
         "shared_cleanup_deadline_budget_seconds": CLEANUP_SECONDS,
         "hard300second_container_termination_deadline_claimed": False,
@@ -670,11 +698,23 @@ def main() -> int:
                     "-B",
                     "-m",
                     "scripts.hermetic_pytest",
-                    NODE,
+                    node,
                     "-o",
                     "addopts=",
                     "-p",
-                    "scripts.diagnose_native_financial_original_node",
+                    "scripts.native_financial_fixed_node_plugin"
+                    if scoped
+                    else "scripts.diagnose_native_financial_original_node",
+                    *(
+                        [
+                            "--ctcc-financial-fixed-node",
+                            args.fixed_node,
+                            "--ctcc-financial-phase-json",
+                            "/validation-results/fixed-node-phases.json",
+                        ]
+                        if scoped
+                        else []
+                    ),
                     "-vv",
                     "-s",
                     "--tb=short",
@@ -706,7 +746,15 @@ def main() -> int:
                 ["-B", "-c", copy_code, sha(map_raw)],
                 mounts=copy_mount,
             )
-            original_result = junit_result(result_root / "original-node.xml")
+            original_result = (
+                fixed_junit_result(result_root / "original-node.xml", args.fixed_node)
+                if scoped
+                else junit_result(result_root / "original-node.xml")
+            )
+            if scoped:
+                identity["actual_original_phase_report"] = read_phase_report(
+                    result_root / "fixed-node-phases.json", args.fixed_node
+                )
             log = (args.output / "original-node.log").read_bytes()
             if log.count(b"HERMETIC_EXECUTION_AUTHORITY=0") != 1:
                 raise ValueError("diagnostic_execution_disabled_preflight_unverified")

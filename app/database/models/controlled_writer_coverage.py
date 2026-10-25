@@ -165,3 +165,67 @@ class DemoControlledWriterCoverageJournal(Base):
         nullable=False,
         server_default=text("clock_timestamp()"),
     )
+
+
+class DemoControlledWriterCoverageCutover(Base):
+    """Immutable start marker for one existing active coverage epoch."""
+
+    __tablename__ = "demo_controlled_writer_coverage_cutovers"
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "environment", "account_id", "epoch_id", name="pk_cwc_cutover"
+        ),
+        UniqueConstraint("cutover_id", name="uq_cwc_cutover_id"),
+        ForeignKeyConstraint(
+            ["environment", "account_id", "active_journal_sequence"],
+            [
+                "demo_controlled_writer_coverage_journal.environment",
+                "demo_controlled_writer_coverage_journal.account_id",
+                "demo_controlled_writer_coverage_journal.journal_sequence",
+            ],
+            name="fk_cwc_cutover_active",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["environment", "account_id", "settlement_currency"],
+            [
+                "qualification_account_scopes.environment",
+                "qualification_account_scopes.account_id",
+                "qualification_account_scopes.settlement_currency",
+            ],
+            name="fk_cwc_cutover_scope",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "environment='demo' AND account_id ~ '^[0-9]{1,32}$' AND settlement_currency='USDT' AND epoch_id ~ '^[a-f0-9]{32}$' AND active_journal_sequence>1",
+            name=conv("ck_cwc_cutover_identity"),
+        ),
+        CheckConstraint(
+            "active_event_sha256 ~ '^[a-f0-9]{64}$' AND cutover_id ~ '^[a-f0-9]{64}$' AND record_sha256 ~ '^[a-f0-9]{64}$' AND encode(sha256(convert_to(record_json,'UTF8')),'hex')=record_sha256",
+            name=conv("ck_cwc_cutover_hashes"),
+        ),
+        CheckConstraint(
+            "octet_length(record_json) BETWEEN 1 AND 16384",
+            name=conv("ck_cwc_cutover_bytes"),
+        ),
+        CheckConstraint(
+            "coverage_start_at<=recorded_at", name=conv("ck_cwc_cutover_clock")
+        ),
+    )
+    environment: Mapped[str] = mapped_column(String(8), nullable=False)
+    account_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    settlement_currency: Mapped[str] = mapped_column(String(16), nullable=False)
+    epoch_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    active_journal_sequence: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    active_event_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    cutover_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    record_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    record_json: Mapped[str] = mapped_column(Text, nullable=False)
+    coverage_start_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=text("clock_timestamp()"),
+    )

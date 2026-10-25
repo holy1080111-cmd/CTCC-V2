@@ -66,6 +66,19 @@ SOURCE_FILES = json.dumps(
         "app/domain/account_history_partition_v1.py": {"sha256": "5" * 64},
         "app/database/repositories/account_history_partition.py": {"sha256": "6" * 64},
         "migrations/versions/0050_account_history_partition.py": {"sha256": "7" * 64},
+        **{
+            name: {"sha256": "8" * 64}
+            for name in (
+                "app/domain/prospective_event_cutover_catalog_v2.py",
+                "app/domain/prospective_event_cutover_v2.py",
+                "app/database/repositories/prospective_event_cutover_v2.py",
+                "app/database/repositories/qualification_ledger.py",
+                "app/trade_qualification/prospective_event_cutover_v2.py",
+                "app/trade_qualification/controlled_writer_coverage_v1.py",
+                "app/database/models/controlled_writer_coverage.py",
+                "migrations/versions/0051_prospective_event_cutover.py",
+            )
+        },
         "migrations/versions/0048_controlled_writer_coverage.py": {"sha256": "2" * 64},
         "migrations/versions/0049_controlled_writer_pair_guard_definer.py": {
             "sha256": "3" * 64
@@ -110,10 +123,27 @@ def synthetic_sealed_native_identity_baseline(monkeypatch):
         synthetic_partition_catalog,
     )
 
+    from app.domain import prospective_event_cutover_catalog_v2 as cutover_policy
+
+    def synthetic_cutover_catalog(catalog, *, require_native_baseline=True):
+        assert require_native_baseline is True
+        if catalog != {"synthetic_fixture_only": True}:
+            raise ValueError("synthetic_cutover_catalog_mismatch")
+
+    def synthetic_cutover_deparser(catalog):
+        if catalog != {"synthetic_fixture_only": True}:
+            raise ValueError("synthetic_cutover_catalog_mismatch")
+        return "c" * 64
+
+    monkeypatch.setattr(cutover_policy, "verify_catalog", synthetic_cutover_catalog)
+    monkeypatch.setattr(cutover_policy, "deparser_sha256", synthetic_cutover_deparser)
+
 
 def _revision_readback(revision: str) -> dict:
-    if revision == "0050":
-        return expected_migration_revision_readback("0050")
+    if revision in ("0050", "0051"):
+        # Filesystem evidence is parsed JSON. Preserve the producer-reader JSON
+        # boundary fix when this preparation is three-way merged with root.
+        return json.loads(json.dumps(expected_migration_revision_readback(revision)))
     if revision in ("0048", "0049"):
         return {
             **_revision_readback("0047"),
@@ -869,6 +899,7 @@ def _artifacts(tmp_path: Path) -> tuple[Path, list[str]]:
             )
         )
     _current0050_synthetic_artifact_layer(artifacts)
+    _current0051_synthetic_artifact_layer(artifacts)
     return artifacts, full
 
 
@@ -2170,3 +2201,224 @@ def test_0050_partition_module_is_exclusively_postgres_selected():
         selected_for("shard", index, path + "::actual_case")
         for index in range(SHARD_COUNT)
     )
+
+
+def _current0051_synthetic_artifact_layer(artifacts):
+    """Invented IO fixtures only, never genuine native catalog or acceptance."""
+    from app.domain import prospective_event_cutover_catalog_v2 as policy
+    from scripts import verify_final_hermetic as producer
+
+    assert policy.PG17_DEPARSED_BASELINE is None
+    assert (
+        policy.PG17_DEPARSED_BASELINE_STATUS == "UNSEALED_REQUIRES_NATIVE_PG17_CAPTURE"
+    )
+    source_files = json.loads(SOURCE_FILES)
+    for attachment in artifacts.iterdir():
+        root = attachment / "ctcc-validation"
+        results = root / "test-results"
+        identity = json.loads((root / "identity.json").read_bytes())
+        identity["migration"]["source_head"] = identity["migration"][
+            "database_head"
+        ] = "0051"
+        identity["migration_empty_roundtrip"].update(
+            source_head="0051",
+            prospective_cutover_before_readback=_revision_readback("0051"),
+            prospective_cutover_down_revision="0050",
+            prospective_cutover_down_readback=producer.expected_prospective_cutover_absent_readback(),
+            reupgrade_readback=_revision_readback("0051"),
+        )
+        identity["migration_downgrade_policy"].update(
+            source_head="0051",
+            database_head_after="0051",
+            rollback_readback=_revision_readback("0051"),
+        )
+        for label in (
+            "migration-identity",
+            "migration-reupgrade-identity",
+            "migration-reidentity",
+        ):
+            (root / (label + ".log")).write_text(
+                json.dumps(identity["migration"]), encoding="utf-8"
+            )
+        for label in (
+            "migration-reupgrade-readback",
+            "migration-denial-readback",
+            "migration-prospective-cutover-empty-before",
+        ):
+            (root / (label + ".log")).write_text(
+                json.dumps(_revision_readback("0051")), encoding="utf-8"
+            )
+        (root / "migration-prospective-cutover-empty-readback.log").write_text(
+            json.dumps(producer.expected_prospective_cutover_absent_readback()),
+            encoding="utf-8",
+        )
+        denial = root / "migration-downgrade-denial.log"
+        denial.write_bytes(
+            b"INFO Running downgrade 0051 -> 0050\n" + denial.read_bytes()
+        )
+        for filename in (
+            "coverage-native-catalog.json",
+            "account-history-partition-native-catalog.json",
+        ):
+            path = results / filename
+            value = json.loads(path.read_bytes())
+            value["source_head"] = value["database_head"] = "0051"
+            if filename.startswith("account-history"):
+                value["schema"] = (
+                    "ctcc.account_history_partition_native_catalog_observation.v2"
+                )
+            path.write_text(json.dumps(value), encoding="utf-8")
+        capture = {
+            "schema": "ctcc.prospective_cutover_native_catalog_observation.v2",
+            "source_head": "0051",
+            "database_head": "0051",
+            "source_migration_sha256": identity["migration"]["migration_sha256"],
+            "session_facts": ["17.0", "170000", "ctcc", "ctcc", "ctcc", "pg_catalog"],
+            "catalog": {"synthetic_fixture_only": True},
+            "source_files": {
+                name: source_files[name]["sha256"]
+                for name in producer.PROSPECTIVE_CUTOVER_CAPTURE_PATHS
+            },
+            "manifest_sha256": _sha(MANIFEST),
+            "effective_ddl_sha256": policy.ddl_identity(),
+            "observed_deparser_sha256": "c" * 64,
+            "native_baseline_admission": False,
+            "g6_qualified": False,
+            "execution_authority": False,
+        }
+        path = results / "prospective-cutover-native-catalog.json"
+        path.write_text(json.dumps(capture), encoding="utf-8")
+        for label, filename in (
+            (
+                "migration-prospective-cutover-native-catalog",
+                "prospective-cutover-native-catalog.json",
+            ),
+            (
+                "migration-history-partition-native-catalog",
+                "account-history-partition-native-catalog.json",
+            ),
+            ("migration-coverage-native-catalog", "coverage-native-catalog.json"),
+        ):
+            value = {
+                "artifact": "test-results/" + filename,
+                "sha256": _sha((results / filename).read_bytes()),
+                "native_baseline_admission": False,
+                "execution_authority": False,
+            }
+            if filename.startswith("prospective"):
+                value["g6_qualified"] = False
+            (root / (label + ".log")).write_text(json.dumps(value), encoding="utf-8")
+        if identity["suite"] == "postgres":
+            identity["predecessor_0047_validation"]["source_head"] = "0051"
+            value = json.loads((root / "predecessor-0047-identity.log").read_bytes())
+            value["source_head"] = "0051"
+            (root / "predecessor-0047-identity.log").write_text(
+                json.dumps(value), encoding="utf-8"
+            )
+            before_path = root / "migration-history-partition-nonempty-before.log"
+            previous = json.loads(before_path.read_bytes())
+            snapshot = producer.history_partition_nonempty_snapshot_0051(
+                _revision_readback("0051"), previous["retention"]
+            )
+            identity["history_partition_nonempty_downgrade_policy"] = (
+                producer.history_partition_nonempty_downgrade_readback_0051(
+                    snapshot, snapshot
+                )
+            )
+            for label in (
+                "migration-history-partition-nonempty-before",
+                "migration-history-partition-nonempty-after",
+            ):
+                (root / (label + ".log")).write_text(
+                    json.dumps(snapshot), encoding="utf-8"
+                )
+            path = root / "migration-history-partition-nonempty-denial.log"
+            path.write_bytes(
+                b"INFO Running downgrade 0051 -> 0050\n" + path.read_bytes()
+            )
+            receipt_path = results / "account-history-partition-migration.json"
+            receipt = json.loads(receipt_path.read_bytes())
+            receipt["schema_version"] = (
+                "ctcc.account_history_partition_migration_acceptance.v2"
+            )
+            receipt["before"]["head"] = receipt["after"]["head"] = "0051"
+            receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+            identity["history_partition_migration_acceptance"] = receipt
+        (root / "identity.json").write_text(json.dumps(identity), encoding="utf-8")
+        hashes = {
+            path.relative_to(root).as_posix(): _sha(path.read_bytes())
+            for path in root.rglob("*")
+            if path.is_file() and path.name != "results.sha256.json"
+        }
+        (root / "results.sha256.json").write_text(json.dumps(hashes), encoding="utf-8")
+    assert policy.PG17_DEPARSED_BASELINE is None
+
+
+@pytest.mark.parametrize(
+    "damage",
+    (
+        "head",
+        "source_pin",
+        "g6",
+        "missing_capture",
+        "deparser_hash",
+        "baseline_flag",
+        "missing_stage",
+        "wrong_cutover_absence",
+    ),
+)
+def test_current0051_union_rejects_rehashed_cutover_fabrication(tmp_path, damage):
+    artifacts, _ = _artifacts(tmp_path)
+    # Prove the complete current51 synthetic artifact set reaches the genuine
+    # reader before damaging it; an unrelated fixture mismatch cannot pass this.
+    verify_union(artifacts, commit=COMMIT, tree=TREE, manifest_sha256=_sha(MANIFEST))
+    attachment = next(artifacts.iterdir())
+    root = attachment / "ctcc-validation"
+    path = root / "test-results/prospective-cutover-native-catalog.json"
+    value = json.loads(path.read_bytes())
+    if damage == "head":
+        value["source_head"] = "0050"
+    elif damage == "source_pin":
+        value["source_files"][next(iter(value["source_files"]))] = "0" * 64
+    elif damage == "g6":
+        value["g6_qualified"] = True
+    elif damage == "deparser_hash":
+        value["observed_deparser_sha256"] = "0" * 64
+    elif damage == "baseline_flag":
+        value["native_baseline_admission"] = True
+    elif damage == "missing_capture":
+        path.unlink()
+    elif damage == "missing_stage":
+        stages_path = root / "steps.json"
+        stages = json.loads(stages_path.read_bytes())
+        stages = [
+            row
+            for row in stages
+            if row["name"] != "migration-prospective-cutover-empty-downgrade"
+        ]
+        stages_path.write_text(json.dumps(stages), encoding="utf-8")
+    else:
+        assert damage == "wrong_cutover_absence"
+        identity_path = root / "identity.json"
+        identity = json.loads(identity_path.read_bytes())
+        identity["migration_empty_roundtrip"]["prospective_cutover_down_readback"][
+            "table_present"
+        ] = True
+        identity_path.write_text(json.dumps(identity), encoding="utf-8")
+    if path.exists():
+        path.write_text(json.dumps(value), encoding="utf-8")
+    hashes = {
+        p.relative_to(root).as_posix(): _sha(p.read_bytes())
+        for p in root.rglob("*")
+        if p.is_file() and p.name != "results.sha256.json"
+    }
+    (root / "results.sha256.json").write_text(json.dumps(hashes), encoding="utf-8")
+    refusal = {
+        "missing_capture": "linux_union_prospective_cutover_capture_missing_or_unsafe",
+        "missing_stage": "linux_union_common_stage_missing",
+        "wrong_cutover_absence": "linux_union_component_identity_rejected",
+    }.get(damage, "prospective_cutover_native_catalog_observation_invalid")
+    with pytest.raises(ValueError, match=refusal):
+        verify_union(
+            artifacts, commit=COMMIT, tree=TREE, manifest_sha256=_sha(MANIFEST)
+        )

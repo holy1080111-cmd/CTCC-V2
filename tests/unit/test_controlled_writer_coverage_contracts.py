@@ -92,6 +92,10 @@ def synthetic_io(monkeypatch, tmp_path):
         "bundle_sha256": "4" * 64,
         "custody_id": "5" * 32,
         "bundle_raw": b"EXPLICIT_SYNTHETIC_UNIT_SOURCE",
+        # Preservation metadata only: these objects cannot satisfy a native
+        # phase lease/context check or issue a new source capability.
+        "read_session": object(),
+        "private_client": object(),
     }
     receipt = canonical({"synthetic_unit_provider": True})
 

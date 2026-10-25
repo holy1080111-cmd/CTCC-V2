@@ -411,3 +411,13 @@ def test_account_history_partition_is_postgresql_only_without_skip_expansion():
         "account_history_partition" not in module
         for module, _ in verifier.POSIX_SKIP_POLICY
     )
+
+
+def test_prospective_cutover_is_postgresql_only_without_skip_expansion():
+    name = "test_prospective_event_cutover_v2_repository.py"
+    assert verifier.POSTGRES_INTEGRATION.count(name) == 1
+    assert name not in verifier.NO_DB_INTEGRATION
+    assert all(
+        "prospective_event_cutover" not in module
+        for module, _ in verifier.POSIX_SKIP_POLICY
+    )

@@ -18,7 +18,7 @@ def _migration_table_reference(revision, table):
     # migrations deliberately lock their exact public-qualified references.
     return (
         f"public.{table}"
-        if revision in {"0043", "0044", "0046", "0048", "0050"}
+        if revision in {"0043", "0044", "0046", "0048", "0050", "0051"}
         else table
     )
 
@@ -75,6 +75,17 @@ def test_exclusive_nowait_locks_precede_any_read_or_drop(revision):
             ("execute", "DROP FUNCTION public.public_runtime_bundle_v1_immutable()"),
         ]
         return
+    if revision == "0051":
+        assert "RAISE EXCEPTION 'prospective_cutover_downgrade_requires_empty'" in guard
+        assert (
+            commands[2][1]
+            == "DROP TABLE public.demo_controlled_writer_coverage_cutovers"
+        )
+        assert all(
+            kind == "execute" and statement.startswith("DROP FUNCTION public.")
+            for kind, statement in commands[3:]
+        )
+        return
     if revision == "0050":
         assert (
             "RAISE EXCEPTION 'account_history_partition_downgrade_requires_empty'"
@@ -124,7 +135,7 @@ def test_scheduled_write_between_guard_and_drop_cannot_be_lost(revision):
         elif (
             kind == "drop"
             or (
-                revision in {"0048", "0050"}
+                revision in {"0048", "0050", "0051"}
                 and kind == "execute"
                 and value
                 in {"DROP TABLE public." + table for table in TABLES[revision]}
@@ -144,7 +155,7 @@ def test_scheduled_write_between_guard_and_drop_cannot_be_lost(revision):
             assert guard_seen
             table = (
                 value.removeprefix("DROP TABLE public.")
-                if revision in {"0048", "0050"} and kind == "execute"
+                if revision in {"0048", "0050", "0051"} and kind == "execute"
                 else TABLES[revision][0]
                 if revision in {"0041", "0046"}
                 else value

@@ -71,7 +71,7 @@ async def coverage_primary():
             assert 170000 <= version < 180000
             assert (
                 await connection.scalar(text("SELECT version_num FROM alembic_version"))
-                == "0050"
+                == "0051"
             )
         yield engine
     finally:
@@ -83,7 +83,7 @@ def _migrate(connection, target, direction):
     config = Config(str(_ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(_ROOT / "migrations"))
     script = ScriptDirectory.from_config(config)
-    assert script.get_current_head() == "0050"
+    assert script.get_current_head() == "0051"
     resolver = (
         script._upgrade_revs if direction == "upgrade" else script._downgrade_revs
     )

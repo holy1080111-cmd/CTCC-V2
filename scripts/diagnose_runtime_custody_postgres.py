@@ -25,13 +25,25 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from uuid import uuid4
 
+from scripts.pg_original_node_diagnostic import (
+    PROFILES as PG_ORIGINAL_PROFILES,
+)
+from scripts.pg_original_node_diagnostic import (
+    finalize_original_node,
+    run_original_node,
+)
+from scripts.pg_original_node_diagnostic import (
+    node_id as pg_original_node_id,
+)
 from scripts.verify_final_hermetic import (
-    HISTORY_PARTITION_NATIVE_CATALOG_CAPTURE,
+    COVERAGE_NATIVE_CATALOG_CAPTURE_0051,
+    HISTORY_PARTITION_NATIVE_CATALOG_CAPTURE_0051,
     MIGRATION_REVISION_PROBE,
-    MIGRATION_REVISION_PROBE_0050,
+    MIGRATION_REVISION_PROBE_0051,
     NATIVE_IDENTITY_DOWNGRADE_DENIAL,
     NATIVE_IDENTITY_RETENTION_PROBE,
-    PREDECESSOR_0047_IDENTITY_PROBE_0050,
+    PREDECESSOR_0047_IDENTITY_PROBE_0051,
+    PROSPECTIVE_CUTOVER_NATIVE_CATALOG_CAPTURE,
     RUNTIME_CUSTODY_PREFLIGHT_CASES,
     Run,
     archive_files,
@@ -43,6 +55,7 @@ from scripts.verify_final_hermetic import (
     native_identity_nonempty_downgrade_readback,
     native_migration_json_equal,
     run_runtime_bundle_custody_preflight,
+    verify_prospective_cutover_native_catalog_capture,
     verify_pytest_report,
 )
 
@@ -76,6 +89,45 @@ NATIVE_WITNESS_CASES = tuple(
     )
 )
 NATIVE_WITNESS_REPORT = "native-witness-identity-diagnostic.xml"
+PROSPECTIVE_CUTOVER_CAPTURE_PROFILE = "prospective-event-cutover-catalog-0051"
+PROSPECTIVE_CUTOVER_FORMAL_CATALOG_PROBE = """
+import asyncio,json
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.pool import NullPool
+from app.config.settings import get_settings
+from app.domain import prospective_event_cutover_catalog_v2 as policy
+from app.domain.prospective_event_cutover_v2 import ProspectiveCutoverError
+from scripts.verify_migration_identity import database_head,source_identity,SOURCE_ROOT
+async def read():
+    before=source_identity(SOURCE_ROOT)
+    engine=create_async_engine(get_settings().database_url,poolclass=NullPool)
+    try:
+        async with engine.connect() as connection:
+            connection=await connection.execution_options(isolation_level='REPEATABLE READ')
+            await connection.execute(text('SET TRANSACTION READ ONLY'))
+            head=await connection.run_sync(database_head)
+            catalog=await connection.scalar(text(policy.CATALOG_SQL))
+            policy.verify_catalog(catalog,require_native_baseline=False)
+            try:
+                policy.verify_catalog(catalog,require_native_baseline=True)
+            except ProspectiveCutoverError as error:
+                if (str(error)!='prospective_cutover_native_baseline_pending'
+                    or policy.PG17_DEPARSED_BASELINE is not None
+                    or policy.PG17_DEPARSED_BASELINE_STATUS!='UNSEALED_REQUIRES_NATIVE_PG17_CAPTURE'):
+                    raise
+                result='DENIED_NATIVE_BASELINE_PENDING'
+            else:
+                result='SEALED_NATIVE_CATALOG_VERIFIED'
+        if before!=source_identity(SOURCE_ROOT) or before.head!='0051' or head!='0051':
+            raise RuntimeError('prospective_cutover_formal_probe_identity_changed')
+        print(json.dumps({'schema':'ctcc.prospective_cutover_formal_catalog_probe.v2',
+            'source_head':before.head,'source_migration_sha256':before.sha256,'database_head':head,
+            'result':result,'native_baseline_admission':False,'g6_qualified':False,
+            'execution_authority':False},sort_keys=True))
+    finally: await engine.dispose()
+asyncio.run(read())
+"""
 _NATIVE_CATEGORIES = {
     "failure": "witness_test_failed",
     "error": "witness_fixture_failed",
@@ -792,7 +844,12 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--profile",
-        choices=(DEFAULT_PROFILE, *NATIVE_WITNESS_PROFILES),
+        choices=(
+            DEFAULT_PROFILE,
+            *NATIVE_WITNESS_PROFILES,
+            PROSPECTIVE_CUTOVER_CAPTURE_PROFILE,
+            *PG_ORIGINAL_PROFILES,
+        ),
         default=DEFAULT_PROFILE,
     )
     parser.add_argument("--archive", type=Path, required=True)
@@ -825,7 +882,18 @@ def main():
             if args.profile == NATIVE_WITNESS_MIGRATION_PROFILE
             else ()
         ),
+        *(
+            ("scripts/prospective_capture_custody.py",)
+            if args.profile == PROSPECTIVE_CUTOVER_CAPTURE_PROFILE
+            else ()
+        ),
     )
+    if args.profile in PG_ORIGINAL_PROFILES:
+        executed += (
+            "scripts/pg_original_node_diagnostic.py",
+            "scripts/pg_original_node_trace.py",
+            "scripts/prospective_capture_custody.py",
+        )
     root = Path(__file__).resolve().parents[1]
     if any(
         hashlib.sha256((root / name).read_bytes()).hexdigest() != files[name]["sha256"]
@@ -848,10 +916,19 @@ def main():
     postgres = f"ctcc-final-{suffix}-postgres"
     image = f"ctcc-custody-diagnostic:{args.commit[:12]}-{suffix}"
     resources = []
+    pg_original_state = {
+        "deadline": None,
+        "case_attempted": False,
+        "observer_attempted": False,
+    }
     run = Run(args.output, budget_seconds=20 * 60, heartbeat_seconds=30)
     identity = {
         "scope": (
-            "db0046_four_case_diagnostic_only"
+            "one_fixed_original_PostgreSQL_node_diagnostic_only"
+            if args.profile in PG_ORIGINAL_PROFILES
+            else "db0051_actual_native_catalog_capture_only_no_tests_no_admission"
+            if args.profile == PROSPECTIVE_CUTOVER_CAPTURE_PROFILE
+            else "db0046_four_case_diagnostic_only"
             if args.profile == DEFAULT_PROFILE
             else "db0047_seventeen_case_migration_diagnostic_only"
             if args.profile == NATIVE_WITNESS_MIGRATION_PROFILE
@@ -874,6 +951,16 @@ def main():
         "full_postgresql_acceptance": False,
         "status": "FAIL",
     }
+    if args.profile in PG_ORIGINAL_PROFILES:
+        identity.update(
+            node_id=pg_original_node_id(args.profile),
+            node_source_sha256=files[PG_ORIGINAL_PROFILES[args.profile][0]]["sha256"],
+            case_timeout_seconds=300,
+            faulthandler_timeout_seconds=30,
+            full_postgresql_acceptance=False,
+            native_baseline_admission=False,
+            g6_qualified=False,
+        )
     migration_progress = {
         "schema": "ctcc.db0047_native_migration_diagnostic.v1",
         "profile": NATIVE_WITNESS_MIGRATION_PROFILE,
@@ -919,6 +1006,14 @@ def main():
                 "ENVIRONMENT=test",
                 "-e",
                 "TRADING_MODE=analysis_only",
+                "-e",
+                "LIVE_TRADING=false",
+                "-e",
+                "OKX_LIVE_ALLOW_ORDER_WRITES=false",
+                "-e",
+                "OKX_DEMO_ALLOW_ORDER_WRITES=false",
+                "-e",
+                "OKX_DEMO_AUTO_EXECUTION=false",
                 "-e",
                 f"DATABASE_URL=postgresql+asyncpg://ctcc@{postgres}:5432/ctcc",
                 image,
@@ -1011,11 +1106,127 @@ def main():
             "--mount",
             f"type=bind,source={tests.resolve()},target=/validation-results",
         )
-        if args.profile in NATIVE_WITNESS_PROFILES:
+        if args.profile in PG_ORIGINAL_PROFILES:
+            run_original_node(
+                container,
+                run,
+                profile=args.profile,
+                resources=resources,
+                run_id=suffix,
+                network=network,
+                postgres=postgres,
+                image=identity["image_id"],
+                tests=tests,
+                state=pg_original_state,
+            )
+        elif args.profile == PROSPECTIVE_CUTOVER_CAPTURE_PROFILE:
+            # Actual migration applies structural checks while0051 seal is pending.
+            # The genuine0050 parent verifier and baseline are not disabled.
+            container(
+                "native-witness-current-upgrade",
+                ["alembic", "upgrade", "head"],
+                timeout=120,
+            )
+            container(
+                "prospective-cutover-current-identity",
+                ["python", "-m", "scripts.verify_migration_identity"],
+                timeout=60,
+            )
+            current = json.loads(
+                (args.output / "prospective-cutover-current-identity.log").read_bytes()
+            )
+            if (
+                current.get("schema") != "ctcc.migration_identity.v1"
+                or current.get("status") != "PASS"
+                or current.get("source_head") != "0051"
+                or current.get("database_head") != "0051"
+                or current.get("execution_authority") is not False
+                or type(current.get("migration_sha256")) is not str
+                or re.fullmatch(r"[a-f0-9]{64}", current["migration_sha256"]) is None
+            ):
+                raise ValueError(
+                    "prospective_cutover_diagnostic_current_identity_invalid"
+                )
+            identity["current_source_migration"] = {
+                key: current[key]
+                for key in ("source_head", "database_head", "migration_sha256")
+            }
+            for stage, code in (
+                (
+                    "prospective-cutover-native-catalog",
+                    PROSPECTIVE_CUTOVER_NATIVE_CATALOG_CAPTURE,
+                ),
+                (
+                    "history-partition-native-catalog",
+                    HISTORY_PARTITION_NATIVE_CATALOG_CAPTURE_0051,
+                ),
+                ("coverage-native-catalog", COVERAGE_NATIVE_CATALOG_CAPTURE_0051),
+            ):
+                container(stage, ["python", "-c", code], mounts=mounts, timeout=60)
+            path = tests / "prospective-cutover-native-catalog.json"
+            if (
+                path.is_symlink()
+                or not path.is_file()
+                or not 0 < path.stat().st_size <= 2 * 1024 * 1024
+            ):
+                raise ValueError(
+                    "prospective_cutover_diagnostic_capture_missing_or_unsafe"
+                )
+            observed = json.loads(path.read_bytes())
+            verify_prospective_cutover_native_catalog_capture(
+                observed,
+                migration_sha256=current["migration_sha256"],
+                manifest_sha256=identity["manifest_sha256"],
+                source_files=files,
+                require_native_baseline=False,
+            )
+            container(
+                "prospective-cutover-formal-catalog-probe",
+                ["python", "-c", PROSPECTIVE_CUTOVER_FORMAL_CATALOG_PROBE],
+                timeout=60,
+            )
+            formal = json.loads(
+                (
+                    args.output / "prospective-cutover-formal-catalog-probe.log"
+                ).read_bytes()
+            )
+            expected = {
+                "schema": "ctcc.prospective_cutover_formal_catalog_probe.v2",
+                "source_head": "0051",
+                "database_head": "0051",
+                "source_migration_sha256": current["migration_sha256"],
+                "result": formal.get("result"),
+                "native_baseline_admission": False,
+                "g6_qualified": False,
+                "execution_authority": False,
+            }
+            if not native_migration_json_equal(formal, expected) or formal.get(
+                "result"
+            ) not in {
+                "DENIED_NATIVE_BASELINE_PENDING",
+                "SEALED_NATIVE_CATALOG_VERIFIED",
+            }:
+                raise ValueError("prospective_cutover_diagnostic_formal_result_invalid")
+            identity["formal_catalog_probe"] = formal
+            if formal["result"] == "SEALED_NATIVE_CATALOG_VERIFIED":
+                container(
+                    "prospective-cutover-current-formal",
+                    ["python", "-c", MIGRATION_REVISION_PROBE_0051, "0051"],
+                    timeout=60,
+                )
+            # Schema drift is genuine native runtime work even in capture-only mode.
+            container(
+                "prospective-cutover-current-drift", ["alembic", "check"], timeout=60
+            )
+            identity["tests_executed"] = 0
+            identity["test_report_requirement"] = "NOT_APPLICABLE_CAPTURE_ONLY_PROFILE"
+            identity["native_baseline_admission"] = False
+            identity["g6_qualified"] = False
+        elif args.profile in NATIVE_WITNESS_PROFILES:
             container("migration-upgrade", ["alembic", "upgrade", "0047"])
             container(
                 "migration-identity",
-                ["python", "-c", PREDECESSOR_0047_IDENTITY_PROBE_0050],
+                ["python", "-c", PREDECESSOR_0047_IDENTITY_PROBE_0051],
             )
             migration = json.loads(
                 (args.output / "migration-identity.log").read_bytes()
@@ -1024,7 +1235,7 @@ def main():
                 type(migration) is not dict
                 or migration.get("status") != "PASS"
                 or migration.get("schema") != "ctcc.migration_predecessor_identity.v1"
-                or migration.get("source_head") != "0050"
+                or migration.get("source_head") != "0051"
                 or migration.get("database_head") != "0047"
                 or migration.get("target_revision") != "0047"
                 or migration.get("execution_authority") is not False
@@ -1056,13 +1267,13 @@ def main():
             )
             container(
                 "history-partition-native-catalog",
-                ["python", "-c", HISTORY_PARTITION_NATIVE_CATALOG_CAPTURE],
+                ["python", "-c", HISTORY_PARTITION_NATIVE_CATALOG_CAPTURE_0051],
                 mounts=mounts,
                 timeout=60,
             )
             container(
                 "history-partition-current-formal",
-                ["python", "-c", MIGRATION_REVISION_PROBE_0050, "0050"],
+                ["python", "-c", MIGRATION_REVISION_PROBE_0051, "0051"],
                 timeout=60,
             )
             container(
@@ -1076,8 +1287,8 @@ def main():
             if (
                 current.get("schema") != "ctcc.migration_identity.v1"
                 or current.get("status") != "PASS"
-                or current.get("source_head") != "0050"
-                or current.get("database_head") != "0050"
+                or current.get("source_head") != "0051"
+                or current.get("database_head") != "0051"
                 or current.get("migration_sha256") != migration["migration_sha256"]
                 or current.get("execution_authority") is not False
             ):
@@ -1095,139 +1306,196 @@ def main():
     except Exception as error:  # noqa: BLE001 - Only a type/category reaches exported evidence.
         identity["failure_type"] = type(error).__name__
     finally:
-        try:
-            failure_pin = _export_upgrade_failure(
-                run, output=args.output, export=export, source_files=files
+        if args.profile in PG_ORIGINAL_PROFILES:
+            receipt_sha = finalize_original_node(
+                output=args.output,
+                export=export,
+                tests=tests,
+                resources=resources,
+                run_id=suffix,
+                files=files,
+                identity=identity,
+                steps=run.steps,
+                profile=args.profile,
+                network=network,
+                postgres=postgres,
+                image=identity.get("image_id", ""),
+                state=pg_original_state,
             )
-            if failure_pin is not None:
-                identity["status"] = "FAIL"
-                identity["current_upgrade_failure_sha256"] = failure_pin
-        except Exception:  # noqa: BLE001 -- preserve failure; never export private errors.
-            identity["status"] = "FAIL"
-            identity["current_upgrade_failure_export_failed"] = True
-        partition_capture = tests / "account-history-partition-native-catalog.json"
-        current_upgrade_ran = any(
-            step.get("name") == "native-witness-current-upgrade"
-            and step.get("exit_code") == 0
-            for step in run.steps
-        )
-        if partition_capture.exists():
-            try:
-                if (
-                    partition_capture.is_symlink()
-                    or not partition_capture.is_file()
-                    or not 0 < partition_capture.stat().st_size <= 2 * 1024 * 1024
-                ):
-                    raise ValueError("history_partition_diagnostic_capture_unsafe")
-                retained = partition_capture.read_bytes()
-                target = export / "account-history-partition-native-catalog.json"
-                with target.open("xb") as stream:
-                    stream.write(retained)
-                    stream.flush()
-                    os.fsync(stream.fileno())
-                if target.read_bytes() != retained:
-                    raise ValueError(
-                        "history_partition_diagnostic_capture_readback_failed"
-                    )
-                identity["history_partition_catalog_sha256"] = hashlib.sha256(
-                    retained
-                ).hexdigest()
-                identity["history_partition_catalog_is_observation_not_admission"] = (
-                    True
-                )
-            except Exception as error:  # noqa: BLE001 -- exact private capture remains retained
-                identity["status"] = "FAIL"
-                identity["history_partition_catalog_failure_type"] = type(
-                    error
-                ).__name__
-        elif current_upgrade_ran:
-            identity["status"] = "FAIL"
-            identity["history_partition_catalog_failure_type"] = (
-                "RequiredCaptureMissing"
+            print(
+                json.dumps(
+                    {
+                        "diagnostic_status": identity["status"],
+                        "receipt_sha256": receipt_sha,
+                    },
+                    sort_keys=True,
+                ),
+                flush=True,
             )
-        raw_path = tests / (
-            "runtime-bundle-custody-preflight.xml"
-            if args.profile == DEFAULT_PROFILE
-            else NATIVE_WITNESS_REPORT
-        )
-        if raw_path.is_file() and not raw_path.is_symlink():
-            try:
-                summary, clean = redacted_report(
-                    raw_path.read_bytes(), profile=args.profile
-                )
-                _write(export / "diagnostic-summary.json", summary)
-                with (export / "diagnostic-junit.xml").open("xb") as stream:
-                    stream.write(clean)
-                if not summary[
-                    "all_four_passed"
-                    if args.profile == DEFAULT_PROFILE
-                    else "all_required_passed"
-                ]:
-                    identity["status"] = "FAIL"
-            except Exception as error:  # noqa: BLE001 - Never export malformed raw content.
-                identity["status"] = "FAIL"
-                identity["report_failure_type"] = type(error).__name__
+        elif args.profile == PROSPECTIVE_CUTOVER_CAPTURE_PROFILE:
+            from scripts.prospective_capture_custody import finalize_prospective_capture
+
+            receipt_sha = finalize_prospective_capture(
+                output=args.output,
+                export=export,
+                tests=tests,
+                resources=resources,
+                run_id=suffix,
+                files=files,
+                identity=identity,
+                steps=run.steps,
+                archive_path=args.archive,
+                archive_raw=archive_raw,
+            )
+            print(
+                json.dumps(
+                    {
+                        "diagnostic_status": identity["status"],
+                        "receipt_sha256": receipt_sha,
+                    },
+                    sort_keys=True,
+                ),
+                flush=True,
+            )
         else:
-            identity["status"] = "FAIL"
-        if args.profile in NATIVE_WITNESS_PROFILES and "migration" in identity:
             try:
-                run.command(
-                    "native-witness-public-catalog",
-                    [
-                        "docker",
-                        "exec",
-                        postgres,
-                        "psql",
-                        "--no-psqlrc",
-                        "--no-align",
-                        "--tuples-only",
-                        "--set=ON_ERROR_STOP=1",
-                        "-U",
-                        "ctcc",
-                        "-d",
-                        "ctcc",
-                        "-c",
-                        NATIVE_WITNESS_CATALOG_SQL,
-                    ],
-                    timeout=30,
+                failure_pin = _export_upgrade_failure(
+                    run, output=args.output, export=export, source_files=files
                 )
-                catalog = native_witness_catalog(
-                    (args.output / "native-witness-public-catalog.log").read_bytes()
-                )
-                identity["public_catalog_sha256"] = _write(
-                    export / "native-witness-public-catalog.json", catalog
-                )
-                identity["catalog_is_observation_not_admission"] = True
-            except Exception as error:  # noqa: BLE001 - Native errors never leave runner temp.
+                if failure_pin is not None:
+                    identity["status"] = "FAIL"
+                    identity["current_upgrade_failure_sha256"] = failure_pin
+            except Exception:  # noqa: BLE001 -- preserve failure; never export private errors.
                 identity["status"] = "FAIL"
-                identity["catalog_failure_type"] = type(error).__name__
-        cleanup = cleanup_resources(resources, suffix, budget_seconds=90)
-        if any(row["status"] not in {"ABSENT", "REMOVED"} for row in cleanup):
-            identity["status"] = "FAIL"
-        _write(export / "cleanup.json", cleanup)
-        if args.profile == NATIVE_WITNESS_MIGRATION_PROFILE:
-            if identity["status"] != "PASS":
-                migration_progress["status"] = "FAIL"
-            if len(json.dumps(migration_progress, sort_keys=True).encode()) > 65536:
-                raise ValueError("diagnostic_migration_receipt_oversized")
-            identity["migration_diagnostic_receipt_sha256"] = _write(
-                export / "native-witness-migration-receipt.json", migration_progress
+                identity["current_upgrade_failure_export_failed"] = True
+            partition_capture = tests / "account-history-partition-native-catalog.json"
+            current_upgrade_ran = any(
+                step.get("name") == "native-witness-current-upgrade"
+                and step.get("exit_code") == 0
+                for step in run.steps
             )
-        _write(export / "steps.json", run.steps)
-        _write(export / "identity.json", identity)
-        hashes = {
-            path.name: hashlib.sha256(path.read_bytes()).hexdigest()
-            for path in sorted(export.iterdir())
-        }
-        receipt_sha = _write(
-            export / "receipt.json", {"artifacts": hashes, "status": identity["status"]}
-        )
-        print(
-            json.dumps(
-                {"diagnostic_status": identity["status"], "receipt_sha256": receipt_sha}
-            ),
-            flush=True,
-        )
+            if partition_capture.exists():
+                try:
+                    if (
+                        partition_capture.is_symlink()
+                        or not partition_capture.is_file()
+                        or not 0 < partition_capture.stat().st_size <= 2 * 1024 * 1024
+                    ):
+                        raise ValueError("history_partition_diagnostic_capture_unsafe")
+                    retained = partition_capture.read_bytes()
+                    target = export / "account-history-partition-native-catalog.json"
+                    with target.open("xb") as stream:
+                        stream.write(retained)
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                    if target.read_bytes() != retained:
+                        raise ValueError(
+                            "history_partition_diagnostic_capture_readback_failed"
+                        )
+                    identity["history_partition_catalog_sha256"] = hashlib.sha256(
+                        retained
+                    ).hexdigest()
+                    identity[
+                        "history_partition_catalog_is_observation_not_admission"
+                    ] = True
+                except Exception as error:  # noqa: BLE001 -- exact private capture remains retained
+                    identity["status"] = "FAIL"
+                    identity["history_partition_catalog_failure_type"] = type(
+                        error
+                    ).__name__
+            elif current_upgrade_ran:
+                identity["status"] = "FAIL"
+                identity["history_partition_catalog_failure_type"] = (
+                    "RequiredCaptureMissing"
+                )
+            if args.profile != PROSPECTIVE_CUTOVER_CAPTURE_PROFILE:
+                raw_path = tests / (
+                    "runtime-bundle-custody-preflight.xml"
+                    if args.profile == DEFAULT_PROFILE
+                    else NATIVE_WITNESS_REPORT
+                )
+                if raw_path.is_file() and not raw_path.is_symlink():
+                    try:
+                        summary, clean = redacted_report(
+                            raw_path.read_bytes(), profile=args.profile
+                        )
+                        _write(export / "diagnostic-summary.json", summary)
+                        with (export / "diagnostic-junit.xml").open("xb") as stream:
+                            stream.write(clean)
+                        if not summary[
+                            "all_four_passed"
+                            if args.profile == DEFAULT_PROFILE
+                            else "all_required_passed"
+                        ]:
+                            identity["status"] = "FAIL"
+                    except Exception as error:  # noqa: BLE001 - Never export malformed raw content.
+                        identity["status"] = "FAIL"
+                        identity["report_failure_type"] = type(error).__name__
+                else:
+                    identity["status"] = "FAIL"
+            if args.profile in NATIVE_WITNESS_PROFILES and "migration" in identity:
+                try:
+                    run.command(
+                        "native-witness-public-catalog",
+                        [
+                            "docker",
+                            "exec",
+                            postgres,
+                            "psql",
+                            "--no-psqlrc",
+                            "--no-align",
+                            "--tuples-only",
+                            "--set=ON_ERROR_STOP=1",
+                            "-U",
+                            "ctcc",
+                            "-d",
+                            "ctcc",
+                            "-c",
+                            NATIVE_WITNESS_CATALOG_SQL,
+                        ],
+                        timeout=30,
+                    )
+                    catalog = native_witness_catalog(
+                        (args.output / "native-witness-public-catalog.log").read_bytes()
+                    )
+                    identity["public_catalog_sha256"] = _write(
+                        export / "native-witness-public-catalog.json", catalog
+                    )
+                    identity["catalog_is_observation_not_admission"] = True
+                except Exception as error:  # noqa: BLE001 - Native errors never leave runner temp.
+                    identity["status"] = "FAIL"
+                    identity["catalog_failure_type"] = type(error).__name__
+            cleanup = cleanup_resources(resources, suffix, budget_seconds=90)
+            if any(row["status"] not in {"ABSENT", "REMOVED"} for row in cleanup):
+                identity["status"] = "FAIL"
+            _write(export / "cleanup.json", cleanup)
+            if args.profile == NATIVE_WITNESS_MIGRATION_PROFILE:
+                if identity["status"] != "PASS":
+                    migration_progress["status"] = "FAIL"
+                if len(json.dumps(migration_progress, sort_keys=True).encode()) > 65536:
+                    raise ValueError("diagnostic_migration_receipt_oversized")
+                identity["migration_diagnostic_receipt_sha256"] = _write(
+                    export / "native-witness-migration-receipt.json", migration_progress
+                )
+            _write(export / "steps.json", run.steps)
+            _write(export / "identity.json", identity)
+            hashes = {
+                path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+                for path in sorted(export.iterdir())
+            }
+            receipt_sha = _write(
+                export / "receipt.json",
+                {"artifacts": hashes, "status": identity["status"]},
+            )
+            print(
+                json.dumps(
+                    {
+                        "diagnostic_status": identity["status"],
+                        "receipt_sha256": receipt_sha,
+                    }
+                ),
+                flush=True,
+            )
     return 0 if identity["status"] == "PASS" else 1
 
 

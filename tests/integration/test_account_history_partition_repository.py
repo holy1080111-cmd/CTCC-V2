@@ -54,7 +54,7 @@ def _migrate(connection, target, direction):
     config = Config(str(_ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(_ROOT / "migrations"))
     script = ScriptDirectory.from_config(config)
-    assert script.get_current_head() == "0050"
+    assert script.get_current_head() == "0051"
     resolver = (
         script._upgrade_revs if direction == "upgrade" else script._downgrade_revs
     )
@@ -87,7 +87,7 @@ async def partition_primary():
             )
             assert (
                 await connection.scalar(text("SELECT version_num FROM alembic_version"))
-                == "0050"
+                == "0051"
             )
         yield engine
     finally:
@@ -387,7 +387,7 @@ async def test_partition_current_nonempty_downgrade_retains_exact_catalog_and_ro
             await _settings(connection)
             await _append(connection, scope, documents[-1], member, revisions, lease)
         before = await _snapshot(partition_primary)
-        assert before[0] == "0050" and sum(before[2]["counts"].values()) > 0
+        assert before[0] == "0051" and sum(before[2]["counts"].values()) > 0
         with pytest.raises(
             DBAPIError, match="account_history_partition_downgrade_requires_empty"
         ):
@@ -399,7 +399,7 @@ async def test_partition_current_nonempty_downgrade_retains_exact_catalog_and_ro
         if directory is not None:
             output = Path(directory) / "account-history-partition-migration.json"
             result = {
-                "schema_version": "ctcc.account_history_partition_migration_acceptance.v1",
+                "schema_version": "ctcc.account_history_partition_migration_acceptance.v2",
                 "manifest_sha256": hashlib.sha256(
                     (_ROOT / "MANIFEST.sha256").read_bytes()
                 ).hexdigest(),
@@ -459,17 +459,35 @@ async def test_partition_empty_downgrade_reupgrade_preserves_old49(partition_chi
 async def test_partition_parent_writer_nowait_refusal_retains_head_and_rows(
     monkeypatch, partition_child
 ):
-    scope, _, _, _ = await _sources(monkeypatch, partition_child)
+    await _sources(monkeypatch, partition_child)
     before = await _snapshot(partition_child)
     async with partition_child.connect() as writer, writer.begin():
+        # Simulate the native writer relation lock without an invalid no-op
+        # UPDATE: DB0017 requires every scope UPDATE to advance ledger_revision.
         await writer.execute(
             text(
-                "UPDATE public.qualification_account_scopes SET account_revision=account_revision WHERE environment='demo' AND account_id=:uid AND settlement_currency='USDT'"
-            ),
-            {"uid": scope.account_id},
+                "LOCK TABLE public.qualification_account_scopes IN ROW EXCLUSIVE MODE NOWAIT"
+            )
         )
+        writer_pid, granted = (
+            await writer.execute(
+                text("""
+                  SELECT pg_catalog.pg_backend_pid(), EXISTS(
+                    SELECT 1 FROM pg_catalog.pg_locks
+                    WHERE pid=pg_catalog.pg_backend_pid()
+                      AND locktype='relation'
+                      AND relation='public.qualification_account_scopes'::pg_catalog.regclass
+                      AND mode='RowExclusiveLock' AND granted)
+                """)
+            )
+        ).one()
+        assert type(writer_pid) is int and writer_pid > 0 and granted is True
         with pytest.raises(DBAPIError) as error:
             async with partition_child.begin() as migration:
+                assert (
+                    await migration.scalar(text("SELECT pg_catalog.pg_backend_pid()"))
+                    != writer_pid
+                )
                 await migration.run_sync(_migrate, "0049", "downgrade")
         assert error.value.orig.sqlstate == "55P03"
     assert await _snapshot(partition_child) == before

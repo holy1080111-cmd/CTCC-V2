@@ -1,0 +1,53 @@
+name: PostgreSQL original node diagnostic
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - work/prospective-event-cutover-pg51-catalog-20261025
+
+permissions:
+  contents: read
+
+jobs:
+  original-postgres-node:
+    if: github.ref == 'refs/heads/work/prospective-event-cutover-pg51-catalog-20261025'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        profile:
+          - partition-parent-writer-nowait-current
+          - submission-transport-ack-0041
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Preserve exact source and run one fixed original case without exchange access
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -C
+          commit=$(git rev-parse HEAD)
+          test "$commit" = "$GITHUB_SHA"
+          tree=$(git rev-parse 'HEAD^{tree}')
+          archive="$RUNNER_TEMP/ctcc-pg-original-source.tar"
+          git -c core.autocrlf=false -c core.eol=lf archive --format=tar --output="$archive" "$commit"
+          digest=$(sha256sum "$archive" | cut -d ' ' -f 1)
+          python3 -m scripts.diagnose_runtime_custody_postgres \
+            --profile "${{ matrix.profile }}" \
+            --archive "$archive" --archive-sha256 "$digest" \
+            --commit "$commit" --tree "$tree" \
+            --output "$RUNNER_TEMP/ctcc-pg-original-node"
+      - name: Preserve exact source and verified safe original-node evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ctcc-pg-original-node-${{ matrix.profile }}-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/ctcc-pg-original-source.tar
+            ${{ runner.temp }}/ctcc-pg-original-node/export/*
+          if-no-files-found: error
+          retention-days: 30

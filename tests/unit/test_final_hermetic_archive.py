@@ -1897,7 +1897,7 @@ def test_current_0050_run_command_records_only_exact_partition_policy_refusal(
         )
 
 
-def _execute_current_0050_host_readback_boundary(variable, document):
+def _execute_current_0051_host_readback_boundary(variable, document):
     """Execute the actual main branch without starting the Docker orchestration."""
     import ast
     from pathlib import Path
@@ -1924,7 +1924,7 @@ def _execute_current_0050_host_readback_boundary(variable, document):
             and child.func.id == "expected_migration_revision_readback"
             and len(child.args) == 1
             and isinstance(child.args[0], ast.Constant)
-            and child.args[0].value == "0050"
+            and child.args[0].value == "0051"
             for child in ast.walk(node.test)
         )
     ]
@@ -1950,16 +1950,16 @@ def _execute_current_0050_host_readback_boundary(variable, document):
 
 
 @pytest.mark.parametrize("variable", ("reupgrade_readback", "denial_readback"))
-def test_current_0050_host_boundaries_accept_exact_json_roundtrip(variable):
+def test_current_0051_host_boundaries_accept_exact_json_roundtrip(variable):
     from scripts import verify_final_hermetic as host
 
-    expected = host.expected_migration_revision_readback("0050")
+    expected = host.expected_migration_revision_readback("0051")
     document = json.loads(json.dumps(expected, allow_nan=False))
     # DB0050 declares tuple-bearing columns, keys and triggers. JSON preserves
     # their order and values as arrays; Python container equality cannot admit it.
     assert document != expected
     assert host.native_migration_json_equal(document, expected)
-    _execute_current_0050_host_readback_boundary(variable, document)
+    _execute_current_0051_host_readback_boundary(variable, document)
 
 
 @pytest.mark.parametrize(
@@ -1988,12 +1988,12 @@ def test_current_0050_host_boundaries_accept_exact_json_roundtrip(variable):
         "nonfinite_value",
     ),
 )
-def test_current_0050_host_boundaries_reject_json_or_schema_damage(
+def test_current_0051_host_boundaries_reject_json_or_schema_damage(
     variable, refusal, damage
 ):
     from scripts import verify_final_hermetic as host
 
-    expected = host.expected_migration_revision_readback("0050")
+    expected = host.expected_migration_revision_readback("0051")
     document = json.loads(json.dumps(expected, allow_nan=False))
     partition = document["account_history_partition_schema"]
     member = partition["tables"]["demo_account_history_native_members"]
@@ -2031,4 +2031,60 @@ def test_current_0050_host_boundaries_reject_json_or_schema_damage(
         document["execution_authority"] = float("nan")
     assert not host.native_migration_json_equal(document, expected)
     with pytest.raises(RuntimeError, match=refusal):
-        _execute_current_0050_host_readback_boundary(variable, document)
+        _execute_current_0051_host_readback_boundary(variable, document)
+
+
+def test_current0051_formal_reader_cannot_accept_structural_only_pending_catalog(
+    monkeypatch,
+):
+    from app.domain import prospective_event_cutover_catalog_v2 as policy
+    from app.domain.prospective_event_cutover_v2 import ProspectiveCutoverError
+    from scripts import verify_final_hermetic as host
+
+    assert policy.PG17_DEPARSED_BASELINE is None
+    marker = object()
+    calls = []
+
+    def actual_seam(value, *, require_native_baseline=True):
+        assert value is marker
+        calls.append(require_native_baseline)
+        if require_native_baseline:
+            raise ProspectiveCutoverError("prospective_cutover_native_baseline_pending")
+
+    monkeypatch.setattr(policy, "verify_catalog", actual_seam)
+    with pytest.raises(
+        ProspectiveCutoverError, match="prospective_cutover_native_baseline_pending"
+    ):
+        host.migration_revision_readback(
+            "0051", "0051", False, False, (), cutover_catalog=marker
+        )
+    assert calls == [True]
+    assert policy.PG17_DEPARSED_BASELINE is None
+    with pytest.raises(RuntimeError, match="migration_revision_readback_mismatch"):
+        host.migration_revision_readback(
+            "0050", "0050", False, False, (), cutover_catalog=marker
+        )
+
+
+def test_current0051_layers_new_marker_without_relabelling_historical0050():
+    from scripts import verify_final_hermetic as host
+
+    previous = host.expected_migration_revision_readback("0050")
+    previous_copy = copy.deepcopy(previous)
+    current = host.expected_migration_revision_readback("0051")
+    assert current["schema"] == "ctcc.migration_revision_readback.v8"
+    assert current["expected"] == current["observed"] == "0051"
+    assert (
+        current["account_history_partition_schema"]
+        == previous["account_history_partition_schema"]
+    )
+    marker = current.pop("prospective_cutover_schema")
+    current.update(
+        schema="ctcc.migration_revision_readback.v7", expected="0050", observed="0050"
+    )
+    assert host.native_migration_json_equal(current, previous)
+    assert (
+        marker["native_deparser_baseline"] is None
+        and marker["execution_authority"] is False
+    )
+    assert previous == previous_copy

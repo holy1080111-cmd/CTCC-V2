@@ -1,0 +1,132 @@
+name: Native financial fixed original node context diagnostics
+
+on:
+  push:
+    branches:
+      - work/prospective-event-cutover-pg51-catalog-20261025
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux-original-context:
+    if: github.ref == 'refs/heads/work/prospective-event-cutover-pg51-catalog-20261025'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        node: [original-current, await-temporary, await-retained, late-b3, post-close]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Run one exact original Linux node with unchanged runtime limits
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -C
+          commit=$(git rev-parse HEAD)
+          test "$commit" = "$GITHUB_SHA"
+          tree=$(git rev-parse 'HEAD^{tree}')
+          archive="$RUNNER_TEMP/ctcc-fixed-node-source.tar"
+          git -c core.autocrlf=false -c core.eol=lf archive --format=tar --output="$archive" "$commit"
+          digest=$(sha256sum "$archive" | cut -d ' ' -f 1)
+          python3 -m scripts.diagnose_native_financial_original_node \
+            --fixed-node '${{ matrix.node }}' \
+            --archive "$archive" --archive-sha256 "$digest" \
+            --commit "$commit" --tree "$tree" \
+            --output "$RUNNER_TEMP/ctcc-fixed-node-linux"
+      - name: Preserve Linux evidence without claiming Windows acceptance
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ctcc-fixed-node-linux-${{ matrix.node }}-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/ctcc-fixed-node-source.tar
+            ${{ runner.temp }}/ctcc-fixed-node-linux/**
+          if-no-files-found: error
+          retention-days: 30
+
+  windows-original-context:
+    if: github.ref == 'refs/heads/work/prospective-event-cutover-pg51-catalog-20261025'
+    runs-on: windows-2025
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        node: [original-current, await-temporary, await-retained, late-b3, post-close]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - name: Export and read back the exact Git source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $resultDir = Join-Path $env:RUNNER_TEMP 'ctcc-fixed-node-windows'
+          New-Item -ItemType Directory -Path $resultDir -ErrorAction Stop | Out-Null
+          $archive = Join-Path $resultDir 'source.zip'
+          $sourceRoot = Join-Path $resultDir 'source'
+          $commit = (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $commit -ne $env:GITHUB_SHA) { throw 'FIXED_NODE_SOURCE_SHA_MISMATCH' }
+          $tree = (git rev-parse 'HEAD^{tree}').Trim()
+          if ($LASTEXITCODE -ne 0) { throw 'FIXED_NODE_TREE_UNKNOWN' }
+          git -c core.autocrlf=false -c core.eol=lf archive --format=zip --output="$archive" "$commit"
+          if ($LASTEXITCODE -ne 0) { throw 'FIXED_NODE_ARCHIVE_FAILED' }
+          Expand-Archive -LiteralPath $archive -DestinationPath $sourceRoot
+          Set-Location -LiteralPath $sourceRoot
+          python -B scripts/manifest.py --check
+          if ($LASTEXITCODE -ne 0) { throw 'FIXED_NODE_MANIFEST_MISMATCH' }
+          $identity = @{ commit = $commit; tree = $tree; github_sha = $env:GITHUB_SHA; archive_sha256 = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant(); manifest_sha256 = (Get-FileHash -LiteralPath 'MANIFEST.sha256' -Algorithm SHA256).Hash.ToLowerInvariant(); runner_label = 'windows-2025' }
+          [System.IO.File]::WriteAllText((Join-Path $resultDir 'source-identity.json'), (($identity | ConvertTo-Json -Compress) + "`n"), [System.Text.UTF8Encoding]::new($false))
+      - name: Install the actual41 dependency Windows lock in a fresh CPython environment
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $resultDir = Join-Path $env:RUNNER_TEMP 'ctcc-fixed-node-windows'
+          Set-Location -LiteralPath (Join-Path $resultDir 'source')
+          $venv = Join-Path $resultDir 'venv'
+          python -m venv $venv
+          if ($LASTEXITCODE -ne 0) { throw 'FIXED_NODE_VENV_FAILED' }
+          $py = Join-Path $venv 'Scripts/python.exe'
+          & $py -m pip --isolated install --require-hashes --only-binary=:all: -r requirements/validation-windows-py312.lock
+          if ($LASTEXITCODE -ne 0) { throw 'FIXED_NODE_LOCK_FAILED' }
+          & $py -m pip --isolated install --no-deps --no-build-isolation '.[test,validation]'
+          if ($LASTEXITCODE -ne 0) { throw 'FIXED_NODE_SOURCE_INSTALL_FAILED' }
+          & $py -m pip check
+          if ($LASTEXITCODE -ne 0) { throw 'FIXED_NODE_PIP_CHECK_FAILED' }
+          $dependency = & $py -B -m scripts.verify_dependency_lock --target windows
+          if ($LASTEXITCODE -ne 0) { throw 'FIXED_NODE_DEPENDENCY_IDENTITY_FAILED' }
+          [System.IO.File]::WriteAllText((Join-Path $resultDir 'dependency-result.json'), (($dependency -join "`n") + "`n"), [System.Text.UTF8Encoding]::new($false))
+      - name: Run one exact Windows original node within an owned300second process Job
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $resultDir = Join-Path $env:RUNNER_TEMP 'ctcc-fixed-node-windows'
+          Set-Location -LiteralPath (Join-Path $resultDir 'source')
+          $identity = Get-Content -LiteralPath (Join-Path $resultDir 'source-identity.json') -Raw | ConvertFrom-Json
+          $py = Join-Path $resultDir 'venv/Scripts/python.exe'
+          & $py -B -m scripts.diagnose_native_financial_fixed_node_windows --fixed-node '${{ matrix.node }}' --archive (Join-Path $resultDir 'source.zip') --commit $identity.commit --tree $identity.tree --output (Join-Path $resultDir 'diagnostic')
+          if ($LASTEXITCODE -ne 0) { throw 'FIXED_WINDOWS_ORIGINAL_NODE_NOT_PASSED' }
+      - name: Preserve Windows results and unknown-state failure evidence separately
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ctcc-fixed-node-windows-${{ matrix.node }}-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/ctcc-fixed-node-windows/source.zip
+            ${{ runner.temp }}/ctcc-fixed-node-windows/source-identity.json
+            ${{ runner.temp }}/ctcc-fixed-node-windows/dependency-result.json
+            ${{ runner.temp }}/ctcc-fixed-node-windows/diagnostic/**
+          if-no-files-found: error
+          retention-days: 30

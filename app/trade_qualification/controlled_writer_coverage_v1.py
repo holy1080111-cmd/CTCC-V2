@@ -48,6 +48,8 @@ _HOOK_KEY = object()
 _BINDINGS = WeakKeyDictionary()
 _OWNERS = WeakKeyDictionary()
 _FINANCIAL = WeakKeyDictionary()
+_CUTOVERS = WeakKeyDictionary()
+_NAMESPACE_PHASES = WeakKeyDictionary()
 _MAX_OWNERS = 256
 _MAX_SOURCE_FILE = 4 * 1024 * 1024
 _ROOT = Path(__file__).resolve().parents[2]
@@ -83,6 +85,13 @@ WRITER_PATHS = (
     "app/database/repositories/okx_live.py",
     "app/database/repositories/okx_live_execution.py",
     "app/trade_qualification/controlled_writer_coverage_v1.py",
+    "app/trade_qualification/prospective_event_cutover_v2.py",
+    "app/database/repositories/prospective_event_cutover_v2.py",
+    "app/trade_qualification/native_namespace_phase_v1.py",
+    "app/database/repositories/native_namespace_phase_v1.py",
+    "app/domain/prospective_event_cutover_v2.py",
+    "app/domain/prospective_event_cutover_catalog_v2.py",
+    "migrations/versions/0051_prospective_event_cutover.py",
     "app/database/repositories/controlled_writer_coverage.py",
     "app/domain/controlled_writer_coverage_catalog_v1.py",
     "migrations/versions/0048_controlled_writer_coverage.py",
@@ -1060,3 +1069,101 @@ def _check_function_pins():
         _deny("controlled_writer_coverage_native_function_changed")
     if _catalog_policy_digest() != _CATALOG_POLICY_SHA256:
         _deny("controlled_writer_coverage_catalog_policy_changed")
+
+
+def _cutover_key_v2(key):
+    from app.trade_qualification.prospective_event_cutover_v2 import _HOOK_KEY
+
+    if key is not _HOOK_KEY:
+        _deny("controlled_writer_coverage_cutover_owner_required")
+
+
+def _take_prospective_cutover_v2(owner, *, key):
+    """Move the original native source/control owner at call time, once."""
+    _cutover_key_v2(key)
+    binding = (
+        _OWNERS.pop(owner, None)
+        if type(owner) is OwnedControlledDemoWriterCoverageV1
+        else None
+    )
+    if binding is None:
+        _deny("controlled_writer_coverage_owner_unavailable")
+    try:
+        _check_binding(binding)
+        _CUTOVERS[binding] = True
+        return binding
+    except BaseException:
+        released = _BINDINGS.pop(binding, None)
+        if released is not None:
+            released.clear()
+        raise
+
+
+def _prospective_cutover_state_v2(binding, *, key):
+    _cutover_key_v2(key)
+    if type(binding) is not _ActivationBindingV1 or _CUTOVERS.get(binding) is not True:
+        _deny("controlled_writer_coverage_cutover_binding_unavailable")
+    state, stamp = _check_binding(binding)
+    if state.get("active") is None or state["active"].state != "active":
+        _deny("controlled_writer_coverage_cutover_active_required")
+    return state, stamp
+
+
+def _release_prospective_cutover_v2(binding, *, key):
+    _cutover_key_v2(key)
+    if type(binding) is _ActivationBindingV1 and _CUTOVERS.pop(binding, None) is True:
+        released = _BINDINGS.pop(binding, None)
+        if released is not None:
+            released.clear()
+
+
+def _namespace_phase_key_v1(key):
+    from app.trade_qualification.native_namespace_phase_v1 import _HOOK_KEY
+
+    if key is not _HOOK_KEY:
+        _deny("controlled_writer_coverage_namespace_phase_owner_required")
+
+
+def _take_namespace_phase_v1(owner, *, key):
+    """MOVE only the genuine newly acquired V4/Control/coverage binding."""
+    _namespace_phase_key_v1(key)
+    binding = (
+        _OWNERS.pop(owner, None)
+        if type(owner) is OwnedControlledDemoWriterCoverageV1
+        else None
+    )
+    if binding is None:
+        _deny("controlled_writer_coverage_owner_unavailable")
+    try:
+        _check_binding(binding)
+        _NAMESPACE_PHASES[binding] = True
+        return binding
+    except BaseException:
+        released = _BINDINGS.pop(binding, None)
+        if released is not None:
+            released.clear()
+        raise
+
+
+def _namespace_phase_state_v1(binding, *, key):
+    _namespace_phase_key_v1(key)
+    if (
+        type(binding) is not _ActivationBindingV1
+        or _NAMESPACE_PHASES.get(binding) is not True
+    ):
+        _deny("controlled_writer_coverage_namespace_phase_binding_unavailable")
+    state, stamp = _check_binding(binding)
+    if state.get("active") is None or state["active"].state != "active":
+        _deny("controlled_writer_coverage_namespace_phase_active_required")
+    return state, stamp
+
+
+def _release_namespace_phase_v1(binding, *, key):
+    _namespace_phase_key_v1(key)
+    if (
+        type(binding) is _ActivationBindingV1
+        and _NAMESPACE_PHASES.pop(binding, None) is True
+    ):
+        released = _BINDINGS.pop(binding, None)
+        if released is not None:
+            released.clear()
