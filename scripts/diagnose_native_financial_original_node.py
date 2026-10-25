@@ -487,7 +487,7 @@ def main() -> int:
     input_pins = dict(INPUT_PINS)
     if scoped:
         input_pins["scripts/verify_final_hermetic.py"] = (
-            "6b3ed4a605fbfcb6d28d5f5114fedae7bdb9613775c1cf73fcc68a4587cd9d80"
+            "dc8e887927052a2b932a12ba8424eb6f926c9ced04b9e6d68f91a8492eb3fcb5"
         )
         input_pins["scripts/prospective_capture_custody.py"] = (
             "50b8305a1d0ddefac32717626d1d0dc55145e2024ac65e5104890a4aefb43789"

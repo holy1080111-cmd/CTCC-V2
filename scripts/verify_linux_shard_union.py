@@ -34,6 +34,7 @@ from scripts.verify_final_hermetic import (
     native_identity_empty_before_readback,
     native_identity_nonempty_downgrade_readback,
     native_migration_json_equal,
+    postgres_required_cases,
     verify_coverage_migration_receipt,
     verify_coverage_native_catalog_capture_0051,
     verify_current_0051_downgrade_denial_log,
@@ -47,8 +48,14 @@ from scripts.verify_final_hermetic import (
     verify_pair_guard_migration_receipt,
     verify_prospective_cutover_native_catalog_capture,
     verify_pytest_report,
+    verify_selected_junit_nodes,
 )
-from scripts.verify_linux_shard import POSTGRES_TEST_PATHS, SHARD_COUNT
+from scripts.verify_linux_shard import (
+    POSTGRES_COMPONENT_COUNT,
+    POSTGRES_TEST_PATHS,
+    SHARD_COUNT,
+    postgres_paths,
+)
 from scripts.verify_native_witness_identity_schema import (
     require_native_witness_identity_baseline,
 )
@@ -387,12 +394,59 @@ def _verify_complete_stage_sequence(stages, mode, index):
                 *PREDECESSOR_0047_STAGES,
                 *POSTGRES_RESTART_STAGES,
             )
+            if mode == "postgres" and index == 0
+            else ("postgres-intent",)
             if mode == "postgres"
             else (f"linux-shard-{index}",)
         ),
     )
     if tuple(step["name"] for step in stages) != expected:
         raise ValueError("linux_union_stage_inventory_or_order_invalid")
+
+
+def _verify_cases_only_no_anchor_claims(identity, hashes):
+    forbidden_fields = {
+        "account_history_partition_preflight",
+        "controlled_writer_coverage_preflight",
+        "runtime_bundle_custody_preflight",
+        "event_journal_schema_preflight",
+        "gate3_preflight",
+        "coverage_migration_acceptance",
+        "coverage_nonempty_downgrade_policy",
+        "pair_guard_migration_acceptance",
+        "historical_0049_nonempty_actual_case",
+        "history_partition_migration_acceptance",
+        "history_partition_nonempty_downgrade_policy",
+        "predecessor_0047_validation",
+        "native_identity_nonempty_downgrade_policy",
+        "synthetic_process_pg_redis_crash_durability",
+        "api_service_restart",
+        "crash_probe_marker_sha256",
+        "live_restart_acceptance",
+    }
+    forbidden_hashes = {
+        "test-results/controlled-writer-coverage-migration.json",
+        "test-results/controlled-writer-pair-guard-migration.json",
+        "test-results/account-history-partition-migration.json",
+        "crash-probe/durable.json",
+        *(
+            f"{stage}.log"
+            for stage in (
+                *POSTGRES_PREFLIGHT_STAGES,
+                *POSTGRES_COVERAGE_STAGES,
+                *PREDECESSOR_0047_STAGES,
+                *POSTGRES_RESTART_STAGES,
+            )
+        ),
+        *(f"test-results/{stage}.xml" for stage in POSTGRES_PREFLIGHT_STAGES),
+        "test-results/predecessor-0047-two-cases.xml",
+    }
+    if (
+        identity.get("anchor_experiments") != "NOT_PERFORMED_CASES_ONLY"
+        or forbidden_fields.intersection(identity)
+        or forbidden_hashes.intersection(hashes)
+    ):
+        raise ValueError("linux_union_cases_only_anchor_claim_forbidden")
 
 
 def verify_union(
@@ -403,9 +457,10 @@ def verify_union(
         raise ValueError("linux_union_git_identity_invalid")
     if not re.fullmatch("[a-f0-9]{64}", manifest_sha256):
         raise ValueError("linux_union_manifest_invalid")
-    names = {f"ctcc-linux-postgres-{commit}"} | {
-        f"ctcc-linux-shard-{i}-{commit}" for i in range(SHARD_COUNT)
-    }
+    names = {
+        f"ctcc-linux-postgres-{index}-{commit}"
+        for index in range(POSTGRES_COMPONENT_COUNT)
+    } | {f"ctcc-linux-shard-{i}-{commit}" for i in range(SHARD_COUNT)}
     actual = {path.name for path in artifacts.iterdir() if path.is_dir()}
     if actual != names:
         raise ValueError("linux_union_component_set_incomplete")
@@ -414,11 +469,11 @@ def verify_union(
     common_identity: tuple | None = None
     components = []
     for mode, index in (
-        ("postgres", None),
+        *(("postgres", index) for index in range(POSTGRES_COMPONENT_COUNT)),
         *(("shard", i) for i in range(SHARD_COUNT)),
     ):
         name = (
-            f"ctcc-linux-postgres-{commit}"
+            f"ctcc-linux-postgres-{index}-{commit}"
             if mode == "postgres"
             else f"ctcc-linux-shard-{index}-{commit}"
         )
@@ -449,7 +504,7 @@ def verify_union(
             != hashlib.sha256((root / "source-files.json").read_bytes()).hexdigest()
             or identity.get("suite") != mode
             or (mode == "shard" and type(identity.get("shard_index")) is not int)
-            or identity.get("shard_index") != index
+            or identity.get("shard_index") != (index if mode == "shard" else None)
             or type(identity.get("shard_count")) is not int
             or identity.get("shard_count") != SHARD_COUNT
             or identity.get("host_credentials") is not False
@@ -769,12 +824,26 @@ def verify_union(
         verify_current_0051_downgrade_denial_log(
             root / "migration-downgrade-denial.log"
         )
+        if mode == "postgres":
+            if (
+                identity.get("postgres_component_schema")
+                != "ctcc.postgres_component.v1"
+                or type(identity.get("postgres_component_index")) is not int
+                or identity["postgres_component_index"] != index
+                or type(identity.get("postgres_component_count")) is not int
+                or identity["postgres_component_count"] != POSTGRES_COMPONENT_COUNT
+                or identity.get("postgres_component_role")
+                != ("anchor" if index == 0 else "cases_only")
+            ):
+                raise ValueError("linux_union_postgres_component_identity_invalid")
+            if index == 1:
+                _verify_cases_only_no_anchor_claims(identity, hashes)
         stage = "postgres-intent" if mode == "postgres" else f"linux-shard-{index}"
         if not any(
             step.get("name") == stage and step.get("exit_code") == 0 for step in stages
         ):
             raise ValueError(f"linux_union_suite_stage_failed:{name}")
-        if mode == "postgres":
+        if mode == "postgres" and index == 0:
             receipt_name = "test-results/controlled-writer-coverage-migration.json"
             if receipt_name not in hashes:
                 raise ValueError("linux_union_coverage_migration_receipt_missing")
@@ -1025,9 +1094,13 @@ def verify_union(
             _verify_restart_stages(root, stages, hashes, identity)
             _verify_preflight_reports(root, hashes, identity)
         _verify_complete_stage_sequence(stages, mode, index)
-        if mode == "postgres" and (
-            identity.get("synthetic_process_pg_redis_crash_durability") != "PASS"
-            or identity.get("api_service_restart") != "PASS"
+        if (
+            mode == "postgres"
+            and index == 0
+            and (
+                identity.get("synthetic_process_pg_redis_crash_durability") != "PASS"
+                or identity.get("api_service_restart") != "PASS"
+            )
         ):
             raise ValueError("linux_union_restart_acceptance_missing")
         xml = root / "test-results" / f"{stage}.xml"
@@ -1048,12 +1121,12 @@ def verify_union(
                 raise ValueError("linux_union_test_hash_missing")
         report = verify_pytest_report(
             xml,
-            required_cases=ARCHIVE_REQUIRED_CASES if mode == "postgres" else (),
+            required_cases=postgres_required_cases(index) if mode == "postgres" else (),
             required_modules=(
                 tuple(
                     sorted(
                         path.removesuffix(".py").replace("/", ".")
-                        for path in POSTGRES_TEST_PATHS
+                        for path in postgres_paths(index)
                     )
                 )
                 if mode == "postgres"
@@ -1075,6 +1148,9 @@ def verify_union(
         if not native_migration_json_equal(identity.get("collection"), collection):
             raise ValueError("linux_union_collection_readback_changed")
         record = _json(collection_path)
+        verify_selected_junit_nodes(
+            xml, record["selected_nodeids"], expected_sha256=report["sha256"]
+        )
         if full is None:
             full = record["full_nodeids"]
         elif record["full_nodeids"] != full:
@@ -1091,13 +1167,48 @@ def verify_union(
                 "skipped": report["skipped"],
                 "junit_sha256": report["sha256"],
                 "collection_sha256": collection["sha256"],
+                **(
+                    {
+                        "postgres_component_index": index,
+                        "postgres_component_role": "anchor"
+                        if index == 0
+                        else "cases_only",
+                        "required_cases": report["required_case_passed"],
+                        "required_modules": report["required_module_passed"],
+                    }
+                    if mode == "postgres"
+                    else {}
+                ),
             }
         )
     assert full is not None
     if selected_union != set(full):
         raise ValueError("linux_union_missing_full_suite_cases")
+    pg_components = [
+        component for component in components if "postgres_component_index" in component
+    ]
+    required_case_keys = [
+        key for component in pg_components for key in component["required_cases"]
+    ]
+    required_module_keys = [
+        key for component in pg_components for key in component["required_modules"]
+    ]
+    if (
+        len(pg_components) != POSTGRES_COMPONENT_COUNT
+        or len(required_case_keys) != len(set(required_case_keys))
+        or set(required_case_keys)
+        != {f"{module}::{case}" for module, case in ARCHIVE_REQUIRED_CASES}
+        or len(required_module_keys) != len(set(required_module_keys))
+        or set(required_module_keys)
+        != {path.removesuffix(".py").replace("/", ".") for path in POSTGRES_TEST_PATHS}
+    ):
+        raise ValueError("linux_union_postgres_required_ownership_incomplete")
     return {
-        "schema": "ctcc.linux_hermetic_union.v1",
+        "schema": "ctcc.linux_hermetic_union.v2",
+        "postgres_component_count": POSTGRES_COMPONENT_COUNT,
+        "postgres_selected_cases": sum(
+            component["selected"] for component in pg_components
+        ),
         "commit": commit,
         "tree": tree,
         "manifest_sha256": manifest_sha256,

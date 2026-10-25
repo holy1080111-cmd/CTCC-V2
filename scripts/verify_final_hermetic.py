@@ -23,7 +23,14 @@ from pathlib import Path, PurePosixPath
 from uuid import uuid4
 
 from scripts.evidence_json import read_evidence_json
-from scripts.verify_linux_shard import POSTGRES_TEST_PATHS, SHARD_COUNT, selected_for
+from scripts.verify_linux_shard import (
+    POSTGRES_COMPONENT_COUNT,
+    POSTGRES_COMPONENT_SCHEMA,
+    POSTGRES_TEST_PATHS,
+    SHARD_COUNT,
+    postgres_paths,
+    selected_for,
+)
 from scripts.verify_native_witness_identity_schema import (
     NATIVE_WITNESS_IDENTITY_SCHEMA,
     NATIVE_WITNESS_IDENTITY_SCHEMA_SQL,  # noqa: F401 -- probe/API re-export
@@ -2638,6 +2645,76 @@ def verify_pytest_report(
     }
 
 
+def postgres_required_cases(index):
+    paths = postgres_paths(index)
+    return tuple(
+        case
+        for case in ARCHIVE_REQUIRED_CASES
+        if case[0].replace(".", "/") + ".py" in paths
+    )
+
+
+def verify_selected_junit_nodes(path: Path, selected, *, expected_sha256):
+    """Join every selected parameter/class identity to actual JUnit, not a count."""
+    import xml.etree.ElementTree as ET
+
+    if (
+        type(selected) is not list
+        or not selected
+        or any(type(node) is not str for node in selected)
+    ):
+        raise ValueError("linux_selected_junit_nodes_invalid")
+    if (
+        path.is_symlink()
+        or not path.is_file()
+        or not 0 < path.stat().st_size <= 64 * 1024 * 1024
+    ):
+        raise ValueError("linux_selected_junit_missing_or_unsafe")
+    raw = path.read_bytes()
+    if hashlib.sha256(raw).hexdigest() != expected_sha256:
+        raise ValueError("linux_selected_junit_digest_changed")
+    expected = []
+    for node in selected:
+        path_name, separator, tail = node.partition("::")
+        if (
+            not separator
+            or not path_name.startswith("tests/")
+            or not path_name.endswith(".py")
+            or ".." in PurePosixPath(path_name).parts
+        ):
+            raise ValueError("linux_selected_junit_node_invalid")
+        head, bracket, parameters = tail.partition("[")
+        parts = head.split("::")
+        if (
+            any(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", part) is None for part in parts)
+            or bracket
+            and not parameters.endswith("]")
+        ):
+            raise ValueError("linux_selected_junit_node_invalid")
+        module = path_name.removesuffix(".py").replace("/", ".")
+        classname = ".".join((module, *parts[:-1]))
+        expected.append((classname, parts[-1] + ("[" + parameters if bracket else "")))
+    root = ET.fromstring(raw)
+    if (
+        root.tag != "testsuites"
+        or not len(root)
+        or any(suite.tag != "testsuite" for suite in root)
+    ):
+        raise ValueError("linux_selected_junit_schema_invalid")
+    actual = [
+        (case.get("classname"), case.get("name"))
+        for suite in root
+        for case in suite.findall("testcase")
+    ]
+    if (
+        len(expected) != len(set(expected))
+        or len(actual) != len(set(actual))
+        or set(actual) != set(expected)
+    ):
+        raise ValueError("linux_selected_junit_identity_mismatch")
+    return {"selected_identity_count": len(expected), "junit_sha256": expected_sha256}
+
+
 def verify_linux_collection(path: Path, *, mode: str, index: int | None, report: dict):
     """Read back an executed shard against its complete collected test list."""
     if path.is_symlink() or not 0 < path.stat().st_size <= 16 * 1024 * 1024:
@@ -2647,11 +2724,21 @@ def verify_linux_collection(path: Path, *, mode: str, index: int | None, report:
     full = record.get("full_nodeids")
     selected = record.get("selected_nodeids")
     observed = record.get("observed_nodeids")
+    component = mode == "postgres" and index is not None
+    if component and (
+        type(index) is not int or not 0 <= index < POSTGRES_COMPONENT_COUNT
+    ):
+        raise ValueError("postgres_component_index_invalid")
+    expected_schema = (
+        POSTGRES_COMPONENT_SCHEMA
+        if component
+        else "ctcc.linux_full_collection_shard.v1"
+    )
     if (
-        record.get("schema") != "ctcc.linux_full_collection_shard.v1"
+        record.get("schema") != expected_schema
         or record.get("mode") != mode
-        or (index is not None and type(record.get("shard_index")) is not int)
-        or record.get("shard_index") != index
+        or (mode == "shard" and type(record.get("shard_index")) is not int)
+        or record.get("shard_index") != (index if mode == "shard" else None)
         or type(record.get("shard_count")) is not int
         or record.get("shard_count") != SHARD_COUNT
         or type(record.get("pytest_exitstatus")) is not int
@@ -2667,6 +2754,35 @@ def verify_linux_collection(path: Path, *, mode: str, index: int | None, report:
         or report["tests"] != len(selected)
     ):
         raise ValueError("linux_collection_execution_incomplete")
+    if component:
+        if (
+            set(record)
+            != {
+                "schema",
+                "mode",
+                "shard_index",
+                "shard_count",
+                "full_nodeids",
+                "selected_nodeids",
+                "observed_nodeids",
+                "pytest_exitstatus",
+                "postgres_component_index",
+                "postgres_component_count",
+                "postgres_component_role",
+            }
+            or type(record.get("postgres_component_index")) is not int
+            or record["postgres_component_index"] != index
+            or type(record.get("postgres_component_count")) is not int
+            or record["postgres_component_count"] != POSTGRES_COMPONENT_COUNT
+            or record.get("postgres_component_role")
+            != ("anchor" if index == 0 else "cases_only")
+        ):
+            raise ValueError("postgres_component_collection_identity_invalid")
+        verify_selected_junit_nodes(
+            path.with_name("postgres-intent.xml"),
+            selected,
+            expected_sha256=report["sha256"],
+        )
     return {
         "full_count": len(full),
         "selected_count": len(selected),
@@ -3201,6 +3317,459 @@ while True:
 """
 
 
+def _run_component_tests_and_recovery(
+    *,
+    args,
+    run,
+    container,
+    identity,
+    test_results,
+    test_results_mount,
+    files,
+    postgres,
+    redis,
+    network,
+    environment,
+    label,
+    image,
+    resources,
+    suffix,
+):
+    """Actual main body after common schema checks; lower IO remains injectable."""
+    if args.suite not in ("full", "postgres", "shard"):
+        raise ValueError("linux_suite_selection_invalid")
+    pg_index = args.postgres_component_index
+    if (args.suite == "postgres") != (pg_index is not None):
+        raise ValueError("postgres_component_selection_invalid")
+    if args.suite == "postgres":
+        postgres_paths(pg_index)
+    anchor = args.suite == "full" or args.suite == "postgres" and pg_index == 0
+    if args.suite in ("full", "postgres"):
+        if anchor:
+            identity["account_history_partition_preflight"] = (
+                run_history_partition_preflight(
+                    container,
+                    test_results=test_results,
+                    mounts=test_results_mount,
+                )
+            )
+            identity["controlled_writer_coverage_preflight"] = (
+                run_controlled_writer_coverage_preflight(
+                    container,
+                    test_results=test_results,
+                    mounts=test_results_mount,
+                )
+            )
+            identity["runtime_bundle_custody_preflight"] = (
+                run_runtime_bundle_custody_preflight(
+                    container, test_results=test_results, mounts=test_results_mount
+                )
+            )
+            # Check the committed journal retention schema before the long
+            # PostgreSQL suite. A failure is a hard denial; its allowlisted
+            # mismatch category is retained in the JUnit artifact.
+            container(
+                "event-journal-schema-preflight",
+                [
+                    "python",
+                    "-m",
+                    "scripts.hermetic_pytest",
+                    "-p",
+                    "no:cacheprovider",
+                    "--tb=no",
+                    "--show-capture=no",
+                    "-o",
+                    "junit_logging=no",
+                    "--junitxml=/validation-results/event-journal-schema-preflight.xml",
+                    *(
+                        f"{module.replace('.', '/')}.py::{case}"
+                        for module, case in LEDGER_SCHEMA_PREFLIGHT_CASES
+                    ),
+                ],
+                mounts=test_results_mount,
+                timeout=5 * 60,
+            )
+            identity["event_journal_schema_preflight"] = verify_pytest_report(
+                test_results / "event-journal-schema-preflight.xml",
+                required_cases=LEDGER_SCHEMA_PREFLIGHT_CASES,
+            )
+            # Fail early on the isolated 0029 claim boundary before the long
+            # PostgreSQL suite. Suppress raw DB tracebacks in this diagnostic
+            # stage; the test exposes only allowlisted PostgreSQL metadata.
+            container(
+                "gate3-postgres-preflight",
+                [
+                    "python",
+                    "-m",
+                    "scripts.hermetic_pytest",
+                    "-p",
+                    "no:cacheprovider",
+                    "--tb=no",
+                    "--show-capture=no",
+                    "-o",
+                    "junit_logging=no",
+                    "--junitxml=/validation-results/gate3-postgres-preflight.xml",
+                    *(
+                        f"{module.replace('.', '/')}.py::{case}"
+                        for module, case in GATE3_PREFLIGHT_CASES
+                    ),
+                ],
+                mounts=test_results_mount,
+                timeout=15 * 60,
+            )
+            identity["gate3_preflight"] = verify_pytest_report(
+                test_results / "gate3-postgres-preflight.xml",
+                required_cases=GATE3_PREFLIGHT_CASES,
+            )
+        postgres_command = [
+            "python",
+            "-m",
+            "scripts.hermetic_pytest",
+            "-p",
+            "no:cacheprovider",
+            "-ra",
+            "-vv",
+            "--junitxml=/validation-results/postgres-intent.xml",
+        ]
+        if args.suite == "postgres":
+            postgres_command += [
+                "-p",
+                "scripts.verify_linux_shard",
+                "--ctcc-linux-suite=postgres",
+                f"--ctcc-linux-postgres-component-index={pg_index}",
+                "--ctcc-linux-collection-json=/validation-results/postgres-collection.json",
+                "tests",
+            ]
+        else:
+            postgres_command += sorted(POSTGRES_TEST_PATHS)
+        container(
+            "postgres-intent",
+            postgres_command,
+            mounts=test_results_mount,
+            extra_environment=(
+                *(
+                    ("-e", "CTCC_COVERAGE_RECEIPT_DIR=/validation-results")
+                    if anchor
+                    else ()
+                ),
+                *(
+                    (
+                        "-e",
+                        "CTCC_RUN_B3_PREFIX_33=1",
+                        "-e",
+                        "CTCC_B3_SCALE_RECEIPT_DIR=/validation-results",
+                    )
+                    if args.suite == "postgres"
+                    else ()
+                ),
+            ),
+            timeout=POSTGRES_TEST_TIMEOUT_SECONDS,
+        )
+        identity["postgres_tests"] = verify_pytest_report(
+            test_results / "postgres-intent.xml",
+            required_cases=postgres_required_cases(pg_index),
+            required_modules=tuple(
+                sorted(
+                    path.removesuffix(".py").replace("/", ".")
+                    for path in postgres_paths(pg_index)
+                )
+            ),
+        )
+        if anchor:
+            receipt_path = test_results / "controlled-writer-coverage-migration.json"
+            if (
+                receipt_path.is_symlink()
+                or not receipt_path.is_file()
+                or not 0 < receipt_path.stat().st_size <= 65536
+            ):
+                raise RuntimeError("coverage_migration_receipt_missing_or_unsafe")
+            identity["coverage_migration_acceptance"] = (
+                verify_coverage_migration_receipt(
+                    read_evidence_json(receipt_path.read_bytes()),
+                    manifest_sha256=identity["manifest_sha256"],
+                    repository_sha256=files[
+                        "app/database/repositories/controlled_writer_coverage.py"
+                    ]["sha256"],
+                    migration_sha256=files[
+                        "migrations/versions/0048_controlled_writer_coverage.py"
+                    ]["sha256"],
+                )
+            )
+            pair_receipt_path = (
+                test_results / "controlled-writer-pair-guard-migration.json"
+            )
+            if (
+                pair_receipt_path.is_symlink()
+                or not pair_receipt_path.is_file()
+                or not 0 < pair_receipt_path.stat().st_size <= 65536
+            ):
+                raise RuntimeError("pair_guard_migration_receipt_missing_or_unsafe")
+            identity["pair_guard_migration_acceptance"] = (
+                verify_pair_guard_migration_receipt(
+                    read_evidence_json(pair_receipt_path.read_bytes()),
+                    manifest_sha256=identity["manifest_sha256"],
+                    repository_sha256=files[
+                        "app/database/repositories/controlled_writer_coverage.py"
+                    ]["sha256"],
+                    migration_sha256=files[
+                        "migrations/versions/0049_controlled_writer_pair_guard_definer.py"
+                    ]["sha256"],
+                )
+            )
+            identity["historical_0049_nonempty_actual_case"] = (
+                verify_historical_0049_nonempty_case(
+                    test_results / "postgres-intent.xml",
+                    identity["pair_guard_migration_acceptance"],
+                )
+            )
+            partition_receipt = (
+                test_results / "account-history-partition-migration.json"
+            )
+            if (
+                partition_receipt.is_symlink()
+                or not partition_receipt.is_file()
+                or not 0 < partition_receipt.stat().st_size <= 65536
+            ):
+                raise RuntimeError(
+                    "history_partition_migration_receipt_missing_or_unsafe"
+                )
+            identity["history_partition_migration_acceptance"] = (
+                verify_history_partition_migration_receipt_0051(
+                    read_evidence_json(partition_receipt.read_bytes()),
+                    manifest_sha256=identity["manifest_sha256"],
+                    repository_sha256=files[
+                        "app/database/repositories/account_history_partition.py"
+                    ]["sha256"],
+                    migration_sha256=files[
+                        "migrations/versions/0050_account_history_partition.py"
+                    ]["sha256"],
+                )
+            )
+            # Own49 and own48 experiments are the separately retained, actual
+            # child receipts validated above. This primary experiment is51; child49/48 remain historical.
+            container(
+                "migration-history-partition-nonempty-before",
+                ["python", "-c", HISTORY_PARTITION_RETENTION_PROBE_0051],
+                timeout=60,
+            )
+            partition_before = read_evidence_json(
+                (
+                    args.output / "migration-history-partition-nonempty-before.log"
+                ).read_bytes()
+            )
+            container(
+                "migration-history-partition-nonempty-denial",
+                ["alembic", "downgrade", "0049"],
+                expected_refusal=HISTORY_PARTITION_DOWNGRADE_DENIAL,
+                refusal_source_head="0051",
+                timeout=60,
+            )
+            verify_history_partition_downgrade_denial_log_0051(
+                args.output / "migration-history-partition-nonempty-denial.log"
+            )
+            container(
+                "migration-history-partition-nonempty-after",
+                ["python", "-c", HISTORY_PARTITION_RETENTION_PROBE_0051],
+                timeout=60,
+            )
+            partition_after = read_evidence_json(
+                (
+                    args.output / "migration-history-partition-nonempty-after.log"
+                ).read_bytes()
+            )
+            identity["history_partition_nonempty_downgrade_policy"] = (
+                history_partition_nonempty_downgrade_readback_0051(
+                    partition_before, partition_after
+                )
+            )
+            identity["predecessor_0047_validation"] = run_predecessor_0047_validation(
+                run,
+                container,
+                postgres=postgres,
+                suffix=suffix,
+                test_results=test_results,
+                mounts=test_results_mount,
+            )
+            identity["native_identity_nonempty_downgrade_policy"] = identity[
+                "predecessor_0047_validation"
+            ]["nonempty_downgrade_policy"]
+        if args.suite == "postgres":
+            identity["collection"] = verify_linux_collection(
+                test_results / "postgres-collection.json",
+                mode="postgres",
+                index=pg_index,
+                report=identity["postgres_tests"],
+            )
+        if args.suite == "postgres" and not anchor:
+            identity["anchor_experiments"] = "NOT_PERFORMED_CASES_ONLY"
+            identity["component_validation"] = "PASS"
+            identity["hermetic_regression"] = "PENDING_UNION"
+            return
+    if args.suite == "full":
+        container(
+            "linux-full",
+            [
+                "python",
+                "-m",
+                "scripts.hermetic_pytest",
+                "-p",
+                "no:cacheprovider",
+                "-ra",
+                "--junitxml=/validation-results/linux-full.xml",
+                "tests",
+            ],
+            mounts=test_results_mount,
+            timeout=FULL_TEST_TIMEOUT_SECONDS,
+        )
+        identity["linux_tests"] = verify_pytest_report(
+            test_results / "linux-full.xml",
+            required_cases=ARCHIVE_REQUIRED_CASES,
+            required_modules=tuple(
+                identity["postgres_tests"]["required_module_passed"]
+            ),
+            allow_unrelated_skips=True,
+        )
+    if args.suite == "shard":
+        stage = f"linux-shard-{args.shard_index}"
+        container(
+            stage,
+            [
+                "python",
+                "-m",
+                "scripts.hermetic_pytest",
+                "-p",
+                "no:cacheprovider",
+                "-p",
+                "scripts.verify_linux_shard",
+                "-ra",
+                f"--junitxml=/validation-results/{stage}.xml",
+                "--ctcc-linux-suite=shard",
+                f"--ctcc-linux-shard-index={args.shard_index}",
+                f"--ctcc-linux-collection-json=/validation-results/{stage}-collection.json",
+                "tests",
+            ],
+            mounts=test_results_mount,
+            timeout=FULL_TEST_TIMEOUT_SECONDS,
+        )
+        identity["linux_tests"] = verify_pytest_report(
+            test_results / f"{stage}.xml",
+            allow_unrelated_skips=True,
+        )
+        identity["collection"] = verify_linux_collection(
+            test_results / f"{stage}-collection.json",
+            mode="shard",
+            index=args.shard_index,
+            report=identity["linux_tests"],
+        )
+        identity["component_validation"] = "PASS"
+        identity["hermetic_regression"] = "PENDING_UNION"
+        return
+    # Actual process death and server restarts, using explicitly synthetic
+    # claims. This does not establish source, Demo or Live acceptance.
+    probe_dir = args.output / "crash-probe"
+    probe_dir.mkdir()
+    probe_dir.chmod(0o777)  # Dedicated Linux validation output; no secrets.
+    probe_marker = probe_dir / "durable.json"
+    probe_container = f"ctcc-final-{suffix}-crash-seed"
+    resources.append(("container", probe_container))
+    probe_mount = (
+        "--mount",
+        f"type=bind,source={probe_dir.resolve()},target=/probe",
+    )
+    run.command(
+        "crash-probe-start",
+        [
+            "docker",
+            "run",
+            "-d",
+            "--name",
+            probe_container,
+            "--label",
+            label,
+            "--network",
+            network,
+            *probe_mount,
+            *environment,
+            "-e",
+            "CTCC_HERMETIC_DURABILITY=1",
+            image,
+            "python",
+            "-m",
+            "scripts.qualification_durability_probe",
+            "seed",
+            "--marker",
+            "/probe/durable.json",
+        ],
+    )
+    wait_for_durable_seed(run, probe_container, probe_marker)
+    run.command("crash-seed-readback-log", ["docker", "logs", probe_container])
+    run.command("process-sigkill", ["docker", "kill", "--signal=KILL", probe_container])
+    run.command("postgres-restart", ["docker", "restart", "--time", "10", postgres])
+    run.command("redis-restart", ["docker", "restart", "--time", "10", redis])
+    deadline = time.monotonic() + 120
+    while subprocess.run(
+        ["docker", "exec", postgres, "pg_isready", "-U", "ctcc", "-d", "ctcc"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+        timeout=15,
+    ).returncode:
+        if time.monotonic() >= deadline:
+            raise RuntimeError("restarted_postgres_not_ready")
+        time.sleep(0.25)
+    container(
+        "crash-restart-independent-readback",
+        [
+            "python",
+            "-m",
+            "scripts.qualification_durability_probe",
+            "verify",
+            "--marker",
+            "/probe/durable.json",
+        ],
+        mounts=(probe_mount[0], probe_mount[1] + ",readonly"),
+        extra_environment=("-e", "CTCC_HERMETIC_DURABILITY=1"),
+    )
+    identity["synthetic_process_pg_redis_crash_durability"] = "PASS"
+    identity["crash_probe_marker_sha256"] = hashlib.sha256(
+        probe_marker.read_bytes()
+    ).hexdigest()
+    api = f"ctcc-final-{suffix}-api"
+    resources.append(("container", api))
+    run.command(
+        "api-start",
+        [
+            "docker",
+            "run",
+            "-d",
+            "--name",
+            api,
+            "--label",
+            label,
+            "--network",
+            network,
+            *environment,
+            image,
+        ],
+    )
+    run.command(
+        "api-health", ["docker", "exec", api, "python", "-c", API_PROBE], timeout=90
+    )
+    run.command("api-restart", ["docker", "restart", "--time", "10", api], timeout=60)
+    run.command(
+        "api-restart-health",
+        ["docker", "exec", api, "python", "-c", API_PROBE],
+        timeout=90,
+    )
+    run.command("api-logs", ["docker", "logs", api], timeout=30)
+    identity["api_service_restart"] = "PASS"
+    identity["live_restart_acceptance"] = False
+    identity["component_validation"] = "PASS"
+    identity["hermetic_regression"] = (
+        "PASS" if args.suite == "full" else "PENDING_UNION"
+    )
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--archive", type=Path, required=True)
@@ -3212,11 +3781,22 @@ def main():
         "--suite", choices=("full", "postgres", "shard"), default="full"
     )
     parser.add_argument("--shard-index", type=int)
+    parser.add_argument("--postgres-component-index", type=int)
     args = parser.parse_args()
     if (args.suite == "shard") != (args.shard_index is not None) or (
         args.shard_index is not None and not 0 <= args.shard_index < SHARD_COUNT
     ):
         raise ValueError("linux_suite_selection_invalid")
+    if (args.suite == "postgres") != (args.postgres_component_index is not None) or (
+        args.postgres_component_index is not None
+        and (
+            type(args.postgres_component_index) is not int
+            or not 0 <= args.postgres_component_index < POSTGRES_COMPONENT_COUNT
+        )
+    ):
+        raise ValueError("postgres_component_selection_invalid")
+    pg_index = args.postgres_component_index
+    anchor = args.suite == "full" or args.suite == "postgres" and pg_index == 0
     for identity in (args.commit, args.tree):
         if not re.fullmatch("[a-f0-9]{40}", identity):
             raise ValueError("exact_git_identity_required")
@@ -3260,6 +3840,13 @@ def main():
         "external_order_writes": 0,
         "trading_acceptance": False,
     }
+    if args.suite == "postgres":
+        identity.update(
+            postgres_component_schema="ctcc.postgres_component.v1",
+            postgres_component_index=pg_index,
+            postgres_component_count=POSTGRES_COMPONENT_COUNT,
+            postgres_component_role="anchor" if anchor else "cases_only",
+        )
     (args.output / "identity.json").write_text(json.dumps(identity, indent=2))
     run = Run(args.output)
     test_results = args.output / "test-results"
@@ -3778,422 +4365,22 @@ def main():
             "rollback_readback": denial_readback,
             "schema_drift": "PASS",
         }
-        if args.suite in ("full", "postgres"):
-            identity["account_history_partition_preflight"] = (
-                run_history_partition_preflight(
-                    container,
-                    test_results=test_results,
-                    mounts=test_results_mount,
-                )
-            )
-            identity["controlled_writer_coverage_preflight"] = (
-                run_controlled_writer_coverage_preflight(
-                    container,
-                    test_results=test_results,
-                    mounts=test_results_mount,
-                )
-            )
-            identity["runtime_bundle_custody_preflight"] = (
-                run_runtime_bundle_custody_preflight(
-                    container, test_results=test_results, mounts=test_results_mount
-                )
-            )
-            # Check the committed journal retention schema before the long
-            # PostgreSQL suite. A failure is a hard denial; its allowlisted
-            # mismatch category is retained in the JUnit artifact.
-            container(
-                "event-journal-schema-preflight",
-                [
-                    "python",
-                    "-m",
-                    "scripts.hermetic_pytest",
-                    "-p",
-                    "no:cacheprovider",
-                    "--tb=no",
-                    "--show-capture=no",
-                    "-o",
-                    "junit_logging=no",
-                    "--junitxml=/validation-results/event-journal-schema-preflight.xml",
-                    *(
-                        f"{module.replace('.', '/')}.py::{case}"
-                        for module, case in LEDGER_SCHEMA_PREFLIGHT_CASES
-                    ),
-                ],
-                mounts=test_results_mount,
-                timeout=5 * 60,
-            )
-            identity["event_journal_schema_preflight"] = verify_pytest_report(
-                test_results / "event-journal-schema-preflight.xml",
-                required_cases=LEDGER_SCHEMA_PREFLIGHT_CASES,
-            )
-            # Fail early on the isolated 0029 claim boundary before the long
-            # PostgreSQL suite. Suppress raw DB tracebacks in this diagnostic
-            # stage; the test exposes only allowlisted PostgreSQL metadata.
-            container(
-                "gate3-postgres-preflight",
-                [
-                    "python",
-                    "-m",
-                    "scripts.hermetic_pytest",
-                    "-p",
-                    "no:cacheprovider",
-                    "--tb=no",
-                    "--show-capture=no",
-                    "-o",
-                    "junit_logging=no",
-                    "--junitxml=/validation-results/gate3-postgres-preflight.xml",
-                    *(
-                        f"{module.replace('.', '/')}.py::{case}"
-                        for module, case in GATE3_PREFLIGHT_CASES
-                    ),
-                ],
-                mounts=test_results_mount,
-                timeout=15 * 60,
-            )
-            identity["gate3_preflight"] = verify_pytest_report(
-                test_results / "gate3-postgres-preflight.xml",
-                required_cases=GATE3_PREFLIGHT_CASES,
-            )
-            postgres_command = [
-                "python",
-                "-m",
-                "scripts.hermetic_pytest",
-                "-p",
-                "no:cacheprovider",
-                "-ra",
-                "-vv",
-                "--junitxml=/validation-results/postgres-intent.xml",
-            ]
-            if args.suite == "postgres":
-                postgres_command += [
-                    "-p",
-                    "scripts.verify_linux_shard",
-                    "--ctcc-linux-suite=postgres",
-                    "--ctcc-linux-collection-json=/validation-results/postgres-collection.json",
-                    "tests",
-                ]
-            else:
-                postgres_command += sorted(POSTGRES_TEST_PATHS)
-            container(
-                "postgres-intent",
-                postgres_command,
-                mounts=test_results_mount,
-                extra_environment=(
-                    "-e",
-                    "CTCC_COVERAGE_RECEIPT_DIR=/validation-results",
-                    *(
-                        (
-                            "-e",
-                            "CTCC_RUN_B3_PREFIX_33=1",
-                            "-e",
-                            "CTCC_B3_SCALE_RECEIPT_DIR=/validation-results",
-                        )
-                        if args.suite == "postgres"
-                        else ()
-                    ),
-                ),
-                timeout=POSTGRES_TEST_TIMEOUT_SECONDS,
-            )
-            identity["postgres_tests"] = verify_pytest_report(
-                test_results / "postgres-intent.xml",
-                required_cases=ARCHIVE_REQUIRED_CASES,
-                required_modules=tuple(
-                    sorted(
-                        path.removesuffix(".py").replace("/", ".")
-                        for path in POSTGRES_TEST_PATHS
-                    )
-                ),
-            )
-            receipt_path = test_results / "controlled-writer-coverage-migration.json"
-            if (
-                receipt_path.is_symlink()
-                or not receipt_path.is_file()
-                or not 0 < receipt_path.stat().st_size <= 65536
-            ):
-                raise RuntimeError("coverage_migration_receipt_missing_or_unsafe")
-            identity["coverage_migration_acceptance"] = (
-                verify_coverage_migration_receipt(
-                    read_evidence_json(receipt_path.read_bytes()),
-                    manifest_sha256=identity["manifest_sha256"],
-                    repository_sha256=files[
-                        "app/database/repositories/controlled_writer_coverage.py"
-                    ]["sha256"],
-                    migration_sha256=files[
-                        "migrations/versions/0048_controlled_writer_coverage.py"
-                    ]["sha256"],
-                )
-            )
-            pair_receipt_path = (
-                test_results / "controlled-writer-pair-guard-migration.json"
-            )
-            if (
-                pair_receipt_path.is_symlink()
-                or not pair_receipt_path.is_file()
-                or not 0 < pair_receipt_path.stat().st_size <= 65536
-            ):
-                raise RuntimeError("pair_guard_migration_receipt_missing_or_unsafe")
-            identity["pair_guard_migration_acceptance"] = (
-                verify_pair_guard_migration_receipt(
-                    read_evidence_json(pair_receipt_path.read_bytes()),
-                    manifest_sha256=identity["manifest_sha256"],
-                    repository_sha256=files[
-                        "app/database/repositories/controlled_writer_coverage.py"
-                    ]["sha256"],
-                    migration_sha256=files[
-                        "migrations/versions/0049_controlled_writer_pair_guard_definer.py"
-                    ]["sha256"],
-                )
-            )
-            identity["historical_0049_nonempty_actual_case"] = (
-                verify_historical_0049_nonempty_case(
-                    test_results / "postgres-intent.xml",
-                    identity["pair_guard_migration_acceptance"],
-                )
-            )
-            partition_receipt = (
-                test_results / "account-history-partition-migration.json"
-            )
-            if (
-                partition_receipt.is_symlink()
-                or not partition_receipt.is_file()
-                or not 0 < partition_receipt.stat().st_size <= 65536
-            ):
-                raise RuntimeError(
-                    "history_partition_migration_receipt_missing_or_unsafe"
-                )
-            identity["history_partition_migration_acceptance"] = (
-                verify_history_partition_migration_receipt_0051(
-                    read_evidence_json(partition_receipt.read_bytes()),
-                    manifest_sha256=identity["manifest_sha256"],
-                    repository_sha256=files[
-                        "app/database/repositories/account_history_partition.py"
-                    ]["sha256"],
-                    migration_sha256=files[
-                        "migrations/versions/0050_account_history_partition.py"
-                    ]["sha256"],
-                )
-            )
-            # Own49 and own48 experiments are the separately retained, actual
-            # child receipts validated above. This primary experiment is51; child49/48 remain historical.
-            container(
-                "migration-history-partition-nonempty-before",
-                ["python", "-c", HISTORY_PARTITION_RETENTION_PROBE_0051],
-                timeout=60,
-            )
-            partition_before = read_evidence_json(
-                (
-                    args.output / "migration-history-partition-nonempty-before.log"
-                ).read_bytes()
-            )
-            container(
-                "migration-history-partition-nonempty-denial",
-                ["alembic", "downgrade", "0049"],
-                expected_refusal=HISTORY_PARTITION_DOWNGRADE_DENIAL,
-                refusal_source_head="0051",
-                timeout=60,
-            )
-            verify_history_partition_downgrade_denial_log_0051(
-                args.output / "migration-history-partition-nonempty-denial.log"
-            )
-            container(
-                "migration-history-partition-nonempty-after",
-                ["python", "-c", HISTORY_PARTITION_RETENTION_PROBE_0051],
-                timeout=60,
-            )
-            partition_after = read_evidence_json(
-                (
-                    args.output / "migration-history-partition-nonempty-after.log"
-                ).read_bytes()
-            )
-            identity["history_partition_nonempty_downgrade_policy"] = (
-                history_partition_nonempty_downgrade_readback_0051(
-                    partition_before, partition_after
-                )
-            )
-            identity["predecessor_0047_validation"] = run_predecessor_0047_validation(
-                run,
-                container,
-                postgres=postgres,
-                suffix=suffix,
-                test_results=test_results,
-                mounts=test_results_mount,
-            )
-            identity["native_identity_nonempty_downgrade_policy"] = identity[
-                "predecessor_0047_validation"
-            ]["nonempty_downgrade_policy"]
-            if args.suite == "postgres":
-                identity["collection"] = verify_linux_collection(
-                    test_results / "postgres-collection.json",
-                    mode="postgres",
-                    index=None,
-                    report=identity["postgres_tests"],
-                )
-        if args.suite == "full":
-            container(
-                "linux-full",
-                [
-                    "python",
-                    "-m",
-                    "scripts.hermetic_pytest",
-                    "-p",
-                    "no:cacheprovider",
-                    "-ra",
-                    "--junitxml=/validation-results/linux-full.xml",
-                    "tests",
-                ],
-                mounts=test_results_mount,
-                timeout=FULL_TEST_TIMEOUT_SECONDS,
-            )
-            identity["linux_tests"] = verify_pytest_report(
-                test_results / "linux-full.xml",
-                required_cases=ARCHIVE_REQUIRED_CASES,
-                required_modules=tuple(
-                    identity["postgres_tests"]["required_module_passed"]
-                ),
-                allow_unrelated_skips=True,
-            )
-        if args.suite == "shard":
-            stage = f"linux-shard-{args.shard_index}"
-            container(
-                stage,
-                [
-                    "python",
-                    "-m",
-                    "scripts.hermetic_pytest",
-                    "-p",
-                    "no:cacheprovider",
-                    "-p",
-                    "scripts.verify_linux_shard",
-                    "-ra",
-                    f"--junitxml=/validation-results/{stage}.xml",
-                    "--ctcc-linux-suite=shard",
-                    f"--ctcc-linux-shard-index={args.shard_index}",
-                    f"--ctcc-linux-collection-json=/validation-results/{stage}-collection.json",
-                    "tests",
-                ],
-                mounts=test_results_mount,
-                timeout=FULL_TEST_TIMEOUT_SECONDS,
-            )
-            identity["linux_tests"] = verify_pytest_report(
-                test_results / f"{stage}.xml",
-                allow_unrelated_skips=True,
-            )
-            identity["collection"] = verify_linux_collection(
-                test_results / f"{stage}-collection.json",
-                mode="shard",
-                index=args.shard_index,
-                report=identity["linux_tests"],
-            )
-            identity["component_validation"] = "PASS"
-            identity["hermetic_regression"] = "PENDING_UNION"
-            return
-        # Actual process death and server restarts, using explicitly synthetic
-        # claims. This does not establish source, Demo or Live acceptance.
-        probe_dir = args.output / "crash-probe"
-        probe_dir.mkdir()
-        probe_dir.chmod(0o777)  # Dedicated Linux validation output; no secrets.
-        probe_marker = probe_dir / "durable.json"
-        probe_container = f"ctcc-final-{suffix}-crash-seed"
-        resources.append(("container", probe_container))
-        probe_mount = (
-            "--mount",
-            f"type=bind,source={probe_dir.resolve()},target=/probe",
-        )
-        run.command(
-            "crash-probe-start",
-            [
-                "docker",
-                "run",
-                "-d",
-                "--name",
-                probe_container,
-                "--label",
-                label,
-                "--network",
-                network,
-                *probe_mount,
-                *environment,
-                "-e",
-                "CTCC_HERMETIC_DURABILITY=1",
-                image,
-                "python",
-                "-m",
-                "scripts.qualification_durability_probe",
-                "seed",
-                "--marker",
-                "/probe/durable.json",
-            ],
-        )
-        wait_for_durable_seed(run, probe_container, probe_marker)
-        run.command("crash-seed-readback-log", ["docker", "logs", probe_container])
-        run.command(
-            "process-sigkill", ["docker", "kill", "--signal=KILL", probe_container]
-        )
-        run.command("postgres-restart", ["docker", "restart", "--time", "10", postgres])
-        run.command("redis-restart", ["docker", "restart", "--time", "10", redis])
-        deadline = time.monotonic() + 120
-        while subprocess.run(
-            ["docker", "exec", postgres, "pg_isready", "-U", "ctcc", "-d", "ctcc"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-            timeout=15,
-        ).returncode:
-            if time.monotonic() >= deadline:
-                raise RuntimeError("restarted_postgres_not_ready")
-            time.sleep(0.25)
-        container(
-            "crash-restart-independent-readback",
-            [
-                "python",
-                "-m",
-                "scripts.qualification_durability_probe",
-                "verify",
-                "--marker",
-                "/probe/durable.json",
-            ],
-            mounts=(probe_mount[0], probe_mount[1] + ",readonly"),
-            extra_environment=("-e", "CTCC_HERMETIC_DURABILITY=1"),
-        )
-        identity["synthetic_process_pg_redis_crash_durability"] = "PASS"
-        identity["crash_probe_marker_sha256"] = hashlib.sha256(
-            probe_marker.read_bytes()
-        ).hexdigest()
-        api = f"ctcc-final-{suffix}-api"
-        resources.append(("container", api))
-        run.command(
-            "api-start",
-            [
-                "docker",
-                "run",
-                "-d",
-                "--name",
-                api,
-                "--label",
-                label,
-                "--network",
-                network,
-                *environment,
-                image,
-            ],
-        )
-        run.command(
-            "api-health", ["docker", "exec", api, "python", "-c", API_PROBE], timeout=90
-        )
-        run.command(
-            "api-restart", ["docker", "restart", "--time", "10", api], timeout=60
-        )
-        run.command(
-            "api-restart-health",
-            ["docker", "exec", api, "python", "-c", API_PROBE],
-            timeout=90,
-        )
-        run.command("api-logs", ["docker", "logs", api], timeout=30)
-        identity["api_service_restart"] = "PASS"
-        identity["live_restart_acceptance"] = False
-        identity["component_validation"] = "PASS"
-        identity["hermetic_regression"] = (
-            "PASS" if args.suite == "full" else "PENDING_UNION"
+        _run_component_tests_and_recovery(
+            args=args,
+            run=run,
+            container=container,
+            identity=identity,
+            test_results=test_results,
+            test_results_mount=test_results_mount,
+            files=files,
+            postgres=postgres,
+            redis=redis,
+            network=network,
+            environment=environment,
+            label=label,
+            image=image,
+            resources=resources,
+            suffix=suffix,
         )
     except Exception as error:
         identity["component_validation"] = "FAIL"

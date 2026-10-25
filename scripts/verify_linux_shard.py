@@ -81,6 +81,14 @@ POSTGRES_TEST_PATHS = frozenset(
     }
 )
 SHARD_COUNT = 8
+POSTGRES_COMPONENT_COUNT = 2
+POSTGRES_COMPONENT_SCHEMA = "ctcc.linux_postgres_component_collection.v1"
+POSTGRES_ANCHOR_PATHS = frozenset(
+    {
+        "tests/integration/test_controlled_writer_coverage_repository.py",
+        "tests/integration/test_account_history_partition_repository.py",
+    }
+)
 _OBSERVED: set[str] = set()
 
 
@@ -98,10 +106,33 @@ def module_shard(path: str) -> int:
     )
 
 
+def postgres_component(path: str) -> int:
+    """Whole-module ownership; retained-state experiments have one fixed owner."""
+    if type(path) is not str or path not in POSTGRES_TEST_PATHS:
+        raise ValueError("postgres_component_path_invalid")
+    if path in POSTGRES_ANCHOR_PATHS:
+        return 0
+    return (
+        int.from_bytes(hashlib.sha256(path.encode("utf-8")).digest()[:8], "big")
+        % POSTGRES_COMPONENT_COUNT
+    )
+
+
+def postgres_paths(index: int | None) -> frozenset[str]:
+    """None is historical monolithic/full mode, never a PG2 CI component."""
+    if index is None:
+        return POSTGRES_TEST_PATHS
+    if type(index) is not int or not 0 <= index < POSTGRES_COMPONENT_COUNT:
+        raise ValueError("postgres_component_index_invalid")
+    return frozenset(
+        path for path in POSTGRES_TEST_PATHS if postgres_component(path) == index
+    )
+
+
 def selected_for(mode: str, index: int | None, nodeid: str) -> bool:
     path = nodeid.split("::", 1)[0]
     if mode == "postgres":
-        return path in POSTGRES_TEST_PATHS
+        return path in postgres_paths(index)
     if mode == "shard" and type(index) is int and 0 <= index < SHARD_COUNT:
         return path not in POSTGRES_TEST_PATHS and module_shard(path) == index
     raise ValueError("linux_shard_selection_invalid")
@@ -111,6 +142,7 @@ def pytest_addoption(parser):
     group = parser.getgroup("ctcc-linux-shard")
     group.addoption("--ctcc-linux-suite", choices=("postgres", "shard"))
     group.addoption("--ctcc-linux-shard-index", type=int)
+    group.addoption("--ctcc-linux-postgres-component-index", type=int)
     group.addoption("--ctcc-linux-collection-json")
 
 
@@ -118,15 +150,28 @@ def pytest_collection_modifyitems(session, config, items):
     mode = config.getoption("--ctcc-linux-suite")
     if mode is None:
         return
-    index = config.getoption("--ctcc-linux-shard-index")
+    shard_index = config.getoption("--ctcc-linux-shard-index")
+    pg_index = config.getoption("--ctcc-linux-postgres-component-index")
+    index = pg_index if mode == "postgres" else shard_index
     target = config.getoption("--ctcc-linux-collection-json")
     if (
         type(target) is not str
         or not target
         or mode == "postgres"
-        and index is not None
+        and (
+            shard_index is not None
+            or pg_index is not None
+            and (
+                type(pg_index) is not int
+                or not 0 <= pg_index < POSTGRES_COMPONENT_COUNT
+            )
+        )
         or mode == "shard"
-        and (type(index) is not int or not 0 <= index < SHARD_COUNT)
+        and (
+            pg_index is not None
+            or type(index) is not int
+            or not 0 <= index < SHARD_COUNT
+        )
     ):
         raise ValueError("linux_shard_arguments_invalid")
     full = [item.nodeid for item in items]
@@ -147,11 +192,18 @@ def pytest_collection_modifyitems(session, config, items):
     session._ctcc_linux_collection = {
         "schema": "ctcc.linux_full_collection_shard.v1",
         "mode": mode,
-        "shard_index": index,
+        "shard_index": shard_index,
         "shard_count": SHARD_COUNT,
         "full_nodeids": full,
         "selected_nodeids": [item.nodeid for item in selected],
     }
+    if mode == "postgres" and pg_index is not None:
+        session._ctcc_linux_collection.update(
+            schema=POSTGRES_COMPONENT_SCHEMA,
+            postgres_component_index=pg_index,
+            postgres_component_count=POSTGRES_COMPONENT_COUNT,
+            postgres_component_role="anchor" if pg_index == 0 else "cases_only",
+        )
     session._ctcc_linux_collection_path = Path(target)
 
 

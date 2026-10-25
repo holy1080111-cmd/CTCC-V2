@@ -34,15 +34,19 @@ from scripts.verify_final_hermetic import (
     expected_native_identity_empty_downgrade_readback,
     native_identity_empty_before_readback,
     native_identity_nonempty_downgrade_readback,
+    postgres_required_cases,
     run_controlled_writer_coverage_preflight,
     run_history_partition_preflight,
     verify_linux_collection,
     verify_pytest_report,
 )
 from scripts.verify_linux_shard import (
+    POSTGRES_COMPONENT_COUNT,
+    POSTGRES_COMPONENT_SCHEMA,
     POSTGRES_TEST_PATHS,
     SHARD_COUNT,
     module_shard,
+    postgres_paths,
     selected_for,
 )
 from scripts.verify_linux_shard_union import (
@@ -344,11 +348,12 @@ def _artifacts(tmp_path: Path) -> tuple[Path, list[str]]:
         "migration_sha256": "e" * 64,
     }
     for mode, index in (
-        ("postgres", None),
+        *(("postgres", index) for index in range(POSTGRES_COMPONENT_COUNT)),
         *(("shard", i) for i in range(SHARD_COUNT)),
     ):
+        anchor = mode == "postgres" and index == 0
         name = (
-            f"ctcc-linux-postgres-{COMMIT}"
+            f"ctcc-linux-postgres-{index}-{COMMIT}"
             if mode == "postgres"
             else f"ctcc-linux-shard-{index}-{COMMIT}"
         )
@@ -363,12 +368,12 @@ def _artifacts(tmp_path: Path) -> tuple[Path, list[str]]:
         _junit(xml, selected)
         report = verify_pytest_report(
             xml,
-            required_cases=ARCHIVE_REQUIRED_CASES if mode == "postgres" else (),
+            required_cases=postgres_required_cases(index) if mode == "postgres" else (),
             required_modules=(
                 tuple(
                     sorted(
                         path.removesuffix(".py").replace("/", ".")
-                        for path in POSTGRES_TEST_PATHS
+                        for path in postgres_paths(index)
                     )
                 )
                 if mode == "postgres"
@@ -384,14 +389,27 @@ def _artifacts(tmp_path: Path) -> tuple[Path, list[str]]:
         collection_file.write_text(
             json.dumps(
                 {
-                    "schema": "ctcc.linux_full_collection_shard.v1",
+                    "schema": POSTGRES_COMPONENT_SCHEMA
+                    if mode == "postgres"
+                    else "ctcc.linux_full_collection_shard.v1",
                     "mode": mode,
-                    "shard_index": index,
+                    "shard_index": index if mode == "shard" else None,
                     "shard_count": SHARD_COUNT,
                     "full_nodeids": full,
                     "selected_nodeids": selected,
                     "observed_nodeids": selected,
                     "pytest_exitstatus": 0,
+                    **(
+                        {
+                            "postgres_component_index": index,
+                            "postgres_component_count": POSTGRES_COMPONENT_COUNT,
+                            "postgres_component_role": "anchor"
+                            if anchor
+                            else "cases_only",
+                        }
+                        if mode == "postgres"
+                        else {}
+                    ),
                 }
             )
         )
@@ -409,7 +427,7 @@ def _artifacts(tmp_path: Path) -> tuple[Path, list[str]]:
             "source_files_sha256": _sha(SOURCE_FILES),
             "runner_sha256": "c" * 64,
             "suite": mode,
-            "shard_index": index,
+            "shard_index": index if mode == "shard" else None,
             "shard_count": SHARD_COUNT,
             "host_credentials": False,
             "host_env": False,
@@ -461,10 +479,19 @@ def _artifacts(tmp_path: Path) -> tuple[Path, list[str]]:
             "postgres_tests" if mode == "postgres" else "linux_tests": report,
         }
         if mode == "postgres":
+            identity.update(
+                postgres_component_schema="ctcc.postgres_component.v1",
+                postgres_component_index=index,
+                postgres_component_count=POSTGRES_COMPONENT_COUNT,
+                postgres_component_role="anchor" if anchor else "cases_only",
+            )
+            if not anchor:
+                identity["anchor_experiments"] = "NOT_PERFORMED_CASES_ONLY"
+        if anchor:
             identity["synthetic_process_pg_redis_crash_durability"] = "PASS"
             identity["api_service_restart"] = "PASS"
         restart_files = []
-        if mode == "postgres":
+        if anchor:
             marker = root / "crash-probe" / "durable.json"
             marker.parent.mkdir()
             body = {
@@ -534,7 +561,7 @@ def _artifacts(tmp_path: Path) -> tuple[Path, list[str]]:
                 restart_files.append(log)
         retention_files = []
         retention_stages = ()
-        if mode == "postgres":
+        if anchor:
             retention_stages = (
                 "migration-native-identity-nonempty-before",
                 "migration-native-identity-nonempty-denial",
@@ -568,7 +595,7 @@ def _artifacts(tmp_path: Path) -> tuple[Path, list[str]]:
             )
             retention_files.append(path)
         preflight_files = []
-        if mode == "postgres":
+        if anchor:
             preflight_xml = results / "runtime-bundle-custody-preflight.xml"
             _junit(
                 preflight_xml,
@@ -666,7 +693,7 @@ def _artifacts(tmp_path: Path) -> tuple[Path, list[str]]:
             path = root / f"{name}.log"
             path.write_text(json.dumps(body))
             coverage_files.append(path)
-        if mode == "postgres":
+        if anchor:
             rows = {
                 table: [{"synthetic_fixture_only": True}]
                 for table in (
@@ -808,11 +835,11 @@ def _artifacts(tmp_path: Path) -> tuple[Path, list[str]]:
                     }
                     for stage_name in (
                         *COMMON_STAGES,
-                        *(POSTGRES_PREFLIGHT_STAGES if mode == "postgres" else ()),
+                        *(POSTGRES_PREFLIGHT_STAGES if anchor else ()),
                         stage,
-                        *(POSTGRES_COVERAGE_STAGES if mode == "postgres" else ()),
-                        *(PREDECESSOR_0047_STAGES if mode == "postgres" else ()),
-                        *(POSTGRES_RESTART_STAGES if mode == "postgres" else ()),
+                        *(POSTGRES_COVERAGE_STAGES if anchor else ()),
+                        *(PREDECESSOR_0047_STAGES if anchor else ()),
+                        *(POSTGRES_RESTART_STAGES if anchor else ()),
                     )
                 ]
             )
@@ -1163,7 +1190,7 @@ def test_union_rejects_rehashed_pg47_retention_changes_or_wrong_refusal(
 
 
 def _pg_root(artifacts):
-    return artifacts / f"ctcc-linux-postgres-{COMMIT}" / "ctcc-validation"
+    return artifacts / f"ctcc-linux-postgres-0-{COMMIT}" / "ctcc-validation"
 
 
 def _rehash(root, *paths):
@@ -2046,7 +2073,10 @@ def _current0050_synthetic_artifact_layer(artifacts):
                 value = json.loads(path.read_bytes())
                 value["source_head"] = "0050"
                 path.write_text(json.dumps(value), encoding="utf-8")
-        if identity["suite"] == "postgres":
+        if (
+            identity["suite"] == "postgres"
+            and identity.get("postgres_component_index") == 0
+        ):
             identity["predecessor_0047_validation"]["source_head"] = "0050"
             cases = producer.HISTORY_PARTITION_PREFLIGHT_CASES
             assert type(cases) is tuple and cases
@@ -2095,11 +2125,11 @@ def _current0050_synthetic_artifact_layer(artifacts):
             )
             identity["postgres_tests"] = verify_pytest_report(
                 xml,
-                required_cases=ARCHIVE_REQUIRED_CASES,
+                required_cases=postgres_required_cases(0),
                 required_modules=tuple(
                     sorted(
                         path.removesuffix(".py").replace("/", ".")
-                        for path in POSTGRES_TEST_PATHS
+                        for path in postgres_paths(0)
                     )
                 ),
             )
@@ -2177,7 +2207,7 @@ def test_0050_partition_preflight_real_producer_report_roundtrips_through_union_
     from scripts import verify_linux_shard_union as reader
 
     artifacts, _full = _artifacts(tmp_path)
-    root = artifacts / f"ctcc-linux-postgres-{COMMIT}" / "ctcc-validation"
+    root = artifacts / f"ctcc-linux-postgres-0-{COMMIT}" / "ctcc-validation"
     identity = json.loads((root / "identity.json").read_bytes())
     hashes = json.loads((root / "results.sha256.json").read_bytes())
     reader._verify_preflight_reports(root, hashes, identity)
@@ -2309,7 +2339,10 @@ def _current0051_synthetic_artifact_layer(artifacts):
             if filename.startswith("prospective"):
                 value["g6_qualified"] = False
             (root / (label + ".log")).write_text(json.dumps(value), encoding="utf-8")
-        if identity["suite"] == "postgres":
+        if (
+            identity["suite"] == "postgres"
+            and identity.get("postgres_component_index") == 0
+        ):
             identity["predecessor_0047_validation"]["source_head"] = "0051"
             value = json.loads((root / "predecessor-0047-identity.log").read_bytes())
             value["source_head"] = "0051"

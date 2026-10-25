@@ -2098,8 +2098,12 @@ def test_current0051_layers_new_marker_without_relabelling_historical0050():
         schema="ctcc.migration_revision_readback.v7", expected="0050", observed="0050"
     )
     assert host.native_migration_json_equal(current, previous)
-    assert (
-        marker["native_deparser_baseline"] is None
-        and marker["execution_authority"] is False
+    assert marker["native_deparser_baseline"] == (
+        "531b56a9680701a6f1bd462c52d0c57edb883194cbf88c75b84bfa7b391b66fd"
+    )
+    assert marker["native_baseline_status"] == "SEALED_FROM_REVIEWED_NATIVE_PG17"
+    assert marker["execution_authority"] is False
+    assert previous["account_history_partition_schema"]["native_deparser_baseline"] == (
+        "37190935d1b8e2807d26590225165779bb12e9684c260dd19fb61fba0d3c64c3"
     )
     assert previous == previous_copy

@@ -20,9 +20,13 @@ concurrency:
 
 jobs:
   linux-postgres:
-    name: Docker PostgreSQL and restart acceptance
+    name: Docker PostgreSQL component ${{ matrix.component }}
     runs-on: ubuntu-24.04
     timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        component: [0, 1]
     steps:
       - name: Checkout reviewed source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -44,7 +48,7 @@ jobs:
           python3 -m scripts.verify_final_hermetic \
             --archive "$archive" --archive-sha256 "$digest" \
             --commit "$commit" --tree "$tree" \
-            --suite postgres \
+            --suite postgres --postgres-component-index "${{ matrix.component }}" \
             --output "$RUNNER_TEMP/ctcc-validation"
 
       - name: Show validation identity
@@ -62,7 +66,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: ctcc-linux-postgres-${{ github.sha }}
+          name: ctcc-linux-postgres-${{ matrix.component }}-${{ github.sha }}
           path: |
             ${{ runner.temp }}/ctcc-source.tar
             ${{ runner.temp }}/ctcc-validation/*.json
