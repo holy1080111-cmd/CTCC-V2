@@ -113,7 +113,9 @@ async def prepare(connection, target, mutation, *, restore=False):
             "FOR EACH ROW EXECUTE FUNCTION pg_temp.native_zero_fok_test()"
         )
     )
-    scope = target.request.scope.model_dump(mode="json")
+    scope = target.request.scope.model_dump(
+        mode="json", include={"environment", "account_id", "settlement_currency"}
+    )
     resid = target.reservation_id
     observations, assessment = sample(target, mutation)
     final_time = observations[-1][1].eof_at + timedelta(milliseconds=1)
