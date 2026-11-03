@@ -1,5 +1,4 @@
-# DRAFT ONLY. Compose merge and actual role proof remain unexecuted.
-# Apply only with the exact N94-derived source/image after independent review.
+# Apply only with the exact reviewed source image after independent review.
 # `docker compose config` must prove the base api env_file and migration CMD
 # are gone before any `up`. All DSN files are private host-owned files.
 name: ctcc-native-${CTCC_NATIVE_DEPLOYMENT_ID:?Reviewed unique deployment id required}
@@ -14,12 +13,14 @@ services:
     container_name: ctcc-native-${CTCC_NATIVE_DEPLOYMENT_ID}-api
     env_file: !reset []
     entrypoint: ["/bin/sh", "-ec"]
-    command: >-
-      export DATABASE_URL="$$(cat /run/secrets/native_writer_dsn)";
-      export OKX_DEMO_NATIVE_CUSTODY_DATABASE_URL="$$(cat /run/secrets/native_custody_dsn)";
-      export OKX_DEMO_NATIVE_FRAME_READER_DATABASE_URL="$$(cat /run/secrets/native_frame_dsn)";
-      export API_TOKEN="$$(cat /run/secrets/native_api_token)";
-      exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
+    command:
+      - |-
+        DATABASE_URL="$$(cat /run/secrets/native_writer_dsn)"
+        OKX_DEMO_NATIVE_CUSTODY_DATABASE_URL="$$(cat /run/secrets/native_custody_dsn)"
+        OKX_DEMO_NATIVE_FRAME_READER_DATABASE_URL="$$(cat /run/secrets/native_frame_dsn)"
+        API_TOKEN="$$(cat /run/secrets/native_api_token)"
+        export DATABASE_URL OKX_DEMO_NATIVE_CUSTODY_DATABASE_URL OKX_DEMO_NATIVE_FRAME_READER_DATABASE_URL API_TOKEN
+        exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
     environment:
       ENVIRONMENT: production
       TRADING_MODE: okx_demo
@@ -66,9 +67,11 @@ services:
     image: ${CTCC_NATIVE_IMAGE_REF:?Pin exact reviewed source image}
     pull_policy: never
     entrypoint: ["/bin/sh", "-ec"]
-    command: >-
-      export DATABASE_URL="$$(cat /run/secrets/native_owner_dsn)";
-      exec alembic upgrade head
+    command:
+      - |-
+        DATABASE_URL="$$(cat /run/secrets/native_owner_dsn)"
+        export DATABASE_URL
+        exec alembic upgrade head
     environment:
       ENVIRONMENT: production
       TRADING_MODE: analysis_only

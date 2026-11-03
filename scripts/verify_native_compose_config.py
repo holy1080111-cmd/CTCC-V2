@@ -33,6 +33,62 @@ _FLAGS = (
     "NOTION_OUTBOX_ENABLED",
     "SUBMISSION_OUTBOX_ENABLED",
 )
+_RUNTIME_ENV = {
+    "ENVIRONMENT": "production",
+    "TRADING_MODE": "okx_demo",
+    "CTCC_NATIVE_ONLY_LIFESPAN_V1": "true",
+    "WEB_CONCURRENCY": "1",
+    "OKX_DEMO_ENABLED": "true",
+    "READINESS_REQUIRE_DATABASE": "true",
+    "READINESS_REQUIRE_REDIS": "true",
+    **dict.fromkeys(_FLAGS, "false"),
+}
+_OWNER_ENV = {
+    "ENVIRONMENT": "production",
+    "TRADING_MODE": "analysis_only",
+    **dict.fromkeys(
+        ("AUTO_TRADE", "LIVE_TRADING", "OKX_DEMO_ENABLED", "OKX_LIVE_ENABLED"), "false"
+    ),
+}
+_RUNTIME_SCRIPT = """\
+DATABASE_URL="$(cat /run/secrets/native_writer_dsn)"
+OKX_DEMO_NATIVE_CUSTODY_DATABASE_URL="$(cat /run/secrets/native_custody_dsn)"
+OKX_DEMO_NATIVE_FRAME_READER_DATABASE_URL="$(cat /run/secrets/native_frame_dsn)"
+API_TOKEN="$(cat /run/secrets/native_api_token)"
+export DATABASE_URL OKX_DEMO_NATIVE_CUSTODY_DATABASE_URL OKX_DEMO_NATIVE_FRAME_READER_DATABASE_URL API_TOKEN
+exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1"""
+_MIGRATE_SCRIPT = """\
+DATABASE_URL="$(cat /run/secrets/native_owner_dsn)"
+export DATABASE_URL
+exec alembic upgrade head"""
+_APP_FIELDS = {
+    "command",
+    "depends_on",
+    "entrypoint",
+    "environment",
+    "image",
+    "networks",
+    "pull_policy",
+    "restart",
+    "secrets",
+    # Some Compose versions keep empty reset fields in the rendered model.
+    "build",
+    "env_file",
+    "ports",
+}
+_RUNTIME_FIELDS = _APP_FIELDS | {
+    "container_name",
+    "healthcheck",
+    "logging",
+    "profiles",
+    "security_opt",
+}
+_RUNTIME_HEALTHCHECK = [
+    "CMD",
+    "python",
+    "-c",
+    "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/readiness', timeout=3)",
+]
 
 
 def _need(value):
@@ -41,10 +97,24 @@ def _need(value):
 
 
 def _secrets(service):
-    return {
-        item if type(item) is str else item.get("source")
-        for item in service.get("secrets", [])
-    }
+    names = set()
+    for item in service.get("secrets", []):
+        if type(item) is str:
+            name = item
+        else:
+            _need(type(item) is dict and set(item) <= {"source", "target"})
+            name = item.get("source")
+            _need(item.get("target", name) in (name, f"/run/secrets/{name}"))
+        _need(type(name) is str and name not in names)
+        names.add(name)
+    return names
+
+
+def _shell_script(service, expected):
+    _need(service.get("entrypoint") == ["/bin/sh", "-ec"])
+    # Compose can re-escape dollars when serializing its effective model.
+    # Either serialization must still contain one exact script argument.
+    _need(service.get("command") in ([expected], [expected.replace("$", "$$")]))
 
 
 def verify(document, deployment_id, image_ref):
@@ -66,9 +136,22 @@ def verify(document, deployment_id, image_ref):
         _need(service.get("image") == image_ref)
         _need(service.get("pull_policy") == "never")
         _need(not service.get("build"))
+        _need(not service.get("env_file"))
     api = services["api"]
-    _need(api.get("entrypoint") == ["/bin/sh", "-ec"])
-    _need(not api.get("env_file"))
+    migrate = services["native_migrate"]
+    provision = services["native_role_provision"]
+    _need(set(api) <= _RUNTIME_FIELDS)
+    _need(set(migrate) <= _APP_FIELDS)
+    _need(set(provision) <= _APP_FIELDS | {"profiles"})
+    _shell_script(api, _RUNTIME_SCRIPT)
+    _shell_script(migrate, _MIGRATE_SCRIPT)
+    _need(
+        provision.get("entrypoint")
+        == ["python", "-B", "-m", "scripts.provision_native_roles_v1"]
+    )
+    _need(provision.get("command") == ["--provision-reviewed-native-roles"])
+    _need(api.get("healthcheck", {}).get("test") == _RUNTIME_HEALTHCHECK)
+    _need(api.get("security_opt") == ["no-new-privileges:true"])
     _need(api.get("container_name") == f"ctcc-native-{deployment_id}-api")
     _need(api.get("profiles") == ["native-runtime"])
     _need(
@@ -80,12 +163,10 @@ def verify(document, deployment_id, image_ref):
             "native_api_token",
         }
     )
-    _need(_secrets(services["native_migrate"]) == {"native_owner_dsn"})
-    _need(not services["native_migrate"].get("env_file"))
-    _need(services["native_role_provision"].get("profiles") == ["native-role-setup"])
-    _need(not services["native_role_provision"].get("env_file"))
+    _need(_secrets(migrate) == {"native_owner_dsn"})
+    _need(provision.get("profiles") == ["native-role-setup"])
     _need(
-        _secrets(services["native_role_provision"])
+        _secrets(provision)
         == {
             "native_owner_dsn",
             "native_writer_dsn",
@@ -105,34 +186,8 @@ def verify(document, deployment_id, image_ref):
         == "/run/secrets/native_postgres_init_password"
     )
     _need(_secrets(services["postgres"]) == {"native_postgres_init_password"})
-    environment = api.get("environment", {})
-    _need(type(environment) is dict)
-    _need(environment.get("ENVIRONMENT") == "production")
-    _need(environment.get("TRADING_MODE") == "okx_demo")
-    _need(environment.get("CTCC_NATIVE_ONLY_LIFESPAN_V1") == "true")
-    _need(environment.get("WEB_CONCURRENCY") == "1")
-    _need(environment.get("OKX_DEMO_ENABLED") == "true")
-    _need(all(environment.get(key) == "false" for key in _FLAGS))
-    _need(
-        not any(
-            key in environment
-            for key in (
-                "DATABASE_URL",
-                "POSTGRES_PASSWORD",
-                "OKX_DEMO_API_KEY",
-                "OKX_DEMO_API_SECRET",
-                "OKX_DEMO_API_PASSPHRASE",
-                "OKX_LIVE_API_KEY",
-                "OKX_LIVE_API_SECRET",
-                "OKX_LIVE_API_PASSPHRASE",
-            )
-        )
-    )
-    command = api.get("command")
-    if type(command) is list:
-        command = " ".join(command)
-    _need(type(command) is str and "exec uvicorn app.main:app" in command)
-    _need("alembic" not in command and "native_owner_dsn" not in command)
+    _need(api.get("environment") == _RUNTIME_ENV)
+    _need(migrate.get("environment") == provision.get("environment") == _OWNER_ENV)
     return {
         "status": "PASS",
         "profile": "native_no_execution_merge_v1",

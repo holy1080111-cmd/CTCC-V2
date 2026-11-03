@@ -14,7 +14,7 @@ def _base_merge():
         "image": image,
         "pull_policy": "never",
         "entrypoint": ["/bin/sh", "-ec"],
-        "command": "export DATABASE_URL=$(cat /run/secrets/native_writer_dsn); exec uvicorn app.main:app",
+        "command": [verifier._RUNTIME_SCRIPT.replace("$", "$$")],
         "container_name": f"ctcc-native-{ident}-api",
         "profiles": ["native-runtime"],
         "secrets": [
@@ -23,14 +23,9 @@ def _base_merge():
             "native_frame_dsn",
             "native_api_token",
         ],
-        "environment": {
-            "ENVIRONMENT": "production",
-            "TRADING_MODE": "okx_demo",
-            "CTCC_NATIVE_ONLY_LIFESPAN_V1": "true",
-            "WEB_CONCURRENCY": "1",
-            "OKX_DEMO_ENABLED": "true",
-            **dict.fromkeys(verifier._FLAGS, "false"),
-        },
+        "environment": dict(verifier._RUNTIME_ENV),
+        "healthcheck": {"test": list(verifier._RUNTIME_HEALTHCHECK)},
+        "security_opt": ["no-new-privileges:true"],
     }
     document = {
         "name": f"ctcc-native-{ident}",
@@ -41,12 +36,23 @@ def _base_merge():
                 **base,
                 "image": image,
                 "pull_policy": "never",
+                "entrypoint": ["/bin/sh", "-ec"],
+                "command": [verifier._MIGRATE_SCRIPT],
+                "environment": dict(verifier._OWNER_ENV),
                 "secrets": ["native_owner_dsn"],
             },
             "native_role_provision": {
                 **base,
                 "image": image,
                 "pull_policy": "never",
+                "entrypoint": [
+                    "python",
+                    "-B",
+                    "-m",
+                    "scripts.provision_native_roles_v1",
+                ],
+                "command": ["--provision-reviewed-native-roles"],
+                "environment": dict(verifier._OWNER_ENV),
                 "profiles": ["native-role-setup"],
                 "secrets": [
                     "native_owner_dsn",
@@ -100,6 +106,42 @@ def test_exact_no_execution_merge():
             ("services", "postgres", "environment", "POSTGRES_PASSWORD"),
             "synthetic",
             id="inline-db-password",
+        ),
+        pytest.param(
+            ("services", "api", "command"),
+            ["printf injected\n" + verifier._RUNTIME_SCRIPT],
+            id="modified-runtime-command",
+        ),
+        pytest.param(
+            ("services", "native_migrate", "command"),
+            ["export", "DATABASE_URL=$$(cat /run/secrets/native_owner_dsn)"],
+            id="truncated-migration-command",
+        ),
+        pytest.param(
+            ("services", "api", "volumes"),
+            [
+                {
+                    "type": "bind",
+                    "source": "/synthetic-host",
+                    "target": "/synthetic-mount",
+                }
+            ],
+            id="unexpected-bind-mount",
+        ),
+        pytest.param(
+            ("services", "api", "environment", "NOTION_TOKEN"),
+            "synthetic",
+            id="unexpected-token-environment",
+        ),
+        pytest.param(
+            ("services", "api", "healthcheck", "test"),
+            ["CMD-SHELL", "true"],
+            id="changed-runtime-healthcheck",
+        ),
+        pytest.param(
+            ("services", "native_migrate", "secrets"),
+            [{"source": "native_owner_dsn", "target": "different"}],
+            id="changed-secret-target",
         ),
     ],
 )
