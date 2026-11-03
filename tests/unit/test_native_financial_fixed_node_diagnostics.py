@@ -1,12 +1,30 @@
 """Synthetic diagnostic boundaries only; no native process/test acceptance."""
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from scripts import diagnose_native_financial_fixed_node_windows as windows
 from scripts import native_financial_fixed_node_diagnostics as diagnostic
+from scripts.manifest import read_manifest
+
+
+@pytest.fixture
+def packaged_observer_pins(monkeypatch):
+    """Exercise the observer with packaged bytes under test-scoped pins."""
+    from scripts import diagnose_native_financial_original_node as original
+
+    root = Path(diagnostic.__file__).resolve().parents[1]
+    manifest = read_manifest(root / "MANIFEST.sha256")
+    monkeypatch.setattr(diagnostic, "SOURCE_SHA", manifest[diagnostic.SOURCE])
+    monkeypatch.setattr(
+        original,
+        "SCOPED_JSON_SOURCE_PINS",
+        {path: manifest[path] for path in original.SCOPED_JSON_SOURCE_PINS},
+    )
+    return original
 
 
 @pytest.mark.parametrize("choice", tuple(diagnostic.NODES))
@@ -59,7 +77,9 @@ def test_junit_cannot_substitute_another_case_or_broaden_the_run(tmp_path, damag
         diagnostic.fixed_junit_result(path, "await-temporary")
 
 
-def test_unknown_failure_locals_and_arguments_are_not_exported_as_deadlines():
+def test_unknown_failure_locals_and_arguments_are_not_exported_as_deadlines(
+    packaged_observer_pins,
+):
     try:
         private_token = "CANARY_ONLY_PRIVATE_TOKEN"
         raise RuntimeError(private_token)
@@ -328,7 +348,9 @@ def test_deadline_reader_refuses_changed_source_pin(monkeypatch):
         diagnostic.deadline_projection(RuntimeError("CANARY_ONLY"))
 
 
-def test_deadline_reader_refuses_non_exception_traceback_operand():
+def test_deadline_reader_refuses_non_exception_traceback_operand(
+    packaged_observer_pins,
+):
     with pytest.raises(TypeError):
         diagnostic.deadline_projection(
             SimpleNamespace(
@@ -410,12 +432,11 @@ def test_actual_phase_reader_accepts_baseline_then_refuses_context_fabrication(
 
 
 def test_allowlist_readback_reuses_actual_main_without_importing_host_pytest(
-    monkeypatch,
+    monkeypatch, packaged_observer_pins
 ):
     import sys
 
-    from scripts import diagnose_native_financial_original_node as original
-
+    original = packaged_observer_pins
     baseline = original._owned_deny_codes(source_pins=original.SCOPED_JSON_SOURCE_PINS)
     monkeypatch.setitem(
         sys.modules, "scripts.diagnose_native_financial_original_node", None
@@ -449,10 +470,9 @@ def test_allowlist_readback_unknown_provider_refuses_without_new_import(monkeypa
     ],
 )
 def test_scoped_json_source_pins_revalidate_after_genuine_baseline(
-    monkeypatch, relative
+    monkeypatch, relative, packaged_observer_pins
 ):
-    from scripts import diagnose_native_financial_original_node as original
-
+    original = packaged_observer_pins
     historical = dict(original.INPUT_PINS)
     baseline = original._owned_deny_codes(source_pins=original.SCOPED_JSON_SOURCE_PINS)
     assert baseline
@@ -460,3 +480,12 @@ def test_scoped_json_source_pins_revalidate_after_genuine_baseline(
     with pytest.raises(ValueError, match="owned_deny_source_identity_changed"):
         original._owned_deny_codes(source_pins=original.SCOPED_JSON_SOURCE_PINS)
     assert original.INPUT_PINS == historical
+
+
+def test_historical_observers_refuse_the_current_packaged_source():
+    from scripts import diagnose_native_financial_original_node as original
+
+    with pytest.raises(ValueError, match="^fixed_deadline_source_unverified$"):
+        diagnostic.deadline_projection(RuntimeError("CANARY_ONLY"))
+    with pytest.raises(ValueError, match="^owned_deny_source_identity_changed$"):
+        original._owned_deny_codes(source_pins=original.SCOPED_JSON_SOURCE_PINS)
