@@ -1179,3 +1179,351 @@ async def test_actual_current55_core_grants_commit_and_verify_three_restricted_l
                     await connection.exec_driver_sql(
                         f"REVOKE {rights_and_target} FROM {role}"
                     )
+
+
+_ACCOUNT_SOURCE_RIGHTS = {
+    "demo_account_capture_events": {"SELECT", "INSERT"},
+    "demo_account_observation_batches": {"SELECT", "INSERT"},
+    "demo_account_observation_facts": {"SELECT", "INSERT"},
+    "demo_account_observation_coverage": {"SELECT", "INSERT"},
+    "demo_account_observation_findings": {"SELECT", "INSERT"},
+    "demo_automation_state": {"SELECT", "MAINTAIN"},
+    "okx_demo_sync_checkpoints": {"SELECT", "INSERT", "UPDATE"},
+    "okx_demo_order_state": {"SELECT", "MAINTAIN"},
+    "okx_demo_position_state": {"SELECT", "MAINTAIN"},
+    "okx_demo_algo_order_state": {"SELECT", "MAINTAIN"},
+    "audit_logs": {"SELECT", "INSERT"},
+}
+_ACCOUNT_SOURCE_LOCK_TABLES = (
+    "demo_automation_state",
+    "okx_demo_sync_checkpoints",
+    "okx_demo_order_state",
+    "okx_demo_position_state",
+    "okx_demo_algo_order_state",
+)
+_ACCOUNT_SOURCE_RIGHTS_SQL = text("""
+SELECT c.relname::text, c.oid::bigint, p.privilege,
+       pg_catalog.has_table_privilege(c.oid, p.privilege)
+FROM pg_catalog.pg_class c
+JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+CROSS JOIN (VALUES ('SELECT'), ('INSERT'), ('UPDATE'), ('DELETE'),
+                   ('TRUNCATE'), ('REFERENCES'), ('TRIGGER'), ('MAINTAIN')) p(privilege)
+WHERE n.nspname='public' AND c.relname::text=ANY(CAST(:names AS text[]))
+""")
+_ACCOUNT_SOURCE_LOCK_SQL = text("""
+SELECT relation::bigint, mode
+FROM pg_catalog.pg_locks
+WHERE pid=pg_catalog.pg_backend_pid() AND locktype='relation' AND granted
+  AND relation::bigint=ANY(CAST(:oids AS bigint[]))
+""")
+
+
+async def _observe_account_source_rights(engine, role_oid, table_oids, *, writer):
+    async with engine.begin() as connection:
+        login = (await connection.execute(_CORE_GRANT_LOGIN_SQL)).one()
+        assert tuple(login[:3]) == (role_oid, True, True)
+        rows = (
+            await connection.execute(
+                _ACCOUNT_SOURCE_RIGHTS_SQL, {"names": list(_ACCOUNT_SOURCE_RIGHTS)}
+            )
+        ).all()
+    assert len(rows) == 8 * len(_ACCOUNT_SOURCE_RIGHTS)
+    assert {(name, oid) for name, oid, _, _ in rows} == set(table_oids.items())
+    expected = {
+        (name, right)
+        for name, rights in _ACCOUNT_SOURCE_RIGHTS.items()
+        for right in rights
+        if writer
+    }
+    assert {(name, right) for name, _, right, allowed in rows if allowed} == expected
+    return login[-1]
+
+
+async def _observe_account_source_lock(
+    writer, role_oid, table_oids, sql_mode, lock_mode
+):
+    oids = {table_oids[name] for name in _ACCOUNT_SOURCE_LOCK_TABLES}
+    # Fixed mode/name inputs only. NOWAIT makes any unexpected fixture lock fail.
+    targets = ", ".join(f"public.{name}" for name in _ACCOUNT_SOURCE_LOCK_TABLES)
+    async with writer.begin() as connection:
+        login = (await connection.execute(_CORE_GRANT_LOGIN_SQL)).one()
+        assert tuple(login[:3]) == (role_oid, True, True)
+        await connection.exec_driver_sql(
+            f"LOCK TABLE {targets} IN {sql_mode} MODE NOWAIT"
+        )
+        rows = (
+            await connection.execute(_ACCOUNT_SOURCE_LOCK_SQL, {"oids": list(oids)})
+        ).all()
+        assert len(rows) == len(oids)
+        assert {tuple(row) for row in rows} == {(oid, lock_mode) for oid in oids}
+        return login[-1]
+
+
+async def _account_source_statement_denied(writer, statement):
+    with pytest.raises(DBAPIError) as denied:
+        async with writer.begin() as connection:
+            await connection.exec_driver_sql(statement)
+    origin = denied.value.orig
+    code = getattr(origin, "sqlstate", None) or getattr(
+        getattr(origin, "__cause__", None), "sqlstate", None
+    )
+    assert code == "42501"
+
+
+async def test_actual_current55_account_source_acl_delta_and_mirror_locks(
+    controlled_current55_database, monkeypatch, request
+):
+    """Exercise fixed ACLs and real locks using fresh disposable direct logins."""
+    from json import loads
+    from re import fullmatch
+
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from app.trade_qualification.account_capture_journal import checked_event
+    from scripts import current0055_native_account_source_acl_v1 as delta
+    from scripts import current0055_runtime_grants as core
+    from tests.integration.test_account_history_original_frame_repository_v1 import (
+        collector,
+    )
+    from tests.integration.test_account_ingestion_journal_repository import initialize
+
+    owner = controlled_current55_database
+    if fullmatch(r"ctcc-final-[a-f0-9]{12}-postgres", owner.url.host or "") is None:
+        pytest.skip(
+            "explicit isolated Docker trust fixture required for this role case"
+        )
+    assert owner.url.username == "ctcc" and owner.url.password is None
+    async with (
+        collector(owner) as (writer, writer_oid),
+        collector(owner) as (custody, custody_oid),
+        collector(owner) as (raw, raw_oid),
+    ):
+        role_oids = (writer_oid, custody_oid, raw_oid)
+        assert len(set(role_oids)) == 3
+        assert all(engine.url.password is None for engine in (writer, custody, raw))
+        names = {
+            "writer": writer.url.username,
+            "custody": custody.url.username,
+            "frame_reader": raw.url.username,
+        }
+        assert all(
+            fullmatch(r"ctcc_raw_frame_[a-f0-9]{32}", name) for name in names.values()
+        )
+        core_sql = core.current55_core_grant_sql(**names)
+        delta_sql = delta.current55_native_account_source_grant_sql_v1(**names)
+        assert len(core_sql) == 28 and len(delta_sql) == 11
+
+        async def provision_delta():
+            async with (
+                owner.connect() as owner_connection,
+                writer.connect() as writer_connection,
+            ):
+                try:
+                    return await delta.provision_current55_native_account_source_acl_v1(
+                        owner_connection, writer_connection, **names
+                    )
+                finally:
+                    assert not owner_connection.in_transaction()
+                    assert not writer_connection.in_transaction()
+
+        try:
+            async with owner.connect() as connection:
+                provisioned = await core.provision_current55_core_grants(
+                    connection, **names
+                )
+                assert not connection.in_transaction()
+            core_acl = await _core_grant_acl_snapshot(owner, role_oids)
+
+            async with owner.begin() as connection:
+                await connection.exec_driver_sql(
+                    "GRANT DELETE ON TABLE public.demo_account_capture_events "
+                    f'TO "{names["writer"]}"'
+                )
+            try:
+                drifted = await _core_grant_acl_snapshot(owner, role_oids)
+                assert len(drifted) == len(core_acl) + 1
+                with pytest.raises(
+                    ValueError, match="current0055_core_grant_scope_or_catalog_changed"
+                ):
+                    await provision_delta()
+                assert await _core_grant_acl_snapshot(owner, role_oids) == drifted
+            finally:
+                async with owner.begin() as connection:
+                    await connection.exec_driver_sql(
+                        "REVOKE DELETE ON TABLE public.demo_account_capture_events "
+                        f'FROM "{names["writer"]}"'
+                    )
+            assert await _core_grant_acl_snapshot(owner, role_oids) == core_acl
+
+            # Run real catalog checks and issue the real eleven GRANTs first.
+            # Fail only after the transaction's effective ACL readback saw them.
+            actual_access = core._access
+
+            async def fail_after_grants(
+                connection, plan, role_oids, *, granted, targets
+            ):
+                await actual_access(
+                    connection, plan, role_oids, granted=granted, targets=targets
+                )
+                if len(plan) == len(core_sql) + len(delta_sql):
+                    raise RuntimeError("synthetic late account source ACL failure")
+
+            with monkeypatch.context() as patch:
+                patch.setattr(core, "_access", fail_after_grants)
+                with pytest.raises(
+                    RuntimeError, match="synthetic late account source ACL failure"
+                ):
+                    await provision_delta()
+            assert await _core_grant_acl_snapshot(owner, role_oids) == core_acl
+
+            result = await provision_delta()
+            owner_oid = provisioned["owner_oid"]
+            table_oids = result["delta_table_oids"]
+            assert set(table_oids) == set(_ACCOUNT_SOURCE_RIGHTS)
+            assert len(set(table_oids.values())) == 11
+            assert result == {
+                "schema": "ctcc.current55.native_account_source_acl_delta.v1",
+                "database_head": "0055",
+                "native_definitions_sha256": profile.PG17_NATIVE_BASELINE_SHA256,
+                "original_source_catalog_sha256": delta.original.PG17_NATIVE_BASELINE_SHA256,
+                "owner_oid": owner_oid,
+                "writer_oid": writer_oid,
+                "custody_oid": custody_oid,
+                "frame_reader_oid": raw_oid,
+                "owner_xid": result["owner_xid"],
+                "writer_core_readback_xid": result["writer_core_readback_xid"],
+                "delta_table_oids": table_oids,
+                "delta_grants": 11,
+                "direct_login_readback_pending": True,
+                "complete_runtime_role_matrix": False,
+                "execution_authority": False,
+            }
+            committed = set(await _core_grant_acl_snapshot(owner, role_oids))
+            assert committed == set(core_acl) | {
+                ("relation", table_oids[name], writer_oid, owner_oid, right, False)
+                for name, rights in _ACCOUNT_SOURCE_RIGHTS.items()
+                for right in rights
+            }
+
+            owner_server, owner_xid = await _core_grant_direct_login(owner, owner_oid)
+            login_xids = []
+            acl_xids = []
+            for engine, oid in zip((writer, custody, raw), role_oids, strict=True):
+                server, xid = await _core_grant_direct_login(engine, oid)
+                assert server == owner_server
+                login_xids.append(xid)
+                acl_xids.append(
+                    await _observe_account_source_rights(
+                        engine, oid, table_oids, writer=engine is writer
+                    )
+                )
+            share_xid = await _observe_account_source_lock(
+                writer, writer_oid, table_oids, "SHARE", "ShareLock"
+            )
+            exclusive_xid = await _observe_account_source_lock(
+                writer,
+                writer_oid,
+                table_oids,
+                "SHARE ROW EXCLUSIVE",
+                "ShareRowExclusiveLock",
+            )
+            xids = [
+                result["owner_xid"],
+                result["writer_core_readback_xid"],
+                owner_xid,
+                *login_xids,
+                *acl_xids,
+                share_xid,
+                exclusive_xid,
+            ]
+            assert all(xid.isascii() and xid.isdecimal() for xid in xids)
+            assert len(set(xids)) == len(xids)
+
+            for sql in (
+                "UPDATE public.demo_account_capture_events SET event_json=event_json WHERE false",
+                "DELETE FROM public.demo_account_capture_events WHERE false",
+                (
+                    "UPDATE public.demo_account_observation_batches "
+                    "SET document_json=document_json WHERE false"
+                ),
+                "DELETE FROM public.demo_account_observation_batches WHERE false",
+                "DELETE FROM public.okx_demo_sync_checkpoints WHERE false",
+                "SELECT public.public_runtime_bundle_v1_read(NULL::text)",
+            ):
+                await _account_source_statement_denied(writer, sql)
+            await _core_grant_forbidden_table_read(
+                writer, "public_runtime_raw_bundles_v1"
+            )
+            for engine in (custody, raw):
+                await _core_grant_forbidden_table_read(
+                    engine, "demo_account_capture_events"
+                )
+                await _core_grant_forbidden_table_read(
+                    engine, "demo_account_observation_batches"
+                )
+            async with writer.begin() as connection:
+                raw_function_oids = (
+                    await connection.execute(
+                        text("""
+                    SELECT p.oid::bigint, pg_catalog.has_function_privilege(p.oid, 'EXECUTE')
+                    FROM pg_catalog.pg_proc p
+                    JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+                    WHERE n.nspname='public'
+                      AND p.proname IN ('account_history_original_frame_v1_read',
+                                        'account_history_original_frame_current55_v2_read')
+                    """)
+                    )
+                ).all()
+            assert len(raw_function_oids) == 2
+            assert all(allowed is False for _, allowed in raw_function_oids)
+
+            factory = async_sessionmaker(
+                writer, autoflush=False, expire_on_commit=False
+            )
+            scope, _, journal, start = await initialize((writer, factory))
+            appended = await journal._append(scope, start)
+            capture_id = checked_event(start)["capture_id"]
+            chain = await journal.read_chain(scope, capture_id)
+            assert len(chain) == 1 and chain[0].event == appended.event == start
+            assert appended.db_recorded_at <= appended.readback_at
+            receipt = loads(appended.receipt_json)
+            assert (
+                receipt["account_complete"] is receipt["execution_authority"] is False
+            )
+            assert set(await _core_grant_acl_snapshot(owner, role_oids)) == committed
+
+            request.node.user_properties.append(
+                (
+                    "ctcc_pg55_native_account_source_acl_v1",
+                    canonical(
+                        {
+                            "database_head": "0055",
+                            "native_definitions_sha256": result[
+                                "native_definitions_sha256"
+                            ],
+                            "original_source_catalog_sha256": result[
+                                "original_source_catalog_sha256"
+                            ],
+                            "role_oids": role_oids,
+                            "transaction_ids": xids,
+                            "delta_table_oids": table_oids,
+                            "grant_statements": 11,
+                            "share_and_share_row_exclusive_locks_observed": True,
+                            "unexpected_acl_denied_without_change": True,
+                            "late_failure_rolled_back_all_grants": True,
+                            "synthetic_b1_append_and_readback": True,
+                            "complete_runtime_role_matrix": False,
+                            "execution_authority": False,
+                        }
+                    ).decode("ascii"),
+                )
+            )
+        finally:
+            async with owner.begin() as connection:
+                for grant in reversed(core_sql + delta_sql):
+                    rights_and_target, role = grant.removeprefix("GRANT ").rsplit(
+                        " TO ", 1
+                    )
+                    await connection.exec_driver_sql(
+                        f"REVOKE {rights_and_target} FROM {role}"
+                    )
