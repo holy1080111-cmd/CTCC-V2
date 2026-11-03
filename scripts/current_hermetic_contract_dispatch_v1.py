@@ -14,17 +14,24 @@ from pathlib import Path, PurePosixPath
 from scripts.evidence_json import read_evidence_json
 
 
-def _argument(argv, flag):
-    found = [index for index, value in enumerate(argv) if value == flag]
+def _argument(argv, flag, *, equals=False):
+    found = [
+        index
+        for index, value in enumerate(argv)
+        if value == flag or (equals and value.startswith(flag + "="))
+    ]
     if not found:
         return None
-    if (
-        len(found) != 1
-        or found[0] + 1 >= len(argv)
-        or argv[found[0] + 1].startswith("--")
-    ):
+    if len(found) != 1:
         raise ValueError("hermetic_contract_dispatch_argument_invalid")
-    return argv[found[0] + 1]
+    index = found[0]
+    if argv[index] != flag:
+        value = argv[index][len(flag) + 1 :]
+        if value:
+            return value
+    elif index + 1 < len(argv) and not argv[index + 1].startswith("--"):
+        return argv[index + 1]
+    raise ValueError("hermetic_contract_dispatch_argument_invalid")
 
 
 def _archive_head(archive):
@@ -45,23 +52,24 @@ def _archive_head(archive):
     return head
 
 
-def maybe_dispatch_hermetic(argv):
-    archive_name = _argument(argv, "--archive")
-    archive_sha256 = _argument(argv, "--archive-sha256")
-    if archive_name is None or archive_sha256 is None:
-        return None
-    path = Path(archive_name)
+def capture_hermetic_archive(path: Path, archive_sha256: str) -> bytes:
+    """Capture the legacy-compatible input once; selected runners revalidate it."""
     if (
         path.is_symlink()
         or not path.is_file()
         or re.fullmatch("[a-f0-9]{64}", archive_sha256) is None
     ):
         raise ValueError("hermetic_contract_dispatch_archive_invalid")
-    if hashlib.sha256(path.read_bytes()).hexdigest() != archive_sha256:
+    raw = path.read_bytes()
+    if hashlib.sha256(raw).hexdigest() != archive_sha256:
         raise ValueError("hermetic_contract_dispatch_archive_changed")
+    return raw
+
+
+def dispatch_captured_hermetic(archive_bytes):
     # Member names select a strict versioned runner only; they never admit the
-    # archive. The runner independently rechecks bytes/identity/extraction.
-    with tarfile.open(path) as archive:
+    # archive. The runner independently rechecks the same captured bytes.
+    with tarfile.open(fileobj=io.BytesIO(archive_bytes)) as archive:
         head = _archive_head(archive)
     if head < 54:
         return None
@@ -70,8 +78,18 @@ def maybe_dispatch_hermetic(argv):
     else:
         from scripts.verify_current0054_hermetic import main
 
-    result = main()
+    result = main(archive_bytes=archive_bytes)
     return 0 if result is None else result
+
+
+def maybe_dispatch_hermetic(argv):
+    archive_name = _argument(argv, "--archive", equals=True)
+    archive_sha256 = _argument(argv, "--archive-sha256", equals=True)
+    if archive_name is None or archive_sha256 is None:
+        return None
+    return dispatch_captured_hermetic(
+        capture_hermetic_archive(Path(archive_name), archive_sha256)
+    )
 
 
 def maybe_dispatch_union(argv):

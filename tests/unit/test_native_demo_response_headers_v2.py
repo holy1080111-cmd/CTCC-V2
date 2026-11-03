@@ -103,6 +103,7 @@ def _data_only_stream_fixture(
     authority._retain_native_body_data_v2 = lambda gate, value, **kw: (
         journal.retain_body(value)
     )
+    authority._native_response_body_limit_v1 = lambda gate, **kw: journal._body_limit
     authority._retain_native_response_eof_v2 = lambda gate, **kw: journal.retain_eof()
 
     def retain_fault(gate, code, **kw):

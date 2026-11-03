@@ -50,6 +50,7 @@ async def synthetic_assembly(monkeypatch, tmp_path):
         "cancel": False,
         "release_coverage_error": False,
         "mutate_on_coverage_replay": None,
+        "mutate_inventory_after_acquire": None,
     }
     with private.pinned_read_session() as lease:
         old_regional, old_credentials = original.regional, original.credentials
@@ -139,6 +140,8 @@ async def synthetic_assembly(monkeypatch, tmp_path):
             calls.append("acquire_history")
             owner = object()
             owners.add(owner)
+            if flags["mutate_inventory_after_acquire"] == "acquire_history":
+                flags["inventory"] += 1
             return owner
 
         async def acquire_coverage(**kwargs):
@@ -148,6 +151,8 @@ async def synthetic_assembly(monkeypatch, tmp_path):
                 raise asyncio.CancelledError
             owner = object()
             owners.add(owner)
+            if flags["mutate_inventory_after_acquire"] == "acquire_coverage":
+                flags["inventory"] += 1
             return owner
 
         def move(kind, owner, *, key):
@@ -391,22 +396,24 @@ async def test_outer_failure_immediately_after_acquire_burns_unmoved_source_owne
     stage,
 ):
     async with synthetic_assembly(monkeypatch, tmp_path) as io:
-        original_check = assembly._check
-
-        def checked(state):
-            original_check(state)
-            if io.calls and io.calls[-1] == stage:
-                raise assembly.NativeAccountRiskAssemblyError(
-                    "synthetic_late_guard_failure"
-                )
-
-        monkeypatch.setattr(assembly, "_check", checked)
+        io.flags["mutate_inventory_after_acquire"] = stage
         with pytest.raises(
-            assembly.NativeAccountRiskAssemblyError, match="late_guard_failure"
+            assembly.NativeAccountRiskAssemblyError,
+            match="native_financial_source_inventory_changed",
         ):
             await assembly.acquire_native_account_risk_assembly_v1(**io.args)
         assert not io.owners and not io.bindings and len(io.durable) == 2
         assert "move_" + stage.removeprefix("acquire_") not in io.calls
+        if stage == "acquire_history":
+            assert io.calls == ["acquire_history", "release_history"]
+        else:
+            assert io.calls == [
+                "acquire_history",
+                "move_history",
+                "acquire_coverage",
+                "release_coverage",
+                "release_history",
+            ]
 
 
 @pytest.mark.asyncio

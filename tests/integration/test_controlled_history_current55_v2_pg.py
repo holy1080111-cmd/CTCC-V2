@@ -134,6 +134,10 @@ async def test_fresh55_full_unsealed_catalog_and_no_grants(
     assert observed["account_complete"] is observed["execution_authority"] is False
     async with engine.connect() as connection, connection.begin():
         await connection.execute(text("SET TRANSACTION READ ONLY"))
+        await connection.execute(
+            text("SET LOCAL search_path TO pg_catalog, public, pg_temp")
+        )
+        await connection.execute(text("SET LOCAL TIME ZONE 'UTC'"))
         actual = await connection.scalar(text(profile.OWNER_CATALOG_SQL))
         result = profile.observe_actual_owner_catalog(actual)
         assert (

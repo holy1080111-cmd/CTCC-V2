@@ -3887,27 +3887,14 @@ def _run_component_tests_and_recovery(
 
 
 def main():
-    import sys
-
-    from scripts.current_hermetic_contract_dispatch_v1 import maybe_dispatch_hermetic
-
-    dispatched = maybe_dispatch_hermetic(sys.argv[1:])
-    if dispatched is not None:
-        return dispatched
-    from scripts.original_history_0052_toolchain import (
-        COVERAGE_NATIVE_CATALOG_CAPTURE_0052,
-        HISTORY_PARTITION_NATIVE_CATALOG_CAPTURE_0052,
-        MIGRATION_REVISION_PROBE_0052,
-        ORIGINAL_FRAME_ABSENT_PROBE_0051,
-        ORIGINAL_FRAME_INSTALLATION_NATIVE_CATALOG_CAPTURE_0052,
-        PROSPECTIVE_CUTOVER_NATIVE_CATALOG_CAPTURE_0052,
-        expected_original_frame_absent_readback,
-        verify_current_0052_downgrade_denial_log,
+    from scripts.current_hermetic_contract_dispatch_v1 import (
+        capture_hermetic_archive,
+        dispatch_captured_hermetic,
     )
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--archive", type=Path, required=True)
-    parser.add_argument("--archive-sha256", required=True)
+    parser = argparse.ArgumentParser(allow_abbrev=False)
+    parser.add_argument("--archive", type=Path, action="append", required=True)
+    parser.add_argument("--archive-sha256", action="append", required=True)
     parser.add_argument("--commit", required=True)
     parser.add_argument("--tree", required=True)
     parser.add_argument("--output", type=Path, required=True)
@@ -3917,6 +3904,10 @@ def main():
     parser.add_argument("--shard-index", type=int)
     parser.add_argument("--postgres-component-index", type=int)
     args = parser.parse_args()
+    if len(args.archive) != 1 or len(args.archive_sha256) != 1:
+        raise ValueError("hermetic_contract_dispatch_argument_invalid")
+    (archive_path,) = args.archive
+    (archive_sha256,) = args.archive_sha256
     if (args.suite == "shard") != (args.shard_index is not None) or (
         args.shard_index is not None and not 0 <= args.shard_index < SHARD_COUNT
     ):
@@ -3937,8 +3928,22 @@ def main():
     # Pin one byte buffer for admission and build. A Windows directory context
     # does not retain archived POSIX executable bits, and rereading the archive
     # after admission could submit different bytes to the builder.
-    archive_bytes = args.archive.read_bytes()
-    if hashlib.sha256(archive_bytes).hexdigest() != args.archive_sha256:
+    archive_bytes = capture_hermetic_archive(archive_path, archive_sha256)
+    dispatched = dispatch_captured_hermetic(archive_bytes)
+    if dispatched is not None:
+        return dispatched
+    from scripts.original_history_0052_toolchain import (
+        COVERAGE_NATIVE_CATALOG_CAPTURE_0052,
+        HISTORY_PARTITION_NATIVE_CATALOG_CAPTURE_0052,
+        MIGRATION_REVISION_PROBE_0052,
+        ORIGINAL_FRAME_ABSENT_PROBE_0051,
+        ORIGINAL_FRAME_INSTALLATION_NATIVE_CATALOG_CAPTURE_0052,
+        PROSPECTIVE_CUTOVER_NATIVE_CATALOG_CAPTURE_0052,
+        expected_original_frame_absent_readback,
+        verify_current_0052_downgrade_denial_log,
+    )
+
+    if hashlib.sha256(archive_bytes).hexdigest() != archive_sha256:
         raise ValueError("archive_digest_mismatch")
     args.output.mkdir(parents=True, exist_ok=False)
     source = args.output / "source"
@@ -3957,7 +3962,7 @@ def main():
     identity = {
         "commit": args.commit,
         "tree": args.tree,
-        "archive_sha256": args.archive_sha256,
+        "archive_sha256": archive_sha256,
         "build_context": "admitted_archive_bytes_v1",
         "runner_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         "source_files_sha256": file_map_sha256,

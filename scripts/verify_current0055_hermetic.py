@@ -67,7 +67,7 @@ def _test_command(mode, index):
 
 
 def _arguments():
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--archive", type=Path, required=True)
     parser.add_argument("--archive-sha256", required=True)
     parser.add_argument("--commit", required=True)
@@ -94,14 +94,21 @@ def _arguments():
     return args, index
 
 
-def _admit_archive(args):
+def _admit_archive(args, archive_bytes=None):
+    if archive_bytes is None:
+        if (
+            args.archive.is_symlink()
+            or not args.archive.is_file()
+            or not 0 < args.archive.stat().st_size <= 128 * 1024 * 1024
+        ):
+            raise ValueError("current55_archive_unavailable")
+        archive_bytes = args.archive.read_bytes()
     if (
-        args.archive.is_symlink()
-        or not args.archive.is_file()
-        or not 0 < args.archive.stat().st_size <= 128 * 1024 * 1024
+        type(archive_bytes) is not bytes
+        or not 0 < len(archive_bytes) <= 128 * 1024 * 1024
     ):
         raise ValueError("current55_archive_unavailable")
-    raw = args.archive.read_bytes()
+    raw = archive_bytes
     if contract.digest(raw) != args.archive_sha256:
         raise ValueError("current55_archive_sha256_mismatch")
     with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as archive:
@@ -138,9 +145,9 @@ def _isolated_client(root):
             os.environ["DOCKER_CONFIG"] = previous
 
 
-def main():
+def main(*, archive_bytes=None):
     args, index = _arguments()
-    raw, files, runner_sha = _admit_archive(args)
+    raw, files, runner_sha = _admit_archive(args, archive_bytes)
     args.output.mkdir(parents=True, exist_ok=False)
     root = args.output.resolve(strict=True)
     with _isolated_client(root):
@@ -500,7 +507,7 @@ def _run(args, index, raw, files, runner_sha, root):
     try:
         contract.verify_current55_component(
             root,
-            args.archive,
+            raw,
             commit=args.commit,
             tree=args.tree,
             manifest_sha256=identity["manifest_sha256"],

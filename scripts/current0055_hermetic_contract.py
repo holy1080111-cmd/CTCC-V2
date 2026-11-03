@@ -518,18 +518,28 @@ def pytest_sessionfinish(session, exitstatus):
 
 
 def verify_current55_component(
-    root: Path, archive_path: Path, *, commit, tree, manifest_sha256
+    root: Path, archive_path: Path | bytes, *, commit, tree, manifest_sha256
 ):
+    """Read a retained union archive or revalidate the runner's captured bytes."""
     if (
         root.is_symlink()
         or not root.is_dir()
-        or archive_path.is_symlink()
-        or not archive_path.is_file()
-        or not 0 < archive_path.stat().st_size <= 128 * 1024 * 1024
         or not _GIT.fullmatch(commit)
         or not _GIT.fullmatch(tree)
         or not _SHA.fullmatch(manifest_sha256)
     ):
+        raise ValueError("current55_component_input_invalid")
+    if isinstance(archive_path, Path):
+        if (
+            archive_path.is_symlink()
+            or not archive_path.is_file()
+            or not 0 < archive_path.stat().st_size <= 128 * 1024 * 1024
+        ):
+            raise ValueError("current55_component_input_invalid")
+        raw = archive_path.read_bytes()
+    else:
+        raw = archive_path
+    if type(raw) is not bytes or not 0 < len(raw) <= 128 * 1024 * 1024:
         raise ValueError("current55_component_input_invalid")
     identity = read_evidence_json(_read(root, "identity.json"))
     mode = identity["suite"]
@@ -560,7 +570,6 @@ def verify_current55_component(
         or identity["external_order_writes"] != 0
     ):
         raise ValueError("current55_component_identity_invalid")
-    raw = archive_path.read_bytes()
     if digest(raw) != identity["archive_sha256"]:
         raise ValueError("current55_archive_sha256_mismatch")
     with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as archive:

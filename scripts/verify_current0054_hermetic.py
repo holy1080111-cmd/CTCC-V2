@@ -3921,7 +3921,7 @@ def _run_component_tests_and_recovery(
     )
 
 
-def main():
+def main(*, archive_bytes=None):
     from scripts import collector_current_0054_toolchain as current54
     from scripts.current0054_hermetic_contracts import (
         CURRENT54_READBACK_PROBE,
@@ -3934,7 +3934,7 @@ def main():
         expected_original_frame_absent_readback,
     )
 
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument("--archive", type=Path, required=True)
     parser.add_argument("--archive-sha256", required=True)
     parser.add_argument("--commit", required=True)
@@ -3966,7 +3966,8 @@ def main():
     # Pin one byte buffer for admission and build. A Windows directory context
     # does not retain archived POSIX executable bits, and rereading the archive
     # after admission could submit different bytes to the builder.
-    archive_bytes = args.archive.read_bytes()
+    if archive_bytes is None:
+        archive_bytes = args.archive.read_bytes()
     if hashlib.sha256(archive_bytes).hexdigest() != args.archive_sha256:
         raise ValueError("archive_digest_mismatch")
     args.output.mkdir(parents=True, exist_ok=False)
