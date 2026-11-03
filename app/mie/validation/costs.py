@@ -166,7 +166,7 @@ def evaluate_costed_return_path(
         raise ValueError("returns and exposures must have equal length")
     if any(value <= D("-1") for value in returns):
         raise ValueError("asset returns must remain above negative one")
-    if any(abs(value) > D("1") for value in shadow_exposures):
+    if any(value.copy_abs() > D("1") for value in shadow_exposures):
         raise ValueError("shadow exposures must lie between negative one and one")
     if (
         isinstance(observation_interval_seconds, bool)

@@ -204,7 +204,7 @@ def test_annualized_period_ratios_keep_undefined_denominators_unknown() -> None:
 def test_annualized_period_ratios_ignore_callers_decimal_context() -> None:
     parameters = {
         "asset_returns": (D("0.0123456789"), D("-0.0065432101")),
-        "exposures": (D(1), D(1)),
+        "exposures": (D("0.999999999"), D("-0.999999999")),
         "cost_model": declared_cost_model(),
         "observation_interval_seconds": 900,
     }
@@ -218,3 +218,18 @@ def test_annualized_period_ratios_ignore_callers_decimal_context() -> None:
     assert trapped_replay == baseline
     assert baseline.authority == "offline_descriptive_only"
     assert baseline.execution_authority is False
+
+
+@pytest.mark.parametrize("exposure", [D("1.000000001"), D("-1.000000001")])
+def test_exposure_ceiling_ignores_callers_decimal_context(exposure: Decimal) -> None:
+    cost_model = declared_cost_model()
+    with (
+        localcontext(Context(prec=8, rounding=ROUND_DOWN, traps=[Inexact])),
+        pytest.raises(ValueError, match="between negative one and one"),
+    ):
+        evaluate_costed_return_path(
+            (D("0.001"),),
+            (exposure,),
+            cost_model=cost_model,
+            observation_interval_seconds=900,
+        )
