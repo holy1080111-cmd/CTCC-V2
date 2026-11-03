@@ -1,7 +1,11 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from app.config.settings import get_settings
+from app.core.native_only_lifespan import (
+    NativeOnlyLifespanError,
+    require_native_only_settings,
+)
 from app.database.health import check_database
 from app.domain.state_machine import transition_map
 from app.domain.system import (
@@ -24,6 +28,20 @@ async def liveness() -> LivenessResponse:
 
 @router.get("/readiness", response_model=ReadinessResponse)
 async def readiness() -> JSONResponse | ReadinessResponse:
+    return await _readiness(native_recovery_confirmed=None)
+
+
+async def native_only_readiness(request: Request) -> JSONResponse | ReadinessResponse:
+    return await _readiness(
+        native_recovery_confirmed=(
+            getattr(request.app.state, "native_only_recovery_confirmed", None) is True
+        )
+    )
+
+
+async def _readiness(
+    *, native_recovery_confirmed: bool | None
+) -> JSONResponse | ReadinessResponse:
     database_ok, database_detail = await check_database()
     redis_ok, redis_detail = await check_redis()
 
@@ -47,7 +65,16 @@ async def readiness() -> JSONResponse | ReadinessResponse:
             blockers.append("okx_live_credentials_missing")
         if settings.live_trading and not settings.okx_live_allow_order_writes:
             blockers.append("okx_live_order_writes_disabled")
-    if settings.trading_mode == "okx_demo":
+    if native_recovery_confirmed is not None:
+        try:
+            if settings.ctcc_native_only_lifespan_v1 is not True:
+                raise NativeOnlyLifespanError("native_only_configuration_denied")
+            require_native_only_settings(settings)
+        except NativeOnlyLifespanError:
+            blockers.append("native_only_configuration_denied")
+        if not native_recovery_confirmed:
+            blockers.append("native_only_recovery_unconfirmed")
+    elif settings.trading_mode == "okx_demo":
         if not settings.okx_demo_enabled:
             blockers.append("okx_demo_disabled")
         if not settings.okx_demo_credentials_configured:
@@ -74,6 +101,13 @@ async def version() -> VersionResponse:
         trading_mode=settings.trading_mode,
         auto_trade=settings.auto_trade,
         live_trading=settings.live_trading,
+    )
+
+
+async def native_only_version() -> VersionResponse:
+    response = await version()
+    return response.model_copy(
+        update={"architecture_stage": "native_only_no_execution"}
     )
 
 

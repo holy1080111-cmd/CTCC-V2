@@ -1,0 +1,138 @@
+# DRAFT ONLY. Compose merge and actual role proof remain unexecuted.
+# Apply only with the exact N94-derived source/image after independent review.
+# `docker compose config` must prove the base api env_file and migration CMD
+# are gone before any `up`. All DSN files are private host-owned files.
+name: ctcc-native-${CTCC_NATIVE_DEPLOYMENT_ID:?Reviewed unique deployment id required}
+
+services:
+  api:
+    profiles: [native-runtime]
+    image: ${CTCC_NATIVE_IMAGE_REF:?Pin exact reviewed source image}
+    pull_policy: never
+    build: !reset null
+    ports: !reset []
+    container_name: ctcc-native-${CTCC_NATIVE_DEPLOYMENT_ID}-api
+    env_file: !reset []
+    entrypoint: ["/bin/sh", "-ec"]
+    command: >-
+      export DATABASE_URL="$$(cat /run/secrets/native_writer_dsn)";
+      export OKX_DEMO_NATIVE_CUSTODY_DATABASE_URL="$$(cat /run/secrets/native_custody_dsn)";
+      export OKX_DEMO_NATIVE_FRAME_READER_DATABASE_URL="$$(cat /run/secrets/native_frame_dsn)";
+      export API_TOKEN="$$(cat /run/secrets/native_api_token)";
+      exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
+    environment:
+      ENVIRONMENT: production
+      TRADING_MODE: okx_demo
+      CTCC_NATIVE_ONLY_LIFESPAN_V1: "true"
+      WEB_CONCURRENCY: "1"
+      OKX_DEMO_ENABLED: "true"
+      AUTO_TRADE: "false"
+      LIVE_TRADING: "false"
+      PAPER_PERSISTENCE_ENABLED: "false"
+      PAPER_AUTO_TICKS: "false"
+      PAPER_AUTO_EXECUTION: "false"
+      OKX_WS_ENABLED: "false"
+      OKX_DEMO_ALLOW_ORDER_WRITES: "false"
+      OKX_DEMO_AUTO_EXECUTION: "false"
+      OKX_DEMO_AUTO_RECONCILE_ON_START: "false"
+      OKX_DEMO_OBSERVABILITY_ENABLED: "false"
+      OKX_DEMO_SOAK_ENABLED: "false"
+      OKX_DEMO_SOAK_ALLOW_EXECUTE: "false"
+      OKX_DEMO_CONTINUOUS_SESSION_ENABLED: "false"
+      OKX_LIVE_ENABLED: "false"
+      OKX_LIVE_ALLOW_ORDER_WRITES: "false"
+      OKX_LIVE_AUTO_EXECUTION: "false"
+      OKX_LIVE_AUTO_RECONCILE_ON_START: "false"
+      NOTION_OUTBOX_ENABLED: "false"
+      SUBMISSION_OUTBOX_ENABLED: "false"
+      READINESS_REQUIRE_DATABASE: "true"
+      READINESS_REQUIRE_REDIS: "true"
+    secrets:
+      - native_writer_dsn
+      - native_custody_dsn
+      - native_frame_dsn
+      - native_api_token
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      native_migrate:
+        condition: service_completed_successfully
+    networks: [native_internal]
+    restart: "no"
+
+  native_migrate:
+    image: ${CTCC_NATIVE_IMAGE_REF:?Pin exact reviewed source image}
+    pull_policy: never
+    entrypoint: ["/bin/sh", "-ec"]
+    command: >-
+      export DATABASE_URL="$$(cat /run/secrets/native_owner_dsn)";
+      exec alembic upgrade head
+    environment:
+      ENVIRONMENT: production
+      TRADING_MODE: analysis_only
+      AUTO_TRADE: "false"
+      LIVE_TRADING: "false"
+      OKX_DEMO_ENABLED: "false"
+      OKX_LIVE_ENABLED: "false"
+    secrets: [native_owner_dsn]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [native_internal]
+    restart: "no"
+
+  native_role_provision:
+    profiles: [native-role-setup]
+    image: ${CTCC_NATIVE_IMAGE_REF:?Pin exact reviewed source image}
+    pull_policy: never
+    entrypoint: ["python", "-B", "-m", "scripts.provision_native_roles_v1"]
+    command: ["--provision-reviewed-native-roles"]
+    environment:
+      ENVIRONMENT: production
+      TRADING_MODE: analysis_only
+      AUTO_TRADE: "false"
+      LIVE_TRADING: "false"
+      OKX_DEMO_ENABLED: "false"
+      OKX_LIVE_ENABLED: "false"
+    secrets:
+      - native_owner_dsn
+      - native_writer_dsn
+      - native_custody_dsn
+      - native_frame_dsn
+    depends_on:
+      native_migrate:
+        condition: service_completed_successfully
+    networks: [native_internal]
+    restart: "no"
+
+  postgres:
+    container_name: ctcc-native-${CTCC_NATIVE_DEPLOYMENT_ID}-postgres
+    environment:
+      POSTGRES_PASSWORD: !reset null
+      POSTGRES_PASSWORD_FILE: /run/secrets/native_postgres_init_password
+    secrets: [native_postgres_init_password]
+    networks: [native_internal]
+
+  redis:
+    container_name: ctcc-native-${CTCC_NATIVE_DEPLOYMENT_ID}-redis
+    networks: [native_internal]
+
+networks:
+  native_internal:
+    internal: true
+
+secrets:
+  native_postgres_init_password:
+    file: ${CTCC_NATIVE_POSTGRES_INIT_PASSWORD_FILE:?Private PostgreSQL init password file required}
+  native_owner_dsn:
+    file: ${CTCC_NATIVE_OWNER_DSN_FILE:?Private owner DSN file required}
+  native_writer_dsn:
+    file: ${CTCC_NATIVE_WRITER_DSN_FILE:?Private writer DSN file required}
+  native_custody_dsn:
+    file: ${CTCC_NATIVE_CUSTODY_DSN_FILE:?Private custody DSN file required}
+  native_frame_dsn:
+    file: ${CTCC_NATIVE_FRAME_DSN_FILE:?Private frame DSN file required}
+  native_api_token:
+    file: ${CTCC_NATIVE_API_TOKEN_FILE:?Private API token file required}

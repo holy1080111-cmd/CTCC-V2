@@ -1542,12 +1542,15 @@ async def test_actual_current55_restricted_native_lifecycle_recovery(
 
     from app.config.settings import Settings
     from app.core import native_only_lifespan as lifespan
+    from app.core.native_role_preflight_v1 import NativeRolePreflightError
+    from app.database import session as configured_db
     from app.database.models.demo_automation import (
         DemoAutomationRun,
         DemoAutomationState,
     )
     from app.database.models.observability import DemoSoakSession
     from app.database.repositories.demo_automation import DemoAutomationRepository
+    from app.demo_automation import native_server_selectors_v2 as selectors
     from app.demo_automation.service import SafeDemoAutomation
     from app.domain.demo_automation import (
         DemoAutomationActiveTrade,
@@ -1728,6 +1731,13 @@ async def test_actual_current55_restricted_native_lifecycle_recovery(
                 trading_mode="okx_demo",
                 web_concurrency=1,
                 okx_demo_enabled=True,
+                database_url=writer.url.render_as_string(hide_password=False),
+                okx_demo_native_custody_database_url=custody.url.render_as_string(
+                    hide_password=False
+                ),
+                okx_demo_native_frame_reader_database_url=raw.url.render_as_string(
+                    hide_password=False
+                ),
                 okx_demo_api_key="",
                 okx_demo_api_secret="",
                 okx_demo_api_passphrase="",
@@ -1862,11 +1872,37 @@ async def test_actual_current55_restricted_native_lifecycle_recovery(
                 "engine": writer,
             }
             originals = {name: getattr(app_main, name) for name in bindings}
-            initial_pool = writer.sync_engine.pool
             with monkeypatch.context() as patch:
                 for name, value in bindings.items():
                     patch.setattr(app_main, name, value)
-                async with app_main.lifespan(app_main.app):
+                patch.setattr(configured_db, "AsyncSessionFactory", writer_factory)
+                patch.setattr(configured_db, "engine", writer)
+                patch.setattr(selectors, "get_settings", lambda: settings)
+                instance = app_main._build_app()
+
+                # A missing privilege must deny the actual profile before the
+                # recovery CAS, even though status never reads the B3 table.
+                target = "public.demo_account_observation_findings"
+                async with owner.begin() as connection:
+                    await connection.exec_driver_sql(
+                        f"REVOKE SELECT ON TABLE {target} FROM {names['writer']}"
+                    )
+                try:
+                    with pytest.raises(NativeRolePreflightError):
+                        async with app_main.lifespan(instance):
+                            pytest.fail("role preflight unexpectedly served")
+                    assert instance.state.native_only_recovery_confirmed is False
+                    assert await repository.load_state() == before
+                    assert (await automation.status()).recovered is False
+                finally:
+                    async with owner.begin() as connection:
+                        await connection.exec_driver_sql(
+                            f"GRANT SELECT ON TABLE {target} TO {names['writer']}"
+                        )
+
+                initial_pool = writer.sync_engine.pool
+                async with app_main.lifespan(instance):
+                    assert instance.state.native_only_recovery_confirmed is True
                     after = await repository.load_state()
                     assert after["_control_revision"] == 2
                     assert after["armed"] is False
@@ -1901,6 +1937,7 @@ async def test_actual_current55_restricted_native_lifecycle_recovery(
                         and status.active_trades == [exposure]
                     )
                     assert writer.sync_engine.pool is initial_pool
+                assert instance.state.native_only_recovery_confirmed is False
             assert writer.sync_engine.pool is not initial_pool
             assert all(
                 getattr(app_main, name) is value for name, value in originals.items()
@@ -1946,6 +1983,8 @@ async def test_actual_current55_restricted_native_lifecycle_recovery(
                             "sticky_latch_preserved": True,
                             "tracked_exposure_preserved": True,
                             "app_lifespan_entered_and_exited": True,
+                            "actual_native_role_preflight_confirmed": True,
+                            "missing_B3_grant_denied_before_control_cas": True,
                             "restricted_engine_disposed": True,
                             "insert_and_delete_denied": True,
                             "execution_authority": False,
