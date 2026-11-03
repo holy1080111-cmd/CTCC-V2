@@ -1969,6 +1969,7 @@ async def test_actual_current55_restricted_b3_append_and_independent_readback(
     monkeypatch, controlled_current55_database, request
 ):
     """Finalize synthetic B1, then write and replay B3 as the actual writer."""
+    from datetime import timedelta
     from json import loads
     from re import fullmatch
 
@@ -1984,7 +1985,11 @@ async def test_actual_current55_restricted_b3_append_and_independent_readback(
         collector,
     )
     from tests.integration.test_account_history_query_verifier_repository import now
-    from tests.integration.test_account_observation_index_repository import prepared
+    from tests.integration.test_account_observation_index_repository import (
+        additional_capture,
+        prepared,
+    )
+    from tests.unit.test_qualification_account_capture import ms, row
 
     owner = controlled_current55_database
     if fullmatch(r"ctcc-final-[a-f0-9]{12}-postgres", owner.url.host or "") is None:
@@ -2027,10 +2032,21 @@ async def test_actual_current55_restricted_b3_append_and_independent_readback(
             factory = async_sessionmaker(
                 writer, autoflush=False, expire_on_commit=False
             )
-            # prepared() makes a full finalized B1 source via local MockTransport.
-            # It uses only synthetic test credentials and makes no provider call.
-            repo, scope, reference, window = await prepared(
-                monkeypatch, (owner, factory)
+            # The first synthetic B1 has no historical facts. A second owned
+            # synthetic capture provides two distinct fill identities and a
+            # history window whose B3 normalized fact/coverage rows are nonempty.
+            repo, scope, _, _ = await prepared(monkeypatch, (owner, factory))
+            sample = row(
+                "fills_history",
+                fillPnl="-3",
+                ts=ms(now() - timedelta(seconds=40)),
+                fillTime="",
+            )
+            reference, window = await additional_capture(
+                monkeypatch,
+                repo,
+                scope,
+                [sample, {**sample, "billId": "899", "tradeId": "699"}],
             )
             original = await repo.journal.read_chain(scope, reference.capture_id)
             assert original and original[-1].event.event_json
@@ -2054,6 +2070,31 @@ async def test_actual_current55_restricted_b3_append_and_independent_readback(
             # Fresh repository reads the committed B1/B3 and immutable bytes.
             restarted = AccountObservationIndexRepository(factory, clock=now)
             assert await restarted.read(scope) == (appended,)
+            membership_scope = {
+                "environment": scope.environment,
+                "uid": scope.account_id,
+                "settlement_currency": scope.settlement_currency,
+                "sequence": appended.sequence,
+            }
+            async with writer.begin() as connection:
+                facts = await connection.scalar(
+                    text(
+                        "SELECT count(*) FROM public.demo_account_observation_facts "
+                        "WHERE environment=:environment AND account_id=:uid "
+                        "AND settlement_currency=:settlement_currency AND batch_sequence=:sequence"
+                    ),
+                    membership_scope,
+                )
+                coverage = await connection.scalar(
+                    text(
+                        "SELECT count(*) FROM public.demo_account_observation_coverage "
+                        "WHERE environment=:environment AND account_id=:uid "
+                        "AND settlement_currency=:settlement_currency AND batch_sequence=:sequence"
+                    ),
+                    membership_scope,
+                )
+            assert facts == document["source_membership_count"] > 0
+            assert coverage == document["coverage_membership_count"] > 0
             original_after = await restarted.journal.read_chain(
                 scope, reference.capture_id
             )
