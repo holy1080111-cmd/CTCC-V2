@@ -16,6 +16,7 @@ from app.trade_qualification.reservations import LedgerScope, QualificationLedge
 from tests.integration import test_qualification_ledger_repository as fixtures
 
 database = fixtures.database
+ledger_database = fixtures.ledger_database
 fixture = fixtures.fixture
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
@@ -84,26 +85,31 @@ async def test_concurrent_cold_initializers_never_publish_a_complete_revision(
 
 
 async def test_bootstrap_never_overwrites_initialized_claims_or_active_event(
-    database, fixture
+    ledger_database, fixture
 ):
-    repository, clock = await fixtures.initialize(database, fixture)
+    repository, clock = await fixtures.initialize(ledger_database, fixture)
     hold = await repository.reserve(fixture.request)
     before = await repository.read_scope(hold.scope)
     result = await repository.initialize_capture_scope(hold.scope)
     assert result.account_initialized and result.state == before
     assert result.state.active == (hold,)
     assert (await repository.read_scope(hold.scope)) == before
-    restarted = QualificationLedgerRepository(database[1], clock=clock)
+    restarted = QualificationLedgerRepository(ledger_database[1], clock=clock)
     assert (await restarted.initialize_capture_scope(hold.scope)).state == before
 
 
 async def test_unknown_scope_cannot_reserve_using_only_a_bootstrap_checkpoint(
-    database, fixture
+    ledger_database, fixture
 ):
-    repository = QualificationLedgerRepository(database[1], clock=lambda: fixture.now)
-    await repository.initialize_capture_scope(fixture.request.scope)
-    with pytest.raises(QualificationLedgerError):
-        await repository.reserve(fixture.request)
-    result = await repository.read_bootstrap_checkpoint(fixture.request.scope)
+    repository = QualificationLedgerRepository(
+        ledger_database[1], clock=lambda: fixture.now
+    )
+    request = fixture.request.model_copy(
+        update={"expected_account_revision": 0, "expected_ledger_revision": 0}
+    )
+    await repository.initialize_capture_scope(request.scope)
+    with pytest.raises(QualificationLedgerError, match="ledger_account_claims_missing"):
+        await repository.reserve(request)
+    result = await repository.read_bootstrap_checkpoint(request.scope)
     assert result.state.account_revision == result.state.ledger_revision == 0
     assert not result.state.active

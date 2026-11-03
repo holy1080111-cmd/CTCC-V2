@@ -6,9 +6,12 @@ does not establish exchange authenticity, account completeness, or authority.
 """
 
 import asyncio
+import re
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.database.repositories.account_capture_journal import (
     AccountCaptureJournalRepository,
@@ -19,14 +22,39 @@ from app.trade_qualification import account_native_proof as native_proof
 from app.trade_qualification import account_native_proof_storage as native_storage
 from app.trade_qualification import post_g12_account_event_observation_v4 as bridge
 from app.trade_qualification.account_capture_journal import digest
+from tests.controlled_current55_fixtures import (
+    ledger_database as ledger_database,  # noqa: PLC0414 -- isolated restricted writer fixture
+)
 from tests.integration.test_account_locked_current_history_join_v7_repository import (
     _captured_v7_pair,
 )
-from tests.integration.test_qualification_ledger_repository import (
-    database as database,  # noqa: PLC0414 -- isolated PostgreSQL fixture
-)
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
+
+
+@pytest.fixture
+async def v4_database(ledger_database):
+    """Seed B1 as owner, then read B1 and the event as one actual writer."""
+    owner, writer_factory = ledger_database
+    writer_name = writer_factory.kw["bind"].url.username
+    assert re.fullmatch(r"ctcc_raw_frame_[a-f0-9]{32}", writer_name or "")
+    assert writer_name != owner.url.username
+    async with owner.begin() as connection:
+        await connection.execute(
+            text(
+                f'GRANT SELECT ON public.demo_account_capture_events TO "{writer_name}"'
+            )
+        )
+    try:
+        yield owner, writer_factory
+    finally:
+        async with owner.begin() as connection:
+            await connection.execute(
+                text(
+                    "REVOKE SELECT ON public.demo_account_capture_events "
+                    f'FROM "{writer_name}"'
+                )
+            )
 
 
 def _utc(value):
@@ -87,14 +115,21 @@ def _native_companion(root, reference, scope_sha256, first_http, deadline):
 
 
 async def test_v4_reads_real_v5_v7_b1_chains_before_separate_event_observation(
-    monkeypatch, database, tmp_path
+    monkeypatch, v4_database, tmp_path
 ):
+    owner, writer_factory = v4_database
+    owner_factory = async_sessionmaker(owner, expire_on_commit=False, autoflush=False)
     scope, repo, (history_id, current_id) = await _captured_v7_pair(
-        monkeypatch, database
+        monkeypatch, (owner, owner_factory)
     )
     assert type(repo) is AccountCaptureJournalRepository
-    ledger = QualificationLedgerRepository(database[1], clock=lambda: datetime.now(UTC))
-    ordered = await repo.read_locked_current_history_join(
+    ledger = QualificationLedgerRepository(
+        writer_factory, clock=lambda: datetime.now(UTC)
+    )
+    reader = AccountCaptureJournalRepository(
+        writer_factory, clock=lambda: datetime.now(UTC)
+    )
+    ordered = await reader.read_locked_current_history_join(
         scope,
         history_capture_id=history_id,
         current_capture_id=current_id,
@@ -144,7 +179,7 @@ async def test_v4_reads_real_v5_v7_b1_chains_before_separate_event_observation(
         value,
         expected,
         root_identity=root_identity,
-        session_factory=database[1],
+        session_factory=writer_factory,
         ledger=ledger,
         scope=scope,
         history_capture_id=history_id,
@@ -165,7 +200,7 @@ async def test_v4_reads_real_v5_v7_b1_chains_before_separate_event_observation(
             changed,
             expected,
             root_identity=root_identity,
-            session_factory=database[1],
+            session_factory=writer_factory,
             ledger=ledger,
             scope=scope,
             history_capture_id=history_id,

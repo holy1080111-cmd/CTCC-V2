@@ -63,7 +63,6 @@ async def _repository(admin, *, metadata=True):
 def _declared_component_bundle():
     raw = b"declared-synthetic-current54-custody-component-only"
     return {
-        "bundle_id": "c" * 32,
         "expected_sha256": hashlib.sha256(raw).hexdigest(),
         "proof_envelope_sha256": hashlib.sha256(
             b"declared-synthetic-proof"
@@ -85,6 +84,10 @@ async def test_actual54_custody_enumerates_both_FKs_and_retains_one_component_bu
             expected_proof_envelope_sha256=bundle["proof_envelope_sha256"],
         )
         assert readback.bundle_raw == bundle["bundle_raw"]
+        assert readback.bundle_id == custody.runtime_bundle_id_v1(
+            bundle_sha256=bundle["expected_sha256"],
+            proof_envelope_sha256=bundle["proof_envelope_sha256"],
+        )
         assert readback.execution_authority is False
         assert readback.historical_availability_verified is False
         assert readback.independently_protected is False
