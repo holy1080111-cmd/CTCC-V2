@@ -431,12 +431,26 @@ def test_runtime_gate_is_independent_of_structural_admin_diagnostics(change):
 
 
 def test_original_migrations_remain_exact_and_model_matches_sole_policy():
+    # DB0048's catalog import moved to its stdlib owner without changing SQL.
+    # Undo only that relocation and its explanatory line before comparing the
+    # historical source pin. All other historical bytes must still match.
+    current0048 = (
+        ROOT / "migrations/versions/0048_controlled_writer_coverage.py"
+    ).read_bytes()
+    new_import = b"from app.domain.controlled_writer_coverage_catalog_v1 import ("
+    new_doc = (
+        b"The sole catalog declaration is source-pinned in the stdlib domain module."
+    )
+    assert current0048.count(new_import) == current0048.count(new_doc) == 1
+    original0048 = current0048.replace(
+        new_import,
+        b"from app.database.repositories.controlled_writer_coverage import (",
+    ).replace(
+        new_doc,
+        b"The sole catalog declaration is source-pinned in the repository module.",
+    )
     assert (
-        hashlib.sha256(
-            (
-                ROOT / "migrations/versions/0048_controlled_writer_coverage.py"
-            ).read_bytes()
-        ).hexdigest()
+        hashlib.sha256(original0048).hexdigest()
         == "d9576bf85a16d4b7fd81a28df4631ce061b8ef6747ec99779215922bdf47240b"
     )
     assert (

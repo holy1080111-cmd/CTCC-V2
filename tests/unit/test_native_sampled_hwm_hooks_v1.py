@@ -38,6 +38,20 @@ NOW = datetime(2026, 1, 1, tzinfo=UTC)
 SCOPE = LedgerScope(account_id="123456789", settlement_currency="USDT")
 
 
+def pin_declared_origin_callees(monkeypatch):
+    """Keep the real origin guard around the two explicitly synthetic callees."""
+    monkeypatch.setattr(
+        assembly,
+        "_ORIGIN_PIN_FUNCTIONS_V5",
+        tuple(
+            (module, name, assembly._v3_callable_pin(getattr(module, name)))
+            if module is assembly and name in {"_check_v4", "_move_assembly_owner_v3"}
+            else (module, name, pin)
+            for module, name, pin in assembly._ORIGIN_PIN_FUNCTIONS_V5
+        ),
+    )
+
+
 @asynccontextmanager
 async def declared_hook_providers(monkeypatch):
     """Finite provider seam; no real source/SQL/credential or opaque-registry writes."""
@@ -108,6 +122,7 @@ async def declared_hook_providers(monkeypatch):
             "v3_view": view,
             "v3_anchors": {"shorter_monotonic_deadline_ns": 61_000_000_000},
         }
+        assembly._transfer_native_origin_v5(initial, state)
         active["state"] = state
         return state
 
@@ -120,6 +135,7 @@ async def declared_hook_providers(monkeypatch):
 
     def release(state):
         calls.append("release_original_sources")
+        assembly._forget_native_origin_v5(state)
         state.clear()
         if flags["defect"] == "release" or flags["release_unknown"]:
             raise RuntimeError("declared synthetic release unknown")
@@ -286,6 +302,7 @@ async def declared_hook_providers(monkeypatch):
     monkeypatch.setattr(assembly, "_bind_databases_v4", databases)
     monkeypatch.setattr(assembly, "_acquire_native_account_risk_assembly", acquire)
     monkeypatch.setattr(assembly, "_move_assembly_owner_v3", move)
+    pin_declared_origin_callees(monkeypatch)
     monkeypatch.setattr(assembly, "_replay_partition_sources_v3", replay)
     monkeypatch.setattr(assembly, "_release_v3", release)
     monkeypatch.setattr(assembly, "_observe_financial_v4", observation)
@@ -369,6 +386,9 @@ def release(binding):
 @pytest.mark.asyncio
 async def test_call_time_real_v4_registry_move_is_exclusive(monkeypatch):
     async with declared_hook_providers(monkeypatch) as io:
+        state = io.active["state"]
+        origin = assembly._origin_record_v5(state)
+        assert origin[0] == "V4_ORIGINAL_ORDER" and origin[4] == "HELD"
         binding = take(io)
         assert io.owner not in assembly._V4_OWNERS
         with pytest.raises(
@@ -382,6 +402,7 @@ async def test_call_time_real_v4_registry_move_is_exclusive(monkeypatch):
         assert "registration" not in io.calls
         release(binding)
         assert io.calls.count("release_original_sources") == 1
+        assert id(state) not in assembly._STATE_ORIGINS_V5
 
 
 @pytest.mark.asyncio
@@ -751,6 +772,7 @@ def real_v4_guard_with_declared_prior_providers(monkeypatch, io):
         lambda _state, _view: (None, io.native_stamp()),
     )
     monkeypatch.setattr(assembly, "_check_v4", REAL_CHECK_V4)
+    pin_declared_origin_callees(monkeypatch)
     monkeypatch.setattr(
         assembly,
         "_V4_PIN_FUNCTIONS",

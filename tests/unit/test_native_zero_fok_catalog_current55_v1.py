@@ -9,11 +9,18 @@ from copy import deepcopy
 import pytest
 
 from app.domain import collector_current_0055_catalog_v1 as policy
-from app.domain import native_zero_fok_closure_schema_v55 as schema
+from app.domain import native_filled_flat_closure_schema_v55 as schema
+from app.domain import native_leverage_configuration_enforcement_v55 as enforcement
+from app.domain import native_zero_fok_closure_schema_v55 as zero_fok
 
 
 def _component():
     owner, function_oid, table_oid = 16384, 20001, 20002
+    function_oids = {
+        schema.FUNCTION: function_oid,
+        "qualification_ledger_immutable": 20003,
+        enforcement.FUNCTION: 20004,
+    }
     function = {
         "name": schema.FUNCTION,
         "oid": function_oid,
@@ -61,6 +68,7 @@ def _component():
                 "qualification_ledger_immutable",
             ),
             ("qualification_reservation_update_guard", 19, schema.FUNCTION),
+            (enforcement.TRIGGER, 23, enforcement.FUNCTION),
         )
     ):
         triggers.append(
@@ -79,9 +87,7 @@ def _component():
                 "old_table": None,
                 "new_table": None,
                 "definition": "DECLARED SYNTHETIC TRIGGER " + name,
-                "function_oid": function_oid
-                if function_name == schema.FUNCTION
-                else 20003,
+                "function_oid": function_oids[function_name],
                 "function_namespace": "public",
                 "function_name": function_name,
                 "function_owner": owner,
@@ -89,12 +95,16 @@ def _component():
                 "function_kind": "f",
             }
         )
-    return {"functions": [function], "tables": [table], "triggers": triggers}, owner
+    return (
+        {"functions": [function], "tables": [table], "triggers": triggers},
+        owner,
+        {"function_oids": {enforcement.FUNCTION: function_oids[enforcement.FUNCTION]}},
+    )
 
 
 def test_synthetic_component_keeps_only_definition_data():
-    value, owner = _component()
-    result = policy._closure55(value, owner=owner)
+    value, owner, configuration = _component()
+    result = policy._closure55(value, owner=owner, configuration=configuration)
     assert result == {
         "function": schema.CURRENT_SQL,
         "triggers": sorted(
@@ -109,6 +119,9 @@ def test_synthetic_component_keeps_only_definition_data():
     ("field", "replacement"),
     (
         ("source", schema.ORIGINAL_SQL.split("$$")[1]),
+        pytest.param(
+            "source", zero_fok.CURRENT_SQL.split("$$")[1], id="superseded-zero-fok-body"
+        ),
         ("owner", 16385),
         ("namespace", "other"),
         ("arguments", "integer"),
@@ -131,10 +144,10 @@ def test_synthetic_component_keeps_only_definition_data():
     ),
 )
 def test_wrong_closure_function_metadata_denied(field, replacement):
-    value, owner = _component()
+    value, owner, configuration = _component()
     value["functions"][0][field] = deepcopy(replacement)
     with pytest.raises(policy.Current0055CatalogError):
-        policy._closure55(value, owner=owner)
+        policy._closure55(value, owner=owner, configuration=configuration)
 
 
 @pytest.mark.parametrize(
@@ -153,10 +166,10 @@ def test_wrong_closure_function_metadata_denied(field, replacement):
     ),
 )
 def test_wrong_actual_reservation_relation_denied(field, replacement):
-    value, owner = _component()
+    value, owner, configuration = _component()
     value["tables"][0][field] = replacement
     with pytest.raises(policy.Current0055CatalogError):
-        policy._closure55(value, owner=owner)
+        policy._closure55(value, owner=owner, configuration=configuration)
 
 
 @pytest.mark.parametrize(
@@ -184,17 +197,17 @@ def test_wrong_actual_reservation_relation_denied(field, replacement):
     ),
 )
 def test_changed_actual_update_trigger_denied(field, replacement):
-    value, owner = _component()
+    value, owner, configuration = _component()
     value["triggers"][2][field] = replacement
     with pytest.raises(policy.Current0055CatalogError):
-        policy._closure55(value, owner=owner)
+        policy._closure55(value, owner=owner, configuration=configuration)
 
 
 @pytest.mark.parametrize(
     "mutation", ("missing", "duplicate", "extra", "missing_function", "extra_function")
 )
 def test_complete_unique_physical_component_required(mutation):
-    value, owner = _component()
+    value, owner, configuration = _component()
     if mutation == "missing":
         value["triggers"].pop()
     elif mutation == "duplicate":
@@ -206,4 +219,11 @@ def test_complete_unique_physical_component_required(mutation):
     else:
         value["functions"].append(deepcopy(value["functions"][0]))
     with pytest.raises(policy.Current0055CatalogError):
-        policy._closure55(value, owner=owner)
+        policy._closure55(value, owner=owner, configuration=configuration)
+
+
+def test_leverage_enforcement_trigger_must_bind_to_observed_function():
+    value, owner, configuration = _component()
+    configuration["function_oids"][enforcement.FUNCTION] += 1
+    with pytest.raises(policy.Current0055CatalogError):
+        policy._closure55(value, owner=owner, configuration=configuration)

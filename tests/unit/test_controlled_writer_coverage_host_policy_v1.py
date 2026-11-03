@@ -193,8 +193,41 @@ def test_runtime_and_host_share_the_same_policy_objects_and_baseline_owner(monke
         adapter.verify_catalog({}, require_native_baseline=1)
 
 
+@pytest.fixture(scope="module")
+def descriptor_verified_current_inventory():
+    from app.trade_qualification import native_account_risk_assembly_v1 as current55
+
+    # This path verifies the current descriptor, manifest, physical file bytes,
+    # and the other controlled source files before any test adapts old pins.
+    baseline, _, _, _ = current55._package_inventory_controlled55_v1()
+    return baseline
+
+
+def test_current_descriptor_acceptance_does_not_rewrite_historical_denial(
+    descriptor_verified_current_inventory,
+):
+    from app.exchange.okx import native_demo_source_identity_v2 as descriptor
+    from app.trade_qualification import controlled_writer_coverage_v1 as issuer
+
+    revised_paths = (
+        "app/exchange/okx/private_rest.py",
+        "app/trade_qualification/private_write_authority.py",
+    )
+    approved = dict(descriptor.read_native_demo_source_contract_v2())
+    for relative in revised_paths:
+        digest = hashlib.sha256((issuer._ROOT / relative).read_bytes()).hexdigest()
+        assert descriptor_verified_current_inventory["files"][relative][2] == digest
+        assert approved[relative] == digest
+        assert issuer._DENY_SOURCE[relative] != digest
+    with pytest.raises(
+        issuer.ControlledWriterCoverageError,
+        match=r"^controlled_writer_coverage_packaged_source_changed$",
+    ):
+        issuer._package_inventory()
+
+
 @pytest.fixture
-def actual_packaged_source_provider(monkeypatch):
+def actual_packaged_source_provider(monkeypatch, descriptor_verified_current_inventory):
     from app.trade_qualification import controlled_writer_coverage_v1 as issuer
 
     # No real source or manifest is changed. Only the file-read boundary is
@@ -204,6 +237,29 @@ def actual_packaged_source_provider(monkeypatch):
         for relative in issuer.WRITER_PATHS
     }
     assert _POLICY_PATH in files
+
+    # Adapt only this historical test carrier to exact descriptor-proved current
+    # bytes. Production _DENY_SOURCE and the real historical refusal stay intact.
+    revised_paths = (
+        "app/exchange/okx/private_rest.py",
+        "app/trade_qualification/private_write_authority.py",
+    )
+    assert {
+        relative
+        for relative, historical_digest in issuer._DENY_SOURCE.items()
+        if historical_digest != hashlib.sha256(files[relative]).hexdigest()
+    } == set(revised_paths)
+    current_digests = {
+        relative: descriptor_verified_current_inventory["files"][relative][2]
+        for relative in revised_paths
+    }
+    assert all(
+        current_digests[relative] == hashlib.sha256(files[relative]).hexdigest()
+        for relative in revised_paths
+    )
+    monkeypatch.setattr(
+        issuer, "_DENY_SOURCE", {**issuer._DENY_SOURCE, **current_digests}
+    )
 
     def refresh_manifest():
         files["MANIFEST.sha256"] = "".join(
@@ -249,6 +305,26 @@ def test_real_package_inventory_rejects_only_policy_file_tampering(
 ):
     source = actual_packaged_source_provider
     source.files[relative] += b"\n# synthetic unit tamper\n"
+    with pytest.raises(
+        source.issuer.ControlledWriterCoverageError,
+        match=r"^controlled_writer_coverage_packaged_source_changed$",
+    ):
+        source.issuer._package_inventory()
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "app/exchange/okx/private_rest.py",
+        "app/trade_qualification/private_write_authority.py",
+    ],
+)
+def test_descriptor_adapted_historical_inventory_still_denies_coherent_private_source_change(
+    actual_packaged_source_provider, relative
+):
+    source = actual_packaged_source_provider
+    source.files[relative] += b"\n# synthetic coherent private source change\n"
+    source.refresh_manifest()
     with pytest.raises(
         source.issuer.ControlledWriterCoverageError,
         match=r"^controlled_writer_coverage_packaged_source_changed$",

@@ -89,6 +89,16 @@ POSTGRES_TEST_PATHS = frozenset(
         "tests/integration/test_public_receipt_post_read_observation_repository.py",
         "tests/integration/test_public_runtime_bundle_custody_repository.py",
         "tests/integration/test_public_receipt_clock_custody_repository_v1.py",
+        "tests/integration/test_collector_issued_revision_sql_component_pg.py",
+        "tests/integration/test_controlled_history_current55_repository_role_pg.py",
+        "tests/integration/test_controlled_history_current55_v2_pg.py",
+        "tests/integration/test_native_close_intent_index_current55_pg.py",
+        "tests/integration/test_native_close_intent_once_index_v55.py",
+        "tests/integration/test_native_filled_flat_current55_pg.py",
+        "tests/integration/test_native_recovery_repository_pg_v1.py",
+        "tests/integration/test_native_submission_reporting_schema_v55.py",
+        "tests/integration/test_native_zero_fok_migration_current55_v1_pg.py",
+        "tests/integration/test_native_zero_fok_trigger_v55.py",
     }
 )
 SHARD_COUNT = 8

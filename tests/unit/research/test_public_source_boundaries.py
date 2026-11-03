@@ -104,6 +104,31 @@ def test_public_source_has_only_explicit_reviewed_consumers():
         "app.public_market_source.public_receipt_storage.PublicJournalCheckpointV1",
         "app.public_market_source.public_receipt_storage._root_context",
     }
+    # These three later native owners replay only the named public clock or
+    # retained custody data. Keep the exact import form and cardinality pinned;
+    # no capture, publisher, or general package capability is admitted.
+    exact_native_imports = {
+        APP / "trade_qualification" / "native_namespace_history_bundle_v1.py": (
+            (
+                "app.public_market_source.public_runtime_custody_v4",
+                (("replay_operational_proof_v4", None),),
+            ),
+        ),
+        APP / "trade_qualification" / "native_postpublication_support_v2.py": (
+            ("app.public_market_source", (("public_clock", None),)),
+            (
+                "app.public_market_source",
+                (("public_runtime_custody_v4", "public_custody"),),
+            ),
+        ),
+        APP / "trade_qualification" / "postpublication_sources_v1.py": (
+            ("app.public_market_source", (("public_clock", None),)),
+            (
+                "app.public_market_source",
+                (("public_runtime_custody_v4", "public_custody"),),
+            ),
+        ),
+    }
     current_custody_imports = {
         current_market_consumer: {
             "app.public_market_source.public_runtime_custody_v4",
@@ -261,10 +286,38 @@ def test_public_source_has_only_explicit_reviewed_consumers():
     observed_scheduled_four_hour_imports = set()
     observed_current_custody_imports = {path: set() for path in current_custody_imports}
     observed_native_availability_bundle_imports = set()
+    observed_exact_native_imports = {path: [] for path in exact_native_imports}
     for path in APP.rglob("*.py"):
         if path.is_relative_to(SOURCE):
             continue
         for node in nodes(path):
+            if path in exact_native_imports and isinstance(node, ast.ImportFrom):
+                assert not (
+                    node.level
+                    and (
+                        "public_market_source" in (node.module or "")
+                        or any(
+                            "public_market_source" in alias.name for alias in node.names
+                        )
+                    )
+                ), (path, node.module, node.level)
+            if (
+                path in exact_native_imports
+                and isinstance(node, ast.ImportFrom)
+                and node.module is not None
+                and node.module.startswith("app.public_market_source")
+            ):
+                import_shape = (
+                    node.module,
+                    tuple((alias.name, alias.asname) for alias in node.names),
+                )
+                assert node.level == 0 and import_shape in exact_native_imports[path], (
+                    path,
+                    import_shape,
+                )
+                observed_exact_native_imports[path].append(import_shape)
+                observed.add(path)
+                continue
             # Resolve this exact owner before names() can omit relative scope.
             if path == native_devval_dataset_consumer and isinstance(
                 node, ast.ImportFrom
@@ -414,7 +467,11 @@ def test_public_source_has_only_explicit_reviewed_consumers():
                         for module in allowed[path]
                     ), name
                     observed.add(path)
-    assert observed == set(allowed)
+    assert observed == set(allowed) | set(exact_native_imports)
+    assert all(
+        tuple(observed_exact_native_imports[path]) == imports
+        for path, imports in exact_native_imports.items()
+    )
     assert (
         observed_native_availability_bundle_imports
         == native_availability_bundle_imports
@@ -436,6 +493,59 @@ def test_public_source_has_only_explicit_reviewed_consumers():
     assert observed_scheduled_pin_imports == scheduled_pin_imports
     assert observed_scheduled_four_hour_imports == scheduled_four_hour_imports
     assert observed_current_custody_imports == current_custody_imports
+
+
+@pytest.mark.parametrize(
+    ("consumer_name", "import_line"),
+    [
+        (
+            "native_namespace_history_bundle_v1.py",
+            (
+                "from app.public_market_source.public_runtime_custody_v4 "
+                "import replay_operational_proof_v4 as caller_alias"
+            ),
+        ),
+        (
+            "native_namespace_history_bundle_v1.py",
+            (
+                "from app.public_market_source.public_market_capture "
+                "import capture_public_market"
+            ),
+        ),
+        (
+            "native_postpublication_support_v2.py",
+            "from app.public_market_source import public_clock as caller_alias",
+        ),
+        (
+            "postpublication_sources_v1.py",
+            "from app.public_market_source import public_market_capture",
+        ),
+        (
+            "postpublication_sources_v1.py",
+            "from app.public_market_source import public_clock",
+        ),
+        (
+            "postpublication_sources_v1.py",
+            "from ..public_market_source import public_market_capture",
+        ),
+    ],
+)
+def test_native_public_replay_consumers_reject_unreviewed_import(
+    monkeypatch, consumer_name, import_line
+):
+    test_public_source_has_only_explicit_reviewed_consumers()
+    original_nodes = nodes
+    consumer = APP / "trade_qualification" / consumer_name
+    unreviewed = ast.parse(import_line).body[0]
+
+    def with_unreviewed_import(path):
+        yield from original_nodes(path)
+        if path == consumer:
+            yield unreviewed
+
+    monkeypatch.setattr(sys.modules[__name__], "nodes", with_unreviewed_import)
+    with pytest.raises(AssertionError):
+        test_public_source_has_only_explicit_reviewed_consumers()
 
 
 @pytest.mark.parametrize(
