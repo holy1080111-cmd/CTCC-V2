@@ -1,4 +1,4 @@
-"""Fresh current0054 database fixture; the historical0052 fixture stays intact.
+"""Fresh DB0054 child from the exact actual source54 or source55 tree.
 
 This establishes a source/database migration boundary only. It does not grant
 a raw reader, lineage actor, account credential, native catalog seal or any
@@ -35,8 +35,9 @@ def _migrate_0054(connection):
     config = Config(str(ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(ROOT / "migrations"))
     script = ScriptDirectory.from_config(config)
-    source_scope = source_scopes.current0054_source_scope(ROOT)
+    source_scope = source_scopes.database0054_source_scope(ROOT)
     assert script.get_current_head() == source_scope.actual_source_head
+    assert source_scope.database_target == "0054"
     assert script.get_revision("0054").down_revision == "0053"
     context = MigrationContext.configure(
         connection, opts={"fn": lambda heads, _: script._upgrade_revs("0054", heads)}
@@ -105,7 +106,7 @@ async def current0054_database():
             await connection.run_sync(_migrate_0054)
             await connection.run_sync(
                 lambda actual: source_scopes.verify_database_scope(
-                    actual, ROOT, source_scopes.current0054_source_scope(ROOT)
+                    actual, ROOT, source_scopes.database0054_source_scope(ROOT)
                 )
             )
             assert (

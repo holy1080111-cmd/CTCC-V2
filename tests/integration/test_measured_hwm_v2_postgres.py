@@ -32,6 +32,7 @@ from app.trade_qualification import account_observation_index as observed
 from app.trade_qualification import account_portfolio_components as components
 from scripts import collector_current_0054_toolchain as current54
 from scripts import current_contract_source_scopes_v1 as source_scopes
+from scripts import historical0052_0053_on_current0055_toolchain as source55
 from scripts.verify_final_hermetic import (
     ACCOUNT_MEASURED_HWM_V2_TRIGGER_CATALOG_SQL,
     ACCOUNT_REVISION_WITNESS_TRIGGER_CATALOG_SQL,
@@ -729,6 +730,8 @@ async def test_b5_nonempty_downgrade_denies_and_rolls_back_exact_catalog(
             )
             if source_scope.actual_source_head == "0054":
                 return await current54.read_current0054_migration(connection)
+            if source_scope.actual_source_head == "0055":
+                return await source55.read_current0055_parent_migration(connection)
             head = await connection.run_sync(database_head)
             witness_table = await connection.scalar(
                 text(

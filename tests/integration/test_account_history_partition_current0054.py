@@ -11,6 +11,9 @@ from sqlalchemy.exc import DBAPIError
 from app.domain import account_history_partition_v1 as records
 from app.domain import collector_current_0054_catalog_v1 as current54
 from scripts import current_contract_source_scopes_v1 as source_scopes
+from tests.current0054_fixtures import (
+    current0054_database as current0054_database,  # noqa: PLC0414 -- exact DB0054 child fixture.
+)
 from tests.integration.test_account_history_partition_repository import (
     _ROOT,
     _append,
@@ -21,9 +24,6 @@ from tests.integration.test_account_history_partition_repository import (
     _settings,
     _snapshot,
     _sources,
-)
-from tests.integration.test_account_history_partition_repository import (
-    partition_primary as partition_primary,  # noqa: PLC0414 -- explicit pytest fixture binding
 )
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
@@ -38,7 +38,7 @@ async def _actual_owner_graph(admin):
             "SET LOCAL TIME ZONE 'UTC'",
         ):
             await connection.execute(text(statement))
-        scope = source_scopes.current0054_source_scope(_ROOT)
+        scope = source_scopes.database0054_source_scope(_ROOT)
         await connection.run_sync(
             lambda actual: source_scopes.verify_database_scope(actual, _ROOT, scope)
         )
@@ -48,26 +48,30 @@ async def _actual_owner_graph(admin):
 
 
 async def test_current54_partition_nonempty_downgrade_retains_whole54_catalog_and_rows(
-    monkeypatch, partition_primary
+    monkeypatch, current0054_database
 ):
-    # Retain actual primary54 mechanics for the current54 harness. The old52
-    # experiment remains separate in its genuine fresh historical52 database.
-    scope, documents, revisions, lease = await _sources(monkeypatch, partition_primary)
+    # Own a fresh DB0054 child of the actual source. The true source head stays
+    # recorded, including when the source is 0055 and the database is 0054.
+    source = source_scopes.database0054_source_scope(_ROOT)
+    assert source.database_target == "0054"
+    scope, documents, revisions, lease = await _sources(
+        monkeypatch, current0054_database
+    )
     member, _ = _member(scope, documents[-1])
-    async with _restricted_role(partition_primary) as restricted:
+    async with _restricted_role(current0054_database) as restricted:
         async with restricted.begin() as connection:
             await _settings(connection)
             await _append(connection, scope, documents[-1], member, revisions, lease)
-        before = await _snapshot(partition_primary)
-        owner_before = await _actual_owner_graph(partition_primary)
+        before = await _snapshot(current0054_database)
+        owner_before = await _actual_owner_graph(current0054_database)
         assert before[0] == "0054" and sum(before[2]["counts"].values()) > 0
         with pytest.raises(
             DBAPIError, match="account_history_partition_downgrade_requires_empty"
         ):
-            async with partition_primary.begin() as connection:
+            async with current0054_database.begin() as connection:
                 await connection.run_sync(_migrate, "0049", "downgrade")
-        after = await _snapshot(partition_primary)
-        owner_after = await _actual_owner_graph(partition_primary)
+        after = await _snapshot(current0054_database)
+        owner_after = await _actual_owner_graph(current0054_database)
         assert before == after and records.canonical(owner_before) == records.canonical(
             owner_after
         )
@@ -77,7 +81,11 @@ async def test_current54_partition_nonempty_downgrade_retains_whole54_catalog_an
                 Path(directory) / "account-history-partition-current0054-migration.json"
             )
             result = {
-                "schema_version": "ctcc.account_history_partition_migration_acceptance.v4",
+                "schema_version": (
+                    "ctcc.account_history_partition_migration_acceptance.v4"
+                    if source.actual_source_head == "0054"
+                    else "ctcc.source0055_historical0054.account_history_partition_migration_acceptance.v1"
+                ),
                 "manifest_sha256": hashlib.sha256(
                     (_ROOT / "MANIFEST.sha256").read_bytes()
                 ).hexdigest(),
@@ -92,7 +100,7 @@ async def test_current54_partition_nonempty_downgrade_retains_whole54_catalog_an
                     ).read_bytes()
                 ).hexdigest(),
                 "server_major": 17,
-                "source_head": "0054",
+                "source_head": source.actual_source_head,
                 "owner_graph_before_sha256": records.digest(
                     records.canonical(owner_before)
                 ),
@@ -112,8 +120,12 @@ async def test_current54_partition_nonempty_downgrade_retains_whole54_catalog_an
             )
             owner_raw = records.canonical(
                 {
-                    "schema": "ctcc.current54.nonempty_rollback_owner_catalog.v1",
-                    "source_head": "0054",
+                    "schema": (
+                        "ctcc.current54.nonempty_rollback_owner_catalog.v1"
+                        if source.actual_source_head == "0054"
+                        else "ctcc.source0055_historical0054.nonempty_rollback_owner_catalog.v1"
+                    ),
+                    "source_head": source.actual_source_head,
                     "database_head": "0054",
                     "before": owner_before,
                     "after": owner_after,

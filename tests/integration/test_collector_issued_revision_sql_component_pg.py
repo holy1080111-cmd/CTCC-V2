@@ -53,6 +53,7 @@ from app.trade_qualification import reservations
 from app.trade_qualification.reservations import LedgerScope
 from scripts import collector_current_0054_toolchain as capture54
 from scripts import current_contract_source_scopes_v1 as scopes
+from scripts import historical0054_on_current0055_observation as historical54
 from tests.controlled_writer_coverage_fixtures import seed_controlled_writer_control
 from tests.current0054_fixtures import (
     ROOT,
@@ -535,8 +536,7 @@ def _migrate(connection, target, *, direction):
     script = ScriptDirectory.from_config(config)
     assert (
         script.get_current_head()
-        == scopes.current0054_source_scope(ROOT).actual_source_head
-        == "0054"
+        == scopes.database0054_source_scope(ROOT).actual_source_head
     )
     resolve = script._upgrade_revs if direction == "upgrade" else script._downgrade_revs
     context = MigrationContext.configure(
@@ -546,12 +546,29 @@ def _migrate(connection, target, *, direction):
         context.run_migrations()
 
 
+async def _capture_database0054_owner(connection):
+    scope = scopes.database0054_source_scope(ROOT)
+    if scope.actual_source_head == "0054":
+        return await capture54.capture_current0054_owner(connection, ROOT)
+    if scope.actual_source_head == "0055":
+        document, raw = await historical54.capture_historical0054_owner_on_current0055(
+            connection, ROOT
+        )
+        historical54.verify_historical0054_owner_on_current0055(document, raw, ROOT)
+        return document, raw
+    raise AssertionError("unsupported_source_for_database0054")
+
+
 async def test_genuine54_migration_and_public_owner_capture_are_observe_only(
     current0054_database,
 ):
     async with current0054_database.connect() as connection:
-        document, raw = await capture54.capture_current0054_owner(connection, ROOT)
-    assert document["source_head"] == document["database_head"] == "0054"
+        document, raw = await _capture_database0054_owner(connection)
+    assert (
+        document["source_head"]
+        == scopes.database0054_source_scope(ROOT).actual_source_head
+    )
+    assert document["database_head"] == "0054"
     assert journal.canonical(document) + b"\n" == raw
     assert (
         document["native_baseline_admission"] is document["runtime_admission"] is False
@@ -1222,7 +1239,7 @@ async def test_actual54_scope_parent_population_has_three_triggers_and_two_revie
         is False
     )
     async with current0054_database.connect() as connection:
-        document, raw = await capture54.capture_current0054_owner(connection, ROOT)
+        document, raw = await _capture_database0054_owner(connection)
     assert document["current0054_observation"] == observed54
     assert journal.canonical(document) + b"\n" == raw
 

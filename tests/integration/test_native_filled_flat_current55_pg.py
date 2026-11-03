@@ -880,3 +880,302 @@ async def test_actual_current55_full_model_has_no_alembic_drift(
         ("ctcc_pg55_full_metadata_drift_v1", canonical(rows).decode("ascii"))
     )
     assert changes == []
+
+
+_CORE_GRANT_ACL_SQL = text("""
+SELECT kind,object_oid,grantee,grantor,privilege,is_grantable FROM (
+ SELECT 'relation' AS kind,c.oid::bigint AS object_oid,a.grantee::bigint AS grantee,
+        a.grantor::bigint AS grantor,a.privilege_type AS privilege,a.is_grantable
+ FROM pg_catalog.pg_class c
+ JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+ CROSS JOIN LATERAL pg_catalog.aclexplode(c.relacl) a WHERE n.nspname='public'
+ UNION ALL
+ SELECT 'routine',p.oid::bigint,a.grantee::bigint,a.grantor::bigint,
+        a.privilege_type,a.is_grantable
+ FROM pg_catalog.pg_proc p
+ JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+ CROSS JOIN LATERAL pg_catalog.aclexplode(p.proacl) a WHERE n.nspname='public'
+ UNION ALL
+ SELECT 'schema',n.oid::bigint,a.grantee::bigint,a.grantor::bigint,
+        a.privilege_type,a.is_grantable
+ FROM pg_catalog.pg_namespace n
+ CROSS JOIN LATERAL pg_catalog.aclexplode(n.nspacl) a WHERE n.nspname='public'
+) acl WHERE grantee=ANY(CAST(:role_oids AS bigint[]))
+ORDER BY kind,object_oid,grantee,grantor,privilege,is_grantable
+""")
+_CORE_GRANT_LOGIN_SQL = text("""
+SELECT (SELECT oid::bigint FROM pg_catalog.pg_roles WHERE rolname=current_user),
+       current_user=session_user,pg_catalog.current_setting('role')='none',
+       (SELECT oid::bigint FROM pg_catalog.pg_database
+        WHERE datname=pg_catalog.current_database()),
+       host(pg_catalog.inet_server_addr()),pg_catalog.inet_server_port(),
+       pg_catalog.pg_postmaster_start_time(),
+       pg_catalog.pg_backend_pid(),pg_catalog.txid_current()::text
+""")
+
+
+async def _core_grant_acl_snapshot(owner, role_oids):
+    async with owner.connect() as connection:
+        rows = await connection.execute(
+            _CORE_GRANT_ACL_SQL, {"role_oids": list(role_oids)}
+        )
+        return tuple(tuple(row) for row in rows)
+
+
+async def _core_grant_direct_login(engine, expected_oid):
+    async with engine.begin() as connection:
+        row = tuple((await connection.execute(_CORE_GRANT_LOGIN_SQL)).one())
+    assert row[:3] == (expected_oid, True, True)
+    database_oid, address, port, started, pid, xid = row[3:]
+    assert database_oid > 0 and address and port > 0 and started.tzinfo is not None
+    assert pid > 0 and xid.isascii() and xid.isdecimal()
+    return row[3:7], xid
+
+
+async def _core_grant_writer_catalog(engine, *, read_only=False):
+    from tests.integration.test_account_history_original_frame_repository_v1 import (
+        settings,
+    )
+
+    async with engine.begin() as connection:
+        if read_only:
+            await connection.execute(text("SET TRANSACTION READ ONLY"))
+        await settings(connection)
+        actual = await connection.scalar(text(profile.ACTOR_CATALOG_SQL))
+    verify = (
+        profile.verify_actual_readonly_writer_catalog
+        if read_only
+        else profile.verify_actual_writer_catalog
+    )
+    return verify(actual)
+
+
+async def _core_grant_forbidden_table_read(engine, table):
+    # Callers below supply only fixed test relation names.
+    with pytest.raises(DBAPIError) as denied:
+        async with engine.begin() as connection:
+            await connection.execute(text(f"SELECT 1 FROM public.{table} LIMIT 1"))
+    origin = denied.value.orig
+    code = getattr(origin, "sqlstate", None) or getattr(
+        getattr(origin, "__cause__", None), "sqlstate", None
+    )
+    assert code == "42501"
+
+
+async def test_actual_current55_core_grants_commit_and_verify_three_restricted_logins(
+    controlled_current55_database, request
+):
+    """Exercise the owner provisioner and real logins in a disposable trust DB."""
+    from hashlib import sha256
+    from re import fullmatch
+
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from app.database.repositories import public_runtime_bundle_custody as bundles
+    from scripts.current0055_runtime_grants import (
+        current55_core_grant_sql,
+        provision_current55_core_grants,
+    )
+    from tests.integration.test_account_history_original_frame_repository_v1 import (
+        collector,
+    )
+
+    owner = controlled_current55_database
+    if fullmatch(r"ctcc-final-[a-f0-9]{12}-postgres", owner.url.host or "") is None:
+        pytest.skip(
+            "explicit isolated Docker trust fixture required for this role case"
+        )
+    assert owner.url.username == "ctcc" and owner.url.password is None
+    async with (
+        collector(owner) as (writer, writer_oid),
+        collector(owner) as (custody, custody_oid),
+        collector(owner) as (raw, raw_oid),
+    ):
+        role_oids = (writer_oid, custody_oid, raw_oid)
+        assert len(set(role_oids)) == 3
+        names = {
+            "writer": writer.url.username,
+            "custody": custody.url.username,
+            "frame_reader": raw.url.username,
+        }
+        assert all(
+            fullmatch(r"ctcc_raw_frame_[a-f0-9]{32}", name) for name in names.values()
+        )
+        assert all(engine.url.password is None for engine in (writer, custody, raw))
+        grants = current55_core_grant_sql(**names)
+        initial = await _core_grant_acl_snapshot(owner, role_oids)
+        # The fixture only grants schema USAGE before calling the provisioner.
+        assert len(initial) == 3
+        assert all(
+            row[0] == "schema" and row[4:] == ("USAGE", False) for row in initial
+        )
+
+        try:
+            # Unexpected rights on an unrelated table must not slip through an
+            # otherwise genuine owner installation or partially change its ACL.
+            async with owner.begin() as connection:
+                await connection.exec_driver_sql(
+                    f'GRANT SELECT ON TABLE public.audit_logs TO "{names["frame_reader"]}"'
+                )
+            try:
+                drifted = await _core_grant_acl_snapshot(owner, role_oids)
+                assert len(drifted) == len(initial) + 1
+                async with owner.connect() as connection:
+                    with pytest.raises(
+                        ValueError,
+                        match="current0055_core_grant_scope_or_catalog_changed",
+                    ):
+                        await provision_current55_core_grants(connection, **names)
+                    assert not connection.in_transaction()
+                assert await _core_grant_acl_snapshot(owner, role_oids) == drifted
+            finally:
+                async with owner.begin() as connection:
+                    await connection.exec_driver_sql(
+                        f'REVOKE SELECT ON TABLE public.audit_logs FROM "{names["frame_reader"]}"'
+                    )
+            assert await _core_grant_acl_snapshot(owner, role_oids) == initial
+
+            async with owner.connect() as connection:
+                result = await provision_current55_core_grants(connection, **names)
+                assert not connection.in_transaction()
+            assert result == {
+                "schema": "ctcc.current55.audited_core_grants.v1",
+                "database_head": "0055",
+                "native_definitions_sha256": profile.PG17_NATIVE_BASELINE_SHA256,
+                "owner_oid": result["owner_oid"],
+                "writer_oid": writer_oid,
+                "custody_oid": custody_oid,
+                "frame_reader_oid": raw_oid,
+                "grants": 28,
+                "direct_login_readback_pending": True,
+                "complete_runtime_role_matrix": False,
+                "execution_authority": False,
+            }
+            assert result["owner_oid"] not in role_oids
+            committed = await _core_grant_acl_snapshot(owner, role_oids)
+            assert len(committed) > len(initial)
+            # PostgreSQL's public schema may be owned by pg_database_owner.
+            # Its existing exact fixture grants remain distinct from table ACLs.
+            assert tuple(row for row in committed if row[0] == "schema") == initial
+            assert all(
+                row[3] == result["owner_oid"] and row[5] is False
+                for row in committed
+                if row[0] != "schema"
+            )
+            owner_server, owner_xid = await _core_grant_direct_login(
+                owner, result["owner_oid"]
+            )
+            logins = [
+                await _core_grant_direct_login(engine, oid)
+                for engine, oid in zip((writer, custody, raw), role_oids, strict=True)
+            ]
+            assert {server for server, _ in logins} == {owner_server}
+            assert len({owner_xid, *(xid for _, xid in logins)}) == 4
+            for read_only in (False, True):
+                observed = await _core_grant_writer_catalog(writer, read_only=read_only)
+                assert observed["role_oid"] == writer_oid
+                assert observed["native_baseline_admission"] is True
+                assert observed["execution_authority"] is False
+                assert (
+                    observed["native_definitions_sha256"]
+                    == result["native_definitions_sha256"]
+                )
+            await _verify_actual_current55_raw_catalog_pair(
+                raw, writer, raw_oid, writer_oid
+            )
+            await _core_grant_forbidden_table_read(raw, "demo_account_capture_events")
+            await _core_grant_forbidden_table_read(
+                writer, "public_runtime_raw_bundles_v1"
+            )
+            await _core_grant_forbidden_table_read(
+                custody, "public_runtime_raw_bundles_v1"
+            )
+
+            repository = bundles.RuntimeBundleCustodyRepository(
+                async_sessionmaker(custody, autoflush=False, expire_on_commit=False)
+            )
+            await repository.verify_deployment()
+            bundle = b'{"declared_synthetic":"current0055_core_custody_role"}'
+            bundle_sha = sha256(bundle).hexdigest()
+            proof_sha = sha256(b"synthetic-current55-core-proof").hexdigest()
+            receipt = await repository.seal_bundle(
+                bundle_raw=bundle,
+                expected_sha256=bundle_sha,
+                proof_envelope_sha256=proof_sha,
+            )
+            readback = bundles._consume_runtime_bundle_custody_receipt(
+                receipt,
+                expected_bundle_sha256=bundle_sha,
+                expected_proof_envelope_sha256=proof_sha,
+            )
+            assert readback.bundle_raw == bundle
+            assert readback.append_backend_pid > 0 and readback.readback_backend_pid > 0
+            assert readback.append_transaction_id != readback.readback_transaction_id
+
+            async with owner.begin() as connection:
+                await connection.exec_driver_sql(
+                    "REVOKE INSERT ON TABLE public.qualification_report_projection_receipts "
+                    f'FROM "{names["writer"]}"'
+                )
+                await connection.exec_driver_sql(
+                    "GRANT SELECT ON TABLE public.public_runtime_raw_bundles_v1 "
+                    f'TO "{names["custody"]}"'
+                )
+            try:
+                with pytest.raises(profile.Current0055CatalogError):
+                    await _core_grant_writer_catalog(writer)
+                with pytest.raises(
+                    bundles.RuntimeBundleCustodyError,
+                    match="runtime_bundle_custody_unavailable",
+                ):
+                    await repository.verify_deployment()
+            finally:
+                async with owner.begin() as connection:
+                    await connection.exec_driver_sql(
+                        "GRANT INSERT ON TABLE public.qualification_report_projection_receipts "
+                        f'TO "{names["writer"]}"'
+                    )
+                    await connection.exec_driver_sql(
+                        "REVOKE SELECT ON TABLE public.public_runtime_raw_bundles_v1 "
+                        f'FROM "{names["custody"]}"'
+                    )
+            assert await _core_grant_acl_snapshot(owner, role_oids) == committed
+            request.node.user_properties.append(
+                (
+                    "ctcc_pg55_core_grants_observation_v1",
+                    canonical(
+                        {
+                            "database_head": "0055",
+                            "native_definitions_sha256": result[
+                                "native_definitions_sha256"
+                            ],
+                            "role_oids": role_oids,
+                            "owner_xid": owner_xid,
+                            "login_xids": [xid for _, xid in logins],
+                            "custody_transaction_ids": [
+                                readback.append_transaction_id,
+                                readback.readback_transaction_id,
+                            ],
+                            "grant_statements": 28,
+                            "unexpected_acl_denied_without_change": True,
+                            "missing_writer_privilege_denied": True,
+                            "custody_raw_privilege_denied": True,
+                            "raw_wrong_role_denied": True,
+                            "synthetic_custody_readback": True,
+                            "complete_runtime_role_matrix": False,
+                            "execution_authority": False,
+                        }
+                    ).decode("ascii"),
+                )
+            )
+        finally:
+            # Drop only fixture-issued ACLs; the enclosing role fixture owns
+            # role deletion and the outer test fixture owns the disposable DB.
+            async with owner.begin() as connection:
+                for grant in reversed(grants):
+                    rights_and_target, role = grant.removeprefix("GRANT ").rsplit(
+                        " TO ", 1
+                    )
+                    await connection.exec_driver_sql(
+                        f"REVOKE {rights_and_target} FROM {role}"
+                    )

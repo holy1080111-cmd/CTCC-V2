@@ -78,10 +78,16 @@ def _now():
 
 
 def _migrate(connection, target="0053", direction="upgrade"):
+    assert (target, direction) in {("0052", "downgrade"), ("0053", "upgrade")}
     config = Config(str(ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(ROOT / "migrations"))
     scripts = ScriptDirectory.from_config(config)
-    source_scope = source_scopes.historical0053_source_scope(ROOT)
+    scope_reader = (
+        source_scopes.historical0052_source_scope
+        if target == "0052"
+        else source_scopes.historical0053_source_scope
+    )
+    source_scope = scope_reader(ROOT)
     assert scripts.get_current_head() == source_scope.actual_source_head
     resolver = (
         scripts._upgrade_revs if direction == "upgrade" else scripts._downgrade_revs
@@ -91,6 +97,7 @@ def _migrate(connection, target="0053", direction="upgrade"):
     )
     with Operations.context(context), context.begin_transaction():
         context.run_migrations()
+    source_scopes.verify_database_scope(connection, ROOT, source_scope)
 
 
 @pytest.fixture
@@ -135,11 +142,6 @@ async def lineage_database():
         admin = create_async_engine(url.set(database=name), poolclass=NullPool)
         async with admin.begin() as connection:
             await connection.run_sync(_migrate)
-            await connection.run_sync(
-                lambda actual: source_scopes.verify_database_scope(
-                    actual, ROOT, source_scopes.historical0053_source_scope(ROOT)
-                )
-            )
             assert (
                 await connection.scalar(text("SELECT version_num FROM alembic_version"))
                 == "0053"

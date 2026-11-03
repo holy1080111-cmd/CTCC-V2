@@ -6,6 +6,7 @@ import json
 import math
 import re
 import tarfile
+import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 
@@ -26,6 +27,126 @@ RESERVATION_UNIQUE = (
 _SHA = re.compile(r"[0-9a-f]{64}")
 _GIT = re.compile(r"[0-9a-f]{40}")
 _FULL_OBSERVED: set[str] = set()
+
+# These exact Windows cases are covered by the independent Windows union.
+_LINUX_PLATFORM_SKIPS = {
+    (
+        "tests.unit.test_highvol_installer_validator",
+        "test_changed_source_bytes_reject_before_execution",
+    ): "Native PowerShell required",
+    (
+        "tests.unit.test_highvol_installer_validator",
+        "test_default_trusted_identity_rejects_an_unreviewed_package",
+    ): "Native PowerShell required",
+    (
+        "tests.unit.test_highvol_installer_validator",
+        "test_duplicate_identity_rejects_before_execution",
+    ): "Native PowerShell required",
+    (
+        "tests.unit.test_highvol_installer_validator",
+        "test_invalid_utf8_identity_rejects_before_execution",
+    ): "Native PowerShell required",
+    (
+        "tests.unit.test_highvol_installer_validator",
+        "test_invalid_utf8_installer_rejects_before_execution",
+    ): "Native PowerShell required",
+    (
+        "tests.unit.test_highvol_installer_validator",
+        "test_missing_source_rejects_before_execution",
+    ): "Native PowerShell required",
+    (
+        "tests.unit.test_highvol_installer_validator",
+        "test_native_parse_and_repeated_dry_run_do_not_execute_installer",
+    ): "Native PowerShell required",
+    (
+        "tests.unit.test_highvol_installer_validator",
+        "test_original_scope_interpolation_rejects_before_execution",
+    ): "Native PowerShell required",
+    (
+        "tests.unit.test_highvol_installer_validator",
+        "test_rewritten_identity_rejects_before_execution",
+    ): "Native PowerShell required",
+    (
+        "tests.unit.test_highvol_installer_validator",
+        "test_unlisted_package_member_rejects_before_execution",
+    ): "Native PowerShell required",
+    (
+        "tests.unit.test_highvol_installer_validator",
+        "test_utf8_bom_identity_and_installer_parse_from_pinned_bytes",
+    ): "Native PowerShell required",
+    (
+        "tests.unit.test_qualification_evidence_gate",
+        "test_native_windows_filesystem_root_is_rejected_without_writing",
+    ): "Native Windows drive-root rejection only",
+    (
+        "tests.unit.test_qualification_evidence_gate",
+        "test_native_windows_owned_root_reports_real_pin_outcome_without_fallback",
+    ): "Actual Windows native publication boundary only",
+    (
+        "tests.unit.test_qualification_evidence_gate",
+        "test_windows_unavailable_native_pin_is_not_a_success_fallback",
+    ): "Windows unavailable-pin fail-closed contract only",
+    (
+        "tests.unit.test_trade_evidence_outbox",
+        "test_native_windows_late_envelope_denial_retains_state_journal",
+    ): "Native Windows late-publication evidence retention",
+    (
+        "tests.unit.test_trade_evidence_outbox",
+        "test_native_windows_late_winerror32_recovers_only_matching_initial_journal",
+    ): "Native Windows recovery acceptance",
+    (
+        "tests.unit.test_trade_evidence_outbox",
+        "test_native_windows_owned_root_truthfully_records_pin_denial_or_real_success",
+    ): "This case records native Windows ancestor-pin behavior only",
+    (
+        "tests.unit.test_trade_evidence_outbox",
+        "test_native_windows_root_publication_delivery_and_conflict_preserve_history",
+    ): "Required real Windows outbox acceptance",
+    (
+        "tests.unit.test_trade_evidence_outbox",
+        "test_native_windows_two_workers_cannot_both_claim",
+    ): "Required real Windows worker fencing",
+    (
+        "tests.unit.test_trade_evidence_outbox_worker",
+        "test_native_windows_worker_denial_or_real_empty_root_is_fail_closed",
+    ): "Records real Windows ancestor-pin behavior, without changing ACLs",
+    (
+        "tests.unit.test_trade_evidence_storage",
+        "test_native_windows_create_new_publish_is_no_clobber_without_releasing_lease",
+    ): "Native Windows root publication",
+    (
+        "tests.unit.test_trade_evidence_storage",
+        "test_native_windows_handles_block_rename_until_receipt_completion",
+    ): "Native Windows directory handle sharing",
+    (
+        "tests.unit.test_trade_evidence_storage",
+        "test_native_windows_late_write_failure_preserves_durable_name_and_bytes",
+    ): "Native Windows late-write preservation",
+    (
+        "tests.unit.test_trade_evidence_storage",
+        "test_native_windows_long_path_publish_readback_no_clobber_and_pins",
+    ): "Real Windows extended-length publication",
+    (
+        "tests.unit.test_trade_evidence_storage",
+        "test_native_windows_owned_root_handle_enforces_publisher_and_rename_exclusion",
+    ): "Native Windows owned-directory primitive",
+    (
+        "tests.unit.test_trade_evidence_storage",
+        "test_native_windows_publish_rejects_unsafe_names_before_io",
+    ): "Native Windows publication filename guard",
+    (
+        "tests.unit.test_trade_evidence_storage",
+        "test_unc_and_device_paths_are_rejected_lexically_before_filesystem_io",
+    ): "Windows UNC and device path syntax",
+    (
+        "tests.unit.test_trade_evidence_storage",
+        "test_windows_junctions_are_rejected_without_touching_the_target",
+    ): "Windows-specific junction coverage",
+    (
+        "tests.unit.test_verify_migration_identity",
+        "test_native_powershell_parser_and_isolated_probe_readback",
+    ): "Native PowerShell parser/probe requires PowerShell",
+}
 
 CATALOG_CASES = tuple(
     ("tests.integration.test_native_filled_flat_current55_pg", name)
@@ -51,6 +172,10 @@ RECOVERY_CASES = (
     (
         "tests.integration.test_submission_reporting_repository",
         "test_actual_process_crash_retains_private_outcome_without_projection",
+    ),
+    (
+        "tests.integration.test_native_filled_flat_current55_pg",
+        "test_actual_current55_core_grants_commit_and_verify_three_restricted_logins",
     ),
     (
         "tests.integration.test_qualification_ledger_restricted_role_repository",
@@ -289,9 +414,31 @@ def _cleanup(raw, prefix, *, anchor):
         raise ValueError("current55_services_not_removed")
 
 
+def _verify_platform_skips(raw, *, mode, expected_skipped):
+    actual_skipped = 0
+    for case in ET.fromstring(raw).iter("testcase"):
+        for skipped in case.findall("skipped"):
+            actual_skipped += 1
+            identity = (case.attrib["classname"], case.attrib["name"].partition("[")[0])
+            approved_reason = _LINUX_PLATFORM_SKIPS.get(identity)
+            if (
+                mode == "postgres"
+                or skipped.get("type") != "pytest.skip"
+                or approved_reason is None
+                or approved_reason != skipped.get("message")
+            ):
+                raise ValueError("current55_unapproved_linux_skip")
+    if actual_skipped != expected_skipped:
+        raise ValueError("current55_linux_skip_count_mismatch")
+
+
 def _collection(root, mode, index, identity):
     junit, selected_path = component_report_paths(mode, index)
     report = shared.verify_pytest_report(root / junit, allow_unrelated_skips=True)
+    junit_raw = _read(root, junit)
+    if digest(junit_raw) != report["sha256"]:
+        raise ValueError("current55_report_identity_mismatch")
+    _verify_platform_skips(junit_raw, mode=mode, expected_skipped=report["skipped"])
     selection = read_evidence_json(_read(root, selected_path))
     if mode == "full":
         full = selection.get("full_nodeids")

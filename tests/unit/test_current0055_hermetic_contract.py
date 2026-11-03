@@ -2,6 +2,7 @@
 
 import json
 import os
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
@@ -69,3 +70,86 @@ def test_docker_configuration_is_fresh_and_restored(tmp_path, monkeypatch):
         runner._isolated_client(tmp_path),
     ):
         pytest.fail("remote Docker endpoint reached the runner")
+
+
+@pytest.mark.parametrize(
+    ("mode", "module", "reason", "kind", "expected_count", "error"),
+    (
+        (
+            "shard",
+            "tests.unit.test_highvol_installer_validator",
+            "Native PowerShell required",
+            "pytest.skip",
+            1,
+            None,
+        ),
+        (
+            "full",
+            "tests.unit.test_highvol_installer_validator",
+            "Native PowerShell required",
+            "pytest.skip",
+            1,
+            None,
+        ),
+        (
+            "postgres",
+            "tests.unit.test_highvol_installer_validator",
+            "Native PowerShell required",
+            "pytest.skip",
+            1,
+            "current55_unapproved_linux_skip",
+        ),
+        (
+            "shard",
+            "tests.integration.test_native_filled_flat_current55_pg",
+            "Native PowerShell required",
+            "pytest.skip",
+            1,
+            "current55_unapproved_linux_skip",
+        ),
+        (
+            "shard",
+            "tests.unit.test_highvol_installer_validator",
+            "unexpected missing dependency",
+            "pytest.skip",
+            1,
+            "current55_unapproved_linux_skip",
+        ),
+        (
+            "shard",
+            "tests.unit.test_highvol_installer_validator",
+            "Native PowerShell required",
+            "pytest.xfail",
+            1,
+            "current55_unapproved_linux_skip",
+        ),
+        (
+            "shard",
+            "tests.unit.test_highvol_installer_validator",
+            "Native PowerShell required",
+            "pytest.skip",
+            0,
+            "current55_linux_skip_count_mismatch",
+        ),
+    ),
+)
+def test_current55_linux_skip_is_bound_to_native_case_and_reason(
+    mode, module, reason, kind, expected_count, error
+):
+    root = ET.Element("testsuites")
+    suite = ET.SubElement(root, "testsuite")
+    case = ET.SubElement(
+        suite,
+        "testcase",
+        classname=module,
+        name="test_unlisted_package_member_rejects_before_execution[unexpected.txt]",
+    )
+    ET.SubElement(case, "skipped", type=kind, message=reason)
+    raw = ET.tostring(root)
+    if error is None:
+        contract._verify_platform_skips(raw, mode=mode, expected_skipped=expected_count)
+    else:
+        with pytest.raises(ValueError, match=f"^{error}$"):
+            contract._verify_platform_skips(
+                raw, mode=mode, expected_skipped=expected_count
+            )

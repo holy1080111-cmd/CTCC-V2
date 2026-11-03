@@ -37,6 +37,7 @@ from app.trade_qualification import account_revision_recorded_claim as recorded_
 from app.trade_qualification.reservations import QualificationLedgerError
 from scripts import collector_current_0054_toolchain as current54
 from scripts import current_contract_source_scopes_v1 as source_scopes
+from scripts import historical0052_0053_on_current0055_toolchain as source55
 from scripts.verify_final_hermetic import (
     ACCOUNT_MEASURED_HWM_V2_TRIGGER_CATALOG_SQL,
     ACCOUNT_REVISION_WITNESS_TRIGGER_CATALOG_SQL,
@@ -103,8 +104,12 @@ async def _committed_migration_witness_state(engine, witness_sha256):
         source_scope = source_scopes.actual_current_source_scope(
             Path(__file__).resolve().parents[2]
         )
-        if source_scope.actual_source_head == "0054":
-            readback = await current54.read_current0054_migration(connection)
+        if source_scope.actual_source_head in {"0054", "0055"}:
+            operation = {
+                "0054": current54.read_current0054_migration,
+                "0055": source55.read_current0055_parent_migration,
+            }[source_scope.actual_source_head]
+            readback = await operation(connection)
             row = (
                 await connection.execute(
                     select(

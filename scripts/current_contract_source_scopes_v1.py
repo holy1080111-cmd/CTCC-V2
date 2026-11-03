@@ -1,7 +1,7 @@
 """Explicit actual-source and historical-database scopes; never relabel a head.
 
-A final source54 checkout can create a fresh historical52/53 database for the
-unchanged component contracts. Full source/manifest identity and every original
+A verified source54 or source55 checkout can create a separate historical
+PostgreSQL database for unchanged component contracts. Full source/manifest identity and every original
 migration-prefix byte remain checked. These scopes are not schema admission.
 """
 
@@ -19,6 +19,8 @@ from scripts.verify_migration_identity import database_head, source_identity
 _PREFIX = {
     "0052": ("5ab13f675830c4bde4207f041f939225b48822cc5719ce57294e3d4c6ddad576", 53),
     "0053": ("66d7632eb522f9a295b7c509898ad01102756f7e1d748c847829248f2970d44d", 54),
+    "0054": ("505f11187e1211074b9e4b60f77a7bada7d4a5136a651cad577de772d524d5e5", 55),
+    "0055": ("19673eda7f135753ee63d4c7fd483178cbbe775b829d786067963af5dd8ba2f7", 56),
 }
 _TAIL = {
     "0053": (
@@ -31,11 +33,17 @@ _TAIL = {
         "a94f49ad17af5e37421c30e6044b3ffa5cfa51d75c70cedc60de67cabe83ac47",
         "0053",
     ),
+    "0055": (
+        "migrations/versions/0055_operator_recovery_acknowledgements.py",
+        "d578edbd18081c0a80c88ef571517fae4cf572301053c081b5df12050ad5c607",
+        "0054",
+    ),
 }
 _SUPPORTED = {
     "0052": frozenset(("0052",)),
     "0053": frozenset(("0052", "0053")),
     "0054": frozenset(("0052", "0053", "0054")),
+    "0055": frozenset(("0052", "0053", "0054", "0055")),
 }
 
 
@@ -106,13 +114,12 @@ def _scope(root, target):
             continue
         files[relative] = _sha(path.read_bytes())
     prefix = _sha(_canonical(files))
-    expected_prefix, expected_count = _PREFIX["0053" if target == "0054" else target]
-    if target == "0054":
-        # Preserve the complete genuine53 prefix independently of the additive54.
-        old = {name: pin for name, pin in files.items() if name != _TAIL["0054"][0]}
-        if _sha(_canonical(old)) != expected_prefix or len(old) != expected_count:
-            _deny()
-    elif prefix != expected_prefix or len(files) != expected_count:
+    expected_prefix, expected_count = _PREFIX[target]
+    if (
+        prefix != expected_prefix
+        or len(files) != expected_count
+        or before.sha256 != _PREFIX[before.head][0]
+    ):
         _deny()
     manifest_pin = _sha((root / "MANIFEST.sha256").read_bytes())
     if before != source_identity(root) or not manifest.check_manifest(
@@ -142,6 +149,11 @@ def actual_current_source_scope(root):
     if scope.actual_migration_sha256 != measured.sha256:
         _deny()
     return scope
+
+
+def database0054_source_scope(root):
+    """Bind genuine database0054 to a measured source54 or source55."""
+    return _scope(root, "0054")
 
 
 def current0054_source_scope(root):

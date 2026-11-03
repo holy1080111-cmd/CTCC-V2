@@ -1,4 +1,4 @@
-"""Fresh current0053 database fixture; the historical0052 fixture stays intact.
+"""Fresh DB0053 fixture with independently measured source and database heads.
 
 This establishes a source/database migration boundary only. It does not grant
 a raw reader, lineage actor, account credential, native catalog seal or any
@@ -31,11 +31,11 @@ from tests.original_frame_portable_pg_profile import (
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def _migrate_0053(connection):
+def _migrate_0053(connection, source_scope):
     config = Config(str(ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(ROOT / "migrations"))
     script = ScriptDirectory.from_config(config)
-    source_scope = source_scopes.historical0053_source_scope(ROOT)
+    assert source_scope == source_scopes.historical0053_source_scope(ROOT)
     assert script.get_current_head() == source_scope.actual_source_head
     assert script.get_revision("0053").down_revision == "0052"
     context = MigrationContext.configure(
@@ -43,6 +43,7 @@ def _migrate_0053(connection):
     )
     with Operations.context(context), context.begin_transaction():
         context.run_migrations()
+    source_scopes.verify_database_scope(connection, ROOT, source_scope)
 
 
 @pytest.fixture
@@ -52,6 +53,7 @@ async def original_frame_database_0053():
         pytest.skip(
             "explicit isolated PostgreSQL DATABASE_URL required; skip is not acceptance"
         )
+    source_scope = source_scopes.historical0053_source_scope(ROOT)
     profile = portable_profile(ROOT)
     if profile is None:
         # Preserve the original explicit Docker fixture contract unchanged.
@@ -102,12 +104,7 @@ async def original_frame_database_0053():
                 pool_recycle=1800,
             )
         async with child.begin() as connection:
-            await connection.run_sync(_migrate_0053)
-            await connection.run_sync(
-                lambda actual: source_scopes.verify_database_scope(
-                    actual, ROOT, source_scopes.historical0053_source_scope(ROOT)
-                )
-            )
+            await connection.run_sync(_migrate_0053, source_scope)
             assert (
                 await connection.scalar(text("SELECT version_num FROM alembic_version"))
                 == "0053"
