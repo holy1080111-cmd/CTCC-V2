@@ -45,6 +45,9 @@ from app.trade_qualification import account_portfolio_components as components
 from app.trade_qualification import demo_control as control
 from app.trade_qualification.account_observation_index import AccountObservationError
 from app.trade_qualification.reservations import LedgerScope
+from tests.controlled_current55_fixtures import (
+    controlled_current55_database as controlled_current55_database,  # noqa: PLC0414 -- register ledger fixture dependency
+)
 from tests.integration.test_account_history_query_verifier_repository import now
 from tests.integration.test_account_observation_index_repository import (
     additional_capture,

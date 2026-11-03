@@ -1056,7 +1056,8 @@ SELECT jsonb_build_object(
    'demo_control_state_guard','demo_control_journal_guard','demo_control_commit_guard','qualification_ledger_immutable',
    'control_clear_ack_guard_v2','control_clear_ack_commit_guard_v2','control_operator_ack_immutable_v55',
    'policy_counter_initialization_guard_v1','policy_counter_initialization_commit_guard_v1',
-   'collector_issued_account_revision_guard_v1')))
+   'collector_issued_account_revision_guard_v1',
+   'qualification_leverage_configuration_positive_guard_v55')))
 """)
 
 
