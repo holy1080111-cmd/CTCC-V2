@@ -9,11 +9,15 @@ from datetime import timedelta
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import text
 
 from app.database.repositories.account_capture_journal import (
     LockedAccountSourceJoinReadback,
 )
-from app.database.repositories.qualification_ledger import QualificationLedgerRepository
+from app.database.repositories.qualification_ledger import (
+    QualificationLedgerRepository,
+    _account_uid_lock_key,
+)
 from app.domain.source_primitives import canonical, decode, utc_from_ns
 from app.trade_qualification import account_capture
 from app.trade_qualification import post_g12_account_event_observation_v4 as bridge
@@ -21,8 +25,11 @@ from app.trade_qualification import post_g12_account_history_join_v3 as joined
 from app.trade_qualification.account_runtime import ControlledDemoAccountSession
 from app.trade_qualification.engine import evaluate_pre_evidence
 from app.trade_qualification.reservations import LedgerScope
-from tests.integration.test_qualification_ledger_repository import (
-    database as database,  # noqa: PLC0414 -- isolated PostgreSQL fixture
+from tests.controlled_current55_fixtures import (
+    controlled_current55_database as controlled_current55_database,  # noqa: PLC0414 -- registers the exact current55 fixture.
+)
+from tests.controlled_current55_fixtures import (
+    ledger_database as ledger_database,  # noqa: PLC0414 -- registers the restricted writer fixture.
 )
 from tests.unit.research import test_post_g12_account_event_observation_v4 as unit_v4
 from tests.unit.research import test_post_g12_account_history_join_v3 as source_fixture
@@ -114,8 +121,9 @@ async def public_journal_fixture(public_source_inputs_fixture, tmp_path_factory)
 
 
 async def test_v4_real_uid_lock_observation_waits_after_fresh_v3_receipt(
-    database, tmp_path, monkeypatch, unique_uid_source, public_journal_fixture
+    ledger_database, tmp_path, monkeypatch, unique_uid_source, public_journal_fixture
 ):
+    _, sessions = ledger_database
     source, values, run, account_session, scope = unique_uid_source
     expected = bridge._original_binding(
         source.market, run, values, account_session, scope, HISTORY_ID
@@ -150,7 +158,7 @@ async def test_v4_real_uid_lock_observation_waits_after_fresh_v3_receipt(
             "monotonic_ns": public_stamp["monotonic_ns"] + elapsed_ns,
         },
     )
-    ledger = QualificationLedgerRepository(database[1], clock=lambda: logical_now)
+    ledger = QualificationLedgerRepository(sessions, clock=lambda: logical_now)
     await ledger.initialize_capture_scope(scope)
     join_root = tmp_path / "join"
     join_root.mkdir()
@@ -212,7 +220,7 @@ async def test_v4_real_uid_lock_observation_waits_after_fresh_v3_receipt(
 
     class SyntheticAccountRepository:
         def __init__(self, factory, *, clock):
-            assert factory is database[1] and clock is ledger.clock
+            assert factory is sessions and clock is ledger.clock
 
         async def read_locked_current_history_join(
             self,
@@ -237,32 +245,54 @@ async def test_v4_real_uid_lock_observation_waits_after_fresh_v3_receipt(
     monkeypatch.setattr(
         bridge, "AccountCaptureJournalRepository", SyntheticAccountRepository
     )
-    async with database[1]() as writer, writer.begin():
-        await ledger._locked(writer, scope)
-        waiting = asyncio.create_task(
-            bridge.publish_capture_inspect_history_event_v4(
-                tmp_path / "g12",
-                tmp_path / "public",
-                tmp_path / "account",
-                tmp_path / "recheck",
-                join_root,
-                event_root,
-                source.market,
-                run=run,
-                original_inputs=values,
-                market_policy=object(),
-                account_session=account_session,
-                session_factory=database[1],
-                history_capture_id=HISTORY_ID,
-                ledger=ledger,
-                scope=scope,
+    unsigned = _account_uid_lock_key(scope) & ((1 << 64) - 1)
+    lock_parts = {"high": unsigned >> 32, "low": unsigned & ((1 << 32) - 1)}
+    waiter_query = text("""
+SELECT EXISTS (
+    SELECT 1 FROM pg_catalog.pg_locks
+    WHERE locktype='advisory' AND mode='ExclusiveLock' AND NOT granted
+      AND objsubid=1 AND classid::bigint=:high AND objid::bigint=:low
+      AND database=(SELECT oid FROM pg_catalog.pg_database
+                    WHERE datname=pg_catalog.current_database())
+)
+""")
+    waiting = None
+    try:
+        async with sessions() as writer, writer.begin():
+            await ledger._locked(writer, scope)
+            waiting = asyncio.create_task(
+                bridge.publish_capture_inspect_history_event_v4(
+                    tmp_path / "g12",
+                    tmp_path / "public",
+                    tmp_path / "account",
+                    tmp_path / "recheck",
+                    join_root,
+                    event_root,
+                    source.market,
+                    run=run,
+                    original_inputs=values,
+                    market_policy=object(),
+                    account_session=account_session,
+                    session_factory=sessions,
+                    history_capture_id=HISTORY_ID,
+                    ledger=ledger,
+                    scope=scope,
+                )
             )
-        )
-        await asyncio.wait_for(published.wait(), timeout=5)
-        await asyncio.sleep(0.05)
-        assert not waiting.done()
-        assert (join_root / "receipt.json").exists()
-    result = await asyncio.wait_for(waiting, timeout=5)
+            async with asyncio.timeout(5):
+                await published.wait()
+                assert (join_root / "receipt.json").exists()
+                while not await writer.scalar(waiter_query, lock_parts):
+                    if waiting.done():
+                        early = await waiting
+                        pytest.fail(f"V4 completed before UID release: {early.code}")
+                    await asyncio.sleep(0)
+            assert not waiting.done()
+        result = await asyncio.wait_for(waiting, timeout=5)
+    finally:
+        if waiting is not None and not waiting.done():
+            waiting.cancel()
+            await asyncio.gather(waiting, return_exceptions=True)
     assert result.code == "trusted_execution_inputs_missing"
     assert result.ledger_event_state == "absent_at_read"
     assert result.ledger_observation_sha256 is not None

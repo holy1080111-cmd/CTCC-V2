@@ -7,6 +7,7 @@ leaves its explicitly synthetic records in that database; no deployed fallback.
 import asyncio
 import hashlib
 import json
+import re
 from contextlib import AsyncExitStack
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -57,6 +58,9 @@ from tests.integration.test_qualification_ledger_repository import (
 )
 from tests.integration.test_qualification_ledger_repository import (
     initialize,
+)
+from tests.integration.test_qualification_ledger_repository import (
+    ledger_database as ledger_database,  # noqa: PLC0414 -- isolated current55 writer fixture
 )
 from tests.original_account_tls_fixture import (
     shared_history_original_tls_contexts as shared_history_original_tls_contexts,  # noqa: PLC0414 -- explicit test-only TLS fixture.
@@ -878,9 +882,9 @@ async def test_demo_mirror_terminal_history_is_locally_flat_but_pending_is_not(
 
 
 async def test_local_read_includes_other_currency_expired_holds_and_consumed_intent(
-    database, fixture
+    ledger_database, fixture
 ):
-    repo, clock = await initialize(database, fixture)
+    repo, clock = await initialize(ledger_database, fixture)
     receipt = await repo.reserve(fixture.request)
     await repo.consume_once(
         fixture.request.scope, receipt.original_event_key, expected_revision=2
@@ -889,22 +893,45 @@ async def test_local_read_includes_other_currency_expired_holds_and_consumed_int
         account_id=fixture.request.scope.account_id, settlement_currency="USDC"
     )
     await repo.initialize_capture_scope(other)
-    clock.value = max(now(), fixture.request.origin.deadline + timedelta(days=1))
-    result = await repo.read_portfolio_checkpoint(other)
-    data = json.loads(result.document_json)
-    assert {
-        state["scope"]["settlement_currency"] for state in data["currency_states"]
-    } == {"USDT", "USDC"}
-    assert "all_currency_local_holds_unresolved" in data["blocking_reasons"]
-    assert "all_currency_local_intents_unresolved" in data["blocking_reasons"]
-    assert data["unresolved_intents"][0][0] == receipt.reservation_id
-    assert not result.known_flat
-    restarted = QualificationLedgerRepository(database[1], clock=clock)
-    again = await restarted.read_portfolio_checkpoint(other)
-    assert again.document_json == result.document_json
-    assert (await restarted.read_scope(fixture.request.scope)).active[
-        0
-    ].state == "consumed"
+    actor = ledger_database[1].kw["bind"].url.username
+    assert type(actor) is str and re.fullmatch(r"ctcc_raw_frame_[a-f0-9]{32}", actor)
+    # B5's original checkpoint takes SHARE table locks on the five legacy
+    # mirrors. Current55's narrow ledger writer has no implicit access to them.
+    legacy_tables = (
+        "demo_automation_state",
+        "okx_demo_sync_checkpoints",
+        "okx_demo_order_state",
+        "okx_demo_position_state",
+        "okx_demo_algo_order_state",
+    )
+    async with ledger_database[0].begin() as owner:
+        for table in legacy_tables:
+            await owner.execute(
+                text(f'GRANT SELECT, MAINTAIN ON public.{table} TO "{actor}"')
+            )
+    try:
+        clock.value = max(now(), fixture.request.origin.deadline + timedelta(days=1))
+        result = await repo.read_portfolio_checkpoint(other)
+        data = json.loads(result.document_json)
+        assert {
+            state["scope"]["settlement_currency"] for state in data["currency_states"]
+        } == {"USDT", "USDC"}
+        assert "all_currency_local_holds_unresolved" in data["blocking_reasons"]
+        assert "all_currency_local_intents_unresolved" in data["blocking_reasons"]
+        assert data["unresolved_intents"][0][0] == receipt.reservation_id
+        assert not result.known_flat
+        restarted = QualificationLedgerRepository(ledger_database[1], clock=clock)
+        again = await restarted.read_portfolio_checkpoint(other)
+        assert again.document_json == result.document_json
+        assert (await restarted.read_scope(fixture.request.scope)).active[
+            0
+        ].state == "consumed"
+    finally:
+        async with ledger_database[0].begin() as owner:
+            for table in legacy_tables:
+                await owner.execute(
+                    text(f'REVOKE SELECT, MAINTAIN ON public.{table} FROM "{actor}"')
+                )
 
 
 async def _capture_shared_history_v5(
