@@ -1963,3 +1963,173 @@ async def test_actual_current55_restricted_native_lifecycle_recovery(
                     await connection.exec_driver_sql(
                         f"REVOKE {rights_and_target} FROM {role}"
                     )
+
+
+async def test_actual_current55_restricted_b3_append_and_independent_readback(
+    monkeypatch, controlled_current55_database, request
+):
+    """Finalize synthetic B1, then write and replay B3 as the actual writer."""
+    from json import loads
+    from re import fullmatch
+
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from app.database.repositories.account_observation_index import (
+        AccountObservationIndexRepository,
+    )
+    from app.trade_qualification.account_capture_journal import digest
+    from scripts import current0055_native_account_source_acl_v1 as account_acl
+    from scripts import current0055_runtime_grants as core_acl
+    from tests.integration.test_account_history_original_frame_repository_v1 import (
+        collector,
+    )
+    from tests.integration.test_account_history_query_verifier_repository import now
+    from tests.integration.test_account_observation_index_repository import prepared
+
+    owner = controlled_current55_database
+    if fullmatch(r"ctcc-final-[a-f0-9]{12}-postgres", owner.url.host or "") is None:
+        pytest.skip("explicit isolated Docker fixture required; no acceptance credit")
+    assert owner.url.username == "ctcc" and owner.url.password is None
+    async with (
+        collector(owner) as (writer, writer_oid),
+        collector(owner) as (custody, custody_oid),
+        collector(owner) as (frame_reader, frame_oid),
+    ):
+        names = {
+            "writer": writer.url.username,
+            "custody": custody.url.username,
+            "frame_reader": frame_reader.url.username,
+        }
+        assert len({writer_oid, custody_oid, frame_oid}) == 3
+        assert all(
+            engine.url.password is None for engine in (writer, custody, frame_reader)
+        )
+        core_sql = core_acl.current55_core_grant_sql(**names)
+        account_sql = account_acl.current55_native_account_source_grant_sql_v1(**names)
+        assert len(core_sql) == 28 and len(account_sql) == 11
+        try:
+            async with owner.connect() as owner_connection:
+                await core_acl.provision_current55_core_grants(
+                    owner_connection, **names
+                )
+            async with (
+                owner.connect() as owner_connection,
+                writer.connect() as writer_connection,
+            ):
+                acl = (
+                    await account_acl.provision_current55_native_account_source_acl_v1(
+                        owner_connection, writer_connection, **names
+                    )
+                )
+            assert acl["delta_grants"] == 11
+            assert acl["execution_authority"] is False
+
+            factory = async_sessionmaker(
+                writer, autoflush=False, expire_on_commit=False
+            )
+            # prepared() makes a full finalized B1 source via local MockTransport.
+            # It uses only synthetic test credentials and makes no provider call.
+            repo, scope, reference, window = await prepared(
+                monkeypatch, (owner, factory)
+            )
+            original = await repo.journal.read_chain(scope, reference.capture_id)
+            assert original and original[-1].event.event_json
+            assert all(item.db_recorded_at <= item.readback_at for item in original)
+
+            appended = await repo.append(scope, reference, window, expected_revision=0)
+            document = loads(appended.document_json)
+            receipt = loads(appended.replay.receipt_json)
+            assert appended.sequence == 1
+            assert appended.event_sha256 == digest(appended.document_json)
+            assert document["receipt_sha256"] == appended.replay.receipt_sha256
+            assert document["source_membership_count"] > 0
+            assert document["coverage_membership_count"] > 0
+            assert all(
+                value["account_complete"] is False
+                and value["execution_authority"] is False
+                and value["admission"] == "DENY"
+                for value in (document, receipt)
+            )
+
+            # Fresh repository reads the committed B1/B3 and immutable bytes.
+            restarted = AccountObservationIndexRepository(factory, clock=now)
+            assert await restarted.read(scope) == (appended,)
+            original_after = await restarted.journal.read_chain(
+                scope, reference.capture_id
+            )
+            assert [(item.event, item.db_recorded_at) for item in original_after] == [
+                (item.event, item.db_recorded_at) for item in original
+            ]
+
+            b3_tables = (
+                "demo_account_observation_batches",
+                "demo_account_observation_facts",
+                "demo_account_observation_coverage",
+                "demo_account_observation_findings",
+            )
+            async with writer.begin() as connection:
+                login = (
+                    await connection.execute(
+                        text("SELECT current_user,session_user,current_setting('role')")
+                    )
+                ).one()
+                assert tuple(login) == (names["writer"], names["writer"], "none")
+                rights = (
+                    await connection.execute(
+                        text("""
+                            SELECT c.relname, p.right,
+                                   pg_catalog.has_table_privilege(c.oid, p.right)
+                            FROM pg_catalog.pg_class c
+                            JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+                            CROSS JOIN (VALUES ('SELECT'), ('INSERT'), ('UPDATE'),
+                                               ('DELETE'), ('TRUNCATE'), ('REFERENCES'),
+                                               ('TRIGGER'), ('MAINTAIN')) p(right)
+                            WHERE n.nspname='public'
+                              AND c.relname::text=ANY(CAST(:names AS text[]))
+                        """),
+                        {"names": list(b3_tables)},
+                    )
+                ).all()
+            assert len(rights) == 8 * len(b3_tables)
+            assert {
+                (table, right) for table, right, permitted in rights if permitted
+            } == {
+                (table, right) for table in b3_tables for right in ("SELECT", "INSERT")
+            }
+            for table in b3_tables:
+                column = "sequence" if table.endswith("_batches") else "ordinal"
+                await _account_source_statement_denied(
+                    writer, f"UPDATE public.{table} SET {column}={column} WHERE false"
+                )
+                await _account_source_statement_denied(
+                    writer, f"DELETE FROM public.{table} WHERE false"
+                )
+            assert await restarted.read(scope) == (appended,)
+
+            request.node.user_properties.append(
+                (
+                    "ctcc_pg55_native_b3_restricted_writer_v1",
+                    canonical(
+                        {
+                            "database_head": "0055",
+                            "core_grants": 28,
+                            "account_source_grants": 11,
+                            "synthetic_b1_fully_finalized": True,
+                            "b3_commit_and_independent_readback": True,
+                            "b3_extra_privileges_denied": True,
+                            "account_complete": False,
+                            "execution_authority": False,
+                            "admission": "DENY",
+                        }
+                    ).decode("ascii"),
+                )
+            )
+        finally:
+            async with owner.begin() as connection:
+                for grant in reversed(core_sql + account_sql):
+                    rights_and_target, role = grant.removeprefix("GRANT ").rsplit(
+                        " TO ", 1
+                    )
+                    await connection.exec_driver_sql(
+                        f"REVOKE {rights_and_target} FROM {role}"
+                    )
