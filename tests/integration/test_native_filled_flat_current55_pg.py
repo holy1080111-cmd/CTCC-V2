@@ -1900,6 +1900,33 @@ async def test_actual_current55_restricted_native_lifecycle_recovery(
                             f"GRANT SELECT ON TABLE {target} TO {names['writer']}"
                         )
 
+                # Row-level security can hide a running soak from the writer
+                # even when its direct SELECT privilege remains present.
+                async with owner_factory.begin() as session:
+                    row = await session.get(DemoSoakSession, soak_id)
+                    assert row.state == "stopped"
+                    row.state = "running"
+                    await session.execute(
+                        text(
+                            "ALTER TABLE public.demo_soak_sessions ENABLE ROW LEVEL SECURITY"
+                        )
+                    )
+                try:
+                    with pytest.raises(NativeRolePreflightError):
+                        async with app_main.lifespan(instance):
+                            pytest.fail("role preflight admitted a hidden running soak")
+                    assert instance.state.native_only_recovery_confirmed is False
+                    assert await repository.load_state() == before
+                finally:
+                    async with owner_factory.begin() as session:
+                        await session.execute(
+                            text(
+                                "ALTER TABLE public.demo_soak_sessions DISABLE ROW LEVEL SECURITY"
+                            )
+                        )
+                        row = await session.get(DemoSoakSession, soak_id)
+                        row.state = "stopped"
+
                 initial_pool = writer.sync_engine.pool
                 async with app_main.lifespan(instance):
                     assert instance.state.native_only_recovery_confirmed is True
@@ -1985,6 +2012,7 @@ async def test_actual_current55_restricted_native_lifecycle_recovery(
                             "app_lifespan_entered_and_exited": True,
                             "actual_native_role_preflight_confirmed": True,
                             "missing_B3_grant_denied_before_control_cas": True,
+                            "RLS_hidden_running_soak_denied_before_control_cas": True,
                             "restricted_engine_disposed": True,
                             "insert_and_delete_denied": True,
                             "execution_authority": False,

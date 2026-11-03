@@ -131,6 +131,10 @@ async def _exact_existing_acl(connection, names, writer_oid: int) -> None:
         == {key: targets[key] for key in account_expected}
     )
     lifecycle_tables = {key: targets[key] for key in lifecycle_acl._TABLES}
+    _need(
+        await account_acl._delta_relations(connection, lifecycle_tables, owner)
+        == lifecycle_tables
+    )
     await lifecycle_acl._guard(connection, lifecycle_tables, owner)
 
 
