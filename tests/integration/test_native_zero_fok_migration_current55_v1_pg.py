@@ -33,6 +33,14 @@ async def _body(connection):
     )
 
 
+async def _owner_catalog(connection):
+    await connection.execute(
+        text("SET LOCAL search_path = pg_catalog, public, pg_temp")
+    )
+    await connection.execute(text("SET LOCAL TIME ZONE 'UTC'"))
+    return await connection.scalar(text(profile.OWNER_CATALOG_SQL))
+
+
 def _closure_inputs(actual):
     owner = actual["issued"]["owner"]
     configuration = configuration_catalog.observe_catalog(
@@ -52,7 +60,7 @@ async def test_fresh55_closure_metadata_is_observed_without_native_admission(
         connection.begin(),
     ):
         await connection.execute(text("SET TRANSACTION READ ONLY"))
-        actual = await connection.scalar(text(profile.OWNER_CATALOG_SQL))
+        actual = await _owner_catalog(connection)
         result = profile.observe_actual_owner_catalog(actual)
         assert result["database_head"] == "0055"
         assert result["native_baseline_admission"] is False
@@ -107,7 +115,7 @@ async def test_actual55_component_rejects_body_and_guard_drift(
                 await connection.exec_driver_sql(
                     "ALTER TABLE public.qualification_reservations DISABLE TRIGGER qualification_reservation_update_guard"
                 )
-            actual = await connection.scalar(text(profile.OWNER_CATALOG_SQL))
+            actual = await _owner_catalog(connection)
             component, owner, configuration = _closure_inputs(actual)
             with pytest.raises(profile.Current0055CatalogError):
                 profile._closure55(component, owner=owner, configuration=configuration)
@@ -130,7 +138,7 @@ async def test_actual_redundant_execute_grant_is_catalog_drift(
                 f'GRANT EXECUTE ON FUNCTION public.qualification_reservation_update() TO "{role}"'
             )
         async with engine.connect() as connection, connection.begin():
-            actual = await connection.scalar(text(profile.OWNER_CATALOG_SQL))
+            actual = await _owner_catalog(connection)
             component, owner, configuration = _closure_inputs(actual)
             with pytest.raises(profile.Current0055CatalogError):
                 profile._closure55(component, owner=owner, configuration=configuration)
