@@ -95,6 +95,10 @@ class AccountCaptureJournalRepository:
         ).all()
         if not rows or len(rows) > MAX_EVENTS:
             raise AccountJournalError("journal_capture_missing_or_bound")
+        # One measured receipt for this fully materialized database response.
+        # Validation below may only reject it; no later per-row clock sample
+        # can make a future database/source timestamp acceptable.
+        readback_at = capture._utc(self.clock())
         result, previous, total_bytes, previous_db = [], None, 0, None
         for index, row in enumerate(rows, 1):
             event = self._event(row, scope)
@@ -114,9 +118,7 @@ class AccountCaptureJournalRepository:
                 raise AccountJournalError("journal_chain_byte_or_clock_bound")
             previous_db = row.db_recorded_at
             previous = digest(event.event_json)
-            result.append(
-                JournalReadback(event, row.db_recorded_at, capture._utc(self.clock()))
-            )
+            result.append(JournalReadback(event, row.db_recorded_at, readback_at))
         return tuple(result)
 
     async def read_locked_current_history_join(

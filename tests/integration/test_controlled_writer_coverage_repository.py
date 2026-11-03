@@ -1,6 +1,6 @@
 """Actual disposable-PG DB0049 and historical DB0048 tests; all source/account inputs are synthetic.
 
-The primary head50 fixture verifies the harness identity. Coverage49 and48
+The primary fixture verifies the actual source/head harness identity. Coverage49 and48
 experiments use separately owned historical child databases; their exact rows,
 refusals and receipts cannot stand in for current50 evidence. Only owned child
 databases/roles are removed. No native source, exchange or execution is tested.
@@ -32,6 +32,7 @@ from sqlalchemy.pool import NullPool
 
 from app.database.repositories import controlled_writer_coverage as coverage
 from app.domain.source_primitives import utc_from_ns
+from scripts import current_contract_source_scopes_v1 as source_scopes
 from tests.controlled_writer_coverage_fixtures import (
     coverage_record_fixture,
     seed_controlled_writer_control,
@@ -62,6 +63,7 @@ async def coverage_primary():
     raw = os.environ.get("DATABASE_URL", "")
     if not raw:
         pytest.skip("explicit isolated migrated DATABASE_URL required")
+    source_scope = source_scopes.actual_current_source_scope(_ROOT)
     engine = create_async_engine(_hermetic_url(raw), poolclass=NullPool)
     try:
         async with engine.connect() as connection:
@@ -71,7 +73,7 @@ async def coverage_primary():
             assert 170000 <= version < 180000
             assert (
                 await connection.scalar(text("SELECT version_num FROM alembic_version"))
-                == "0051"
+                == source_scope.actual_source_head
             )
         yield engine
     finally:
@@ -83,7 +85,8 @@ def _migrate(connection, target, direction):
     config = Config(str(_ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(_ROOT / "migrations"))
     script = ScriptDirectory.from_config(config)
-    assert script.get_current_head() == "0051"
+    source_scope = source_scopes.historical0052_source_scope(_ROOT)
+    assert script.get_current_head() == source_scope.actual_source_head
     resolver = (
         script._upgrade_revs if direction == "upgrade" else script._downgrade_revs
     )

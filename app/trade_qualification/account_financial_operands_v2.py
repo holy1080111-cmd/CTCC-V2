@@ -71,7 +71,30 @@ class AccountFinancialOperandsV2:
         return sha(self.receipt_json)
 
 
+def _native_account_observations(packets, references):
+    accounts = []
+    for packet, reference in zip(packets, references, strict=True):
+        pages = [p for p in packet.observations if p.request.stream == "config_after"]
+        if len(pages) != 1 or len(pages[0].rows) != 1:
+            _deny("account_financial_original_identity_required")
+        accounts.append(
+            {
+                "config": lifecycle._json(pages[0].rows[0].canonical_json.encode()),
+                "session_binding_sha256": reference.session_binding_sha256,
+                "origin": packet.plan.origin,
+                "registration_region": packet.plan.registration_region,
+            }
+        )
+    return accounts
+
+
 def _native_position_rows(source, packets, references, scope, checked_at):
+    return _native_position_rows_from_accounts(
+        source, _native_account_observations(packets, references), scope, checked_at
+    )
+
+
+def _native_position_rows_from_accounts(source, accounts, scope, checked_at):
     if type(source) is not NativePositionSourceV2:
         _deny("account_financial_original_native_position_source_required")
     plan, identity = source.plan, source.identity
@@ -89,11 +112,10 @@ def _native_position_rows(source, packets, references, scope, checked_at):
         or identity.position_mode != "net_mode"
     ):
         _deny("account_financial_position_scope_or_mode_unsupported")
-    for packet, reference in zip(packets, references, strict=True):
-        pages = [p for p in packet.observations if p.request.stream == "config_after"]
-        if len(pages) != 1 or len(pages[0].rows) != 1:
-            _deny("account_financial_original_identity_required")
-        config = lifecycle._json(pages[0].rows[0].canonical_json.encode())
+    if type(accounts) is not list or not accounts:
+        _deny("account_financial_original_identity_required")
+    for account in accounts:
+        config = account["config"]
         if (
             (
                 config.get("uid"),
@@ -107,9 +129,9 @@ def _native_position_rows(source, packets, references, scope, checked_at):
                 identity.account_level,
                 identity.position_mode,
             )
-            or reference.session_binding_sha256 != plan.session_binding_sha256
-            or packet.plan.origin != plan.origin
-            or packet.plan.registration_region != plan.registration_region
+            or account["session_binding_sha256"] != plan.session_binding_sha256
+            or account["origin"] != plan.origin
+            or account["registration_region"] != plan.registration_region
         ):
             _deny("account_financial_original_position_session_changed")
     archive = capture._decode_json(

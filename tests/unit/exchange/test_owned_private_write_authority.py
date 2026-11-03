@@ -5,6 +5,8 @@ Only synthetic credentials and MockTransport are used; no exchange IO occurs.
 
 from __future__ import annotations
 
+from importlib import import_module
+
 import httpx
 import pytest
 
@@ -19,6 +21,13 @@ from app.trade_qualification.dispatch_ownership import (
 )
 from tests.unit.exchange.test_live_execution_rest import execution_settings
 from tests.unit.exchange.test_private_rest import demo_settings
+
+
+@pytest.fixture(autouse=True)
+def initialize_native_guard():
+    # Install the source guards before the test deliberately replaces either
+    # legacy classifier. These cases exercise the separate final boundary.
+    import_module("app.exchange.okx.native_demo_write_v2")
 
 
 @pytest.mark.asyncio

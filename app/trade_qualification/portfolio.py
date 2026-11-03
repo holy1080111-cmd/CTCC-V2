@@ -336,6 +336,7 @@ def _evaluate_portfolio(
     authority: DemoRiskAuthority | None,
     current_time: datetime,
     _financial=None,
+    _finite=None,
 ) -> PortfolioRiskResult:
     """Assess fixed linear-contract risk against fresh complete scoped evidence.
 
@@ -393,10 +394,27 @@ def _evaluate_portfolio(
         outputs.update(requested_contracts=contracts, requested_leverage=leverage)
     except _INVALID:
         causes.append("candidate_invalid")
+    account_type = PortfolioRiskSnapshot
+    if _finite is not None:
+        from app.trade_qualification.account_ledger_claims_v2 import (
+            FiniteAccountLedgerClaimsV1,
+            FinitePortfolioSnapshotV1,
+        )
+
+        if (
+            type(_finite) is not FiniteAccountLedgerClaimsV1
+            or _financial is None
+            or account is not _finite.account
+            or policy is not _finite.risk_policy
+            or authority is not _finite.authority
+        ):
+            causes.append("finite_financial_claim_binding_invalid")
+            return finish()
+        account_type = FinitePortfolioSnapshotV1
     checked = {}
     for name, value, expected in (
         ("instrument", instrument, ContractRiskSpec),
-        ("account", account, PortfolioRiskSnapshot),
+        ("account", account, account_type),
         ("policy", policy, PortfolioRiskPolicy),
         ("authority", authority, DemoRiskAuthority),
     ):
@@ -490,16 +508,31 @@ def _evaluate_portfolio(
         )
     if any(len(groups) != 1 for groups in groups_by_instrument.values()):
         causes.append("correlation_identity_mismatch")
-    if (
+    if _finite is None:
+        if (
+            state.available_margin > state.equity
+            or state.peak_equity < state.equity
+            or not state.peak_window_started_at
+            <= state.peak_observed_at
+            <= state.balance_stamp.observed_at
+        ):
+            causes.append("peak_equity_invalid")
+        if state.peak_window_started_at != limits.drawdown_window_started_at:
+            causes.append("drawdown_window_mismatch")
+    elif (
         state.available_margin > state.equity
-        or state.peak_equity < state.equity
-        or not state.peak_window_started_at
-        <= state.peak_observed_at
-        <= state.balance_stamp.observed_at
+        or _financial.measured_peak is None
+        or _financial.measured_current is None
+        or _financial.measured_peak < _financial.measured_current
+        or _finite.financial.measured_hwm_window_started_at
+        != limits.drawdown_window_started_at
+        or _finite.financial.measured_peak_observed_at is None
+        or not limits.drawdown_window_started_at
+        <= _finite.financial.measured_peak_observed_at
+        <= _finite.financial.available_at
+        <= now
     ):
-        causes.append("peak_equity_invalid")
-    if state.peak_window_started_at != limits.drawdown_window_started_at:
-        causes.append("drawdown_window_mismatch")
+        causes.append("finite_measured_hwm_invalid")
     if (
         state.history_start > week_start
         or state.history_end != state.history_stamp.observed_at
@@ -508,7 +541,9 @@ def _evaluate_portfolio(
         or state.history_start > state.history_end
     ):
         causes.append("history_coverage_incomplete")
-    rows = state.loss_history
+    # Finite source windows carry their original closed-run population separately;
+    # no legacy outcome rows or initial streak seed are fabricated for that type.
+    rows = state.loss_history if _finite is None else ()
     if len({row.outcome_id for row in rows}) != len(rows):
         causes.append("history_invalid")
     for index, row in enumerate(rows):
@@ -571,7 +606,14 @@ def _evaluate_portfolio(
             weekly_pnl = _financial.weekly_net_pnl
         daily_loss = None if daily_pnl is None else max(Fraction(0), -daily_pnl)
         weekly_loss = None if weekly_pnl is None else max(Fraction(0), -weekly_pnl)
-        drawdown = (Fraction(state.peak_equity) - equity) / Fraction(state.peak_equity)
+        drawdown = (
+            (Fraction(state.peak_equity) - equity) / Fraction(state.peak_equity)
+            if _finite is None
+            else (
+                (_financial.measured_peak - _financial.measured_current)
+                / _financial.measured_peak
+            )
+        )
         outputs.update(
             {
                 name: None if value is None else _display(value)
@@ -603,7 +645,7 @@ def _evaluate_portfolio(
             causes.append("quantity_limit_exceeded")
         if leverage > min(spec.max_leverage, limits.max_leverage):
             causes.append("leverage_limit_exceeded")
-        streak = state.loss_streak_at_history_start
+        streak = state.loss_streak_at_history_start if _finite is None else None
         if _financial is None:
             for row in rows:
                 if row.realized_pnl < 0:
@@ -692,7 +734,15 @@ def _evaluate_portfolio(
             ),
             (
                 any(
-                    used > MAX_SINGLE_POSITION_MARGIN_USDT
+                    used
+                    > (
+                        MAX_SINGLE_POSITION_MARGIN_USDT
+                        if _finite is None
+                        else min(
+                            MAX_SINGLE_POSITION_MARGIN_USDT,
+                            _financial.position_margin_bucket,
+                        )
+                    )
                     for used in instrument_margins.values()
                 ),
                 "position_margin_bucket_exceeded",
@@ -981,3 +1031,54 @@ def evaluate_native_account_risk_windows_v1(
         raise AccountRiskWindowsError(
             "account_risk_windows_current_source_invalid"
         ) from None
+
+
+def evaluate_finite_account_portfolio_v1(
+    *,
+    claims,
+    report_id,
+    instrument_id,
+    direction,
+    candidate_entry,
+    stop_loss,
+    round_trip_cost_per_base,
+    requested_contracts,
+    requested_leverage,
+    instrument,
+    current_time,
+):
+    """Data-only finite source algebra; native ownership is checked by its caller.
+
+    The codec's explicit finite schema preserves an unknown initial seed. This
+    branch shares every original cap, reservation rounding and candidate-geometry
+    operation above; it does not construct a legacy PortfolioRiskSnapshot.
+    """
+    from app.trade_qualification.account_ledger_claims_v2 import (
+        decode_finite_account_ledger_claims_v1,
+        encode_finite_account_ledger_claims_v1,
+    )
+    from app.trade_qualification.account_owned_financial_v1 import (
+        _checked_finite_evaluation_v1,
+    )
+
+    claims = decode_finite_account_ledger_claims_v1(
+        encode_finite_account_ledger_claims_v1(claims)
+    )
+    financial = _checked_finite_evaluation_v1(claims, evaluated_at=current_time)
+    return _evaluate_portfolio(
+        report_id=report_id,
+        instrument_id=instrument_id,
+        direction=direction,
+        candidate_entry=candidate_entry,
+        stop_loss=stop_loss,
+        round_trip_cost_per_base=round_trip_cost_per_base,
+        requested_contracts=requested_contracts,
+        requested_leverage=requested_leverage,
+        instrument=instrument,
+        account=claims.account,
+        policy=claims.risk_policy,
+        authority=claims.authority,
+        current_time=current_time,
+        _financial=financial,
+        _finite=claims,
+    )

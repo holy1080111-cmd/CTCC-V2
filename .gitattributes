@@ -1,2 +1,5 @@
 # Source identity must not depend on the operator's core.autocrlf setting.
 * text=auto eol=lf
+
+# Preserve the independently verified raw OKX route artifact.
+/app/demo_automation/configured_demo_official_route_evidence_v2.json -text !eol

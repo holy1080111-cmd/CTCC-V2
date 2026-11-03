@@ -1682,3 +1682,58 @@ def test_permission_denial_after_commit_marker_is_not_assumed_to_be_zero_writes(
     with pytest.raises(module.OutboxError, match="^outbox_report_conflict$"):
         module.enqueue(memory.root, payload(order_reference="changed"), clock=clock)
     assert memory.files == retained
+
+
+def test_native_terminal_projection_recovers_matching_orphan_journal(memory, clock):
+    from dataclasses import replace
+
+    from app.database.repositories.native_closed_reporting_v55 import (
+        NativeTerminalReportDataV55,
+        enqueue_native_terminal_report_v55,
+    )
+    from tests.unit.test_trade_evidence_post_submit import candidate
+
+    report = NativeTerminalReportDataV55(
+        candidate().model_copy(update={"report_id": REPORT}),
+        REPORT,
+        "trend_pullback",
+        "synthetic-order-reference",
+        NOW - timedelta(seconds=2),
+        NOW - timedelta(seconds=1),
+    )
+    marker = (f"{REPORT}.json",)
+    memory.fail_publish_before.add(marker)
+    with pytest.raises(module.OutboxError, match="^outbox_storage_unavailable$"):
+        enqueue_native_terminal_report_v55(
+            memory.root, report, SUBMISSION_SHA, policy=policy(), clock=clock
+        )
+    initial = memory.files[event_path(1)]
+    assert marker not in memory.files
+    memory.fail_publish_before.clear()
+    clock.advance(1)
+
+    for variant, rule in (
+        (replace(report, client_order_id="different-order"), policy()),
+        (report, policy(max_attempts=2)),
+    ):
+        with pytest.raises(module.OutboxError, match="^outbox_journal_mismatch$"):
+            enqueue_native_terminal_report_v55(
+                memory.root, variant, SUBMISSION_SHA, policy=rule, clock=clock
+            )
+        assert memory.files[event_path(1)] == initial
+        assert marker not in memory.files
+
+    receipt = enqueue_native_terminal_report_v55(
+        memory.root, report, SUBMISSION_SHA, policy=policy(), clock=clock
+    )
+    assert receipt.status == "enqueued" and receipt.durable_outbox_readback is True
+    view = module.read_job(memory.root, REPORT, clock=clock)
+    assert view.envelope.envelope_sha256 == receipt.outbox_envelope_sha256
+    assert view.envelope.enqueued_at == NOW and view.status == "queued"
+    assert memory.files[event_path(1)] == initial
+    assert (
+        enqueue_native_terminal_report_v55(
+            memory.root, report, SUBMISSION_SHA, policy=policy(), clock=clock
+        )
+        == receipt
+    )

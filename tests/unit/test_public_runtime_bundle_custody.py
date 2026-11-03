@@ -173,7 +173,8 @@ def _catalog():
     }
     for constraint in constraints:
         constraint.definition = definitions[constraint.conname]
-    return role, functions, triggers, columns, constraints
+    incoming = [SimpleNamespace(lineage_oid=None, constraint_oid=None)]
+    return role, functions, triggers, incoming, columns, constraints
 
 
 async def _run_catalog(
@@ -182,6 +183,8 @@ async def _run_catalog(
     path_readback="pg_catalog, public, pg_temp",
     path_failure=None,
     trace=None,
+    migration_head="0052",
+    head_layout=None,
 ):
     class Result:
         def __init__(self, value):
@@ -215,6 +218,17 @@ async def _run_catalog(
                 assert self.path == "pg_catalog, public, pg_temp"
                 return Result(path_readback)
             assert self.path == "pg_catalog, public, pg_temp"
+            if statement is custody._HEAD_LAYOUT_SQL:
+                return Result(
+                    head_layout
+                    if head_layout is not None
+                    else {
+                        "has_version": migration_head is not None,
+                        "standalone_only": migration_head is None,
+                    }
+                )
+            if statement is custody._HEAD_SQL:
+                return Result(migration_head)
             return Result(next(self.items))
 
     return await custody.RuntimeBundleCustodyRepository._catalog(Session())
@@ -328,10 +342,17 @@ def test_every_controlled_custody_transaction_guards_path_before_catalog(
                 self.path_verified = True
                 return SimpleNamespace(scalar_one=lambda: self.path)
             assert self.path_verified and self.path == "pg_catalog, public, pg_temp"
+            if statement is custody._HEAD_LAYOUT_SQL:
+                return SimpleNamespace(
+                    scalar_one=lambda: {"has_version": True, "standalone_only": False}
+                )
+            if statement is custody._HEAD_SQL:
+                return SimpleNamespace(scalar_one=lambda: "0052")
             catalog_queries = (
                 custody._ROLE_SQL,
                 custody._FUNCTION_SQL,
                 custody._TRIGGER_SQL,
+                custody._INCOMING_CUSTODY_FK_SQL,
                 custody._COLUMN_SQL,
                 custody._CONSTRAINT_SQL,
             )
@@ -489,11 +510,11 @@ def test_unsafe_deployment_role_or_durability_denied(field, value):
         (2, 1, "tgtype", 7),
         (2, 2, "qualification", "false"),
         (2, 0, "tgargs", b"changed"),
-        (3, 3, "type_name", "text"),
-        (3, 0, "attnotnull", False),
-        (4, 0, "valid_index", False),
-        (4, 1, "key_columns", [3]),
-        (4, 2, "definition", "CHECK (true)"),
+        (4, 3, "type_name", "text"),
+        (4, 0, "attnotnull", False),
+        (5, 0, "valid_index", False),
+        (5, 1, "key_columns", [3]),
+        (5, 2, "definition", "CHECK (true)"),
     ),
 )
 def test_changed_catalog_cannot_be_promoted(collection, index, field, value):
@@ -802,3 +823,276 @@ def test_uncertain_commit_never_issues_receipt_or_retries(monkeypatch):
 
     asyncio.run(run())
     assert trace == ["session", "append", "commit_unknown"]
+
+
+def _declared_native_0053_ri_catalog():
+    """Synthetic native-catalog wire only; real PG cases prove the metadata."""
+    role, functions, triggers, _absent, columns, constraints = _catalog()
+    incoming = SimpleNamespace(
+        parent_oid=100,
+        lineage_oid=101,
+        lineage_owner=24,
+        lineage_kind="r",
+        lineage_persistence="p",
+        relrowsecurity=False,
+        relforcerowsecurity=False,
+        relispartition=False,
+        lineage_inherited=False,
+        constraint_oid=200,
+        conname="fk_collector_current_custody",
+        constraint_namespace="public",
+        constraint_type="f",
+        child_oid=101,
+        target_oid=100,
+        conkey=[15],
+        confkey=[1],
+        delete_action="r",
+        update_action="a",
+        match_type="s",
+        convalidated=True,
+        condeferrable=False,
+        condeferred=False,
+        parent_constraint_oid=0,
+        conislocal=True,
+        coninhcount=0,
+        child_namespace="public",
+        child_name="demo_collector_current_revision_lineages",
+        child_owner=24,
+        child_column_number=15,
+        child_column_name="custody_id",
+        child_column_type="character varying(32)",
+        child_column_notnull=True,
+        child_identity="",
+        child_generated="",
+        target_column_number=1,
+        target_column_name="bundle_id",
+        target_column_type="character varying(32)",
+        target_column_notnull=True,
+        target_identity="",
+        target_generated="",
+        matching_collation=True,
+        index_oid=300,
+        expected_index_oid=300,
+        parent_pk_name="pk_public_runtime_raw_bundles_v1",
+        parent_pk_validated=True,
+        index_owner=24,
+        index_name="pk_public_runtime_raw_bundles_v1",
+        index_namespace="public",
+        index_table_oid=100,
+        indisunique=True,
+        indisprimary=True,
+        indisvalid=True,
+        indisready=True,
+        indislive=True,
+        plain_index=True,
+        single_key_index=True,
+    )
+    native = [
+        SimpleNamespace(
+            tgname=f"RI_ConstraintTrigger_a_{oid}",
+            tgtype=kind,
+            tgenabled="O",
+            tgisinternal=True,
+            tgconstraint=200,
+            tgnargs=0,
+            tgargs=b"",
+            qualification=None,
+            tgoldtable=None,
+            tgnewtable=None,
+            proname=function,
+            nspname="pg_catalog",
+            trigger_oid=oid,
+            relation_oid=100,
+            other_oid=101,
+            tgdeferrable=False,
+            tginitdeferred=False,
+            attribute_numbers="",
+            parent_trigger_oid=0,
+            function_oid=expected,
+            expected_function_oid=expected,
+        )
+        for oid, kind, function, expected in (
+            (401, 9, "RI_FKey_restrict_del", 501),
+            (402, 17, "RI_FKey_noaction_upd", 502),
+        )
+    ]
+    return role, functions, [*triggers, *native], [incoming], columns, constraints
+
+
+def test_declared_0053_native_RI_pair_is_distinct_from_original_three_user_triggers():
+    items = _declared_native_0053_ri_catalog()
+    fingerprint = asyncio.run(_run_catalog(items, migration_head="0053"))
+    assert len(fingerprint) == 64
+    assert fingerprint != asyncio.run(_run_catalog(_catalog()))
+    assert len([row for row in items[2] if row.tgisinternal is False]) == 3
+    assert {row.tgenabled for row in items[2] if row.tgisinternal} == {"O"}
+
+
+def test_every_other_incoming_reference_is_rejected_instead_of_filtered():
+    items = _declared_native_0053_ri_catalog()
+    items[3].append(SimpleNamespace(lineage_oid=101, constraint_oid=999))
+    with pytest.raises(custody.RuntimeBundleCustodyError):
+        asyncio.run(_run_catalog(items, migration_head="0053"))
+
+
+def _declared_native_0054_ri_catalog():
+    """Synthetic catalog DTO only; actual54 PG must prove the relationships."""
+    role, functions, triggers, incoming, columns, constraints = (
+        _declared_native_0053_ri_catalog()
+    )
+    second = SimpleNamespace(**vars(incoming[0]))
+    second.lineage_oid = second.child_oid = 102
+    second.constraint_oid = 201
+    second.conname = "fk_collector_issued_hwm_custody"
+    second.child_name = "demo_collector_issued_account_revisions"
+    second.child_column_number = 16
+    second.child_column_name = "hwm_custody_id"
+    second.conkey = [16]
+    native = []
+    for original in triggers[-2:]:
+        row = SimpleNamespace(**vars(original))
+        row.trigger_oid += 2
+        row.tgname = "RI_ConstraintTrigger_a_" + str(row.trigger_oid)
+        row.tgconstraint = 201
+        row.other_oid = 102
+        native.append(row)
+    return (
+        role,
+        functions,
+        [*triggers, *native],
+        [*incoming, second],
+        columns,
+        constraints,
+    )
+
+
+def test_current54_requires_exact_both_FKs_and_all_four_parent_actions():
+    value = _declared_native_0054_ri_catalog()
+    actual = asyncio.run(_run_catalog(value, migration_head="0054"))
+    assert len(actual) == 64
+    assert actual != asyncio.run(
+        _run_catalog(_declared_native_0053_ri_catalog(), migration_head="0053")
+    )
+    with pytest.raises(custody.RuntimeBundleCustodyError):
+        asyncio.run(_run_catalog(value, migration_head="0053"))
+    with pytest.raises(custody.RuntimeBundleCustodyError):
+        asyncio.run(
+            _run_catalog(_declared_native_0053_ri_catalog(), migration_head="0054")
+        )
+
+
+@pytest.mark.parametrize("head", ["0055", "", 54, False])
+def test_unknown_actual_version_has_no_custody_fallback(head):
+    with pytest.raises(custody.RuntimeBundleCustodyError):
+        asyncio.run(_run_catalog(_catalog(), migration_head=head))
+
+
+def test_missing_version_with_other_public_relations_is_not_standalone():
+    with pytest.raises(custody.RuntimeBundleCustodyError):
+        asyncio.run(
+            _run_catalog(
+                _catalog(),
+                migration_head=None,
+                head_layout={"has_version": False, "standalone_only": False},
+            )
+        )
+
+
+def test_explicit_standalone_component_never_claims_a_migration_revision():
+    standalone = asyncio.run(_run_catalog(_catalog(), migration_head=None))
+    versioned = asyncio.run(_run_catalog(_catalog(), migration_head="0052"))
+    assert len(standalone) == len(versioned) == 64
+    assert standalone != versioned
+
+
+def test_version53_missing_its_relation_cannot_use_absent_predecessor_profile():
+    with pytest.raises(custody.RuntimeBundleCustodyError):
+        asyncio.run(_run_catalog(_catalog(), migration_head="0053"))
+
+
+def test_current54_wrong_issuer_FK_column_is_rejected():
+    value = _declared_native_0054_ri_catalog()
+    value[3][1].conkey = [15]
+    value[3][1].child_column_number = 15
+    with pytest.raises(custody.RuntimeBundleCustodyError):
+        asyncio.run(_run_catalog(value, migration_head="0054"))
+
+
+def test_current54_extra_internal_trigger_or_third_reference_is_not_filtered():
+    value = _declared_native_0054_ri_catalog()
+    extra = SimpleNamespace(**vars(value[2][-1]))
+    extra.trigger_oid = 999
+    extra.tgname = "RI_ConstraintTrigger_a_999"
+    value[2].append(extra)
+    with pytest.raises(custody.RuntimeBundleCustodyError):
+        asyncio.run(_run_catalog(value, migration_head="0054"))
+
+
+def test_absent0053_requires_zero_internal_triggers_and_zero_incoming_FK():
+    absent = _catalog()
+    native = _declared_native_0053_ri_catalog()[2][-1]
+    absent[2].append(native)
+    with pytest.raises(custody.RuntimeBundleCustodyError):
+        asyncio.run(_run_catalog(absent))
+    absent = _catalog()
+    absent[3][0].constraint_oid = 999
+    with pytest.raises(custody.RuntimeBundleCustodyError):
+        asyncio.run(_run_catalog(absent))
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    (
+        ("function_oid", 999),
+        ("tgenabled", "D"),
+        ("qualification", "false"),
+        ("tgargs", b"unapproved"),
+        ("relation_oid", 101),
+        ("tgconstraint", 999),
+        ("tgname", "renamed_native_action"),
+    ),
+)
+def test_native_RI_relationship_or_function_drift_remains_fail_closed(field, value):
+    items = _declared_native_0053_ri_catalog()
+    setattr(items[2][-1], field, value)
+    with pytest.raises(custody.RuntimeBundleCustodyError):
+        asyncio.run(_run_catalog(items, migration_head="0053"))
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    (
+        ("child_owner", 999),
+        ("child_name", "other_table"),
+        ("conkey", [16]),
+        ("delete_action", "c"),
+        ("convalidated", False),
+        ("condeferrable", True),
+        ("expected_index_oid", 999),
+    ),
+)
+def test_0053_FK_owner_columns_actions_validation_and_index_are_exact(field, value):
+    items = _declared_native_0053_ri_catalog()
+    setattr(items[3][0], field, value)
+    with pytest.raises(custody.RuntimeBundleCustodyError):
+        asyncio.run(_run_catalog(items, migration_head="0053"))
+
+
+def test_same_semantic_FK_and_RI_recreation_changes_deployment_identity():
+    old = _declared_native_0053_ri_catalog()
+    changed = _declared_native_0053_ri_catalog()
+    changed[3][0].constraint_oid = 210
+    for row in changed[2][-2:]:
+        row.tgconstraint = 210
+        row.trigger_oid += 20
+        row.tgname = f"RI_ConstraintTrigger_a_{row.trigger_oid}"
+    assert asyncio.run(_run_catalog(old, migration_head="0053")) != asyncio.run(
+        _run_catalog(changed, migration_head="0053")
+    )
+
+
+def test_unknown_extra_user_trigger_is_still_rejected_with0053_present():
+    items = _declared_native_0053_ri_catalog()
+    items[2].append(SimpleNamespace(tgisinternal=False, tgname="unapproved_extra_user"))
+    with pytest.raises(custody.RuntimeBundleCustodyError):
+        asyncio.run(_run_catalog(items, migration_head="0053"))

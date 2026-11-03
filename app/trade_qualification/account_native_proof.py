@@ -418,7 +418,7 @@ def _source(chain, scope, *, proof_schema=SCHEMA):
         journal.JournalReadback(point.event, point.db_recorded_at, point.readback_at)
     reference = observed.source_reference(chain)
     if proof_schema == SCHEMA:
-        history.verify_history_query_chain(chain, **observed._pins(reference, scope))
+        history._verify_original_page_query(chain, **observed._pins(reference, scope))
         expected_plan = capture.AllProductDemoAccountCapturePlan
     elif proof_schema == ALGO_V6_SCHEMA:
         history.verify_algo_history_query_chain_v6(
@@ -456,7 +456,12 @@ def _source(chain, scope, *, proof_schema=SCHEMA):
     packets = tuple(
         point.event.packet_payload for point in chain if point.event.packet_payload
     )
-    packet = capture.verify_demo_account_packet(
+    packet_verifier = (
+        capture._verify_original_page_packet
+        if proof_schema == SCHEMA
+        else capture.verify_demo_account_packet
+    )
+    packet = packet_verifier(
         packets[0],
         expected_sha256=reference.packet_sha256,
         expected_plan_sha256=reference.plan_sha256,

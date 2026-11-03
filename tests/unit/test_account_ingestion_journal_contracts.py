@@ -958,3 +958,376 @@ async def test_failed_eof_clock_preserves_observed_exhaustion_without_inventing_
     assert any(item.event.raw_body == harness.streams[0].body for item in events)
     assert not any(item.event.packet_payload for item in events)
     assert records(events)[-1]["outcome"] == "failed"
+
+
+# These cases execute the real locked-read method and JournalReadback checks.
+# SQL result providers and all event bytes are explicitly synthetic. The first
+# case delegates its one receipt measurement to the unchanged real native clock;
+# it still does not establish PostgreSQL, TLS, account or source qualification.
+def _batch_receipt_rows():
+    from datetime import UTC
+
+    from app.database.models.account_capture_journal import DemoAccountCaptureEvent
+    from app.trade_qualification.reservations import LedgerScope
+
+    base = datetime(2026, 1, 1, tzinfo=UTC)
+    scope = LedgerScope(account_id="123456789", settlement_currency="USDT")
+    capture_id = "b" * 32
+    values = (
+        (
+            "capture_start",
+            {"raw_retention": "not_read", "source_state": "not_requested"},
+            None,
+            None,
+        ),
+        (
+            "raw_finalized",
+            {"raw_retention": "durable_secret_checked"},
+            b'{"declared_synthetic_body":true}',
+            None,
+        ),
+        ("packet_recorded", {}, None, b'{"declared_synthetic_packet":true}'),
+    )
+    rows, originals = [], []
+    previous, chain_bytes = None, 0
+    for index, (kind, data, raw_body, packet_payload) in enumerate(values, 1):
+        event = journal._JournalEvent(
+            journal._ISSUER,
+            journal.canonical(
+                {
+                    "version": "ctcc.demo_account_ingestion_event.v1",
+                    "capture_id": capture_id,
+                    "sequence": index,
+                    "previous_sha256": previous,
+                    "kind": kind,
+                    "outcome": "in_progress",
+                    "observed_at": (base + timedelta(microseconds=index)).isoformat(),
+                    "data": data,
+                    "raw_sha256": None
+                    if raw_body is None
+                    else journal.digest(raw_body),
+                    "packet_sha256": None
+                    if packet_payload is None
+                    else journal.digest(packet_payload),
+                    "account_complete": False,
+                    "execution_authority": False,
+                    "admission": "DENY",
+                }
+            ),
+            raw_body,
+            packet_payload,
+        )
+        chain_bytes += (
+            len(event.event_json) + len(raw_body or b"") + len(packet_payload or b"")
+        )
+        rows.append(
+            DemoAccountCaptureEvent(
+                environment=scope.environment,
+                account_id=scope.account_id,
+                settlement_currency=scope.settlement_currency,
+                capture_id=capture_id,
+                sequence=index,
+                previous_sha256=previous,
+                chain_bytes=chain_bytes,
+                event_sha256=journal.digest(event.event_json),
+                event_json=event.event_json.decode("utf-8"),
+                raw_body=raw_body,
+                packet_payload=packet_payload,
+                db_recorded_at=base + timedelta(milliseconds=index),
+            )
+        )
+        originals.append(event)
+        previous = journal.digest(event.event_json)
+    return scope, capture_id, rows, tuple(originals), base + timedelta(seconds=1)
+
+
+class _BatchReadResult:
+    def __init__(self, rows, trace):
+        self.rows, self.trace = rows, trace
+
+    def all(self):
+        self.trace.append("rows_materialized")
+        return self.rows
+
+
+class _BatchReadSession:
+    def __init__(self, rows, trace):
+        self.rows, self.trace, self.calls = rows, trace, 0
+
+    async def scalars(self, statement):
+        self.calls += 1
+        assert statement._limit_clause.value == journal.MAX_EVENTS + 1
+        self.trace.append("query_started")
+        await asyncio.sleep(0)
+        self.trace.append("query_received")
+        return _BatchReadResult(self.rows, self.trace)
+
+
+def _batch_source_bytes(rows):
+    return tuple(
+        (
+            row.event_json,
+            row.raw_body,
+            row.packet_payload,
+            row.db_recorded_at,
+            row.chain_bytes,
+            row.sequence,
+            row.previous_sha256,
+            row.event_sha256,
+        )
+        for row in rows
+    )
+
+
+def _batch_declared_last_row(rows, **changes):
+    # This builds a NEW synthetic damaged input vector before the read. It never
+    # changes any previously accepted real source, clock or persisted journal.
+    row = rows[-1]
+    record = json.loads(row.event_json)
+    record.update(changes)
+    raw = journal.canonical(record)
+    row.event_json, row.event_sha256 = raw.decode("utf-8"), journal.digest(raw)
+    row.sequence, row.previous_sha256 = record["sequence"], record["previous_sha256"]
+    total = 0
+    for item in rows:
+        total += (
+            len(item.event_json.encode("utf-8"))
+            + len(item.raw_body or b"")
+            + len(item.packet_payload or b"")
+        )
+        item.chain_bytes = total
+
+
+@pytest.mark.asyncio
+async def test_locked_batch_read_measures_one_real_native_receipt_after_materialization_before_validation(
+    monkeypatch,
+):
+    from app.domain import native_clock
+    from app.domain.source_primitives import utc_from_ns
+
+    scope, capture_id, rows, originals, _declared_receipt = _batch_receipt_rows()
+    trace, samples = [], []
+    session = _BatchReadSession(rows, trace)
+    before = _batch_source_bytes(rows)
+    real_event = AccountCaptureJournalRepository._event
+
+    def clock():
+        assert trace == ["query_started", "query_received", "rows_materialized"]
+        trace.append("receipt_clock")
+        # No retry, fallback, synthetic now or clock-primitive replacement.
+        value = utc_from_ns(native_clock.native_stamp()["utc_ns"])
+        samples.append(value)
+        return value
+
+    def check_row(row, received_scope):
+        assert len(samples) == 1 and "receipt_clock" in trace
+        trace.append("row_validation")
+        return real_event(row, received_scope)
+
+    monkeypatch.setattr(
+        AccountCaptureJournalRepository, "_event", staticmethod(check_row)
+    )
+    repository = AccountCaptureJournalRepository(None, clock=clock)
+    result = await repository._read_chain_locked(session, scope, capture_id)
+    assert session.calls == len(samples) == 1
+    assert trace.count("row_validation") == len(rows)
+    assert tuple(item.event for item in result) == originals
+    assert all(item.readback_at == samples[0] for item in result)
+    assert tuple(item.db_recorded_at for item in result) == tuple(
+        row.db_recorded_at for row in rows
+    )
+    assert _batch_source_bytes(rows) == before
+    assert all(
+        json.loads(item.receipt_json)["execution_authority"] is False for item in result
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "defect",
+    [
+        "sequence_gap",
+        "predecessor",
+        "event_sha",
+        "raw_conflict",
+        "packet_conflict",
+        "chain_bytes",
+        "db_regression",
+        "future_event",
+        "future_metadata",
+    ],
+)
+async def test_locked_batch_read_keeps_every_original_chain_byte_and_causal_guard(
+    defect,
+):
+    scope, capture_id, rows, _originals, receipt = _batch_receipt_rows()
+    if defect == "sequence_gap":
+        _batch_declared_last_row(rows, sequence=4)
+    elif defect == "predecessor":
+        _batch_declared_last_row(rows, previous_sha256="e" * 64)
+    elif defect == "event_sha":
+        rows[-1].event_sha256 = "f" * 64
+    elif defect == "raw_conflict":
+        rows[1].raw_body = b"declared changed raw bytes"
+    elif defect == "packet_conflict":
+        rows[-1].packet_payload = b"declared changed packet bytes"
+    elif defect == "chain_bytes":
+        rows[-1].chain_bytes += 1
+    elif defect == "db_regression":
+        rows[-1].db_recorded_at = rows[-2].db_recorded_at - timedelta(microseconds=1)
+    elif defect == "future_event":
+        _batch_declared_last_row(
+            rows, observed_at=(receipt + timedelta(microseconds=1)).isoformat()
+        )
+    else:
+        _batch_declared_last_row(
+            rows,
+            data={
+                "body_completed_at": (receipt + timedelta(microseconds=1)).isoformat()
+            },
+        )
+    before = _batch_source_bytes(rows)
+    trace, clocks = [], []
+
+    def clock():
+        assert trace == ["query_started", "query_received", "rows_materialized"]
+        clocks.append(receipt)
+        return receipt
+
+    session = _BatchReadSession(rows, trace)
+    repository = AccountCaptureJournalRepository(None, clock=clock)
+    result = None
+    with pytest.raises(journal.AccountJournalError):
+        result = await repository._read_chain_locked(session, scope, capture_id)
+    assert result is None and len(clocks) == session.calls == 1
+    assert _batch_source_bytes(rows) == before
+
+
+@pytest.mark.asyncio
+async def test_locked_batch_read_future_database_time_cannot_be_rescued_by_later_row_clock():
+    scope, capture_id, rows, _originals, receipt = _batch_receipt_rows()
+    rows[-1].db_recorded_at = receipt + timedelta(milliseconds=500)
+    before = _batch_source_bytes(rows)
+    trace, clocks = [], []
+
+    def clock():
+        # The old per-row third clock would be later than the damaged last row.
+        # The DB-body receipt is the first actual measurement and must govern all.
+        value = receipt + timedelta(seconds=len(clocks))
+        clocks.append(value)
+        return value
+
+    session = _BatchReadSession(rows, trace)
+    repository = AccountCaptureJournalRepository(None, clock=clock)
+    result = None
+    with pytest.raises(
+        journal.AccountJournalError, match="^journal_receipt_clock_order$"
+    ):
+        result = await repository._read_chain_locked(session, scope, capture_id)
+    assert result is None and clocks == [receipt] and session.calls == 1
+    assert _batch_source_bytes(rows) == before
+
+
+@pytest.mark.asyncio
+async def test_locked_batch_read_first_uncertain_clock_rejects_whole_without_retry_or_validation(
+    monkeypatch,
+):
+    from app.domain.source_primitives import PublicReceiptError
+
+    scope, capture_id, rows, _originals, receipt = _batch_receipt_rows()
+    trace, clocks, validated = [], [], []
+    uncertain = PublicReceiptError("native_clock_sample_unbounded")
+    real_event = AccountCaptureJournalRepository._event
+
+    def clock():
+        assert trace == ["query_started", "query_received", "rows_materialized"]
+        clocks.append(True)
+        if len(clocks) == 1:
+            raise uncertain
+        return receipt  # A second measurement must never be attempted.
+
+    def check_row(row, received_scope):
+        validated.append(True)
+        return real_event(row, received_scope)
+
+    monkeypatch.setattr(
+        AccountCaptureJournalRepository, "_event", staticmethod(check_row)
+    )
+    session = _BatchReadSession(rows, trace)
+    repository = AccountCaptureJournalRepository(None, clock=clock)
+    result = None
+    with pytest.raises(PublicReceiptError) as rejected:
+        result = await repository._read_chain_locked(session, scope, capture_id)
+    assert rejected.value is uncertain
+    assert (
+        result is None and clocks == [True] and validated == [] and session.calls == 1
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("population", ["empty", "too_many"])
+async def test_locked_batch_read_population_bound_denies_before_any_receipt_clock(
+    population,
+):
+    scope, capture_id, rows, _originals, _receipt = _batch_receipt_rows()
+    rows = [] if population == "empty" else [rows[0]] * (journal.MAX_EVENTS + 1)
+    trace = []
+
+    def clock():
+        pytest.fail("invalid_population_reached_receipt_clock")
+
+    session = _BatchReadSession(rows, trace)
+    repository = AccountCaptureJournalRepository(None, clock=clock)
+    with pytest.raises(
+        journal.AccountJournalError, match="^journal_capture_missing_or_bound$"
+    ):
+        await repository._read_chain_locked(session, scope, capture_id)
+    assert session.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_locked_batch_read_query_failure_has_no_receipt_measurement_or_partial_result():
+    scope, capture_id, _rows, _originals, _receipt = _batch_receipt_rows()
+    failure = RuntimeError("declared synthetic query failure")
+    calls = []
+
+    class FailedSession:
+        async def scalars(self, _statement):
+            calls.append(True)
+            raise failure
+
+    def clock():
+        pytest.fail("uncertain_database_read_reached_receipt_clock")
+
+    repository = AccountCaptureJournalRepository(None, clock=clock)
+    result = None
+    with pytest.raises(RuntimeError) as rejected:
+        result = await repository._read_chain_locked(FailedSession(), scope, capture_id)
+    assert result is None and rejected.value is failure and calls == [True]
+
+
+@pytest.mark.asyncio
+async def test_locked_batch_read_incomplete_materialization_has_no_receipt_or_partial_result():
+    scope, capture_id, _rows, _originals, _receipt = _batch_receipt_rows()
+    failure = RuntimeError("declared synthetic body materialization failure")
+    trace = []
+
+    class FailedResult:
+        def all(self):
+            trace.append("incomplete_materialization")
+            raise failure
+
+    class BodySession:
+        async def scalars(self, _statement):
+            trace.append("query_received")
+            return FailedResult()
+
+    def clock():
+        pytest.fail("incomplete_materialization_reached_receipt_clock")
+
+    repository = AccountCaptureJournalRepository(None, clock=clock)
+    result = None
+    with pytest.raises(RuntimeError) as rejected:
+        result = await repository._read_chain_locked(BodySession(), scope, capture_id)
+    assert result is None and rejected.value is failure
+    assert trace == ["query_received", "incomplete_materialization"]

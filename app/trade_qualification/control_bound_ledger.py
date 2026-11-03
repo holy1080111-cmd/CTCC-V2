@@ -87,6 +87,21 @@ def _packet_session_sha256(packet_json, packet_sha256, plan_sha256):
 
 
 def _guard_request_session(request, state, *, now):
+    from app.trade_qualification import native_ledger_contracts_v2 as native
+
+    if native.is_native_request(request):
+        request = native.checked_request(request)
+        if request.credential_session_sha256 != state.pins.credential_session_sha256:
+            _deny("bound_control_account_session_conflict")
+        proof = json.loads(request.r7_proof_json)
+        if (
+            not request.origin.publication_completed_at
+            < datetime.fromisoformat(proof["observed_at"])
+            <= now
+            < request.origin.deadline
+        ):
+            _deny("bound_control_native_packet_causality_invalid")
+        return
     if type(request) is ledger.ReservationRequestV2:
         _deny("bound_control_account_session_binding_missing")
     if type(request) is ledger.ReservationRequestV3:
@@ -285,18 +300,28 @@ def _assemble_control_bound_intent(
 ):
     """Join already replayed inputs within one public call; never a permit."""
     inner_document = json.loads(replayed.canonical_json)
-    if inner_document["version"] != VERSION_V2:
+    from app.trade_qualification import native_ledger_contracts_v2 as native
+
+    is_native = native.is_native_request(request)
+    if inner_document["version"] != (
+        native.INTENT_VERSION if is_native else VERSION_V2
+    ):
         _deny("bound_control_v2_intent_required")
     reserved, prior_state, prior_event = replay_reserved_evidence(reserved_raw, request)
     control.checked(state, control.ControlState)
     state_json = control.canonical(control.document(state))
     _state_for_request(state_json, event_sha256, request, consumed.updated_at)
     binding = inner_document["execution_binding"]
-    if state.pins.credential_session_sha256 != _packet_session_sha256(
-        binding["account_packet_json"],
-        binding["account_packet_sha256"],
-        binding["account_plan_sha256"],
-    ):
+    session_sha = (
+        request.credential_session_sha256
+        if is_native
+        else _packet_session_sha256(
+            binding["account_packet_json"],
+            binding["account_packet_sha256"],
+            binding["account_plan_sha256"],
+        )
+    )
+    if state.pins.credential_session_sha256 != session_sha:
         _deny("bound_control_account_session_conflict")
     if (
         state_json != control.canonical(control.document(prior_state))

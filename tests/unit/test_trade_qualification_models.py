@@ -371,3 +371,42 @@ def test_drift_and_rr_are_independent_of_ambient_decimal_context(precision, roun
         }
         with pytest.raises(ValidationError, match="entry zone"):
             EntryQualificationResult(**borderline)
+
+
+def test_frozen_gate_measurements_revalidate_without_mutability_or_type_loss():
+    from types import MappingProxyType
+
+    actual = gate(
+        QualificationGate.DATA,
+        measured_values={"decimal": D("1.25"), "flag": False, "unknown": None},
+    )
+    replay = GateAssessment.model_validate(actual, strict=True)
+    assert replay == actual
+    assert type(replay.measured_values) is MappingProxyType
+    assert type(replay.measured_values["decimal"]) is D
+    assert replay.measured_values["flag"] is False
+    assert replay.measured_values["unknown"] is None
+    with pytest.raises(TypeError):
+        replay.measured_values["flag"] = True
+    result = EntryQualificationResult(**inputs())
+    assert EntryQualificationResult.model_validate(result, strict=True) == result
+
+
+@pytest.mark.parametrize(
+    "bad",
+    (
+        {},
+        {"bad": D("NaN")},
+        {"bad": {"type": "decimal", "value": "1.25"}},
+        {"bad": "x" * 513},
+        {"bad": 10**41},
+        {str(n): True for n in range(33)},
+    ),
+)
+def test_frozen_measurement_proxy_cannot_skip_any_original_contract(bad):
+    from types import MappingProxyType
+
+    actual = gate(QualificationGate.DATA)
+    forged = actual.model_copy(update={"measured_values": MappingProxyType(bad)})
+    with pytest.raises(ValidationError):
+        GateAssessment.model_validate(forged, strict=True)

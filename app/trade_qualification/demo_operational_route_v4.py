@@ -666,6 +666,12 @@ async def probe_initial_demo_operational_route_v4(
             "headers_received": headers,
             "body_completed": body_completed,
             "raw": bytes(raw),
+            # Private memory only; later phases must scan earlier source bytes
+            # against every signature actually learned in this invocation.
+            "secret_tokens": (
+                *collector._credential_values(session._credentials)[:3],
+                _signature,
+            ),
             "peer_sha256": peer_sha256,
             "request_start_ns": started["utc_ns"],
             "headers_received_ns": headers["utc_ns"],

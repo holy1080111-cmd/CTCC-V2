@@ -432,7 +432,7 @@ def _replay(sources, scope, window, policy_pin, *, adjacent=True, source_ts_v2=F
         verifier = (
             query.verify_history_query_chain_v2
             if source_ts_v2
-            else query.verify_history_query_chain
+            else query._verify_original_page_query
         )
         verified = verifier(chain, **pins)
         value = json.loads(verified.receipt_json)
@@ -551,7 +551,12 @@ def _replay(sources, scope, window, policy_pin, *, adjacent=True, source_ts_v2=F
         packet_payload = next(
             item.event.packet_payload for item in chain if item.event.packet_payload
         )
-        packet = capture.verify_demo_account_packet(
+        packet_verifier = (
+            capture.verify_demo_account_packet
+            if source_ts_v2
+            else capture._verify_original_page_packet
+        )
+        packet = packet_verifier(
             packet_payload,
             expected_sha256=reference.packet_sha256,
             expected_plan_sha256=reference.plan_sha256,

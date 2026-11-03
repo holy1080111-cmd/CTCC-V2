@@ -14,6 +14,8 @@ from tests.unit.qualification_range_v5_fixtures import range_v5_ledger_fixture
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 database = shared.database
+controlled_current55_database = shared.controlled_current55_database
+ledger_database = shared.ledger_database
 
 
 @pytest.fixture(params=("long", "short"))
@@ -23,16 +25,21 @@ def chain(request, database, monkeypatch):
     )[:2]
 
 
-async def test_computational_pass_cannot_create_durable_reservation(database, chain):
+async def test_computational_pass_cannot_create_durable_reservation(
+    ledger_database, chain
+):
     fixture, _ = chain
-    repo, clock = await shared.initialize(database, fixture)
+    repo, clock = await shared.initialize(ledger_database, fixture)
     recorded = _document(
         fixture.request.replay_binding.recheck_json, RecordedRecheckAssessment
     )
     assert recorded.computational_checks_passed
     assert recorded.runtime_admissible is False
     assert recorded.source_authenticity_verified is False
-    for restarted in (repo, QualificationLedgerRepository(database[1], clock=clock)):
+    for restarted in (
+        repo,
+        QualificationLedgerRepository(ledger_database[1], clock=clock),
+    ):
         with pytest.raises(
             QualificationLedgerError, match="ledger_recheck_runtime_authority_missing"
         ):
@@ -47,10 +54,10 @@ async def test_computational_pass_cannot_create_durable_reservation(database, ch
 
 
 async def test_caller_pass_flag_and_valid_offline_replay_both_fail_closed(
-    database, chain
+    ledger_database, chain
 ):
     fixture, _ = chain
-    repo, _ = await shared.initialize(database, fixture)
+    repo, _ = await shared.initialize(ledger_database, fixture)
     forged = fixture.request.model_copy(
         update={
             "replay_binding": fixture.request.replay_binding.model_copy(
@@ -69,10 +76,10 @@ async def test_caller_pass_flag_and_valid_offline_replay_both_fail_closed(
 
 
 async def test_positive_r7_alone_cannot_promote_caller_account_revision(
-    database, chain, monkeypatch
+    ledger_database, chain, monkeypatch
 ):
     fixture, _ = chain
-    repo, _ = await shared.initialize(database, fixture)
+    repo, _ = await shared.initialize(ledger_database, fixture)
     # Adversarially bypass the separate, currently hard-denied R7 check. The
     # account source boundary must still prevent any durable reservation.
     monkeypatch.setattr(

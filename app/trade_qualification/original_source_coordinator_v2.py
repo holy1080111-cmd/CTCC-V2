@@ -1425,6 +1425,18 @@ async def _capture_owned_original_bracket_for_boundary_v11(
     )
 
 
+def continue_owned_original_local_gates_v13(original_prefix_owner):
+    """Continue the actual held source through local G6–G10, not a receipt.
+
+    The called boundary MOVEs before returning its one-use awaitable. A partial
+    owner/result never supplies the missing genuine G11 account/risk producer,
+    G12 publication, risk reservation, durable intent or a transport permit.
+    """
+    from app.trade_qualification import owned_current_original_prefix_v1 as prefix
+
+    return prefix.continue_owned_original_local_gates_v13(original_prefix_owner)
+
+
 async def _capture_owned_original_bracket_journal_for_boundary_v12(
     public_root,
     account_root,

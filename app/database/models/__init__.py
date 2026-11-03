@@ -6,6 +6,9 @@ from app.database.models.account_history_partition import (
     DemoAccountHistoryNativeMember,
     DemoAccountHistoryPartitionCheckpoint,
 )
+from app.database.models.account_issued_revision import (
+    DemoCollectorIssuedAccountRevision,
+)
 from app.database.models.account_measured_hwm_v2 import DemoAccountMeasuredHWMV2
 from app.database.models.account_observation_index import (
     DemoAccountObservationBatch,
@@ -18,6 +21,9 @@ from app.database.models.account_observation_index_typed import (
     DemoAccountObservationTypedCoverage,
     DemoAccountObservationTypedFact,
     DemoAccountObservationTypedFinding,
+)
+from app.database.models.account_revision_collector_lineage import (
+    DemoCollectorCurrentRevisionLineage,
 )
 from app.database.models.account_revision_source_witness import (
     DemoAccountRevisionSourceWitness,
@@ -38,6 +44,10 @@ from app.database.models.demo_automation import (
 )
 from app.database.models.demo_control import DemoAccountControl, DemoControlJournal
 from app.database.models.demo_event_history_epoch import DemoEventHistoryEpochEvent
+from app.database.models.demo_operator_acknowledgements_v55 import (
+    DemoControlClearAcknowledgementV2,
+    DemoPolicyCounterInitializationV1,
+)
 from app.database.models.g12_invocation_custody import (
     G12InvocationClaim,
     G12InvocationPublication,
@@ -54,6 +64,11 @@ from app.database.models.gate3_capture_schedule_publication_ack import (
 from app.database.models.gate3_preregistration_seal import (
     Gate3PreregistrationSeal,
     Gate3PreregistrationSealAck,
+)
+from app.database.models.native_leverage_configuration import (
+    NativeLeverageConfigurationAttemptV1,
+    NativeLeverageConfigurationIntentV1,
+    NativeLeverageConfigurationResultV1,
 )
 from app.database.models.observability import DemoObservabilityEvent, DemoSoakSession
 from app.database.models.okx_demo import (
@@ -147,6 +162,9 @@ __all__ = [
     "DemoAutomationFingerprint",
     "DemoAutomationRun",
     "DemoAutomationState",
+    "DemoCollectorCurrentRevisionLineage",
+    "DemoCollectorIssuedAccountRevision",
+    "DemoControlClearAcknowledgementV2",
     "DemoControlJournal",
     "DemoControlledWriterCoverageJournal",
     "DemoControlledWriterCoverageScope",
@@ -154,6 +172,7 @@ __all__ = [
     "DemoEventHistoryEpochEvent",
     "DemoObservabilityEvent",
     "DemoPerformanceSnapshot",
+    "DemoPolicyCounterInitializationV1",
     "DemoSoakSession",
     "DemoStrategyControl",
     "Fill",
@@ -167,6 +186,9 @@ __all__ = [
     "Gate3PreregistrationSeal",
     "Gate3PreregistrationSealAck",
     "MarketSnapshot",
+    "NativeLeverageConfigurationAttemptV1",
+    "NativeLeverageConfigurationIntentV1",
+    "NativeLeverageConfigurationResultV1",
     "OkxDemoAlgoOrderState",
     "OkxDemoBalanceState",
     "OkxDemoOrderState",

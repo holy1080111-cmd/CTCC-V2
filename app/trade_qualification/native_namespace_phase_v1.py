@@ -392,6 +392,53 @@ def join_owned_native_namespace_phase_v1(previous_owner, current_coverage_owner)
     return wrapper
 
 
+def _take_native_namespace_history_v1(owner, *, key):
+    """MOVE fresh native phase at call time; destroy its current authority.
+
+    The returned private operands are historical scope/custody only. Old V4
+    source, Control and phase deadlines are retained and are never renewed by
+    a subsequent archival GET stage. No caller DTO or saved row enters here.
+    """
+    from app.trade_qualification.native_namespace_history_source_v1 import (
+        _HOOK_KEY as consumer_key,
+    )
+    from app.trade_qualification.native_namespace_history_source_v1 import (
+        _register_moved_namespace_history_v1,
+    )
+
+    if key is not consumer_key or any(
+        getattr(module, name) is not function for module, name, function in _PINS
+    ):
+        records.deny("namespace_history_original_consumer_required")
+    state = (
+        _OWNERS.pop(owner, None) if type(owner) is OwnedNativeNamespacePhaseV1 else None
+    )
+    if state is None:
+        records.deny("namespace_history_phase_owner_unavailable")
+    try:
+        _historical_context(state["historical"])
+        binding = state["binding"]
+        current, checked = coverage._namespace_phase_state_v1(binding, key=_HOOK_KEY)
+        _same_native_lease(state["historical"], current)
+        result = {
+            "historical": state["historical"],
+            "hops": state["hops"],
+            "current_account": dict(current["account"]),
+            "active": current["active"],
+            "template": dict(current["template"]),
+            "factory": current["factory"],
+            "custody": current["custody"],
+            "source_files": dict(current["source_files"]),
+            "private_root": current["private_root"],
+            "native_root": current["native_root"],
+            "phase_checked": dict(checked),
+        }
+        return _register_moved_namespace_history_v1(result, key=_HOOK_KEY)
+    finally:
+        # This runs before the consumer can create or await a new acquisition.
+        _release(state)
+
+
 def _policy_digest():
     return records.digest(
         records.canonical(
@@ -412,6 +459,11 @@ def _policy_digest():
 
 _POLICY_SHA256 = _policy_digest()
 _PINS = (
+    (
+        sys.modules[__name__],
+        "_take_native_namespace_history_v1",
+        _take_native_namespace_history_v1,
+    ),
     (sys.modules[__name__], "_historical_context", _historical_context),
     (sys.modules[__name__], "_take_previous", _take_previous),
     (sys.modules[__name__], "_release", _release),

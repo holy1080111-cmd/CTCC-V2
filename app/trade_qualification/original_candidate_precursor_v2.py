@@ -56,6 +56,7 @@ from app.trade_qualification.sweep_history_permission import (
     POLICY_ID as SWEEP_HISTORY_POLICY,
 )
 from app.trade_qualification.sweep_history_permission import (
+    SWAP_V2_POLICY_SHA256,
     evaluate_sweep_history_permission,
     verify_sweep_history_permission,
 )
@@ -371,6 +372,59 @@ def _prefix_witness(timeline, detection):
     return output
 
 
+# New owned-family precursor DATA is distinct from the original V2 diagnostic.
+OWNED_POLICY_V3_BYTES = journal.canonical(
+    {
+        **json.loads(POLICY_BYTES),
+        "version": "ctcc.owned_original_candidate_precursor_policy.v3",
+        "sweep_history_policy": "ctcc-sweep-history-protection-swap-vwap-v2",
+        "sweep_history_policy_sha256": SWAP_V2_POLICY_SHA256,
+        "sweep_native_family_calculation": True,
+        "full_qualification": False,
+        "execution_authority": False,
+    }
+)
+OWNED_POLICY_V3_SHA256 = journal.digest(OWNED_POLICY_V3_BYTES)
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class OwnedOriginalCandidatePrecursorV3:
+    """Source-replayable values only; constructing them cannot create an owner."""
+
+    intent: QualificationIntent | None
+    receipt_json: bytes
+
+    @property
+    def receipt_sha256(self):
+        raw, _ = _preflight_owned_precursor_v3(self)
+        return journal.digest(raw)
+
+    @property
+    def execution_authority(self):
+        return False
+
+    @property
+    def original_source_verified(self):
+        return False
+
+
+def _preflight_owned_precursor_v3(value):
+    if type(value) is not OwnedOriginalCandidatePrecursorV3:
+        _deny("owned_precursor_v3_exact_result_required")
+    raw = object.__getattribute__(value, "receipt_json")
+    if type(raw) is not bytes or not 0 < len(raw) <= _MAX_RECEIPT:
+        _deny("owned_precursor_v3_receipt_bytes_bound")
+    intent = _intent_tree(object.__getattribute__(value, "intent"))
+    document = decode(raw, _MAX_RECEIPT)
+    if (
+        journal.canonical(document) != raw
+        or document["schema_version"] != "ctcc.owned_original_candidate_precursor.v3"
+        or document["policy_sha256"] != OWNED_POLICY_V3_SHA256
+    ):
+        _deny("owned_precursor_v3_receipt_changed")
+    return raw, intent
+
+
 def derive_original_candidate_precursor_v2(
     public_packet,
     account_packet,
@@ -418,10 +472,15 @@ def _derive(
     created_at,
     service_deadline,
     policy_pin,
+    *,
+    _owned_family_v3=False,
 ):
+    if type(_owned_family_v3) is not bool:
+        _deny("owned_precursor_v3_purpose_invalid")
+    selected_policy = OWNED_POLICY_V3_SHA256 if _owned_family_v3 else POLICY_SHA256
     if type(strategy) is not str or strategy not in STRATEGY_CATALOG:
         _deny("precursor_v2_strategy_invalid")
-    if type(policy_pin) is not str or policy_pin != POLICY_SHA256:
+    if type(policy_pin) is not str or policy_pin != selected_policy:
         _deny("precursor_v2_policy_mismatch")
     for pin in (public_pin, plan_pin, account_pin, data_pin):
         if type(pin) is not str or _DIGEST.fullmatch(pin) is None:
@@ -471,13 +530,21 @@ def _derive(
     ):
         _deny("precursor_v2_creation_precedes_sources")
     value = {
-        "schema_version": "ctcc.original_candidate_precursor.v2",
-        "policy_sha256": POLICY_SHA256,
+        "schema_version": (
+            "ctcc.owned_original_candidate_precursor.v3"
+            if _owned_family_v3
+            else "ctcc.original_candidate_precursor.v2"
+        ),
+        "policy_sha256": selected_policy,
         "strategy": strategy,
         "selected_engine_adapter": (
             BASE_ENGINE_CONTRACT
             if strategy in _BASE_STRATEGIES
-            else "ctcc-sweep-history-evidence-v1-stage-C-closed"
+            else (
+                "ctcc-sweep-history-swap-v2-owned-family"
+                if _owned_family_v3
+                else "ctcc-sweep-history-evidence-v1-stage-C-closed"
+            )
             if strategy == _SWEEP
             else ENGINE_CONTRACTS[strategy]
         ),
@@ -574,7 +641,11 @@ def _derive(
         encoded = journal.canonical(value)
         if len(encoded) > _MAX_RECEIPT:
             _deny("precursor_v2_receipt_bytes_bound")
-        return OriginalCandidatePrecursorV2(intent, encoded)
+        return (
+            OwnedOriginalCandidatePrecursorV3
+            if _owned_family_v3
+            else OriginalCandidatePrecursorV2
+        )(intent, encoded)
 
     if deadline <= created:
         return finish("CANCEL", "service_deadline_expired")
@@ -656,6 +727,8 @@ def _derive(
                 "observed_at": created,
                 "analysis_version": effective_analysis_version,
             }
+            if _owned_family_v3:
+                inputs["expected_policy_sha256"] = SWAP_V2_POLICY_SHA256
             sweep = evaluate_sweep_history_permission(market, **inputs)
             sweep = verify_sweep_history_permission(sweep, market, **inputs)
             sweep_record = json.loads(sweep.receipt_json)
@@ -784,7 +857,9 @@ def _derive(
         )
     return finish(
         "WAIT",
-        "sweep_stage_C_closed"
+        "owned_family_derived_remaining_native_gates"
+        if _owned_family_v3
+        else "sweep_stage_C_closed"
         if strategy == _SWEEP
         else "precursor_derived_remaining_dependencies_unverified",
         intent,
@@ -824,3 +899,54 @@ def verify_original_candidate_precursor_v2(
     if raw != replayed.receipt_json or intent != _intent_tree(replayed.intent):
         _deny("precursor_v2_original_replay_mismatch")
     return replayed
+
+
+def derive_owned_original_candidate_precursor_v3(
+    public_packet,
+    account_packet,
+    *,
+    strategy,
+    expected_public_bundle_sha256,
+    expected_account_plan_sha256,
+    expected_account_packet_sha256,
+    data_policy,
+    expected_data_policy_sha256,
+    created_at,
+    service_deadline,
+    expected_policy_sha256=OWNED_POLICY_V3_SHA256,
+):
+    """Real raw V2 all-family calculation; values alone grant no native authority."""
+    try:
+        return _derive(
+            public_packet,
+            account_packet,
+            strategy,
+            expected_public_bundle_sha256,
+            expected_account_plan_sha256,
+            expected_account_packet_sha256,
+            data_policy,
+            expected_data_policy_sha256,
+            created_at,
+            service_deadline,
+            expected_policy_sha256,
+            _owned_family_v3=True,
+        )
+    except OriginalCandidatePrecursorV2Error:
+        raise
+    except Exception:  # noqa: BLE001 - raw source/analysis errors never escape this pure boundary.
+        raise OriginalCandidatePrecursorV2Error(
+            "owned_precursor_v3_source_invalid"
+        ) from None
+
+
+def verify_owned_original_candidate_precursor_v3(
+    result, public_packet, account_packet, **inputs
+):
+    """Replay the original actual raw pages and captured cutoffs, never a DTO claim."""
+    raw, intent = _preflight_owned_precursor_v3(result)
+    repeated = derive_owned_original_candidate_precursor_v3(
+        public_packet, account_packet, **inputs
+    )
+    if raw != repeated.receipt_json or intent != _intent_tree(repeated.intent):
+        _deny("owned_precursor_v3_source_replay_changed")
+    return repeated

@@ -1,0 +1,39 @@
+{
+  "schema": "ctcc.root.configured_demo_route_evidence.v2",
+  "reviewed_at_utc": "2026-11-02T08:41:00.5003001Z",
+  "environment": "demo",
+  "configured_rest_origin": "https://openapi.okx.com",
+  "configured_public_ws_origin": "wss://wspap.okx.com",
+  "purpose": "Official configured route selection; fresh same-session authentication and exact account identity independently required",
+  "official_sources": [
+    {
+      "facts": "Global Demo REST uses openapi.okx.com and Demo WS uses wspap.okx.com; signed Demo requests require x-simulated-trading: 1.",
+      "url": "https://www.okx.com/docs-v5/en/"
+    },
+    {
+      "facts": "openapi.okx.com and www.okx.com are functionally identical for global REST; regional domains remain distinct.",
+      "url": "https://www.okx.com/docs-v5/log_en/#2026-05-20"
+    },
+    {
+      "facts": "US/AU accounts registered on app.okx.com use us.okx.com; EU accounts registered on my.okx.com use eea.okx.com.",
+      "url": "https://www.okx.com/docs-v5"
+    }
+  ],
+  "saved_demo_key_UI_readback_sha256": "a7ac7761d6dc4829cac4105f438525089c7202836875703512d566e95b655092",
+  "diagnostic_signed_config_GET_sha256": "22b64602e44fa6b730f9ebf84a6eb70608ef1f270e03e2de738e7da86c42a033",
+  "diagnostic_authenticated_on_selected_route": true,
+  "diagnostic_only": true,
+  "registered_site": null,
+  "registered_site_proven": false,
+  "registration_claim": null,
+  "raw_UID_or_credential_session_exported": false,
+  "historical_diagnostic_can_grant_permission": false,
+  "fresh_same_configured_client_signed_GET_selector_required": true,
+  "formal_full_raw_native_CURRENT_independent_identity_replay_required": true,
+  "no_automatic_region_fallback": true,
+  "account_complete": false,
+  "execution_authority": false,
+  "Arm": false,
+  "order_writes": 0,
+  "CTCC_V2_FINAL_COMPLETE": 0
+}

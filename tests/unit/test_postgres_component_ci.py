@@ -248,7 +248,7 @@ def test_actual_post_common_driver_runs_exact_role_and_original_finally(
             if call[0] == "migration-history-partition-nonempty-denial"
         )
         assert denial[1] == ["alembic", "downgrade", "0049"]
-        assert denial[2]["refusal_source_head"] == "0051"
+        assert denial[2]["refusal_source_head"] == "0052"
         assert "extra_environment" not in denial[2]
         child = next(call for call in calls if call[0] == "predecessor-0047-upgrade")
         assert any(
@@ -309,11 +309,20 @@ def test_actual_post_common_finally_refuses_unknown_cleanup_and_retains_failure_
 
 def test_pg2_owns_every_whole_module_and_keeps_both_stateful_anchors_on_zero():
     owned = [selection.postgres_paths(index) for index in range(2)]
-    assert len(selection.POSTGRES_TEST_PATHS) == 65
-    assert [len(paths) for paths in owned] == [33, 32]
+    assert len(selection.POSTGRES_TEST_PATHS) == 68
+    assert [len(paths) for paths in owned] == [35, 33]
     assert not owned[0] & owned[1]
     assert owned[0] | owned[1] == selection.POSTGRES_TEST_PATHS
     assert selection.POSTGRES_ANCHOR_PATHS <= owned[0]
+    new_original_frame_owners = {
+        "tests/integration/test_account_history_original_frame_repository_v1.py": 0,
+        "tests/integration/test_account_history_original_native_read_v1.py": 1,
+        "tests/integration/test_original_frame_owner_installation_v1.py": 0,
+    }
+    assert set(new_original_frame_owners) <= selection.POSTGRES_TEST_PATHS
+    assert all(
+        path in owned[index] for path, index in new_original_frame_owners.items()
+    )
     for path in selection.POSTGRES_TEST_PATHS:
         expected = (
             0
@@ -652,8 +661,11 @@ def test_actual_driver_refuses_component_argument_mismatch_before_archive_or_nat
     assert calls == []
 
 
-@pytest.mark.parametrize("damage", ["old_pin", "source_drift", "missing_member"])
-def test_current_linux_diagnostic_consumer_uses_new_driver_pin_and_retains_helper_fix(
+@pytest.mark.parametrize(
+    "damage",
+    ["historical_current_source", "current_source_drift", "current_missing_member"],
+)
+def test_historical_pg51_pin_is_frozen_and_generic_guard_uses_actual_current_bytes(
     damage,
 ):
     root = Path(__file__).resolve().parents[2]
@@ -679,10 +691,15 @@ def test_current_linux_diagnostic_consumer_uses_new_driver_pin_and_retains_helpe
         node.targets[0].slice.value: ast.literal_eval(node.value) for node in pins
     }
     actual = _sha((root / target).read_bytes())
-    assert values[target] == actual
+    # This profile is historical pg51, never current0052 acceptance.
+    assert (
+        values[target]
+        == "dc8e887927052a2b932a12ba8424eb6f926c9ced04b9e6d68f91a8492eb3fcb5"
+    )
+    assert actual != values[target]
     assert (
         values["scripts/native_financial_fixed_node_diagnostics.py"]
-        == "a8318180305b9bfb136f6c43447b586033be6e1ed9e5a42551da93defba8916a"
+        == "071e446016c91549a98420daf7dfa58b201cad7cd713993ea8b91678ca4ca3cd"
     )
     loops = [
         node
@@ -704,17 +721,23 @@ def test_current_linux_diagnostic_consumer_uses_new_driver_pin_and_retains_helpe
     guard = compile(ast.Module(body=[loops[0]], type_ignores=[]), str(producer), "exec")
     scope = {
         "__builtins__": {"ValueError": ValueError},
-        "input_pins": {target: actual},
+        "input_pins": {target: values[target]},
         "files": {target: {"sha256": actual}},
     }
-    exec(guard, scope)  # noqa: S102 -- actual reviewed pure dictionary pin loop only.
-    if damage == "old_pin":
-        scope["input_pins"][target] = (
-            "6b3ed4a605fbfcb6d28d5f5114fedae7bdb9613775c1cf73fcc68a4587cd9d80"
-        )
-    elif damage == "source_drift":
+    if damage == "historical_current_source":
+        # Actual current bytes must be REFUSED by the frozen historical profile.
+        # There is no fake dc8 source metadata or historical-positive assertion.
+        with pytest.raises(ValueError, match="^diagnostic_reviewed_input_changed$"):
+            exec(guard, scope)  # noqa: S102 -- exact original dictionary pin loop only.
+        return
+    # These two cases test the generic guard loop using actual CURRENT bytes as
+    # an explicit pure test policy. They confer no historical profile acceptance.
+    scope["input_pins"][target] = actual
+    exec(guard, scope)  # noqa: S102 -- current-byte baseline for pure loop contract only.
+    if damage == "current_source_drift":
         scope["files"][target]["sha256"] = "0" * 64
     else:
+        assert damage == "current_missing_member"
         del scope["files"][target]
     with pytest.raises(ValueError, match="^diagnostic_reviewed_input_changed$"):
-        exec(guard, scope)  # noqa: S102 -- baseline-first original guard rejection.
+        exec(guard, scope)  # noqa: S102 -- each damage reaches its own generic boundary.  # noqa: S102 -- baseline-first original guard rejection.

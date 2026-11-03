@@ -198,33 +198,58 @@ def _funding_sources(sources, region):
     return result
 
 
-def _witnesses(packets, name, side, opened, closed):
-    witnesses = []
+def _position_observation_rows(packets):
+    """Original page observations only; no packet substitute or new authority."""
+    rows = []
     for packet in packets:
         for page in packet.observations:
-            if (
-                page.request.stream != "positions"
-                or not opened < page.body_completed_at < closed
-            ):
-                continue
-            for row in page.rows:
-                raw = json.loads(row.canonical_json)
-                if raw.get("instId") != name or raw.get("posSide") != side:
-                    continue
-                if _number(raw.get("pos")) == 0:
-                    continue
-                witnesses.append(
-                    {
-                        "raw": raw,
-                        "row_sha256": sha(row.canonical_json.encode()),
-                        "page_receipt_sha256": page.receipt_sha256,
-                        "body_completed_at": page.body_completed_at,
-                    }
-                )
+            if page.request.stream == "positions":
+                for row in page.rows:
+                    rows.append(
+                        {
+                            "raw": json.loads(row.canonical_json),
+                            "row_sha256": sha(row.canonical_json.encode()),
+                            "page_receipt_sha256": page.receipt_sha256,
+                            "body_completed_at": page.body_completed_at,
+                        }
+                    )
+    return rows
+
+
+def _position_witnesses(rows, name, side, opened, closed):
+    witnesses = []
+    for item in rows:
+        if not opened < item["body_completed_at"] < closed:
+            continue
+        raw = item["raw"]
+        if raw.get("instId") != name or raw.get("posSide") != side:
+            continue
+        if _number(raw.get("pos")) == 0:
+            continue
+        witnesses.append(item)
     return witnesses
 
 
+def _witnesses(packets, name, side, opened, closed):
+    return _position_witnesses(
+        _position_observation_rows(packets), name, side, opened, closed
+    )
+
+
 def _run(part, members, packets, position_rows, funding_sources, currency):
+    return _run_with_position_observations(
+        part,
+        members,
+        _position_observation_rows(packets),
+        position_rows,
+        funding_sources,
+        currency,
+    )
+
+
+def _run_with_position_observations(
+    part, members, position_observations, position_rows, funding_sources, currency
+):
     # These remain global obligations. They do not prevent independently
     # corroborating aggregate arithmetic, and are never cleared on old B6.
     reasons = set(part["reasons"]) - {
@@ -256,7 +281,9 @@ def _run(part, members, packets, position_rows, funding_sources, currency):
         and fees is not None
         and not reasons
     ):
-        witnesses = _witnesses(packets, name, side, opened, closed)
+        witnesses = _position_witnesses(
+            position_observations, name, side, opened, closed
+        )
         identities = {
             (
                 item["raw"].get("posId"),

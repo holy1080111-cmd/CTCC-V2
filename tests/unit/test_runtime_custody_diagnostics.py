@@ -140,7 +140,7 @@ def test_synthetic_internal_char_bytes_explain_denials_without_relaxing_guard():
     [
         (index, name + "_query")
         for index, name in enumerate(
-            ("role", "function", "trigger", "column", "constraint")
+            ("role", "function", "trigger", "trigger", "column", "constraint")
         )
     ],
 )
@@ -189,9 +189,9 @@ def test_catalog_query_failure_redacts_driver_payload(collection, category):
         (1, "prosrc", "changed", "function_attributes"),
         (2, None, None, "trigger_inventory"),
         (2, "tgenabled", "O", "trigger_attributes"),
-        (3, "type_name", "text", "column_shape"),
-        (4, None, None, "constraint_inventory"),
-        (4, "definition", "CHECK (true)", "constraint_attributes"),
+        (4, "type_name", "text", "column_shape"),
+        (5, None, None, "constraint_inventory"),
+        (5, "definition", "CHECK (true)", "constraint_attributes"),
     ),
 )
 def test_rejected_catalog_groups_do_not_change_acceptance(

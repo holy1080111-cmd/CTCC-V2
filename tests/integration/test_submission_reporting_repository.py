@@ -7,8 +7,9 @@ from datetime import timedelta
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.exc import DBAPIError
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.database.models.qualification_ledger import (
     QualificationAccountScope,
@@ -21,7 +22,10 @@ from app.database.models.submission_reporting import (
     QualificationSubmissionOutcome,
 )
 from app.database.repositories.qualification_ledger import QualificationLedgerRepository
-from app.database.repositories.submission_reporting import SubmissionReportingRepository
+from app.database.repositories.submission_reporting import (
+    SubmissionReportingRepository,
+    _projection_lock_key,
+)
 from app.trade_evidence import outbox
 from app.trade_evidence.submission_reporting import (
     CapturedSubmission,
@@ -35,6 +39,8 @@ from tests.unit.qualification_ledger_fixtures import LedgerFixture, ledger_fixtu
 from tests.unit.qualification_range_v5_fixtures import range_v5_ledger_fixture
 
 database = fixtures.database
+controlled_current55_database = fixtures.controlled_current55_database
+ledger_database = fixtures.ledger_database
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 QUEUE = "ctcc-synthetic-submission"
 
@@ -152,7 +158,7 @@ def allow_synthetic_range_replay_for_repository_mechanism(monkeypatch):
 
 @pytest.mark.parametrize("version", ("v2", "v3"))
 async def test_synthetic_range_v5_submission_lineage_v2_and_unbound_v3(
-    database, range_chain, version, monkeypatch
+    ledger_database, range_chain, version, monkeypatch
 ):
     # Synthetic source/response cannot pass R7 admission. A local-only gate
     # override keeps the downstream DB intent/outcome lineage under test.
@@ -190,7 +196,7 @@ async def test_synthetic_range_v5_submission_lineage_v2_and_unbound_v3(
             json.dumps(forged, sort_keys=True, separators=(",", ":"))
         )
 
-    ledger, clock = await fixtures.initialize(database, fixture)
+    ledger, clock = await fixtures.initialize(ledger_database, fixture)
     with pytest.raises(
         reservations.QualificationLedgerError,
         match="ledger_recheck_runtime_authority_missing",
@@ -244,7 +250,7 @@ async def test_synthetic_range_v5_submission_lineage_v2_and_unbound_v3(
         raw_body=json.dumps(response).encode(),
         transport_complete=True,
     )
-    reporter = SubmissionReportingRepository(database[1], clock=clock)
+    reporter = SubmissionReportingRepository(ledger_database[1], clock=clock)
     args = {
         "expected_revision": 3,
         "intent_sha256": intent.sha256,
@@ -262,7 +268,7 @@ async def test_synthetic_range_v5_submission_lineage_v2_and_unbound_v3(
             )
         state = await ledger.read_scope(hold.scope)
         assert state.ledger_revision == 3 and state.active[0].state == "consumed"
-        async with database[1]() as session:
+        async with ledger_database[1]() as session:
             assert (
                 await session.scalar(
                     select(func.count())
@@ -294,7 +300,7 @@ async def test_synthetic_range_v5_submission_lineage_v2_and_unbound_v3(
     )
     assert observed.status == "acknowledged"
     assert not observed.execution_authority and not observed.order_retry_authority
-    restarted = SubmissionReportingRepository(database[1], clock=clock)
+    restarted = SubmissionReportingRepository(ledger_database[1], clock=clock)
     assert (
         await restarted.read_observation(
             hold.scope, hold.original_event_key, expected_outcome_id=observed.outcome_id
@@ -305,10 +311,10 @@ async def test_synthetic_range_v5_submission_lineage_v2_and_unbound_v3(
 
 
 async def test_synthetic_control_bound_v3_observation_replays_both_intents(
-    database, range_chain, tmp_path, monkeypatch
+    ledger_database, range_chain, tmp_path, monkeypatch
 ):
     fixture, _binding, _ = range_chain
-    setup = await control_fixtures.setup(database, fixture)
+    setup = await control_fixtures.setup(ledger_database, fixture)
     with pytest.raises(
         reservations.QualificationLedgerError,
         match="ledger_recheck_runtime_authority_missing",
@@ -359,7 +365,7 @@ async def test_synthetic_control_bound_v3_observation_replays_both_intents(
         ).encode(),
         transport_complete=True,
     )
-    repository = SubmissionReportingRepository(database[1], clock=setup.clock)
+    repository = SubmissionReportingRepository(ledger_database[1], clock=setup.clock)
     namespace = "ctcc-control-v3-" + uuid4().hex[:16]
     args = {
         "expected_revision": 3,
@@ -381,7 +387,7 @@ async def test_synthetic_control_bound_v3_observation_replays_both_intents(
     assert observed.status == "acknowledged"
     assert observed.intent_sha256 == outer.sha256
     assert not observed.execution_authority and not observed.order_retry_authority
-    async with database[1]() as session:
+    async with ledger_database[1]() as session:
         saved = await session.get(QualificationSubmissionOutcome, observed.outcome_id)
         document = json.loads(saved.outcome_json)
         assert saved.intent_sha256 == outer.sha256
@@ -397,7 +403,7 @@ async def test_synthetic_control_bound_v3_observation_replays_both_intents(
     await setup.control.latch_stop(
         setup.observed.state.scope, command_id=control_fixtures.command()
     )
-    restarted = SubmissionReportingRepository(database[1], clock=setup.clock)
+    restarted = SubmissionReportingRepository(ledger_database[1], clock=setup.clock)
     assert (
         await restarted.read_observation(
             hold.scope,
@@ -414,22 +420,22 @@ async def test_synthetic_control_bound_v3_observation_replays_both_intents(
 
 
 async def test_atomic_unverified_ack_restart_retains_private_evidence_only(
-    database, fixture, tmp_path
+    ledger_database, fixture, tmp_path
 ):
-    ledger, _repository, clock, hold, args = await setup(database, fixture)
+    ledger, _repository, clock, hold, args = await setup(ledger_database, fixture)
     receipt = await ledger.record_submission_observation(
         hold.scope, hold.original_event_key, **args
     )
     state = await ledger.read_scope(hold.scope)
     assert state.ledger_revision == 4 and state.active[0].state == "consumed"
     assert not receipt.execution_authority and not receipt.order_retry_authority
-    restarted = SubmissionReportingRepository(database[1], clock=clock)
+    restarted = SubmissionReportingRepository(ledger_database[1], clock=clock)
     assert (
         await restarted.record_observation(hold.scope, hold.original_event_key, **args)
         == receipt
     )
     await assert_private_only(restarted, receipt, tmp_path)
-    async with database[1]() as session:
+    async with ledger_database[1]() as session:
         saved = await session.get(QualificationSubmissionOutcome, receipt.outcome_id)
         assert json.loads(saved.capture_json)["raw_body_sha256"]
         assert saved.intent_sha256 == args["intent_sha256"]
@@ -441,12 +447,12 @@ async def test_atomic_unverified_ack_restart_retains_private_evidence_only(
 
 
 async def test_db_rejects_forged_eligible_spool_then_retains_private_capture(
-    database, fixture, tmp_path, monkeypatch
+    ledger_database, fixture, tmp_path, monkeypatch
 ):
     """The DB independently refuses eligibility fabricated by application code."""
     import app.database.repositories.submission_reporting as module
 
-    _, repository, clock, hold, args = await setup(database, fixture)
+    _, repository, clock, hold, args = await setup(ledger_database, fixture)
     original = module.spool_eligible
     monkeypatch.setattr(module, "spool_eligible", lambda _document: True)
     try:
@@ -461,7 +467,7 @@ async def test_db_rejects_forged_eligible_spool_then_retains_private_capture(
     receipt = await repository.record_observation(
         hold.scope, hold.original_event_key, **args
     )
-    restarted = SubmissionReportingRepository(database[1], clock=clock)
+    restarted = SubmissionReportingRepository(ledger_database[1], clock=clock)
     assert (
         await restarted.read_observation(
             hold.scope, hold.original_event_key, expected_outcome_id=receipt.outcome_id
@@ -469,7 +475,7 @@ async def test_db_rejects_forged_eligible_spool_then_retains_private_capture(
         == receipt
     )
     await assert_private_only(restarted, receipt, tmp_path)
-    async with database[1]() as session:
+    async with ledger_database[1]() as session:
         saved = await session.get(QualificationSubmissionOutcome, receipt.outcome_id)
         spool = await session.get(QualificationReportSpool, receipt.spool_id)
         assert spool.eligible is False
@@ -485,20 +491,22 @@ async def test_db_rejects_forged_eligible_spool_then_retains_private_capture(
 
 @pytest.mark.parametrize("status", ("acknowledged", "rejected", "uncertain"))
 async def test_initial_lineage_readback_uses_committed_db_bytes_without_authority(
-    database, fixture, status
+    ledger_database, fixture, status
 ):
-    _, repository, clock, hold, args = await setup(database, fixture, status=status)
+    _, repository, clock, hold, args = await setup(
+        ledger_database, fixture, status=status
+    )
     observed = await repository.record_observation(
         hold.scope, hold.original_event_key, **args
     )
     # This repository instance opens a new session after the writer committed.
-    restarted = SubmissionReportingRepository(database[1], clock=clock)
+    restarted = SubmissionReportingRepository(ledger_database[1], clock=clock)
     lineage = await restarted.read_initial_lineage(
         hold.scope,
         hold.original_event_key,
         expected_outcome_id=observed.outcome_id,
     )
-    async with database[1]() as session:
+    async with ledger_database[1]() as session:
         outcome = await session.get(QualificationSubmissionOutcome, observed.outcome_id)
         reservation = await session.get(QualificationReservation, hold.reservation_id)
         intent = await session.get(
@@ -543,10 +551,10 @@ async def test_initial_lineage_readback_uses_committed_db_bytes_without_authorit
 
 @pytest.mark.parametrize("status", ("acknowledged", "rejected", "uncertain"))
 async def test_unverified_ack_rejection_or_unknown_is_never_projected(
-    database, fixture, tmp_path, status
+    ledger_database, fixture, tmp_path, status
 ):
     ledger, repository, clock, hold, args = await setup(
-        database, fixture, status=status
+        ledger_database, fixture, status=status
     )
     result = await repository.record_observation(
         hold.scope, hold.original_event_key, **args
@@ -558,7 +566,7 @@ async def test_unverified_ack_rejection_or_unknown_is_never_projected(
         "uncertain" if status == "uncertain" else "consumed"
     )
     if status == "uncertain":
-        async with database[1]() as session:
+        async with ledger_database[1]() as session:
             transitions = (
                 await session.scalars(
                     select(QualificationReservationTransition).filter_by(
@@ -583,9 +591,11 @@ async def test_unverified_ack_rejection_or_unknown_is_never_projected(
     )
 
 
-async def test_concurrent_identical_reporters_commit_one_outcome(database, fixture):
-    _, repository, clock, hold, args = await setup(database, fixture)
-    other = SubmissionReportingRepository(database[1], clock=clock)
+async def test_concurrent_identical_reporters_commit_one_outcome(
+    ledger_database, fixture
+):
+    _, repository, clock, hold, args = await setup(ledger_database, fixture)
+    other = SubmissionReportingRepository(ledger_database[1], clock=clock)
     one, two = await asyncio.gather(
         *(
             item.record_observation(hold.scope, hold.original_event_key, **args)
@@ -593,7 +603,7 @@ async def test_concurrent_identical_reporters_commit_one_outcome(database, fixtu
         )
     )
     assert one == two
-    async with database[1]() as session:
+    async with ledger_database[1]() as session:
         assert (
             await session.scalar(
                 select(func.count())
@@ -618,9 +628,9 @@ async def test_concurrent_identical_reporters_commit_one_outcome(database, fixtu
 
 
 async def test_commit_readback_failure_retains_outcome_and_spool(
-    database, fixture, monkeypatch
+    ledger_database, fixture, monkeypatch
 ):
-    _, repository, clock, hold, args = await setup(database, fixture)
+    _, repository, clock, hold, args = await setup(ledger_database, fixture)
 
     async def lost(*a, **kw):
         raise ConnectionError("synthetic committed readback loss")
@@ -628,7 +638,7 @@ async def test_commit_readback_failure_retains_outcome_and_spool(
     monkeypatch.setattr(repository, "read_observation", lost)
     with pytest.raises(ConnectionError):
         await repository.record_observation(hold.scope, hold.original_event_key, **args)
-    restarted = SubmissionReportingRepository(database[1], clock=clock)
+    restarted = SubmissionReportingRepository(ledger_database[1], clock=clock)
     result = await restarted.record_observation(
         hold.scope, hold.original_event_key, **args
     )
@@ -637,9 +647,11 @@ async def test_commit_readback_failure_retains_outcome_and_spool(
 
 
 async def test_spool_failure_rolls_back_unknown_trade_transition_and_outcome(
-    database, fixture, monkeypatch
+    ledger_database, fixture, monkeypatch
 ):
-    _, repository, _, hold, args = await setup(database, fixture, status="uncertain")
+    _, repository, _, hold, args = await setup(
+        ledger_database, fixture, status="uncertain"
+    )
     import app.database.repositories.submission_reporting as module
 
     def failed(*args):
@@ -650,7 +662,7 @@ async def test_spool_failure_rolls_back_unknown_trade_transition_and_outcome(
         await repository.record_observation(hold.scope, hold.original_event_key, **args)
     state = await repository.read_scope(hold.scope)
     assert state.ledger_revision == 3 and state.active[0].state == "consumed"
-    async with database[1]() as session:
+    async with ledger_database[1]() as session:
         assert (
             await session.scalar(
                 select(func.count())
@@ -670,9 +682,9 @@ async def test_spool_failure_rolls_back_unknown_trade_transition_and_outcome(
 
 
 async def test_unverified_ack_cannot_invoke_local_outbox_publisher(
-    database, fixture, tmp_path, monkeypatch
+    ledger_database, fixture, tmp_path, monkeypatch
 ):
-    _, repository, _, hold, args = await setup(database, fixture)
+    _, repository, _, hold, args = await setup(ledger_database, fixture)
     result = await repository.record_observation(
         hold.scope, hold.original_event_key, **args
     )
@@ -682,21 +694,23 @@ async def test_unverified_ack_cannot_invoke_local_outbox_publisher(
         pytest.fail("unverified acknowledgement reached local outbox publisher")
 
     monkeypatch.setattr(module.post_submit, "enqueue_post_submit", forbidden)
-    restarted = SubmissionReportingRepository(database[1], clock=repository.clock)
+    restarted = SubmissionReportingRepository(
+        ledger_database[1], clock=repository.clock
+    )
     await assert_private_only(restarted, result, tmp_path)
     assert (await repository.read_scope(hold.scope)).active[0].state == "consumed"
 
 
 async def test_unverified_ack_cannot_create_projection_receipt(
-    database, fixture, tmp_path
+    ledger_database, fixture, tmp_path
 ):
-    _, repository, clock, hold, args = await setup(database, fixture)
+    _, repository, clock, hold, args = await setup(ledger_database, fixture)
     result = await repository.record_observation(
         hold.scope, hold.original_event_key, **args
     )
-    restarted = SubmissionReportingRepository(database[1], clock=clock)
+    restarted = SubmissionReportingRepository(ledger_database[1], clock=clock)
     await assert_private_only(restarted, result, tmp_path)
-    async with database[1]() as session:
+    async with ledger_database[1]() as session:
         assert (
             await session.get(QualificationReportProjectionReceipt, result.spool_id)
             is None
@@ -704,9 +718,9 @@ async def test_unverified_ack_cannot_create_projection_receipt(
 
 
 async def test_unverified_ack_projection_audit_has_no_receipt(
-    database, fixture, tmp_path
+    ledger_database, fixture, tmp_path
 ):
-    _, repository, _, hold, args = await setup(database, fixture)
+    _, repository, _, hold, args = await setup(ledger_database, fixture)
     result = await repository.record_observation(
         hold.scope, hold.original_event_key, **args
     )
@@ -716,9 +730,9 @@ async def test_unverified_ack_projection_audit_has_no_receipt(
 
 
 async def test_unverified_ack_projection_readback_cannot_invent_receipt(
-    database, fixture, tmp_path, monkeypatch
+    ledger_database, fixture, tmp_path, monkeypatch
 ):
-    _, repository, _, hold, args = await setup(database, fixture)
+    _, repository, _, hold, args = await setup(ledger_database, fixture)
     result = await repository.record_observation(
         hold.scope, hold.original_event_key, **args
     )
@@ -736,8 +750,37 @@ async def test_unverified_ack_projection_readback_cannot_invent_receipt(
         )
 
 
-async def test_immutable_rows_cannot_be_changed_or_deleted(database, fixture, tmp_path):
-    _, repository, _, hold, args = await setup(database, fixture)
+async def test_append_only_projector_skips_held_spool_lock_and_rechecks_after_release(
+    ledger_database, fixture, tmp_path
+):
+    _, repository, _, hold, args = await setup(ledger_database, fixture)
+    result = await repository.record_observation(
+        hold.scope, hold.original_event_key, **args
+    )
+    async with ledger_database[1]() as holder, holder.begin():
+        lock = await holder.scalar(
+            text(
+                "SELECT pg_catalog.pg_try_advisory_xact_lock(CAST(:lock_key AS bigint))"
+            ),
+            {"lock_key": _projection_lock_key(result.spool_id)},
+        )
+        assert lock is True
+        assert (
+            await asyncio.wait_for(
+                repository.project_one(
+                    result.spool_id, root=tmp_path, queue_namespace=QUEUE
+                ),
+                timeout=5,
+            )
+            is None
+        )
+    await assert_private_only(repository, result, tmp_path)
+
+
+async def test_immutable_rows_cannot_be_changed_or_deleted(
+    ledger_database, fixture, tmp_path
+):
+    _, repository, _, hold, args = await setup(ledger_database, fixture)
     result = await repository.record_observation(
         hold.scope, hold.original_event_key, **args
     )
@@ -752,6 +795,7 @@ async def test_immutable_rows_cannot_be_changed_or_deleted(database, fixture, tm
         ),
         (QualificationReportSpool, "spool_id", result.spool_id, "eligible", True),
     )
+    owner_sessions = async_sessionmaker(ledger_database[0])
     for model, key, identity, column, value in cases:
         for statement in (
             update(model)
@@ -759,14 +803,14 @@ async def test_immutable_rows_cannot_be_changed_or_deleted(database, fixture, tm
             .values(**{column: value}),
             delete(model).where(getattr(model, key) == identity),
         ):
-            async with database[1]() as session:
+            async with owner_sessions() as session:
                 with pytest.raises(DBAPIError):
                     await session.execute(statement)
                 await session.rollback()
 
 
 async def test_actual_process_crash_retains_private_outcome_without_projection(
-    database, fixture, tmp_path
+    ledger_database, fixture, tmp_path
 ):
     import os
     import subprocess
@@ -775,7 +819,7 @@ async def test_actual_process_crash_retains_private_outcome_without_projection(
 
     from app.trade_evidence.submission_reporting import freeze_capture
 
-    _, repository, clock, hold, args = await setup(database, fixture)
+    _, repository, clock, hold, args = await setup(ledger_database, fixture)
     values = {
         "mode": "after_outcome_commit",
         "at": clock.value.isoformat(),
@@ -786,6 +830,8 @@ async def test_actual_process_crash_retains_private_outcome_without_projection(
         "intent_sha256": args["intent_sha256"],
         "namespace": QUEUE,
     }
+
+    writer_url = ledger_database[1].kw["bind"].url.render_as_string(hide_password=False)
 
     async def crash(value):
         return await asyncio.to_thread(
@@ -798,7 +844,9 @@ async def test_actual_process_crash_retains_private_outcome_without_projection(
             input=json.dumps(value).encode(),
             capture_output=True,
             cwd=Path(__file__).parents[2],
-            env=dict(os.environ, CTCC_SUBMISSION_CRASH_CHILD="1"),
+            env=dict(
+                os.environ, CTCC_SUBMISSION_CRASH_CHILD="1", DATABASE_URL=writer_url
+            ),
             timeout=180,
         )
 
@@ -816,10 +864,10 @@ async def test_actual_process_crash_retains_private_outcome_without_projection(
 
 @pytest.mark.parametrize("operation", ("reserve", "consume"))
 async def test_uncertain_outcome_blocks_concurrent_other_event_in_same_account(
-    database, fixture, other, operation
+    ledger_database, fixture, other, operation
 ):
     ledger, repository, _, hold, args = await setup(
-        database,
+        ledger_database,
         fixture,
         status="uncertain",
         pre_reserve_request=other.request if operation == "consume" else None,
@@ -828,7 +876,7 @@ async def test_uncertain_outcome_blocks_concurrent_other_event_in_same_account(
     next_revision = 4
     if operation == "consume":
         next_revision = 5
-    async with database[1]() as session, session.begin():
+    async with ledger_database[1]() as session, session.begin():
         await session.scalar(
             select(QualificationAccountScope)
             .filter_by(account_id=hold.scope.account_id)
@@ -864,14 +912,14 @@ async def test_uncertain_outcome_blocks_concurrent_other_event_in_same_account(
 
 @pytest.mark.parametrize("operation", ("reserve", "consume"))
 async def test_missing_outcome_inhibits_new_entry_after_restart(
-    database, fixture, other, operation
+    ledger_database, fixture, other, operation
 ):
     ledger, _, clock, hold, args = await setup(
-        database,
+        ledger_database,
         fixture,
         pre_reserve_request=other.request if operation == "consume" else None,
     )
-    restarted = QualificationLedgerRepository(database[1], clock=clock)
+    restarted = QualificationLedgerRepository(ledger_database[1], clock=clock)
     if operation == "reserve":
         action = restarted.reserve(
             other.request.model_copy(update={"expected_ledger_revision": 3})
@@ -890,10 +938,10 @@ async def test_missing_outcome_inhibits_new_entry_after_restart(
 
 
 async def test_orphan_initial_outcome_cannot_release_consumed_event_hold(
-    database, fixture, other
+    ledger_database, fixture, other
 ):
-    _, _, clock, hold, _ = await setup(database, fixture)
-    async with database[1]() as session, session.begin():
+    _, _, clock, hold, _ = await setup(ledger_database, fixture)
+    async with ledger_database[1]() as session, session.begin():
         transition = await session.scalar(
             select(QualificationReservationTransition).filter_by(
                 reservation_id=hold.reservation_id, to_state="consumed"
@@ -919,7 +967,7 @@ async def test_orphan_initial_outcome_cannot_release_consumed_event_hold(
                 recorded_at=transition.occurred_at,
             )
         )
-    restarted = QualificationLedgerRepository(database[1], clock=clock)
+    restarted = QualificationLedgerRepository(ledger_database[1], clock=clock)
     with pytest.raises(
         reservations.QualificationLedgerError, match="unresolved_submission"
     ):
@@ -932,14 +980,16 @@ async def test_orphan_initial_outcome_cannot_release_consumed_event_hold(
 
 @pytest.mark.parametrize("status", ("acknowledged", "rejected"))
 async def test_valid_initial_outcome_and_spool_remain_auditable_but_not_closure(
-    database, fixture, status
+    ledger_database, fixture, status
 ):
-    ledger, reporter, _, hold, args = await setup(database, fixture, status=status)
+    ledger, reporter, _, hold, args = await setup(
+        ledger_database, fixture, status=status
+    )
     observed = await reporter.record_observation(
         hold.scope, hold.original_event_key, **args
     )
     assert observed.status == status
-    async with database[1]() as session, session.begin():
+    async with ledger_database[1]() as session, session.begin():
         row = await ledger._locked(session, hold.scope)
         active = await ledger._active(session, hold.scope, row)
         spool = await session.scalar(
@@ -958,10 +1008,10 @@ async def test_valid_initial_outcome_and_spool_remain_auditable_but_not_closure(
 @pytest.mark.parametrize("status", ("acknowledged", "rejected"))
 @pytest.mark.parametrize("operation", ("reserve", "consume"))
 async def test_initial_response_without_closure_inhibits_other_event(
-    database, fixture, other, status, operation
+    ledger_database, fixture, other, status, operation
 ):
     ledger, reporter, _, hold, args = await setup(
-        database,
+        ledger_database,
         fixture,
         status=status,
         pre_reserve_request=other.request if operation == "consume" else None,
@@ -998,12 +1048,12 @@ async def test_initial_response_without_closure_inhibits_other_event(
 
 
 async def test_legacy_consumed_without_intent_also_inhibits_new_entry(
-    database, fixture, other
+    ledger_database, fixture, other
 ):
-    ledger, clock = await fixtures.initialize(database, fixture)
+    ledger, clock = await fixtures.initialize(ledger_database, fixture)
     hold = await ledger.reserve(fixture.request)
     await ledger.consume_once(hold.scope, hold.original_event_key, expected_revision=2)
-    restarted = QualificationLedgerRepository(database[1], clock=clock)
+    restarted = QualificationLedgerRepository(ledger_database[1], clock=clock)
     with pytest.raises(
         reservations.QualificationLedgerError, match="unresolved_submission"
     ):
@@ -1016,16 +1066,18 @@ async def test_legacy_consumed_without_intent_also_inhibits_new_entry(
 
 @pytest.mark.parametrize("status", ("acknowledged", "uncertain"))
 async def test_caller_flat_cannot_retire_intent_before_or_after_delayed_observation(
-    database, fixture, status
+    ledger_database, fixture, status
 ):
     # This is a synthetic delayed response, not a Demo order or account proof.
-    ledger, reporter, clock, hold, args = await setup(database, fixture, status=status)
+    ledger, reporter, clock, hold, args = await setup(
+        ledger_database, fixture, status=status
+    )
     before = await ledger.read_scope(hold.scope)
     assert before.active[0].state == "consumed"
     assert before.ledger_revision == 3
     clock.value += timedelta(seconds=1)
     claims = fixtures.refresh(fixture.claims, clock.value, armed=False)
-    restarted = QualificationLedgerRepository(database[1], clock=clock)
+    restarted = QualificationLedgerRepository(ledger_database[1], clock=clock)
     with pytest.raises(
         reservations.QualificationLedgerError,
         match="post_submit_closure_witness_missing",
@@ -1037,7 +1089,7 @@ async def test_caller_flat_cannot_retire_intent_before_or_after_delayed_observat
             expected_revision=3,
         )
     assert await restarted.read_scope(hold.scope) == before
-    async with database[1]() as session:
+    async with ledger_database[1]() as session:
         assert (
             await session.scalar(
                 select(func.count())
@@ -1104,13 +1156,13 @@ async def test_advisory_lock_serializes_exact_uid_across_settlement_scopes(datab
 
 @pytest.mark.parametrize("state", ("reserved", "consumed", "uncertain"))
 async def test_other_currency_exposure_denies_entry_but_not_read_reconciliation(
-    database, fixture, other, state
+    ledger_database, fixture, other, state
 ):
     import hashlib
 
-    ledger, clock = await fixtures.initialize(database, fixture)
+    ledger, clock = await fixtures.initialize(ledger_database, fixture)
     hold = await ledger.reserve(fixture.request)
-    async with database[1]() as session, session.begin():
+    async with ledger_database[1]() as session, session.begin():
         original = await session.get(QualificationReservation, hold.reservation_id)
         other_scope = hold.scope.model_copy(update={"settlement_currency": "USDC"})
         await ledger._locked(session, other_scope, create=True)
@@ -1147,7 +1199,7 @@ async def test_other_currency_exposure_denies_entry_but_not_read_reconciliation(
         expected_revision=2,
     )
     assert resolved.state == "reconciled_flat"
-    async with database[1]() as session:
+    async with ledger_database[1]() as session:
         assert (
             await session.scalar(
                 select(QualificationReservation.state).filter_by(

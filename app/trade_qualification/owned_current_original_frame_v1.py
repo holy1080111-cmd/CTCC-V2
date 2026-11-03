@@ -254,6 +254,13 @@ def open_current_original_capture_v1(
             for plan in plans
         )
         selected = market.public._policy_copy(market_policy)
+        # Select non-secret qualification assumptions before any source request.
+        # Existing diagnostic receipts and their policy meanings are unchanged.
+        from app.trade_qualification.owned_current_original_prefix_v1 import (
+            _freeze_local_gate_policy_v13,
+        )
+
+        local_gate_policy = _freeze_local_gate_policy_v13()
         token = object.__new__(CurrentOriginalCaptureV1)
         state = {
             "task": task,
@@ -274,6 +281,7 @@ def open_current_original_capture_v1(
             "owned_custody_factory": owned_factory,
             "repository": repository,
             "database_pins": database_pins,
+            "local_gate_policy_v13": local_gate_policy,
         }
         _check_database(state)
         _CAPTURES[token] = state

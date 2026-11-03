@@ -1,10 +1,10 @@
 """Independent final order-entry authority check for the shared OKX transport.
 
-The existing Demo/Live route classifiers remain the first hard DENY. This
-boundary additionally requires a process-owned DispatchOwnership slot tied to
-the durable qualification intent. There is no READY issuer yet, so even a
-valid diagnostic owner/slot cannot send a write. Caller payloads, flags and
-receipts are never considered authority.
+Legacy Demo/Live routes and diagnostic DispatchOwnership slots remain denied.
+The distinct native Demo branch requires a genuine same-invocation durable
+intent, actual retained database locks and the exact prepared signed request.
+Its independent TLS/socket gate replays that ownership after internal awaits.
+Caller payloads, flags, historical receipts and copied DATA grant no authority.
 """
 
 from __future__ import annotations
@@ -23,14 +23,14 @@ def require_owned_private_write_authority(
     *,
     owner: DispatchOwnership | None,
     slot: DispatchSlot | None,
+    client: object | None = None,
 ) -> None:
     """Deny every private write without an owned durable invocation.
 
-    ``require_ready`` currently tombstones and denies every slot. When a
-    trusted source-owned issuer is implemented, this boundary must also bind
-    its result to the exact signed request bytes, environment, account,
-    credential session, expiry and one-shot consumption before permitting IO.
-    Merely changing ``require_ready`` to return a truthy value grants nothing.
+    The native branch compares the exact signed bytes, environment, account,
+    credential session, original expiry and one-shot intent; it also requires
+    the separately guarded physical transport. Diagnostic ``require_ready``
+    remains a terminal denial and cannot grant a native slot.
     """
     if type(method) is not str or type(path) is not str:
         raise OkxPrivateApiError(
@@ -38,6 +38,16 @@ def require_owned_private_write_authority(
             code="private_write_authority_unavailable",
         )
     if method.upper() == "GET":
+        return
+    from app.exchange.okx import native_demo_write_v2 as native_write
+
+    if native_write._native_leverage_configuration_route_v1(client, method, path):
+        native_write._require_native_leverage_configuration_private_write_v1(
+            client, method, path
+        )
+        return
+    if native_write._native_route_v2(client, method, path):
+        native_write._require_native_private_write_v2(client, method, path)
         return
     if type(owner) is DispatchOwnership and type(slot) is DispatchSlot:
         try:

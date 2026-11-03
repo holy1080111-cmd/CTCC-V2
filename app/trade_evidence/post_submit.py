@@ -643,8 +643,9 @@ async def run_post_submit_pass(
     adapter: NotionDeliveryAdapter,
     policy: outbox_worker.OutboxWorkerPolicy,
     clock: Callable[[], datetime] = outbox.actual_utc,
+    source_permit=None,
 ) -> outbox_worker.OutboxPassResult:
-    """Explicit separate reporting pass, currently source-authority denied.
+    """Explicit separate reporting pass requiring genuine native source ownership.
 
     Construct the existing adapter with an explicitly supplied client/token and
     four destination property pins. Caller owns the HTTP client. This function
@@ -656,7 +657,21 @@ async def run_post_submit_pass(
     # The standalone wrapper must share the runtime's source-authority gate.
     # Local files and a supplied adapter are not issuer-backed DB readback.
     try:
-        delivery_source_authority.require_issuer_backed_projection()
+        if source_permit is None:
+            source_permit = adapter._source_permit
+        if source_permit is None:
+            delivery_source_authority.require_issuer_backed_projection()
+        else:
+            from app.trade_evidence import (
+                native_notion_delivery_source_v55 as native_source,
+            )
+
+            native_source.require_prepared_native_notion_source_v55(
+                source_permit, root=root, report_ids=report_ids
+            )
+            adapter = native_source.make_native_notion_adapter_v55(
+                source_permit, adapter=adapter
+            )
     except delivery_source_authority.DeliverySourceAuthorityUnavailable:
         raise PostSubmitError("post_submit_source_authority_unavailable") from None
     return await outbox_worker.run_outbox_pass(

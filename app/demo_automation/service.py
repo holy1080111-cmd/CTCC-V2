@@ -218,7 +218,7 @@ class SafeDemoAutomation:
             self._restart_latch_required = True
             self._engage_emergency("restart_requires_explicit_clear_stop")
         self._state["armed"] = False
-        self._state["last_error"] = None
+        # Durable failure/unknown history survives restart and disarm.
         self._normalize_portfolio_state()
         self._clear_disabled_continuous_session_locks()
         # Invalid in-memory policy blocks Arm and runs, but recovery must
@@ -370,6 +370,22 @@ class SafeDemoAutomation:
 
     async def history(self, limit: int = 20) -> list[DemoAutomationRunResult]:
         return list(self._history)[-max(1, limit) :]
+
+    async def perform_native_action_v2(self, request, *, operator_token):
+        from app.demo_automation.native_caller_v2 import perform_native_demo_action_v2
+
+        return await perform_native_demo_action_v2(
+            self, request, operator_token=operator_token
+        )
+
+    async def reconcile_native_owned_v1(self, request, *, operator_token):
+        from app.trade_qualification.native_postsubmit_reconciliation_v1 import (
+            recover_native_for_service_v1,
+        )
+
+        return await recover_native_for_service_v1(
+            self, request, operator_token=operator_token
+        )
 
     async def arm(self) -> DemoAutomationStatus:
         if not self._recovered:
@@ -710,8 +726,12 @@ class SafeDemoAutomation:
         )
 
     async def disarm(self) -> DemoAutomationStatus:
+        from app.demo_automation.native_caller_v2 import revoke_native_for_service_v2
+
+        native_persistence = revoke_native_for_service_v2(self, emergency=False)
         self._control_generation += 1
         self._state["armed"] = False
+        await native_persistence
         await self.stop()
         # Local exposure authority is revoked before I/O. A configured durable
         # repository must acknowledge the revocation; a CAS conflict or lost
@@ -720,8 +740,12 @@ class SafeDemoAutomation:
         return await self.status()
 
     async def emergency_stop(self) -> DemoAutomationStatus:
+        from app.demo_automation.native_caller_v2 import revoke_native_for_service_v2
+
+        native_persistence = revoke_native_for_service_v2(self, emergency=True)
         self._engage_emergency("emergency_stop_engaged")
         was_recovered = self._recovered
+        await native_persistence
         # This also covers cancellation after a DB commit but before readback.
         # Only a confirmed write from a current copy may restore local recovery.
         self._recovered = False
@@ -870,6 +894,9 @@ class SafeDemoAutomation:
         return await self.status()
 
     async def stop(self) -> DemoAutomationStatus:
+        from app.demo_automation.native_caller_v2 import revoke_native_for_service_v2
+
+        native_persistence = revoke_native_for_service_v2(self, emergency=False)
         if self._task is not None:
             self._stop.set()
             self._task.cancel()
@@ -877,6 +904,7 @@ class SafeDemoAutomation:
                 await self._task
             self._task = None
         self._next_run_at = None
+        await native_persistence
         return await self.status()
 
     async def run_once(

@@ -35,7 +35,7 @@ NODES = {key: NODE_FILE + "::" + name for key, name in NODE_NAMES.items()}
 SCOPED_CHOICES = tuple(key for key in NODES if key != "original")
 SCOPED_REF = "refs/heads/work/prospective-event-cutover-pg51-catalog-20261025"
 SOURCE = "app/trade_qualification/native_account_risk_assembly_v1.py"
-SOURCE_SHA = "e74f4565d2c93b54fd85c588959493d8384fd8e2ffd6fbb3cfdb4526c31fd317"
+SOURCE_SHA = "af96c0a2f18224d4ba1739b1b6049337ca2f08611166577e6d0f2cffa3bd31d7"
 _PHASES = []
 _COLLECTED = None
 
@@ -144,11 +144,11 @@ def deadline_projection(error):
 
 
 _TRACE_SOURCE_PINS = {
-    "app/trade_qualification/native_account_risk_assembly_v1.py": "e74f4565d2c93b54fd85c588959493d8384fd8e2ffd6fbb3cfdb4526c31fd317",
-    "app/trade_qualification/account_history_source_v1.py": "fb06524a1ee540e36bc3b1366acfc647edd587b06bb8bd517ef22267fbcb6e79",
-    "app/trade_qualification/account_history_source_bundle_v1.py": "06a993d5b10961f302107ff2a45dc5cbfb282384793cb4b1b317563b35c460ac",
+    "app/trade_qualification/native_account_risk_assembly_v1.py": "af96c0a2f18224d4ba1739b1b6049337ca2f08611166577e6d0f2cffa3bd31d7",
+    "app/trade_qualification/account_history_source_v1.py": "05ab94864ede0f95450da9d3be60d35f717b22e44fd1f3d81af52ee6ce7df39b",
+    "app/trade_qualification/account_history_source_bundle_v1.py": "cbee6a92d818e10a2dd0633ea558298dd5a9896d9de6534f39757f8c22e93c12",
     "app/trade_qualification/controlled_writer_coverage_v1.py": "06c5221b4a9aa4f1fcea241881f6fcfd573b0b0b92a752f4b85bcf94700065bf",
-    "app/trade_qualification/account_current_source_v4.py": "7d2ce189d92449035d6542386c656b8a37a6b1115ade636b5c7dc7b9afd1e177",
+    "app/trade_qualification/account_current_source_v4.py": "602e20c2865b5cc9da693d3d11dca1d241a74b974a2f21988f126c5e3f1da611",
     "app/trade_qualification/account_observation_index.py": "b2184bf6806e6ad978a8d6b74e533e5f866e56579fcc9a176aff7f95920bdec9",
     "app/trade_qualification/account_bootstrap_runtime.py": "39bc6cd29a44ad442fee7e5a7f0e2410b262b7540aae565e3a91ea9836b0397e",
     "app/trade_qualification/account_native_clock.py": "61b1d50304d34c9c1790c85c948eaf849298ee617764c7c2ec65911f314ecb0f",
@@ -159,7 +159,7 @@ _TRACE_SOURCE_PINS = {
     "app/database/repositories/public_runtime_bundle_custody.py": "69cca49251e9bce5f97261a8171aeefabac208a4d1244d864380727dd1597d30",
     "app/domain/source_primitives.py": "660a18a2bab787297c370d5316fa08cbf0ecf01273ea95ed990b949c4953420d",
     "tests/unit/test_native_account_financial_operands_v3.py": "0879abd5ce8170203bc8c3a8b969d0f73e4e6f66701169067e53d45caba16fbf",
-    "tests/unit/test_account_history_source_v1.py": "0abc9de525d36cfb8adbbb17a4e7880939ecfc6535aa1bde6ac2a427a3b8df13",
+    "tests/unit/test_account_history_source_v1.py": "7893ccdb5deb3671fa0aba85f995e8d1f3cb75374c935480d686257df4ac21c1",
     "tests/unit/test_account_current_source_v7.py": "2f306107444f5d637f348fe5ec21dbd6c447aed791e501648d3765c2f3774c98",
 }
 
@@ -647,7 +647,7 @@ def _owned_denies_for_readback():
         or Path(function.__code__.co_filename).resolve() != expected
     ):
         raise ValueError("fixed_original_loaded_deny_interpreter_unverified")
-    return function()
+    return function(source_pins=provider.SCOPED_JSON_SOURCE_PINS)
 
 
 def _validate_phase_row(row, *, wire_version=1):

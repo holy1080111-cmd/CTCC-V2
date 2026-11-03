@@ -1,4 +1,9 @@
-"""Small source-bound proofs for the Linux CI suite union gate."""
+"""Synthetic wire-only union tests, never actual native/CI/gate acceptance.
+
+The historical0051 fixture layer is preserved. The separate current0052 layer
+uses an explicitly scoped owner-API wire mock, never a new native hash or role.
+Every positive real0052/native acceptance still requires fresh actual artifacts.
+"""
 
 from __future__ import annotations
 
@@ -10,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from scripts import original_history_0052_toolchain as current0052
 from scripts.verify_final_hermetic import (
     ACCOUNT_MEASURED_HWM_V2_TRIGGERS,
     ACCOUNT_MEASURED_HWM_V2_TRIGGERS_0045,
@@ -83,6 +89,10 @@ SOURCE_FILES = json.dumps(
                 "migrations/versions/0051_prospective_event_cutover.py",
             )
         },
+        **{
+            name: {"sha256": "8" * 64}
+            for name in current0052.ORIGINAL_FRAME_INSTALLATION_CAPTURE_PATHS
+        },
         "migrations/versions/0048_controlled_writer_coverage.py": {"sha256": "2" * 64},
         "migrations/versions/0049_controlled_writer_pair_guard_definer.py": {
             "sha256": "3" * 64
@@ -142,9 +152,25 @@ def synthetic_sealed_native_identity_baseline(monkeypatch):
     monkeypatch.setattr(cutover_policy, "verify_catalog", synthetic_cutover_catalog)
     monkeypatch.setattr(cutover_policy, "deparser_sha256", synthetic_cutover_deparser)
 
+    from app.domain import account_history_original_frame_v1 as frame_policy
+
+    def synthetic0052_owner_wire_only(catalog, previous):
+        # This bypass exists only in the outer parser's explicitly synthetic
+        # test fixture. No owner OID, role, source hash or native seal is reminted.
+        if catalog != {"synthetic0052_wire_only": True} or previous != {
+            "synthetic0052_wire_only": True,
+            "server": _synthetic0052_wire_server(),
+        }:
+            raise ValueError("synthetic0052_owner_wire_catalog_mismatch")
+        return frame_policy.expected_owner_installation_schema()
+
+    monkeypatch.setattr(
+        frame_policy, "verify_owner_installation_catalog", synthetic0052_owner_wire_only
+    )
+
 
 def _revision_readback(revision: str) -> dict:
-    if revision in ("0050", "0051"):
+    if revision in ("0050", "0051", "0052"):
         # Filesystem evidence is parsed JSON. Preserve the producer-reader JSON
         # boundary fix when this preparation is three-way merged with root.
         return json.loads(json.dumps(expected_migration_revision_readback(revision)))
@@ -927,6 +953,7 @@ def _artifacts(tmp_path: Path) -> tuple[Path, list[str]]:
         )
     _current0050_synthetic_artifact_layer(artifacts)
     _current0051_synthetic_artifact_layer(artifacts)
+    _current0052_synthetic_wire_only_artifact_layer(artifacts)
     return artifacts, full
 
 
@@ -1649,10 +1676,16 @@ def test_union_rejects_rehashed_roundtrip_or_rollback_tamper(
     hashes = json.loads(hashes_path.read_text())
     hashes[path.name] = _sha(path.read_bytes())
     hashes_path.write_text(json.dumps(hashes))
-    with pytest.raises(ValueError, match="linux_union_migration_readback_changed"):
+    expected = (
+        "linux_union_current0052_readback_log_changed"
+        if name in ("migration-reupgrade-readback.log", "migration-denial-readback.log")
+        else f"linux_union_migration_readback_changed:{root.parent.name}"
+    )
+    with pytest.raises(ValueError) as rejected:
         verify_union(
             artifacts, commit=COMMIT, tree=TREE, manifest_sha256=_sha(MANIFEST)
         )
+    assert rejected.value.args == (expected,)
 
 
 @pytest.mark.parametrize(
@@ -2404,10 +2437,12 @@ def _current0051_synthetic_artifact_layer(artifacts):
         "wrong_cutover_absence",
     ),
 )
-def test_current0051_union_rejects_rehashed_cutover_fabrication(tmp_path, damage):
+def test_current0052_wire_only_union_rejects_rehashed_cutover_fabrication(
+    tmp_path, damage
+):
     artifacts, _ = _artifacts(tmp_path)
-    # Prove the complete current51 synthetic artifact set reaches the genuine
-    # reader before damaging it; an unrelated fixture mismatch cannot pass this.
+    # Prove this current52 WIRE-ONLY mock set reaches the actual parser before
+    # damage. This is never fresh native, CI, migration or trading acceptance.
     verify_union(artifacts, commit=COMMIT, tree=TREE, manifest_sha256=_sha(MANIFEST))
     attachment = next(artifacts.iterdir())
     root = attachment / "ctcc-validation"
@@ -2456,6 +2491,235 @@ def test_current0051_union_rejects_rehashed_cutover_fabrication(tmp_path, damage
         "wrong_cutover_absence": "linux_union_component_identity_rejected",
     }.get(damage, "prospective_cutover_native_catalog_observation_invalid")
     with pytest.raises(ValueError, match=refusal):
+        verify_union(
+            artifacts, commit=COMMIT, tree=TREE, manifest_sha256=_sha(MANIFEST)
+        )
+
+
+def _synthetic0052_wire_server():
+    # No actual role/OID or native definition is represented by this mock.
+    return {
+        "version_num": "170000",
+        "current_user": "synthetic0052_wire_owner",
+        "session_user": "synthetic0052_wire_owner",
+        "database": "synthetic0052_wire_database",
+    }
+
+
+def _synthetic0052_wire_rehash(root):
+    hashes = {
+        path.relative_to(root).as_posix(): _sha(path.read_bytes())
+        for path in root.rglob("*")
+        if path.is_file() and path.name != "results.sha256.json"
+    }
+    (root / "results.sha256.json").write_text(json.dumps(hashes), encoding="utf-8")
+
+
+def _current0052_synthetic_wire_only_artifact_layer(artifacts):
+    """Invented outer-IO parser vectors only; zero actual native/gate credit."""
+    from app.domain import account_history_original_frame_v1 as frame_policy
+
+    source_files = json.loads(SOURCE_FILES)
+    for attachment in artifacts.iterdir():
+        root = attachment / "ctcc-validation"
+        results = root / "test-results"
+        identity = json.loads((root / "identity.json").read_bytes())
+        identity["migration"]["source_head"] = identity["migration"][
+            "database_head"
+        ] = "0052"
+        identity["migration_empty_roundtrip"].update(
+            source_head="0052",
+            original_history_frame_before_readback=_revision_readback("0052"),
+            original_history_frame_down_revision="0051",
+            original_history_frame_down_readback=current0052.expected_original_frame_absent_readback(),
+            reupgrade_readback=_revision_readback("0052"),
+        )
+        # Keep prospective_cutover_before_readback at actual predecessor0051.
+        assert (
+            identity["migration_empty_roundtrip"][
+                "prospective_cutover_before_readback"
+            ]["observed"]
+            == "0051"
+        )
+        identity["migration_downgrade_policy"].update(
+            source_head="0052",
+            database_head_after="0052",
+            rollback_readback=_revision_readback("0052"),
+        )
+        for label in (
+            "migration-identity",
+            "migration-reupgrade-identity",
+            "migration-reidentity",
+        ):
+            (root / (label + ".log")).write_text(
+                json.dumps(identity["migration"]), encoding="utf-8"
+            )
+        for label in (
+            "migration-original-history-frame-empty-before",
+            "migration-reupgrade-readback",
+            "migration-denial-readback",
+        ):
+            (root / (label + ".log")).write_text(
+                json.dumps(_revision_readback("0052")), encoding="utf-8"
+            )
+        (root / "migration-original-history-frame-empty-readback.log").write_text(
+            json.dumps(current0052.expected_original_frame_absent_readback()),
+            encoding="utf-8",
+        )
+        denial = root / "migration-downgrade-denial.log"
+        denial.write_bytes(
+            b"INFO Running downgrade 0052 -> 0051\n" + denial.read_bytes()
+        )
+        for filename in (
+            "coverage-native-catalog.json",
+            "account-history-partition-native-catalog.json",
+            "prospective-cutover-native-catalog.json",
+        ):
+            path = results / filename
+            value = json.loads(path.read_bytes())
+            value["source_head"] = value["database_head"] = "0052"
+            if filename.startswith("account-history"):
+                value["schema"] = (
+                    "ctcc.account_history_partition_native_catalog_observation.v3"
+                )
+            elif filename.startswith("prospective"):
+                value["schema"] = (
+                    "ctcc.prospective_cutover_native_catalog_observation.v3"
+                )
+            path.write_text(json.dumps(value), encoding="utf-8")
+            marker = {
+                "artifact": "test-results/" + filename,
+                "sha256": _sha(path.read_bytes()),
+                "native_baseline_admission": False,
+                "execution_authority": False,
+            }
+            if filename.startswith("prospective"):
+                marker["g6_qualified"] = False
+            label = (
+                "migration-prospective-cutover-native-catalog"
+                if filename.startswith("prospective")
+                else "migration-history-partition-native-catalog"
+                if filename.startswith("account-history")
+                else "migration-coverage-native-catalog"
+            )
+            (root / (label + ".log")).write_text(json.dumps(marker), encoding="utf-8")
+        server = _synthetic0052_wire_server()
+        capture = {
+            "schema": "ctcc.original_history_frame_owner_catalog_observation.v1",
+            "source_head": "0052",
+            "database_head": "0052",
+            "source_migration_sha256": identity["migration"]["migration_sha256"],
+            "session_facts": [
+                "synthetic17",
+                server["version_num"],
+                server["current_user"],
+                server["session_user"],
+                server["database"],
+                "pg_catalog",
+            ],
+            "catalog": {"synthetic0052_wire_only": True},
+            "partition_catalog": {"synthetic0052_wire_only": True, "server": server},
+            "installation": frame_policy.expected_owner_installation_schema(),
+            "source_files": {
+                name: source_files[name]["sha256"]
+                for name in current0052.ORIGINAL_FRAME_INSTALLATION_CAPTURE_PATHS
+            },
+            "manifest_sha256": _sha(MANIFEST),
+            "native_baseline_admission": False,
+            "runtime_admission": False,
+            "account_complete": False,
+            "execution_authority": False,
+        }
+        path = results / "original-history-frame-owner-catalog.json"
+        path.write_text(json.dumps(capture), encoding="utf-8")
+        (root / "migration-original-history-frame-native-catalog.log").write_text(
+            json.dumps(
+                {
+                    "artifact": "test-results/original-history-frame-owner-catalog.json",
+                    "sha256": _sha(path.read_bytes()),
+                    "native_baseline_admission": False,
+                    "runtime_admission": False,
+                    "account_complete": False,
+                    "execution_authority": False,
+                }
+            ),
+            encoding="utf-8",
+        )
+        if (
+            identity["suite"] == "postgres"
+            and identity.get("postgres_component_index") == 0
+        ):
+            identity["predecessor_0047_validation"]["source_head"] = "0052"
+            path = root / "predecessor-0047-identity.log"
+            value = json.loads(path.read_bytes())
+            value["source_head"] = "0052"
+            path.write_text(json.dumps(value), encoding="utf-8")
+            path = root / "migration-history-partition-nonempty-before.log"
+            prior = json.loads(path.read_bytes())
+            snapshot = current0052.history_partition_nonempty_snapshot_0052(
+                _revision_readback("0052"), prior["retention"]
+            )
+            identity["history_partition_nonempty_downgrade_policy"] = (
+                current0052.history_partition_nonempty_downgrade_readback_0052(
+                    snapshot, snapshot
+                )
+            )
+            for label in (
+                "migration-history-partition-nonempty-before",
+                "migration-history-partition-nonempty-after",
+            ):
+                (root / (label + ".log")).write_text(
+                    json.dumps(snapshot), encoding="utf-8"
+                )
+            path = root / "migration-history-partition-nonempty-denial.log"
+            path.write_bytes(
+                b"INFO Running downgrade 0052 -> 0051\n" + path.read_bytes()
+            )
+            path = results / "account-history-partition-migration.json"
+            receipt = json.loads(path.read_bytes())
+            receipt["schema_version"] = (
+                "ctcc.account_history_partition_migration_acceptance.v3"
+            )
+            receipt["before"]["head"] = receipt["after"]["head"] = "0052"
+            path.write_text(json.dumps(receipt), encoding="utf-8")
+            identity["history_partition_migration_acceptance"] = receipt
+        (root / "identity.json").write_text(json.dumps(identity), encoding="utf-8")
+        _synthetic0052_wire_rehash(root)
+
+
+@pytest.mark.parametrize(
+    "damage", ["head", "session", "authority", "readback", "missing_capture"]
+)
+def test_current0052_wire_only_frame_contract_refuses_rehashed_damage(tmp_path, damage):
+    artifacts, _ = _artifacts(tmp_path)
+    result = verify_union(
+        artifacts, commit=COMMIT, tree=TREE, manifest_sha256=_sha(MANIFEST)
+    )
+    assert result["trading_acceptance"] is False
+    # This success has only synthetic wire/parser credit, never actual gate credit.
+    root = next(artifacts.iterdir()) / "ctcc-validation"
+    path = root / "test-results/original-history-frame-owner-catalog.json"
+    value = json.loads(path.read_bytes())
+    if damage == "head":
+        value["database_head"] = "0053"
+    elif damage == "session":
+        value["session_facts"][4] = "contradictory"
+    elif damage == "authority":
+        value["runtime_admission"] = True
+    elif damage == "readback":
+        (root / "migration-original-history-frame-empty-before.log").write_text(
+            json.dumps(_revision_readback("0051")), encoding="utf-8"
+        )
+    else:
+        path.unlink()
+    if path.exists():
+        path.write_text(json.dumps(value), encoding="utf-8")
+        marker = root / "migration-original-history-frame-native-catalog.log"
+        record = json.loads(marker.read_bytes())
+        record["sha256"] = _sha(path.read_bytes())
+        marker.write_text(json.dumps(record), encoding="utf-8")
+    _synthetic0052_wire_rehash(root)
+    with pytest.raises(ValueError):
         verify_union(
             artifacts, commit=COMMIT, tree=TREE, manifest_sha256=_sha(MANIFEST)
         )

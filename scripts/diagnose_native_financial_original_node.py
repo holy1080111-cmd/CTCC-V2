@@ -40,6 +40,12 @@ INPUT_PINS = {
     "app/trade_qualification/account_history_source_bundle_v1.py": "06a993d5b10961f302107ff2a45dc5cbfb282384793cb4b1b317563b35c460ac",
     "app/database/repositories/public_runtime_bundle_custody.py": "69cca49251e9bce5f97261a8171aeefabac208a4d1244d864380727dd1597d30",
 }
+SCOPED_JSON_SOURCE_PINS = {
+    "app/trade_qualification/native_account_risk_assembly_v1.py": "af96c0a2f18224d4ba1739b1b6049337ca2f08611166577e6d0f2cffa3bd31d7",
+    "app/trade_qualification/account_history_source_v1.py": "05ab94864ede0f95450da9d3be60d35f717b22e44fd1f3d81af52ee6ce7df39b",
+    "app/trade_qualification/account_history_source_bundle_v1.py": "cbee6a92d818e10a2dd0633ea558298dd5a9896d9de6534f39757f8c22e93c12",
+    "app/trade_qualification/history_json_lexical_guard_v1.py": "56b704cc253d9a077067ae9fb346537cfb29f3bb484d0174eb4403c1ccf9035b",
+}
 EXECUTION_OFF = (
     "ENVIRONMENT=test",
     "TRADING_MODE=analysis_only",
@@ -63,12 +69,50 @@ def sha(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
-def _owned_deny_codes() -> dict:
+def _owned_deny_codes(*, source_pins=INPUT_PINS) -> dict:
     """Called only after an exception; source literals, never error text."""
     global _DENY_ALLOWLIST
-    if _DENY_ALLOWLIST is not None:
+    if source_pins is not INPUT_PINS and source_pins is not SCOPED_JSON_SOURCE_PINS:
+        raise ValueError("owned_deny_source_profile_unverified")
+    if source_pins is INPUT_PINS and _DENY_ALLOWLIST is not None:
         return _DENY_ALLOWLIST
     root = Path(__file__).resolve().parents[1]
+    if source_pins is SCOPED_JSON_SOURCE_PINS:
+        for relative in (
+            "app/trade_qualification/native_account_risk_assembly_v1.py",
+            "app/trade_qualification/account_history_source_v1.py",
+            "app/trade_qualification/account_history_source_bundle_v1.py",
+            "app/trade_qualification/history_json_lexical_guard_v1.py",
+        ):
+            path = root / relative
+            before = path.lstat()
+            if (
+                not stat.S_ISREG(before.st_mode)
+                or before.st_nlink != 1
+                or path.is_symlink()
+                or getattr(before, "st_file_attributes", 0) & 1024
+                or not 0 < before.st_size <= 4 * 1024 * 1024
+            ):
+                raise ValueError("owned_deny_source_identity_changed")
+            with path.open("rb") as source_file:
+                raw = source_file.read(4 * 1024 * 1024 + 1)
+            after = path.lstat()
+            fields = (
+                "st_dev",
+                "st_ino",
+                "st_mode",
+                "st_nlink",
+                "st_size",
+                "st_mtime_ns",
+                "st_ctime_ns",
+            )
+            if (
+                tuple(getattr(before, field) for field in fields)
+                != tuple(getattr(after, field) for field in fields)
+                or len(raw) != before.st_size
+                or sha(raw) != source_pins[relative]
+            ):
+                raise ValueError("owned_deny_source_identity_changed")
     allowed = {}
     for name in (
         "app/trade_qualification/native_account_risk_assembly_v1.py",
@@ -76,7 +120,7 @@ def _owned_deny_codes() -> dict:
         "app/trade_qualification/account_history_source_bundle_v1.py",
     ):
         raw = (root / name).read_bytes()
-        if len(raw) > 4 * 1024 * 1024 or sha(raw) != INPUT_PINS[name]:
+        if len(raw) > 4 * 1024 * 1024 or sha(raw) != source_pins[name]:
             raise ValueError("owned_deny_source_identity_changed")
         tree = ast.parse(raw)
         local_classes = {
@@ -112,7 +156,8 @@ def _owned_deny_codes() -> dict:
         }
         module = name.removesuffix(".py").replace("/", ".")
         allowed[(module, next(iter(raised)))] = frozenset(literals)
-    _DENY_ALLOWLIST = allowed
+    if source_pins is INPUT_PINS:
+        _DENY_ALLOWLIST = allowed
     return allowed
 
 
@@ -486,6 +531,7 @@ def main() -> int:
     expected_ref = SCOPED_REF if scoped else EXPECTED_REF
     input_pins = dict(INPUT_PINS)
     if scoped:
+        input_pins.update(SCOPED_JSON_SOURCE_PINS)
         input_pins["scripts/verify_final_hermetic.py"] = (
             "dc8e887927052a2b932a12ba8424eb6f926c9ced04b9e6d68f91a8492eb3fcb5"
         )
@@ -493,7 +539,7 @@ def main() -> int:
             "50b8305a1d0ddefac32717626d1d0dc55145e2024ac65e5104890a4aefb43789"
         )
         input_pins["scripts/native_financial_fixed_node_diagnostics.py"] = (
-            "a8318180305b9bfb136f6c43447b586033be6e1ed9e5a42551da93defba8916a"
+            "071e446016c91549a98420daf7dfa58b201cad7cd713993ea8b91678ca4ca3cd"
         )
         input_pins["scripts/native_financial_fixed_node_plugin.py"] = (
             "658595a65d3ec85449f3572b74675f4f832ebd800caaaeb781adaef5f2506e15"

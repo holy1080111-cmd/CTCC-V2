@@ -17,6 +17,7 @@ from app.database.models.qualification_ledger import (
 )
 from app.database.repositories import qualification_ledger as repository_module
 from app.database.repositories.qualification_ledger import QualificationLedgerRepository
+from app.domain.collector_current_0055_catalog_v1 import Current0055CatalogError
 from app.trade_qualification.reservations import (
     AccountLedgerClaims,
     LedgerScope,
@@ -29,6 +30,8 @@ from tests.integration import test_qualification_ledger_repository as fixtures
 from tests.unit.qualification_ledger_fixtures import ledger_fixture
 
 database = fixtures.database
+controlled_current55_database = fixtures.controlled_current55_database
+ledger_database = fixtures.ledger_database
 fixture = fixtures.fixture
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
@@ -56,9 +59,9 @@ def report_pair(fixture):
     "state", ["reserved", "consumed", "uncertain", "reconciled_flat"]
 )
 async def test_exact_all_state_read_keeps_terminal_tombstone_without_revision_change(
-    database, fixture, state
+    ledger_database, fixture, state
 ):
-    repo, clock = await fixtures.initialize(database, fixture)
+    repo, clock = await fixtures.initialize(ledger_database, fixture)
     receipt = await repo.reserve(fixture.request)
     if state == "consumed":
         receipt = await repo.consume_once(
@@ -78,7 +81,7 @@ async def test_exact_all_state_read_keeps_terminal_tombstone_without_revision_ch
         )
         assert not (await repo.read_scope(receipt.scope)).active
     before = await repo.read_scope(receipt.scope)
-    restarted = QualificationLedgerRepository(database[1], clock=clock)
+    restarted = QualificationLedgerRepository(ledger_database[1], clock=clock)
     observed = await restarted.read_event_observation(
         receipt.scope, receipt.original_event_key
     )
@@ -92,9 +95,9 @@ async def test_exact_all_state_read_keeps_terminal_tombstone_without_revision_ch
 
 
 async def test_other_requested_currency_cannot_hide_original_uid_event(
-    database, fixture
+    ledger_database, fixture
 ):
-    repo, clock = await fixtures.initialize(database, fixture)
+    repo, clock = await fixtures.initialize(ledger_database, fixture)
     receipt = await repo.reserve(fixture.request)
     clock.value += timedelta(microseconds=1)
     receipt = await repo.reconcile_reservation(
@@ -113,9 +116,9 @@ async def test_other_requested_currency_cannot_hide_original_uid_event(
 
 
 async def test_missing_scope_is_error_and_unrecorded_exact_key_is_only_diagnostic_absence(
-    database, fixture
+    ledger_database, fixture
 ):
-    repo, _ = await fixtures.initialize(database, fixture)
+    repo, _ = await fixtures.initialize(ledger_database, fixture)
     existing = await repo.reserve(fixture.request)
     absent = await repo.read_event_observation(existing.scope, "f" * 64)
     assert absent.matched is None and absent.admission == "DENY"
@@ -135,61 +138,64 @@ async def test_missing_scope_is_error_and_unrecorded_exact_key_is_only_diagnosti
 
 
 @pytest.mark.parametrize("drift", ("disabled_trigger", "wrong_uid_unique_key"))
-async def test_observation_denies_absence_when_retention_schema_drifts_in_transaction(
-    database, fixture, monkeypatch, drift
+async def test_observation_denies_absence_after_owner_schema_drift(
+    ledger_database, fixture, drift
 ):
-    """Inject transactional DDL at the guard: the fixture DB stays unchanged."""
-    repo, _ = await fixtures.initialize(database, fixture)
-    original_guard = repository_module._require_event_journal_schema
-
-    async def drift_then_check(session):
-        if drift == "disabled_trigger":
-            await session.execute(
-                text(
-                    "ALTER TABLE public.qualification_reservation_transitions "
-                    "DISABLE TRIGGER qualification_transition_immutable"
-                )
-            )
-        else:
-            await session.execute(
-                text(
-                    "ALTER TABLE public.qualification_reservations "
-                    "DROP CONSTRAINT uq_qualification_reservations_uid_event"
-                )
-            )
-            await session.execute(
-                text(
-                    "ALTER TABLE public.qualification_reservations ADD CONSTRAINT "
-                    "uq_qualification_reservations_uid_event UNIQUE "
-                    "(environment, account_id, settlement_currency, original_event_key)"
-                )
-            )
-        await original_guard(session)
-        # Keep injected DDL transactional even if the production guard regresses.
-        raise AssertionError("event_ledger_schema_drift_was_accepted")
-
-    monkeypatch.setattr(
-        repository_module, "_require_event_journal_schema", drift_then_check
-    )
+    repo, _ = await fixtures.initialize(ledger_database, fixture)
+    scope = fixture.request.scope
+    missing = "f" * 64
+    original = await repo.read_event_observation(scope, missing)
+    assert original.matched is None and original.admission == "DENY"
+    if drift == "disabled_trigger":
+        change = (
+            (
+                "ALTER TABLE public.qualification_reservation_transitions "
+                "DISABLE TRIGGER qualification_transition_immutable"
+            ),
+        )
+        restore = (
+            (
+                "ALTER TABLE public.qualification_reservation_transitions "
+                "ENABLE TRIGGER qualification_transition_immutable"
+            ),
+        )
+    else:
+        drop = (
+            "ALTER TABLE public.qualification_reservations "
+            "DROP CONSTRAINT uq_qualification_reservations_uid_event"
+        )
+        add = (
+            "ALTER TABLE public.qualification_reservations ADD CONSTRAINT "
+            "uq_qualification_reservations_uid_event UNIQUE "
+        )
+        change = (
+            drop,
+            add + "(environment, account_id, settlement_currency, original_event_key)",
+        )
+        restore = (drop, add + "(environment, account_id, original_event_key)")
+    owner = ledger_database[0]
+    async with owner.begin() as connection:
+        for statement in change:
+            await connection.execute(text(statement))
     try:
         with pytest.raises(
-            QualificationLedgerError, match="event_ledger_schema_retention_invalid"
+            (Current0055CatalogError, QualificationLedgerError),
+            match="current0055_actual_catalog_unavailable|event_ledger_schema_retention_invalid",
         ):
-            await repo.read_event_observation(fixture.request.scope, "f" * 64)
+            await repo.read_event_observation(scope, missing)
     finally:
-        monkeypatch.setattr(
-            repository_module, "_require_event_journal_schema", original_guard
-        )
-    # The failed read rolled the DDL back; ordinary absence remains DENY-only.
-    observed = await repo.read_event_observation(fixture.request.scope, "f" * 64)
+        async with owner.begin() as connection:
+            for statement in restore:
+                await connection.execute(text(statement))
+    observed = await repo.read_event_observation(scope, missing)
     assert observed.matched is None and observed.admission == "DENY"
 
 
 async def test_observation_nowait_rejects_concurrent_direct_writer_lock(
-    database, fixture
+    ledger_database, fixture
 ):
-    repo, _ = await fixtures.initialize(database, fixture)
-    async with database[1]() as writer, writer.begin():
+    repo, _ = await fixtures.initialize(ledger_database, fixture)
+    async with ledger_database[1]() as writer, writer.begin():
         await writer.execute(
             text("LOCK TABLE public.qualification_reservations IN ROW EXCLUSIVE MODE")
         )
@@ -204,9 +210,9 @@ async def test_observation_nowait_rejects_concurrent_direct_writer_lock(
 
 
 async def test_query_is_exact_bounded_all_state_and_defers_large_request_json(
-    database, fixture
+    ledger_database, fixture
 ):
-    repo, _ = await fixtures.initialize(database, fixture)
+    repo, _ = await fixtures.initialize(ledger_database, fixture)
     receipt = await repo.reserve(fixture.request)
     captured = []
 
@@ -214,11 +220,12 @@ async def test_query_is_exact_bounded_all_state_and_defers_large_request_json(
         if "FROM qualification_reservations" in statement:
             captured.append((statement, parameters))
 
-    event.listen(database[0].sync_engine, "before_cursor_execute", query)
+    writer_engine = ledger_database[1].kw["bind"].sync_engine
+    event.listen(writer_engine, "before_cursor_execute", query)
     try:
         await repo.read_event_observation(receipt.scope, receipt.original_event_key)
     finally:
-        event.remove(database[0].sync_engine, "before_cursor_execute", query)
+        event.remove(writer_engine, "before_cursor_execute", query)
     assert len(captured) == 1
     sql, values = captured[0]
     assert "request_json" not in sql and " LIMIT " in sql
@@ -232,9 +239,9 @@ async def test_query_is_exact_bounded_all_state_and_defers_large_request_json(
 
 @pytest.mark.parametrize("mutation", ["utc", "monotonic", "monotonic_bool"])
 async def test_invalid_measured_read_interval_is_error_not_absence(
-    database, fixture, monkeypatch, mutation
+    ledger_database, fixture, monkeypatch, mutation
 ):
-    repo, clock = await fixtures.initialize(database, fixture)
+    repo, clock = await fixtures.initialize(ledger_database, fixture)
     receipt = await repo.reserve(fixture.request)
     if mutation == "utc":
         samples = iter((clock.value + timedelta(seconds=1), clock.value, clock.value))
@@ -249,15 +256,15 @@ async def test_invalid_measured_read_interval_is_error_not_absence(
 
 
 async def test_uid_lock_covers_cross_currency_read_and_other_report_reservation(
-    database, report_pair
+    ledger_database, report_pair
 ):
     original, other = report_pair
-    s = await controls.setup(database, original)
+    s = await controls.setup(ledger_database, original)
     diagnostic_scope = LedgerScope(
         account_id=original.request.scope.account_id, settlement_currency="USDC"
     )
     await s.ledger.initialize_capture_scope(diagnostic_scope)
-    async with database[1]() as session, session.begin():
+    async with ledger_database[1]() as session, session.begin():
         await s.ledger._locked(session, original.request.scope)
         lookup = asyncio.create_task(
             s.ledger.read_event_observation(
@@ -283,11 +290,11 @@ async def test_uid_lock_covers_cross_currency_read_and_other_report_reservation(
 
 
 async def test_waiting_reservation_does_not_hold_table_lock_ahead_of_uid(
-    database, report_pair
+    ledger_database, report_pair
 ):
     """A writer waiting for this UID must not deny the holder's SHARE read."""
     original, other = report_pair
-    s = await controls.setup(database, original)
+    s = await controls.setup(ledger_database, original)
     key = repository_module._account_uid_lock_key(original.request.scope)
     # PostgreSQL exposes a bigint advisory key as classid/objid halves.
     unsigned = key & ((1 << 64) - 1)
@@ -301,7 +308,7 @@ async def test_waiting_reservation_does_not_hold_table_lock_ahead_of_uid(
     )
     writer = None
     try:
-        async with database[1]() as reader, reader.begin():
+        async with ledger_database[1]() as reader, reader.begin():
             await reader.execute(text("SET TRANSACTION ISOLATION LEVEL READ COMMITTED"))
             await reader.execute(
                 text("SET LOCAL search_path TO pg_catalog, public, pg_temp")
@@ -348,10 +355,10 @@ async def test_waiting_reservation_does_not_hold_table_lock_ahead_of_uid(
 
 
 async def test_new_bound_route_rechecks_terminal_other_report_after_earlier_absence(
-    database, report_pair
+    ledger_database, report_pair
 ):
     original, other = report_pair
-    s = await controls.setup(database, original)
+    s = await controls.setup(ledger_database, original)
     absent = await s.ledger.read_event_observation(
         other.request.scope, original.request.origin.original_event_key
     )
@@ -379,10 +386,10 @@ async def test_new_bound_route_rechecks_terminal_other_report_after_earlier_abse
 
 
 async def test_legacy_reserve_cannot_reuse_terminal_uid_event_with_other_report(
-    database, report_pair
+    ledger_database, report_pair
 ):
     original, other = report_pair
-    repo, clock = await fixtures.initialize(database, original)
+    repo, clock = await fixtures.initialize(ledger_database, original)
     receipt = await repo.reserve(original.request)
     clock.value += timedelta(microseconds=1)
     terminal = await repo.reconcile_reservation(
@@ -403,10 +410,10 @@ async def test_legacy_reserve_cannot_reuse_terminal_uid_event_with_other_report(
 
 
 async def test_concurrent_bound_same_uid_event_different_report_has_exactly_one_winner(
-    database, report_pair
+    ledger_database, report_pair
 ):
     original, other = report_pair
-    s = await controls.setup(database, original)
+    s = await controls.setup(ledger_database, original)
     # Both candidate claims were independently recomputed before attempting the
     # race; the final transaction must repeat event lookup under the same UID.
     results = await asyncio.wait_for(
@@ -424,7 +431,7 @@ async def test_concurrent_bound_same_uid_event_different_report_has_exactly_one_
     assert len(wins) == len(failures) == 1
     assert "event_already_recorded" in str(failures[0])
     assert wins[0].original_event_key == original.request.origin.original_event_key
-    async with database[1]() as session:
+    async with ledger_database[1]() as session:
         rows = (
             await session.scalars(
                 select(QualificationReservation).where(
@@ -440,11 +447,11 @@ async def test_concurrent_bound_same_uid_event_different_report_has_exactly_one_
 
 
 async def test_concurrent_legacy_and_bound_reserve_share_uid_event_lock(
-    database, report_pair
+    ledger_database, report_pair
 ):
     original, other = report_pair
-    s = await controls.setup(database, original)
-    async with database[1]() as session, session.begin():
+    s = await controls.setup(ledger_database, original)
+    async with ledger_database[1]() as session, session.begin():
         await s.ledger._locked(session, original.request.scope)
         legacy = asyncio.create_task(s.ledger.reserve(original.request))
         bound = asyncio.create_task(
@@ -469,7 +476,7 @@ async def test_concurrent_legacy_and_bound_reserve_share_uid_event_lock(
     assert len(wins) == len(failures) == 1
     assert "event_already_recorded" in str(failures[0])
     assert wins[0].original_event_key == original.request.origin.original_event_key
-    async with database[1]() as session:
+    async with ledger_database[1]() as session:
         rows = (
             await session.scalars(
                 select(QualificationReservation).where(
@@ -486,9 +493,9 @@ async def test_concurrent_legacy_and_bound_reserve_share_uid_event_lock(
 
 @pytest.mark.parametrize("terminal", (False, True))
 async def test_database_denies_direct_cross_currency_uid_event_duplicate(
-    database, fixture, terminal
+    ledger_database, fixture, terminal
 ):
-    repo, clock = await fixtures.initialize(database, fixture)
+    repo, clock = await fixtures.initialize(ledger_database, fixture)
     receipt = await repo.reserve(fixture.request)
     if terminal:
         clock.value += timedelta(microseconds=1)
@@ -506,7 +513,7 @@ async def test_database_denies_direct_cross_currency_uid_event_duplicate(
     # A direct SQL writer does not use the repository's UID advisory lock.
     # The DB itself must retain the all-state event tombstone across currencies.
     with pytest.raises(DBAPIError) as denied:
-        async with database[1]() as session, session.begin():
+        async with ledger_database[1]() as session, session.begin():
             original = await session.get(
                 QualificationReservation, receipt.reservation_id
             )
@@ -526,7 +533,7 @@ async def test_database_denies_direct_cross_currency_uid_event_duplicate(
     assert (
         await repo.read_event_observation(receipt.scope, receipt.original_event_key)
     ).matched == receipt
-    async with database[1]() as session:
+    async with ledger_database[1]() as session:
         rows = (
             await session.scalars(
                 select(QualificationReservation).filter_by(

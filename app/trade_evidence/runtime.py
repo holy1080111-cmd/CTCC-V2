@@ -1,4 +1,4 @@
-"""Independent, default-off durable reporting worker; no trading imports/callbacks.
+"""Independent, default-off durable reporting worker; no trading operations.
 
 The worker owns a thread and event loop, keeping synchronous durable filesystem
 work and credential ACL checks off the API/trading event loop. The durable outbox
@@ -15,20 +15,17 @@ from pathlib import Path
 
 import httpx
 
-from app.config.settings import Settings
+from app.config.settings import Settings, get_settings
 from app.trade_evidence import (
-    delivery_source_authority,
     notion_adapter,
     outbox,
     outbox_worker,
-    reporting_control,
     storage,
 )
 from app.trade_evidence.notion_binding import (
     NotionBindingError,
     load_destination,
     load_private_token,
-    verify_binding,
 )
 
 logger = logging.getLogger(__name__)
@@ -192,142 +189,141 @@ class NotionOutboxRuntime:
         token = load_private_token(Path(values.notion_outbox_token_file))
         return root, destination, token
 
+    def _configuration_presence(self):
+        """Existing missing-config reason before source, token or filesystem IO."""
+        values = self.settings
+        if not all(
+            (
+                values.notion_outbox_root,
+                values.notion_outbox_destination_file,
+                values.notion_outbox_destination_sha256,
+                values.notion_outbox_token_file,
+            )
+        ):
+            raise NotionBindingError("notion_outbox_configuration_missing")
+
     async def tick(self) -> int | None:
-        """One bounded reporting pass. A None delay pauses until explicit restart."""
+        """Genuine native source preparation around the shared lower DATA cycle."""
         delay = self.settings.notion_outbox_poll_seconds
+        source_permit = None
+        cycle_progress = None
         if not self.settings.notion_outbox_enabled:
             return delay
         try:
-            try:
-                delivery_source_authority.require_issuer_backed_projection()
-            except delivery_source_authority.DeliverySourceAuthorityUnavailable:
+            self._configuration_presence()
+            if self.settings is not get_settings():
                 raise NotionBindingError(
                     "notion_outbox_submission_source_authority_unavailable",
                     retry_after_seconds=None,
-                ) from None
-            root, destination, token = self._configuration()
-            with reporting_control.reporting_lease(root) as control:
-                cooldown = reporting_control.retry_delay(control, self._clock())
-                if cooldown is None or cooldown > 0:
-                    self.status, self.last_code = (
-                        "paused",
-                        "notion_outbox_rate_limit_pending",
+                )
+            from app.trade_evidence import (
+                native_notion_delivery_source_v55 as native_source,
+            )
+
+            root = storage._root_path(Path(self.settings.notion_outbox_root))
+            destination = token = None
+
+            async def prepare_batch(batch):
+                nonlocal source_permit, destination, token
+                for report_id in batch:
+                    view = outbox.validate_outbox_view(
+                        outbox.read_job(root, report_id, clock=outbox.actual_utc)
                     )
-                    return cooldown
-                ids = discover_jobs(root)
-                # No HTTP until every durable prior dispatch is resolved. This
-                # also preserves global rate/uncertainty pauses across restarts.
-                for report_id in ids:
-                    view = outbox.recover_job(root, report_id, clock=self._clock)
-                    if view.status in {"uncertain", "dispatching", "claimed"}:
-                        self.status, self.last_code = (
-                            "paused",
-                            "notion_outbox_reconciliation_required",
-                        )
-                        return None
-                after = tuple(name for name in ids if name > self._after_id)
-                ordered = after + tuple(name for name in ids if name <= self._after_id)
-                batch = ordered[: self.settings.notion_outbox_batch_size]
-                self.last_result = None
-                async with (
-                    self._client_factory() as client,
-                    asyncio.timeout(self.settings.notion_outbox_pass_timeout_seconds),
-                ):
+                    if (
+                        view.status not in {"queued", "retry_wait"}
+                        or view.head.next_attempt_at > view.verified_at
+                    ):
+                        continue
                     try:
-                        await verify_binding(client, token, destination)
-                    except NotionBindingError as error:
-                        if error.code == "notion_binding_rate_limited":
-                            reporting_control.record_rate_limit(
-                                control, self._clock(), error.retry_after_seconds
-                            )
-                        raise
-                    if self._stop.is_set():
-                        raise asyncio.CancelledError
-                    # A producer can publish while the remote schema GETs run.
-                    # Recheck the complete root before selecting any dispatch.
-                    discover_jobs(root)
-
-                    def check_queue_pairs():
-                        discover_jobs(root)
-
-                    adapter = notion_adapter.NotionDeliveryAdapter(
-                        client=client,
-                        token=token,
-                        destination=destination,
-                        clock=self._clock,
-                        pre_create_check=check_queue_pairs,
-                    )
-                    for report_id in batch:
-                        discover_jobs(root)
-                        self.last_result = await outbox_worker.run_outbox_pass(
-                            root,
-                            report_ids=(report_id,),
-                            worker_id=self._worker_id,
-                            adapter=adapter,
-                            policy=outbox_worker.OutboxWorkerPolicy(
-                                pass_timeout_seconds=self.settings.notion_outbox_pass_timeout_seconds
-                            ),
-                            clock=self._clock,
+                        source_permit = await native_source.acquire_native_notion_delivery_source_v55(
+                            root=root,
+                            report_id=report_id,
+                            expected_envelope_sha256=view.envelope.envelope_sha256,
                         )
-                        self._after_id = report_id
-                        if adapter.rate_limited:
-                            reporting_control.record_rate_limit(
-                                control,
-                                self._clock(),
-                                adapter.rate_limit_retry_after_seconds,
-                            )
-                        # Persist a verified remote cooldown first, then
-                        # preserve a precise pause for an interrupted local
-                        # publication observed during the adapter's awaits.
-                        discover_jobs(root)
-                        if adapter.pre_create_check_failed:
-                            self.status, self.last_code = (
-                                "pending",
-                                "notion_outbox_pre_create_check_failed",
-                            )
-                            return self.settings.notion_outbox_poll_seconds
-                        if adapter.rate_limited or any(
-                            item.outbox_status in {"uncertain", "dispatching"}
-                            or item.status == "failed"
-                            for item in self.last_result.items
-                        ):
-                            self.status, self.last_code = (
-                                "paused",
-                                "notion_outbox_reconciliation_required",
-                            )
-                            return None
-                pending = self.last_result is not None and any(
-                    item.outbox_status != "delivered" for item in self.last_result.items
+                    except native_source.NativeNotionSourceUnavailable:
+                        raise outbox_worker.ReportingPreparationUnavailable(
+                            report_id
+                        ) from None
+                    actual_root, destination, token = self._configuration()
+                    if actual_root != root:
+                        raise NotionBindingError(
+                            "notion_outbox_submission_source_authority_unavailable"
+                        )
+                    native_source.require_prepared_native_notion_source_v55(
+                        source_permit, root=root, report_ids=(report_id,)
+                    )
+                    return (report_id,)
+                return None
+
+            async def verify_binding(client):
+                await native_source.verify_native_notion_binding_v55(
+                    source_permit, client=client, token=token, destination=destination
                 )
-                self.status, self.last_code = (
-                    ("pending", "notion_outbox_jobs_pending")
-                    if pending
-                    else ("running", "notion_outbox_pass_complete")
+
+            def make_adapter(client, check_pairs):
+                adapter = notion_adapter.NotionDeliveryAdapter(
+                    client=client,
+                    token=token,
+                    destination=destination,
+                    clock=self._clock,
+                    pre_create_check=check_pairs,
                 )
-                self._failures = 0
+                return native_source.make_native_notion_adapter_v55(
+                    source_permit, adapter=adapter
+                ), adapter
+
+            cycle_progress = outbox_worker.ReportingCycleProgress(
+                self._after_id, self.last_result, self._failures
+            )
+            data = await outbox_worker.run_reporting_delivery_cycle(
+                root,
+                worker_id=self._worker_id,
+                clock=self._clock,
+                poll_seconds=delay,
+                batch_size=self.settings.notion_outbox_batch_size,
+                after_id=self._after_id,
+                client_factory=self._client_factory,
+                discover=discover_jobs,
+                prepare_batch=prepare_batch,
+                verify_binding=verify_binding,
+                make_adapter=make_adapter,
+                stop_requested=self._stop.is_set,
+                timeout_seconds=self.settings.notion_outbox_pass_timeout_seconds,
+                progress=cycle_progress,
+            )
+            self.status, self.last_code, delay = data.status, data.code, data.delay
+            self._after_id, self.last_result, self._failures = (
+                data.after_id,
+                data.last_result,
+                data.failures,
+            )
         except asyncio.CancelledError:
             raise
-        except Exception as error:  # noqa: BLE001 -- Reporting cannot affect trade state or leak errors.
-            self._failures += 1
-            self.status, self.last_code = (
-                "pending",
-                "notion_outbox_configuration_or_delivery_pending",
+        except Exception as error:  # noqa: BLE001 -- no private error text or trade consequence.
+            if cycle_progress is not None:
+                self._after_id, self.last_result = (
+                    cycle_progress.after_id,
+                    cycle_progress.last_result,
+                )
+            data = outbox_worker.reporting_error_data(
+                error,
+                poll_seconds=delay,
+                failures=self._failures,
+                after_id=self._after_id,
+                safe_codes=SAFE_CODES,
             )
-            delay = min(300, delay * 2 ** min(self._failures - 1, 6))
-            if (
-                type(error) is NotionBindingError
-                and type(error.code) is str
-                and error.code in SAFE_CODES
-            ):
-                self.last_code = error.code
-                if error.retry_after_seconds is None:
-                    self.status, delay = "paused", None
-                elif (
-                    type(error.retry_after_seconds) is int
-                    and 0 <= error.retry_after_seconds <= 99999
-                ):
-                    delay = max(delay, error.retry_after_seconds)
+            self.status, self.last_code, delay = data.status, data.code, data.delay
+            self._failures = data.failures
             logger.warning("notion_outbox_pending code=%s", self.last_code)
+        finally:
+            if source_permit is not None:
+                try:
+                    source_permit.close()
+                except BaseException:  # noqa: BLE001 -- Preserve the enclosing operation's result and mark custody pending.
+                    self.status, self.last_code = (
+                        "pending",
+                        "notion_outbox_submission_source_authority_unavailable",
+                    )
         return delay
 
     async def _run(self):

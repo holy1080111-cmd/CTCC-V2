@@ -37,21 +37,50 @@ class ControlledHoldoutRead:
     execution_authority: bool = field(default=False, init=False)
 
 
-def _same_file(left: os.stat_result, right: os.stat_result) -> bool:
-    stable = (
-        left.st_dev,
-        left.st_ino,
-        left.st_size,
-        left.st_mtime_ns,
-    ) == (
-        right.st_dev,
-        right.st_ino,
-        right.st_size,
-        right.st_mtime_ns,
+def _file_identity(info: os.stat_result) -> tuple:
+    """Exact observations within one path or descriptor stat channel."""
+    return (
+        info.st_dev,
+        info.st_ino,
+        info.st_mode,
+        info.st_nlink,
+        info.st_size,
+        info.st_mtime_ns,
+        info.st_ctime_ns,
+        getattr(info, "st_file_attributes", 0),
+        getattr(info, "st_reparse_tag", 0),
+        getattr(info, "st_birthtime_ns", None),
     )
-    # Windows path and descriptor stat can disagree on st_ctime after a write.
-    # The content digest remains mandatory on every platform.
-    return stable and (os.name == "nt" or left.st_ctime_ns == right.st_ctime_ns)
+
+
+def _same_file(left: os.stat_result, right: os.stat_result) -> bool:
+    # Same-channel comparisons never omit either ctime observation.
+    return _file_identity(left) == _file_identity(right)
+
+
+def _cross_file(left: os.stat_result, right: os.stat_result) -> bool:
+    if os.name != "nt":
+        return _same_file(left, right)
+    a, b = _file_identity(left), _file_identity(right)
+    births = (
+        getattr(left, "st_birthtime_ns", None),
+        getattr(right, "st_birthtime_ns", None),
+    )
+    if not (
+        all(type(value) is int and value > 0 for value in births)
+        and all(type(value) is int for value in (*a[:6], *b[:6]))
+        and left.st_ino > 0
+        and right.st_ino > 0
+        and all(
+            type(getattr(info, field, None)) is int
+            for info in (left, right)
+            for field in ("st_file_attributes", "st_reparse_tag")
+        )
+    ):
+        return False
+    # Windows path ctime and descriptor ctime have different semantics.
+    # Join all compatible identity fields and required positive birthtime.
+    return a[:6] + a[7:] == b[:6] + b[7:]
 
 
 def _read_pinned_file(
@@ -61,7 +90,13 @@ def _read_pinned_file(
         raise ControlledHoldoutReadError("holdout input path must be absolute")
     try:
         before = path.lstat()
-        if not stat.S_ISREG(before.st_mode) or not 0 < before.st_size <= maximum:
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_nlink != 1
+            or getattr(before, "st_file_attributes", 0) & 0x400
+            or getattr(before, "st_reparse_tag", 0)
+            or not 0 < before.st_size <= maximum
+        ):
             raise ControlledHoldoutReadError(
                 "holdout input is not a bounded regular file"
             )
@@ -69,7 +104,7 @@ def _read_pinned_file(
         fd = os.open(path, flags)
         try:
             opened = os.fstat(fd)
-            if not stat.S_ISREG(opened.st_mode) or not _same_file(before, opened):
+            if not stat.S_ISREG(opened.st_mode) or not _cross_file(before, opened):
                 raise ControlledHoldoutReadError("holdout input changed at open")
             with os.fdopen(fd, "rb", closefd=False) as stream:
                 payload = stream.read(maximum + 1)
@@ -79,8 +114,9 @@ def _read_pinned_file(
         after_path = path.lstat()
         if (
             len(payload) != before.st_size
-            or not _same_file(before, after_fd)
+            or not _same_file(opened, after_fd)
             or not _same_file(before, after_path)
+            or not _cross_file(after_path, after_fd)
         ):
             raise ControlledHoldoutReadError("holdout input changed during read")
         if hashlib.sha256(payload).hexdigest() != expected_sha256:

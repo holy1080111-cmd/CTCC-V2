@@ -26,12 +26,18 @@ from app.trade_qualification import account_native_proof as proof
 from app.trade_qualification import account_observation_index as observed
 from app.trade_qualification import account_positions_history_collector_v1 as positions
 from app.trade_qualification import account_positions_history_v1 as position_pages
+from app.trade_qualification import history_json_lexical_guard_v1 as _json_lexical_guard
 from app.trade_qualification.reservations import LedgerScope
 
 SCHEMA = "ctcc.native_history_source_bundle.v1"
 PROOF_SCHEMA = "ctcc.native_history_acquisition.v1"
 MAX_JSON_DEPTH = 32
 MAX_JSON_NODES = 262144
+
+_JSON_SPECIAL_PATTERN = _json_lexical_guard.PATTERN
+_JSON_SPECIAL_FINDITER = _json_lexical_guard.FINDITER
+_JSON_MATCH_START = _json_lexical_guard.MATCH_START
+_JSON_LEXICAL_BINDING = _json_lexical_guard.BINDING
 POLICY_SHA256 = sha(
     canonical(
         {
@@ -72,13 +78,40 @@ def _deny(code="history_source_bundle_invalid"):
     raise HistorySourceBundleError(code) from None
 
 
-def _json(raw, maximum=MAX_BUNDLE_BYTES):
+def _json(
+    raw,
+    maximum=MAX_BUNDLE_BYTES,
+    *,
+    _json_guard=_json_lexical_guard.require,
+    _json_binding=_json_lexical_guard.BINDING,
+    _json_module=_json_lexical_guard,
+):
+    if (
+        _json_module is not _json_lexical_guard
+        or _json_binding is not _json_module.BINDING
+        or _json_guard is not _json_binding[0]
+        or (_json_guard is not _json_module.require)
+        or (_json_guard.__code__ != _json_binding[1])
+        or (_json_guard.__code__.co_filename != _json_binding[1].co_filename)
+        or (_json_guard.__defaults__ is not _json_module._ENTRY_DEFAULTS)
+        or (_json_guard.__kwdefaults__ is not None)
+        or (_json_guard.__closure__ is not None)
+        or (_json_guard.__globals__ is not _json_module.__dict__)
+        or (_json_guard.__builtins__ is not _json_module._BUILTINS)
+    ):
+        raise ValueError("history_json_guard_entry_changed") from None
+    _json_guard()
     if type(raw) is not bytes or not 0 < len(raw) <= maximum:
         _deny("history_source_byte_limit")
-    # Bound depth/structural allocation before json.loads creates a large tree.
     depth = tokens = 0
     quoted = escaped = False
-    for byte in raw:
+    previous = -1
+    for match in _JSON_SPECIAL_FINDITER(_JSON_SPECIAL_PATTERN, raw):
+        offset = _JSON_MATCH_START(match)
+        if escaped and offset > previous + 1:
+            escaped = False
+        previous = offset
+        byte = raw[offset]
         if quoted:
             if escaped:
                 escaped = False
@@ -96,6 +129,8 @@ def _json(raw, maximum=MAX_BUNDLE_BYTES):
                 _deny("history_source_json_structure_limit")
         elif byte in (125, 93):
             depth -= 1
+    if escaped and previous + 1 < len(raw):
+        escaped = False
 
     def unique(pairs):
         result = {}
@@ -128,7 +163,7 @@ def _json(raw, maximum=MAX_BUNDLE_BYTES):
         raise
     except (ValueError, UnicodeError, RecursionError):
         _deny("history_source_json_invalid")
-    pending, nodes = [(value, 0)], 0
+    pending, nodes = ([(value, 0)], 0)
     while pending:
         item, depth = pending.pop()
         nodes += 1
@@ -430,8 +465,30 @@ def freeze_history_source_bundle_v1(
     return raw
 
 
-def replay_history_source_bundle_v1(raw, *, expected_sha256):
+def replay_history_source_bundle_v1(
+    raw,
+    *,
+    expected_sha256,
+    _json_guard=_json_lexical_guard.require,
+    _json_binding=_json_lexical_guard.BINDING,
+    _json_module=_json_lexical_guard,
+):
     """Pure audit replay; even exact durable bytes return only an inert DTO."""
+    if (
+        _json_module is not _json_lexical_guard
+        or _json_binding is not _json_module.BINDING
+        or _json_guard is not _json_binding[0]
+        or (_json_guard is not _json_module.require)
+        or (_json_guard.__code__ != _json_binding[1])
+        or (_json_guard.__code__.co_filename != _json_binding[1].co_filename)
+        or (_json_guard.__defaults__ is not _json_module._ENTRY_DEFAULTS)
+        or (_json_guard.__kwdefaults__ is not None)
+        or (_json_guard.__closure__ is not None)
+        or (_json_guard.__globals__ is not _json_module.__dict__)
+        or (_json_guard.__builtins__ is not _json_module._BUILTINS)
+    ):
+        raise ValueError("history_json_guard_entry_changed") from None
+    _json_guard()
     try:
         if type(expected_sha256) is not str or sha(raw) != expected_sha256:
             _deny("history_source_pin_mismatch")
@@ -477,7 +534,7 @@ def replay_history_source_bundle_v1(raw, *, expected_sha256):
             or not 1 <= len(value["sources"]) <= observed.MAX_CAPTURES
         ):
             _deny("history_source_population_bound")
-        sources, packets, joins, records = [], [], [], []
+        sources, packets, joins, records = ([], [], [], [])
         for raw_chain in value["sources"]:
             chain = _chain(raw_chain)
             reference, packet, source_records, source_joins = proof._source(
@@ -572,8 +629,10 @@ def replay_history_source_bundle_v1(raw, *, expected_sha256):
                 page.response_body, limit=positions.MAX_CONFIG_BYTES, wire=True
             )[0]["data"][0]
             if any(
-                type(config.get(key)) is not str or config[key] != item
-                for key, item in expected_config.items()
+                (
+                    type(config.get(key)) is not str or config[key] != item
+                    for key, item in expected_config.items()
+                )
             ):
                 _deny("history_source_identity_changed")
         if (
@@ -613,31 +672,56 @@ def replay_history_source_bundle_v1(raw, *, expected_sha256):
         _deny()
 
 
-def _positions_trace(trace, position, plan):
+def _positions_trace(
+    trace,
+    position,
+    plan,
+    *,
+    _json_guard=_json_lexical_guard.require,
+    _json_binding=_json_lexical_guard.BINDING,
+    _json_module=_json_lexical_guard,
+):
+    if (
+        _json_module is not _json_lexical_guard
+        or _json_binding is not _json_module.BINDING
+        or _json_guard is not _json_binding[0]
+        or (_json_guard is not _json_module.require)
+        or (_json_guard.__code__ != _json_binding[1])
+        or (_json_guard.__code__.co_filename != _json_binding[1].co_filename)
+        or (_json_guard.__defaults__ is not _json_module._ENTRY_DEFAULTS)
+        or (_json_guard.__kwdefaults__ is not None)
+        or (_json_guard.__closure__ is not None)
+        or (_json_guard.__globals__ is not _json_module.__dict__)
+        or (_json_guard.__builtins__ is not _json_module._BUILTINS)
+    ):
+        raise ValueError("history_json_guard_entry_changed") from None
+    _json_guard()
     if type(trace) is not dict or set(trace) != {"events", "pages"}:
         _deny("history_positions_trace_invalid")
     archive = _json(position.raw_archive, positions.MAX_ARCHIVE_BYTES)
     raw_pages = [positions._read_record(archive["config_before"])]
     pages = positions._unfreeze_pages(plan, archive["history_archive"])
     raw_pages.extend(
-        positions._RawPage(
-            page.raw_body,
-            page.request_started_at,
-            page.headers_received_at,
-            page.body_completed_at,
-            cert,
+        (
+            positions._RawPage(
+                page.raw_body,
+                page.request_started_at,
+                page.headers_received_at,
+                page.body_completed_at,
+                cert,
+            )
+            for page, cert in zip(pages, position.peer_certificate_sha256, strict=True)
         )
-        for page, cert in zip(pages, position.peer_certificate_sha256, strict=True)
     )
     raw_pages.append(positions._read_record(archive["config_after"]))
     if (
         type(trace["pages"]) is not list
         or len(trace["pages"]) != len(raw_pages)
         or type(trace["events"]) is not list
-        or len(trace["events"]) > 4096
+        or (len(trace["events"]) > 4096)
     ):
         _deny("history_positions_trace_invalid")
-    events, cursor, prior, stamps = trace["events"], 0, None, []
+    events, cursor, prior, stamps = (trace["events"], 0, None, [])
     for index, raw in enumerate(raw_pages):
         if type(raw.certificate_sha256) is not str:
             _deny("history_native_tls_required")
@@ -939,3 +1023,19 @@ def _b1_temporal(
     # the existing 5ms/60s bounds even for >512 page witnesses; no relaxed policy.
     for prior, stamp in pairwise(stamps):
         validate_stamps((stamps[0], prior, stamp))
+
+
+# The binder is checked before invocation; code is expected-source compiled.
+_json_bind = _json_lexical_guard.BINDING
+if (
+    _json_bind[5] is not _json_lexical_guard.bind_bundle
+    or _json_bind[5].__code__ != _json_bind[6]
+    or _json_bind[5].__code__.co_filename != _json_bind[6].co_filename
+    or _json_bind[5].__globals__ is not _json_lexical_guard.__dict__
+    or _json_bind[5].__builtins__ is not _json_lexical_guard._BUILTINS
+    or _json_bind[5].__defaults__ is not _json_lexical_guard._BINDER_DEFAULTS
+    or _json_bind[5].__kwdefaults__ is not None
+    or _json_bind[5].__closure__ is not None
+):
+    raise ValueError("history_json_guard_binding_entry_changed") from None
+_json_bind[5](globals())

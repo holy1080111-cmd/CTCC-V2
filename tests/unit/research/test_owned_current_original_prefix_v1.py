@@ -40,6 +40,10 @@ def raw_market():
 
 @pytest.fixture(scope="module")
 def arithmetic_replay(tmp_path_factory):
+    return _arithmetic_replay_values(tmp_path_factory)
+
+
+def _arithmetic_replay_values(tmp_path_factory, *, fresh_funding=False):
     """Declared raw replay data, not registered as any native frame/owner.
 
     The exact account replay dataclass deliberately retains all false authority
@@ -52,7 +56,26 @@ def arithmetic_replay(tmp_path_factory):
             v2_engine_source("long"),
             evaluated_at=original_fixture.NOW + timedelta(milliseconds=10),
         )
-    diagnostic = capture_raw_source(source, tmp_path_factory.mktemp("opx-math"))
+    declared_funding = None
+    if fresh_funding:
+        # Declare a distinct synthetic response BEFORE capture. Retain the
+        # source's original ts/settlement pair; never restamp collected bytes.
+        provenance = source.quote.provenance[2]
+        assert provenance.role == "funding"
+        payload = json.loads(provenance.response_body)
+        assert payload["code"] == "0" and len(payload["data"]) == 1
+        declared_funding = dict(payload["data"][0])
+        declared_funding.update(
+            method="current_period",
+            formulaType="withRate",
+            minFundingRate="-0.00375",
+            maxFundingRate="0.00375",
+            settFundingRate="-0.0002",
+            settState="settled",
+        )
+    diagnostic = capture_raw_source(
+        source, tmp_path_factory.mktemp("opx-math"), declared_funding=declared_funding
+    )
     packet = original_fixture.account_source()
     policy = fixed_native_original_g1_policy()
     args = inputs(

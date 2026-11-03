@@ -1,5 +1,6 @@
 """Append-only post-submit observations and local reporting projections."""
 
+import json
 from datetime import datetime
 
 from sqlalchemy import (
@@ -18,6 +19,10 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database.base import Base
+from app.domain import native_close_intent_schema_v55 as native_close_intent
+from app.domain import native_closed_report_schema_v55 as native_report
+
+_CLOSE_INTENT_INDEX = json.loads(native_close_intent.INDEX_SPEC_JSON)
 
 
 class QualificationSubmissionOutcome(Base):
@@ -49,6 +54,12 @@ class QualificationSubmissionOutcome(Base):
             "reservation_id",
             unique=True,
             postgresql_where=text("observation_kind = 'initial'"),
+        ),
+        Index(
+            _CLOSE_INTENT_INDEX["index_name"],
+            _CLOSE_INTENT_INDEX["column"],
+            unique=_CLOSE_INTENT_INDEX["unique"],
+            postgresql_where=text(_CLOSE_INTENT_INDEX["predicate"]),
         ),
     )
     outcome_id: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -94,7 +105,7 @@ class QualificationReportSpool(Base):
             "octet_length(report_bytes) BETWEEN 1 AND 32768 AND octet_length(policy_json) BETWEEN 1 AND 4096",
             name="bounds",
         ),
-        CheckConstraint("eligible=false", name="transport_unverified"),
+        CheckConstraint(native_report.SPOOL_CHECK, name="transport_unverified"),
         Index(
             "uq_submission_eligible_reservation",
             "reservation_id",
@@ -144,7 +155,7 @@ class QualificationReportProjectionReceipt(Base):
             "report_sha256 ~ '^[a-f0-9]{64}$' AND policy_sha256 ~ '^[a-f0-9]{64}$' AND envelope_sha256 ~ '^[a-f0-9]{64}$'",
             name="digests",
         ),
-        CheckConstraint("false", name="transport_unverified"),
+        CheckConstraint(native_report.PROJECTION_CHECK, name="transport_unverified"),
     )
     spool_id: Mapped[str] = mapped_column(
         ForeignKey("qualification_report_spool.spool_id", ondelete="RESTRICT"),

@@ -31,6 +31,7 @@ from app.domain import controlled_writer_coverage_catalog_v1 as previous
 from app.domain import prospective_event_cutover_catalog_v2 as catalog
 from app.domain import prospective_event_cutover_v2 as records
 from app.trade_qualification.reservations import LedgerScope, QualificationLedgerError
+from scripts import current_contract_source_scopes_v1 as source_scopes
 from tests.controlled_writer_coverage_fixtures import (
     coverage_record_fixture,
     seed_controlled_writer_coverage,
@@ -48,7 +49,8 @@ def _migrate(connection, target, direction):
     config = Config(str(_ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(_ROOT / "migrations"))
     script = ScriptDirectory.from_config(config)
-    assert script.get_current_head() == "0051"
+    source_scope = source_scopes.historical0052_source_scope(_ROOT)
+    assert script.get_current_head() == source_scope.actual_source_head
     resolver = (
         script._upgrade_revs if direction == "upgrade" else script._downgrade_revs
     )
@@ -124,6 +126,7 @@ async def child():
     raw = os.environ.get("DATABASE_URL", "")
     if not raw:
         pytest.skip("explicit isolated migrated DATABASE_URL required")
+    source_scope = source_scopes.actual_current_source_scope(_ROOT)
     parent = create_async_engine(_hermetic_url(raw), poolclass=NullPool)
     try:
         async with parent.connect() as connection:
@@ -136,7 +139,7 @@ async def child():
             )
             assert (
                 await connection.scalar(text("SELECT version_num FROM alembic_version"))
-                == "0051"
+                == source_scope.actual_source_head
             )
         async with _owned_child(parent) as value:
             yield value

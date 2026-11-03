@@ -20,7 +20,11 @@ from app.trade_qualification.reservations import LedgerScope
 
 
 async def run(value):
-    engine = create_async_engine(os.environ["DATABASE_URL"], poolclass=NullPool)
+    engine = create_async_engine(
+        os.environ["DATABASE_URL"],
+        poolclass=NullPool,
+        connect_args={"server_settings": {"timezone": "UTC"}},
+    )
     sessions = async_sessionmaker(engine, expire_on_commit=False, autoflush=False)
     at = datetime.fromisoformat(value["at"])
     repository = SubmissionReportingRepository(sessions, clock=lambda: at)

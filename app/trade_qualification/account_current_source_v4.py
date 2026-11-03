@@ -486,6 +486,9 @@ async def acquire_initial_demo_account_source_v4(
             "root": native_proof_root,
             "repository": custody_repository,
             "route_proof": route_proof,
+            # Missing custody remains unknown for historical synthetic providers;
+            # no default token set can satisfy the new postpublication issuer.
+            "route_secret_tokens": route_state.get("secret_tokens"),
             "read_session": read_session,
         }
         try:
@@ -627,6 +630,13 @@ async def _acquire_native(initial):
             "bundle_raw": raw,
             "bundle_sha256": sha(raw),
             "custody_id": retained.bundle_id,
+            "lineage_factory": factory,
+            "lineage_bind": factory.kw["bind"],
+            "lineage_factory_kw": tuple(sorted(factory.kw.items())),
+            "lineage_custody": repository,
+            "private_secret_tokens": None
+            if owned["route_secret_tokens"] is None
+            else (*owner.tokens, *owned["route_secret_tokens"][3:]),
             "last": issued,
         }
         _check_owner(context)
@@ -774,6 +784,88 @@ def _replay_controlled_writer_coverage_v1(state, *, key):
     )["stage"]["started"]
     now = native_stamp()
     validate_stamps((original, state["last"], now))
+    _check_current(replay, now)
+    state["last"] = now
+    return replay, now
+
+
+def _take_postpublication_sources_v1(source, *, key):
+    """MOVE actual native current source; neither DTO nor saved bundle works."""
+    from app.trade_qualification.postpublication_sources_v1 import _HOOK_KEY
+
+    if key is not _HOOK_KEY:
+        _deny("account_v4_postpublication_owner_required")
+    state = (
+        _CURRENT.pop(source, None)
+        if type(source) is OwnedCurrentDemoAccountSourceV4
+        else None
+    )
+    if state is None:
+        _deny()
+    _replay_postpublication_sources_v1(state, key=key)
+    return state
+
+
+def _replay_postpublication_sources_v1(state, *, key):
+    """Keep native source/lease/deadlines; not a current risk or G6 issuer."""
+    from app.trade_qualification.postpublication_sources_v1 import _HOOK_KEY
+
+    if key is not _HOOK_KEY:
+        _deny("account_v4_postpublication_owner_required")
+    _check_owner(state)
+    now = native_stamp()
+    validate_stamps((state["last"], now))
+    replay = replay_current_account_bundle_v4(
+        state["bundle_raw"], expected_sha256=state["bundle_sha256"]
+    )
+    _check_current(replay, now)
+    state["last"] = now
+    return replay, now
+
+
+def _take_account_revision_lineage_v1(source, *, key):
+    """Move one actual CURRENT owner to the fixed durable-lineage collector."""
+    from app.database.repositories.account_revision_collector_lineage import _SOURCE_KEY
+
+    if key is not _SOURCE_KEY:
+        _deny("account_v4_collector_lineage_key_required")
+    state = (
+        _CURRENT.pop(source, None)
+        if type(source) is OwnedCurrentDemoAccountSourceV4
+        else None
+    )
+    if state is None:
+        _deny("account_v4_collector_lineage_owner_unavailable")
+    try:
+        _replay_account_revision_lineage_v1(state, key=key)
+        return state
+    except BaseException:
+        state.clear()
+        raise
+
+
+def _replay_account_revision_lineage_v1(state, *, key):
+    """Original lease/context and configured DB factory; never a renewed owner."""
+    from app.database.repositories.account_revision_collector_lineage import _SOURCE_KEY
+
+    if key is not _SOURCE_KEY:
+        _deny("account_v4_collector_lineage_key_required")
+    _check_owner(state)
+    factory = state.get("lineage_factory")
+    if (
+        not runtime._configured_factory(factory)
+        or factory.kw["bind"] is not state.get("lineage_bind")
+        or tuple(sorted(factory.kw.items())) != state.get("lineage_factory_kw")
+    ):
+        _deny("account_v4_collector_lineage_factory_changed")
+    if type(state.get("lineage_custody")) is not custody.RuntimeBundleCustodyRepository:
+        _deny("account_v4_collector_lineage_custody_changed")
+    state["lineage_custody"]._check_factory()
+    now = native_stamp()
+    validate_stamps((state["last"], now))
+    replay = replay_current_account_bundle_v4(
+        state["bundle_raw"], expected_sha256=state["bundle_sha256"]
+    )
     _check_current(replay, now)
     state["last"] = now
     return replay, now

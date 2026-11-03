@@ -35,10 +35,18 @@ from app.database.repositories.account_observation_index import (
 from app.domain import account_history_partition_catalog_v1 as policy
 from app.domain import account_history_partition_v1 as records
 from app.trade_qualification.reservations import LedgerScope
+from scripts import current_contract_source_scopes_v1 as source_scopes
 from tests.controlled_writer_coverage_fixtures import seed_controlled_writer_control
 from tests.integration.test_account_observation_index_repository import (
     additional_capture,
     stored,
+)
+from tests.original_frame_portable_pg_profile import (
+    create_portable_reader_role,
+    parse_portable_url,
+    portable_profile,
+    verify_portable_server,
+    verify_portable_url,
 )
 from tests.unit.test_account_history_partition_v1 import original_linkage
 
@@ -54,7 +62,8 @@ def _migrate(connection, target, direction):
     config = Config(str(_ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(_ROOT / "migrations"))
     script = ScriptDirectory.from_config(config)
-    assert script.get_current_head() == "0051"
+    source_scope = source_scopes.historical0052_source_scope(_ROOT)
+    assert script.get_current_head() == source_scope.actual_source_head
     resolver = (
         script._upgrade_revs if direction == "upgrade" else script._downgrade_revs
     )
@@ -70,14 +79,22 @@ async def partition_primary():
     raw = os.environ.get("DATABASE_URL", "")
     if not raw:
         pytest.skip("explicit isolated migrated DATABASE_URL required")
-    url = make_url(raw)
-    assert url.drivername == "postgresql+asyncpg"
-    assert re.fullmatch(r"ctcc-final-[a-f0-9]{12}-postgres", url.host or "")
-    assert url.username == "ctcc" and url.password is None
-    assert url.port == 5432 and url.database == "ctcc" and not url.query
+    source_scope = source_scopes.historical0052_source_scope(_ROOT)
+    profile = portable_profile(_ROOT)
+    if profile is None:
+        url = make_url(raw)
+        assert url.drivername == "postgresql+asyncpg"
+        assert re.fullmatch(r"ctcc-final-[a-f0-9]{12}-postgres", url.host or "")
+        assert url.username == "ctcc" and url.password is None
+        assert url.port == 5432 and url.database == "ctcc" and not url.query
+    else:
+        url = parse_portable_url(raw)
+        verify_portable_url(url, profile)
     engine = create_async_engine(url, poolclass=NullPool)
     try:
         async with engine.connect() as connection:
+            if profile is not None:
+                await verify_portable_server(connection, url, profile)
             assert (
                 170000
                 <= await connection.scalar(
@@ -87,7 +104,7 @@ async def partition_primary():
             )
             assert (
                 await connection.scalar(text("SELECT version_num FROM alembic_version"))
-                == "0051"
+                == source_scope.actual_source_head
             )
         yield engine
     finally:
@@ -100,9 +117,16 @@ async def _restricted_role(admin):
     assert re.fullmatch(r"ctcc_hp50_[a-f0-9]{32}", role)
     created = False
     engine = None
+    profile = portable_profile(_ROOT)
+    password = None
+    if profile is not None:
+        verify_portable_url(admin.url, profile, database=admin.url.database)
     try:
         async with admin.begin() as connection:
-            await connection.execute(text(f'CREATE ROLE "{role}" LOGIN'))
+            if profile is None:
+                await connection.execute(text(f'CREATE ROLE "{role}" LOGIN'))
+            else:
+                password = await create_portable_reader_role(connection, role)
             created = True
             await connection.execute(text(f'GRANT USAGE ON SCHEMA public TO "{role}"'))
             for name in (
@@ -114,7 +138,9 @@ async def _restricted_role(admin):
                         f'GRANT EXECUTE ON FUNCTION public.{name}({policy.FUNCTION_SIGNATURES[name]}) TO "{role}"'
                     )
                 )
-        engine = create_async_engine(admin.url.set(username=role), poolclass=NullPool)
+        engine = create_async_engine(
+            admin.url.set(username=role, password=password), poolclass=NullPool
+        )
         yield engine
     finally:
         if engine is not None:
@@ -141,7 +167,8 @@ async def _restricted_role(admin):
 
 
 @asynccontextmanager
-async def _child(parent):
+async def _child(parent, *, target="0050"):
+    assert target in {"0050", "0052"}
     name = "ctcc_hp50_" + uuid4().hex
     assert re.fullmatch(r"ctcc_hp50_[a-f0-9]{32}", name)
     created = False
@@ -156,7 +183,17 @@ async def _child(parent):
             created = True
         engine = create_async_engine(parent.url.set(database=name), poolclass=NullPool)
         async with engine.begin() as connection:
-            await connection.run_sync(_migrate, "0050", "upgrade")
+            await connection.run_sync(_migrate, target, "upgrade")
+            assert (
+                await connection.scalar(text("SELECT version_num FROM alembic_version"))
+                == target
+            )
+            if target == "0052":
+                await connection.run_sync(
+                    lambda actual: source_scopes.verify_database_scope(
+                        actual, _ROOT, source_scopes.historical0052_source_scope(_ROOT)
+                    )
+                )
         yield engine
     finally:
         if engine is not None:
@@ -176,6 +213,13 @@ async def _child(parent):
 @pytest.fixture
 async def partition_child(partition_primary):
     async with _child(partition_primary) as child:
+        yield child
+
+
+@pytest.fixture
+async def partition_historical52(partition_primary):
+    """Actual fresh DB52 under the independently measured current source graph."""
+    async with _child(partition_primary, target="0052") as child:
         yield child
 
 
@@ -376,30 +420,32 @@ async def test_partition_restricted_role_deployment_pending_and_actual_commit_re
 
 
 async def test_partition_current_nonempty_downgrade_retains_exact_catalog_and_rows(
-    monkeypatch, partition_primary
+    monkeypatch, partition_historical52
 ):
-    # Leave this real row on the primary0050 database for producer before/after
-    # downgrade stages. Retention is deliberate, not fixture cleanup leakage.
-    scope, documents, revisions, lease = await _sources(monkeypatch, partition_primary)
+    # Preserve the historical52 experiment in its real fresh DB52. Current54
+    # primary retention has a separate versioned test and receipt.
+    scope, documents, revisions, lease = await _sources(
+        monkeypatch, partition_historical52
+    )
     member, _ = _member(scope, documents[-1])
-    async with _restricted_role(partition_primary) as restricted:
+    async with _restricted_role(partition_historical52) as restricted:
         async with restricted.begin() as connection:
             await _settings(connection)
             await _append(connection, scope, documents[-1], member, revisions, lease)
-        before = await _snapshot(partition_primary)
-        assert before[0] == "0051" and sum(before[2]["counts"].values()) > 0
+        before = await _snapshot(partition_historical52)
+        assert before[0] == "0052" and sum(before[2]["counts"].values()) > 0
         with pytest.raises(
             DBAPIError, match="account_history_partition_downgrade_requires_empty"
         ):
-            async with partition_primary.begin() as connection:
+            async with partition_historical52.begin() as connection:
                 await connection.run_sync(_migrate, "0049", "downgrade")
-        after = await _snapshot(partition_primary)
+        after = await _snapshot(partition_historical52)
         assert before == after
         directory = os.environ.get("CTCC_COVERAGE_RECEIPT_DIR")
         if directory is not None:
             output = Path(directory) / "account-history-partition-migration.json"
             result = {
-                "schema_version": "ctcc.account_history_partition_migration_acceptance.v2",
+                "schema_version": "ctcc.account_history_partition_migration_acceptance.v3",
                 "manifest_sha256": hashlib.sha256(
                     (_ROOT / "MANIFEST.sha256").read_bytes()
                 ).hexdigest(),

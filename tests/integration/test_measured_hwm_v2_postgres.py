@@ -8,6 +8,7 @@ equity, account genesis, historical completeness, or order execution.
 import asyncio
 import hashlib
 import json
+from pathlib import Path
 
 import pytest
 from alembic.migration import MigrationContext
@@ -29,6 +30,8 @@ from app.trade_qualification import account_capture_journal as journal
 from app.trade_qualification import account_measured_hwm_continuation as hwm
 from app.trade_qualification import account_observation_index as observed
 from app.trade_qualification import account_portfolio_components as components
+from scripts import collector_current_0054_toolchain as current54
+from scripts import current_contract_source_scopes_v1 as source_scopes
 from scripts.verify_final_hermetic import (
     ACCOUNT_MEASURED_HWM_V2_TRIGGER_CATALOG_SQL,
     ACCOUNT_REVISION_WITNESS_TRIGGER_CATALOG_SQL,
@@ -149,7 +152,11 @@ async def test_b5_0045_roundtrip_or_nonempty_denial_keeps_catalog(database):
         row_count = await connection.scalar(
             text("SELECT count(*) FROM public.demo_account_measured_hwm_v2")
         )
-        assert await connection.run_sync(database_head) == "0051"
+        root = Path(__file__).resolve().parents[2]
+        scope = source_scopes.actual_current_source_scope(root)
+        await connection.run_sync(
+            lambda actual: source_scopes.verify_database_scope(actual, root, scope)
+        )
         original = await catalog(connection)
         assert original[0][-1] == migration._NEW_BODY_SHA256
         assert original[0][-2] is False
@@ -167,7 +174,11 @@ async def test_b5_0045_roundtrip_or_nonempty_denial_keeps_catalog(database):
         assert legacy[1] == original[1]
         await connection.run_sync(invoke, "upgrade")
         assert await catalog(connection) == original
-        assert await connection.run_sync(database_head) == "0051"
+        root = Path(__file__).resolve().parents[2]
+        scope = source_scopes.actual_current_source_scope(root)
+        await connection.run_sync(
+            lambda actual: source_scopes.verify_database_scope(actual, root, scope)
+        )
 
 
 def _first_append_diagnostic(stage: str, error: Exception) -> str:
@@ -706,6 +717,18 @@ async def test_b5_nonempty_downgrade_denies_and_rolls_back_exact_catalog(
 
     async def inspect():
         async with database[0].connect() as connection:
+            for statement in (
+                "SET TRANSACTION ISOLATION LEVEL READ COMMITTED",
+                "SET TRANSACTION READ ONLY",
+                "SET LOCAL TIME ZONE 'UTC'",
+                "SET LOCAL search_path TO pg_catalog, public, pg_temp",
+            ):
+                await connection.execute(text(statement))
+            source_scope = source_scopes.actual_current_source_scope(
+                Path(__file__).resolve().parents[2]
+            )
+            if source_scope.actual_source_head == "0054":
+                return await current54.read_current0054_migration(connection)
             head = await connection.run_sync(database_head)
             witness_table = await connection.scalar(
                 text(
@@ -755,8 +778,13 @@ async def test_b5_nonempty_downgrade_denies_and_rolls_back_exact_catalog(
             )
 
             cutover_catalog = await connection.scalar(text(CUTOVER_SQL))
+            from app.domain.account_history_original_frame_v1 import (
+                CATALOG_SQL as FRAME_SQL,
+            )
+
+            original_frame_catalog = await connection.scalar(text(FRAME_SQL))
         return migration_revision_readback(
-            "0051",
+            "0052",
             head,
             witness_table,
             witness_guard,
@@ -769,6 +797,7 @@ async def test_b5_nonempty_downgrade_denies_and_rolls_back_exact_catalog(
             coverage_catalog=coverage_catalog,
             partition_catalog=partition_catalog,
             cutover_catalog=cutover_catalog,
+            original_frame_catalog=original_frame_catalog,
         )
 
     before = await inspect()
@@ -808,4 +837,8 @@ async def test_b5_downgrade_nowait_refuses_concurrent_parent_reader(
             async with database[0].begin() as contender:
                 await contender.run_sync(downgrade)
     async with database[0].connect() as connection:
-        assert await connection.run_sync(database_head) == "0051"
+        root = Path(__file__).resolve().parents[2]
+        scope = source_scopes.actual_current_source_scope(root)
+        await connection.run_sync(
+            lambda actual: source_scopes.verify_database_scope(actual, root, scope)
+        )

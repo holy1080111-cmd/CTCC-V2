@@ -240,6 +240,26 @@ def _label_positions(actual, top, bottom):
     return tuple(positioned)
 
 
+def _quote_display(snapshot):
+    """Display V2 source clocks directly; never build a legacy quote."""
+    from app.trade_qualification.executable_quote_v2 import ExecutableQuoteV2
+
+    quote = snapshot.quote
+    if type(quote) is ExecutableQuoteV2:
+        return (
+            quote.ticker.ask if snapshot.direction == "long" else quote.ticker.bid,
+            quote.ticker.source_generated_at,
+            "REST ticker V2; funding forecast paired with fundingTime",
+        )
+    if quote is not None:
+        return (
+            quote.ask if snapshot.direction == "long" else quote.bid,
+            quote.quote_time,
+            quote.source,
+        )
+    return None, None, "unknown"
+
+
 def _critical(snapshot):
     qualification = snapshot.qualification
     values = []
@@ -254,9 +274,7 @@ def _critical(snapshot):
         values.append(
             (
                 "QUOTE",
-                snapshot.quote.ask
-                if snapshot.direction == "long"
-                else snapshot.quote.bid,
+                _quote_display(snapshot)[0],
                 _MUTED,
                 (2, 5),
             )
@@ -517,7 +535,7 @@ def _panel(snapshot, panel):
         f"Entry {_number(q.candidate_entry)}   SL {_number(q.stop_loss)}   TP {_number(q.take_profit)}",
         f"Ideal zone: {_number(zone.zone_low) + ' .. ' + _number(zone.zone_high) if zone else 'unknown'}",
         f"Trigger: {_at(trigger.trigger_time) if trigger else 'unknown'}; {'in crop' if trigger_visible else 'outside crop / unavailable'}",
-        f"Captured quote: {_number(critical[-1][1]) if snapshot.quote else 'unknown'}  at {_at(snapshot.quote.quote_time) if snapshot.quote else 'unknown'}",
+        f"Captured quote: {_number(critical[-1][1]) if snapshot.quote else 'unknown'}  at {_at(_quote_display(snapshot)[1]) if snapshot.quote else 'unknown'}",
         f"Gross / net RR: {_number(q.gross_rr, compact=True)} / {_number(q.net_rr, compact=True)} (scenario)",
     ]
     source_lines = [
@@ -594,7 +612,7 @@ def _summary(snapshot, *, liquidity_summary=False):
     entry = (
         f"Unchanged candidate {_number(q.candidate_entry)}; reference {_number(q.reference_price)}. "
         f"Ideal zone {_number(zone.zone_low) + ' .. ' + _number(zone.zone_high) if zone else 'unknown'}; "
-        f"quote source {snapshot.quote.source if snapshot.quote else 'unknown'} at {_at(snapshot.quote.quote_time) if snapshot.quote else 'unknown'}."
+        f"quote source {_quote_display(snapshot)[2] if snapshot.quote else 'unknown'} at {_at(_quote_display(snapshot)[1]) if snapshot.quote else 'unknown'}."
     )
     invalidation = (
         f"Thesis {_number(detection.invalidation_price) if detection else 'unknown'}; "

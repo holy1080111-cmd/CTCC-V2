@@ -533,3 +533,286 @@ def _replay_original_frame_v1(state, *, key):
     )
     state["last"] = now
     return packet, context, now
+
+
+def _take_postpublication_sources_v1(source, *, key):
+    """MOVE actual fresh initial bytes to the distinct postpublication owner."""
+    from app.trade_qualification.postpublication_sources_v1 import _HOOK_KEY
+
+    if key is not _HOOK_KEY:
+        raise CurrentMarketSourceV4Error("public_v4_postpublication_owner_required")
+    state = (
+        _CURRENT.pop(source, None)
+        if type(source) is OwnedCurrentMarketSourceV4
+        else None
+    )
+    if state is None:
+        raise CurrentMarketSourceV4Error("public_v4_source_unavailable")
+    try:
+        _replay_postpublication_sources_v1(state, key=key)
+        return state
+    except BaseException:
+        operational._discard_owned_route_v4(state["v4_route_claim"])
+        raise
+
+
+def _replay_postpublication_sources_v1(state, *, key):
+    """Retain native expiry/custody; this does not issue an original frame."""
+    from app.trade_qualification.postpublication_sources_v1 import _HOOK_KEY
+
+    if key is not _HOOK_KEY:
+        raise CurrentMarketSourceV4Error("public_v4_postpublication_owner_required")
+    _check_owner(state)
+    operational._owned_route_state_v4(
+        state["v4_route_claim"],
+        invocation=state["invocation"],
+        owner_task=state["parent"],
+    )
+    now = native_stamp()
+    validate_stamps((state["last"], now))
+    at = utc_from_ns(now["utc_ns"])
+    if at >= state["expires_at"]:
+        raise CurrentMarketSourceV4Error("public_v4_source_expired")
+    directory, proof, _, _ = replay_runtime_bundle_v4(
+        state["bundle_raw"], expected_sha256=state["bundle_sha256"]
+    )
+    if (
+        sha(canonical(proof)) != state["proof_sha256"]
+        or sha(directory.read("summary.json", runtime.MAX_RAW))
+        != state["journal_sha256"]
+    ):
+        raise CurrentMarketSourceV4Error("public_v4_custody_journal_changed")
+    _, _, packet = runtime.replay_public_runtime(
+        directory,
+        expected_plan_sha256=sha(directory.read("plan.json", runtime.MAX_RAW)),
+    )
+    context = public_market_context_v2(
+        packet, expected_bundle_sha256=packet.bundle_sha256, evaluated_at=at
+    )
+    state["last"] = now
+    return packet, context, now
+
+
+def _take_native_postpublication_v2(source, *, key):
+    """Distinct held G12 continuation purpose; no old bootstrap or DTO owner."""
+    from app.trade_qualification.native_postpublication_recheck_v2 import (
+        _PUBLIC_SOURCE_KEY_V2,
+    )
+
+    if key is not _PUBLIC_SOURCE_KEY_V2:
+        raise CurrentMarketSourceV4Error(
+            "public_v4_native_postpublication_owner_required"
+        )
+    state = (
+        _CURRENT.pop(source, None)
+        if type(source) is OwnedCurrentMarketSourceV4
+        else None
+    )
+    if state is None:
+        raise CurrentMarketSourceV4Error("public_v4_source_unavailable")
+    try:
+        _replay_native_postpublication_v2(state, key=key)
+        return state
+    except BaseException:
+        operational._discard_owned_route_v4(state["v4_route_claim"])
+        raise
+
+
+def _replay_native_postpublication_v2(state, *, key):
+    """Same existing V4 source replay/freshness; distinct outer owned purpose."""
+    from app.trade_qualification.native_postpublication_recheck_v2 import (
+        _PUBLIC_SOURCE_KEY_V2,
+    )
+
+    if key is not _PUBLIC_SOURCE_KEY_V2:
+        raise CurrentMarketSourceV4Error(
+            "public_v4_native_postpublication_owner_required"
+        )
+    _check_owner(state)
+    operational._owned_route_state_v4(
+        state["v4_route_claim"],
+        invocation=state["invocation"],
+        owner_task=state["parent"],
+    )
+    now = native_stamp()
+    validate_stamps((state["last"], now))
+    at = utc_from_ns(now["utc_ns"])
+    if at >= state["expires_at"]:
+        raise CurrentMarketSourceV4Error("public_v4_source_expired")
+    directory, proof, _, _ = replay_runtime_bundle_v4(
+        state["bundle_raw"], expected_sha256=state["bundle_sha256"]
+    )
+    if (
+        sha(canonical(proof)) != state["proof_sha256"]
+        or sha(directory.read("summary.json", runtime.MAX_RAW))
+        != state["journal_sha256"]
+    ):
+        raise CurrentMarketSourceV4Error("public_v4_custody_journal_changed")
+    _, _, packet = runtime.replay_public_runtime(
+        directory,
+        expected_plan_sha256=sha(directory.read("plan.json", runtime.MAX_RAW)),
+    )
+    context = public_market_context_v2(
+        packet, expected_bundle_sha256=packet.bundle_sha256, evaluated_at=at
+    )
+    state["last"] = now
+    return packet, context, now
+
+
+def _discard_native_postpublication_v2_owner(source, *, key):
+    """Synchronous retirement, including the return-to-MOVE cancel window."""
+    from app.trade_qualification.native_postpublication_recheck_v2 import (
+        _PUBLIC_SOURCE_KEY_V2,
+    )
+
+    if key is not _PUBLIC_SOURCE_KEY_V2:
+        raise CurrentMarketSourceV4Error(
+            "public_v4_native_postpublication_owner_required"
+        )
+    state = (
+        _CURRENT.pop(source, None)
+        if type(source) is OwnedCurrentMarketSourceV4
+        else None
+    )
+    if state is not None:
+        operational._discard_owned_route_v4(state["v4_route_claim"])
+
+
+def _take_native_original55_v2(source, *, key):
+    """MOVE new original public bytes under the genuine issued55 context."""
+    from app.trade_qualification.native_original_local_current55_v2 import (
+        _PUBLIC_KEY_V2,
+    )
+
+    if key is not _PUBLIC_KEY_V2:
+        raise CurrentMarketSourceV4Error("public_v4_native_original55_owner_required")
+    state = (
+        _CURRENT.pop(source, None)
+        if type(source) is OwnedCurrentMarketSourceV4
+        else None
+    )
+    if state is None:
+        raise CurrentMarketSourceV4Error("public_v4_source_unavailable")
+    try:
+        _replay_native_original55_v2(state, key=key)
+        return state
+    except BaseException:
+        operational._discard_owned_route_v4(state["v4_route_claim"])
+        raise
+
+
+def _replay_native_original55_v2(state, *, key):
+    """Unchanged real V4 raw/custody/route semantics; distinct original purpose."""
+    from app.trade_qualification.native_original_local_current55_v2 import (
+        _PUBLIC_KEY_V2,
+    )
+
+    if key is not _PUBLIC_KEY_V2:
+        raise CurrentMarketSourceV4Error("public_v4_native_original55_owner_required")
+    _check_owner(state)
+    operational._owned_route_state_v4(
+        state["v4_route_claim"],
+        invocation=state["invocation"],
+        owner_task=state["parent"],
+    )
+    now = native_stamp()
+    validate_stamps((state["last"], now))
+    at = utc_from_ns(now["utc_ns"])
+    if at >= state["expires_at"]:
+        raise CurrentMarketSourceV4Error("public_v4_source_expired")
+    directory, proof, _, _ = replay_runtime_bundle_v4(
+        state["bundle_raw"], expected_sha256=state["bundle_sha256"]
+    )
+    if (
+        sha(canonical(proof)) != state["proof_sha256"]
+        or sha(directory.read("summary.json", runtime.MAX_RAW))
+        != state["journal_sha256"]
+    ):
+        raise CurrentMarketSourceV4Error("public_v4_custody_journal_changed")
+    _, _, packet = runtime.replay_public_runtime(
+        directory,
+        expected_plan_sha256=sha(directory.read("plan.json", runtime.MAX_RAW)),
+    )
+    context = public_market_context_v2(
+        packet, expected_bundle_sha256=packet.bundle_sha256, evaluated_at=at
+    )
+    state["last"] = now
+    return packet, context, now
+
+
+def _discard_native_original55_v2_owner(source, *, key):
+    from app.trade_qualification.native_original_local_current55_v2 import (
+        _PUBLIC_KEY_V2,
+    )
+
+    if key is not _PUBLIC_KEY_V2:
+        raise CurrentMarketSourceV4Error("public_v4_native_original55_owner_required")
+    state = (
+        _CURRENT.pop(source, None)
+        if type(source) is OwnedCurrentMarketSourceV4
+        else None
+    )
+    if state is not None:
+        operational._discard_owned_route_v4(state["v4_route_claim"])
+
+
+def _take_native_flat_leverage_configuration_v1(source, *, key):
+    """MOVE new original public bytes under the genuine issued55 context."""
+    from app.trade_qualification.native_flat_leverage_account_source_v1 import (
+        _PUBLIC_KEY_V1,
+    )
+
+    if key is not _PUBLIC_KEY_V1:
+        raise CurrentMarketSourceV4Error("public_v4_native_original55_owner_required")
+    state = (
+        _CURRENT.pop(source, None)
+        if type(source) is OwnedCurrentMarketSourceV4
+        else None
+    )
+    if state is None:
+        raise CurrentMarketSourceV4Error("public_v4_source_unavailable")
+    try:
+        _replay_native_flat_leverage_configuration_v1(state, key=key)
+        return state
+    except BaseException:
+        operational._discard_owned_route_v4(state["v4_route_claim"])
+        raise
+
+
+def _replay_native_flat_leverage_configuration_v1(state, *, key):
+    """Unchanged real V4 raw/custody/route semantics; distinct original purpose."""
+    from app.trade_qualification.native_flat_leverage_account_source_v1 import (
+        _PUBLIC_KEY_V1,
+    )
+
+    if key is not _PUBLIC_KEY_V1:
+        raise CurrentMarketSourceV4Error("public_v4_native_original55_owner_required")
+    _check_owner(state)
+    operational._owned_route_state_v4(
+        state["v4_route_claim"],
+        invocation=state["invocation"],
+        owner_task=state["parent"],
+    )
+    now = native_stamp()
+    validate_stamps((state["last"], now))
+    at = utc_from_ns(now["utc_ns"])
+    if at >= state["expires_at"]:
+        raise CurrentMarketSourceV4Error("public_v4_source_expired")
+    directory, proof, _, _ = replay_runtime_bundle_v4(
+        state["bundle_raw"], expected_sha256=state["bundle_sha256"]
+    )
+    if (
+        sha(canonical(proof)) != state["proof_sha256"]
+        or sha(directory.read("summary.json", runtime.MAX_RAW))
+        != state["journal_sha256"]
+    ):
+        raise CurrentMarketSourceV4Error("public_v4_custody_journal_changed")
+    _, _, packet = runtime.replay_public_runtime(
+        directory,
+        expected_plan_sha256=sha(directory.read("plan.json", runtime.MAX_RAW)),
+    )
+    context = public_market_context_v2(
+        packet, expected_bundle_sha256=packet.bundle_sha256, evaluated_at=at
+    )
+    state["last"] = now
+    return packet, context, now

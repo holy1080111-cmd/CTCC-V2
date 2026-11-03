@@ -499,8 +499,9 @@ async def test_prior_b1_signature_echo_is_withheld_without_custody_promotion(
 
 @pytest.mark.parametrize("escaped", [False, True])
 def test_final_secret_union_scans_older_original_bodies_before_encoded_archives(
-    monkeypatch, escaped
+    escaped,
 ):
+    assert bundle._json(b"{}") == {}
     signature = "synthetic-later-position-signature"
     raw = canonical({"msg": signature})
     if escaped:
@@ -508,12 +509,29 @@ def test_final_secret_union_scans_older_original_bodies_before_encoded_archives(
     older = (SimpleNamespace(event=SimpleNamespace(raw_body=raw)),)
     latest = (SimpleNamespace(event=SimpleNamespace(raw_body=b'{"msg":""}')),)
     encoded = []
-    monkeypatch.setattr(bundle, "_json", lambda *_: encoded.append(True))
+
+    class ArchiveSentinel:
+        @property
+        def raw_archive(self):
+            encoded.append(True)
+            raise AssertionError("archive_access_preceded_original_secret_refusal")
+
+    position = ArchiveSentinel()
+    tokens = [signature]
+    with pytest.raises(
+        AssertionError, match="^archive_access_preceded_original_secret_refusal$"
+    ):
+        source._check_original_wire_secrets(
+            (((latest, None),), ()), position, None, tokens
+        )
+    assert encoded == [True]
+    encoded.clear()
+
     with pytest.raises(
         source.collector.AccountCollectionError, match="credential_echo_rejected"
     ):
         source._check_original_wire_secrets(
-            (((older, None), (latest, None)), ()), None, None, [signature]
+            (((older, None), (latest, None)), ()), position, None, tokens
         )
     assert encoded == []
 

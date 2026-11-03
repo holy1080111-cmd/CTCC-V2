@@ -27,8 +27,11 @@ from app.trade_qualification.event_models import TriggerDetection
 from app.trade_qualification.events import _checked_tree, _copy_source, extract_trigger
 from app.trade_qualification.sweep_contract import (
     SWEEP_PERMISSION_SHA256,
+    SWEEP_PERMISSION_SWAP_V2_SHA256,
     SWEEP_SELECTION_POLICY,
     SWEEP_SELECTION_SHA256,
+    SWEEP_SELECTION_SWAP_V2_POLICY,
+    SWEEP_SELECTION_SWAP_V2_SHA256,
 )
 from app.trade_qualification.timing import TIMING_POLICIES
 
@@ -218,6 +221,22 @@ class SweepStructuralProtectionSelection(StructuralProtectionSelection):
     def to_audit_json(self) -> str:
         payload = json.loads(super().to_audit_json())
         payload["schema"] = "ctcc_structural_selection_sweep_v1"
+        return json.dumps(
+            payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+        )
+
+
+@dataclass(frozen=True)
+class SweepStructuralProtectionSelectionV2(SweepStructuralProtectionSelection):
+    selection_policy: Literal["ctcc-sweep-original-extreme-selection-swap-v2"] = (
+        SWEEP_SELECTION_SWAP_V2_POLICY
+    )
+    selection_policy_sha256: str = SWEEP_SELECTION_SWAP_V2_SHA256
+    sweep_permission_policy_sha256: str = SWEEP_PERMISSION_SWAP_V2_SHA256
+
+    def to_audit_json(self) -> str:
+        payload = json.loads(super().to_audit_json())
+        payload["schema"] = "ctcc_structural_selection_sweep_swap_v2"
         return json.dumps(
             payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")
         )
@@ -586,6 +605,19 @@ def select_sweep_structural_protection(detection, market, analysis, **inputs):
     )
 
 
+def select_sweep_structural_protection_v2(detection, market, analysis, **inputs):
+    """Actual SWAP-v2 history and original-extreme policy; historical V6 stays exact."""
+    return _select_structural_protection(
+        detection,
+        market,
+        analysis,
+        _reversal=False,
+        _sweep=True,
+        _sweep_v2=True,
+        **inputs,
+    )
+
+
 def _restrict_sweep_stops(stops, event):
     """Keep every pool/alternative; only the original extreme may be selected."""
     raw = D(
@@ -642,6 +674,7 @@ def _select_structural_protection(
     _reversal: bool,
     _range: bool = False,
     _sweep: bool = False,
+    _sweep_v2: bool = False,
 ) -> StructuralProtectionSelection:
     """Select a source-bound bracket without moving the supplied entry.
 
@@ -660,7 +693,9 @@ def _select_structural_protection(
         "evidence": "confirmed_ohlc",
     }
     result_type = (
-        SweepStructuralProtectionSelection
+        SweepStructuralProtectionSelectionV2
+        if _sweep_v2
+        else SweepStructuralProtectionSelection
         if _sweep
         else RangeStructuralProtectionSelection
         if _range
@@ -757,12 +792,16 @@ def _select_structural_protection(
             source_sha256=digest,
         )
         if _sweep:
-            from app.trade_qualification.sweep_contract import derive_sweep_admission
+            from app.trade_qualification.sweep_contract import (
+                derive_sweep_admission,
+                derive_sweep_admission_v2,
+            )
 
+            derive = derive_sweep_admission_v2 if _sweep_v2 else derive_sweep_admission
             identity["retained_analysis_blockers"] = tuple(analysis.blockers)
             if event.strategy != "liquidity_sweep_reversal":
                 return failed("sweep_protection_strategy_mismatch")
-            admission = derive_sweep_admission(
+            admission = derive(
                 market,
                 report_id=event.report_id,
                 direction=event.direction,

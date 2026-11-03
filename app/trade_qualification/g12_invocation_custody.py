@@ -484,6 +484,20 @@ def require_original_unchanged(claim: G12InvocationClaim, market, pre, inputs) -
         _deny("g12_custody_original_changed")
 
 
+_NATIVE_V2_KEY = object()
+
+
+def _native_custody_entry(repository, binding, stage, claim, publication=None):
+    if binding is None:
+        return None
+    from app.trade_qualification import native_g12_publication_v2 as native
+
+    native._require_custody_entry_v2(
+        repository, binding, stage, claim, publication, key=_NATIVE_V2_KEY
+    )
+    return native
+
+
 class G12InvocationCustodyRepository:
     """Two committed inserts with independent-session readback, still DENY."""
 
@@ -492,8 +506,19 @@ class G12InvocationCustodyRepository:
             _deny("g12_custody_session_factory_required")
         self.session_factory = session_factory
 
-    async def _read_claim(self, claim: G12InvocationClaim) -> G12InvocationClaim:
+    async def _read_claim(
+        self, claim: G12InvocationClaim, *, _native_binding=None
+    ) -> G12InvocationClaim:
+        native = _native_custody_entry(self, _native_binding, "claim_read", claim)
         async with self.session_factory() as session:
+            if native is not None:
+                await native._prepare_custody_session_v2(
+                    self,
+                    _native_binding,
+                    session,
+                    stage="claim_read",
+                    key=_NATIVE_V2_KEY,
+                )
             row = (
                 (
                     await session.execute(
@@ -507,6 +532,14 @@ class G12InvocationCustodyRepository:
                 .mappings()
                 .one_or_none()
             )
+            if native is not None:
+                await native._finish_custody_session_v2(
+                    self,
+                    _native_binding,
+                    session,
+                    stage="claim_read",
+                    key=_NATIVE_V2_KEY,
+                )
         value = claim.values
         if (
             row is None
@@ -527,14 +560,26 @@ class G12InvocationCustodyRepository:
             row["db_claimed_at"].astimezone(UTC),
         )
 
-    async def claim(self, claim: G12InvocationClaim) -> G12InvocationClaim:
+    async def claim(
+        self, claim: G12InvocationClaim, *, _native_binding=None
+    ) -> G12InvocationClaim:
         if type(claim) is not G12InvocationClaim or claim.db_claimed_at is not None:
             _deny("g12_custody_new_claim_required")
         value = claim.values
+        native = _native_custody_entry(self, _native_binding, "claim_write", claim)
         try:
             async with self.session_factory() as session, session.begin():
-                await session.execute(text("SET LOCAL lock_timeout = '3s'"))
-                await session.execute(text("SET LOCAL statement_timeout = '10s'"))
+                if native is not None:
+                    await native._prepare_custody_session_v2(
+                        self,
+                        _native_binding,
+                        session,
+                        stage="claim_write",
+                        key=_NATIVE_V2_KEY,
+                    )
+                if native is None:
+                    await session.execute(text("SET LOCAL lock_timeout = '3s'"))
+                    await session.execute(text("SET LOCAL statement_timeout = '10s'"))
                 await session.execute(
                     text(
                         "INSERT INTO public.g12_invocation_claims "
@@ -549,7 +594,19 @@ class G12InvocationCustodyRepository:
                         "digest": claim.claim_sha256,
                     },
                 )
-            return await self._read_claim(claim)
+                if native is not None:
+                    await native._finish_custody_session_v2(
+                        self,
+                        _native_binding,
+                        session,
+                        stage="claim_write",
+                        key=_NATIVE_V2_KEY,
+                    )
+            return (
+                await self._read_claim(claim)
+                if native is None
+                else await self._read_claim(claim, _native_binding=_native_binding)
+            )
         except G12InvocationCustodyError:
             raise
         except Exception:  # noqa: BLE001 -- uncertain commit never starts G12
@@ -559,6 +616,8 @@ class G12InvocationCustodyRepository:
         self,
         claim: G12InvocationClaim,
         publication: G12InvocationPublication,
+        *,
+        _native_binding=None,
     ) -> G12InvocationPublication:
         if (
             type(claim) is not G12InvocationClaim
@@ -571,12 +630,29 @@ class G12InvocationCustodyRepository:
         value = decode(publication.publication_json, _MAX_DOCUMENT)
         if value["claim_sha256"] != claim.claim_sha256:
             _deny("g12_custody_publication_claim_mismatch")
+        native = _native_custody_entry(
+            self, _native_binding, "publication_write", claim, publication
+        )
         try:
-            if await self._read_claim(claim) != claim:
+            observed_claim = (
+                await self._read_claim(claim)
+                if native is None
+                else await self._read_claim(claim, _native_binding=_native_binding)
+            )
+            if observed_claim != claim:
                 _deny("g12_custody_claim_changed")
             async with self.session_factory() as session, session.begin():
-                await session.execute(text("SET LOCAL lock_timeout = '3s'"))
-                await session.execute(text("SET LOCAL statement_timeout = '10s'"))
+                if native is not None:
+                    await native._prepare_custody_session_v2(
+                        self,
+                        _native_binding,
+                        session,
+                        stage="publication_write",
+                        key=_NATIVE_V2_KEY,
+                    )
+                if native is None:
+                    await session.execute(text("SET LOCAL lock_timeout = '3s'"))
+                    await session.execute(text("SET LOCAL statement_timeout = '10s'"))
                 await session.execute(
                     text(
                         "INSERT INTO public.g12_invocation_publications "
@@ -590,26 +666,56 @@ class G12InvocationCustodyRepository:
                         "digest": publication.publication_sha256,
                     },
                 )
-            return await self.read_publication(claim, publication.publication_sha256)
+                if native is not None:
+                    await native._finish_custody_session_v2(
+                        self,
+                        _native_binding,
+                        session,
+                        stage="publication_write",
+                        key=_NATIVE_V2_KEY,
+                    )
+            return (
+                await self.read_publication(claim, publication.publication_sha256)
+                if native is None
+                else await self.read_publication(
+                    claim,
+                    publication.publication_sha256,
+                    _native_binding=_native_binding,
+                )
+            )
         except G12InvocationCustodyError:
             raise
         except Exception:  # noqa: BLE001 -- uncertain commit blocks post-G12 capture
             _deny("g12_custody_publication_unavailable")
 
     async def read_publication(
-        self, claim: G12InvocationClaim, expected_sha256: str
+        self, claim: G12InvocationClaim, expected_sha256: str, *, _native_binding=None
     ) -> G12InvocationPublication:
         """Audit a committed row after restart; never resume post-G12 capture."""
+        native = _native_custody_entry(self, _native_binding, "publication_read", claim)
         try:
             if (
                 type(claim) is not G12InvocationClaim
                 or claim.db_claimed_at is None
                 or type(expected_sha256) is not str
                 or len(expected_sha256) != 64
-                or await self._read_claim(claim) != claim
+                or (
+                    await self._read_claim(claim)
+                    if native is None
+                    else await self._read_claim(claim, _native_binding=_native_binding)
+                )
+                != claim
             ):
                 raise ValueError
             async with self.session_factory() as session:
+                if native is not None:
+                    await native._prepare_custody_session_v2(
+                        self,
+                        _native_binding,
+                        session,
+                        stage="publication_read",
+                        key=_NATIVE_V2_KEY,
+                    )
                 row = (
                     (
                         await session.execute(
@@ -623,6 +729,14 @@ class G12InvocationCustodyRepository:
                     .mappings()
                     .one_or_none()
                 )
+                if native is not None:
+                    await native._finish_custody_session_v2(
+                        self,
+                        _native_binding,
+                        session,
+                        stage="publication_read",
+                        key=_NATIVE_V2_KEY,
+                    )
             if row is None:
                 _deny("g12_custody_publication_readback_mismatch")
             value = decode(row["publication_json"].encode("utf-8"), _MAX_DOCUMENT)

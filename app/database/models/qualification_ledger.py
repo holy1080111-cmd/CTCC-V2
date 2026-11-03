@@ -133,7 +133,11 @@ class QualificationReservationTransition(Base):
             ["qualification_reservations.reservation_id"],
             ondelete="RESTRICT",
         ),
-        UniqueConstraint("reservation_id", "state_revision"),
+        UniqueConstraint(
+            "reservation_id",
+            "state_revision",
+            name="qualification_reservation_tra_reservation_id_state_revision_key",
+        ),
         CheckConstraint("state_revision >= 1", name="state_revision"),
         CheckConstraint(
             "to_state IN ('reserved','consumed','uncertain','reconciled_flat')",

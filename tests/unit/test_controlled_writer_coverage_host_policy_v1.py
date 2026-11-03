@@ -423,3 +423,73 @@ async def test_current_catalog_data_replacement_denies_held_binding_before_nativ
     finally:
         issuer._BINDINGS.pop(binding, None)
     assert native_calls == [] and tuple(issuer._OWNERS) == owners_before
+
+
+def test_migration0048_imports_only_the_existing_stdlib_catalog(tmp_path):
+    """Alembic revision discovery must not import the broker/settings stack."""
+    root = Path(__file__).resolve().parents[2]
+    probe = r"""
+import importlib.util
+import json
+from pathlib import Path
+import sys
+from types import ModuleType, SimpleNamespace
+
+root = Path(sys.argv[1])
+sys.path.insert(0, str(root))
+class ColdMigrationOnly:
+    def find_spec(self, fullname, path=None, target=None):
+        first = fullname.partition('.')[0]
+        if first == 'app':
+            if fullname not in {'app', 'app.domain', 'app.domain.controlled_writer_coverage_catalog_v1'}:
+                raise ModuleNotFoundError('migration_runtime_import_forbidden')
+        elif first not in sys.stdlib_module_names and first != 'alembic':
+            raise ModuleNotFoundError('migration_nonstdlib_import_forbidden')
+sys.meta_path.insert(0, ColdMigrationOnly())
+statements = []
+alembic = ModuleType('alembic')
+alembic.op = SimpleNamespace(execute=statements.append)
+sys.modules['alembic'] = alembic
+from app.domain import controlled_writer_coverage_catalog_v1 as policy
+path = root / 'migrations/versions/0048_controlled_writer_coverage.py'
+spec = importlib.util.spec_from_file_location('cold_actual_revision0048', path)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+for name in ('COVERAGE_FUNCTION_SIGNATURES', 'COVERAGE_FUNCTION_SQL', 'COVERAGE_INDEX_SQL',
+             'COVERAGE_TABLE_SQL', 'COVERAGE_TABLES', 'COVERAGE_TRIGGER_SPECS', 'COVERAGE_TRIGGER_SQL'):
+    assert getattr(module, name) is getattr(policy, name)
+assert module.revision == '0048' and module.down_revision == '0047'
+assert module.branch_labels is module.depends_on is None
+module.upgrade()
+upgrade_count = len(statements)
+assert upgrade_count == 33 and all(type(value) is str for value in statements)
+statements.clear()
+module.downgrade()
+assert len(statements) == 10 and all(type(value) is str for value in statements)
+assert not any(name == 'app.database' or name.startswith(('app.database.', 'app.config',
+    'app.exchange', 'app.trade_qualification', 'sqlalchemy')) for name in sys.modules)
+print(json.dumps({'revision': '0048', 'upgrade_statements': upgrade_count,
+                  'downgrade_statements': len(statements), 'native_SQL': False}, sort_keys=True))
+"""
+    environment = {
+        name: os.environ[name]
+        for name in ("SYSTEMROOT", "WINDIR", "TEMP", "TMP")
+        if name in os.environ
+    }
+    result = subprocess.run(
+        [sys.executable, "-I", "-B", "-S", "-c", probe, str(root)],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == ""
+    assert json.loads(result.stdout) == {
+        "revision": "0048",
+        "upgrade_statements": 33,
+        "downgrade_statements": 10,
+        "native_SQL": False,
+    }

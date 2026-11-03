@@ -1897,7 +1897,7 @@ def test_current_0050_run_command_records_only_exact_partition_policy_refusal(
         )
 
 
-def _execute_current_0051_host_readback_boundary(variable, document):
+def _execute_current_0052_host_readback_boundary(variable, document):
     """Execute the actual main branch without starting the Docker orchestration."""
     import ast
     from pathlib import Path
@@ -1924,7 +1924,7 @@ def _execute_current_0051_host_readback_boundary(variable, document):
             and child.func.id == "expected_migration_revision_readback"
             and len(child.args) == 1
             and isinstance(child.args[0], ast.Constant)
-            and child.args[0].value == "0051"
+            and child.args[0].value == "0052"
             for child in ast.walk(node.test)
         )
     ]
@@ -1950,16 +1950,16 @@ def _execute_current_0051_host_readback_boundary(variable, document):
 
 
 @pytest.mark.parametrize("variable", ("reupgrade_readback", "denial_readback"))
-def test_current_0051_host_boundaries_accept_exact_json_roundtrip(variable):
+def test_current_0052_host_boundaries_accept_exact_json_roundtrip(variable):
     from scripts import verify_final_hermetic as host
 
-    expected = host.expected_migration_revision_readback("0051")
+    expected = host.expected_migration_revision_readback("0052")
     document = json.loads(json.dumps(expected, allow_nan=False))
     # DB0050 declares tuple-bearing columns, keys and triggers. JSON preserves
     # their order and values as arrays; Python container equality cannot admit it.
     assert document != expected
     assert host.native_migration_json_equal(document, expected)
-    _execute_current_0051_host_readback_boundary(variable, document)
+    _execute_current_0052_host_readback_boundary(variable, document)
 
 
 @pytest.mark.parametrize(
@@ -1988,12 +1988,12 @@ def test_current_0051_host_boundaries_accept_exact_json_roundtrip(variable):
         "nonfinite_value",
     ),
 )
-def test_current_0051_host_boundaries_reject_json_or_schema_damage(
+def test_current_0052_host_boundaries_reject_json_or_schema_damage(
     variable, refusal, damage
 ):
     from scripts import verify_final_hermetic as host
 
-    expected = host.expected_migration_revision_readback("0051")
+    expected = host.expected_migration_revision_readback("0052")
     document = json.loads(json.dumps(expected, allow_nan=False))
     partition = document["account_history_partition_schema"]
     member = partition["tables"]["demo_account_history_native_members"]
@@ -2031,7 +2031,7 @@ def test_current_0051_host_boundaries_reject_json_or_schema_damage(
         document["execution_authority"] = float("nan")
     assert not host.native_migration_json_equal(document, expected)
     with pytest.raises(RuntimeError, match=refusal):
-        _execute_current_0051_host_readback_boundary(variable, document)
+        _execute_current_0052_host_readback_boundary(variable, document)
 
 
 def test_current0051_formal_reader_cannot_accept_structural_only_pending_catalog(

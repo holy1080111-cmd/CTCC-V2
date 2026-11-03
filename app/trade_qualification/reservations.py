@@ -447,6 +447,10 @@ def checked(value, expected):
 
 
 def canonical(value) -> str:
+    from app.trade_qualification import native_ledger_contracts_v2 as native
+
+    if native.is_native_request(value):
+        return native.canonical_request(value)
     checked(value, type(value))
     raw = json.dumps(
         value.model_dump(mode="json", round_trip=True),
@@ -479,6 +483,10 @@ def decode(raw: str, expected):
 
 
 def checked_reservation_request(value):
+    from app.trade_qualification import native_ledger_contracts_v2 as native
+
+    if native.is_native_request(value):
+        return native.checked_request(value)
     if type(value) is ReservationRequest:
         return checked(value, ReservationRequest)
     if type(value) is ReservationRequestV2:
@@ -509,6 +517,15 @@ def decode_reservation_request(raw):
             kind = ReservationRequestV2
         elif body["contract_version"] == "ctcc-reservation-request-v3":
             kind = ReservationRequestV3
+        elif body["contract_version"] == "ctcc-reservation-request-native-v4":
+            from app.trade_qualification import native_ledger_contracts_v2 as native
+
+            value = native.NativeReservationRequestV4.model_validate_json(
+                raw, strict=True
+            )
+            if native.canonical_request(value) != raw:
+                raise ValueError("noncanonical")
+            return native.checked_request(value)
         else:
             raise ValueError("version")
         return checked_reservation_request(decode(raw, kind))

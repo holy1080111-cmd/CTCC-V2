@@ -708,7 +708,12 @@ def _guard(value, depth=0, budget=None):
     if depth > 20 or budget[0] < 0:
         _fail("record_traversal_limit")
     kind = type(value)
-    if any(kind is model for model in _MODELS):
+    is_model = False
+    for model in _MODELS:
+        if kind is model:
+            is_model = True
+            break
+    if is_model:
         raw = value.__dict__
         extra = value.__pydantic_extra__
         private = value.__pydantic_private__
@@ -753,9 +758,11 @@ def _guard(value, depth=0, budget=None):
 
 
 def _plain(value):
-    if any(type(value) is model for model in _MODELS):
-        return {key: _plain(item) for key, item in value.__dict__.items()}
-    if type(value) is tuple:
+    kind = type(value)
+    for model in _MODELS:
+        if kind is model:
+            return {key: _plain(item) for key, item in value.__dict__.items()}
+    if kind is tuple:
         return tuple(_plain(item) for item in value)
     return value
 
@@ -771,17 +778,19 @@ def _copy(value, expected):
 
 
 def _json_value(value):
-    if any(type(value) is model for model in _MODELS):
-        return {key: _json_value(item) for key, item in value.__dict__.items()}
-    if type(value) is dict:
+    kind = type(value)
+    for model in _MODELS:
+        if kind is model:
+            return {key: _json_value(item) for key, item in value.__dict__.items()}
+    if kind is dict:
         return {key: _json_value(item) for key, item in value.items()}
-    if type(value) is tuple:
+    if kind is tuple:
         return [_json_value(item) for item in value]
-    if type(value) is bytes:
+    if kind is bytes:
         return value.hex()
-    if type(value) is datetime:
+    if kind is datetime:
         return _utc(value).isoformat()
-    if type(value) is Decimal:
+    if kind is Decimal:
         return str(value)
     return value
 
@@ -1885,3 +1894,110 @@ def verify_demo_account_packet(
     except (ValueError, TypeError, ArithmeticError, RecursionError):
         _fail("packet_schema_invalid")
     return _replay_packet(packet, expected_plan_sha256)
+
+
+def _make_original_page_packet_verifier():
+    # This namespace stays in this helper closure, never a caller parameter.
+    from app.trade_qualification import account_original_page_memo_v1 as memo
+
+    namespace = object()
+    packet_key, current_context, fresh_copy = (
+        memo._packet_key,
+        memo._native_current_context,
+        memo._fresh_packet_copy,
+    )
+    full_verify = verify_demo_account_packet
+    packet_type = DemoAccountPacket
+    dependencies = (
+        full_verify,
+        _replay_packet,
+        verify_demo_account_records,
+        _copy,
+        _decode_json,
+        packet_type,
+    )
+
+    def _verify_original_page_packet(
+        payload: bytes, *, expected_sha256: str, expected_plan_sha256: str
+    ) -> DemoAccountPacket:
+        context = current_context()
+        if context is None:
+            return verify_demo_account_packet(
+                payload,
+                expected_sha256=expected_sha256,
+                expected_plan_sha256=expected_plan_sha256,
+            )
+        if (
+            memo._packet_key is not packet_key
+            or memo._native_current_context is not current_context
+            or memo._fresh_packet_copy is not fresh_copy
+        ):
+            memo._deny()
+        if any(
+            current is not original
+            for current, original in zip(
+                (
+                    verify_demo_account_packet,
+                    _replay_packet,
+                    verify_demo_account_records,
+                    _copy,
+                    _decode_json,
+                    DemoAccountPacket,
+                ),
+                dependencies,
+                strict=True,
+            )
+        ):
+            memo._deny()
+        key = packet_key(context, payload, expected_sha256, expected_plan_sha256)
+        if key is None:
+            return verify_demo_account_packet(
+                payload,
+                expected_sha256=expected_sha256,
+                expected_plan_sha256=expected_plan_sha256,
+            )
+        cached = context._packets.get((namespace, key))
+        if cached is not None:
+            result = fresh_copy(cached)
+        else:
+            result = full_verify(
+                payload,
+                expected_sha256=expected_sha256,
+                expected_plan_sha256=expected_plan_sha256,
+            )
+        if (
+            memo._packet_key is not packet_key
+            or memo._native_current_context is not current_context
+            or memo._fresh_packet_copy is not fresh_copy
+        ):
+            memo._deny()
+        if any(
+            current is not original
+            for current, original in zip(
+                (
+                    verify_demo_account_packet,
+                    _replay_packet,
+                    verify_demo_account_records,
+                    _copy,
+                    _decode_json,
+                    DemoAccountPacket,
+                ),
+                dependencies,
+                strict=True,
+            )
+        ):
+            memo._deny()
+        if type(result) is not packet_type:
+            memo._deny()
+        if packet_key(context, payload, expected_sha256, expected_plan_sha256) != key:
+            memo._deny()
+        if cached is None:
+            context._remember_packet(namespace, key, result, len(payload))
+        context.check()
+        return result
+
+    return _verify_original_page_packet
+
+
+_verify_original_page_packet = _make_original_page_packet_verifier()
+del _make_original_page_packet_verifier

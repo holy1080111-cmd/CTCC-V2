@@ -1681,6 +1681,32 @@ print(json.dumps(history_partition_nonempty_snapshot_0051(revision,retention),so
 
 
 def expected_migration_revision_readback(revision: str) -> dict:
+    if revision == "0052":
+        from app.domain.account_history_original_frame_v1 import (
+            expected_owner_installation_schema,
+        )
+
+        return {
+            **expected_migration_revision_readback("0051"),
+            "schema": "ctcc.migration_revision_readback.v9",
+            "expected": "0052",
+            "observed": "0052",
+            "original_history_frame_owner_installation": expected_owner_installation_schema(),
+        }
+    if revision not in (
+        "0001",
+        "0042",
+        "0043",
+        "0044",
+        "0045",
+        "0046",
+        "0047",
+        "0048",
+        "0049",
+        "0050",
+        "0051",
+    ):
+        raise RuntimeError("migration_revision_readback_mismatch")
     if revision == "0051":
         from app.domain.prospective_event_cutover_catalog_v2 import expected_schema
 
@@ -2125,6 +2151,44 @@ def native_identity_nonempty_downgrade_readback(before: dict, after: dict) -> di
     }
 
 
+def _validated_0051_parent_fields(
+    witness_present,
+    guard_present,
+    trigger_catalog,
+    hwm_present,
+    hwm_guard_present,
+    hwm_trigger_catalog,
+    runtime_catalog,
+    native_identity_catalog,
+    *,
+    coverage_catalog,
+    partition_catalog,
+    cutover_catalog,
+):
+    """Check unchanged parent catalogs; do not relabel an actual database head."""
+    from app.domain.prospective_event_cutover_catalog_v2 import (
+        expected_schema,
+        verify_catalog,
+    )
+
+    verify_catalog(cutover_catalog, require_native_baseline=True)
+    previous = migration_revision_readback(
+        "0050",
+        "0050",
+        witness_present,
+        guard_present,
+        trigger_catalog,
+        hwm_present,
+        hwm_guard_present,
+        hwm_trigger_catalog,
+        runtime_catalog,
+        native_identity_catalog,
+        coverage_catalog=coverage_catalog,
+        partition_catalog=partition_catalog,
+    )
+    return {**previous, "prospective_cutover_schema": expected_schema()}
+
+
 def migration_revision_readback(
     expected: str,
     observed: str,
@@ -2140,22 +2204,22 @@ def migration_revision_readback(
     coverage_catalog: dict | None = None,
     partition_catalog: dict | None = None,
     cutover_catalog: dict | None = None,
+    original_frame_catalog: dict | None = None,
 ) -> dict:
     """Deny schema drift, including extra or disabled non-internal triggers."""
-    if expected == "0051":
-        from app.domain.prospective_event_cutover_catalog_v2 import (
-            expected_schema,
-            verify_catalog,
+    if expected == "0052":
+        from app.domain.account_history_original_frame_v1 import (
+            verify_owner_installation_catalog,
         )
 
-        if observed != "0051":
+        if observed != "0052":
             raise RuntimeError("migration_revision_readback_mismatch")
-        # The separate capture retains actual PG output before this formal gate.
-        # None/pending never confers admission, even with valid structural DDL.
-        verify_catalog(cutover_catalog, require_native_baseline=True)
-        previous = migration_revision_readback(
-            "0050",
-            "0050",
+        # Owner installation and restricted runtime admission are separate,
+        # strict APIs. No role/catalog projection or seal-off flag is used.
+        installation = verify_owner_installation_catalog(
+            original_frame_catalog, partition_catalog
+        )
+        previous = _validated_0051_parent_fields(
             witness_present,
             guard_present,
             trigger_catalog,
@@ -2166,13 +2230,45 @@ def migration_revision_readback(
             native_identity_catalog,
             coverage_catalog=coverage_catalog,
             partition_catalog=partition_catalog,
+            cutover_catalog=cutover_catalog,
+        )
+        result = {
+            **previous,
+            "schema": "ctcc.migration_revision_readback.v9",
+            "expected": "0052",
+            "observed": "0052",
+            "original_history_frame_owner_installation": installation,
+        }
+        if not native_migration_json_equal(
+            result, expected_migration_revision_readback("0052")
+        ):
+            raise RuntimeError("migration_revision_readback_mismatch")
+        return result
+    if original_frame_catalog is not None:
+        raise RuntimeError("migration_revision_readback_mismatch")
+    if expected == "0051":
+        if observed != "0051":
+            raise RuntimeError("migration_revision_readback_mismatch")
+        # The separate capture retains actual PG output before this formal gate.
+        # None/pending never confers admission, even with valid structural DDL.
+        previous = _validated_0051_parent_fields(
+            witness_present,
+            guard_present,
+            trigger_catalog,
+            hwm_present,
+            hwm_guard_present,
+            hwm_trigger_catalog,
+            runtime_catalog,
+            native_identity_catalog,
+            coverage_catalog=coverage_catalog,
+            partition_catalog=partition_catalog,
+            cutover_catalog=cutover_catalog,
         )
         result = {
             **previous,
             "schema": "ctcc.migration_revision_readback.v8",
             "expected": "0051",
             "observed": "0051",
-            "prospective_cutover_schema": expected_schema(),
         }
         if not native_migration_json_equal(
             result, expected_migration_revision_readback("0051")
@@ -2872,6 +2968,10 @@ def run_predecessor_0047_validation(
     run, container, *, postgres, suffix, test_results, mounts
 ):
     """Own one exact temporary DB; two diagnostic cases are outside the union."""
+    from scripts.original_history_0052_toolchain import (
+        PREDECESSOR_0047_IDENTITY_PROBE_0052,
+    )
+
     name = "ctcc_predecessor_47_" + suffix
     if not re.fullmatch(r"ctcc_predecessor_47_[a-f0-9]{12}", name):
         raise ValueError("predecessor_database_name_invalid")
@@ -2924,7 +3024,7 @@ def run_predecessor_0047_validation(
         )
         separate(
             "predecessor-0047-identity",
-            ["python", "-c", PREDECESSOR_0047_IDENTITY_PROBE_0051],
+            ["python", "-c", PREDECESSOR_0047_IDENTITY_PROBE_0052],
             timeout=60,
         )
         report_name = "predecessor-0047-two-cases.xml"
@@ -2980,7 +3080,7 @@ def run_predecessor_0047_validation(
         )
         return {
             "schema": "ctcc.isolated_0047_predecessor_validation.v1",
-            "source_head": "0051",
+            "source_head": "0052",
             "database_target": "0047",
             "separate_from_full_suite_unique_count": True,
             "test_report": report,
@@ -3104,15 +3204,24 @@ class Run:
                             self.output / f"{name}.log"
                         )
                     elif expected_refusal == HISTORY_PARTITION_DOWNGRADE_DENIAL:
-                        if refusal_source_head not in (None, "0051"):
+                        if refusal_source_head not in (None, "0051", "0052"):
                             raise RuntimeError(
                                 "history_partition_refusal_source_head_invalid"
                             )
-                        verifier = (
-                            verify_history_partition_downgrade_denial_log_0051
-                            if refusal_source_head == "0051"
-                            else verify_history_partition_downgrade_denial_log
-                        )
+                        if refusal_source_head == "0052":
+                            from scripts.original_history_0052_toolchain import (
+                                verify_history_partition_downgrade_denial_log_0052,
+                            )
+
+                            verifier = (
+                                verify_history_partition_downgrade_denial_log_0052
+                            )
+                        else:
+                            verifier = (
+                                verify_history_partition_downgrade_denial_log_0051
+                                if refusal_source_head == "0051"
+                                else verify_history_partition_downgrade_denial_log
+                            )
                         verifier(self.output / f"{name}.log")
                     else:
                         verify_native_identity_downgrade_denial_log(
@@ -3336,6 +3445,13 @@ def _run_component_tests_and_recovery(
     suffix,
 ):
     """Actual main body after common schema checks; lower IO remains injectable."""
+    from scripts.original_history_0052_toolchain import (
+        HISTORY_PARTITION_RETENTION_PROBE_0052,
+        history_partition_nonempty_downgrade_readback_0052,
+        verify_history_partition_downgrade_denial_log_0052,
+        verify_history_partition_migration_receipt_0052,
+    )
+
     if args.suite not in ("full", "postgres", "shard"):
         raise ValueError("linux_suite_selection_invalid")
     pg_index = args.postgres_component_index
@@ -3534,7 +3650,7 @@ def _run_component_tests_and_recovery(
                     "history_partition_migration_receipt_missing_or_unsafe"
                 )
             identity["history_partition_migration_acceptance"] = (
-                verify_history_partition_migration_receipt_0051(
+                verify_history_partition_migration_receipt_0052(
                     read_evidence_json(partition_receipt.read_bytes()),
                     manifest_sha256=identity["manifest_sha256"],
                     repository_sha256=files[
@@ -3546,10 +3662,10 @@ def _run_component_tests_and_recovery(
                 )
             )
             # Own49 and own48 experiments are the separately retained, actual
-            # child receipts validated above. This primary experiment is51; child49/48 remain historical.
+            # child receipts validated above. This primary is52; child49/48 remain historical.
             container(
                 "migration-history-partition-nonempty-before",
-                ["python", "-c", HISTORY_PARTITION_RETENTION_PROBE_0051],
+                ["python", "-c", HISTORY_PARTITION_RETENTION_PROBE_0052, "0052"],
                 timeout=60,
             )
             partition_before = read_evidence_json(
@@ -3561,15 +3677,15 @@ def _run_component_tests_and_recovery(
                 "migration-history-partition-nonempty-denial",
                 ["alembic", "downgrade", "0049"],
                 expected_refusal=HISTORY_PARTITION_DOWNGRADE_DENIAL,
-                refusal_source_head="0051",
+                refusal_source_head="0052",
                 timeout=60,
             )
-            verify_history_partition_downgrade_denial_log_0051(
+            verify_history_partition_downgrade_denial_log_0052(
                 args.output / "migration-history-partition-nonempty-denial.log"
             )
             container(
                 "migration-history-partition-nonempty-after",
-                ["python", "-c", HISTORY_PARTITION_RETENTION_PROBE_0051],
+                ["python", "-c", HISTORY_PARTITION_RETENTION_PROBE_0052, "0052"],
                 timeout=60,
             )
             partition_after = read_evidence_json(
@@ -3578,7 +3694,7 @@ def _run_component_tests_and_recovery(
                 ).read_bytes()
             )
             identity["history_partition_nonempty_downgrade_policy"] = (
-                history_partition_nonempty_downgrade_readback_0051(
+                history_partition_nonempty_downgrade_readback_0052(
                     partition_before, partition_after
                 )
             )
@@ -3771,6 +3887,24 @@ def _run_component_tests_and_recovery(
 
 
 def main():
+    import sys
+
+    from scripts.current_hermetic_contract_dispatch_v1 import maybe_dispatch_hermetic
+
+    dispatched = maybe_dispatch_hermetic(sys.argv[1:])
+    if dispatched is not None:
+        return dispatched
+    from scripts.original_history_0052_toolchain import (
+        COVERAGE_NATIVE_CATALOG_CAPTURE_0052,
+        HISTORY_PARTITION_NATIVE_CATALOG_CAPTURE_0052,
+        MIGRATION_REVISION_PROBE_0052,
+        ORIGINAL_FRAME_ABSENT_PROBE_0051,
+        ORIGINAL_FRAME_INSTALLATION_NATIVE_CATALOG_CAPTURE_0052,
+        PROSPECTIVE_CUTOVER_NATIVE_CATALOG_CAPTURE_0052,
+        expected_original_frame_absent_readback,
+        verify_current_0052_downgrade_denial_log,
+    )
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--archive", type=Path, required=True)
     parser.add_argument("--archive-sha256", required=True)
@@ -4034,20 +4168,26 @@ def main():
             raise RuntimeError("migration_supported_roundtrip_readback_invalid")
         container("migration-upgrade", ["alembic", "upgrade", "head"])
         container(
+            "migration-original-history-frame-native-catalog",
+            ["python", "-c", ORIGINAL_FRAME_INSTALLATION_NATIVE_CATALOG_CAPTURE_0052],
+            mounts=test_results_mount,
+            timeout=60,
+        )
+        container(
             "migration-prospective-cutover-native-catalog",
-            ["python", "-c", PROSPECTIVE_CUTOVER_NATIVE_CATALOG_CAPTURE],
+            ["python", "-c", PROSPECTIVE_CUTOVER_NATIVE_CATALOG_CAPTURE_0052],
             mounts=test_results_mount,
             timeout=60,
         )
         container(
             "migration-history-partition-native-catalog",
-            ["python", "-c", HISTORY_PARTITION_NATIVE_CATALOG_CAPTURE_0051],
+            ["python", "-c", HISTORY_PARTITION_NATIVE_CATALOG_CAPTURE_0052],
             mounts=test_results_mount,
             timeout=60,
         )
         container(
             "migration-coverage-native-catalog",
-            ["python", "-c", COVERAGE_NATIVE_CATALOG_CAPTURE_0051],
+            ["python", "-c", COVERAGE_NATIVE_CATALOG_CAPTURE_0052],
             mounts=test_results_mount,
             timeout=60,
         )
@@ -4058,12 +4198,47 @@ def main():
             (args.output / "migration-identity.log").read_text()
         )
         if (
-            identity["migration"].get("source_head") != "0051"
-            or identity["migration"].get("database_head") != "0051"
+            identity["migration"].get("source_head") != "0052"
+            or identity["migration"].get("database_head") != "0052"
             or identity["migration"].get("status") != "PASS"
         ):
             raise RuntimeError("migration_downgrade_policy_head_unreviewed")
         container("migration-drift", ["alembic", "check"])
+        container(
+            "migration-original-history-frame-empty-before",
+            ["python", "-c", MIGRATION_REVISION_PROBE_0052, "0052"],
+            timeout=60,
+        )
+        frame_empty_before = read_evidence_json(
+            (
+                args.output / "migration-original-history-frame-empty-before.log"
+            ).read_bytes()
+        )
+        if not native_migration_json_equal(
+            frame_empty_before, expected_migration_revision_readback("0052")
+        ):
+            raise RuntimeError("original_frame_current_head_readback_invalid")
+        # This actual downgrade removes only the owner-only new RPC. The old
+        # DB0051 cutover experiment below retains its genuine predecessor head.
+        container(
+            "migration-original-history-frame-empty-downgrade",
+            ["alembic", "downgrade", "0051"],
+            timeout=60,
+        )
+        container(
+            "migration-original-history-frame-empty-readback",
+            ["python", "-c", ORIGINAL_FRAME_ABSENT_PROBE_0051],
+            timeout=60,
+        )
+        frame_absent = read_evidence_json(
+            (
+                args.output / "migration-original-history-frame-empty-readback.log"
+            ).read_bytes()
+        )
+        if not native_migration_json_equal(
+            frame_absent, expected_original_frame_absent_readback()
+        ):
+            raise RuntimeError("original_frame_empty_downgrade_readback_invalid")
         container(
             "migration-prospective-cutover-empty-before",
             ["python", "-c", MIGRATION_REVISION_PROBE_0051, "0051"],
@@ -4288,18 +4463,21 @@ def main():
             raise RuntimeError("migration_reupgrade_identity_changed")
         container(
             "migration-reupgrade-readback",
-            ["python", "-c", MIGRATION_REVISION_PROBE_0051, "0051"],
+            ["python", "-c", MIGRATION_REVISION_PROBE_0052, "0052"],
         )
         reupgrade_readback = json.loads(
             (args.output / "migration-reupgrade-readback.log").read_text()
         )
         if not native_migration_json_equal(
-            reupgrade_readback, expected_migration_revision_readback("0051")
+            reupgrade_readback, expected_migration_revision_readback("0052")
         ):
             raise RuntimeError("migration_reupgrade_readback_invalid")
         container("migration-reupgrade-drift", ["alembic", "check"])
         identity["migration_empty_roundtrip"] = {
-            "source_head": "0051",
+            "source_head": "0052",
+            "original_history_frame_before_readback": frame_empty_before,
+            "original_history_frame_down_revision": "0051",
+            "original_history_frame_down_readback": frame_absent,
             "prospective_cutover_before_readback": cutover_empty_before,
             "prospective_cutover_down_revision": "0050",
             "prospective_cutover_down_readback": cutover_absent,
@@ -4332,7 +4510,7 @@ def main():
             ["alembic", "downgrade", "0041"],
             expected_refusal=DOWNGRADE_DENIAL,
         )
-        verify_current_0051_downgrade_denial_log(
+        verify_current_0052_downgrade_denial_log(
             args.output / "migration-downgrade-denial.log"
         )
         container(
@@ -4345,23 +4523,23 @@ def main():
             raise RuntimeError("migration_denial_identity_changed")
         container(
             "migration-denial-readback",
-            ["python", "-c", MIGRATION_REVISION_PROBE_0051, "0051"],
+            ["python", "-c", MIGRATION_REVISION_PROBE_0052, "0052"],
         )
         denial_readback = json.loads(
             (args.output / "migration-denial-readback.log").read_text()
         )
         if not native_migration_json_equal(
-            denial_readback, expected_migration_revision_readback("0051")
+            denial_readback, expected_migration_revision_readback("0052")
         ):
             raise RuntimeError("migration_denial_transaction_rollback_unverified")
         container("migration-redrift", ["alembic", "check"])
         identity["migration_downgrade_policy"] = {
-            "source_head": "0051",
+            "source_head": "0052",
             "target": "0041",
             "result": "DENIED",
             "denied_at": "0042",
             "policy_refusal": DOWNGRADE_DENIAL,
-            "database_head_after": "0051",
+            "database_head_after": "0052",
             "rollback_readback": denial_readback,
             "schema_drift": "PASS",
         }

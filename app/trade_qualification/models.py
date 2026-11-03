@@ -174,6 +174,10 @@ class GateAssessment(QualificationModel):
     @field_validator("measured_values", mode="before")
     @classmethod
     def decode_decimal_measurements(cls, values, info: ValidationInfo):
+        # Our validated immutable representation must pass through the SAME
+        # strict value, size and consistency checks on instance revalidation.
+        if type(values) is MappingProxyType:
+            values = dict(values)
         if info.mode != "json" or not isinstance(values, dict):
             return values
         decoded = {}

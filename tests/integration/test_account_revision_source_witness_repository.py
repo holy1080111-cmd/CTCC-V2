@@ -7,6 +7,7 @@ writes, positive account revision or transport permission are involved.
 import asyncio
 import json
 from datetime import timedelta
+from pathlib import Path
 
 import pytest
 from alembic.migration import MigrationContext
@@ -34,6 +35,8 @@ from app.trade_qualification import account_history_query_verifier as history_qu
 from app.trade_qualification import account_observation_index as observed
 from app.trade_qualification import account_revision_recorded_claim as recorded_claim
 from app.trade_qualification.reservations import QualificationLedgerError
+from scripts import collector_current_0054_toolchain as current54
+from scripts import current_contract_source_scopes_v1 as source_scopes
 from scripts.verify_final_hermetic import (
     ACCOUNT_MEASURED_HWM_V2_TRIGGER_CATALOG_SQL,
     ACCOUNT_REVISION_WITNESS_TRIGGER_CATALOG_SQL,
@@ -90,6 +93,29 @@ async def _sources(monkeypatch, database):
 async def _committed_migration_witness_state(engine, witness_sha256):
     """Read the committed row and catalog through a new database connection."""
     async with engine.connect() as connection:
+        for statement in (
+            "SET TRANSACTION ISOLATION LEVEL READ COMMITTED",
+            "SET TRANSACTION READ ONLY",
+            "SET LOCAL TIME ZONE 'UTC'",
+            "SET LOCAL search_path TO pg_catalog, public, pg_temp",
+        ):
+            await connection.execute(text(statement))
+        source_scope = source_scopes.actual_current_source_scope(
+            Path(__file__).resolve().parents[2]
+        )
+        if source_scope.actual_source_head == "0054":
+            readback = await current54.read_current0054_migration(connection)
+            row = (
+                await connection.execute(
+                    select(
+                        Witness.witness_sha256,
+                        Witness.witness_json,
+                        Witness.claims_sha256,
+                        Witness.admission,
+                    ).where(Witness.witness_sha256 == witness_sha256)
+                )
+            ).one()
+            return row, readback
         head = await connection.run_sync(database_head)
         row = (
             await connection.execute(
@@ -145,8 +171,13 @@ async def _committed_migration_witness_state(engine, witness_sha256):
         )
 
         cutover_catalog = await connection.scalar(text(CUTOVER_SQL))
+        from app.domain.account_history_original_frame_v1 import (
+            CATALOG_SQL as FRAME_SQL,
+        )
+
+        original_frame_catalog = await connection.scalar(text(FRAME_SQL))
     readback = migration_revision_readback(
-        "0051",
+        "0052",
         head,
         table_present,
         guard_present,
@@ -159,6 +190,7 @@ async def _committed_migration_witness_state(engine, witness_sha256):
         coverage_catalog=coverage_catalog,
         partition_catalog=partition_catalog,
         cutover_catalog=cutover_catalog,
+        original_frame_catalog=original_frame_catalog,
     )
     return row, readback
 
@@ -270,7 +302,10 @@ async def test_committed_denial_blocks_0043_downgrade_and_rolls_back(
     assert before[1]["account_revision_witness_trigger_count"] == 3
 
     def downgrade_after_committed_readback(sync_connection):
-        assert database_head(sync_connection) == "0051"
+        root = Path(__file__).resolve().parents[2]
+        source_scopes.verify_database_scope(
+            sync_connection, root, source_scopes.actual_current_source_scope(root)
+        )
         assert (
             sync_connection.execute(
                 text(

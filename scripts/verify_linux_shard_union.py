@@ -14,6 +14,17 @@ import re
 from pathlib import Path
 
 from scripts.evidence_json import read_evidence_json
+from scripts.original_history_0052_toolchain import (
+    expected_original_frame_absent_readback,
+    history_partition_nonempty_downgrade_readback_0052,
+    verify_coverage_native_catalog_capture_0052,
+    verify_current_0052_downgrade_denial_log,
+    verify_history_partition_downgrade_denial_log_0052,
+    verify_history_partition_migration_receipt_0052,
+    verify_history_partition_native_catalog_capture_0052,
+    verify_original_frame_installation_native_catalog_capture_0052,
+    verify_prospective_cutover_native_catalog_capture_0052,
+)
 from scripts.verify_final_hermetic import (
     ARCHIVE_REQUIRED_CASES,
     COVERAGE_PREFLIGHT_CASES,
@@ -30,23 +41,23 @@ from scripts.verify_final_hermetic import (
     expected_migration_revision_readback,
     expected_native_identity_empty_downgrade_readback,
     expected_prospective_cutover_absent_readback,
-    history_partition_nonempty_downgrade_readback_0051,
+    history_partition_nonempty_downgrade_readback_0051,  # noqa: F401 -- historical0051 API
     native_identity_empty_before_readback,
     native_identity_nonempty_downgrade_readback,
     native_migration_json_equal,
     postgres_required_cases,
     verify_coverage_migration_receipt,
-    verify_coverage_native_catalog_capture_0051,
-    verify_current_0051_downgrade_denial_log,
+    verify_coverage_native_catalog_capture_0051,  # noqa: F401 -- historical0051 API
+    verify_current_0051_downgrade_denial_log,  # noqa: F401 -- historical0051 API
     verify_durable_seed_marker,
     verify_historical_0049_nonempty_case,
-    verify_history_partition_downgrade_denial_log_0051,
-    verify_history_partition_migration_receipt_0051,
-    verify_history_partition_native_catalog_capture_0051,
+    verify_history_partition_downgrade_denial_log_0051,  # noqa: F401 -- historical0051 API
+    verify_history_partition_migration_receipt_0051,  # noqa: F401 -- historical0051 API
+    verify_history_partition_native_catalog_capture_0051,  # noqa: F401 -- historical0051 API
     verify_linux_collection,
     verify_native_identity_downgrade_denial_log,
     verify_pair_guard_migration_receipt,
-    verify_prospective_cutover_native_catalog_capture,
+    verify_prospective_cutover_native_catalog_capture,  # noqa: F401 -- historical0051 API
     verify_pytest_report,
     verify_selected_junit_nodes,
 )
@@ -77,11 +88,15 @@ COMMON_STAGES = (
     "migration-downgrade-supported",
     "migration-supported-readback",
     "migration-upgrade",
+    "migration-original-history-frame-native-catalog",
     "migration-prospective-cutover-native-catalog",
     "migration-history-partition-native-catalog",
     "migration-coverage-native-catalog",
     "migration-identity",
     "migration-drift",
+    "migration-original-history-frame-empty-before",
+    "migration-original-history-frame-empty-downgrade",
+    "migration-original-history-frame-empty-readback",
     "migration-prospective-cutover-empty-before",
     "migration-prospective-cutover-empty-downgrade",
     "migration-prospective-cutover-empty-readback",
@@ -516,8 +531,8 @@ def verify_union(
             or identity.get("hermetic_regression") != "PENDING_UNION"
             or identity.get("cleanup") != "PASS"
             or not isinstance(identity.get("migration"), dict)
-            or identity["migration"].get("source_head") != "0051"
-            or identity["migration"].get("database_head") != "0051"
+            or identity["migration"].get("source_head") != "0052"
+            or identity["migration"].get("database_head") != "0052"
             or identity["migration"].get("status") != "PASS"
             or not native_migration_json_equal(
                 identity.get("migration_supported_roundtrip"),
@@ -526,7 +541,12 @@ def verify_union(
             or not native_migration_json_equal(
                 identity.get("migration_empty_roundtrip"),
                 {
-                    "source_head": "0051",
+                    "source_head": "0052",
+                    "original_history_frame_before_readback": expected_migration_revision_readback(
+                        "0052"
+                    ),
+                    "original_history_frame_down_revision": "0051",
+                    "original_history_frame_down_readback": expected_original_frame_absent_readback(),
                     "prospective_cutover_before_readback": expected_migration_revision_readback(
                         "0051"
                     ),
@@ -564,7 +584,7 @@ def verify_union(
                     "hwm_down_readback": expected_migration_revision_readback("0043"),
                     "down_revision": "0042",
                     "down_readback": expected_migration_revision_readback("0042"),
-                    "reupgrade_readback": expected_migration_revision_readback("0051"),
+                    "reupgrade_readback": expected_migration_revision_readback("0052"),
                     "reupgrade_identity": "PASS",
                     "schema_drift": "PASS",
                 },
@@ -572,18 +592,82 @@ def verify_union(
             or not native_migration_json_equal(
                 identity.get("migration_downgrade_policy"),
                 {
-                    "source_head": "0051",
+                    "source_head": "0052",
                     "target": "0041",
                     "result": "DENIED",
                     "denied_at": "0042",
                     "policy_refusal": DOWNGRADE_DENIAL,
-                    "database_head_after": "0051",
-                    "rollback_readback": expected_migration_revision_readback("0051"),
+                    "database_head_after": "0052",
+                    "rollback_readback": expected_migration_revision_readback("0052"),
                     "schema_drift": "PASS",
                 },
             )
         ):
             raise ValueError(f"linux_union_component_identity_rejected:{name}")
+        for filename, expected_readback in (
+            (
+                "migration-original-history-frame-empty-before.log",
+                expected_migration_revision_readback("0052"),
+            ),
+            (
+                "migration-original-history-frame-empty-readback.log",
+                expected_original_frame_absent_readback(),
+            ),
+            (
+                "migration-prospective-cutover-empty-before.log",
+                expected_migration_revision_readback("0051"),
+            ),
+            (
+                "migration-reupgrade-readback.log",
+                expected_migration_revision_readback("0052"),
+            ),
+            (
+                "migration-denial-readback.log",
+                expected_migration_revision_readback("0052"),
+            ),
+        ):
+            if not native_migration_json_equal(
+                _json(root / filename), expected_readback
+            ):
+                raise ValueError("linux_union_current0052_readback_log_changed")
+        frame_capture_path = (
+            root / "test-results/original-history-frame-owner-catalog.json"
+        )
+        if (
+            frame_capture_path.is_symlink()
+            or not frame_capture_path.is_file()
+            or not 0 < frame_capture_path.stat().st_size <= 8 * 1024 * 1024
+        ):
+            raise ValueError("linux_union_original_frame_capture_missing_or_unsafe")
+        frame_installation = (
+            verify_original_frame_installation_native_catalog_capture_0052(
+                _json(frame_capture_path),
+                migration_sha256=identity["migration"]["migration_sha256"],
+                manifest_sha256=manifest_sha256,
+                source_files=source_files,
+            )
+        )
+        if not native_migration_json_equal(
+            frame_installation,
+            expected_migration_revision_readback("0052")[
+                "original_history_frame_owner_installation"
+            ],
+        ):
+            raise ValueError("linux_union_original_frame_catalog_changed")
+        if not native_migration_json_equal(
+            _json(root / "migration-original-history-frame-native-catalog.log"),
+            {
+                "artifact": "test-results/original-history-frame-owner-catalog.json",
+                "sha256": hashes[
+                    "test-results/original-history-frame-owner-catalog.json"
+                ],
+                "native_baseline_admission": False,
+                "runtime_admission": False,
+                "account_complete": False,
+                "execution_authority": False,
+            },
+        ):
+            raise ValueError("linux_union_original_frame_capture_receipt_changed")
         cutover_capture_path = (
             root / "test-results/prospective-cutover-native-catalog.json"
         )
@@ -595,7 +679,7 @@ def verify_union(
             raise ValueError(
                 "linux_union_prospective_cutover_capture_missing_or_unsafe"
             )
-        cutover_schema = verify_prospective_cutover_native_catalog_capture(
+        cutover_schema = verify_prospective_cutover_native_catalog_capture_0052(
             _json(cutover_capture_path),
             migration_sha256=identity["migration"]["migration_sha256"],
             manifest_sha256=manifest_sha256,
@@ -603,7 +687,7 @@ def verify_union(
         )
         if not native_migration_json_equal(
             cutover_schema,
-            expected_migration_revision_readback("0051")["prospective_cutover_schema"],
+            expected_migration_revision_readback("0052")["prospective_cutover_schema"],
         ):
             raise ValueError("linux_union_prospective_cutover_catalog_changed")
         if not native_migration_json_equal(
@@ -626,7 +710,7 @@ def verify_union(
             raise ValueError(
                 "linux_union_history_partition_native_catalog_size_invalid"
             )
-        partition_schema = verify_history_partition_native_catalog_capture_0051(
+        partition_schema = verify_history_partition_native_catalog_capture_0052(
             _json(partition_capture_path),
             migration_sha256=identity["migration"]["migration_sha256"],
             manifest_sha256=manifest_sha256,
@@ -634,7 +718,7 @@ def verify_union(
         )
         if not native_migration_json_equal(
             partition_schema,
-            expected_migration_revision_readback("0051")[
+            expected_migration_revision_readback("0052")[
                 "account_history_partition_schema"
             ],
         ):
@@ -655,7 +739,7 @@ def verify_union(
         if not 0 < capture_path.stat().st_size <= 2 * 1024 * 1024:
             raise ValueError("linux_union_coverage_native_catalog_size_invalid")
         capture = _json(capture_path)
-        coverage_schema = verify_coverage_native_catalog_capture_0051(
+        coverage_schema = verify_coverage_native_catalog_capture_0052(
             capture, migration_sha256=identity["migration"].get("migration_sha256")
         )
         if not native_migration_json_equal(
@@ -821,7 +905,7 @@ def verify_union(
             empty_positions.append(matches[0][0])
         if empty_positions != sorted(empty_positions):
             raise ValueError("linux_union_native_identity_empty_stage_order")
-        verify_current_0051_downgrade_denial_log(
+        verify_current_0052_downgrade_denial_log(
             root / "migration-downgrade-denial.log"
         )
         if mode == "postgres":
@@ -924,7 +1008,7 @@ def verify_union(
                 raise ValueError(
                     "linux_union_history_partition_migration_receipt_missing"
                 )
-            partition_receipt = verify_history_partition_migration_receipt_0051(
+            partition_receipt = verify_history_partition_migration_receipt_0052(
                 _json(root / partition_receipt_name),
                 manifest_sha256=manifest_sha256,
                 repository_sha256=source_files[
@@ -941,10 +1025,10 @@ def verify_union(
                 raise ValueError(
                     "linux_union_history_partition_migration_receipt_changed"
                 )
-            verify_history_partition_downgrade_denial_log_0051(
+            verify_history_partition_downgrade_denial_log_0052(
                 root / "migration-history-partition-nonempty-denial.log"
             )
-            partition_retention = history_partition_nonempty_downgrade_readback_0051(
+            partition_retention = history_partition_nonempty_downgrade_readback_0052(
                 _json(root / "migration-history-partition-nonempty-before.log"),
                 _json(root / "migration-history-partition-nonempty-after.log"),
             )
@@ -965,7 +1049,7 @@ def verify_union(
                 {
                     "schema": "ctcc.migration_predecessor_identity.v1",
                     "status": "PASS",
-                    "source_head": "0051",
+                    "source_head": "0052",
                     "database_head": "0047",
                     "target_revision": "0047",
                     "migration_sha256": identity["migration"].get("migration_sha256"),
@@ -1043,7 +1127,7 @@ def verify_union(
                 identity.get("predecessor_0047_validation"),
                 {
                     "schema": "ctcc.isolated_0047_predecessor_validation.v1",
-                    "source_head": "0051",
+                    "source_head": "0052",
                     "database_target": "0047",
                     "separate_from_full_suite_unique_count": True,
                     "test_report": predecessor_report,
@@ -1223,6 +1307,13 @@ def verify_union(
 
 
 def main():
+    import sys
+
+    from scripts.current_hermetic_contract_dispatch_v1 import maybe_dispatch_union
+
+    dispatched = maybe_dispatch_union(sys.argv[1:])
+    if dispatched is not None:
+        return dispatched
     parser = argparse.ArgumentParser()
     parser.add_argument("--artifacts", type=Path, required=True)
     parser.add_argument("--commit", required=True)

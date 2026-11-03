@@ -1,9 +1,9 @@
 """Explicit Notion delivery adapter for the existing post-submit outbox.
 
-Production delivery is currently DENY until an issuer-backed, database-bound
-projection can be verified. The final synchronous gate runs before HTTP even
-if a caller bypasses the runtime and post-submit wrappers. Synthetic tests of
-the following adapter mechanics are not delivery acceptance.
+Native historical delivery requires the genuine configured-DB projection
+capability. Legacy/local/caller-flag paths remain denied. The final source gate
+runs before HTTP, with native source guards across each asynchronous resume.
+Synthetic adapter mechanics are not native source or delivery acceptance.
 
 No token discovery, database creation/update, scheduler or order callback exists
 here. The caller owns an isolated HTTPX client and injects a SecretStr token and
@@ -409,6 +409,7 @@ class NotionDeliveryAdapter:
         )
         self._clock = clock
         self._pre_create_check = pre_create_check
+        self._source_permit = None
         self.pre_create_check_failed = False
         self._busy = False
         self.rate_limited = False
@@ -419,6 +420,14 @@ class NotionDeliveryAdapter:
         if task is not None and task.cancelling():
             raise asyncio.CancelledError
         _client(self._client)
+        if self._source_permit is not None:
+            from app.trade_evidence import (
+                native_notion_delivery_source_v55 as native_source,
+            )
+
+            native_source.require_native_notion_dispatch_v55(
+                self._source_permit, adapter=self
+            )
         started = outbox._now(self._clock)
         if started >= claim.lease_expires_at:
             raise NotionAdapterError("notion_lease_expired")
@@ -535,9 +544,10 @@ class NotionDeliveryAdapter:
     async def __call__(
         self, payload: outbox.OutboxPayload, claim: outbox.ClaimToken
     ) -> outbox.DeliveryOutcome:
-        # Last outbound boundary. This synchronous DENY runs before any token
-        # or HTTP operation, even when a caller bypasses the runtime wrapper.
-        delivery_source_authority.require_issuer_backed_projection()
+        # The old no-permit path remains denied. A genuine native capability
+        # is consumed against this exact durable dispatching claim below.
+        if self._source_permit is None:
+            delivery_source_authority.require_issuer_backed_projection()
         payload, claim = (
             outbox._copy(payload, outbox.OutboxPayload),
             outbox._copy(claim, outbox.ClaimToken),
@@ -546,6 +556,10 @@ class NotionDeliveryAdapter:
             _copy(self._destination, NotionDestination),
             _copy(self._policy, NotionAdapterPolicy),
         )
+        if self._source_permit is not None:
+            delivery_source_authority.require_issuer_backed_projection(
+                self._source_permit, adapter=self, payload=payload, claim=claim
+            )
         if payload.report_id != claim.report_id or claim.status != "dispatching":
             raise NotionAdapterError("notion_claim_identity_invalid")
         if self._busy:
@@ -680,6 +694,7 @@ class NotionDeliveryAdapter:
             status, page_id = "uncertain", None
         finally:
             self._busy = False
+
         if task is not None and task.cancelling():
             raise asyncio.CancelledError
         completed = outbox._now(self._clock)

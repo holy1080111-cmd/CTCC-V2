@@ -1,4 +1,4 @@
-"""Native durable filesystem + synthetic HTTP/lifecycle checks, no real Notion IO."""
+"""Actual filesystem/lifecycle + shared DATA delivery mechanics; no native admission or real Notion IO."""
 
 import asyncio
 import hashlib
@@ -23,6 +23,7 @@ from app.trade_evidence import (
 from app.trade_evidence import notion_binding as binding
 from app.trade_evidence.runtime import NotionOutboxRuntime, discover_jobs
 from scripts.setup_notion_outbox import discover_destination
+from tests.unit.notion_delivery_data_harness import SyntheticReportingDataRuntime
 from tests.unit.test_trade_evidence_notion_adapter import (
     DB,
     SOURCE,
@@ -50,7 +51,7 @@ def settings(**values):
 
 
 def service(root, handler, clock, *, batch=16):
-    worker = NotionOutboxRuntime(
+    worker = SyntheticReportingDataRuntime(
         settings(notion_outbox_enabled=True, notion_outbox_batch_size=batch),
         client_factory=lambda: httpx.AsyncClient(
             transport=httpx.MockTransport(handler), trust_env=False
@@ -58,13 +59,13 @@ def service(root, handler, clock, *, batch=16):
         clock=clock,
     )
     worker._configuration = lambda: (root, destination(), TOKEN)
+    assert worker.source_authenticity_verified is False
+    assert worker.remote_acceptance_verified is False
     return worker
 
 
-_SYNTHETIC_DOWNSTREAM_RUNTIME_TESTS = frozenset(
+_SYNTHETIC_DOWNSTREAM_DATA_TESTS = frozenset(
     {
-        "test_enabled_missing_configuration_is_pending_with_bounded_retry",
-        "test_thread_starts_without_blocking_api_and_stops_idempotently",
         "test_native_delivery_readback_and_restart_never_recreate_page",
         "test_native_crashed_dispatch_recovers_uncertain_without_post",
         "test_page_created_before_finish_journal_failure_is_not_created_again",
@@ -83,21 +84,32 @@ _SYNTHETIC_DOWNSTREAM_RUNTIME_TESTS = frozenset(
         "test_delivery_429_stops_all_later_jobs_and_survives_restart",
         "test_prebinding_cooldown_persists_and_only_retries_after_deadline",
         "test_reporting_lease_prevents_parallel_runtime_http",
-        "test_static_error_allowlist_never_logs_injected_exception_code",
     }
 )
 
 
 @pytest.fixture(autouse=True)
 def _simulate_downstream_mechanics_only(monkeypatch, request):
-    # These named MockTransport cases exercise only recovery/adapter mechanics.
+    # These named DATA harness cases exercise only recovery/adapter mechanics.
     # The separate unpatched test below is the production admission contract.
-    if request.node.originalname in _SYNTHETIC_DOWNSTREAM_RUNTIME_TESTS:
+    if request.node.originalname in _SYNTHETIC_DOWNSTREAM_DATA_TESTS:
         monkeypatch.setattr(
             delivery_source_authority,
             "require_issuer_backed_projection",
             lambda: None,
         )
+
+
+def _journal_bytes(root, report_id):
+    """Exact durable bytes via the publisher's validated native path spelling."""
+    with (
+        outbox._root_context(root) as directory,
+        directory.child(report_id + ".state") as journal,
+    ):
+        return {
+            name: journal.read(name, outbox.MAX_RECORD_BYTES)
+            for name in journal.names()
+        }
 
 
 def recorder(root, clock):
@@ -146,13 +158,22 @@ async def test_enabled_valid_legacy_job_pair_cannot_authorize_notion_io(
     outbox.enqueue(tmp_path, payload(), clock=clock)
     before = outbox.read_job(tmp_path, REPORT, clock=clock)
     envelope_bytes = (tmp_path / (REPORT + ".json")).read_bytes()
-    journal_bytes = (tmp_path / (REPORT + ".state") / "00000001.json").read_bytes()
+    journal_bytes = _journal_bytes(tmp_path, REPORT)
+    assert set(journal_bytes) == {"00000001.json"}
 
     def forbidden(*_args, **_kwargs):
         pytest.fail("local report files reached token, root, or Notion IO")
 
     worker = NotionOutboxRuntime(
-        settings(notion_outbox_enabled=True), client_factory=forbidden, clock=clock
+        settings(
+            notion_outbox_enabled=True,
+            notion_outbox_root=str(tmp_path),
+            notion_outbox_destination_file="synthetic-data-only-destination",
+            notion_outbox_destination_sha256="a" * 64,
+            notion_outbox_token_file="synthetic-data-only-token",
+        ),
+        client_factory=forbidden,
+        clock=clock,
     )
     worker._configuration = forbidden
     monkeypatch.setattr(runtime, "discover_jobs", forbidden)
@@ -164,14 +185,21 @@ async def test_enabled_valid_legacy_job_pair_cannot_authorize_notion_io(
     assert worker.last_result is None
     assert outbox.read_job(tmp_path, REPORT, clock=clock) == before
     assert (tmp_path / (REPORT + ".json")).read_bytes() == envelope_bytes
-    assert (
-        tmp_path / (REPORT + ".state") / "00000001.json"
-    ).read_bytes() == journal_bytes
+    assert _journal_bytes(tmp_path, REPORT) == journal_bytes
 
 
 @pytest.mark.asyncio
-async def test_enabled_missing_configuration_is_pending_with_bounded_retry(caplog):
-    worker = NotionOutboxRuntime(settings(notion_outbox_enabled=True))
+async def test_enabled_missing_configuration_is_pending_with_bounded_retry(
+    caplog, monkeypatch
+):
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("missing configuration reached Settings/source/token/client IO")
+
+    worker = NotionOutboxRuntime(
+        settings(notion_outbox_enabled=True), client_factory=forbidden
+    )
+    worker._configuration = forbidden
+    monkeypatch.setattr(runtime, "get_settings", forbidden)
     assert await worker.tick() == 30
     assert worker.last_code == "notion_outbox_configuration_missing"
     for _ in range(10):
@@ -183,14 +211,20 @@ async def test_enabled_missing_configuration_is_pending_with_bounded_retry(caplo
 @pytest.mark.asyncio
 async def test_thread_starts_without_blocking_api_and_stops_idempotently():
     entered, release = threading.Event(), threading.Event()
-    worker = NotionOutboxRuntime(settings(notion_outbox_enabled=True))
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("configuration-denied worker reached a client")
+
+    worker = NotionOutboxRuntime(
+        settings(notion_outbox_enabled=True), client_factory=forbidden
+    )
 
     def blocked_configuration():
         entered.set()
         release.wait(2)
         raise binding.NotionBindingError("notion_outbox_configuration_missing")
 
-    worker._configuration = blocked_configuration
+    worker._configuration_presence = blocked_configuration
     try:
         await asyncio.wait_for(worker.start(), 0.2)
         assert await asyncio.to_thread(entered.wait, 2)
@@ -216,16 +250,10 @@ async def test_native_delivery_readback_and_restart_never_recreate_page(tmp_path
     assert outbox.read_job(tmp_path, REPORT, clock=clock).status == "delivered"
     assert worker.last_result.execution_authority is False
     assert worker.status == "running" and len(created) == 1
-    journal = {
-        path.name: path.read_bytes()
-        for path in (tmp_path / f"{REPORT}.state").iterdir()
-    }
+    journal = _journal_bytes(tmp_path, REPORT)
     await service(tmp_path, handler, clock).tick()
     assert sum(request.url.path == "/v1/pages" for request in calls) == 1
-    assert journal == {
-        path.name: path.read_bytes()
-        for path in (tmp_path / f"{REPORT}.state").iterdir()
-    }
+    assert journal == _journal_bytes(tmp_path, REPORT)
     assert TOKEN.get_secret_value().encode() not in b"".join(journal.values())
 
 
@@ -271,8 +299,7 @@ async def test_page_created_before_finish_journal_failure_is_not_created_again(
     assert calls[-1].url.path.endswith("/query")  # Created page was read back.
     view = outbox.read_job(tmp_path, REPORT, clock=clock)
     assert view.status == "dispatching" and len(view.events) == 3
-    journal = tmp_path / f"{REPORT}.state"
-    saved = {path.name: path.read_bytes() for path in journal.iterdir()}
+    saved = _journal_bytes(tmp_path, REPORT)
     assert set(saved) == {"00000001.json", "00000002.json", "00000003.json"}
 
     monkeypatch.setattr(directory, "publish", original_publish)
@@ -286,7 +313,9 @@ async def test_page_created_before_finish_journal_failure_is_not_created_again(
     recovered = outbox.read_job(tmp_path, REPORT, clock=clock)
     assert recovered.status == "uncertain"
     assert recovered.head.action == "recover" and len(recovered.events) == 4
-    assert all((journal / name).read_bytes() == raw for name, raw in saved.items())
+    recovered_bytes = _journal_bytes(tmp_path, REPORT)
+    assert set(recovered_bytes) == set(saved) | {"00000004.json"}
+    assert all(recovered_bytes[name] == raw for name, raw in saved.items())
 
 
 @pytest.mark.asyncio
@@ -667,12 +696,17 @@ async def test_reporting_lease_prevents_parallel_runtime_http(tmp_path):
 
 @pytest.mark.asyncio
 async def test_static_error_allowlist_never_logs_injected_exception_code(caplog):
-    worker = NotionOutboxRuntime(settings(notion_outbox_enabled=True))
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("configuration-denied worker reached a client")
+
+    worker = NotionOutboxRuntime(
+        settings(notion_outbox_enabled=True), client_factory=forbidden
+    )
 
     def invalid():
         raise binding.NotionBindingError(TOKEN.get_secret_value())
 
-    worker._configuration = invalid
+    worker._configuration_presence = invalid
     await worker.tick()
     assert TOKEN.get_secret_value() not in caplog.text
     assert worker.last_code == "notion_outbox_configuration_or_delivery_pending"

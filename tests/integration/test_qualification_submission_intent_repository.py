@@ -14,6 +14,8 @@ from tests.integration import test_qualification_ledger_repository as fixtures
 from tests.unit.qualification_execution_binding_fixtures import execution_binding
 
 database = fixtures.database
+controlled_current55_database = fixtures.controlled_current55_database
+ledger_database = fixtures.ledger_database
 fixture = fixtures.fixture
 initialize = fixtures.initialize
 
@@ -22,9 +24,9 @@ pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
 @pytest.mark.parametrize("fixture", ("long", "short"), indirect=True)
 async def test_atomic_consume_intent_committed_and_independent_restart_readback(
-    database, fixture
+    ledger_database, fixture
 ):
-    repo, clock = await initialize(database, fixture)
+    repo, clock = await initialize(ledger_database, fixture)
     reserved = await repo.reserve(fixture.request)
     result = await repo.consume_with_submission_intent(
         reserved.scope, reserved.original_event_key, expected_revision=2
@@ -33,14 +35,14 @@ async def test_atomic_consume_intent_committed_and_independent_restart_readback(
     assert body["version"] == "ctcc-demo-submit-intent-v1"
     assert body["consumed_receipt"]["state"] == "consumed"
     assert body["consumed_receipt"]["ledger_revision"] == 3
-    restarted = QualificationLedgerRepository(database[1], clock=clock)
+    restarted = QualificationLedgerRepository(ledger_database[1], clock=clock)
     assert (
         await restarted.read_submission_intent(
             reserved.scope, reserved.original_event_key, expected_sha256=result.sha256
         )
         == result
     )
-    async with database[1]() as session:
+    async with ledger_database[1]() as session:
         rows = (
             await session.scalars(
                 select(QualificationReservationTransition)
@@ -54,10 +56,10 @@ async def test_atomic_consume_intent_committed_and_independent_restart_readback(
     assert result.execution_authority is False and result.order_retry_authority is False
 
 
-async def test_concurrent_consumers_only_one_committed_intent(database, fixture):
-    repo, clock = await initialize(database, fixture)
+async def test_concurrent_consumers_only_one_committed_intent(ledger_database, fixture):
+    repo, clock = await initialize(ledger_database, fixture)
     reserved = await repo.reserve(fixture.request)
-    other = QualificationLedgerRepository(database[1], clock=clock)
+    other = QualificationLedgerRepository(ledger_database[1], clock=clock)
     results = await asyncio.gather(
         *(
             item.consume_with_submission_intent(
@@ -74,9 +76,9 @@ async def test_concurrent_consumers_only_one_committed_intent(database, fixture)
 
 
 async def test_late_failure_rolls_back_intent_and_consumption(
-    database, fixture, monkeypatch
+    ledger_database, fixture, monkeypatch
 ):
-    repo, _clock = await initialize(database, fixture)
+    repo, _clock = await initialize(ledger_database, fixture)
     reserved = await repo.reserve(fixture.request)
 
     def deny(*args):
@@ -89,7 +91,7 @@ async def test_late_failure_rolls_back_intent_and_consumption(
         )
     state = await repo.read_scope(reserved.scope)
     assert state.ledger_revision == 2 and state.active[0].state == "reserved"
-    async with database[1]() as session:
+    async with ledger_database[1]() as session:
         rows = (
             await session.scalars(
                 select(QualificationReservationTransition).filter_by(
@@ -101,9 +103,9 @@ async def test_late_failure_rolls_back_intent_and_consumption(
 
 
 async def test_readback_failure_does_not_roll_back_or_retry_committed_consumption(
-    database, fixture, monkeypatch
+    ledger_database, fixture, monkeypatch
 ):
-    repo, clock = await initialize(database, fixture)
+    repo, clock = await initialize(ledger_database, fixture)
     reserved = await repo.reserve(fixture.request)
 
     async def unavailable(*args, **kwargs):
@@ -116,15 +118,15 @@ async def test_readback_failure_does_not_roll_back_or_retry_committed_consumptio
         )
     state = await repo.read_scope(reserved.scope)
     assert state.ledger_revision == 3 and state.active[0].state == "consumed"
-    restarted = QualificationLedgerRepository(database[1], clock=clock)
+    restarted = QualificationLedgerRepository(ledger_database[1], clock=clock)
     with pytest.raises(QualificationLedgerError, match="transition_denied"):
         await restarted.consume_with_submission_intent(
             reserved.scope, reserved.original_event_key, expected_revision=3
         )
 
 
-async def test_legacy_consumption_cannot_backfill_an_intent(database, fixture):
-    repo, _ = await initialize(database, fixture)
+async def test_legacy_consumption_cannot_backfill_an_intent(ledger_database, fixture):
+    repo, _ = await initialize(ledger_database, fixture)
     reserved = await repo.reserve(fixture.request)
     await repo.consume_once(
         reserved.scope, reserved.original_event_key, expected_revision=2
@@ -140,9 +142,9 @@ async def test_legacy_consumption_cannot_backfill_an_intent(database, fixture):
 
 
 async def test_uncertain_and_expired_intent_read_is_audit_only_and_hold_remains(
-    database, fixture
+    ledger_database, fixture
 ):
-    repo, clock = await initialize(database, fixture)
+    repo, clock = await initialize(ledger_database, fixture)
     reserved = await repo.reserve(fixture.request)
     result = await repo.consume_with_submission_intent(
         reserved.scope, reserved.original_event_key, expected_revision=2
@@ -165,10 +167,10 @@ async def test_uncertain_and_expired_intent_read_is_audit_only_and_hold_remains(
 
 @pytest.mark.parametrize("fixture", ("long", "short"), indirect=True)
 async def test_v2_exact_body_is_committed_with_consumption_and_replayed_after_restart(
-    database, fixture
+    ledger_database, fixture
 ):
     binding = execution_binding(fixture)
-    repo, clock = await initialize(database, fixture)
+    repo, clock = await initialize(ledger_database, fixture)
     reserved = await repo.reserve(fixture.request)
     result = await repo.consume_with_submission_intent(
         reserved.scope,
@@ -180,7 +182,7 @@ async def test_v2_exact_body_is_committed_with_consumption_and_replayed_after_re
     assert body["version"] == "ctcc-demo-submit-intent-v2"
     assert body["exchange_request"]["body"]["ordType"] == "fok"
     assert body["exchange_request"]["body"]["tdMode"] == "isolated"
-    async with database[1]() as session:
+    async with ledger_database[1]() as session:
         row = await session.scalar(
             select(QualificationReservationTransition).filter_by(
                 reservation_id=reserved.reservation_id, to_state="consumed"
@@ -188,7 +190,7 @@ async def test_v2_exact_body_is_committed_with_consumption_and_replayed_after_re
         )
         assert row.evidence_json == result.canonical_json
     clock.value = fixture.request.origin.deadline + timedelta(days=1)
-    restarted = QualificationLedgerRepository(database[1], clock=clock)
+    restarted = QualificationLedgerRepository(ledger_database[1], clock=clock)
     await restarted.mark_uncertain(
         reserved.scope, reserved.original_event_key, expected_revision=3
     )
@@ -212,12 +214,12 @@ async def test_v2_exact_body_is_committed_with_consumption_and_replayed_after_re
 
 
 async def test_invalid_v2_binding_rolls_back_without_falling_back_to_legacy_intent(
-    database, fixture
+    ledger_database, fixture
 ):
     binding = execution_binding(fixture).model_copy(
         update={"recheck_json": '{"passed":true}'}
     )
-    repo, _ = await initialize(database, fixture)
+    repo, _ = await initialize(ledger_database, fixture)
     reserved = await repo.reserve(fixture.request)
     with pytest.raises(
         QualificationLedgerError, match="submit_execution_binding_invalid"
@@ -230,7 +232,7 @@ async def test_invalid_v2_binding_rolls_back_without_falling_back_to_legacy_inte
         )
     state = await repo.read_scope(reserved.scope)
     assert state.active[0].state == "reserved" and state.ledger_revision == 2
-    async with database[1]() as session:
+    async with ledger_database[1]() as session:
         rows = (
             await session.scalars(
                 select(QualificationReservationTransition).filter_by(

@@ -416,7 +416,7 @@ def test_allowlist_readback_reuses_actual_main_without_importing_host_pytest(
 
     from scripts import diagnose_native_financial_original_node as original
 
-    baseline = original._owned_deny_codes()
+    baseline = original._owned_deny_codes(source_pins=original.SCOPED_JSON_SOURCE_PINS)
     monkeypatch.setitem(
         sys.modules, "scripts.diagnose_native_financial_original_node", None
     )
@@ -437,3 +437,26 @@ def test_allowlist_readback_unknown_provider_refuses_without_new_import(monkeypa
     ):
         diagnostic._owned_denies_for_readback()
     assert sys.modules["scripts.diagnose_native_financial_original_node"] is None
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "app/trade_qualification/native_account_risk_assembly_v1.py",
+        "app/trade_qualification/account_history_source_v1.py",
+        "app/trade_qualification/account_history_source_bundle_v1.py",
+        "app/trade_qualification/history_json_lexical_guard_v1.py",
+    ],
+)
+def test_scoped_json_source_pins_revalidate_after_genuine_baseline(
+    monkeypatch, relative
+):
+    from scripts import diagnose_native_financial_original_node as original
+
+    historical = dict(original.INPUT_PINS)
+    baseline = original._owned_deny_codes(source_pins=original.SCOPED_JSON_SOURCE_PINS)
+    assert baseline
+    monkeypatch.setitem(original.SCOPED_JSON_SOURCE_PINS, relative, "0" * 64)
+    with pytest.raises(ValueError, match="owned_deny_source_identity_changed"):
+        original._owned_deny_codes(source_pins=original.SCOPED_JSON_SOURCE_PINS)
+    assert original.INPUT_PINS == historical

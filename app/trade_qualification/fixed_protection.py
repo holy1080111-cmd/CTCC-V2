@@ -38,14 +38,21 @@ from app.analysis.service import analyze_snapshot_at
 from app.domain import analysis as analysis_models
 from app.domain.analysis import MultiTimeframeAnalysis
 from app.domain.market import MarketSnapshot
+from app.domain.source_primitives import decode as _owned_decode_v2
+from app.domain.source_primitives import sha as _owned_sha_v2
 from app.indicators.core import atr
 from app.market.quality.candles import BAR_SECONDS, candle_closed_at, inspect_candles_at
+from app.strategies import structural_protection as _owned_selection_v2
 from app.strategies.structural_protection import (
     _source_anchors,
     select_range_structural_protection,
     select_reversal_structural_protection,
     select_structural_protection,
     select_sweep_structural_protection,
+)
+from app.trade_qualification import executable_quote_v2 as _owned_quote_v2
+from app.trade_qualification import (
+    native_original_bracket_policy_v1 as _owned_family_policy_v2,
 )
 from app.trade_qualification.data import (
     DataQualificationPolicy,
@@ -154,6 +161,7 @@ def _guard(value, depth=0, budget=None):
             FixedProtectionResultV3,
             FixedProtectionResultV5,
             FixedProtectionResultV6,
+            OwnedFamilyFixedProtectionResultV2,
         }
         if type(value) not in allowed:
             raise FixedProtectionError("exact_fixed_protection_model_required")
@@ -440,6 +448,28 @@ class FixedProtectionResultV6(FixedProtectionResult):
             )
         ):
             raise ValueError("fixed_sweep_history_binding_required")
+        return self
+
+
+class OwnedFamilyFixedProtectionResultV2(FixedProtectionResult):
+    """Raw-V2 fixed-price protection DATA, never an independent trade permission."""
+
+    contract_version: Literal["ctcc-owned-family-fixed-protection-v2"] = (
+        "ctcc-owned-family-fixed-protection-v2"
+    )
+    family_policy_sha256: Digest
+    sweep_permission_sha256: Digest | None = None
+    original_extreme_anchor_id: Text | None = None
+    range_permission_sha256: Digest | None = None
+    history_admission_sha256: Digest | None = None
+
+    @model_validator(mode="after")
+    def fixed_family_policy(self):
+        expected = _owned_sha_v2(
+            _owned_family_policy_v2.fixed_native_owned_family_policy_v2(self.strategy)
+        )
+        if self.family_policy_sha256 != expected:
+            raise ValueError("owned_fixed_family_policy_changed")
         return self
 
 
@@ -811,6 +841,455 @@ def _evaluate_fixed_protection(
                 checked_quote.bid,
                 checked_quote.ask,
                 checked_quote.mark_price,
+            )
+        )
+        if not check(
+            "fixed_geometry",
+            "passed"
+            if aligned and geometry and quote_between
+            else "fixed_geometry_invalid",
+            {
+                "tick_aligned": aligned,
+                "thesis_invalidation": thesis,
+                "quote_within_original_bracket": quote_between,
+                "prices_changed": False,
+            },
+        ):
+            return finish()
+        anchor = selected.stop.anchor
+        volatility = atr(frames[anchor.timeframe], 14)
+        friction = (
+            Fraction(spread)
+            + Fraction(entry) * Fraction(chosen_policy.expected_slippage_bps) / 10000
+            + Fraction(tick_size)
+        )
+        if volatility is None or volatility <= 0:
+            check(
+                "current_noise",
+                "fixed_current_atr_invalid",
+                {"timeframe": anchor.timeframe},
+            )
+            return finish()
+        required_buffer_exact = (
+            max(
+                Fraction(entry) * Fraction(chosen_policy.minimum_buffer_bps) / 10000,
+                Fraction(volatility) * Fraction(chosen_policy.atr_buffer_multiplier),
+            )
+            + friction
+        )
+        clearance = (
+            anchor.anchor_price - stop_loss if long else stop_loss - anchor.anchor_price
+        )
+        distance = entry - stop_loss if long else stop_loss - entry
+        minimum_distance_exact = Fraction(volatility) * Fraction(
+            chosen_policy.min_stop_distance_atr
+        )
+        required_buffer = _measured_fraction(required_buffer_exact)
+        minimum_distance = _measured_fraction(minimum_distance_exact)
+        enough = (
+            Fraction(clearance) >= required_buffer_exact
+            and Fraction(distance) >= minimum_distance_exact
+        )
+        constraints["noise"] = {
+            "original_anchor_id": anchor.anchor_id,
+            "timeframe": anchor.timeframe,
+            "atr": str(volatility),
+            "clearance": str(clearance),
+            "required_buffer": str(required_buffer),
+            "required_buffer_exact": _fraction_record(required_buffer_exact),
+            "minimum_stop_distance": str(minimum_distance),
+            "minimum_stop_distance_exact": _fraction_record(minimum_distance_exact),
+            "actual_stop_distance": str(distance),
+        }
+        if not check(
+            "current_noise",
+            "passed" if enough else "fixed_stop_noise_insufficient",
+            {
+                "timeframe": anchor.timeframe,
+                "atr": volatility,
+                "anchor_price": anchor.anchor_price,
+                "clearance": clearance,
+                "required_buffer": required_buffer,
+                "stop_distance": distance,
+                "minimum_stop_distance": minimum_distance,
+                "comparison": "exact_fraction",
+            },
+        ):
+            return finish()
+        try:
+            stops, targets = _source_anchors(frames, event)
+        except _ERRORS as exc:
+            check(
+                "current_liquidity",
+                "fixed_current_anchors_invalid",
+                {"cause": str(exc)[:512] or "invalid anchors"},
+            )
+            return finish()
+        pool_records = []
+        for pool in (item for item in stops if item.source.startswith("equal_")):
+            if pool.atr is None or pool.atr <= 0:
+                check(
+                    "current_liquidity",
+                    "fixed_liquidity_atr_invalid",
+                    {"anchor_id": pool.anchor_id},
+                )
+                return finish()
+            buffer_exact = (
+                max(
+                    Fraction(entry)
+                    * Fraction(chosen_policy.minimum_buffer_bps)
+                    / 10000,
+                    Fraction(pool.atr) * Fraction(chosen_policy.atr_buffer_multiplier),
+                )
+                + friction
+            )
+            gap = abs(stop_loss - pool.anchor_price)
+            buffer = _measured_fraction(buffer_exact)
+            pool_records.append(
+                {
+                    "anchor_id": pool.anchor_id,
+                    "price": str(pool.anchor_price),
+                    "required_buffer": str(buffer),
+                    "required_buffer_exact": _fraction_record(buffer_exact),
+                    "actual_clearance": str(gap),
+                    "passed": Fraction(gap) >= buffer_exact,
+                }
+            )
+        constraints["liquidity"] = pool_records
+        blocked_pools = [item for item in pool_records if not item["passed"]]
+        if not check(
+            "current_liquidity",
+            "passed" if not blocked_pools else "fixed_stop_liquidity_buffer",
+            {
+                "pool_count": len(pool_records),
+                "blocked_pool_count": len(blocked_pools),
+                "first_blocking_anchor": blocked_pools[0]["anchor_id"]
+                if blocked_pools
+                else None,
+            },
+        ):
+            return finish()
+        barriers = [
+            item
+            for item in targets
+            if (item.anchor_price > entry if long else item.anchor_price < entry)
+        ]
+        nearest = (
+            (
+                min(item.anchor_price for item in barriers)
+                if long
+                else max(item.anchor_price for item in barriers)
+            )
+            if barriers
+            else None
+        )
+        occupied = any(
+            item.zone_low is not None and item.zone_low <= entry <= item.zone_high
+            for item in targets
+        )
+        blocked = nearest is not None and (
+            nearest < take_profit if long else nearest > take_profit
+        )
+        constraints["targets"] = [
+            {
+                "anchor_id": item.anchor_id,
+                "price": str(item.anchor_price),
+                "known_at": item.known_at.isoformat(),
+                "zone_low": str(item.zone_low) if item.zone_low is not None else None,
+                "zone_high": str(item.zone_high)
+                if item.zone_high is not None
+                else None,
+            }
+            for item in targets
+        ]
+        check(
+            "current_target",
+            "fixed_entry_inside_opposing_zone"
+            if occupied
+            else "fixed_target_intervening_barrier"
+            if blocked
+            else "passed",
+            {
+                "nearest_barrier": nearest,
+                "original_take_profit": take_profit,
+                "target_count": len(targets),
+                "entry_inside_opposing_zone": occupied,
+                "prices_changed": False,
+            },
+        )
+        return finish()
+
+
+def evaluate_owned_fixed_protection_v2(
+    original_market: MarketSnapshot,
+    original_analysis: MultiTimeframeAnalysis,
+    current_market: MarketSnapshot,
+    current_analysis: MultiTimeframeAnalysis,
+    *,
+    detection: TriggerDetection,
+    original_selection_audit_json: str,
+    stop_loss: Decimal,
+    take_profit: Decimal,
+    entry: Decimal,
+    policy: ProtectionPolicy,
+    tick_size: Decimal,
+    data_policy: DataQualificationPolicy,
+    quote: _owned_quote_v2.ExecutableQuoteV2,
+    observed_at: datetime,
+) -> FixedProtectionResult:
+    """Compare original prices only; current-source history continuity is separate.
+
+    Noise uses the original stop anchor's timeframe ATR, the original stop
+    distance, original slippage/buffer policy and the newly observed spread.
+    Equal-pivot pool exclusion and nearer opposing targets reuse the selector's
+    bounded 15m/1H/4H source universe. Equality clears the same buffer boundary
+    as the original selector; a target exactly at a barrier is not beyond it.
+    """
+    try:
+        event = _copy(detection, TriggerDetection)
+        _reversal = event.strategy == "structure_reversal"
+        _range = event.strategy == "range_reversal"
+        _sweep = event.strategy == "liquidity_sweep_reversal"
+        if _sweep and event.strategy != "liquidity_sweep_reversal":
+            raise FixedProtectionError("fixed_sweep_strategy_required")
+        if _range and event.strategy != "range_reversal":
+            raise FixedProtectionError("fixed_range_strategy_required")
+        if _reversal and event.strategy != "structure_reversal":
+            raise FixedProtectionError("fixed_reversal_strategy_required")
+        chosen_policy = _bounded_scalars(policy, ProtectionPolicy)
+        data = _bounded_scalars(data_policy, DataQualificationPolicy)
+        now = _time(observed_at)
+        entry, stop_loss, take_profit, tick_size = map(
+            _price, (entry, stop_loss, take_profit, tick_size)
+        )
+        if (
+            event.trigger is None
+            or event.source_sha256 is None
+            or event.invalidation_price is None
+            or event_identity(event) is None
+        ):
+            raise FixedProtectionError("original_event_missing")
+        if (
+            type(original_selection_audit_json) is not str
+            or not 0 < len(original_selection_audit_json) <= _MAX_AUDIT
+            or len(original_selection_audit_json.encode()) > _MAX_AUDIT
+        ):
+            raise FixedProtectionError("original_audit_contract_invalid")
+    except _ERRORS as exc:
+        raise FixedProtectionError("fixed_protection_input_invalid") from exc
+    identity = {
+        "contract_version": "ctcc-owned-family-fixed-protection-v2",
+        "family_policy_sha256": _owned_sha_v2(
+            _owned_family_policy_v2.fixed_native_owned_family_policy_v2(event.strategy)
+        ),
+        "report_id": event.report_id,
+        "instrument_id": event.instrument_id,
+        "strategy": event.strategy,
+        "direction": event.direction,
+        "observed_at": now,
+        "entry": entry,
+        "stop_loss": stop_loss,
+        "take_profit": take_profit,
+        "tick_size": tick_size,
+        "policy": chosen_policy,
+        "data_policy": data,
+        "policy_sha256": _hash(chosen_policy),
+        "data_policy_sha256": _hash(data),
+        "event_key": event_identity(event),
+    }
+    evidence, checks, constraints = {}, [], {}
+
+    def check(step, code, measured):
+        checks.append(
+            FixedProtectionCheck(
+                step=step, passed=code == "passed", code=code, measured_values=measured
+            )
+        )
+        return code == "passed"
+
+    def finish():
+        result_type = OwnedFamilyFixedProtectionResultV2
+        return result_type.model_validate(
+            _plain(
+                {
+                    **identity,
+                    **evidence,
+                    "checks": tuple(checks),
+                    "current_constraints_json": _canonical(constraints)
+                    if constraints
+                    else None,
+                    "passed": len(checks) == len(STEPS)
+                    and all(c.passed for c in checks),
+                    "code": checks[-1].code,
+                }
+            ),
+            strict=True,
+        )
+
+    with localcontext(Context(prec=100)):
+        try:
+            old_market, old_analysis, _, old_sha = _source(
+                original_market,
+                original_analysis,
+                at=event.observed_at,
+                data_policy=data,
+            )
+            if old_sha != event.source_sha256 or (
+                old_market.instrument_id,
+                old_market.symbol,
+            ) != (event.instrument_id, event.symbol):
+                raise FixedProtectionError("original_source_pin_mismatch")
+            if not event.observed_at <= now < event.trigger.expires_at:
+                raise FixedProtectionError("original_event_time_invalid")
+            evidence["original_source_sha256"] = old_sha
+        except _ERRORS as exc:
+            check(
+                "original_source",
+                "fixed_original_source_invalid",
+                {"cause": str(exc)[:512] or "invalid source"},
+            )
+            return finish()
+        check(
+            "original_source",
+            "passed",
+            {"source_sha256": old_sha, "analysis_recomputed": True},
+        )
+        try:
+            selector = (
+                _owned_selection_v2.select_sweep_structural_protection_v2
+                if _sweep
+                else select_range_structural_protection
+                if _range
+                else select_reversal_structural_protection
+                if _reversal
+                else select_structural_protection
+            )
+            original = selector(
+                event,
+                old_market,
+                old_analysis,
+                observed_at=event.observed_at,
+                entry=entry,
+                tick_size=tick_size,
+                **{k: v for k, v in _plain(chosen_policy).items() if k != "policy_id"},
+            )
+            if (
+                not original.protection_valid
+                or original.to_audit_json() != original_selection_audit_json
+            ):
+                raise FixedProtectionError("original_selection_replay_mismatch")
+            selected = original.selected
+            if _sweep:
+                evidence["sweep_permission_sha256"] = original.sweep_permission_sha256
+                evidence["original_extreme_anchor_id"] = (
+                    original.original_extreme_anchor_id
+                )
+            if _range:
+                evidence["range_permission_sha256"] = original.range_permission_sha256
+            if _reversal:
+                evidence["history_admission_sha256"] = original.history_admission_sha256
+            if (selected.stop.final_stop, selected.target.final_target) != (
+                stop_loss,
+                take_profit,
+            ):
+                raise FixedProtectionError("original_fixed_prices_mismatch")
+            evidence["original_audit_sha256"] = hashlib.sha256(
+                original_selection_audit_json.encode()
+            ).hexdigest()
+        except _ERRORS as exc:
+            check(
+                "original_selection",
+                "fixed_original_selection_invalid",
+                {"cause": str(exc)[:512] or "invalid selection"},
+            )
+            return finish()
+        check(
+            "original_selection",
+            "passed",
+            {
+                "original_audit_sha256": evidence["original_audit_sha256"],
+                "entry": entry,
+                "stop_loss": stop_loss,
+                "take_profit": take_profit,
+            },
+        )
+        try:
+            new_market, _new_analysis, frames, new_sha = _source(
+                current_market, current_analysis, at=now, data_policy=data
+            )
+            if (new_market.instrument_id, new_market.symbol) != (
+                old_market.instrument_id,
+                old_market.symbol,
+            ) or new_market.received_at < old_market.received_at:
+                raise FixedProtectionError("current_source_identity_or_time_invalid")
+            evidence["current_source_sha256"] = new_sha
+        except _ERRORS as exc:
+            check(
+                "current_source",
+                "fixed_current_source_invalid",
+                {"cause": str(exc)[:512] or "invalid source"},
+            )
+            return finish()
+        check(
+            "current_source",
+            "passed",
+            {
+                "source_sha256": new_sha,
+                "analysis_recomputed": True,
+                **{
+                    f"{tf}_closed_through": candle_closed_at(rows[-1], tf).isoformat()
+                    for tf, rows in frames.items()
+                },
+                "continuation_verified": False,
+            },
+        )
+        try:
+            if type(quote) is not _owned_quote_v2.ExecutableQuoteV2:
+                raise FixedProtectionError("fixed_v2_exact_quote_required")
+            inspected = _owned_quote_v2.inspect_executable_quote_v2(
+                quote, current_time=now
+            )
+            observation = _owned_decode_v2(inspected.receipt_json, 1024 * 1024)
+            if observation["profile_satisfied"] is not True or (
+                quote.report_id,
+                quote.instrument_id,
+            ) != (event.report_id, event.instrument_id):
+                raise FixedProtectionError("fixed_v2_quote_profile_invalid")
+            evidence["quote_sha256"] = observation["quote_sha256"]
+            spread = quote.ticker.ask - quote.ticker.bid
+        except _ERRORS as exc:
+            check(
+                "quote",
+                "fixed_quote_invalid",
+                {"cause": str(exc)[:512] or "invalid quote"},
+            )
+            return finish()
+        check(
+            "quote",
+            "passed",
+            {"quote_sha256": evidence["quote_sha256"], "spread": spread},
+        )
+        long = event.direction == "long"
+        thesis = D(
+            dict(event.setup_basis).get(
+                "invalidation_unrounded", str(event.invalidation_price)
+            )
+        )
+        aligned = all(
+            Fraction(value) % Fraction(tick_size) == 0
+            for value in (stop_loss, take_profit)
+        )
+        geometry = (
+            stop_loss < min(thesis, event.invalidation_price) < entry < take_profit
+            if long
+            else take_profit < entry < max(thesis, event.invalidation_price) < stop_loss
+        )
+        quote_between = all(
+            stop_loss < value < take_profit if long else take_profit < value < stop_loss
+            for value in (
+                quote.ticker.bid,
+                quote.ticker.ask,
+                quote.mark.price,
             )
         )
         if not check(

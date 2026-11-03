@@ -19,6 +19,7 @@ from typing import Any
 import httpx
 
 from app.config.settings import Settings, get_settings
+from app.exchange.okx import native_reconciliation_observation_v1 as reconciliation_read
 from app.exchange.okx.errors import OkxPrivateApiError
 from app.exchange.okx.transport_observation import (
     ObservedOrderResult,
@@ -37,6 +38,54 @@ from app.trade_qualification.execution_authority import (
 from app.trade_qualification.private_write_authority import (
     require_owned_private_write_authority,
 )
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class DemoConfigSelectorObservationV2:
+    """Private selector DATA; never serialize signature/raw response publicly."""
+
+    data: tuple[dict[str, Any], ...] = field(repr=False)
+    raw_body: bytes = field(repr=False)
+    request_signature: str = field(repr=False)
+    account_complete: bool = field(default=False, init=False)
+    execution_authority: bool = field(default=False, init=False)
+
+
+def _demo_selector_json_pairs_v2(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("demo_selector_duplicate_json")
+        result[key] = value
+    return result
+
+
+def _demo_selector_json_constant_v2(_value):
+    raise ValueError("demo_selector_nonfinite_json")
+
+
+def _demo_selector_json_float_v2(value):
+    result = float(value)
+    if not float("-inf") < result < float("inf"):
+        raise ValueError("demo_selector_nonfinite_json")
+    return result
+
+
+def _demo_selector_append_chunk_v2(chunks, size, chunk):
+    if (
+        type(chunks) is not list
+        or type(chunk) is not bytes
+        or type(size) is not int
+        or not 0 <= size <= 65536
+    ):
+        raise ValueError("demo_selector_stream_invalid")
+    next_size = size + len(chunk)
+    if next_size > 65536:
+        raise ValueError("demo_selector_response_bound")
+    if chunk:
+        chunks.append(chunk)
+    return next_size
+
 
 Clock = Callable[[], datetime]
 _ALGO_ORDER_TYPES = (
@@ -587,7 +636,82 @@ class _OkxPrivateRestClientBase:
         body: dict[str, Any] | None = None,
         write: bool = False,
         observe_order: bool = False,
-    ) -> list[dict[str, Any]] | ObservedOrderResult:
+        _demo_selector_max_bytes: int | None = None,
+        _demo_reconciliation_max_bytes: int | None = None,
+        _native_configuration_max_bytes: int | None = None,
+    ) -> (
+        list[dict[str, Any]]
+        | ObservedOrderResult
+        | DemoConfigSelectorObservationV2
+        | reconciliation_read.DemoReconciliationObservationV1
+    ):
+        demo_selector = _demo_selector_max_bytes is not None
+        demo_reconciliation = _demo_reconciliation_max_bytes is not None
+        bounded_read = demo_selector or demo_reconciliation
+        demo_configuration = _native_configuration_max_bytes is not None
+        bounded_response = bounded_read or demo_configuration
+        if demo_configuration:
+            from app.exchange.okx import native_demo_write_v2 as native_configuration
+
+            if (
+                type(_native_configuration_max_bytes) is not int
+                or _native_configuration_max_bytes != 65536
+                or type(self) is not OkxDemoPrivateRestClient
+                or method != "POST"
+                or path != "/api/v5/account/set-leverage"
+                or params is not None
+                or type(body) is not dict
+                or write is not True
+                or observe_order is not False
+                or bounded_read
+                or self._external_client is not None
+                or self._clock_injected is not False
+                or not native_configuration._native_leverage_configuration_route_v1(
+                    self, method, path
+                )
+            ):
+                raise OkxPrivateApiError(
+                    "Native configuration write unavailable",
+                    code="native_configuration_write_invalid",
+                )
+        if demo_reconciliation:
+            reconciliation_read.checked_query(path, params)
+            if (
+                _demo_reconciliation_max_bytes != reconciliation_read.MAX_BODY
+                or type(_demo_reconciliation_max_bytes) is not int
+                or type(self) is not OkxDemoPrivateRestClient
+                or method != "GET"
+                or body is not None
+                or write is not False
+                or observe_order is not False
+                or self._external_client is not None
+                or self._clock_injected is not False
+                or self._active_read_session() is None
+                or self._read_max_retries() != 0
+            ):
+                raise OkxPrivateApiError(
+                    "Native reconciliation GET is unavailable",
+                    code="native_reconciliation_read_invalid",
+                )
+        if demo_selector and (
+            type(_demo_selector_max_bytes) is not int
+            or _demo_selector_max_bytes != 65536
+            or type(self) is not OkxDemoPrivateRestClient
+            or method != "GET"
+            or path != "/api/v5/account/config"
+            or params is not None
+            or body is not None
+            or write is not False
+            or observe_order is not False
+            or self._external_client is not None
+            or self._clock_injected is not False
+            or self._active_read_session() is None
+            or self._read_max_retries() != 0
+        ):
+            raise OkxPrivateApiError(
+                "Demo selector purpose is unavailable",
+                code="demo_selector_purpose_invalid",
+            )
         self._last_prepared_dispatch_diagnostic = None
         self._before_send(method=method, path=path)
         if (
@@ -617,24 +741,44 @@ class _OkxPrivateRestClientBase:
             if body is None
             else json.dumps(
                 body,
-                sort_keys=order_create,
+                sort_keys=order_create or demo_configuration,
                 separators=(",", ":"),
                 ensure_ascii=False,
-                allow_nan=not order_create,
+                allow_nan=not (order_create or demo_configuration),
             )
         )
         body_bytes = None if body is None else body_text.encode("utf-8")
 
+        from app.exchange.okx import native_demo_write_v2 as native_write
+
+        native_httpx_client = native_write._native_request_client_v2(self, method, path)
         own_client = self._external_client is None
-        client = self._external_client or httpx.AsyncClient(
-            base_url=self._rest_base_url(),
-            timeout=httpx.Timeout(self._timeout_seconds()),
-            trust_env=False,
-            follow_redirects=False,
+        client = (
+            native_httpx_client
+            or self._external_client
+            or httpx.AsyncClient(
+                base_url=self._rest_base_url(),
+                timeout=httpx.Timeout(self._timeout_seconds()),
+                trust_env=False,
+                follow_redirects=False,
+            )
         )
         attempts = 1 if write else self._read_max_retries() + 1
         last_error: Exception | None = None
+        selector_response = None
+        selector_raw = None
+        selector_signature = None
+        reconciliation_journal = None
         try:
+            if demo_reconciliation:
+                reconciliation_journal = reconciliation_read.begin(
+                    self,
+                    self._active_read_session(),
+                    path,
+                    params,
+                    request_url,
+                    transport_client=client,
+                )
             for attempt in range(attempts):
                 try:
                     # Generate a fresh timestamp and signature for every read retry.
@@ -674,6 +818,10 @@ class _OkxPrivateRestClientBase:
                             headers=headers,
                             content=body_bytes,
                         )
+                        if native_httpx_client is not None:
+                            native_write._bind_prepared_native_request_v2(
+                                self, prepared_write_request
+                            )
                         if order_create:
                             owner = getattr(self, "_qualification_dispatch_owner", None)
                             slot = getattr(self, "_qualification_dispatch_slot", None)
@@ -702,14 +850,35 @@ class _OkxPrivateRestClientBase:
                                         "Private write observation is unavailable",
                                         code="private_write_authority_unavailable",
                                     ) from None
+                    if bounded_read:
+                        prepared_write_request = client.build_request(
+                            "GET", request_url, headers=headers, content=None
+                        )
+                        selector_signature = prepared_write_request.headers.get(
+                            "OK-ACCESS-SIGN"
+                        )
+                        if (
+                            type(selector_signature) is not str
+                            or not selector_signature
+                        ):
+                            raise OkxPrivateApiError(
+                                "Demo selector signature is unavailable",
+                                code="demo_selector_signature_invalid",
+                            )
+                        if reconciliation_journal is not None:
+                            reconciliation_journal.signature = selector_signature
+                            reconciliation_read.retain_prepared_request_v1(
+                                reconciliation_journal, prepared_write_request
+                            )
                     self._final_dispatch_check(method=method, path=path)
-                    # Separate from the route classifiers: removing their
-                    # temporary hard DENY cannot expose legacy order entries.
+                    # Independent of native route selection and legacy route
+                    # classifiers: a caller flag or saved receipt grants nothing.
                     require_owned_private_write_authority(
                         method,
                         path,
                         owner=getattr(self, "_qualification_dispatch_owner", None),
                         slot=getattr(self, "_qualification_dispatch_slot", None),
+                        client=self,
                     )
                     if prepared_write_request is not None:
                         if observe_order:
@@ -726,7 +895,6 @@ class _OkxPrivateRestClientBase:
                                 send_invoked_at=started_at,
                                 clock=self._clock,
                             )
-                            self._after_response_check(method=method, path=path)
                             # This is a private, non-authorizing pair.  Only
                             # retained raw response bytes may be classified
                             # against the consumed intent by a future owner.
@@ -735,12 +903,78 @@ class _OkxPrivateRestClientBase:
                                 if observation.raw_body is not None
                                 else None
                             )
-                            return ObservedOrderResult(observation, response_digest)
-                        response = await client.send(
-                            prepared_write_request,
-                            auth=None,
-                            follow_redirects=False,
-                        )
+                            observed_result = ObservedOrderResult(
+                                observation, response_digest
+                            )
+                            if native_httpx_client is not None:
+                                native_write._retain_native_order_observation_v2(
+                                    self, observed_result
+                                )
+                            self._after_response_check(method=method, path=path)
+                            return observed_result
+                        if demo_configuration:
+                            response = await client.send(
+                                prepared_write_request,
+                                auth=None,
+                                follow_redirects=False,
+                                stream=True,
+                            )
+                            selector_response = response
+                            native_write._retain_native_leverage_configuration_httpx_response_v1(
+                                self, response
+                            )
+                            # The original Root ResponseStream rejects >64KiB
+                            # BEFORE yielding to HTTPX's materialization/JSON.
+                            selector_raw = await response.aread()
+                            if (
+                                type(selector_raw) is not bytes
+                                or len(selector_raw) > 65536
+                            ):
+                                raise OkxPrivateApiError(
+                                    "Native configuration response bound",
+                                    code="native_configuration_response_bound",
+                                )
+                            response._content = selector_raw
+                            native_write._retain_native_leverage_configuration_httpx_response_v1(
+                                self, response
+                            )
+                        elif bounded_read:
+                            response = await client.send(
+                                prepared_write_request,
+                                auth=None,
+                                follow_redirects=False,
+                                stream=True,
+                            )
+                            selector_response = response
+                            if reconciliation_journal is not None:
+                                reconciliation_read.retain_transport(
+                                    reconciliation_journal,
+                                    client,
+                                    prepared_write_request,
+                                    response,
+                                )
+                            selector_raw = await self._read_demo_selector_bytes_v2(
+                                response,
+                                _reconciliation_journal=reconciliation_journal,
+                                _selector_bound=demo_selector,
+                            )
+                            if (
+                                prepared_write_request.headers.get("OK-ACCESS-SIGN")
+                                != selector_signature
+                            ):
+                                raise OkxPrivateApiError(
+                                    "Demo selector request changed",
+                                    code="demo_selector_signature_invalid",
+                                )
+                            # HTTPX's ordinary bounded auth/status handling below
+                            # sees exactly the retained uncompressed entity bytes.
+                            response._content = selector_raw
+                        else:
+                            response = await client.send(
+                                prepared_write_request,
+                                auth=None,
+                                follow_redirects=False,
+                            )
                     else:
                         response = await client.request(
                             method.upper(),
@@ -759,7 +993,16 @@ class _OkxPrivateRestClientBase:
                                 code=auth_code,
                             )
                     response.raise_for_status()
-                    payload = response.json()
+                    payload = (
+                        json.loads(
+                            selector_raw,
+                            object_pairs_hook=_demo_selector_json_pairs_v2,
+                            parse_constant=_demo_selector_json_constant_v2,
+                            parse_float=_demo_selector_json_float_v2,
+                        )
+                        if bounded_response
+                        else response.json()
+                    )
                     response_shape_code = "ambiguous_response" if write else None
                     if not isinstance(payload, dict):
                         raise OkxPrivateApiError(
@@ -797,6 +1040,23 @@ class _OkxPrivateRestClientBase:
                             signed_body_text=body_text,
                             data=typed_data,
                         )
+                    if demo_reconciliation:
+                        observation = reconciliation_journal.finish()
+                        if not demo_selector:
+                            return observation
+                    if demo_selector:
+                        if (
+                            response.status_code != 200
+                            or type(selector_raw) is not bytes
+                            or type(selector_signature) is not str
+                        ):
+                            raise OkxPrivateApiError(
+                                "Demo selector response is invalid",
+                                code="demo_selector_response_invalid",
+                            )
+                        return DemoConfigSelectorObservationV2(
+                            tuple(typed_data), selector_raw, selector_signature
+                        )
                     return typed_data
                 except OkxPrivateApiError:
                     raise
@@ -810,8 +1070,113 @@ class _OkxPrivateRestClientBase:
                 code="transport_error",
             )
         finally:
-            if own_client:
-                await client.aclose()
+            try:
+                if selector_response is not None:
+                    await selector_response.aclose()
+            except BaseException:
+                if reconciliation_journal is not None:
+                    reconciliation_journal.fault("close_failed")
+                raise
+            finally:
+                if (
+                    reconciliation_journal is not None
+                    and reconciliation_journal.observation is None
+                ):
+                    reconciliation_journal.fault("read_failed")
+                if own_client:
+                    try:
+                        await client.aclose()
+                    except BaseException:
+                        if reconciliation_journal is not None:
+                            reconciliation_journal.fault("close_failed")
+                        raise
+
+    async def _read_demo_selector_bytes_v2(
+        self, response, *, _reconciliation_journal=None, _selector_bound=False
+    ):
+        """Fixed config GET raw body, EOF and size checked before JSON parsing."""
+        lease = self._active_read_session()
+        if (
+            type(self) is not OkxDemoPrivateRestClient
+            or type(lease) is not DemoPinnedReadSession
+            or type(response) is not httpx.Response
+        ):
+            raise OkxPrivateApiError(
+                "Demo selector stream is unavailable",
+                code="demo_selector_stream_invalid",
+            )
+        lease.verify_current()
+        journal = _reconciliation_journal
+        if (
+            journal is not None
+            and type(journal) is not reconciliation_read.ReadJournalV1
+        ):
+            raise ValueError("native_reconciliation_read_data_invalid")
+        maximum = (
+            65536
+            if journal is None or _selector_bound
+            else reconciliation_read.MAX_BODY
+        )
+        encoding = response.headers.get("content-encoding")
+        if encoding is not None and encoding.strip().lower() != "identity":
+            raise OkxPrivateApiError(
+                "Demo selector encoding is unsupported",
+                code="demo_selector_stream_invalid",
+            )
+        declared = response.headers.get("content-length")
+        if declared is not None and (
+            not declared.isascii()
+            or not declared.isdigit()
+            or len(declared) > len(str(maximum))
+            or int(declared) > maximum
+        ):
+            raise OkxPrivateApiError(
+                "Demo selector body exceeds its bound",
+                code="demo_selector_response_bound",
+            )
+        if journal is not None:
+            journal.declared_length = None if declared is None else int(declared)
+        chunks, size, chunk_count = [], 0, 0
+        iterator = (
+            response.aiter_raw() if journal is None else response.stream.__aiter__()
+        )
+        while True:
+            lease.verify_current()
+            try:
+                chunk = await anext(iterator)
+            except StopAsyncIteration:
+                if journal is not None:
+                    journal.retain_eof()
+                lease.verify_current()
+                break
+            if journal is not None:
+                journal.retain_chunk(chunk)
+            lease.verify_current()
+            self._after_response_check(
+                method="GET",
+                path="/api/v5/account/config" if journal is None else journal.path,
+            )
+            chunk_count += 1
+            if chunk_count > 65536:
+                raise OkxPrivateApiError(
+                    "Demo selector chunk count exceeds its bound",
+                    code="demo_selector_stream_invalid",
+                )
+            if journal is None:
+                size = _demo_selector_append_chunk_v2(chunks, size, chunk)
+            else:
+                size = journal.body_bytes
+                if size > maximum:
+                    journal.fault("response_invalid")
+                    raise OkxPrivateApiError(
+                        "Demo selector body exceeds its bound",
+                        code="demo_selector_response_bound",
+                    )
+        if size == 0 or (declared is not None and int(declared) != size):
+            raise OkxPrivateApiError(
+                "Demo selector body is incomplete", code="demo_selector_stream_invalid"
+            )
+        return b"".join(chunks if journal is None else journal.chunks)
 
     async def _cursor_chain(
         self,
@@ -875,6 +1240,63 @@ class _OkxPrivateRestClientBase:
 
     async def account_config(self) -> list[dict[str, Any]]:
         return await self._request("GET", "/api/v5/account/config")
+
+    async def account_config_selector_v2(
+        self, *, retain_network=False
+    ) -> DemoConfigSelectorObservationV2:
+        """One configured Demo GET only; no source/order eligibility is issued."""
+        if (
+            type(self) is not OkxDemoPrivateRestClient
+            or type(retain_network) is not bool
+        ):
+            raise OkxPrivateApiError(
+                "Demo selector purpose is unavailable",
+                code="demo_selector_purpose_invalid",
+            )
+        lease = self._active_read_session()
+        if type(lease) is not DemoPinnedReadSession:
+            raise OkxPrivateApiError(
+                "Demo selector read lease is unavailable",
+                code="demo_selector_purpose_invalid",
+            )
+        lease.verify_current()
+        async with asyncio.timeout(5):
+            result = await self._request(
+                "GET",
+                "/api/v5/account/config",
+                _demo_selector_max_bytes=65536,
+                _demo_reconciliation_max_bytes=reconciliation_read.MAX_BODY
+                if retain_network
+                else None,
+            )
+        lease.verify_current()
+        if type(result) is not DemoConfigSelectorObservationV2:
+            raise OkxPrivateApiError(
+                "Demo selector observation is unavailable",
+                code="demo_selector_response_invalid",
+            )
+        return result
+
+    async def native_reconciliation_get_v1(self, path, params):
+        """One fresh signed bounded GET page. DATA only, never account completeness.
+
+        Uses the same signing/dispatch/GET-only pinned lease as ordinary reads.
+        A new native owner must separately prove every terminal page and identity.
+        """
+        reconciliation_read.checked_query(path, params)
+        async with asyncio.timeout(5):
+            result = await self._request(
+                "GET",
+                path,
+                params=params,
+                _demo_reconciliation_max_bytes=reconciliation_read.MAX_BODY,
+            )
+        if type(result) is not reconciliation_read.DemoReconciliationObservationV1:
+            raise OkxPrivateApiError(
+                "Native reconciliation GET is unavailable",
+                code="native_reconciliation_read_invalid",
+            )
+        return result
 
     async def balance(self, currency: str | None = None) -> list[dict[str, Any]]:
         return await self._request(
@@ -1024,6 +1446,22 @@ class _OkxPrivateRestClientBase:
 class OkxDemoPrivateRestClient(_OkxPrivateRestClientBase):
     """Authenticated OKX Demo REST client with simulation permanently enabled."""
 
+    async def _submit_native_demo_leverage_configuration_v1(
+        self, payload, *, native_write_gate
+    ):
+        from app.exchange.okx import native_demo_write_v2 as native_write
+
+        native_write._require_native_leverage_configuration_client_v1(
+            self, native_write_gate, payload
+        )
+        return await self._request(
+            "POST",
+            "/api/v5/account/set-leverage",
+            body=payload,
+            write=True,
+            _native_configuration_max_bytes=65536,
+        )
+
     async def place_order_observed(
         self, payload: dict[str, Any]
     ) -> ObservedOrderResult:
@@ -1128,6 +1566,10 @@ class OkxDemoPrivateRestClient(_OkxPrivateRestClientBase):
         if session is None:
             return None
         if session._owner is not self:
+            from app.exchange.okx import native_demo_write_v2 as native_write
+
+            if native_write._native_foreign_read_context_v2(self, session):
+                return None
             raise OkxPrivateApiError(
                 "Demo read session belongs to another client",
                 code="demo_read_session_invalid",
@@ -1147,10 +1589,18 @@ class OkxDemoPrivateRestClient(_OkxPrivateRestClientBase):
                 "Pinned Demo session allows GET only",
                 code="demo_read_session_get_only",
             )
+        from app.exchange.okx import native_demo_write_v2 as native_write
+
+        if native_write._native_route_v2(self, method, path):
+            return
         enforce_demo_submission_boundary(method, path)
 
     def _final_dispatch_check(self, *, method: str, path: str) -> None:
         self._active_read_session()
+        from app.exchange.okx import native_demo_write_v2 as native_write
+
+        if native_write._native_route_v2(self, method, path):
+            return
         enforce_demo_final_dispatch(method, path)
 
     def _after_response_check(self, *, method: str, path: str) -> None:

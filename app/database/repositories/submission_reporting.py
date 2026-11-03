@@ -4,7 +4,7 @@ import json
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from app.database.models.qualification_ledger import (
     QualificationReservation,
@@ -15,8 +15,10 @@ from app.database.models.submission_reporting import (
     QualificationReportSpool,
     QualificationSubmissionOutcome,
 )
+from app.database.repositories import native_closed_reporting_v55 as native_reporting
 from app.database.repositories.demo_control import DemoControlRepository
 from app.database.repositories.qualification_ledger import QualificationLedgerRepository
+from app.domain.source_primitives import decode as decode_native_document
 from app.trade_evidence import outbox, post_submit
 from app.trade_evidence.observed_order_capture import (
     capture_unverified_order_response,
@@ -181,6 +183,21 @@ def spool_identity(outcome_id, report_sha256, policy_sha256, namespace):
                 "queue_namespace": namespace,
             }
         ).encode()
+    )
+
+
+def _projection_lock_key(spool_id):
+    digest = sha(b"ctcc-report-projection-v1\0" + spool_id.encode("ascii"))
+    return int.from_bytes(bytes.fromhex(digest[:16]), "big", signed=True)
+
+
+def _enqueue_verified_report(root, report, report_sha256, *, policy, clock):
+    if type(report) is native_reporting.NativeTerminalReportDataV55:
+        return native_reporting.enqueue_native_terminal_report_v55(
+            root, report, report_sha256, policy=policy, clock=clock
+        )
+    return post_submit.enqueue_post_submit(
+        root, report, outbox_policy=policy, clock=clock
     )
 
 
@@ -482,6 +499,13 @@ class SubmissionReportingRepository(QualificationLedgerRepository):
         outcome = await session.get(QualificationSubmissionOutcome, spool.outcome_id)
         if outcome is None or outcome.reservation_id != spool.reservation_id:
             raise SubmissionReportingError("submission_outcome_missing")
+        document = decode_native_document(outcome.capture_json.encode(), 140000)
+        if type(document) is not dict:
+            raise SubmissionReportingError("submission_observation_version_unsupported")
+        if document.get("version") == "ctcc.native_closed_trade_report_ready.v1":
+            return await native_reporting.verify_native_terminal_spool_v55(
+                self, session, spool
+            )
         capture = decode_capture(outcome.capture_json, outcome.capture_sha256)
         _, entry, prepared = await self._lineage(
             session,
@@ -747,12 +771,31 @@ class SubmissionReportingRepository(QualificationLedgerRepository):
     async def project_one(self, spool_id, *, root, queue_namespace):
         """Only DB→local durable outbox. No token, HTTP, order or callback."""
         namespace = queue(queue_namespace)
+        spool_id = pin(spool_id)
         async with self.session_factory() as session, session.begin():
-            spool = await session.scalar(
-                select(QualificationReportSpool)
-                .where(QualificationReportSpool.spool_id == pin(spool_id))
-                .with_for_update(skip_locked=True)
+            if session.get_bind().dialect.name != "postgresql":
+                raise SubmissionReportingError(
+                    "submission_projection_postgresql_required"
+                )
+            await session.execute(
+                text("SET TRANSACTION ISOLATION LEVEL READ COMMITTED")
             )
+            await session.execute(
+                text("SET LOCAL search_path TO pg_catalog, public, pg_temp")
+            )
+            # The spool is append-only. Serialize projectors until commit
+            # without UPDATE privileges on the spool or the receipt.
+            locked = await session.scalar(
+                text(
+                    "SELECT pg_catalog.pg_try_advisory_xact_lock(CAST(:lock_key AS bigint))"
+                ),
+                {"lock_key": _projection_lock_key(spool_id)},
+            )
+            if locked is False:
+                return None
+            if locked is not True:
+                raise SubmissionReportingError("submission_projection_lock_invalid")
+            spool = await session.get(QualificationReportSpool, spool_id)
             if spool is None:
                 return None
             if not spool.eligible or spool.queue_namespace != namespace:
@@ -793,10 +836,11 @@ class SubmissionReportingRepository(QualificationLedgerRepository):
                         "submission_projection_receipt_conflict"
                     )
             else:
-                result = post_submit.enqueue_post_submit(
+                result = _enqueue_verified_report(
                     root,
                     report,
-                    outbox_policy=policy,
+                    spool.report_sha256,
+                    policy=policy,
                     clock=self.clock,
                 )
                 if result.status != "enqueued" or not result.durable_outbox_readback:
@@ -814,8 +858,12 @@ class SubmissionReportingRepository(QualificationLedgerRepository):
                         raise SubmissionReportingError(
                             "submission_local_enqueue_pending"
                         ) from None
-                    result = post_submit.enqueue_post_submit(
-                        root, report, outbox_policy=policy, clock=self.clock
+                    result = _enqueue_verified_report(
+                        root,
+                        report,
+                        spool.report_sha256,
+                        policy=policy,
+                        clock=self.clock,
                     )
                     if (
                         result.status != "enqueued"
@@ -875,6 +923,28 @@ class SubmissionReportingRepository(QualificationLedgerRepository):
             return SubmissionProjectionReceipt(
                 spool_id, row.envelope_sha256, row.report_sha256, row.policy_sha256
             )
+
+    async def acquire_native_notion_delivery_source(
+        self, report_id, *, root, queue_namespace, expected_envelope_sha256
+    ):
+        """Acquire independently from configured DB; this repository is no permit.
+
+        The supplied repository/factory, diagnostics and flags are deliberately
+        not forwarded as native source authority. The real issuer owns new DB
+        sessions and verifies the exact configured native queue namespace.
+        """
+        from app.config.settings import get_settings
+        from app.trade_evidence import native_notion_delivery_source_v55 as native
+
+        if queue(queue_namespace) != queue(
+            get_settings().submission_outbox_queue_namespace
+        ):
+            raise SubmissionReportingError("notion_delivery_source_input_invalid")
+        return await native.acquire_native_notion_delivery_source_v55(
+            root=root,
+            report_id=report_id,
+            expected_envelope_sha256=expected_envelope_sha256,
+        )
 
     async def inspect_notion_delivery_source(
         self, report_id, *, root, queue_namespace, expected_envelope_sha256
@@ -971,6 +1041,13 @@ class SubmissionReportingRepository(QualificationLedgerRepository):
                 if spool.eligible is not True:
                     return denied(
                         "notion_delivery_source_eligibility_unverified",
+                        local=True,
+                        lineage=True,
+                        projection=True,
+                    )
+                if type(report) is native_reporting.NativeTerminalReportDataV55:
+                    return denied(
+                        "notion_delivery_native_terminal_source_verified",
                         local=True,
                         lineage=True,
                         projection=True,

@@ -55,6 +55,17 @@ POSTGRES_TEST_PATHS = frozenset(
         "tests/integration/test_control_bound_ledger_repository.py",
         "tests/integration/test_controlled_writer_coverage_repository.py",
         "tests/integration/test_account_history_partition_repository.py",
+        "tests/integration/test_account_history_original_frame_repository_v1.py",
+        "tests/integration/test_account_history_original_native_read_v1.py",
+        "tests/integration/test_account_history_original_financial_native_pg_v2.py",
+        "tests/integration/test_account_history_original_financial_native_pg_v3.py",
+        "tests/integration/test_account_revision_collector_lineage_pg_v1.py",
+        "tests/integration/test_original_frame_current_0053_fixture.py",
+        "tests/integration/test_original_frame_current_0053_multirole.py",
+        "tests/integration/test_collector_current0054_catalog_pg.py",
+        "tests/integration/test_runtime_bundle_custody_current0054.py",
+        "tests/integration/test_account_history_partition_current0054.py",
+        "tests/integration/test_original_frame_owner_installation_v1.py",
         "tests/integration/test_prospective_event_cutover_v2_repository.py",
         "tests/integration/test_native_history_partition_source_v1.py",
         "tests/integration/test_complete_consumed_event_ledger_repository.py",
@@ -87,6 +98,7 @@ POSTGRES_ANCHOR_PATHS = frozenset(
     {
         "tests/integration/test_controlled_writer_coverage_repository.py",
         "tests/integration/test_account_history_partition_repository.py",
+        "tests/integration/test_account_history_partition_current0054.py",
     }
 )
 _OBSERVED: set[str] = set()

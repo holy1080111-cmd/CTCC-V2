@@ -4,7 +4,7 @@ HTTP IO is delegated to the injected adapter. The worker neither creates nor
 closes an HTTP client: the adapter owns responses and the caller owns the client.
 
 Only caller-listed report IDs are considered, once each. This layer neither
-discovers jobs nor retries, reconciles, deletes, schedules or submits orders.
+retries, reconciles, deletes or submits orders. Its reporting-cycle wrapper adds queue discovery, fairness and persisted cooldown scheduling as DATA only.
 Recovery and dispatch always use the existing verified append-only outbox API.
 The asyncio deadline bounds cooperative async work, not blocking synchronous
 filesystem calls or an adapter that refuses cancellation. A deadline stops all
@@ -19,6 +19,7 @@ import asyncio
 import json
 import re
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
@@ -33,7 +34,7 @@ from pydantic import (
     model_validator,
 )
 
-from app.trade_evidence import outbox, storage
+from app.trade_evidence import outbox, reporting_control, storage
 
 Code = Literal[
     "outbox_attempt_recorded",
@@ -414,4 +415,205 @@ async def run_outbox_pass(
         completed_at=checked_clock(),
         status="deadline_reached" if expired else "completed",
         items=tuple(items),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class ReportingCycleData:
+    """Scheduler/queue DATA only, never a native source or remote permit."""
+
+    status: str
+    code: str
+    delay: int | None
+    after_id: str
+    last_result: object = None
+    failures: int = 0
+    execution_authority: Literal[False] = field(default=False, init=False)
+    source_authenticity_verified: Literal[False] = field(default=False, init=False)
+
+
+@dataclass(slots=True)
+class ReportingCycleProgress:
+    """Local cursor/result DATA retained even if a later queue read fails."""
+
+    after_id: str
+    last_result: object = None
+    failures: int = 0
+
+
+class ReportingPreparationUnavailable(ValueError):
+    """A trusted preparation callback found no authorized source for this ID."""
+
+    def __init__(self, report_id):
+        outbox._name(report_id)
+        self.report_id = report_id
+        super().__init__("notion_outbox_submission_source_authority_unavailable")
+
+
+def reporting_error_data(error, *, poll_seconds, failures, after_id, safe_codes):
+    """Existing fixed-code/backoff mapping; no exception text enters DATA."""
+    from app.trade_evidence.notion_binding import NotionBindingError
+
+    failures += 1
+    delay = min(300, poll_seconds * 2 ** min(failures - 1, 6))
+    status, code = "pending", "notion_outbox_configuration_or_delivery_pending"
+    if (
+        type(error) is NotionBindingError
+        and type(error.code) is str
+        and error.code in safe_codes
+    ):
+        code = error.code
+        if error.retry_after_seconds is None:
+            status, delay = "paused", None
+        elif (
+            type(error.retry_after_seconds) is int
+            and 0 <= error.retry_after_seconds <= 99999
+        ):
+            delay = max(delay, error.retry_after_seconds)
+    return ReportingCycleData(status, code, delay, after_id, failures=failures)
+
+
+async def run_reporting_delivery_cycle(
+    root,
+    *,
+    worker_id,
+    clock,
+    poll_seconds,
+    batch_size,
+    after_id,
+    client_factory,
+    discover,
+    prepare_batch,
+    verify_binding,
+    make_adapter,
+    stop_requested,
+    timeout_seconds,
+    progress=None,
+):
+    """Shared lower DATA orchestration; supplied callbacks grant no source truth.
+
+    Production callbacks must enforce their own genuine source/transport owner.
+    Synthetic callers can exercise queue/protocol mechanics, never native
+    admission. Existing outbox remains the sole durable dispatch/retry engine.
+    """
+    from app.trade_evidence.notion_binding import NotionBindingError
+
+    if progress is None:
+        progress = ReportingCycleProgress(after_id)
+    if type(progress) is not ReportingCycleProgress or progress.after_id != after_id:
+        raise OutboxWorkerError("outbox_worker_input_invalid")
+    cursor, last = after_id, None
+    with reporting_control.reporting_lease(root) as control:
+        cooldown = reporting_control.retry_delay(control, clock())
+        if cooldown is None or cooldown > 0:
+            return ReportingCycleData(
+                "paused",
+                "notion_outbox_rate_limit_pending",
+                cooldown,
+                cursor,
+                progress.last_result,
+                progress.failures,
+            )
+        ids = discover(root)
+        for report_id in ids:
+            view = outbox.recover_job(root, report_id, clock=clock)
+            if view.status in {"uncertain", "dispatching", "claimed"}:
+                return ReportingCycleData(
+                    "paused",
+                    "notion_outbox_reconciliation_required",
+                    None,
+                    cursor,
+                    progress.last_result,
+                    progress.failures,
+                )
+        later = tuple(name for name in ids if name > after_id)
+        ordered = later + tuple(name for name in ids if name <= after_id)
+        try:
+            batch = await prepare_batch(ordered[:batch_size])
+        except ReportingPreparationUnavailable as unavailable:
+            return ReportingCycleData(
+                "pending",
+                "notion_outbox_submission_source_authority_unavailable",
+                poll_seconds,
+                unavailable.report_id,
+                progress.last_result,
+                progress.failures,
+            )
+        if batch is None:
+            return ReportingCycleData(
+                "running",
+                "notion_outbox_pass_complete",
+                poll_seconds,
+                cursor,
+                progress.last_result,
+                progress.failures,
+            )
+        if type(batch) is not tuple or any(item not in ids for item in batch):
+            raise OutboxWorkerError("outbox_worker_report_ids_invalid")
+        progress.last_result = None
+        async with client_factory() as client, asyncio.timeout(timeout_seconds):
+            try:
+                await verify_binding(client)
+            except NotionBindingError as error:
+                if error.code == "notion_binding_rate_limited":
+                    reporting_control.record_rate_limit(
+                        control, clock(), error.retry_after_seconds
+                    )
+                raise
+            if stop_requested():
+                raise asyncio.CancelledError
+            discover(root)
+
+            def check_queue_pairs():
+                discover(root)
+
+            deliver, monitor = make_adapter(client, check_queue_pairs)
+            for report_id in batch:
+                discover(root)
+                last = await run_outbox_pass(
+                    root,
+                    report_ids=(report_id,),
+                    worker_id=worker_id,
+                    adapter=deliver,
+                    policy=OutboxWorkerPolicy(pass_timeout_seconds=timeout_seconds),
+                    clock=clock,
+                )
+                cursor = report_id
+                progress.after_id, progress.last_result = cursor, last
+                if monitor.rate_limited:
+                    reporting_control.record_rate_limit(
+                        control, clock(), monitor.rate_limit_retry_after_seconds
+                    )
+                discover(root)
+                if monitor.pre_create_check_failed:
+                    return ReportingCycleData(
+                        "pending",
+                        "notion_outbox_pre_create_check_failed",
+                        poll_seconds,
+                        cursor,
+                        last,
+                        progress.failures,
+                    )
+                if monitor.rate_limited or any(
+                    item.outbox_status in {"uncertain", "dispatching"}
+                    or item.status == "failed"
+                    for item in last.items
+                ):
+                    return ReportingCycleData(
+                        "paused",
+                        "notion_outbox_reconciliation_required",
+                        None,
+                        cursor,
+                        last,
+                        progress.failures,
+                    )
+    pending = last is not None and any(
+        item.outbox_status != "delivered" for item in last.items
+    )
+    return ReportingCycleData(
+        "pending" if pending else "running",
+        "notion_outbox_jobs_pending" if pending else "notion_outbox_pass_complete",
+        poll_seconds,
+        cursor,
+        last,
     )

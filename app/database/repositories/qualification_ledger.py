@@ -65,6 +65,8 @@ from app.trade_qualification.submission_intent import (
     replay_submission_intent,
 )
 
+_NATIVE_V2_KEY = object()
+
 
 def _canonical_json_sha256(value: str) -> str:
     """Hash canonical JSON already emitted or verified by the caller."""
@@ -370,6 +372,28 @@ async def _require_event_journal_schema(session):
             )
         )
     ).all()
+    expected_functions = _EVENT_GUARD_FUNCTIONS
+    # Only an explicitly new body enters actual55 metadata admission. The old
+    # literal map and all old54 behavior remain unchanged.
+    from app.domain import native_filled_flat_closure_schema_v55 as native_closure55
+
+    if any(
+        row[0] == native_closure55.FUNCTION
+        and row[1] == native_closure55.CURRENT_BODY_SHA256
+        for row in function_rows
+    ):
+        from app.database.repositories.native_zero_fok_event_schema_v55 import (
+            require_actual_zero_fok_event_schema_v55,
+        )
+
+        await require_actual_zero_fok_event_schema_v55(session)
+        expected_functions = {
+            **_EVENT_GUARD_FUNCTIONS,
+            native_closure55.FUNCTION: (
+                native_closure55.CURRENT_BODY_SHA256,
+                ("search_path=pg_catalog, pg_temp",),
+            ),
+        }
     function_status = {}
     for (
         name,
@@ -382,7 +406,7 @@ async def _require_event_journal_schema(session):
         returns_trigger,
         arity,
     ) in function_rows:
-        expected = _EVENT_GUARD_FUNCTIONS.get(name)
+        expected = expected_functions.get(name)
         if expected is None:
             continue
         config = (
@@ -401,7 +425,7 @@ async def _require_event_journal_schema(session):
             and arity == 0
         )
     function_issues = tuple(
-        name for name in _EVENT_GUARD_FUNCTIONS if function_status.get(name) != [True]
+        name for name in expected_functions if function_status.get(name) != [True]
     )
     if (
         any(guards.get(key) != function for key, function in required.items())
@@ -809,6 +833,175 @@ class QualificationLedgerRepository:
                 ) from None
         return result
 
+    async def _inspect_owned_original_local_events_v13(self, binding, *, key):
+        """Finite local CTCC UID/event observation for one real held prefix.
+
+        The old diagnostic reader and all history/completeness semantics stay
+        unchanged. This fixed native purpose accepts no scope/checkpoint/clock
+        from callers, grants no reservation, and never writes financial claims.
+        """
+        from app.domain.source_primitives import canonical as source_canonical
+        from app.trade_qualification import owned_current_original_prefix_v1 as original
+        from app.trade_qualification.demo_control import document as control_document
+
+        context = original._local_journal_context_v13(binding, key=key)
+        factory, scope, checkpoint_sha256, deadline = context
+        if (
+            self.session_factory is not factory
+            or self.clock is not original._local_gate_clock_v13
+        ):
+            raise QualificationLedgerError("owned_local_event_native_context_required")
+
+        def current():
+            if original._local_journal_context_v13(binding, key=key) != context:
+                raise QualificationLedgerError("owned_local_event_context_changed")
+
+        async with factory() as session, session.begin():
+            if session.get_bind().dialect.name != "postgresql":
+                raise QualificationLedgerError("event_ledger_postgresql_required")
+            budget = min(1000, int((deadline - self.clock()).total_seconds() * 1000))
+            if budget <= 0:
+                raise QualificationLedgerError("owned_local_event_original_expiry")
+            for statement in (
+                "SET TRANSACTION ISOLATION LEVEL READ COMMITTED",
+                "SET LOCAL search_path TO pg_catalog, public, pg_temp",
+                "SET LOCAL TIME ZONE 'UTC'",
+            ):
+                await session.execute(text(statement))
+                current()
+            await session.execute(
+                text(
+                    "SELECT set_config('lock_timeout',:value,true), set_config('statement_timeout',:value,true)"
+                ),
+                {"value": f"{budget}ms"},
+            )
+            current()
+            # Same native ordering as final control-bound reservation:
+            # UID -> Control row -> qualification scope (UID lock reentrant).
+            control, event_sha256 = await DemoControlRepository.read_in_transaction(
+                session, ControlScope(scope.environment, scope.account_id)
+            )
+            current()
+            selected = await self._locked(session, scope)
+            current()
+            checkpoint = await self._bootstrap_checkpoint(session, scope, selected)
+            current()
+            if checkpoint.state_sha256 != checkpoint_sha256:
+                raise QualificationLedgerError(
+                    "owned_local_event_capture_checkpoint_changed"
+                )
+            observed = await self._inspect_prospective_event_journal_locked(
+                session, scope, selected
+            )
+            current()
+            if type(observed) is not _ConsumedEventJournalInspection:
+                raise QualificationLedgerError(
+                    "owned_local_event_exact_observation_required"
+                )
+            control_wire = source_canonical(
+                {"state": control_document(control), "event_sha256": event_sha256}
+            )
+        current()  # Independent native source fence after transaction exit.
+        return observed, control_wire
+
+    async def _inspect_native_original55_local_events_v2(self, binding, *, key):
+        """Actual55 original G6, only after the genuine issuer's own transition.
+
+        The source CURRENT checkpoint is retained unchanged in native custody.
+        The issuer wrapper proves exactly that source's own issued row/claims
+        and revisions; no arbitrary newer checkpoint is substituted here.
+        """
+        from app.database.repositories import (
+            collector_current_0055_multirole_catalog_v1 as catalog55,
+        )
+        from app.database.repositories.demo_control_current55_v2 import (
+            DemoControlRepositoryV2,
+        )
+        from app.domain.source_primitives import canonical as source_canonical
+        from app.trade_qualification import native_account_risk_assembly_v1 as native
+        from app.trade_qualification import (
+            native_original_local_current55_v2 as original,
+        )
+        from app.trade_qualification.demo_control import document as control_document
+
+        record, source = original._journal_context_v2(binding, key=key)
+        scope, deadline = record["scope"], record["deadline"]
+        if (
+            self.session_factory is not source.session_factory
+            or self.clock is not original._clock
+        ):
+            raise QualificationLedgerError("native_original55_journal_context_required")
+
+        def current():
+            actual_record, actual = original._journal_context_v2(binding, key=key)
+            if (
+                actual_record is not record
+                or actual.source_generation is not source.source_generation
+                or actual.session_factory is not source.session_factory
+                or actual.control_expectation != source.control_expectation
+                or actual_record["scope"] != scope
+                or actual_record["deadline"] != deadline
+            ):
+                raise QualificationLedgerError(
+                    "native_original55_journal_context_changed"
+                )
+
+        async with source.session_factory() as session, session.begin():
+            budget = min(1000, int((deadline - self.clock()).total_seconds() * 1000))
+            if budget <= 0:
+                raise QualificationLedgerError("native_original55_original_expired")
+            for statement in (
+                "SET TRANSACTION ISOLATION LEVEL READ COMMITTED",
+                "SET LOCAL search_path TO pg_catalog, public, pg_temp",
+                "SET LOCAL TIME ZONE 'UTC'",
+                "SET LOCAL synchronous_commit='on'",
+            ):
+                await session.execute(text(statement))
+                current()
+            await session.execute(
+                text(
+                    "SELECT pg_catalog.set_config('statement_timeout',:value,true),"
+                    "pg_catalog.set_config('lock_timeout',:value,true)"
+                ),
+                {"value": str(budget)},
+            )
+            current()
+            await catalog55.verify_actual_issuer_catalog_v2(session)
+            current()
+            state, event = await DemoControlRepositoryV2.read_in_transaction(
+                session, ControlScope(scope.environment, scope.account_id)
+            )
+            current()
+            selected = await self._locked(session, scope)
+            current()
+            claims = await native.require_issued_original_revision_locked_v2(
+                record["issued_handle"],
+                session=session,
+                scope_row=selected,
+                control_state=state,
+                control_event_sha256=event,
+                key=key,
+            )
+            current()
+            if claims.scope != scope:
+                raise QualificationLedgerError("native_original55_issued_scope_changed")
+            bound.guard_current_control(
+                state, event, source.control_expectation, scope, now=self._now(selected)
+            )
+            observed = await self._inspect_prospective_event_journal_locked(
+                session, scope, selected
+            )
+            current()
+            if type(observed) is not _ConsumedEventJournalInspection:
+                raise QualificationLedgerError(
+                    "native_original55_exact_journal_required"
+                )
+            control_wire = source_canonical(
+                {"state": control_document(state), "event_sha256": event}
+            )
+        current()
+        return observed, control_wire
+
     async def inspect_consumed_event_journal(self, scope):
         """Inspect bounded UID rows and their transition chains, fail closed.
 
@@ -1124,14 +1317,25 @@ class QualificationLedgerRepository:
         )
         if row.account_revision == 0:
             if (
-                row.ledger_revision != 0
-                or row.claims_json is not None
+                row.claims_json is not None
                 or row.claims_sha256 is not None
                 or state.active
             ):
                 raise QualificationLedgerError("ledger_uninitialized_state_invalid")
-        elif self._claims(row).scope != scope:
-            raise QualificationLedgerError("ledger_claim_scope_mismatch")
+            if row.ledger_revision != 0:
+                from app.database.repositories.native_leverage_configuration_checkpoint_v55 import (
+                    require_initial_configuration_checkpoint_v55,
+                )
+
+                await require_initial_configuration_checkpoint_v55(
+                    self, session, scope, row
+                )
+        else:
+            from app.database.repositories.qualification_native_checkpoint_v2 import (
+                validate_positive_checkpoint_claims_v2,
+            )
+
+            await validate_positive_checkpoint_claims_v2(self, session, scope, row)
         received = self._now(row)
         if received < observed:
             raise QualificationLedgerError("ledger_clock_regressed")
@@ -1434,7 +1638,13 @@ class QualificationLedgerRepository:
         # must ALSO fit caps; it cannot oversubscribe an epsilon.
         # These fixed ceilings do not authorize the caller's policy or account
         # claims; they only prevent looser policy values from granting room.
-        policy = request.origin.evidence.pre_evidence.policy.portfolio
+        from app.trade_qualification import native_ledger_contracts_v2 as native_wire
+
+        policy = (
+            request.risk_policy
+            if native_wire.is_native_request(request)
+            else request.origin.evidence.pre_evidence.policy.portfolio
+        )
         if (
             request.scope.settlement_currency != BUCKET_SETTLEMENT_CURRENCY
             or claims.account.settlement_currency != BUCKET_SETTLEMENT_CURRENCY
@@ -1570,16 +1780,46 @@ class QualificationLedgerRepository:
         )
         return row, state, event_sha
 
-    async def _reserve(self, request, *, control_expectation=None):
+    def reserve_consume_owned_native_v2(self, owner):
+        """MOVE one real native R7 owner through reserve/intent; no order IO."""
+        from app.trade_qualification import native_ledger_runtime_v2 as native_runtime
+
+        return native_runtime.begin(self, owner, key=_NATIVE_V2_KEY)
+
+    async def _reserve(
+        self, request, *, control_expectation=None, _native_binding=None
+    ):
+        from app.trade_qualification import native_ledger_contracts_v2 as native_wire
+        from app.trade_qualification import native_ledger_runtime_v2 as native_runtime
+
         request = checked_reservation_request(request)
+        is_native = native_wire.is_native_request(request)
+        if is_native:
+            native_runtime._record(self, _native_binding)
+            if control_expectation is None:
+                raise QualificationLedgerError("native_ledger_control_required")
+        elif _native_binding is not None:
+            raise QualificationLedgerError("native_ledger_exact_request_required")
         # Request models are frozen. Serialize and hash once before acquiring
         # the account-scoped database lock; canonical() already validates the
         # exact request contract and its size.
         request_json = canonical(request)
         request_sha256 = _canonical_json_sha256(request_json)
         async with self.session_factory() as session, session.begin():
+            if is_native:
+                await native_runtime.configure_transaction(
+                    self, _native_binding, session
+                )
             await _require_event_journal_write_schema(session, request.scope)
-            if control_expectation is None:
+            if is_native:
+                (
+                    row,
+                    control_state,
+                    control_event,
+                ) = await native_runtime.control_locked_v2(
+                    self, _native_binding, session, request.scope, request=request
+                )
+            elif control_expectation is None:
                 row = await self._locked(session, request.scope)
             else:
                 row, control_state, control_event = await self._control_locked(
@@ -1604,12 +1844,33 @@ class QualificationLedgerRepository:
             rid = reservation_id(request.scope, key)
             if await session.get(QualificationReservation, rid) is not None:
                 raise QualificationLedgerError("ledger_event_already_recorded")
-            claims = self._claims(row)
+            claims = (
+                await native_runtime.require_locked(
+                    self,
+                    _native_binding,
+                    session=session,
+                    scope_row=row,
+                    control_state=control_state,
+                    control_event_sha256=control_event,
+                    request=request,
+                )
+                if is_native
+                else self._claims(row)
+            )
             active = await self._active(session, request.scope, row)
             self._require_no_uncertain(active)
             await self._require_resolved_submissions(session, active)
-            coverage, result = prepare_reservation(
-                request, claims, active, observed_at=now
+            coverage, result = (
+                native_runtime.prepare_locked(
+                    self,
+                    _native_binding,
+                    request=request,
+                    claims=claims,
+                    active=active,
+                    observed_at=now,
+                )
+                if is_native
+                else prepare_reservation(request, claims, active, observed_at=now)
             )
             if type(request) in (ReservationRequestV2, ReservationRequestV3):
                 # Independent of the R7 replay verdict. A caller can currently
@@ -1642,6 +1903,8 @@ class QualificationLedgerRepository:
             session.add(record)
             await session.flush()
             receipt = self._receipt(record, row)
+            if is_native:
+                native_runtime.note_reserve_mutation(self, _native_binding, receipt)
             evidence = (
                 None
                 if control_expectation is None
@@ -1662,7 +1925,19 @@ class QualificationLedgerRepository:
                 evidence,
             )
             await session.flush()
-            self._late_guard(row, request, claims)
+            if is_native:
+                await native_runtime.late_guard(
+                    self,
+                    _native_binding,
+                    session=session,
+                    scope_row=row,
+                    request=request,
+                    claims=claims,
+                    control_state=control_state,
+                    control_event_sha256=control_event,
+                )
+            else:
+                self._late_guard(row, request, claims)
             if control_expectation is not None:
                 bound.guard_current_control(
                     control_state,
@@ -1699,11 +1974,29 @@ class QualificationLedgerRepository:
         record_intent=False,
         execution_binding: SubmissionExecutionBinding | None = None,
         control_expectation=None,
+        _native_binding=None,
     ):
+        from app.trade_qualification import native_ledger_contracts_v2 as native_wire
+        from app.trade_qualification import native_ledger_runtime_v2 as native_runtime
+
         scope = checked(scope, LedgerScope)
+        if _native_binding is not None:
+            native_runtime._record(self, _native_binding)
         async with self.session_factory() as session, session.begin():
+            if _native_binding is not None:
+                await native_runtime.configure_transaction(
+                    self, _native_binding, session
+                )
             await _require_event_journal_write_schema(session, scope)
-            if control_expectation is None:
+            if _native_binding is not None:
+                (
+                    row,
+                    control_state,
+                    control_event,
+                ) = await native_runtime.control_locked_v2(
+                    self, _native_binding, session, scope
+                )
+            elif control_expectation is None:
                 row = await self._locked(session, scope)
             else:
                 row, control_state, control_event = await self._control_locked(
@@ -1736,6 +2029,15 @@ class QualificationLedgerRepository:
                 claims = checked(claims, AccountLedgerClaims)
             request_json = record.request_json
             request = decode_reservation_request(request_json)
+            is_native = native_wire.is_native_request(request)
+            if is_native:
+                native_runtime._record(self, _native_binding)
+                if control_expectation is None or target != "consumed":
+                    raise QualificationLedgerError(
+                        "native_ledger_controlled_consume_required"
+                    )
+            elif _native_binding is not None:
+                raise QualificationLedgerError("native_ledger_exact_request_required")
             if _canonical_json_sha256(request_json) != record.request_sha256:
                 raise QualificationLedgerError("ledger_request_digest_mismatch")
             if target == "consumed":
@@ -1799,14 +2101,27 @@ class QualificationLedgerRepository:
                         request=request,
                     )
                 await self._require_compatible_currency(session, scope)
-                current = self._claims(row)
+                current = (
+                    await native_runtime.require_locked(
+                        self,
+                        _native_binding,
+                        session=session,
+                        scope_row=row,
+                        control_state=control_state,
+                        control_event_sha256=control_event,
+                        request=request,
+                    )
+                    if is_native
+                    else self._claims(row)
+                )
                 if type(request) in (ReservationRequestV2, ReservationRequestV3):
                     self._revision(
                         row.account_revision, request.expected_account_revision
                     )
-                raw = _plain(request)
-                raw["risk_inputs"]["account"] = _plain(current.account)
-                raw["risk_inputs"]["authority"] = _plain(current.authority)
+                raw = None if is_native else _plain(request)
+                if not is_native:
+                    raw["risk_inputs"]["account"] = _plain(current.account)
+                    raw["risk_inputs"]["authority"] = _plain(current.authority)
                 all_active = await self._active(session, scope, row)
                 self._require_no_uncertain(all_active)
                 await self._require_resolved_submissions(session, all_active)
@@ -1817,12 +2132,23 @@ class QualificationLedgerRepository:
                 )
                 # A collector already includes this hold? Verify it then remove
                 # it only for candidate re-evaluation (not from durable state).
-                current = self._without_self(current, self._receipt(record, row))
-                raw["risk_inputs"]["account"] = _plain(current.account)
-                fresh_request = type(request).model_validate(raw, strict=True)
-                coverage, _ = prepare_reservation(
-                    fresh_request, current, active, observed_at=now
-                )
+                if is_native:
+                    fresh_request = request
+                    coverage, _ = native_runtime.prepare_locked(
+                        self,
+                        _native_binding,
+                        request=request,
+                        claims=current,
+                        active=active,
+                        observed_at=now,
+                    )
+                else:
+                    current = self._without_self(current, self._receipt(record, row))
+                    raw["risk_inputs"]["account"] = _plain(current.account)
+                    fresh_request = type(request).model_validate(raw, strict=True)
+                    coverage, _ = prepare_reservation(
+                        fresh_request, current, active, observed_at=now
+                    )
                 stored = decode(record.coverage_json, RiskCoverage)
                 if any(
                     getattr(coverage, name) > getattr(stored, name)
@@ -1859,6 +2185,11 @@ class QualificationLedgerRepository:
             record.state_revision += 1
             record.updated_at = now
             receipt = self._receipt(record, row)
+            if is_native:
+                native_runtime.note_consume_mutation(self, _native_binding, receipt)
+                execution_binding = native_runtime.execution_binding(
+                    self, _native_binding
+                )
             intent = (
                 build_submission_intent(
                     request, receipt, execution_binding=execution_binding
@@ -1892,7 +2223,19 @@ class QualificationLedgerRepository:
             )
             await session.flush()
             if target == "consumed":
-                self._late_guard(row, fresh_request, current)
+                if is_native:
+                    await native_runtime.late_guard(
+                        self,
+                        _native_binding,
+                        session=session,
+                        scope_row=row,
+                        request=fresh_request,
+                        claims=current,
+                        control_state=control_state,
+                        control_event_sha256=control_event,
+                    )
+                else:
+                    self._late_guard(row, fresh_request, current)
                 if control_expectation is not None:
                     bound.guard_current_control(
                         control_state,
@@ -2016,8 +2359,16 @@ class QualificationLedgerRepository:
         )
 
     async def _read_submission_intent(
-        self, scope, event_key, *, expected_sha256, control_bound=False
+        self,
+        scope,
+        event_key,
+        *,
+        expected_sha256,
+        control_bound=False,
+        _native_binding=None,
     ):
+        from app.trade_qualification import native_ledger_runtime_v2 as native_runtime
+
         scope = checked(scope, LedgerScope)
         if (
             type(expected_sha256) is not str
@@ -2025,102 +2376,166 @@ class QualificationLedgerRepository:
             or any(char not in "0123456789abcdef" for char in expected_sha256)
         ):
             raise QualificationLedgerError("submit_intent_integrity_mismatch")
+        if _native_binding is not None:
+            native_runtime._record(self, _native_binding)
         async with self.session_factory() as session, session.begin():
-            if control_bound:
-                await DemoControlRepository.read_in_transaction(
-                    session, ControlScope(scope.environment, scope.account_id)
+            if _native_binding is not None:
+                await native_runtime.configure_transaction(
+                    self, _native_binding, session
                 )
-            scope_row = await self._locked(session, scope)
-            record = await session.get(
-                QualificationReservation, reservation_id(scope, event_key)
+            return await self._read_submission_intent_in_transaction(
+                session,
+                scope,
+                event_key,
+                expected_sha256=expected_sha256,
+                control_bound=control_bound,
+                _native_binding=_native_binding,
             )
-            if record is None:
-                raise QualificationLedgerError("ledger_reservation_missing")
-            entries = (
-                await session.scalars(
-                    select(QualificationReservationTransition)
-                    .filter_by(
-                        reservation_id=record.reservation_id, to_state="consumed"
-                    )
-                    .limit(2)
+
+    async def _read_submission_intent_in_transaction(
+        self,
+        session,
+        scope,
+        event_key,
+        *,
+        expected_sha256,
+        control_bound=False,
+        _native_binding=None,
+    ):
+        from app.trade_qualification import native_ledger_runtime_v2 as native_runtime
+
+        scope = checked(scope, LedgerScope)
+        if (
+            type(expected_sha256) is not str
+            or len(expected_sha256) != 64
+            or any(char not in "0123456789abcdef" for char in expected_sha256)
+        ):
+            raise QualificationLedgerError("submit_intent_integrity_mismatch")
+        if _native_binding is not None:
+            await native_runtime.require_intent_read_session_v2(
+                self,
+                _native_binding,
+                session,
+                scope=scope,
+                event_key=event_key,
+                expected_sha256=expected_sha256,
+            )
+        if _native_binding is not None:
+            await native_runtime.read_control_v2(self, _native_binding, session, scope)
+        elif control_bound:
+            await DemoControlRepository.read_in_transaction(
+                session, ControlScope(scope.environment, scope.account_id)
+            )
+        scope_row = await self._locked(session, scope)
+        if _native_binding is not None:
+            native_runtime._actual_session(self, _native_binding, session)
+        record = await session.get(
+            QualificationReservation, reservation_id(scope, event_key)
+        )
+        if _native_binding is not None:
+            native_runtime._actual_session(self, _native_binding, session)
+        if record is None:
+            raise QualificationLedgerError("ledger_reservation_missing")
+        entries = (
+            await session.scalars(
+                select(QualificationReservationTransition)
+                .filter_by(reservation_id=record.reservation_id, to_state="consumed")
+                .limit(2)
+            )
+        ).all()
+        if _native_binding is not None:
+            native_runtime._actual_session(self, _native_binding, session)
+        if (
+            len(entries) != 1
+            or entries[0].reason_code
+            != (
+                bound.CONSUMED_REASON
+                if control_bound
+                else "consumed_with_submit_intent"
+            )
+            or entries[0].from_state != "reserved"
+            or entries[0].state_revision != 2
+            or entries[0].evidence_json is None
+        ):
+            raise QualificationLedgerError("submit_intent_missing")
+        entry = entries[0]
+        request_json = record.request_json
+        request = decode_reservation_request(request_json)
+        if _canonical_json_sha256(request_json) != record.request_sha256:
+            raise QualificationLedgerError("ledger_request_digest_mismatch")
+        if control_bound:
+            intent, consumed = bound.replay_control_bound_intent(
+                entry.evidence_json, request, expected_sha256=expected_sha256
+            )
+            reserved_entry = await session.scalar(
+                select(QualificationReservationTransition).filter_by(
+                    reservation_id=record.reservation_id, state_revision=1
                 )
-            ).all()
+            )
+            if _native_binding is not None:
+                native_runtime._actual_session(self, _native_binding, session)
+            envelope = bound._document(intent.canonical_json)
             if (
-                len(entries) != 1
-                or entries[0].reason_code
-                != (
-                    bound.CONSUMED_REASON
-                    if control_bound
-                    else "consumed_with_submit_intent"
-                )
-                or entries[0].from_state != "reserved"
-                or entries[0].state_revision != 2
-                or entries[0].evidence_json is None
+                reserved_entry is None
+                or reserved_entry.from_state is not None
+                or reserved_entry.to_state != "reserved"
+                or reserved_entry.reason_code != bound.RESERVED_REASON
+                or reserved_entry.evidence_json != envelope["reservation_binding_json"]
+                or reserved_entry.occurred_at != record.created_at
             ):
-                raise QualificationLedgerError("submit_intent_missing")
-            entry = entries[0]
-            request_json = record.request_json
-            request = decode_reservation_request(request_json)
-            if _canonical_json_sha256(request_json) != record.request_sha256:
-                raise QualificationLedgerError("ledger_request_digest_mismatch")
-            if control_bound:
-                intent, consumed = bound.replay_control_bound_intent(
-                    entry.evidence_json, request, expected_sha256=expected_sha256
+                raise QualificationLedgerError("bound_control_reserved_journal_invalid")
+            _, reserved_control, reserved_event = bound.replay_reserved_evidence(
+                reserved_entry.evidence_json, request
+            )
+            if _native_binding is not None:
+                await native_runtime.verify_control_history_v2(
+                    self, _native_binding, session, reserved_control, reserved_event
                 )
-                reserved_entry = await session.scalar(
-                    select(QualificationReservationTransition).filter_by(
-                        reservation_id=record.reservation_id, state_revision=1
-                    )
-                )
-                envelope = bound._document(intent.canonical_json)
-                if (
-                    reserved_entry is None
-                    or reserved_entry.from_state is not None
-                    or reserved_entry.to_state != "reserved"
-                    or reserved_entry.reason_code != bound.RESERVED_REASON
-                    or reserved_entry.evidence_json
-                    != envelope["reservation_binding_json"]
-                    or reserved_entry.occurred_at != record.created_at
-                ):
-                    raise QualificationLedgerError(
-                        "bound_control_reserved_journal_invalid"
-                    )
-                _, reserved_control, reserved_event = bound.replay_reserved_evidence(
-                    reserved_entry.evidence_json, request
-                )
+            else:
                 await DemoControlRepository.verify_historical_binding(
                     session, reserved_control, reserved_event
                 )
-            else:
-                intent, consumed = replay_submission_intent(
-                    entry.evidence_json, request, expected_sha256=expected_sha256
+        else:
+            intent, consumed = replay_submission_intent(
+                entry.evidence_json, request, expected_sha256=expected_sha256
+            )
+        current = self._receipt(record, scope_row)
+        if (
+            any(
+                getattr(consumed, name) != getattr(current, name)
+                for name in (
+                    "scope",
+                    "reservation_id",
+                    "original_event_key",
+                    "report_id",
+                    "instrument_id",
+                    "direction",
+                    "correlation_group",
+                    "request_sha256",
+                    "deadline",
                 )
-            current = self._receipt(record, scope_row)
-            if (
-                any(
-                    getattr(consumed, name) != getattr(current, name)
-                    for name in (
-                        "scope",
-                        "reservation_id",
-                        "original_event_key",
-                        "report_id",
-                        "instrument_id",
-                        "direction",
-                        "correlation_group",
-                        "request_sha256",
-                        "deadline",
-                    )
-                )
-                or consumed.created_at != current.created_at
-                or consumed.updated_at != require_aware(entry.occurred_at)
-                or consumed.coverage != current.coverage
-                or consumed.ledger_revision > current.ledger_revision
-                or consumed.account_revision > current.account_revision
-                or current.state == "reserved"
-                or consumed.state_revision > current.state_revision
-            ):
-                raise QualificationLedgerError("submit_intent_journal_mismatch")
-            return intent
+            )
+            or consumed.created_at != current.created_at
+            or consumed.updated_at != require_aware(entry.occurred_at)
+            or consumed.coverage != current.coverage
+            or consumed.ledger_revision > current.ledger_revision
+            or consumed.account_revision > current.account_revision
+            or current.state == "reserved"
+            or consumed.state_revision > current.state_revision
+        ):
+            raise QualificationLedgerError("submit_intent_journal_mismatch")
+        if _native_binding is not None:
+            await native_runtime.require_locked_intent_readback_v2(
+                self,
+                _native_binding,
+                session=session,
+                scope_row=scope_row,
+                request=request,
+                intent=intent,
+                current=current,
+                consumed=consumed,
+            )
+        return intent
 
     async def mark_uncertain(self, scope, event_key, *, expected_revision):
         return await self._transition(

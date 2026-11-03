@@ -283,11 +283,133 @@ WHERE n.nspname='public' AND p.proname IN ('public_runtime_bundle_v1_guard',
 _TRIGGER_SQL = text("""
 SELECT g.tgname,g.tgtype,g.tgenabled::text AS tgenabled,g.tgisinternal,g.tgconstraint,
   g.tgnargs,g.tgargs,g.tgqual::text AS qualification,g.tgoldtable,g.tgnewtable,
-  p.proname,n.nspname
+  p.proname,n.nspname,g.oid::bigint AS trigger_oid,
+  g.tgrelid::bigint AS relation_oid,g.tgconstrrelid::bigint AS other_oid,
+  g.tgdeferrable,g.tginitdeferred,g.tgattr::text AS attribute_numbers,
+  g.tgparentid::bigint AS parent_trigger_oid,p.oid::bigint AS function_oid,
+  CASE WHEN n.nspname='pg_catalog' AND p.proname IN
+      ('RI_FKey_restrict_del','RI_FKey_noaction_upd')
+    THEN pg_catalog.to_regprocedure('pg_catalog.'||pg_catalog.quote_ident(p.proname)||'()')::oid::bigint
+    ELSE NULL END AS expected_function_oid
 FROM pg_catalog.pg_trigger g JOIN pg_catalog.pg_proc p ON p.oid=g.tgfoid
 JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
 WHERE g.tgrelid=pg_catalog.to_regclass('public.public_runtime_raw_bundles_v1')
 """)
+_INCOMING_CUSTODY_FK_SQL = text("""
+SELECT parent.oid::bigint AS parent_oid,lineage.oid::bigint AS lineage_oid,
+  lineage.relowner::bigint AS lineage_owner,lineage.relkind::text AS lineage_kind,
+  lineage.relpersistence::text AS lineage_persistence,lineage.relrowsecurity,
+  lineage.relforcerowsecurity,lineage.relispartition,
+  EXISTS(SELECT 1 FROM pg_catalog.pg_inherits h
+    WHERE h.inhrelid=lineage.oid OR h.inhparent=lineage.oid) AS lineage_inherited,
+  f.oid::bigint AS constraint_oid,f.conname,fn.nspname AS constraint_namespace,
+  f.contype::text AS constraint_type,f.conrelid::bigint AS child_oid,
+  f.confrelid::bigint AS target_oid,f.conkey,f.confkey,
+  f.confdeltype::text AS delete_action,f.confupdtype::text AS update_action,
+  f.confmatchtype::text AS match_type,f.convalidated,f.condeferrable,f.condeferred,
+  f.conparentid::bigint AS parent_constraint_oid,f.conislocal,f.coninhcount,
+  child.relname AS child_name,cn.nspname AS child_namespace,
+  child.relowner::bigint AS child_owner,
+  ca.attnum AS child_column_number,ca.attname AS child_column_name,
+  pg_catalog.format_type(ca.atttypid,ca.atttypmod) AS child_column_type,
+  ca.attnotnull AS child_column_notnull,ca.attidentity::text AS child_identity,
+  ca.attgenerated::text AS child_generated,
+  pa.attnum AS target_column_number,pa.attname AS target_column_name,
+  pg_catalog.format_type(pa.atttypid,pa.atttypmod) AS target_column_type,
+  pa.attnotnull AS target_column_notnull,pa.attidentity::text AS target_identity,
+  pa.attgenerated::text AS target_generated,
+  ca.attcollation=pa.attcollation AS matching_collation,
+  f.conindid::bigint AS index_oid,pk.conindid::bigint AS expected_index_oid,
+  pk.conname AS parent_pk_name,pk.convalidated AS parent_pk_validated,
+  ic.relowner::bigint AS index_owner,ic.relname AS index_name,
+  ixn.nspname AS index_namespace,
+  i.indrelid::bigint AS index_table_oid,i.indisunique,i.indisprimary,
+  i.indisvalid,i.indisready,i.indislive,
+  i.indpred IS NULL AND i.indexprs IS NULL AS plain_index,
+  i.indnatts=i.indnkeyatts AND i.indnkeyatts=1 AS single_key_index
+FROM pg_catalog.pg_class parent
+LEFT JOIN pg_catalog.pg_class lineage
+  ON lineage.oid=pg_catalog.to_regclass('public.demo_collector_current_revision_lineages')
+-- Enumerate EVERY incoming FK. A foreign/extra relationship is never hidden.
+LEFT JOIN pg_catalog.pg_constraint f ON f.confrelid=parent.oid AND f.contype='f'
+LEFT JOIN pg_catalog.pg_namespace fn ON fn.oid=f.connamespace
+LEFT JOIN pg_catalog.pg_class child ON child.oid=f.conrelid
+LEFT JOIN pg_catalog.pg_namespace cn ON cn.oid=child.relnamespace
+LEFT JOIN pg_catalog.pg_attribute ca ON ca.attrelid=f.conrelid
+  AND ca.attname='custody_id' AND ca.attnum>0 AND NOT ca.attisdropped
+LEFT JOIN pg_catalog.pg_attribute pa ON pa.attrelid=parent.oid
+  AND pa.attname='bundle_id' AND pa.attnum>0 AND NOT pa.attisdropped
+LEFT JOIN pg_catalog.pg_constraint pk ON pk.conrelid=parent.oid AND pk.contype='p'
+LEFT JOIN pg_catalog.pg_index i ON i.indexrelid=f.conindid
+LEFT JOIN pg_catalog.pg_class ic ON ic.oid=i.indexrelid
+LEFT JOIN pg_catalog.pg_namespace ixn ON ixn.oid=ic.relnamespace
+WHERE parent.oid=pg_catalog.to_regclass('public.public_runtime_raw_bundles_v1')
+""")
+
+_INCOMING_CUSTODY_FK_SQL_CURRENT0054 = text("""
+SELECT parent.oid::bigint AS parent_oid,lineage.oid::bigint AS lineage_oid,
+  lineage.relowner::bigint AS lineage_owner,lineage.relkind::text AS lineage_kind,
+  lineage.relpersistence::text AS lineage_persistence,lineage.relrowsecurity,
+  lineage.relforcerowsecurity,lineage.relispartition,
+  EXISTS(SELECT 1 FROM pg_catalog.pg_inherits h
+    WHERE h.inhrelid=lineage.oid OR h.inhparent=lineage.oid) AS lineage_inherited,
+  f.oid::bigint AS constraint_oid,f.conname,fn.nspname AS constraint_namespace,
+  f.contype::text AS constraint_type,f.conrelid::bigint AS child_oid,
+  f.confrelid::bigint AS target_oid,f.conkey,f.confkey,
+  f.confdeltype::text AS delete_action,f.confupdtype::text AS update_action,
+  f.confmatchtype::text AS match_type,f.convalidated,f.condeferrable,f.condeferred,
+  f.conparentid::bigint AS parent_constraint_oid,f.conislocal,f.coninhcount,
+  child.relname AS child_name,cn.nspname AS child_namespace,
+  child.relowner::bigint AS child_owner,
+  ca.attnum AS child_column_number,ca.attname AS child_column_name,
+  pg_catalog.format_type(ca.atttypid,ca.atttypmod) AS child_column_type,
+  ca.attnotnull AS child_column_notnull,ca.attidentity::text AS child_identity,
+  ca.attgenerated::text AS child_generated,
+  pa.attnum AS target_column_number,pa.attname AS target_column_name,
+  pg_catalog.format_type(pa.atttypid,pa.atttypmod) AS target_column_type,
+  pa.attnotnull AS target_column_notnull,pa.attidentity::text AS target_identity,
+  pa.attgenerated::text AS target_generated,
+  ca.attcollation=pa.attcollation AS matching_collation,
+  f.conindid::bigint AS index_oid,pk.conindid::bigint AS expected_index_oid,
+  pk.conname AS parent_pk_name,pk.convalidated AS parent_pk_validated,
+  ic.relowner::bigint AS index_owner,ic.relname AS index_name,
+  ixn.nspname AS index_namespace,
+  i.indrelid::bigint AS index_table_oid,i.indisunique,i.indisprimary,
+  i.indisvalid,i.indisready,i.indislive,
+  i.indpred IS NULL AND i.indexprs IS NULL AS plain_index,
+  i.indnatts=i.indnkeyatts AND i.indnkeyatts=1 AS single_key_index
+FROM pg_catalog.pg_class parent
+-- Enumerate EVERY incoming FK and its actual referencing relation.
+LEFT JOIN pg_catalog.pg_constraint f ON f.confrelid=parent.oid AND f.contype='f'
+LEFT JOIN pg_catalog.pg_class lineage ON lineage.oid=f.conrelid
+LEFT JOIN pg_catalog.pg_namespace fn ON fn.oid=f.connamespace
+LEFT JOIN pg_catalog.pg_class child ON child.oid=f.conrelid
+LEFT JOIN pg_catalog.pg_namespace cn ON cn.oid=child.relnamespace
+LEFT JOIN pg_catalog.pg_attribute ca ON ca.attrelid=f.conrelid
+  AND ca.attnum=ANY(f.conkey) AND ca.attnum>0 AND NOT ca.attisdropped
+LEFT JOIN pg_catalog.pg_attribute pa ON pa.attrelid=parent.oid
+  AND pa.attname='bundle_id' AND pa.attnum>0 AND NOT pa.attisdropped
+LEFT JOIN pg_catalog.pg_constraint pk ON pk.conrelid=parent.oid AND pk.contype='p'
+LEFT JOIN pg_catalog.pg_index i ON i.indexrelid=f.conindid
+LEFT JOIN pg_catalog.pg_class ic ON ic.oid=i.indexrelid
+LEFT JOIN pg_catalog.pg_namespace ixn ON ixn.oid=ic.relnamespace
+WHERE parent.oid=pg_catalog.to_regclass('public.public_runtime_raw_bundles_v1')
+""")
+
+_HEAD_LAYOUT_SQL = text("""
+SELECT jsonb_build_object(
+ 'has_version',pg_catalog.to_regclass('public.alembic_version') IS NOT NULL,
+ 'standalone_only',
+   pg_catalog.to_regclass('public.alembic_version') IS NULL
+   AND pg_catalog.to_regclass('public.public_runtime_raw_bundles_v1') IS NOT NULL
+   AND NOT EXISTS(SELECT 1 FROM pg_catalog.pg_class c
+     JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+     WHERE n.nspname='public' AND c.relkind IN ('r','p','v','m','f')
+       AND c.oid<>pg_catalog.to_regclass('public.public_runtime_raw_bundles_v1')))
+""")
+
+_HEAD_SQL = text("SELECT version_num FROM public.alembic_version")
+
 _COLUMN_SQL = text("""
 SELECT a.attname,pg_catalog.format_type(a.atttypid,a.atttypmod) AS type_name,
   a.attnotnull,a.attidentity::text AS attidentity,a.attgenerated::text AS attgenerated
@@ -547,6 +669,534 @@ def _consume_runtime_bundle_custody_receipt(
     return readback
 
 
+def _custody_foreign_key_identity(role, triggers, incoming):
+    """Exactly absent, or the frozen0053 FK plus its two native parent actions.
+
+    All trigger rows and all incoming FKs are enumerated by their queries.
+    System RI routines are bound by exact pg_catalog signature/OID; their owner
+    is not confused with the application table owner. No arbitrary callback,
+    private catalog row, identifier or exception text leaves this check.
+    """
+
+    def deny(category="trigger_attributes"):
+        raise RuntimeBundleCustodyError(
+            "runtime_bundle_custody_unavailable", diagnostic_category=category
+        ) from None
+
+    if (
+        any(type(row.tgisinternal) is not bool for row in triggers)
+        or len(incoming) != 1
+    ):
+        deny("trigger_inventory")
+    internal = tuple(row for row in triggers if row.tgisinternal)
+    foreign = incoming[0]
+    if foreign.lineage_oid is None:
+        if internal or foreign.constraint_oid is not None:
+            deny("trigger_inventory")
+        return ()
+    integer_names = (
+        "parent_oid",
+        "lineage_oid",
+        "constraint_oid",
+        "child_oid",
+        "target_oid",
+        "index_oid",
+        "expected_index_oid",
+        "lineage_owner",
+        "child_owner",
+        "index_owner",
+    )
+    if any(
+        type(getattr(foreign, name)) is not int
+        or not 0 < getattr(foreign, name) < 2**32
+        for name in integer_names
+    ):
+        deny()
+    if (
+        foreign.child_oid != foreign.lineage_oid
+        or foreign.target_oid != foreign.parent_oid
+        or foreign.lineage_owner != role.owner_oid
+        or foreign.child_owner != role.owner_oid
+        or foreign.index_owner != role.owner_oid
+        or (foreign.lineage_kind, foreign.lineage_persistence) != ("r", "p")
+        or any(
+            value is not False
+            for value in (
+                foreign.relrowsecurity,
+                foreign.relforcerowsecurity,
+                foreign.relispartition,
+                foreign.lineage_inherited,
+            )
+        )
+        or (foreign.conname, foreign.constraint_namespace, foreign.constraint_type)
+        != ("fk_collector_current_custody", "public", "f")
+        or (foreign.child_namespace, foreign.child_name)
+        != ("public", "demo_collector_current_revision_lineages")
+        or (foreign.delete_action, foreign.update_action, foreign.match_type)
+        != ("r", "a", "s")
+        or foreign.convalidated is not True
+        or foreign.condeferrable is not False
+        or foreign.condeferred is not False
+        or foreign.parent_constraint_oid != 0
+        or foreign.conislocal is not True
+        or foreign.coninhcount != 0
+        or (foreign.child_column_number, foreign.target_column_number) != (15, 1)
+        or foreign.conkey != [15]
+        or foreign.confkey != [1]
+        or (foreign.child_column_name, foreign.target_column_name)
+        != ("custody_id", "bundle_id")
+        or (foreign.child_column_type, foreign.target_column_type)
+        != ("character varying(32)", "character varying(32)")
+        or foreign.child_column_notnull is not True
+        or foreign.target_column_notnull is not True
+        or (
+            foreign.child_identity,
+            foreign.child_generated,
+            foreign.target_identity,
+            foreign.target_generated,
+        )
+        != ("", "", "", "")
+        or foreign.matching_collation is not True
+        or foreign.index_oid != foreign.expected_index_oid
+        or foreign.parent_pk_name != "pk_public_runtime_raw_bundles_v1"
+        or foreign.parent_pk_validated is not True
+        or (foreign.index_namespace, foreign.index_name)
+        != ("public", "pk_public_runtime_raw_bundles_v1")
+        or foreign.index_table_oid != foreign.parent_oid
+        or any(
+            value is not True
+            for value in (
+                foreign.indisunique,
+                foreign.indisprimary,
+                foreign.indisvalid,
+                foreign.indisready,
+                foreign.indislive,
+                foreign.plain_index,
+                foreign.single_key_index,
+            )
+        )
+    ):
+        deny()
+    expected = {"RI_FKey_restrict_del": 9, "RI_FKey_noaction_upd": 17}
+    if len(internal) != 2 or {row.proname for row in internal} != set(expected):
+        deny("trigger_inventory")
+    identities = []
+    for row in internal:
+        if (
+            type(row.trigger_oid) is not int
+            or not 0 < row.trigger_oid < 2**32
+            or row.tgname != "RI_ConstraintTrigger_a_" + str(row.trigger_oid)
+            or row.tgtype != expected[row.proname]
+            or row.tgenabled != "O"
+            or row.tgisinternal is not True
+            or row.tgconstraint != foreign.constraint_oid
+            or row.relation_oid != foreign.parent_oid
+            or row.other_oid != foreign.child_oid
+            or row.nspname != "pg_catalog"
+            or type(row.function_oid) is not int
+            or row.function_oid <= 0
+            or row.function_oid != row.expected_function_oid
+            or row.tgdeferrable is not False
+            or row.tginitdeferred is not False
+            or row.parent_trigger_oid != 0
+            or row.attribute_numbers != ""
+            or row.tgnargs != 0
+            or bytes(row.tgargs) != b""
+            or row.qualification is not None
+            or row.tgoldtable is not None
+            or row.tgnewtable is not None
+        ):
+            deny()
+        identities.append(
+            (
+                row.proname,
+                row.trigger_oid,
+                row.tgname,
+                row.function_oid,
+                row.tgconstraint,
+                row.relation_oid,
+                row.other_oid,
+            )
+        )
+    # Pin every accepted new FK/RI identity. Drop/recreate cannot silently reuse
+    # a preflight even when the replacement has an identical SQL definition.
+    return (
+        (
+            foreign.constraint_oid,
+            foreign.parent_oid,
+            foreign.child_oid,
+            foreign.index_oid,
+            foreign.lineage_owner,
+        ),
+        tuple(sorted(identities)),
+    )
+
+
+def _custody_foreign_key_identity_current0054(role, triggers, incoming):
+    """Exact actual54 two incoming FKs and all four native parent RI actions.
+
+    The SQL row field prefix 'lineage_' is retained for finite compatibility,
+    but in this query it is the ACTUAL referencing table for EACH incoming FK.
+    No field is projected to a different relation or accepted through old53.
+    """
+
+    def deny(category="trigger_attributes"):
+        raise RuntimeBundleCustodyError(
+            "runtime_bundle_custody_unavailable", diagnostic_category=category
+        ) from None
+
+    if (
+        any(type(row.tgisinternal) is not bool for row in triggers)
+        or len(incoming) != 2
+    ):
+        deny("trigger_inventory")
+    internal = tuple(row for row in triggers if row.tgisinternal)
+    if (
+        len(internal) != 4
+        or len({row.trigger_oid for row in internal}) != 4
+        or len({row.constraint_oid for row in incoming}) != 2
+        or len({row.child_oid for row in incoming}) != 2
+    ):
+        deny("trigger_inventory")
+    expected_foreign_keys = {
+        "fk_collector_current_custody": (
+            "demo_collector_current_revision_lineages",
+            15,
+            "custody_id",
+        ),
+        "fk_collector_issued_hwm_custody": (
+            "demo_collector_issued_account_revisions",
+            16,
+            "hwm_custody_id",
+        ),
+    }
+    if {row.conname for row in incoming} != set(expected_foreign_keys):
+        deny("trigger_inventory")
+    if {row.tgconstraint for row in internal} != {
+        row.constraint_oid for row in incoming
+    }:
+        deny("trigger_inventory")
+    accepted = []
+    for foreign in incoming:
+        expected_constraint = foreign.conname
+        expected_table, expected_number, expected_column = expected_foreign_keys[
+            expected_constraint
+        ]
+        local_internal = tuple(
+            row for row in internal if row.tgconstraint == foreign.constraint_oid
+        )
+        integer_names = (
+            "parent_oid",
+            "lineage_oid",
+            "constraint_oid",
+            "child_oid",
+            "target_oid",
+            "index_oid",
+            "expected_index_oid",
+            "lineage_owner",
+            "child_owner",
+            "index_owner",
+        )
+        if any(
+            type(getattr(foreign, name)) is not int
+            or not 0 < getattr(foreign, name) < 2**32
+            for name in integer_names
+        ):
+            deny()
+        if (
+            foreign.child_oid != foreign.lineage_oid
+            or foreign.target_oid != foreign.parent_oid
+            or foreign.lineage_owner != role.owner_oid
+            or foreign.child_owner != role.owner_oid
+            or foreign.index_owner != role.owner_oid
+            or (foreign.lineage_kind, foreign.lineage_persistence) != ("r", "p")
+            or any(
+                value is not False
+                for value in (
+                    foreign.relrowsecurity,
+                    foreign.relforcerowsecurity,
+                    foreign.relispartition,
+                    foreign.lineage_inherited,
+                )
+            )
+            or (foreign.conname, foreign.constraint_namespace, foreign.constraint_type)
+            != (expected_constraint, "public", "f")
+            or (foreign.child_namespace, foreign.child_name)
+            != ("public", expected_table)
+            or (foreign.delete_action, foreign.update_action, foreign.match_type)
+            != ("r", "a", "s")
+            or foreign.convalidated is not True
+            or foreign.condeferrable is not False
+            or foreign.condeferred is not False
+            or foreign.parent_constraint_oid != 0
+            or foreign.conislocal is not True
+            or foreign.coninhcount != 0
+            or (foreign.child_column_number, foreign.target_column_number)
+            != (expected_number, 1)
+            or foreign.conkey != [expected_number]
+            or foreign.confkey != [1]
+            or (foreign.child_column_name, foreign.target_column_name)
+            != (expected_column, "bundle_id")
+            or (foreign.child_column_type, foreign.target_column_type)
+            != ("character varying(32)", "character varying(32)")
+            or foreign.child_column_notnull is not True
+            or foreign.target_column_notnull is not True
+            or (
+                foreign.child_identity,
+                foreign.child_generated,
+                foreign.target_identity,
+                foreign.target_generated,
+            )
+            != ("", "", "", "")
+            or foreign.matching_collation is not True
+            or foreign.index_oid != foreign.expected_index_oid
+            or foreign.parent_pk_name != "pk_public_runtime_raw_bundles_v1"
+            or foreign.parent_pk_validated is not True
+            or (foreign.index_namespace, foreign.index_name)
+            != ("public", "pk_public_runtime_raw_bundles_v1")
+            or foreign.index_table_oid != foreign.parent_oid
+            or any(
+                value is not True
+                for value in (
+                    foreign.indisunique,
+                    foreign.indisprimary,
+                    foreign.indisvalid,
+                    foreign.indisready,
+                    foreign.indislive,
+                    foreign.plain_index,
+                    foreign.single_key_index,
+                )
+            )
+        ):
+            deny()
+        expected = {"RI_FKey_restrict_del": 9, "RI_FKey_noaction_upd": 17}
+        if len(local_internal) != 2 or {row.proname for row in local_internal} != set(
+            expected
+        ):
+            deny("trigger_inventory")
+        identities = []
+        for row in local_internal:
+            if (
+                type(row.trigger_oid) is not int
+                or not 0 < row.trigger_oid < 2**32
+                or row.tgname != "RI_ConstraintTrigger_a_" + str(row.trigger_oid)
+                or row.tgtype != expected[row.proname]
+                or row.tgenabled != "O"
+                or row.tgisinternal is not True
+                or row.tgconstraint != foreign.constraint_oid
+                or row.relation_oid != foreign.parent_oid
+                or row.other_oid != foreign.child_oid
+                or row.nspname != "pg_catalog"
+                or type(row.function_oid) is not int
+                or row.function_oid <= 0
+                or row.function_oid != row.expected_function_oid
+                or row.tgdeferrable is not False
+                or row.tginitdeferred is not False
+                or row.parent_trigger_oid != 0
+                or row.attribute_numbers != ""
+                or row.tgnargs != 0
+                or bytes(row.tgargs) != b""
+                or row.qualification is not None
+                or row.tgoldtable is not None
+                or row.tgnewtable is not None
+            ):
+                deny()
+            identities.append(
+                (
+                    row.proname,
+                    row.trigger_oid,
+                    row.tgname,
+                    row.function_oid,
+                    row.tgconstraint,
+                    row.relation_oid,
+                    row.other_oid,
+                )
+            )
+        accepted.append(
+            (
+                (
+                    foreign.constraint_oid,
+                    foreign.parent_oid,
+                    foreign.child_oid,
+                    foreign.index_oid,
+                    foreign.lineage_owner,
+                ),
+                tuple(sorted(identities)),
+            )
+        )
+    return tuple(sorted(accepted))
+
+
+_CURRENT0055_SCHEMA_IDENTITY_SQL = text("""
+SELECT jsonb_build_object(
+ 'head',(SELECT jsonb_agg(version_num ORDER BY version_num COLLATE "C") FROM public.alembic_version),
+ 'tables',(SELECT jsonb_agg(jsonb_build_object(
+  'name',c.relname,'owner',c.relowner::bigint,'kind',c.relkind::text,'persistence',c.relpersistence::text,
+  'rls',c.relrowsecurity,'force_rls',c.relforcerowsecurity,'partition',c.relispartition,
+  'inherited',EXISTS(SELECT 1 FROM pg_inherits x WHERE x.inhrelid=c.oid OR x.inhparent=c.oid),
+  'rules',EXISTS(SELECT 1 FROM pg_rewrite x WHERE x.ev_class=c.oid),
+  'policies',EXISTS(SELECT 1 FROM pg_policy x WHERE x.polrelid=c.oid),
+  'columns',(SELECT jsonb_agg(jsonb_build_array(a.attname,format_type(a.atttypid,a.atttypmod),a.attnotnull,
+    pg_get_expr(d.adbin,d.adrelid),a.attgenerated,a.attidentity,
+    CASE WHEN a.attcollation=0 THEN NULL ELSE cn.nspname||'.'||co.collname END) ORDER BY a.attnum)
+    FROM pg_attribute a LEFT JOIN pg_attrdef d ON d.adrelid=c.oid AND d.adnum=a.attnum
+    LEFT JOIN pg_collation co ON co.oid=a.attcollation LEFT JOIN pg_namespace cn ON cn.oid=co.collnamespace
+    WHERE a.attrelid=c.oid AND a.attnum>0 AND NOT a.attisdropped)) ORDER BY c.relname COLLATE "C")
+  FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public'
+   AND c.relname IN('demo_control_clear_acknowledgements_v2','demo_policy_counter_initializations_v1')),
+ 'functions',(SELECT jsonb_agg(jsonb_build_object('name',p.proname,'owner',p.proowner::bigint,
+  'language',l.lanname,'arity',p.pronargs::int,'defaults',p.pronargdefaults::int,
+  'returns_trigger',p.prorettype='pg_catalog.trigger'::regtype,'returns_set',p.proretset,
+  'security_definer',p.prosecdef,'strict',p.proisstrict,'leakproof',p.proleakproof,
+  'volatility',p.provolatile::text,'parallel',p.proparallel::text,'kind',p.prokind::text,
+  'support_zero',p.prosupport=0,'config',p.proconfig,
+  'source_sha256',encode(sha256(convert_to(p.prosrc,'UTF8')),'hex')) ORDER BY p.proname COLLATE "C")
+  FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace JOIN pg_language l ON l.oid=p.prolang
+  WHERE n.nspname='public' AND p.proname IN(
+   'demo_control_state_guard','demo_control_journal_guard','demo_control_commit_guard','qualification_ledger_immutable',
+   'control_clear_ack_guard_v2','control_clear_ack_commit_guard_v2','control_operator_ack_immutable_v55',
+   'policy_counter_initialization_guard_v1','policy_counter_initialization_commit_guard_v1',
+   'collector_issued_account_revision_guard_v1')))
+""")
+
+
+async def _current0055_custody_schema_identity(session, role):
+    """Actual55 metadata on THIS custody role, never a projected writer role.
+
+    This carrier predicate does not replace the separate full55 catalogue on
+    the genuine captured writer factory required by controlled native source.
+    """
+    from app.domain import collector_current_0055_catalog_v1 as current55
+
+    def deny():
+        raise RuntimeBundleCustodyError(
+            "runtime_bundle_custody_unavailable",
+            diagnostic_category="current55_schema_identity",
+        ) from None
+
+    baseline = current55._required_baseline()
+    if (
+        current55.FROZEN_OPERATOR_DDL_SHA256
+        != "9535c233c7398c9f70d407a6c172576f251cc4d6d2cd9ce2a0e716164b69a629"
+    ):
+        deny()
+    value = (
+        await _catalog_query(
+            session, _CURRENT0055_SCHEMA_IDENTITY_SQL, category="role_query"
+        )
+    ).scalar_one()
+    if (
+        type(value) is not dict
+        or set(value) != {"head", "tables", "functions"}
+        or value["head"] != ["0055"]
+    ):
+        deny()
+    tables = value["tables"]
+    names = {current55.operator.CLEAR_TABLE, current55.operator.COUNTER_TABLE}
+    if type(tables) is not list or len(tables) != 2:
+        deny()
+    seen = set()
+    fields = {
+        "name",
+        "owner",
+        "kind",
+        "persistence",
+        "rls",
+        "force_rls",
+        "partition",
+        "inherited",
+        "rules",
+        "policies",
+        "columns",
+    }
+    for row in tables:
+        if (
+            type(row) is not dict
+            or set(row) != fields
+            or row["name"] not in names
+            or row["name"] in seen
+            or type(row["owner"]) is not int
+            or row["owner"] != role.owner_oid
+            or row["kind"] != "r"
+            or row["persistence"] != "p"
+            or any(
+                row[key] is not False
+                for key in (
+                    "rls",
+                    "force_rls",
+                    "partition",
+                    "inherited",
+                    "rules",
+                    "policies",
+                )
+            )
+            or row["columns"] != current55._COLUMNS[row["name"]]
+        ):
+            deny()
+        seen.add(row["name"])
+    functions = value["functions"]
+    expected = current55._source_functions()
+    expected["collector_issued_account_revision_guard_v1"] = (
+        current55._sha(current55._body(current55.operator.ISSUER_GUARD_SQL, "$ctcc$")),
+        True,
+        ["search_path=pg_catalog, pg_temp"],
+        False,
+    )
+    if type(functions) is not list or len(functions) != len(expected):
+        deny()
+    seen = set()
+    fields = {
+        "name",
+        "owner",
+        "language",
+        "arity",
+        "defaults",
+        "returns_trigger",
+        "returns_set",
+        "security_definer",
+        "strict",
+        "leakproof",
+        "volatility",
+        "parallel",
+        "kind",
+        "support_zero",
+        "config",
+        "source_sha256",
+    }
+    for row in functions:
+        if (
+            type(row) is not dict
+            or set(row) != fields
+            or row["name"] not in expected
+            or row["name"] in seen
+            or type(row["owner"]) is not int
+            or row["owner"] != role.owner_oid
+            or row["language"] != "plpgsql"
+            or row["returns_trigger"] is not True
+            or row["returns_set"] is not False
+            or any(
+                type(row[key]) is not int or row[key] != 0
+                for key in ("arity", "defaults")
+            )
+            or row["strict"] is not False
+            or row["leakproof"] is not False
+            or row["support_zero"] is not True
+            or row["volatility"] != "v"
+            or row["parallel"] != "u"
+            or row["kind"] != "f"
+        ):
+            deny()
+        body, security, config, _public = expected[row["name"]]
+        if (
+            row["source_sha256"] != body
+            or row["security_definer"] is not security
+            or row["config"] != config
+        ):
+            deny()
+        seen.add(row["name"])
+    return baseline, _sha(repr(value).encode("utf-8"))
+
+
 class RuntimeBundleCustodyRepository:
     """Explicit restricted PostgreSQL connection; one invocation owner.
 
@@ -625,6 +1275,46 @@ class RuntimeBundleCustodyRepository:
                 diagnostic_category="role_scope",
                 diagnostic_conditions=_failed_role_conditions(role),
             )
+        head_layout = (
+            await _catalog_query(session, _HEAD_LAYOUT_SQL, category="role_query")
+        ).scalar_one()
+        if (
+            type(head_layout) is not dict
+            or set(head_layout) != {"has_version", "standalone_only"}
+            or type(head_layout["has_version"]) is not bool
+            or type(head_layout["standalone_only"]) is not bool
+        ):
+            raise RuntimeBundleCustodyError(
+                "runtime_bundle_custody_unavailable", diagnostic_category="role_query"
+            )
+        if head_layout["has_version"]:
+            migration_head = (
+                await _catalog_query(session, _HEAD_SQL, category="role_query")
+            ).scalar_one()
+            if type(migration_head) is not str or migration_head not in {
+                "0046",
+                "0047",
+                "0048",
+                "0049",
+                "0050",
+                "0051",
+                "0052",
+                "0053",
+                "0054",
+                "0055",
+            }:
+                raise RuntimeBundleCustodyError(
+                    "runtime_bundle_custody_unavailable",
+                    diagnostic_category="role_query",
+                )
+        elif head_layout["standalone_only"]:
+            # Existing isolated0046 DDL component tests have no migration graph.
+            # This explicit label grants no revision/native-account authority.
+            migration_head = "UNVERSIONED_RAW_CUSTODY_COMPONENT_ONLY"
+        else:
+            raise RuntimeBundleCustodyError(
+                "runtime_bundle_custody_unavailable", diagnostic_category="role_query"
+            )
         functions = tuple(
             (
                 await _catalog_query(session, _FUNCTION_SQL, category="function_query")
@@ -669,6 +1359,47 @@ class RuntimeBundleCustodyRepository:
                 await _catalog_query(session, _TRIGGER_SQL, category="trigger_query")
             ).all()
         )
+        incoming = tuple(
+            (
+                await _catalog_query(
+                    session,
+                    (
+                        _INCOMING_CUSTODY_FK_SQL_CURRENT0054
+                        if migration_head in {"0054", "0055"}
+                        else _INCOMING_CUSTODY_FK_SQL
+                    ),
+                    category="trigger_query",
+                )
+            ).all()
+        )
+        if migration_head == "0055":
+            current55_identity = await _current0055_custody_schema_identity(
+                session, role
+            )
+            # Actual55 adds no direct custody FK. Reuse only this unchanged
+            # physical two-FK/four-RI validator, never54 native admission.
+            foreign_key_identity = (
+                _custody_foreign_key_identity_current0054(role, triggers, incoming),
+                ("explicit_actual0055_carrier", current55_identity),
+            )
+        elif migration_head == "0054":
+            foreign_key_identity = _custody_foreign_key_identity_current0054(
+                role, triggers, incoming
+            )
+        else:
+            if len(incoming) != 1 or (migration_head == "0053") is not (
+                incoming[0].lineage_oid is not None
+            ):
+                raise RuntimeBundleCustodyError(
+                    "runtime_bundle_custody_unavailable",
+                    diagnostic_category="trigger_inventory",
+                )
+            foreign_key_identity = _custody_foreign_key_identity(
+                role, triggers, incoming
+            )
+        # Keep the original three user-trigger checks exact. Nothing is removed
+        # from inventory: every internal row has already been accounted for.
+        triggers = tuple(row for row in triggers if row.tgisinternal is False)
         expected_triggers = {
             "public_runtime_bundle_v1_insert_guard": (
                 7,
@@ -757,6 +1488,7 @@ class RuntimeBundleCustodyRepository:
                 diagnostic_category="constraint_attributes",
             )
         identity = (
+            migration_head,
             role.database_oid,
             role.database_name,
             role.server_address,
@@ -765,6 +1497,8 @@ class RuntimeBundleCustodyRepository:
             role.login_oid,
             role.owner_oid,
         )
+        if foreign_key_identity:
+            identity = (*identity, foreign_key_identity)
         return _sha(repr(identity).encode("utf-8"))
 
     async def verify_deployment(self) -> None:

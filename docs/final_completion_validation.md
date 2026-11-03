@@ -852,8 +852,9 @@ there is no sealed predictive OOS or positive execution authority.
 A read-only review of the Demo dynamic-leverage path found an explicit
 `None` check for risk score (zero is preserved), the configured 3/5/8/10/20x
 ladder, 0.5% per-trade structural and 1% portfolio open stop-risk ceilings,
-and an effective aggregate-margin cap no greater than 60% of the 300 USDT
-bucket. Existing tests cover a third-order margin denial and late state
+and an effective aggregate-margin cap no greater than 60% of reconciled
+settlement/account equity, alongside a separate 300 USDT per-instrument
+margin bucket. Existing tests cover a third-order margin denial and late state
 mutation. This is an offline code/test finding, not a rollout acceptance:
 structural Demo Arm still rejects outside test mode with
 `structural_rollout_atomic_flat_start_unavailable`.

@@ -16,6 +16,8 @@ from tests.unit.qualification_execution_binding_fixtures import (
 from tests.unit.qualification_history_intent_fixtures import history_ledger_fixture
 
 database = shared.database
+controlled_current55_database = shared.controlled_current55_database
+ledger_database = shared.ledger_database
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
 
@@ -32,12 +34,12 @@ def chain(request, tmp_path, database):
 
 
 async def test_history_intent_atomic_single_consumer_and_new_session_readback(
-    database, chain
+    ledger_database, chain
 ):
-    repo, clock = await shared.initialize(database, chain)
+    repo, clock = await shared.initialize(ledger_database, chain)
     reserved = await repo.reserve(chain.request)
     binding = await asyncio.to_thread(execution_binding, chain)
-    restarted = QualificationLedgerRepository(database[1], clock=clock)
+    restarted = QualificationLedgerRepository(ledger_database[1], clock=clock)
     results = await asyncio.gather(
         *(
             instance.consume_with_submission_intent(
@@ -72,9 +74,9 @@ async def test_history_intent_atomic_single_consumer_and_new_session_readback(
 
 
 async def test_missing_history_policy_marker_rolls_back_consume_and_intent(
-    database, chain
+    ledger_database, chain
 ):
-    repo, _ = await shared.initialize(database, chain)
+    repo, _ = await shared.initialize(ledger_database, chain)
     reserved = await repo.reserve(chain.request)
     binding = await asyncio.to_thread(execution_binding, chain)
     original = json.loads(binding.original_inputs_json)

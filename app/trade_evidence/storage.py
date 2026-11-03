@@ -302,12 +302,27 @@ def _read_fd(fd: int, maximum: int) -> bytes:
         parts.append(part)
         remaining -= len(part)
     after = os.fstat(fd)
-    if len(b"".join(parts)) != before.st_size or (
-        before.st_dev,
-        before.st_ino,
-        before.st_size,
-        before.st_mtime_ns,
-    ) != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
+    _regular_file(after)
+    # Both samples are fstat on the same descriptor: ctime meanings match.
+    fields = (
+        "st_dev",
+        "st_ino",
+        "st_mode",
+        "st_nlink",
+        "st_size",
+        "st_mtime_ns",
+        "st_ctime_ns",
+    )
+    if (
+        len(b"".join(parts)) != before.st_size
+        or tuple(getattr(before, name) for name in fields)
+        != tuple(getattr(after, name) for name in fields)
+        or getattr(before, "st_file_attributes", 0)
+        != getattr(after, "st_file_attributes", 0)
+        or getattr(before, "st_reparse_tag", 0) != getattr(after, "st_reparse_tag", 0)
+        or getattr(before, "st_birthtime_ns", None)
+        != getattr(after, "st_birthtime_ns", None)
+    ):
         raise EvidencePublicationError("evidence changed during bounded readback")
     return b"".join(parts)
 

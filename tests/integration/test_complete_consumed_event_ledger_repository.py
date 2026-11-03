@@ -24,6 +24,7 @@ from app.database.repositories.qualification_ledger import (
     _require_event_journal_session,
     _require_event_journal_write_schema,
 )
+from app.domain.collector_current_0055_catalog_v1 import Current0055CatalogError
 from app.trade_qualification.reservations import (
     LedgerScope,
     QualificationLedgerError,
@@ -44,10 +45,13 @@ pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
 
 async def test_committed_event_journal_schema_retention_guard_accepts_current_head(
-    database,
+    ledger_database,
 ):
     """Surface a missing retention guard before the long PostgreSQL suite."""
-    async with database[1]() as session:
+    async with ledger_database[1]() as session, session.begin():
+        await session.execute(
+            text("SET LOCAL search_path TO pg_catalog, public, pg_temp")
+        )
         await _require_event_journal_schema(session)
 
 
@@ -55,9 +59,9 @@ async def test_committed_event_journal_schema_retention_guard_accepts_current_he
     "state", ("reserved", "consumed", "uncertain", "reconciled_flat")
 )
 async def test_all_states_and_expired_tombstone_remain_consumed(
-    database, fixture, state
+    ledger_database, fixture, state
 ):
-    repository, clock = await initialize(database, fixture)
+    repository, clock = await initialize(ledger_database, fixture)
     scope = fixture.request.scope
     empty = await repository.inspect_consumed_event_journal(scope)
     initial = json.loads(empty.document_json)
@@ -158,9 +162,11 @@ async def _insert_synthetic_reservation(
     return key
 
 
-async def test_missing_transition_denies_instead_of_publishing_empty(database, fixture):
-    repository, _ = await initialize(database, fixture)
-    async with database[1]() as session, session.begin():
+async def test_missing_transition_denies_instead_of_publishing_empty(
+    ledger_database, fixture
+):
+    repository, _ = await initialize(ledger_database, fixture)
+    async with ledger_database[1]() as session, session.begin():
         await repository._locked(session, fixture.request.scope)
         await _insert_synthetic_reservation(
             session, fixture, scope=fixture.request.scope, with_initial_transition=False
@@ -171,13 +177,13 @@ async def test_missing_transition_denies_instead_of_publishing_empty(database, f
         await repository.inspect_consumed_event_journal(fixture.request.scope)
 
 
-async def test_post_uid_lock_read_sees_other_currency_writer(database, fixture):
-    repository, _ = await initialize(database, fixture)
+async def test_post_uid_lock_read_sees_other_currency_writer(ledger_database, fixture):
+    repository, _ = await initialize(ledger_database, fixture)
     requested_scope = fixture.request.scope
     other_scope = LedgerScope(
         account_id=requested_scope.account_id, settlement_currency="USDC"
     )
-    async with database[1]() as session, session.begin():
+    async with ledger_database[1]() as session, session.begin():
         await repository._locked(session, requested_scope)
         session.add(
             QualificationAccountScope(
@@ -205,10 +211,11 @@ async def test_post_uid_lock_read_sees_other_currency_writer(database, fixture):
     assert record["db_journal_complete"] is False
 
 
-async def test_temp_shadow_table_cannot_replace_public_ledger(database, fixture):
-    repository, clock = await initialize(database, fixture)
+async def test_temp_shadow_table_cannot_replace_public_ledger(ledger_database, fixture):
+    repository, clock = await initialize(ledger_database, fixture)
     reserved = await repository.reserve(fixture.request)
-    async with database[0].connect() as connection:
+    writer_engine = ledger_database[1].kw["bind"]
+    async with writer_engine.connect() as connection:
         await connection.execute(
             text("CREATE TEMP TABLE qualification_reservations (shadow_marker integer)")
         )
@@ -254,101 +261,68 @@ async def test_session_guard_rejects_replica_role_when_test_role_allows_it(datab
             await session.rollback()
 
 
-async def test_schema_guard_rejects_disabled_immutable_transition(database):
-    async with database[1]() as session:
-        try:
-            await session.execute(text("SET LOCAL lock_timeout TO '1000ms'"))
-            await session.execute(
-                text(
-                    "ALTER TABLE public.qualification_reservation_transitions "
-                    "DISABLE TRIGGER qualification_transition_immutable"
-                )
-            )
-        except DBAPIError:
-            await session.rollback()
-            pytest.skip("isolated PostgreSQL role cannot alter test trigger")
-        try:
-            with pytest.raises(
-                QualificationLedgerError, match="event_ledger_schema_retention_invalid"
-            ):
-                await _require_event_journal_schema(session)
-            with pytest.raises(
-                QualificationLedgerError, match="event_ledger_schema_retention_invalid"
-            ):
-                await _require_event_journal_write_schema(
-                    session,
-                    LedgerScope(account_id="123456789", settlement_currency="USDT"),
-                )
-        finally:
-            # DDL is transactional; no disabled trigger survives this test.
-            await session.rollback()
+async def _assert_retention_fault_denied(ledger_database, statements):
+    owner, sessions = ledger_database
+    scope = LedgerScope(account_id="123456789", settlement_currency="USDT")
+    async with sessions() as session, session.begin():
+        await _require_event_journal_write_schema(session, scope)
+    # The owner changes only this test's disposable database. The restricted
+    # login then observes the committed change in independent transactions.
+    async with owner.begin() as connection:
+        await connection.execute(text("SET LOCAL lock_timeout TO '1000ms'"))
+        for statement in statements:
+            await connection.execute(text(statement))
+    failures = (Current0055CatalogError, QualificationLedgerError)
+    expected = (
+        "current0055_actual_catalog_unavailable|event_ledger_schema_retention_invalid"
+    )
+    async with sessions() as session, session.begin():
+        await session.execute(
+            text("SET LOCAL search_path TO pg_catalog, public, pg_temp")
+        )
+        with pytest.raises(failures, match=expected):
+            await _require_event_journal_schema(session)
+    async with sessions() as session, session.begin():
+        with pytest.raises(failures, match=expected):
+            await _require_event_journal_write_schema(session, scope)
 
 
-async def test_schema_guard_rejects_replaced_immutable_function_body(database):
-    """A same-OID CREATE OR REPLACE must not preserve a false safety claim."""
-    async with database[1]() as session:
-        try:
-            await session.execute(text("SET LOCAL lock_timeout TO '1000ms'"))
-            await session.execute(
-                text(
-                    "CREATE OR REPLACE FUNCTION public.qualification_ledger_immutable() "
-                    "RETURNS trigger AS $$ BEGIN RETURN NEW; END; $$ LANGUAGE plpgsql"
-                )
-            )
-        except DBAPIError:
-            await session.rollback()
-            pytest.skip("isolated PostgreSQL role cannot replace test function")
-        try:
-            with pytest.raises(
-                QualificationLedgerError,
-                match=r"event_ledger_schema_retention_invalid:.*functions=qualification_ledger_immutable",
-            ):
-                await _require_event_journal_schema(session)
-            with pytest.raises(
-                QualificationLedgerError,
-                match=r"event_ledger_schema_retention_invalid:.*functions=qualification_ledger_immutable",
-            ):
-                await _require_event_journal_write_schema(
-                    session,
-                    LedgerScope(account_id="123456789", settlement_currency="USDT"),
-                )
-        finally:
-            # The replacement is transactional and never leaves this fixture.
-            await session.rollback()
+async def test_schema_guard_rejects_disabled_immutable_transition(ledger_database):
+    await _assert_retention_fault_denied(
+        ledger_database,
+        (
+            (
+                "ALTER TABLE public.qualification_reservation_transitions "
+                "DISABLE TRIGGER qualification_transition_immutable"
+            ),
+        ),
+    )
 
 
-async def test_schema_guard_rejects_same_name_wrong_uid_unique_key(database):
-    async with database[1]() as session:
-        try:
-            await session.execute(text("SET LOCAL lock_timeout TO '1000ms'"))
-            await session.execute(
-                text(
-                    "ALTER TABLE public.qualification_reservations "
-                    "DROP CONSTRAINT uq_qualification_reservations_uid_event"
-                )
-            )
-            await session.execute(
-                text(
-                    "ALTER TABLE public.qualification_reservations ADD CONSTRAINT "
-                    "uq_qualification_reservations_uid_event UNIQUE "
-                    "(environment, account_id, settlement_currency, original_event_key)"
-                )
-            )
-        except DBAPIError:
-            await session.rollback()
-            pytest.skip("isolated PostgreSQL role cannot alter test constraint")
-        try:
-            with pytest.raises(
-                QualificationLedgerError, match="event_ledger_schema_retention_invalid"
-            ):
-                await _require_event_journal_schema(session)
-            with pytest.raises(
-                QualificationLedgerError, match="event_ledger_schema_retention_invalid"
-            ):
-                await _require_event_journal_write_schema(
-                    session,
-                    LedgerScope(account_id="123456789", settlement_currency="USDT"),
-                )
-        finally:
-            # Roll back the temporary key change even if the assertion fails.
-            await session.rollback()
+async def test_schema_guard_rejects_replaced_immutable_function_body(ledger_database):
+    await _assert_retention_fault_denied(
+        ledger_database,
+        (
+            (
+                "CREATE OR REPLACE FUNCTION public.qualification_ledger_immutable() "
+                "RETURNS trigger AS $$ BEGIN RETURN NEW; END; $$ LANGUAGE plpgsql"
+            ),
+        ),
+    )
+
+
+async def test_schema_guard_rejects_same_name_wrong_uid_unique_key(ledger_database):
+    await _assert_retention_fault_denied(
+        ledger_database,
+        (
+            (
+                "ALTER TABLE public.qualification_reservations "
+                "DROP CONSTRAINT uq_qualification_reservations_uid_event"
+            ),
+            (
+                "ALTER TABLE public.qualification_reservations ADD CONSTRAINT "
+                "uq_qualification_reservations_uid_event UNIQUE "
+                "(environment, account_id, settlement_currency, original_event_key)"
+            ),
+        ),
+    )

@@ -207,6 +207,12 @@ class Settings(BaseSettings):
     okx_demo_api_key: SecretStr = SecretStr("")
     okx_demo_api_secret: SecretStr = SecretStr("")
     okx_demo_api_passphrase: SecretStr = SecretStr("")
+    # Native Demo uses distinct server-private restricted roles. Empty settings
+    # keep the native caller unavailable; no writer-role fallback is permitted.
+    okx_demo_native_custody_database_url: SecretStr = SecretStr("")
+    okx_demo_native_frame_reader_database_url: SecretStr = SecretStr("")
+    # Private durable account evidence, outside Git and deployment build context.
+    okx_demo_native_evidence_root: str = ""
     okx_demo_timeout_seconds: float = Field(default=10, gt=1, le=60)
     okx_demo_read_max_retries: int = Field(default=2, ge=0, le=5)
     okx_demo_allowed_symbols: str = _REVIEWED_DEMO_SYMBOLS_CSV

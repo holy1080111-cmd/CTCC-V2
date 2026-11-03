@@ -402,7 +402,7 @@ def _source_rows(rows, packets, sources):
     return results
 
 
-def _lifecycle(rows, packets, sources, scope, blockers):
+def _lifecycle_context(packets, sources, scope, blockers):
     orders, specs, anchors = {}, {}, []
     identity = None
     for packet, (_, reference) in zip(packets, sources, strict=True):
@@ -456,6 +456,19 @@ def _lifecycle(rows, packets, sources, scope, blockers):
                     "inventory_page_receipts": [p.receipt_sha256 for p in inventory],
                 }
             )
+    return identity, orders, specs, anchors
+
+
+def _lifecycle(rows, packets, sources, scope, blockers):
+    _identity, orders, specs, anchors = _lifecycle_context(
+        packets, sources, scope, blockers
+    )
+    return _lifecycle_from_context(
+        rows, scope, blockers, orders=orders, specs=specs, anchors=anchors
+    )
+
+
+def _lifecycle_from_context(rows, scope, blockers, *, orders, specs, anchors):
     groups = {}
     for row in rows:
         if row["family"] == "fills":

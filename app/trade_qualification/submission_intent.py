@@ -281,6 +281,12 @@ def _require_range_execution_binding(pre, binding):
 def build_submission_intent(
     request, consumed, *, execution_binding: SubmissionExecutionBinding | None = None
 ):
+    from app.trade_qualification import native_ledger_contracts_v2 as native
+
+    if native.is_native_request(request):
+        return native.build_native_intent(
+            request, consumed, execution_binding=execution_binding
+        )
     """Derive all facts from exact reservation records; performs no IO."""
     _guard(request)
     _guard(consumed)
@@ -372,6 +378,12 @@ def build_submission_intent(
 
 
 def replay_submission_intent(raw, request, *, expected_sha256):
+    from app.trade_qualification import native_ledger_contracts_v2 as native
+
+    if native.is_native_request(request):
+        return native.replay_native_intent(
+            raw, request, expected_sha256=expected_sha256
+        )
     """Reconstruct against persisted request. Hash is integrity, not authority."""
     try:
         encoded = raw.encode("utf-8") if type(raw) is str else b""

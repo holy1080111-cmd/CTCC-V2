@@ -1,6 +1,7 @@
 """Explicit sweep V6 computation contracts; no runtime or order authority."""
 
 import json
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Literal
@@ -9,6 +10,7 @@ from zoneinfo import ZoneInfo
 from pydantic import ConfigDict, Field, field_validator, model_validator
 from pydantic_core import TzInfo
 
+from app.domain.source_primitives import decode as _decode_swap_v2
 from app.trade_qualification import account_capture_journal as journal
 from app.trade_qualification.event_models import Digest, TriggerDetection
 from app.trade_qualification.models import (
@@ -332,3 +334,132 @@ def verify_sweep_admission(record, market, **original_inputs):
     if raw != object.__getattribute__(replayed, "__dict__"):
         raise ValueError("sweep_admission_source_replay_mismatch")
     return replayed
+
+
+# Explicit SWAP-v2 DATA branch. The historical V1/V6 contracts above are exact.
+SWEEP_PERMISSION_SWAP_V2_POLICY = "ctcc-sweep-history-protection-swap-vwap-v2"
+SWEEP_PERMISSION_SWAP_V2_SHA256 = (
+    "8ba3d675a1d6ae19999505d5aa5f0b8159ad94b9e3ba678a347e627770d5ec09"
+)
+SWEEP_SELECTION_SWAP_V2_POLICY = "ctcc-sweep-original-extreme-selection-swap-v2"
+SWEEP_SELECTION_SWAP_V2_BYTES = journal.canonical(
+    {
+        **json.loads(SWEEP_SELECTION_BYTES),
+        "policy_id": SWEEP_SELECTION_SWAP_V2_POLICY,
+        "history_permission_policy_sha256": SWEEP_PERMISSION_SWAP_V2_SHA256,
+        "source_ticker": "OKX_SWAP_volCcyQuote_over_volCcy",
+        "historical_v1_contract_unchanged": True,
+    }
+)
+SWEEP_SELECTION_SWAP_V2_SHA256 = journal.digest(SWEEP_SELECTION_SWAP_V2_BYTES)
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class SweepHistoryAdmissionRecordV2:
+    """Immutable pure SWAP history DATA; raw replay is mandatory, never authority."""
+
+    receipt_json: bytes
+
+    def __post_init__(self):
+        raw = self.receipt_json
+        if type(raw) is not bytes or not 0 < len(raw) <= _MAX_BYTES:
+            raise ValueError("sweep_swap_v2_receipt_invalid")
+        value = _decode_swap_v2(raw, _MAX_BYTES)
+        if (
+            type(value) is not dict
+            or set(value) != _RECEIPT_FIELDS
+            or journal.canonical(value) != raw
+            or value["schema_version"] != "ctcc.sweep_history_permission.v2"
+            or value["policy_id"] != SWEEP_PERMISSION_SWAP_V2_POLICY
+            or value["policy_sha256"] != SWEEP_PERMISSION_SWAP_V2_SHA256
+            or value["strategy"] != "liquidity_sweep_reversal"
+            or value["permission_scope"] != "history_evidence_only"
+            or type(value["admitted"]) is not bool
+            or value["admitted"] != (value["code"] == "passed")
+            or any(value[name] is not False for name in _AUTHORITY)
+        ):
+            raise ValueError("sweep_swap_v2_receipt_invalid")
+        event = self.detection
+        if event is not None:
+            _guard(event)
+        if value["event_key"] != (event_identity(event) if event is not None else None):
+            raise ValueError("sweep_swap_v2_event_changed")
+        if self.admitted and (
+            event is None
+            or event.fail_codes
+            or event.source_sha256 != self.source_sha256
+            or self.source_sha256 is None
+        ):
+            raise ValueError("sweep_swap_v2_source_missing")
+        context = value["range_context"]
+        if value["range_context_sha256"] != (
+            journal.digest(journal.canonical(context)) if context is not None else None
+        ):
+            raise ValueError("sweep_swap_v2_context_changed")
+
+    @property
+    def evaluation_sha256(self):
+        return journal.digest(self.receipt_json)
+
+    @property
+    def admitted(self):
+        return _decode_swap_v2(self.receipt_json, _MAX_BYTES)["admitted"]
+
+    @property
+    def code(self):
+        return _decode_swap_v2(self.receipt_json, _MAX_BYTES)["code"]
+
+    @property
+    def source_sha256(self):
+        return _decode_swap_v2(self.receipt_json, _MAX_BYTES)["source_sha256"]
+
+    @property
+    def detection(self):
+        value = _decode_swap_v2(self.receipt_json, _MAX_BYTES)["detection"]
+        return (
+            TriggerDetection.model_validate_json(journal.canonical(value), strict=True)
+            if value is not None
+            else None
+        )
+
+    @property
+    def execution_authority(self):
+        return False
+
+
+def derive_sweep_admission_v2(
+    market, *, report_id, direction, observed_at, analysis_version
+):
+    # Keep local imports: the strategy/structural-protection import cycle is real.
+    from app.domain.market import MarketSnapshot, SwapTickerV2
+    from app.trade_qualification.sweep_history_permission import (
+        SWAP_V2_POLICY_SHA256,
+        evaluate_sweep_history_permission,
+        verify_sweep_history_permission,
+    )
+
+    if (
+        type(market) is not MarketSnapshot
+        or type(market.ticker) is not SwapTickerV2
+        or SWAP_V2_POLICY_SHA256 != SWEEP_PERMISSION_SWAP_V2_SHA256
+    ):
+        raise ValueError("sweep_swap_v2_exact_source_required")
+    inputs = {
+        "report_id": report_id,
+        "direction": direction,
+        "observed_at": observed_at,
+        "analysis_version": analysis_version,
+        "expected_policy_sha256": SWEEP_PERMISSION_SWAP_V2_SHA256,
+    }
+    measured = evaluate_sweep_history_permission(market, **inputs)
+    measured = verify_sweep_history_permission(measured, market, **inputs)
+    return SweepHistoryAdmissionRecordV2(measured.receipt_json)
+
+
+def verify_sweep_admission_v2(record, market, **original_inputs):
+    if type(record) is not SweepHistoryAdmissionRecordV2:
+        raise ValueError("sweep_swap_v2_exact_record_required")
+    repeated = derive_sweep_admission_v2(market, **original_inputs)
+    if record.receipt_json != repeated.receipt_json:
+        raise ValueError("sweep_swap_v2_source_replay_changed")
+    return repeated

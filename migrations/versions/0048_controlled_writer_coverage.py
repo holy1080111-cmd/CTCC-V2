@@ -4,12 +4,12 @@ Revision ID: 0048
 Revises: 0047
 
 No source/account initialization, role creation, Arm or execution permission.
-The sole catalog declaration is source-pinned in the repository module.
+The sole catalog declaration is source-pinned in the stdlib domain module.
 """
 
 from alembic import op
 
-from app.database.repositories.controlled_writer_coverage import (
+from app.domain.controlled_writer_coverage_catalog_v1 import (
     COVERAGE_FUNCTION_SIGNATURES,
     COVERAGE_FUNCTION_SQL,
     COVERAGE_INDEX_SQL,

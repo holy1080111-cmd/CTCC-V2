@@ -24,9 +24,21 @@ from pydantic import BaseModel, field_validator, model_validator
 
 from app.domain.analysis import MultiTimeframeAnalysis
 from app.domain.market import MarketSnapshot
+from app.domain.source_primitives import canonical as _family_canonical_v2
+from app.domain.source_primitives import decode as _family_decode_v2
+from app.domain.source_primitives import sha as _family_sha_v2
 from app.strategies.base import StrategyContext
 from app.strategies.conditions import assess_conditions
 from app.strategies.regime import RouteDecision, route_regime
+from app.trade_qualification import (
+    native_original_bracket_policy_v1 as _owned_family_policy_v2,
+)
+from app.trade_qualification import range_policy as _owned_range_v2
+from app.trade_qualification import regime_admission as _owned_regime_v2
+from app.trade_qualification import sweep_contract as _owned_sweep_v2
+from app.trade_qualification import (
+    sweep_history_permission as _owned_sweep_history_v2,  # noqa: F401 -- fixed SWAP history namespace is retained by native source guards.
+)
 from app.trade_qualification.data import (
     DataQualificationResult,
     WSReferenceObservation,
@@ -77,6 +89,7 @@ from app.trade_qualification.service import (
     _time,
 )
 from app.trade_qualification.sweep_history_permission import current_sweep_checks
+from app.trade_qualification.timing import event_identity
 
 D = Decimal
 _ORDER = tuple(QualificationGate)[:4]
@@ -1054,3 +1067,307 @@ def verify_current_conditions(run, current_market, **inputs) -> CurrentCondition
     if checked != replayed:
         raise ValueError("current_conditions_replay_mismatch")
     return replayed
+
+
+# New raw-V2 owned purpose. All historical/base current entrypoints stay exact.
+_OWNED_HISTORY_FAMILIES_V2 = frozenset(
+    (
+        "volatility_expansion",
+        "structure_reversal",
+        "range_reversal",
+        "liquidity_sweep_reversal",
+    )
+)
+
+
+def _derive_owned_original_history_v2(
+    market, analysis, *, intent, detection, source_sha256, observed_at
+):
+    """Recompute the existing family predicates from the actual original raw view."""
+    if intent.strategy not in _OWNED_HISTORY_FAMILIES_V2:
+        raise ValueError("owned_history_family_required")
+    policy = _owned_family_policy_v2.fixed_native_owned_family_policy_v2(
+        intent.strategy
+    )
+    event_key = event_identity(detection)
+    receipt, admitted, code = None, False, "history_permission_missing"
+    if intent.strategy in {"structure_reversal", "volatility_expansion"}:
+        inputs = {
+            "report_id": intent.report_id,
+            "strategy": intent.strategy,
+            "direction": intent.direction,
+            "observed_at": observed_at,
+            "analysis_version": analysis.version,
+        }
+        value = _owned_regime_v2.evaluate_regime_admission(market, **inputs)
+        value = _owned_regime_v2.verify_regime_admission(value, market, **inputs)
+        admitted, code = value.admitted, value.code
+        receipt = _family_canonical_v2(value.model_dump(mode="json", round_trip=True))
+        digest = value.evaluation_sha256
+        if admitted and (
+            value.detection != detection
+            or value.source_sha256 != source_sha256
+            or value.event_key != event_key
+        ):
+            raise ValueError("owned_history_original_event_changed")
+    elif intent.strategy == "liquidity_sweep_reversal":
+        inputs = {
+            "report_id": intent.report_id,
+            "direction": intent.direction,
+            "observed_at": observed_at,
+            "analysis_version": analysis.version,
+        }
+        value = _owned_sweep_v2.derive_sweep_admission_v2(market, **inputs)
+        value = _owned_sweep_v2.verify_sweep_admission_v2(value, market, **inputs)
+        admitted, code, receipt, digest = (
+            value.admitted,
+            value.code,
+            value.receipt_json,
+            value.evaluation_sha256,
+        )
+        if admitted and (
+            value.detection != detection or value.source_sha256 != source_sha256
+        ):
+            raise ValueError("owned_history_original_event_changed")
+    else:
+        route = route_regime(analysis)
+        admitted = _owned_range_v2.range_current_permission(
+            analysis, market, route, intent.direction
+        )
+        if admitted:
+            digest = _owned_range_v2.replay_range_permission(
+                market, analysis, detection
+            )
+            code = "passed"
+        else:
+            digest, code = None, "range_history_permission_denied"
+        receipt = _family_canonical_v2(
+            {
+                "policy": "ctcc-neutral-range-protection-v1",
+                "source_sha256": source_sha256,
+                "event_key": event_key,
+                "permission_sha256": digest,
+                "admitted": admitted,
+            }
+        )
+    return _family_canonical_v2(
+        {
+            "schema_version": "ctcc.owned_original_family_history.v2",
+            "strategy": intent.strategy,
+            "family_policy_sha256": _family_sha_v2(policy),
+            "original_source_sha256": source_sha256,
+            "original_event_key": event_key,
+            "original_observed_at": observed_at.isoformat(),
+            "admitted": admitted,
+            "code": code,
+            "history_evaluation_sha256": digest,
+            "source_receipt_json": receipt.decode("utf-8"),
+            "execution_authority": False,
+        }
+    )
+
+
+def _evaluate_owned_history_g2_g4_v2(
+    market,
+    analysis,
+    *,
+    intent,
+    policy,
+    source_sha256,
+    quote_bundle_sha256,
+    bid,
+    ask,
+    funding_rate,
+    values,
+    gate,
+    detection,
+    original_source_sha256,
+    original_history_json=None,
+):
+    """Existing family G2–G4 math on privately replayed raw-V2 operands.
+
+    This is pure DATA math. The native caller authenticates the retained original
+    receipt on its same-owner replay; this function cannot mint or move an owner.
+    A current call never extracts a replacement event or changes its expiry.
+    """
+    if intent.strategy not in _OWNED_HISTORY_FAMILIES_V2:
+        raise ValueError("owned_history_family_required")
+    original_phase = original_history_json is None
+    if original_phase:
+        original_history_json = _derive_owned_original_history_v2(
+            market,
+            analysis,
+            intent=intent,
+            detection=detection,
+            source_sha256=source_sha256,
+            observed_at=detection.observed_at,
+        )
+    if (
+        type(original_history_json) is not bytes
+        or not 0 < len(original_history_json) <= 4 * 1024 * 1024
+    ):
+        raise ValueError("owned_history_original_receipt_required")
+    original = _family_decode_v2(original_history_json, 4 * 1024 * 1024)
+    selected_policy = _owned_family_policy_v2.fixed_native_owned_family_policy_v2(
+        intent.strategy
+    )
+    if (
+        _family_canonical_v2(original) != original_history_json
+        or original["schema_version"] != "ctcc.owned_original_family_history.v2"
+        or original["strategy"] != intent.strategy
+        or original["family_policy_sha256"] != _family_sha_v2(selected_policy)
+        or original["original_source_sha256"] != original_source_sha256
+        or original["original_event_key"] != event_identity(detection)
+        or original["original_observed_at"] != detection.observed_at.isoformat()
+        or original["execution_authority"] is not False
+    ):
+        raise ValueError("owned_history_original_receipt_changed")
+    with localcontext(Context(prec=100)):
+        route = route_regime(analysis)
+        sweep_code = None
+        if intent.strategy == "volatility_expansion":
+            allowed = (
+                route.regime == MarketRegime.EXPANSION
+                and "breakout_continuation" in route.allowed_strategies
+            )
+        elif intent.strategy == "structure_reversal":
+            allowed = reversal_safety_permission(analysis, route, intent.direction)
+        elif intent.strategy == "range_reversal":
+            allowed = (
+                route.regime == MarketRegime.RANGE
+                and route.decision == RouteDecision.ALLOW_SCORING
+                and intent.strategy in route.allowed_strategies
+            )
+        else:
+            sweep_code, _, _ = current_sweep_checks(
+                analysis, market, route, intent.direction
+            )
+            allowed = sweep_code == "passed"
+        allowed = original["admitted"] is True and allowed
+        if original_phase:
+            allowed = original["admitted"] is True
+        values["market_regime"] = route.regime
+        if allowed and intent.strategy == "liquidity_sweep_reversal":
+            values["market_regime"] = "History Verified Sweep"
+        elif (
+            allowed
+            and intent.strategy == "structure_reversal"
+            and route.regime == MarketRegime.UNKNOWN
+        ):
+            values["market_regime"] = "History Verified Reversal"
+        values["family_policy_sha256"] = _family_sha_v2(selected_policy)
+        values["history_admission_sha256"] = original["history_evaluation_sha256"]
+        if not gate(
+            QualificationGate.REGIME,
+            "passed" if allowed else "history_regime_strategy_not_allowed",
+            "Original raw history and the existing family-specific current safety must both hold.",
+            {
+                "regime": route.regime.value,
+                "actual_router_regime": route.regime.value,
+                "route_decision": route.decision.value,
+                "route_diagnostics": ",".join(route.fail_codes) or "none",
+                "source_sha256": source_sha256,
+                "original_source_sha256": original_source_sha256,
+                "history_evaluation_sha256": original["history_evaluation_sha256"],
+                "family_policy_sha256": _family_sha_v2(selected_policy),
+                "original_history_record_sha256": _family_sha_v2(original_history_json),
+                "original_event_key": original["original_event_key"],
+                "current_sweep_check_code": sweep_code,
+                "router_relabelled": False,
+            },
+        ):
+            return original_history_json
+        assessed = assess_conditions(
+            StrategyContext(analysis, market, policy.minimum_score, D(1)),
+            intent.strategy,
+        )
+        values["raw_score"] = assessed.score
+        direction_matches = assessed.direction == intent.direction
+        if intent.strategy == "volatility_expansion":
+            htf_ok = direction_matches and expansion_htf_permission(
+                analysis, route, intent.direction
+            )
+        elif intent.strategy == "structure_reversal":
+            htf_ok = direction_matches and reversal_current_permission(
+                analysis, market, route, intent.direction
+            )
+        elif intent.strategy == "range_reversal":
+            htf_ok = direction_matches and range_current_permission(
+                analysis, market, route, intent.direction
+            )
+        else:
+            sweep_code, _, _ = current_sweep_checks(
+                analysis, market, route, intent.direction
+            )
+            htf_ok = direction_matches and sweep_code == "passed"
+        h4, h1 = (analysis.timeframe_analyses[frame] for frame in ("4H", "1H"))
+        if htf_ok:
+            values["htf_bias"] = (
+                "neutral"
+                if intent.strategy in {"range_reversal", "liquidity_sweep_reversal"}
+                else assessed.direction
+            )
+        if not gate(
+            QualificationGate.HTF,
+            "passed" if htf_ok else "htf_strategy_permission_denied",
+            "Reuse the versioned family permission; neutral-range/sweep are not trend alignment.",
+            {
+                "strategy_direction": assessed.direction,
+                "requested_direction": intent.direction,
+                "4h_bias": h4.directional_bias,
+                "1h_bias": h1.directional_bias,
+                "4h_structure": h4.structure.trend,
+                "1h_structure": h1.structure.trend,
+                "history_admission_sha256": original["history_evaluation_sha256"],
+                "current_sweep_check_code": sweep_code,
+                **{item.code: item.passed for item in assessed.for_group("htf")},
+            },
+        ):
+            return original_history_json
+        spread = (
+            (Fraction(ask) - Fraction(bid))
+            / ((Fraction(ask) + Fraction(bid)) / 2)
+            * 10000
+        )
+        funding = Fraction(funding_rate) * (
+            10000 if intent.direction == "long" else -10000
+        )
+        spread_ok, funding_ok = (
+            spread <= Fraction(policy.maximum_strategy_spread_bps),
+            funding <= Fraction(policy.maximum_adverse_funding_bps),
+        )
+        code = (
+            "required_setup_missing"
+            if assessed.required_failures
+            else "strategy_veto"
+            if assessed.veto_failures
+            else "strategy_spread_exceeded"
+            if not spread_ok
+            else "strategy_adverse_funding_exceeded"
+            if not funding_ok
+            else "strategy_score_below_minimum"
+            if assessed.score < policy.minimum_score
+            else "passed"
+        )
+        values["setup_state"] = "valid" if code == "passed" else "invalid"
+        if code == "passed":
+            values["effective_score"] = assessed.score
+        gate(
+            QualificationGate.SETUP,
+            code,
+            "Unchanged required/veto/score plus measured V2 spread/adverse funding.",
+            {
+                "raw_score": assessed.score,
+                "minimum_score": policy.minimum_score,
+                "required_failures": ",".join(assessed.required_failures) or "none",
+                "veto_failures": ",".join(assessed.veto_failures) or "none",
+                "fresh_spread_bps": D(spread.numerator) / D(spread.denominator),
+                "fresh_signed_funding_cost_bps": D(funding.numerator)
+                / D(funding.denominator),
+                "spread_within_strategy_limit": spread_ok,
+                "funding_within_strategy_limit": funding_ok,
+                "quote_bundle_sha256": quote_bundle_sha256,
+                **{item.code: item.passed for item in assessed.items},
+            },
+        )
+    return original_history_json

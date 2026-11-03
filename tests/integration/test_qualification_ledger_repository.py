@@ -33,6 +33,12 @@ from app.trade_qualification.reservations import (
     digest,
 )
 from app.trade_qualification.service import _plain
+from tests.controlled_current55_fixtures import (
+    controlled_current55_database as controlled_current55_database,  # noqa: PLC0414 -- Register shared pytest fixture.
+)
+from tests.controlled_current55_fixtures import (
+    ledger_database as ledger_database,  # noqa: PLC0414 -- Register shared pytest fixture.
+)
 from tests.unit.qualification_ledger_fixtures import ledger_fixture
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
@@ -114,13 +120,13 @@ async def initialize(database, fixture):
 
 @pytest.mark.parametrize("fixture", ("long", "short"), indirect=True)
 async def test_real_sql_durable_two_scenario_hold_consume_once_restart(
-    database, fixture
+    ledger_database, fixture
 ):
-    repository, clock = await initialize(database, fixture)
+    repository, clock = await initialize(ledger_database, fixture)
     receipt = await repository.reserve(fixture.request)
     assert receipt.state == "reserved" and receipt.ledger_revision == 2
     assert receipt.execution_authority is False
-    restarted = QualificationLedgerRepository(database[1], clock=clock)
+    restarted = QualificationLedgerRepository(ledger_database[1], clock=clock)
     state = await restarted.read_scope(fixture.request.scope)
     assert state.active == (receipt,)
     consumed = await restarted.consume_once(
@@ -142,10 +148,10 @@ async def test_real_sql_durable_two_scenario_hold_consume_once_restart(
 
 
 async def test_two_workers_and_renamed_report_cannot_reuse_original_event(
-    database, fixture, renamed
+    ledger_database, fixture, renamed
 ):
-    repository, clock = await initialize(database, fixture)
-    second = QualificationLedgerRepository(database[1], clock=clock)
+    repository, clock = await initialize(ledger_database, fixture)
+    second = QualificationLedgerRepository(ledger_database[1], clock=clock)
     results = await asyncio.gather(
         repository.reserve(fixture.request),
         second.reserve(fixture.request),
@@ -163,10 +169,10 @@ async def test_two_workers_and_renamed_report_cannot_reuse_original_event(
     assert len((await repository.read_scope(fixture.request.scope)).active) == 1
 
 
-async def test_expiry_is_checked_after_waiting_for_scope_lock(database, fixture):
-    repository, clock = await initialize(database, fixture)
+async def test_expiry_is_checked_after_waiting_for_scope_lock(ledger_database, fixture):
+    repository, clock = await initialize(ledger_database, fixture)
     baseline = clock.calls
-    async with database[1]() as session, session.begin():
+    async with ledger_database[1]() as session, session.begin():
         await session.scalar(
             select(QualificationAccountScope)
             .filter_by(account_id=fixture.request.scope.account_id)
@@ -182,10 +188,10 @@ async def test_expiry_is_checked_after_waiting_for_scope_lock(database, fixture)
     assert state.ledger_revision == 1 and not state.active
 
 
-async def test_cancel_while_waiting_does_not_create_hold(database, fixture):
-    repository, clock = await initialize(database, fixture)
+async def test_cancel_while_waiting_does_not_create_hold(ledger_database, fixture):
+    repository, clock = await initialize(ledger_database, fixture)
     baseline = clock.calls
-    async with database[1]() as session, session.begin():
+    async with ledger_database[1]() as session, session.begin():
         await session.scalar(
             select(QualificationAccountScope)
             .filter_by(account_id=fixture.request.scope.account_id)
@@ -202,9 +208,9 @@ async def test_cancel_while_waiting_does_not_create_hold(database, fixture):
 
 
 async def test_account_revision_and_current_disarm_invalidate_reservation(
-    database, fixture
+    ledger_database, fixture
 ):
-    repository, clock = await initialize(database, fixture)
+    repository, clock = await initialize(ledger_database, fixture)
     clock.value += timedelta(milliseconds=1)
     claims = refresh(fixture.claims, clock.value, armed=False)
     await repository.reconcile_scope(claims, expected_revision=1)
@@ -221,9 +227,9 @@ async def test_account_revision_and_current_disarm_invalidate_reservation(
 
 
 async def test_caller_flat_claims_cannot_retire_uncertain_hold_or_tombstone(
-    database, fixture
+    ledger_database, fixture
 ):
-    repository, clock = await initialize(database, fixture)
+    repository, clock = await initialize(ledger_database, fixture)
     receipt = await repository.reserve(fixture.request)
     await repository.mark_uncertain(
         fixture.request.scope, receipt.original_event_key, expected_revision=2
@@ -241,7 +247,7 @@ async def test_caller_flat_claims_cannot_retire_uncertain_hold_or_tombstone(
         )
     clock.value += timedelta(seconds=1)
     claims = refresh(fixture.claims, clock.value, armed=False)
-    restarted = QualificationLedgerRepository(database[1], clock=clock)
+    restarted = QualificationLedgerRepository(ledger_database[1], clock=clock)
     with pytest.raises(
         QualificationLedgerError, match="post_submit_closure_witness_missing"
     ):
@@ -270,7 +276,7 @@ async def test_caller_flat_claims_cannot_retire_uncertain_hold_or_tombstone(
     again = fixture.request.model_copy(update={"expected_ledger_revision": 3})
     with pytest.raises(QualificationLedgerError, match="event_already_recorded"):
         await repository.reserve(again)
-    async with database[1]() as session:
+    async with ledger_database[1]() as session:
         record = await session.get(QualificationReservation, receipt.reservation_id)
         assert record is not None and record.state == "uncertain"
         count = await session.scalar(
@@ -283,9 +289,9 @@ async def test_caller_flat_claims_cannot_retire_uncertain_hold_or_tombstone(
 
 @pytest.mark.parametrize("state", ("consumed", "uncertain"))
 async def test_database_rejects_direct_post_submit_flat_transition(
-    database, fixture, state
+    ledger_database, fixture, state
 ):
-    repository, clock = await initialize(database, fixture)
+    repository, clock = await initialize(ledger_database, fixture)
     receipt = await repository.reserve(fixture.request)
     await repository.consume_once(
         receipt.scope, receipt.original_event_key, expected_revision=2
@@ -298,7 +304,7 @@ async def test_database_rejects_direct_post_submit_flat_transition(
     assert before.active[0].state == state
     clock.value += timedelta(seconds=1)
     with pytest.raises(DBAPIError, match="qualification_reservation_update_denied"):
-        async with database[1]() as session, session.begin():
+        async with ledger_database[1]() as session, session.begin():
             await session.execute(
                 update(QualificationReservation)
                 .where(
@@ -311,7 +317,7 @@ async def test_database_rejects_direct_post_submit_flat_transition(
                 )
             )
     assert await repository.read_scope(receipt.scope) == before
-    async with database[1]() as session:
+    async with ledger_database[1]() as session:
         count = await session.scalar(
             select(func.count())
             .select_from(QualificationReservationTransition)
@@ -326,9 +332,9 @@ async def test_database_rejects_direct_post_submit_flat_transition(
 
 
 async def test_failed_journal_insert_rolls_back_reservation_and_revision(
-    database, fixture, monkeypatch
+    ledger_database, fixture, monkeypatch
 ):
-    repository, _ = await initialize(database, fixture)
+    repository, _ = await initialize(ledger_database, fixture)
 
     def fail_journal(*args, **kwargs):
         raise RuntimeError("synthetic_journal_failure")
@@ -346,9 +352,9 @@ async def test_failed_journal_insert_rolls_back_reservation_and_revision(
     "mutation", ("delete", "risk", "event", "deadline", "transition")
 )
 async def test_database_itself_protects_tombstones_and_original_operands(
-    database, fixture, mutation
+    ledger_database, fixture, mutation
 ):
-    repository, _ = await initialize(database, fixture)
+    repository, _ = await initialize(ledger_database, fixture)
     receipt = await repository.reserve(fixture.request)
     if mutation == "delete":
         statement = delete(QualificationReservation).filter_by(
@@ -369,8 +375,9 @@ async def test_database_itself_protects_tombstones_and_original_operands(
             .filter_by(reservation_id=receipt.reservation_id)
             .values(**fields[mutation])
         )
+    owner_sessions = async_sessionmaker(ledger_database[0])
     with pytest.raises(DBAPIError):
-        async with database[1]() as session, session.begin():
+        async with owner_sessions() as session, session.begin():
             await session.execute(statement)
     assert (
         checked(
@@ -384,10 +391,10 @@ async def test_database_itself_protects_tombstones_and_original_operands(
 @pytest.mark.parametrize("stage", ("reserve", "consume"))
 @pytest.mark.parametrize("late", ("expiry", "quote", "account", "regression"))
 async def test_late_clock_failure_rolls_back_after_work_and_flush(
-    database, latefixture, stage, late
+    ledger_database, latefixture, stage, late
 ):
     fixture = latefixture
-    repository, _ = await initialize(database, fixture)
+    repository, _ = await initialize(ledger_database, fixture)
     if stage == "consume":
         await repository.reserve(fixture.request)
     now = fixture.now
@@ -419,7 +426,7 @@ async def test_late_clock_failure_rolls_back_after_work_and_flush(
         assert state.ledger_revision == 1 and not state.active
     else:
         assert state.ledger_revision == 2 and state.active[0].state == "reserved"
-    async with database[1]() as session:
+    async with ledger_database[1]() as session:
         count = await session.scalar(
             select(func.count())
             .select_from(QualificationReservationTransition)
@@ -436,9 +443,9 @@ async def test_late_clock_failure_rolls_back_after_work_and_flush(
 
 
 async def test_duplicate_current_self_holds_cannot_be_stored_then_laundered(
-    database, fixture
+    ledger_database, fixture
 ):
-    repository, clock = await initialize(database, fixture)
+    repository, clock = await initialize(ledger_database, fixture)
     receipt = await repository.reserve(fixture.request)
     pending = PendingReservation(
         reservation_id=receipt.reservation_id,
@@ -466,15 +473,15 @@ async def test_duplicate_current_self_holds_cannot_be_stored_then_laundered(
 
 
 async def test_capture_checkpoint_reads_persisted_revision_and_keeps_unresolved_hold(
-    database, fixture
+    ledger_database, fixture
 ):
-    repository, clock = await initialize(database, fixture)
+    repository, clock = await initialize(ledger_database, fixture)
     first = await repository.read_capture_checkpoint(fixture.request.scope)
     assert first.state_sha256 == digest(first.state)
     assert first.state.account_revision == first.state.ledger_revision == 1
     assert first.observed_at == first.received_at == fixture.now
     reserved = await repository.reserve(fixture.request)
-    restarted = QualificationLedgerRepository(database[1], clock=clock)
+    restarted = QualificationLedgerRepository(ledger_database[1], clock=clock)
     second = await restarted.read_capture_checkpoint(fixture.request.scope)
     assert second.state_sha256 != first.state_sha256
     assert second.state.active == (reserved,)
@@ -487,9 +494,9 @@ async def test_capture_checkpoint_reads_persisted_revision_and_keeps_unresolved_
 
 @pytest.mark.parametrize("problem", ("clock", "claims_hash", "claims_scope"))
 async def test_capture_checkpoint_denies_bad_clock_and_persisted_claims(
-    database, fixture, problem
+    ledger_database, fixture, problem
 ):
-    repository, clock = await initialize(database, fixture)
+    repository, clock = await initialize(ledger_database, fixture)
     if problem == "clock":
         clock.value -= timedelta(seconds=1)
         match = "ledger_clock_regressed"
@@ -500,7 +507,7 @@ async def test_capture_checkpoint_denies_bad_clock_and_persisted_claims(
         claims = AccountLedgerClaims.model_validate(raw_claims, strict=True)
         from app.trade_qualification.reservations import canonical
 
-        async with database[1]() as session, session.begin():
+        async with ledger_database[1]() as session, session.begin():
             await session.execute(
                 update(QualificationAccountScope)
                 .where(

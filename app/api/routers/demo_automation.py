@@ -1,7 +1,19 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 
 from app.api.security import require_ctcc_token
 from app.demo_automation import DemoAutomationBusyError, DemoAutomationSafetyError
+from app.demo_automation.native_requests_v2 import (
+    NativeDemoActionResultV2,
+    NativeDemoArmExecuteRequestV2,
+    NativeDemoClearStopRequestV2,
+    NativeDemoConfigureLeverageRequestV1,
+    NativeDemoConfigureLeverageResultV1,
+    NativeDemoCounterInitializationRequestV2,
+    NativeDemoFilledCompleteResultV3,
+    NativeDemoRecoveryRequestV1,
+    NativeDemoRecoveryResultV1,
+    NativeDemoZeroCompleteResultV3,
+)
 from app.demo_automation.runtime import safe_demo_automation
 from app.domain.demo_automation import (
     DemoAutomationArmRequest,
@@ -128,3 +140,97 @@ async def clear_emergency_stop(
         return await safe_demo_automation.clear_emergency_stop()
     except Exception as exc:
         raise _http_error(exc) from exc
+
+
+async def _perform_native_request(request, operator_token):
+    # The exact header is reauthenticated in this same request task. Positive
+    # owners/clocks/factories/UID/claims/evidence roots never enter through HTTP.
+    await require_ctcc_token(operator_token)
+    try:
+        return await safe_demo_automation.perform_native_action_v2(
+            request, operator_token=operator_token
+        )
+    except HTTPException:
+        raise
+    except DemoAutomationBusyError:
+        raise HTTPException(
+            status_code=status.HTTP_423_LOCKED, detail="native_demo_run_in_progress"
+        ) from None
+    except Exception:  # noqa: BLE001 - never serialize account/source exception data.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="native_demo_action_failed_or_unknown",
+        ) from None
+
+
+@router.post(
+    "/native/arm-execute",
+    response_model=NativeDemoActionResultV2
+    | NativeDemoFilledCompleteResultV3
+    | NativeDemoZeroCompleteResultV3,
+)
+async def native_arm_execute(
+    request: NativeDemoArmExecuteRequestV2,
+    operator_token: str | None = Header(default=None, alias="X-CTCC-Token"),
+    _: None = Depends(require_ctcc_token),
+) -> (
+    NativeDemoActionResultV2
+    | NativeDemoFilledCompleteResultV3
+    | NativeDemoZeroCompleteResultV3
+):
+    return await _perform_native_request(request, operator_token)
+
+
+@router.post(
+    "/native/configure-leverage", response_model=NativeDemoConfigureLeverageResultV1
+)
+async def native_configure_leverage(
+    request: NativeDemoConfigureLeverageRequestV1,
+    operator_token: str | None = Header(default=None, alias="X-CTCC-Token"),
+    _: None = Depends(require_ctcc_token),
+) -> NativeDemoConfigureLeverageResultV1:
+    return await _perform_native_request(request, operator_token)
+
+
+@router.post("/native/clear-stop", response_model=NativeDemoActionResultV2)
+async def native_clear_stop(
+    request: NativeDemoClearStopRequestV2,
+    operator_token: str | None = Header(default=None, alias="X-CTCC-Token"),
+    _: None = Depends(require_ctcc_token),
+) -> NativeDemoActionResultV2:
+    return await _perform_native_request(request, operator_token)
+
+
+@router.post(
+    "/native/initialize-policy-counter", response_model=NativeDemoActionResultV2
+)
+async def native_initialize_policy_counter(
+    request: NativeDemoCounterInitializationRequestV2,
+    operator_token: str | None = Header(default=None, alias="X-CTCC-Token"),
+    _: None = Depends(require_ctcc_token),
+) -> NativeDemoActionResultV2:
+    return await _perform_native_request(request, operator_token)
+
+
+@router.post("/native/reconcile", response_model=NativeDemoRecoveryResultV1)
+async def native_reconcile(
+    request: NativeDemoRecoveryRequestV1,
+    operator_token: str | None = Header(default=None, alias="X-CTCC-Token"),
+    _: None = Depends(require_ctcc_token),
+) -> NativeDemoRecoveryResultV1:
+    await require_ctcc_token(operator_token)
+    try:
+        return await safe_demo_automation.reconcile_native_owned_v1(
+            request, operator_token=operator_token
+        )
+    except HTTPException:
+        raise
+    except DemoAutomationBusyError:
+        raise HTTPException(
+            status_code=status.HTTP_423_LOCKED, detail="native_demo_run_in_progress"
+        ) from None
+    except Exception:  # noqa: BLE001 -- no private account/source exception text leaves DATA recovery.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="native_demo_reconciliation_failed_or_unknown",
+        ) from None

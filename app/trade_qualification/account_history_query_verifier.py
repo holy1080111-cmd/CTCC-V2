@@ -567,6 +567,141 @@ def verify_history_query_chain(
     raise HistoryQueryVerificationError("history_query_verification_invalid")
 
 
+def _make_original_page_query_verifier():
+    # No caller can supply a result, context, namespace or passed flag here.
+    from app.trade_qualification import account_original_page_memo_v1 as memo
+
+    namespace = object()
+    query_key, current_context = memo._query_key, memo._native_current_context
+    full_verify, receipt_type = _verify, HistoryQueryVerification
+    dependencies = (
+        verify_history_query_chain,
+        full_verify,
+        _chain,
+        _joined_pages,
+        _coverage,
+        capture.verify_demo_account_packet,
+        capture._verify_original_page_packet,
+        capture._replay_packet,
+        receipt_type,
+    )
+
+    def _verify_original_page_query(
+        chain,
+        *,
+        expected_head_sha256,
+        expected_plan_sha256,
+        expected_packet_sha256,
+        expected_account_id,
+        expected_settlement_currency,
+        expected_policy_sha256=POLICY_SHA256,
+    ):
+        pins = (
+            expected_head_sha256,
+            expected_plan_sha256,
+            expected_packet_sha256,
+            expected_account_id,
+            expected_settlement_currency,
+            expected_policy_sha256,
+        )
+        arguments = dict(
+            zip(
+                (
+                    "expected_head_sha256",
+                    "expected_plan_sha256",
+                    "expected_packet_sha256",
+                    "expected_account_id",
+                    "expected_settlement_currency",
+                    "expected_policy_sha256",
+                ),
+                pins,
+                strict=True,
+            )
+        )
+        context = current_context()
+        if (
+            context is None
+            or type(expected_policy_sha256) is not str
+            or expected_policy_sha256 != POLICY_SHA256
+        ):
+            return verify_history_query_chain(chain, **arguments)
+        if (
+            memo._query_key is not query_key
+            or memo._native_current_context is not current_context
+        ):
+            memo._deny()
+        if any(
+            current is not original
+            for current, original in zip(
+                (
+                    verify_history_query_chain,
+                    _verify,
+                    _chain,
+                    _joined_pages,
+                    _coverage,
+                    capture.verify_demo_account_packet,
+                    capture._verify_original_page_packet,
+                    capture._replay_packet,
+                    HistoryQueryVerification,
+                ),
+                dependencies,
+                strict=True,
+            )
+        ):
+            memo._deny()
+        key = query_key(context, chain, pins)
+        if key is None:
+            return verify_history_query_chain(chain, **arguments)
+        cached = context._query_receipts.get((namespace, key))
+        if cached is None:
+            try:
+                result = full_verify(chain, *pins, _original_page_context=context)
+            except HistoryQueryVerificationError:
+                raise
+            except Exception:  # noqa: BLE001 -- preserve the original closed public error boundary
+                raise HistoryQueryVerificationError(
+                    "history_query_verification_invalid"
+                ) from None
+            raw = result.receipt_json
+        else:
+            raw = cached
+        if (
+            memo._query_key is not query_key
+            or memo._native_current_context is not current_context
+        ):
+            memo._deny()
+        if any(
+            current is not original
+            for current, original in zip(
+                (
+                    verify_history_query_chain,
+                    _verify,
+                    _chain,
+                    _joined_pages,
+                    _coverage,
+                    capture.verify_demo_account_packet,
+                    capture._verify_original_page_packet,
+                    capture._replay_packet,
+                    HistoryQueryVerification,
+                ),
+                dependencies,
+                strict=True,
+            )
+        ):
+            memo._deny()
+        if cached is None and type(result) is not receipt_type:
+            memo._deny()
+        if query_key(context, chain, pins) != key:
+            memo._deny()
+        if cached is None:
+            context._remember_query(namespace, key, raw)
+        context.check()
+        # No externally returned DTO is retained as a cache value.
+        return receipt_type(raw)
+
+    return _verify_original_page_query
+
+
 def verify_history_query_chain_v2(
     chain,
     *,
@@ -661,6 +796,7 @@ def _verify(
     policy_pin,
     *,
     predecessor_receipt_sha256=None,
+    _original_page_context=None,
 ):
     if type(policy_pin) is not str or policy_pin not in {
         POLICY_SHA256,
@@ -685,7 +821,17 @@ def _verify(
     ]
     if len(saved) != 1:
         _deny("history_query_original_packet_required")
-    packet = capture.verify_demo_account_packet(
+    packet_verifier = capture.verify_demo_account_packet
+    if _original_page_context is not None:
+        from app.trade_qualification import account_original_page_memo_v1 as memo
+
+        if (
+            _original_page_context is not memo._native_current_context()
+            or policy_pin != POLICY_SHA256
+        ):
+            memo._deny()
+        packet_verifier = capture._verify_original_page_packet
+    packet = packet_verifier(
         saved[0], expected_sha256=packet_pin, expected_plan_sha256=plan_pin
     )
     plan = packet.plan
@@ -1026,3 +1172,7 @@ def _compare_history_query_chains(
     except Exception:  # noqa: BLE001, S110 -- no private audit exception logging
         pass
     raise HistoryQueryVerificationError("history_query_comparison_invalid")
+
+
+_verify_original_page_query = _make_original_page_query_verifier()
+del _make_original_page_query_verifier
