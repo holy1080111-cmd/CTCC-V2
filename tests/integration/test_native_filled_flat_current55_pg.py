@@ -2118,13 +2118,13 @@ async def test_actual_current55_restricted_b3_append_and_independent_readback(
                 rights = (
                     await connection.execute(
                         text("""
-                            SELECT c.relname, p.right,
-                                   pg_catalog.has_table_privilege(c.oid, p.right)
+                            SELECT c.relname, p.privilege_name,
+                                   pg_catalog.has_table_privilege(c.oid, p.privilege_name)
                             FROM pg_catalog.pg_class c
                             JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
                             CROSS JOIN (VALUES ('SELECT'), ('INSERT'), ('UPDATE'),
                                                ('DELETE'), ('TRUNCATE'), ('REFERENCES'),
-                                               ('TRIGGER'), ('MAINTAIN')) p(right)
+                                               ('TRIGGER'), ('MAINTAIN')) p(privilege_name)
                             WHERE n.nspname='public'
                               AND c.relname::text=ANY(CAST(:names AS text[]))
                         """),
@@ -2157,6 +2157,8 @@ async def test_actual_current55_restricted_b3_append_and_independent_readback(
                             "account_source_grants": 11,
                             "synthetic_b1_fully_finalized": True,
                             "b3_commit_and_independent_readback": True,
+                            "normalized_fact_rows": facts,
+                            "normalized_coverage_rows": coverage,
                             "b3_extra_privileges_denied": True,
                             "account_complete": False,
                             "execution_authority": False,
