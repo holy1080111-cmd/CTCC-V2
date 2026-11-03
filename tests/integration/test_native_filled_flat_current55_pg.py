@@ -1527,3 +1527,439 @@ async def test_actual_current55_account_source_acl_delta_and_mirror_locks(
                     await connection.exec_driver_sql(
                         f"REVOKE {rights_and_target} FROM {role}"
                     )
+
+
+async def test_actual_current55_restricted_native_lifecycle_recovery(
+    controlled_current55_database, monkeypatch, request
+):
+    """Use the real restricted repository and recovery on isolated PostgreSQL."""
+    from datetime import timedelta
+    from decimal import Decimal
+    from re import fullmatch
+    from uuid import uuid4
+
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from app.config.settings import Settings
+    from app.core import native_only_lifespan as lifespan
+    from app.database.models.demo_automation import (
+        DemoAutomationRun,
+        DemoAutomationState,
+    )
+    from app.database.models.observability import DemoSoakSession
+    from app.database.repositories.demo_automation import DemoAutomationRepository
+    from app.demo_automation.service import SafeDemoAutomation
+    from app.domain.demo_automation import (
+        DemoAutomationActiveTrade,
+        DemoAutomationRunResult,
+    )
+    from scripts import current0055_native_account_source_acl_v1 as account
+    from scripts import current0055_native_lifecycle_acl_v1 as lifecycle
+    from scripts import current0055_runtime_grants as core
+    from tests.integration.test_account_history_original_frame_repository_v1 import (
+        collector,
+    )
+
+    owner = controlled_current55_database
+    if fullmatch(r"ctcc-final-[a-f0-9]{12}-postgres", owner.url.host or "") is None:
+        pytest.skip(
+            "explicit isolated Docker trust fixture required for this role case"
+        )
+    assert owner.url.username == "ctcc" and owner.url.password is None
+    async with (
+        collector(owner) as (writer, writer_oid),
+        collector(owner) as (custody, custody_oid),
+        collector(owner) as (raw, raw_oid),
+    ):
+        role_oids = (writer_oid, custody_oid, raw_oid)
+        assert len(set(role_oids)) == 3
+        assert all(engine.url.password is None for engine in (writer, custody, raw))
+        names = {
+            "writer": writer.url.username,
+            "custody": custody.url.username,
+            "frame_reader": raw.url.username,
+        }
+        assert all(
+            fullmatch(r"ctcc_raw_frame_[a-f0-9]{32}", name) for name in names.values()
+        )
+        core_sql = core.current55_core_grant_sql(**names)
+        account_sql = account.current55_native_account_source_grant_sql_v1(**names)
+        lifecycle_sql = lifecycle.current55_native_lifecycle_grant_sql_v1(**names)
+        assert (len(core_sql), len(account_sql), len(lifecycle_sql)) == (28, 11, 3)
+
+        async def provision_lifecycle():
+            async with (
+                owner.connect() as owner_connection,
+                writer.connect() as writer_connection,
+            ):
+                try:
+                    return await lifecycle.provision_current55_native_lifecycle_acl_v1(
+                        owner_connection, writer_connection, **names
+                    )
+                finally:
+                    assert not owner_connection.in_transaction()
+                    assert not writer_connection.in_transaction()
+
+        try:
+            async with owner.connect() as connection:
+                owner_receipt = await core.provision_current55_core_grants(
+                    connection, **names
+                )
+            async with (
+                owner.connect() as owner_connection,
+                writer.connect() as writer_connection,
+            ):
+                await account.provision_current55_native_account_source_acl_v1(
+                    owner_connection, writer_connection, **names
+                )
+            before_acl = set(await _core_grant_acl_snapshot(owner, role_oids))
+            async with owner.begin() as connection:
+                await connection.exec_driver_sql(
+                    "GRANT INSERT ON TABLE public.demo_automation_runs "
+                    f'TO "{names["writer"]}"'
+                )
+            try:
+                drifted = set(await _core_grant_acl_snapshot(owner, role_oids))
+                assert len(drifted - before_acl) == 1
+                with pytest.raises(
+                    ValueError, match="current0055_core_grant_scope_or_catalog_changed"
+                ):
+                    await provision_lifecycle()
+                assert set(await _core_grant_acl_snapshot(owner, role_oids)) == drifted
+            finally:
+                async with owner.begin() as connection:
+                    await connection.exec_driver_sql(
+                        "REVOKE INSERT ON TABLE public.demo_automation_runs "
+                        f'FROM "{names["writer"]}"'
+                    )
+            assert set(await _core_grant_acl_snapshot(owner, role_oids)) == before_acl
+
+            async with writer.begin() as connection:
+                await connection.exec_driver_sql(
+                    "LOCK TABLE public.demo_automation_state IN SHARE MODE NOWAIT"
+                )
+                with pytest.raises(DBAPIError) as lock_denied:
+                    await provision_lifecycle()
+                assert getattr(lock_denied.value.orig, "sqlstate", None) == "55P03"
+                assert (
+                    set(await _core_grant_acl_snapshot(owner, role_oids)) == before_acl
+                )
+
+            receipt = await provision_lifecycle()
+            owner_oid = owner_receipt["owner_oid"]
+            assert receipt["owner_oid"] == owner_oid
+            assert receipt["role_oids"] == dict(zip(names, role_oids, strict=True))
+            assert receipt["database_head"] == "0055"
+            assert (
+                receipt["native_definitions_sha256"]
+                == profile.PG17_NATIVE_BASELINE_SHA256
+            )
+            assert (
+                receipt["delta_grants"] == 3 and receipt["execution_authority"] is False
+            )
+            assert receipt["complete_runtime_role_matrix"] is False
+            expected_rights = {
+                "demo_automation_state": {"SELECT", "MAINTAIN", "UPDATE"},
+                "demo_automation_runs": {"SELECT"},
+                "demo_soak_sessions": {"SELECT"},
+            }
+            table_oids = receipt["lifecycle_table_oids"]
+            assert set(table_oids) == set(expected_rights)
+            assert len(set(table_oids.values())) == 3
+            committed_acl = set(await _core_grant_acl_snapshot(owner, role_oids))
+            assert committed_acl == before_acl | {
+                ("relation", table_oids[table], writer_oid, owner_oid, right, False)
+                for table, right in (
+                    ("demo_automation_state", "UPDATE"),
+                    ("demo_automation_runs", "SELECT"),
+                    ("demo_soak_sessions", "SELECT"),
+                )
+            }
+            async with writer.begin() as connection:
+                direct = tuple((await connection.execute(_CORE_GRANT_LOGIN_SQL)).one())
+                assert direct[:3] == (writer_oid, True, True)
+                rights = (
+                    await connection.execute(
+                        _ACCOUNT_SOURCE_RIGHTS_SQL, {"names": list(expected_rights)}
+                    )
+                ).all()
+            assert len(rights) == 24
+            assert {(table, oid) for table, oid, _, _ in rights} == set(
+                table_oids.items()
+            )
+            assert {
+                (table, right) for table, _, right, allowed in rights if allowed
+            } == {
+                (table, right)
+                for table, values in expected_rights.items()
+                for right in values
+            }
+            xids = (
+                receipt["owner_xid"],
+                receipt["writer_core_readback_xid"],
+                direct[-1],
+            )
+            assert len(set(xids)) == 3 and all(
+                xid.isascii() and xid.isdecimal() for xid in xids
+            )
+
+            for table in expected_rights:
+                # A zero-row statement still checks the actual write privilege.
+                await _account_source_statement_denied(
+                    writer,
+                    f"INSERT INTO public.{table} (id) SELECT id FROM public.{table} WHERE false",
+                )
+                await _account_source_statement_denied(
+                    writer, f"DELETE FROM public.{table} WHERE false"
+                )
+
+            def factory(engine):
+                return async_sessionmaker(
+                    engine, autoflush=False, expire_on_commit=False
+                )
+
+            writer_factory = factory(writer)
+            owner_factory = factory(owner)
+            repository = DemoAutomationRepository(writer_factory)
+            settings = Settings(
+                _env_file=None,
+                ctcc_native_only_lifespan_v1=True,
+                environment="production",
+                trading_mode="okx_demo",
+                web_concurrency=1,
+                okx_demo_enabled=True,
+                okx_demo_api_key="",
+                okx_demo_api_secret="",
+                okx_demo_api_passphrase="",
+                **dict.fromkeys(lifespan._MUST_BE_FALSE, False),
+            )
+            # Unrelated collaborators have no operations. Any attempted exchange,
+            # market, strategy or background action fails instead of running.
+            absent = object()
+            automation = SafeDemoAutomation(
+                settings=settings,
+                repository=repository,
+                strategy_service=absent,
+                risk_service=absent,
+                demo_service=absent,
+                public_client=absent,
+                strategy_control_repository=absent,
+                market_hub=absent,
+                market_client=absent,
+            )
+            assert await repository.load_state() is None
+            with pytest.raises(
+                lifespan.NativeOnlyLifespanError,
+                match="native_only_control_state_missing",
+            ):
+                await lifespan.start_native_only(settings, writer_factory, automation)
+            assert await repository.load_state() is None
+            assert (await automation.status()).recovered is False
+
+            instant = datetime.now(UTC)
+            run = DemoAutomationRunResult(
+                trigger="manual",
+                execute=False,
+                started_at=instant,
+                completed_at=instant,
+                results=[],
+            )
+            exposure = DemoAutomationActiveTrade(
+                instrument_id="BTC-USDT-SWAP",
+                settlement_currency="USDT",
+                direction="long",
+                client_order_id="lifecycleFixture1",
+                exchange_order_id="10001",
+                protection_client_order_id="lifecycleFixtureP1",
+                contracts=Decimal(2),
+                leverage=3,
+                margin_mode="isolated",
+                estimated_margin=Decimal(10),
+                estimated_stop_loss_amount=Decimal(1),
+                start_equity=Decimal(500),
+                started_at=instant,
+            )
+            active_trades = {exposure.instrument_id: exposure.model_dump(mode="json")}
+            soak_id = uuid4()
+            async with owner_factory.begin() as session:
+                session.add_all(
+                    [
+                        DemoAutomationState(
+                            id=1,
+                            control_revision=0,
+                            session_date=instant.date(),
+                            equity_basis="fixture",
+                            baseline_equity=Decimal(500),
+                            peak_equity=Decimal(500),
+                            risk_peak_equity=Decimal(500),
+                            daily_pnl=Decimal(-4),
+                            trades_today=1,
+                            consecutive_losses=1,
+                            active_trades=active_trades,
+                            active_instrument_id=exposure.instrument_id,
+                            active_client_order_id=exposure.client_order_id,
+                            active_start_equity=exposure.start_equity,
+                            active_started_at=exposure.started_at,
+                        ),
+                        DemoAutomationRun(
+                            trigger=run.trigger,
+                            execute=run.execute,
+                            started_at=run.started_at,
+                            completed_at=run.completed_at,
+                            result=run.model_dump(mode="json"),
+                        ),
+                    ]
+                )
+            revision_zero = await repository.load_state()
+            with pytest.raises(
+                lifespan.NativeOnlyLifespanError,
+                match="native_only_control_state_invalid",
+            ):
+                await lifespan.start_native_only(settings, writer_factory, automation)
+            assert await repository.load_state() == revision_zero
+
+            async with owner_factory.begin() as session:
+                await session.execute(
+                    text("""
+                    UPDATE public.demo_automation_state SET control_revision=1,
+                        armed=true, restart_latch_required=true WHERE id=1
+                """)
+                )
+                session.add(
+                    DemoSoakSession(
+                        id=soak_id,
+                        state="running",
+                        execute=False,
+                        symbols=[exposure.instrument_id],
+                        interval_seconds=60,
+                        duration_minutes=1,
+                        max_runs=1,
+                        started_at=instant,
+                        planned_end_at=instant + timedelta(minutes=1),
+                    )
+                )
+            before = await repository.load_state()
+            assert before["_control_revision"] == 1 and before["armed"] is True
+            assert before["_restart_latch_required"] is True
+            with pytest.raises(
+                lifespan.NativeOnlyLifespanError,
+                match="native_only_running_soak_unresolved",
+            ):
+                await lifespan.start_native_only(settings, writer_factory, automation)
+            assert await repository.load_state() == before
+            assert (await automation.status()).recovered is False
+            async with owner_factory.begin() as session:
+                row = await session.get(DemoSoakSession, soak_id)
+                assert row.state == "running"
+                row.state = "stopped"
+
+            from app import main as app_main
+
+            bindings = {
+                "settings": settings,
+                "AsyncSessionFactory": writer_factory,
+                "safe_demo_automation": automation,
+                "engine": writer,
+            }
+            originals = {name: getattr(app_main, name) for name in bindings}
+            initial_pool = writer.sync_engine.pool
+            with monkeypatch.context() as patch:
+                for name, value in bindings.items():
+                    patch.setattr(app_main, name, value)
+                async with app_main.lifespan(app_main.app):
+                    after = await repository.load_state()
+                    assert after["_control_revision"] == 2
+                    assert after["armed"] is False
+                    assert (
+                        after["emergency_stop"]
+                        is after["locked"]
+                        is after["_restart_latch_required"]
+                        is True
+                    )
+                    assert (
+                        "restart_requires_explicit_clear_stop" in after["lock_reasons"]
+                    )
+                    assert after["active_trades"] == active_trades
+                    preserved = (
+                        "active_trades",
+                        "active_instrument_id",
+                        "active_client_order_id",
+                        "active_start_equity",
+                        "active_started_at",
+                        "baseline_equity",
+                        "daily_pnl",
+                        "trades_today",
+                        "consecutive_losses",
+                    )
+                    assert all(after[key] == before[key] for key in preserved)
+                    assert await automation.history() == [run]
+                    status = await automation.status()
+                    assert status.recovered and status.emergency_stop and status.locked
+                    assert (
+                        not status.armed
+                        and not status.running
+                        and status.active_trades == [exposure]
+                    )
+                    assert writer.sync_engine.pool is initial_pool
+            assert writer.sync_engine.pool is not initial_pool
+            assert all(
+                getattr(app_main, name) is value for name, value in originals.items()
+            )
+            assert await automation.status() == status
+            assert await repository.load_state() == after
+
+            # The real legacy DB guard still forbids clearing the sticky latch.
+            with pytest.raises(DBAPIError) as blocked:
+                async with writer.begin() as connection:
+                    await connection.exec_driver_sql("""
+                        UPDATE public.demo_automation_state SET restart_latch_required=false,
+                            control_revision=control_revision+1 WHERE id=1
+                    """)
+            assert getattr(blocked.value.orig, "sqlstate", None) == "23514"
+            assert await repository.load_state() == after
+            assert (
+                set(await _core_grant_acl_snapshot(owner, role_oids)) == committed_acl
+            )
+            request.node.user_properties.append(
+                (
+                    "ctcc_pg55_native_lifecycle_acl_v1",
+                    canonical(
+                        {
+                            "database_head": "0055",
+                            "native_definitions_sha256": receipt[
+                                "native_definitions_sha256"
+                            ],
+                            "control_guard_body_sha256": receipt[
+                                "legacy_control_guard_body_sha256"
+                            ],
+                            "role_oids": role_oids,
+                            "transaction_ids": xids,
+                            "lifecycle_table_oids": table_oids,
+                            "grant_statements": 3,
+                            "control_revision_before": 1,
+                            "control_revision_after": 2,
+                            "missing_and_revision_zero_denied": True,
+                            "running_soak_denied": True,
+                            "conflicting_lock_denied_without_grants": True,
+                            "armed": False,
+                            "emergency_stop": True,
+                            "sticky_latch_preserved": True,
+                            "tracked_exposure_preserved": True,
+                            "app_lifespan_entered_and_exited": True,
+                            "restricted_engine_disposed": True,
+                            "insert_and_delete_denied": True,
+                            "execution_authority": False,
+                            "complete_runtime_role_matrix": False,
+                        }
+                    ).decode("ascii"),
+                )
+            )
+        finally:
+            async with owner.begin() as connection:
+                for grant in reversed(core_sql + account_sql + lifecycle_sql):
+                    rights_and_target, role = grant.removeprefix("GRANT ").rsplit(
+                        " TO ", 1
+                    )
+                    await connection.exec_driver_sql(
+                        f"REVOKE {rights_and_target} FROM {role}"
+                    )

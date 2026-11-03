@@ -186,9 +186,21 @@ class SafeDemoAutomation:
     def running(self) -> bool:
         return self._task is not None and not self._task.done()
 
-    async def recover(self) -> None:
+    async def recover(self, *, require_existing: bool = False) -> None:
+        if type(require_existing) is not bool or (
+            require_existing and self.repository is None
+        ):
+            raise DemoAutomationSafetyError("demo_automation_control_state_missing")
         if self.repository is not None:
             stored = await self.repository.load_state()
+            if require_existing and (
+                type(stored) is not dict
+                or type(stored.get("_control_revision")) is not int
+                or stored["_control_revision"] < 1
+            ):
+                # Never bootstrap an empty legacy control row in the
+                # native-only profile, even if the prior probe raced.
+                raise DemoAutomationSafetyError("demo_automation_control_state_missing")
             if stored:
                 stored = dict(stored)
                 revision = stored.pop("_control_revision", 0)
@@ -372,6 +384,8 @@ class SafeDemoAutomation:
         return list(self._history)[-max(1, limit) :]
 
     async def perform_native_action_v2(self, request, *, operator_token):
+        if getattr(self.settings, "ctcc_native_only_lifespan_v1", False) is True:
+            raise DemoAutomationSafetyError("native_only_dispatch_disabled")
         from app.demo_automation.native_caller_v2 import perform_native_demo_action_v2
 
         return await perform_native_demo_action_v2(

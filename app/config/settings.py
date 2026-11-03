@@ -64,6 +64,8 @@ class Settings(BaseSettings):
     )
     redis_url: str = "redis://redis:6379/0"
     api_token: SecretStr = SecretStr("")
+    # Opt-in, no-execution native Demo startup. Legacy lifespan stays default.
+    ctcc_native_only_lifespan_v1: bool = False
 
     # Independent reporting only. Missing external configuration is handled by
     # the worker and must never abort trading-core/application startup.

@@ -6,7 +6,8 @@ from fastapi import FastAPI
 from app.api.router import api_router
 from app.config.settings import get_settings
 from app.core.logging import configure_logging
-from app.database.session import engine
+from app.core.native_only_lifespan import start_native_only
+from app.database.session import AsyncSessionFactory, engine
 from app.demo_automation.runtime import safe_demo_automation
 from app.market.realtime_service import realtime_client
 from app.observability.runtime import demo_observability
@@ -32,6 +33,17 @@ async def lifespan(_: FastAPI):
         settings.environment,
         settings.trading_mode,
     )
+    if settings.ctcc_native_only_lifespan_v1:
+        await start_native_only(settings, AsyncSessionFactory, safe_demo_automation)
+        try:
+            yield
+        finally:
+            try:
+                await safe_demo_automation.stop()
+            finally:
+                await engine.dispose()
+        return
+
     if settings.environment != "test":
         await paper_service.recover()
         await auto_paper_orchestrator.recover()
