@@ -145,37 +145,16 @@ def test_synthetic_internal_char_bytes_explain_denials_without_relaxing_guard():
     ],
 )
 def test_catalog_query_failure_redacts_driver_payload(collection, category):
-    values = _catalog()
-
-    class Result:
-        def __init__(self, value):
-            self.value = value
-
-        def one_or_none(self):
-            return self.value
-
-        def all(self):
-            return self.value
-
-        def scalar_one(self):
-            return self.value
-
-    class Session:
-        count = 0
-
-        async def execute(self, _statement):
-            if _statement is custody._SET_CATALOG_SEARCH_PATH_SQL:
-                return Result(None)
-            if _statement is custody._CATALOG_SEARCH_PATH_SQL:
-                return Result("pg_catalog, public, pg_temp")
-            index = self.count
-            self.count += 1
+    def driver_results():
+        # The shared adapter handles search path and migration head queries
+        # before consuming the corresponding catalog data rows.
+        for index, value in enumerate(_catalog()):
             if index == collection:
                 raise RuntimeError("private-driver-detail")
-            return Result(values[index])
+            yield value
 
     with pytest.raises(custody.RuntimeBundleCustodyError) as caught:
-        asyncio.run(custody.RuntimeBundleCustodyRepository._catalog(Session()))
+        asyncio.run(_run_catalog(driver_results()))
     assert str(caught.value) == "runtime_bundle_custody_unavailable"
     assert caught.value.diagnostic_category == category
     assert caught.value.__suppress_context__

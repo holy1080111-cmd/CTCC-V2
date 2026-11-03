@@ -12,6 +12,9 @@ from sqlalchemy import text
 
 from app.domain import collector_current_0055_catalog_v1 as profile
 from app.domain import native_filled_flat_closure_schema_v55 as schema
+from app.domain import (
+    native_leverage_configuration_catalog_v55 as configuration_catalog,
+)
 from tests.controlled_current55_fixtures import (
     controlled_current55_database as controlled_current55_database,  # noqa: PLC0414 -- preserve the actual shared fixture registration.
 )
@@ -30,6 +33,17 @@ async def _body(connection):
     )
 
 
+def _closure_inputs(actual):
+    owner = actual["issued"]["owner"]
+    configuration = configuration_catalog.observe_catalog(
+        actual["native_configuration55"],
+        owner=owner,
+        actor=actual["role"]["oid"],
+        owner_mode=True,
+    )
+    return actual["native_closure55"], owner, configuration
+
+
 async def test_fresh55_closure_metadata_is_observed_without_native_admission(
     controlled_current55_database,
 ):
@@ -43,9 +57,11 @@ async def test_fresh55_closure_metadata_is_observed_without_native_admission(
         assert result["database_head"] == "0055"
         assert result["native_baseline_admission"] is False
         assert result["native_closure_body_sha256"] == schema.CURRENT_BODY_SHA256
-        component = actual["native_closure55"]
-        owner = component["tables"][0]["owner"]
-        assert profile._closure55(component, owner=owner)["function"]
+        component, owner, configuration = _closure_inputs(actual)
+        closure = profile._closure55(
+            component, owner=owner, configuration=configuration
+        )
+        assert closure["function"]
         assert await _body(connection) == schema.CURRENT_BODY_SHA256
 
 
@@ -91,10 +107,10 @@ async def test_actual55_component_rejects_body_and_guard_drift(
                 await connection.exec_driver_sql(
                     "ALTER TABLE public.qualification_reservations DISABLE TRIGGER qualification_reservation_update_guard"
                 )
-            actual = await connection.scalar(text(profile._CLOSURE_CATALOG_SQL))
-            owner = actual["tables"][0]["owner"]
+            actual = await connection.scalar(text(profile.OWNER_CATALOG_SQL))
+            component, owner, configuration = _closure_inputs(actual)
             with pytest.raises(profile.Current0055CatalogError):
-                profile._closure55(actual, owner=owner)
+                profile._closure55(component, owner=owner, configuration=configuration)
         finally:
             await transaction.rollback()
 
@@ -114,9 +130,10 @@ async def test_actual_redundant_execute_grant_is_catalog_drift(
                 f'GRANT EXECUTE ON FUNCTION public.qualification_reservation_update() TO "{role}"'
             )
         async with engine.connect() as connection, connection.begin():
-            actual = await connection.scalar(text(profile._CLOSURE_CATALOG_SQL))
+            actual = await connection.scalar(text(profile.OWNER_CATALOG_SQL))
+            component, owner, configuration = _closure_inputs(actual)
             with pytest.raises(profile.Current0055CatalogError):
-                profile._closure55(actual, owner=actual["tables"][0]["owner"])
+                profile._closure55(component, owner=owner, configuration=configuration)
     finally:
         if created:
             async with engine.begin() as connection:
