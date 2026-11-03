@@ -27,6 +27,24 @@ def _argument(argv, flag):
     return argv[found[0] + 1]
 
 
+def _archive_head(archive):
+    revisions = []
+    for member in archive.getmembers():
+        parts = PurePosixPath(member.name).parts
+        if (
+            member.isfile()
+            and len(parts) == 3
+            and parts[:2] == ("migrations", "versions")
+        ):
+            revision = re.fullmatch(r"(\d{4})_[A-Za-z0-9_]+\.py", parts[2])
+            if revision is not None:
+                revisions.append(int(revision.group(1)))
+    head = max(revisions, default=0)
+    if head > 55 or (head >= 54 and revisions.count(head) != 1):
+        raise ValueError("hermetic_contract_dispatch_migration_unsupported")
+    return head
+
+
 def maybe_dispatch_hermetic(argv):
     archive_name = _argument(argv, "--archive")
     archive_sha256 = _argument(argv, "--archive-sha256")
@@ -43,17 +61,14 @@ def maybe_dispatch_hermetic(argv):
         raise ValueError("hermetic_contract_dispatch_archive_changed")
     # Member names select a strict versioned runner only; they never admit the
     # archive. The runner independently rechecks bytes/identity/extraction.
-    newer = False
     with tarfile.open(path) as archive:
-        for member in archive.getmembers():
-            parts = PurePosixPath(member.name).parts
-            if len(parts) == 3 and parts[:2] == ("migrations", "versions"):
-                revision = re.fullmatch(r"(\d{4})_[A-Za-z0-9_]+\.py", parts[2])
-                if revision is not None and int(revision.group(1)) >= 54:
-                    newer = True
-    if not newer:
+        head = _archive_head(archive)
+    if head < 54:
         return None
-    from scripts.verify_current0054_hermetic import main
+    if head == 55:
+        from scripts.verify_current0055_hermetic import main
+    else:
+        from scripts.verify_current0054_hermetic import main
 
     result = main()
     return 0 if result is None else result
@@ -75,7 +90,7 @@ def maybe_dispatch_union(argv):
         raise ValueError("hermetic_contract_dispatch_git_identity_required")
     from scripts.verify_final_hermetic import archive_tree
 
-    newer = False
+    heads = set()
     for attachment in artifacts.iterdir():
         if not attachment.is_dir():
             continue
@@ -109,15 +124,15 @@ def maybe_dispatch_union(argv):
                 raise ValueError(
                     "hermetic_contract_dispatch_union_archive_identity_changed"
                 )
-            for member in archive.getmembers():
-                parts = PurePosixPath(member.name).parts
-                if len(parts) == 3 and parts[:2] == ("migrations", "versions"):
-                    revision = re.fullmatch(r"(\d{4})_[A-Za-z0-9_]+\.py", parts[2])
-                    if revision is not None and int(revision.group(1)) >= 54:
-                        newer = True
-    if not newer:
+            heads.add(_archive_head(archive))
+    if not heads or max(heads) < 54:
         return None
-    from scripts.verify_current0054_linux_union import main
+    if len(heads) != 1:
+        raise ValueError("hermetic_contract_dispatch_mixed_migration_heads")
+    if heads == {55}:
+        from scripts.verify_current0055_linux_union import main
+    else:
+        from scripts.verify_current0054_linux_union import main
 
     result = main()
     return 0 if result is None else result

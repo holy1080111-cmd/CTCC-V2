@@ -8,10 +8,6 @@ import asyncio
 from uuid import uuid4
 
 import pytest
-from alembic.config import Config
-from alembic.migration import MigrationContext
-from alembic.operations import Operations
-from alembic.script import ScriptDirectory
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
@@ -21,26 +17,11 @@ from app.domain import native_close_intent_schema_v55 as schema
 from app.domain import native_leverage_configuration_catalog_v55 as configuration
 from app.domain import native_leverage_configuration_enforcement_v55 as enforcement
 from tests.controlled_current55_fixtures import (
-    ROOT,
-)
-from tests.controlled_current55_fixtures import (
     controlled_current55_database as controlled_current55_database,  # noqa: PLC0414 -- Register shared pytest fixture.
 )
+from tests.controlled_current55_fixtures import migrate_current55 as _migrate
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
-
-
-def _migrate(connection, target, *, down=False):
-    config = Config(str(ROOT / "alembic.ini"))
-    config.set_main_option("script_location", str(ROOT / "migrations"))
-    script = ScriptDirectory.from_config(config)
-    assert script.get_current_head() == "0055"
-    direction = script._downgrade_revs if down else script._upgrade_revs
-    context = MigrationContext.configure(
-        connection, opts={"fn": lambda heads, _: direction(target, heads)}
-    )
-    with Operations.context(context), context.begin_transaction():
-        context.run_migrations()
 
 
 def _configuration_guard_oid(value, owner):

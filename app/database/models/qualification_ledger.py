@@ -136,7 +136,7 @@ class QualificationReservationTransition(Base):
         UniqueConstraint(
             "reservation_id",
             "state_revision",
-            name="qualification_reservation_tra_reservation_id_state_revision_key",
+            name="uq_qualification_reservation_transitions_reservation_id",
         ),
         CheckConstraint("state_revision >= 1", name="state_revision"),
         CheckConstraint(

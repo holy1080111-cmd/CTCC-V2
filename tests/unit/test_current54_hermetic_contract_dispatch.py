@@ -36,8 +36,8 @@ def test_changed_archive_denies_before_importing_a_new_runner(tmp_path):
         )
 
 
-@pytest.mark.parametrize("head", ["0054", "0055", "0099"])
-def test_new_or_unknown_head_routes_to_strict54_and_preserves_its_rejection(
+@pytest.mark.parametrize("head", ["0054", "0055"])
+def test_reviewed_head_routes_to_matching_runner_and_preserves_its_rejection(
     tmp_path, monkeypatch, head
 ):
     path = tmp_path / "source.tar"
@@ -46,16 +46,29 @@ def test_new_or_unknown_head_routes_to_strict54_and_preserves_its_rejection(
 
     def reject():
         calls.append(head)
-        raise ValueError("DECLARED_STRICT54_REJECTION")
+        raise ValueError("DECLARED_MATCHED_RUNNER_REJECTION")
 
     monkeypatch.setitem(
-        sys.modules, "scripts.verify_current0054_hermetic", SimpleNamespace(main=reject)
+        sys.modules,
+        f"scripts.verify_current{head}_hermetic",
+        SimpleNamespace(main=reject),
     )
-    with pytest.raises(ValueError, match="^DECLARED_STRICT54_REJECTION$"):
+    with pytest.raises(ValueError, match="^DECLARED_MATCHED_RUNNER_REJECTION$"):
         dispatch.maybe_dispatch_hermetic(
             ["--archive", str(path), "--archive-sha256", pin]
         )
     assert calls == [head]
+
+
+def test_unknown_archive_head_is_rejected_before_runner_selection(tmp_path):
+    path = tmp_path / "source.tar"
+    pin = _archive(path, "0099")
+    with pytest.raises(
+        ValueError, match="^hermetic_contract_dispatch_migration_unsupported$"
+    ):
+        dispatch.maybe_dispatch_hermetic(
+            ["--archive", str(path), "--archive-sha256", pin]
+        )
 
 
 def test_historical52_routes_to_unchanged_historical_runner(tmp_path):
@@ -129,16 +142,16 @@ def test_union_cannot_fall_back_to52_by_changing_identity_markers(
     (evidence / "identity.json").write_text(json.dumps(identity))
     calls = []
 
-    def strict54():
+    def matched_union():
         calls.append(head)
-        raise ValueError("DECLARED_STRICT54_UNION_REJECTION")
+        raise ValueError("DECLARED_MATCHED_UNION_REJECTION")
 
     monkeypatch.setitem(
         sys.modules,
-        "scripts.verify_current0054_linux_union",
-        SimpleNamespace(main=strict54),
+        f"scripts.verify_current{head}_linux_union",
+        SimpleNamespace(main=matched_union),
     )
-    with pytest.raises(ValueError, match="^DECLARED_STRICT54_UNION_REJECTION$"):
+    with pytest.raises(ValueError, match="^DECLARED_MATCHED_UNION_REJECTION$"):
         dispatch.maybe_dispatch_union(
             ["--artifacts", str(artifacts), "--commit", "a" * 40, "--tree", tree]
         )

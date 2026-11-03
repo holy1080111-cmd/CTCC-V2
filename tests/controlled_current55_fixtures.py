@@ -21,6 +21,8 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
+import app.database.models  # noqa: F401 - register all ORM tables as in migrations/env.py.
+from app.database.base import Base
 from tests.original_frame_portable_pg_profile import (
     parse_portable_url,
     portable_profile,
@@ -31,7 +33,7 @@ from tests.original_frame_portable_pg_profile import (
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def migrate_current55(connection, *, target="0055"):
+def migrate_current55(connection, target="0055", *, down=False):
     if target not in {"0054", "0055"}:
         raise ValueError("current55_component_target")
     config = Config(str(ROOT / "alembic.ini"))
@@ -39,8 +41,15 @@ def migrate_current55(connection, *, target="0055"):
     script = ScriptDirectory.from_config(config)
     assert script.get_current_head() == "0055"
     assert script.get_revision("0055").down_revision == "0054"
+    direction = script._downgrade_revs if down else script._upgrade_revs
+    # Alembic applies Base.metadata's naming convention while constructing DDL.
     context = MigrationContext.configure(
-        connection, opts={"fn": lambda heads, _: script._upgrade_revs(target, heads)}
+        connection,
+        opts={
+            "fn": lambda heads, _: direction(target, heads),
+            "target_metadata": Base.metadata,
+            "compare_type": True,
+        },
     )
     with Operations.context(context), context.begin_transaction():
         context.run_migrations()

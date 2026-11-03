@@ -8,35 +8,16 @@ import re
 from uuid import uuid4
 
 import pytest
-from alembic.config import Config
-from alembic.migration import MigrationContext
-from alembic.operations import Operations
-from alembic.script import ScriptDirectory
 from sqlalchemy import text
 
 from app.domain import collector_current_0055_catalog_v1 as profile
 from app.domain import native_filled_flat_closure_schema_v55 as schema
 from tests.controlled_current55_fixtures import (
-    ROOT,
-)
-from tests.controlled_current55_fixtures import (
     controlled_current55_database as controlled_current55_database,  # noqa: PLC0414 -- preserve the actual shared fixture registration.
 )
+from tests.controlled_current55_fixtures import migrate_current55 as _migrate
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
-
-
-def _migrate(connection, target, *, down=False):
-    config = Config(str(ROOT / "alembic.ini"))
-    config.set_main_option("script_location", str(ROOT / "migrations"))
-    script = ScriptDirectory.from_config(config)
-    assert script.get_current_head() == "0055"
-    direction = script._downgrade_revs if down else script._upgrade_revs
-    context = MigrationContext.configure(
-        connection, opts={"fn": lambda heads, _: direction(target, heads)}
-    )
-    with Operations.context(context), context.begin_transaction():
-        context.run_migrations()
 
 
 async def _body(connection):
