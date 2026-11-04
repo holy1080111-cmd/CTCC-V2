@@ -1476,6 +1476,47 @@ def _release_financial_assembly_v1(binding, *, key):
         state.clear()
 
 
+def consume_owned_native_history_current_source_only_v1(owner) -> str:
+    """Burn one genuine CURRENT owner into a DENY-only diagnostic digest.
+
+    This does not transfer a financial binding, portfolio snapshot, account
+    revision, or execution capability. The original lease/task/60-second
+    deadline must still be current. Old owners and receipts are unchanged.
+    """
+    state = (
+        _OWNERS.pop(owner, None)
+        if type(owner) is OwnedNativeHistoryCurrentSourceV2
+        else None
+    )
+    if state is None:
+        _deny("native_history_source_only_owner_unavailable")
+    try:
+        _check_pins(state)
+        digest = state.get("source_sha256")
+        if (
+            state.get("partition_current_key") is not _PARTITION_CURRENT_V2
+            or type(digest) is not str
+            or re.fullmatch(r"[a-f0-9]{64}", digest) is None
+            or type(state.get("raw_inventory")) is not dict
+            or type(state.get("companion_inventory")) is not dict
+        ):
+            _deny("native_history_source_only_owner_changed")
+        return digest
+    finally:
+        state.clear()
+
+
+def discard_owned_native_history_current_source_only_v1(owner) -> None:
+    """Irrevocably drop a returned CURRENT owner after a diagnostic failure."""
+    state = (
+        _OWNERS.pop(owner, None)
+        if type(owner) is OwnedNativeHistoryCurrentSourceV2
+        else None
+    )
+    if state is not None:
+        state.clear()
+
+
 async def _replay_financial_assembly_v1(binding, *, key):
     """Original full B1/B3 population, companions and fresh DB0046 readback."""
     _financial_key_v1(key)

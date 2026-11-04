@@ -272,10 +272,17 @@ def _parse_selector_rows_v2(rows):
 
 
 async def select_configured_demo_identity_v2(
-    *, private_client, read_session, instrument_ids, retain_read_transport=False
+    *,
+    private_client,
+    read_session,
+    instrument_ids,
+    retain_read_transport=False,
+    source_only_role_preflight=False,
 ):
     """One real configured signed GET; no HTTP UID/mainUID/route proof input."""
     token = object()
+    factories = result = None
+    returned = False
     try:
         _need(
             len(_SELECTIONS) + len(_SELECTING) < _MAX_SELECTIONS,
@@ -283,10 +290,28 @@ async def select_configured_demo_identity_v2(
         )
         _SELECTING[token] = asyncio.current_task()
         _need(type(retain_read_transport) is bool)
+        _need(type(source_only_role_preflight) is bool)
         settings = _configured_inputs(private_client, read_session, instrument_ids)
         server_pin = _server_settings_pin(settings)
         artifact = _route_artifact()
         factories = select_configured_native_demo_factories_v2()
+        if source_only_role_preflight:
+            # This opt-in source diagnostic proves the actual selector-owned
+            # factory set before its first signed GET. Existing callers keep
+            # their original behavior and receipts.
+            from app.core.native_role_preflight_v1 import (
+                verify_selected_native_roles_v1,
+            )
+
+            async with asyncio.timeout(45):
+                roles = await verify_selected_native_roles_v1(factories)
+            _need(
+                type(roles) is dict
+                and roles.get("database_head") == "0055"
+                and roles.get("account_complete") is False
+                and roles.get("execution_authority") is False,
+                "native_demo_source_only_pre_get_role_preflight_failed",
+            )
         before = native_stamp()
         async with asyncio.timeout(5):
             if retain_read_transport:
@@ -412,6 +437,7 @@ async def select_configured_demo_identity_v2(
         }
         _SELECTING.pop(token)
         _record(result)
+        returned = True
         return result
     except asyncio.CancelledError:
         raise asyncio.CancelledError() from None
@@ -423,6 +449,39 @@ async def select_configured_demo_identity_v2(
         ) from None
     finally:
         _SELECTING.pop(token, None)
+        if not returned:
+            if result is not None:
+                _SELECTIONS.pop(result, None)
+            if factories is not None:
+                await _dispose_failed_selection_factories_v2(factories)
+
+
+async def _dispose_failed_selection_factories_v2(factories):
+    """Failed signed GETs cannot leave a hidden restricted engine behind."""
+    pending = asyncio.gather(
+        factories.frame_reader_engine.dispose(),
+        factories.custody_engine.dispose(),
+        return_exceptions=True,
+    )
+    try:
+        async with asyncio.timeout(5):
+            results = await asyncio.shield(pending)
+    except asyncio.CancelledError:
+        try:
+            async with asyncio.timeout(5):
+                await asyncio.shield(pending)
+        except BaseException:  # noqa: BLE001 -- cancellation remains authoritative
+            pending.cancel()
+        raise asyncio.CancelledError() from None
+    except Exception:  # noqa: BLE001 -- no DSN or transport detail escapes
+        pending.cancel()
+        raise NativeDemoCallerReadinessErrorV2(
+            "native_demo_selector_cleanup_uncertain"
+        ) from None
+    if any(isinstance(item, BaseException) for item in results):
+        raise NativeDemoCallerReadinessErrorV2(
+            "native_demo_selector_cleanup_uncertain"
+        ) from None
 
 
 def _replay_configured_demo_identity_selection_v2(selection, *, key):
