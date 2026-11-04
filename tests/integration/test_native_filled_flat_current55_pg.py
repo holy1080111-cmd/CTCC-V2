@@ -3,6 +3,7 @@
 import json
 import re
 from datetime import UTC, datetime, timedelta
+from time import monotonic_ns
 
 import pytest
 from sqlalchemy import text
@@ -24,6 +25,7 @@ from app.domain import native_terminal_catalog_v55 as helpers
 from app.domain import native_zero_fok_closure_schema_v55 as zero
 from app.domain.source_primitives import canonical
 from app.trade_qualification import account_history_original_stream_v1 as stream
+from app.trade_qualification import account_original_page_memo_v1 as page_memo
 from app.trade_qualification import account_original_raw_proof_bank_v1 as bank
 from app.trade_qualification.demo_control import ControlPins, ControlScope
 from app.trade_qualification.demo_control_runtime import DemoControlOwner
@@ -2282,6 +2284,7 @@ def _closed_current55_original_read_failure_v1(error):
         (reader55.current_catalog.Current0055MultiRoleError, "CURRENT55_CATALOG"),
         (reader55.native.OriginalHistoryPgReadError, "ORIGINAL_NATIVE_READER"),
         (reader55.native.wire.OriginalFrameWireError, "ORIGINAL_FRAME_WIRE"),
+        (page_memo.OriginalPageMemoError, "ORIGINAL_PAGE_MEMO"),
         (reader55.stream.OriginalHistoryStreamError, "ORIGINAL_STREAM"),
         (reader55.raw_bank.OriginalRawProofBankError, "ORIGINAL_RAW_BANK"),
         (reader55.controlled.ControlledHistoryCurrent55Error, "CURRENT55_SQL_POLICY"),
@@ -2331,6 +2334,16 @@ def _closed_current55_original_read_failure_v1(error):
             frozenset({"_check_request", "_backend", "_execute_one", "check", "_deny"}),
         ),
         (
+            "app/database/repositories/account_history_original_frame_v1.py",
+            "ORIGINAL_FRAME_WIRE",
+            frozenset({"decode_original_frame_wire_v1", "_preflight", "_deny"}),
+        ),
+        (
+            "app/trade_qualification/account_original_page_memo_v1.py",
+            "ORIGINAL_PAGE_MEMO",
+            frozenset({"_bind_validated_rpc", "check", "_native_page_context"}),
+        ),
+        (
             "app/trade_qualification/account_history_original_stream_v1.py",
             "ORIGINAL_STREAM",
             frozenset(
@@ -2361,7 +2374,43 @@ def _closed_current55_original_read_failure_v1(error):
             frozenset({"_deny", "verify_catalog"}),
         ),
     )
+    # Labels are a closed review inventory. No SQL, payload, traceback source
+    # line, arbitrary local, timestamp, or account identifier is serialized.
+    source_file = (
+        "/app/database/repositories/"
+        "account_history_original_raw_proof_bank_current55_v1.py"
+    )
+    frame_sites = {
+        503: "BEFORE_FRAME_RPC_FENCE",
+        504: "FRAME_RPC_AWAIT",
+        507: "AFTER_FRAME_RPC_FENCE",
+        510: "FRAME_CONTEXT_ENTER",
+        511: "FRAME_WIRE_DECODE",
+        523: "FRAME_TO_PAGE",
+        526: "FRAME_PAGE_DIGEST",
+        541: "BEFORE_YIELD_FENCE",
+        542: "FRAME_YIELD",
+        545: "AFTER_YIELD_FENCE",
+    }
+    native_file = (
+        "/app/database/repositories/account_history_original_native_read_v1.py"
+    )
+    native_sites = {108: "ORIGINAL_DEADLINE_CHECK", 109: "ORIGINAL_DEADLINE_DENY"}
+    wire_file = "/app/database/repositories/account_history_original_frame_v1.py"
+    wire_sites = {
+        ("decode_original_frame_wire_v1", 351): "WIRE_PREFLIGHT",
+        ("decode_original_frame_wire_v1", 356): "WIRE_BIND_VALIDATED_RPC",
+        ("decode_original_frame_wire_v1", 475): "WIRE_FIXED_DENY",
+        ("_preflight", 215): "WIRE_EXPIRY_CHECK",
+        ("_preflight", 216): "WIRE_EXPIRY_DENY",
+    }
+    memo_file = "/app/trade_qualification/account_original_page_memo_v1.py"
+    memo_sites = {
+        ("_bind_validated_rpc", 232): "MEMO_BIND_FENCE",
+        ("check", 150): "MEMO_ORIGINAL_FENCE",
+    }
     chain = []
+    original_frame_after_sequence = None
     current = error
     seen = set()
     while current is not None and len(chain) < 6 and id(current) not in seen:
@@ -2371,12 +2420,38 @@ def _closed_current55_original_read_failure_v1(error):
             "UNLISTED_EXCEPTION_CLASS",
         )
         stages = []
+        sites = []
         trace = current.__traceback__
         visits = 0
         while trace is not None and len(stages) < 16 and visits < 64:
             visits += 1
             filename = trace.tb_frame.f_code.co_filename.replace("\\", "/")
             function = trace.tb_frame.f_code.co_name
+            if (
+                filename.endswith(source_file)
+                and function == "_controlled_current55_pages_v2"
+            ):
+                site = frame_sites.get(trace.tb_lineno)
+                if site is not None:
+                    sites.append(site)
+                # This ordinal is the one reviewed local read from a traceback.
+                # It is the cursor before the next width-one frame, not a
+                # source row, account ID, response value or new admission.
+                ordinal = trace.tb_frame.f_locals.get("after")
+                if type(ordinal) is int and 0 <= ordinal <= 33:
+                    original_frame_after_sequence = ordinal
+            elif filename.endswith(native_file) and function == "check":
+                site = native_sites.get(trace.tb_lineno)
+                if site is not None:
+                    sites.append(site)
+            elif filename.endswith(wire_file):
+                site = wire_sites.get((function, trace.tb_lineno))
+                if site is not None:
+                    sites.append(site)
+            elif filename.endswith(memo_file):
+                site = memo_sites.get((function, trace.tb_lineno))
+                if site is not None:
+                    sites.append(site)
             for suffix, module, allowed in modules:
                 if filename.endswith("/" + suffix):
                     known = (
@@ -2385,14 +2460,20 @@ def _closed_current55_original_read_failure_v1(error):
                     stages.append(module + "." + known)
                     break
             trace = trace.tb_next
-        chain.append({"class": label, "stages": stages[:16]})
+        chain.append({"class": label, "stages": stages[:16], "sites": sites[:4]})
         current = current.__context__
     return {
         "schema": "ctcc.pg55.original_financial_closed_failure.v1",
         "chain": chain,
+        "original_frame_after_sequence": original_frame_after_sequence,
         "account_complete": False,
         "execution_authority": False,
     }
+
+
+def _original33_elapsed_seconds(started_ns):
+    """Coarse, bounded duration only; never a wall-clock or lease substitute."""
+    return min(600, max(0, (monotonic_ns() - started_ns) // 1_000_000_000))
 
 
 async def _prestage_distinct_original33_before_arm(monkeypatch, admin):
@@ -2521,6 +2602,8 @@ async def test_exact55_two_roles_replay_original33_financial_without_authority(
             arm = await arm_owner.request_arm(
                 expires_at=started.state.lease_until - timedelta(seconds=1)
             )
+            armed_mono_ns = monotonic_ns()
+            phase_elapsed_seconds = {"arm": 0}
             lineage = await arm_repo.read_lineage(control_scope)
             assert lineage.current_state == arm.state
             assert lineage.current_event_sha256 == arm.event_sha256
@@ -2563,6 +2646,9 @@ async def test_exact55_two_roles_replay_original33_financial_without_authority(
             )
             assert checkpoint_readback.checkpoints[-1].record_json == checkpoint_raw
             assert checkpoint_readback.members[-1].record_json == member32
+            phase_elapsed_seconds["checkpoint"] = _original33_elapsed_seconds(
+                armed_mono_ns
+            )
 
             final = await index.append(
                 ledger_scope, reference33, window33, expected_revision=32
@@ -2570,6 +2656,7 @@ async def test_exact55_two_roles_replay_original33_financial_without_authority(
             documents = (*prefix32, final.document_json)
             assert len(documents) == 33
             assert original.records.digest(documents[-1]) == final.event_sha256
+            phase_elapsed_seconds["b3"] = _original33_elapsed_seconds(armed_mono_ns)
             async with writer.begin() as connection:
                 await original.settings(connection)
                 revisions33 = (
@@ -2621,6 +2708,9 @@ async def test_exact55_two_roles_replay_original33_financial_without_authority(
                 type(wrong_role.value.__context__)
                 is reader55.current_catalog.Current0055MultiRoleError
             )
+            phase_elapsed_seconds["negative"] = _original33_elapsed_seconds(
+                armed_mono_ns
+            )
             assert datetime.now(UTC) < genesis.expires_at
             try:
                 result = (
@@ -2640,7 +2730,11 @@ async def test_exact55_two_roles_replay_original33_financial_without_authority(
                     )
                 )
             except reader55.OriginalHistoryFinancialPgReadError as error:
+                phase_elapsed_seconds["positive_failed"] = _original33_elapsed_seconds(
+                    armed_mono_ns
+                )
                 report = _closed_current55_original_read_failure_v1(error)
+                report["phase_elapsed_seconds"] = phase_elapsed_seconds
                 safe = json.dumps(report, sort_keys=True, separators=(",", ":"))
                 request.node.user_properties.append(
                     ("ctcc_pg55_original_financial_closed_failure_v1", safe)
@@ -2649,6 +2743,24 @@ async def test_exact55_two_roles_replay_original33_financial_without_authority(
                     "ctcc_pg55_original_financial_closed_failure_v1=" + safe,
                     pytrace=False,
                 )
+            phase_elapsed_seconds["positive"] = _original33_elapsed_seconds(
+                armed_mono_ns
+            )
+            request.node.user_properties.append(
+                (
+                    "ctcc_pg55_original33_elapsed_v1",
+                    json.dumps(
+                        {
+                            "schema": "ctcc.pg55.original33_elapsed.v1",
+                            "phase_elapsed_seconds": phase_elapsed_seconds,
+                            "account_complete": False,
+                            "execution_authority": False,
+                        },
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                )
+            )
             receipt = json.loads(result.acquisition_receipt_json)
             assert result.observed_frames == receipt["observed_frames"] == 33
             assert receipt["original_db_prefix_replayed"] is True
