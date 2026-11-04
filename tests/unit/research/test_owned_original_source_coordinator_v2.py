@@ -192,13 +192,28 @@ def test_existing_symlink_or_junction_ancestor_is_denied(tmp_path):
     target = tmp_path / "real"
     target.mkdir()
     alias = tmp_path / "alias"
+    public = tmp_path / "public"
+    windows = os.name == "nt"
+    if windows:
+        from _winapi import CreateJunction
+
+        CreateJunction(str(target), str(alias))
+    else:
+        alias.symlink_to(target, target_is_directory=True)
     try:
-        os.symlink(target, alias, target_is_directory=True)
-    except (NotImplementedError, OSError) as exc:
-        pytest.skip(f"directory link unavailable on this host: {type(exc).__name__}")
-    with pytest.raises(coordinator.OriginalSourceCoordinatorError, match="linked_root"):
-        coordinator._roots(tmp_path / "public", alias / "account")
-    assert not (target / "account").exists()
+        assert os.path.isjunction(alias) if windows else alias.is_symlink()
+        with pytest.raises(
+            coordinator.OriginalSourceCoordinatorError, match="linked_root"
+        ):
+            coordinator._roots(public, alias / "account")
+        assert not (target / "account").exists()
+        assert not public.exists()
+    finally:
+        if windows:
+            alias.rmdir()
+        else:
+            alias.unlink()
+    assert target.is_dir()
 
 
 @pytest.mark.asyncio
