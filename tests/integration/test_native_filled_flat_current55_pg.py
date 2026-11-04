@@ -1,11 +1,17 @@
 """Real disposable PG17 component mechanics; never genuine native authority."""
 
+import json
+import re
 from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from app.database.repositories import (
+    account_history_original_raw_proof_bank_current55_v1 as reader55,
+)
 from app.domain import collector_current_0055_catalog_v1 as profile
 from app.domain import native_closed_report_catalog_v55 as reports
 from app.domain import native_closed_report_schema_v55 as report_schema
@@ -13,8 +19,19 @@ from app.domain import native_filled_flat_closure_schema_v55 as schema
 from app.domain import native_terminal_catalog_v55 as helpers
 from app.domain import native_zero_fok_closure_schema_v55 as zero
 from app.domain.source_primitives import canonical
+from app.trade_qualification import account_history_original_stream_v1 as stream
+from app.trade_qualification import account_original_raw_proof_bank_v1 as bank
+from scripts import current0055_native_account_source_acl_v1 as account_acl
+from scripts import current0055_runtime_grants as core_acl
 from tests.controlled_current55_fixtures import (
     controlled_current55_database as controlled_current55_database,  # noqa: PLC0414 -- Pytest collects this imported fixture.
+)
+from tests.integration import (
+    test_account_history_original_financial_native_pg_v3 as financial_fixture,
+)
+from tests.integration import test_account_history_original_native_read_v1 as original
+from tests.integration.test_account_history_original_frame_repository_v1 import (
+    collector,
 )
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
@@ -2242,4 +2259,155 @@ async def test_actual_current55_restricted_b3_append_and_independent_readback(
                     )
                     await connection.exec_driver_sql(
                         f"REVOKE {rights_and_target} FROM {role}"
+                    )
+
+
+async def test_exact55_two_roles_replay_original33_financial_without_authority(
+    monkeypatch, controlled_current55_database, request
+):
+    owner = controlled_current55_database
+    if re.fullmatch(r"ctcc-final-[a-f0-9]{12}-postgres", owner.url.host or "") is None:
+        pytest.skip("explicit isolated Docker PG17 fixture required")
+    assert owner.url.username == "ctcc" and owner.url.password is None
+
+    # Original B1/B3/DB0052 frame semantics remain unchanged on exact head55.
+    # The helper seals one original checkpoint, then a distinct original33.
+    (
+        scope,
+        documents,
+        revisions,
+        lease,
+        checkpoint,
+    ) = await financial_fixture._distinct_prefix33(monkeypatch, owner)
+    async with (
+        collector(owner) as (writer, writer_oid),
+        collector(owner) as (custody, custody_oid),
+        collector(owner) as (raw, raw_oid),
+    ):
+        assert len({writer_oid, custody_oid, raw_oid}) == 3
+        names = {
+            "writer": writer.url.username,
+            "custody": custody.url.username,
+            "frame_reader": raw.url.username,
+        }
+        core_sql = core_acl.current55_core_grant_sql(**names)
+        account_sql = account_acl.current55_native_account_source_grant_sql_v1(**names)
+        assert (len(core_sql), len(account_sql)) == (28, 11)
+        try:
+            async with owner.connect() as owner_connection:
+                core = await core_acl.provision_current55_core_grants(
+                    owner_connection, **names
+                )
+            async with (
+                owner.connect() as owner_connection,
+                writer.connect() as writer_connection,
+            ):
+                account = (
+                    await account_acl.provision_current55_native_account_source_acl_v1(
+                        owner_connection, writer_connection, **names
+                    )
+                )
+            assert core["database_head"] == account["database_head"] == "0055"
+            assert account["execution_authority"] is False
+
+            # Actual separate role/catalog identity, including denial of raw
+            # SELECT on the current revision lineage table.
+            await _verify_actual_current55_raw_catalog_pair(
+                raw, writer, raw_oid, writer_oid
+            )
+            raw_factory = async_sessionmaker(
+                raw, expire_on_commit=False, autoflush=False
+            )
+            writer_factory = async_sessionmaker(
+                writer, expire_on_commit=False, autoflush=False
+            )
+            genesis = original._request(scope, documents, revisions, lease)
+            result = await reader55.replay_original_history_api_population_from_pg_v2(
+                raw_factory,
+                genesis_request=genesis,
+                expected_checkpoint_sha256=checkpoint,
+                approved_collector_role_oid=raw_oid,
+                lineage_session_factory=writer_factory,
+                expected_financial_policy_sha256=(
+                    stream.original_history_financial_stream_policy_sha256_v3()
+                ),
+                expected_raw_bank_policy_sha256=bank.POLICY_SHA256,
+                expected_api_population_policy_sha256=(
+                    bank.API_POPULATION_POLICY_SHA256_V2
+                ),
+            )
+            receipt = json.loads(result.acquisition_receipt_json)
+            assert result.observed_frames == receipt["observed_frames"] == 33
+            assert receipt["original_db_prefix_replayed"] is True
+            assert receipt["original_head_sha256"] == genesis.head
+            assert receipt["original_checkpoint_sha256"] == checkpoint
+            assert receipt["catalog_sha256"]
+            assert result.replay.financial_facts.receipt_json
+            assert result.raw_proof_bank.receipt_json
+            assert result.api_population.receipt_json
+            assert (
+                result.first_request_started_at
+                <= result.last_rpc_received_at
+                <= result.measured_validation_at
+                <= result.session_closed_at
+                < genesis.expires_at
+            )
+            assert result.account_complete is result.execution_authority is False
+            assert (
+                receipt["account_complete"] is receipt["execution_authority"] is False
+            )
+            assert receipt["admission"] == "DENY"
+
+            # The same original head cannot be replayed through a substituted
+            # lineage factory. A wrong role must return no financial receipt.
+            with pytest.raises(
+                reader55.OriginalHistoryFinancialPgReadError,
+                match="^original_pg_read_uncertain$",
+            ):
+                await reader55.replay_original_history_api_population_from_pg_v2(
+                    raw_factory,
+                    genesis_request=genesis,
+                    expected_checkpoint_sha256=checkpoint,
+                    approved_collector_role_oid=raw_oid,
+                    lineage_session_factory=raw_factory,
+                    expected_financial_policy_sha256=(
+                        stream.original_history_financial_stream_policy_sha256_v3()
+                    ),
+                    expected_raw_bank_policy_sha256=bank.POLICY_SHA256,
+                    expected_api_population_policy_sha256=(
+                        bank.API_POPULATION_POLICY_SHA256_V2
+                    ),
+                )
+            async with raw.begin() as session:
+                assert (
+                    await session.scalar(
+                        text(
+                            "SELECT has_table_privilege(current_user,"
+                            "'public.demo_collector_current_revision_lineages','SELECT')"
+                        )
+                    )
+                    is False
+                )
+            request.node.user_properties.append(
+                (
+                    "ctcc_pg55_original_financial_two_role_synthetic_v1",
+                    json.dumps(
+                        {
+                            "head": "0055",
+                            "frames": 33,
+                            "account_complete": False,
+                            "execution_authority": False,
+                            "admission": "DENY",
+                        },
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                )
+            )
+        finally:
+            async with owner.begin() as connection:
+                for grant in reversed(core_sql + account_sql):
+                    rights_target, role = grant.removeprefix("GRANT ").rsplit(" TO ", 1)
+                    await connection.exec_driver_sql(
+                        f"REVOKE {rights_target} FROM {role}"
                     )
