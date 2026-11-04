@@ -16,6 +16,7 @@ from app.trade_qualification.reservations import LedgerScope, QualificationLedge
 from tests.integration import test_qualification_ledger_repository as fixtures
 
 database = fixtures.database
+controlled_current55_database = fixtures.controlled_current55_database
 ledger_database = fixtures.ledger_database
 fixture = fixtures.fixture
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]

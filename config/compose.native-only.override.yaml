@@ -115,6 +115,16 @@ services:
     environment:
       POSTGRES_PASSWORD: !reset null
       POSTGRES_PASSWORD_FILE: /run/secrets/native_postgres_init_password
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          password=$$(cat /run/secrets/native_postgres_init_password)
+          && test -n "$$password"
+          && result=$$(PGPASSWORD="$$password" psql -X -w -h 127.0.0.1
+          -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}" -tA -v ON_ERROR_STOP=1
+          -c 'SELECT 1')
+          && test "$$result" = 1
     secrets: [native_postgres_init_password]
     networks: [native_internal]
 

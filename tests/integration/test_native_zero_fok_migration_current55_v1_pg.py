@@ -112,11 +112,24 @@ async def test_actual55_component_rejects_body_and_guard_drift(
                     "ALTER FUNCTION public.qualification_reservation_update() SECURITY DEFINER"
                 )
             else:
+                _, clean_owner, clean_configuration = _closure_inputs(
+                    await _owner_catalog(connection)
+                )
                 await connection.exec_driver_sql(
                     "ALTER TABLE public.qualification_reservations DISABLE TRIGGER qualification_reservation_update_guard"
                 )
             actual = await _owner_catalog(connection)
-            component, owner, configuration = _closure_inputs(actual)
+            if mutation == "disable_guard":
+                # The trigger belongs to both components. Each validator must refuse it.
+                with pytest.raises(
+                    ValueError,
+                    match="^native_leverage_configuration55_actual_catalog_changed$",
+                ):
+                    _closure_inputs(actual)
+                component = actual["native_closure55"]
+                owner, configuration = clean_owner, clean_configuration
+            else:
+                component, owner, configuration = _closure_inputs(actual)
             with pytest.raises(profile.Current0055CatalogError):
                 profile._closure55(component, owner=owner, configuration=configuration)
         finally:

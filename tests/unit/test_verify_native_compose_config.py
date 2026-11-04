@@ -68,6 +68,12 @@ def _base_merge():
                     "POSTGRES_PASSWORD_FILE": "/run/secrets/native_postgres_init_password"
                 },
                 "secrets": ["native_postgres_init_password"],
+                "healthcheck": {
+                    "test": [
+                        "CMD-SHELL",
+                        verifier._POSTGRES_HEALTHCHECK_SCRIPT.replace("$", "$$"),
+                    ]
+                },
             },
             "redis": {
                 **base,
@@ -80,6 +86,15 @@ def _base_merge():
 
 def test_exact_no_execution_merge():
     document, ident, image = _base_merge()
+    assert verifier.verify(document, ident, image)["status"] == "PASS"
+
+
+def test_exact_postgres_healthcheck_without_config_dollar_escape():
+    document, ident, image = _base_merge()
+    document["services"]["postgres"]["healthcheck"]["test"] = [
+        "CMD-SHELL",
+        verifier._POSTGRES_HEALTHCHECK_SCRIPT,
+    ]
     assert verifier.verify(document, ident, image)["status"] == "PASS"
 
 
@@ -106,6 +121,21 @@ def test_exact_no_execution_merge():
             ("services", "postgres", "environment", "POSTGRES_PASSWORD"),
             "synthetic",
             id="inline-db-password",
+        ),
+        pytest.param(
+            ("services", "postgres", "healthcheck", "test"),
+            ["CMD-SHELL", "pg_isready -U ctcc -d ctcc"],
+            id="postgres-unix-socket-bootstrap-healthcheck",
+        ),
+        pytest.param(
+            ("services", "postgres", "healthcheck", "test"),
+            ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U ctcc -d ctcc"],
+            id="postgres-tcp-without-initialized-database-query",
+        ),
+        pytest.param(
+            ("services", "postgres", "healthcheck", "test"),
+            ["CMD-SHELL", verifier._POSTGRES_HEALTHCHECK_SCRIPT + " || true"],
+            id="postgres-sql-refusal-suppressed",
         ),
         pytest.param(
             ("services", "api", "command"),

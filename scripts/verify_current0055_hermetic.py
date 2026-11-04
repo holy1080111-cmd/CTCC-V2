@@ -24,7 +24,16 @@ from pathlib import Path
 from scripts.verify_final_hermetic import verify_copied_source
 print(verify_copied_source(Path('/app'), Path('/ctcc-source-files.json'), sys.argv[1]))
 """
-_PG_READY = "for n in $(seq 1 90); do pg_isready -U ctcc -d ctcc && exit 0; sleep 1; done; exit 1"
+_PG_READY = """
+for n in $(seq 1 90); do
+    if db="$(psql -X -h 127.0.0.1 -U ctcc -d ctcc -tA -v ON_ERROR_STOP=1 -c 'SELECT current_database()' 2>/dev/null)" &&
+        [ "$db" = ctcc ]; then
+        exec pg_isready -h 127.0.0.1 -U ctcc -d ctcc
+    fi
+    sleep 1
+done
+exit 1
+""".strip()
 _REDIS_READY = 'for n in $(seq 1 45); do [ "$(redis-cli ping)" = PONG ] && { echo PONG; exit 0; }; sleep 1; done; exit 1'
 _RESERVATION_UNIQUE_QUERY = (
     "SELECT conname, pg_catalog.pg_get_constraintdef(oid) FROM pg_catalog.pg_constraint "

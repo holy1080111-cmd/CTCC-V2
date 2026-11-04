@@ -89,6 +89,14 @@ _RUNTIME_HEALTHCHECK = [
     "-c",
     "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/readiness', timeout=3)",
 ]
+_POSTGRES_HEALTHCHECK_SCRIPT = (
+    "password=$(cat /run/secrets/native_postgres_init_password) "
+    '&& test -n "$password" '
+    '&& result=$(PGPASSWORD="$password" psql -X -w -h 127.0.0.1 '
+    '-U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -tA -v ON_ERROR_STOP=1 '
+    "-c 'SELECT 1') "
+    '&& test "$result" = 1'
+)
 
 
 def _need(value):
@@ -179,13 +187,21 @@ def verify(document, deployment_id, image_ref):
             services[name].get("container_name")
             == f"ctcc-native-{deployment_id}-{name}"
         )
-    postgres_env = services["postgres"].get("environment", {})
+    postgres = services["postgres"]
+    postgres_env = postgres.get("environment", {})
     _need("POSTGRES_PASSWORD" not in postgres_env)
     _need(
         postgres_env.get("POSTGRES_PASSWORD_FILE")
         == "/run/secrets/native_postgres_init_password"
     )
-    _need(_secrets(services["postgres"]) == {"native_postgres_init_password"})
+    _need(_secrets(postgres) == {"native_postgres_init_password"})
+    _need(
+        postgres.get("healthcheck", {}).get("test")
+        in (
+            ["CMD-SHELL", _POSTGRES_HEALTHCHECK_SCRIPT],
+            ["CMD-SHELL", _POSTGRES_HEALTHCHECK_SCRIPT.replace("$", "$$")],
+        )
+    )
     _need(api.get("environment") == _RUNTIME_ENV)
     _need(migrate.get("environment") == provision.get("environment") == _OWNER_ENV)
     return {

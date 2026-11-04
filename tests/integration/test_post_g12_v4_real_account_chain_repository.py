@@ -23,6 +23,9 @@ from app.trade_qualification import account_native_proof_storage as native_stora
 from app.trade_qualification import post_g12_account_event_observation_v4 as bridge
 from app.trade_qualification.account_capture_journal import digest
 from tests.controlled_current55_fixtures import (
+    controlled_current55_database as controlled_current55_database,  # noqa: PLC0414 -- shared dependency of ledger_database
+)
+from tests.controlled_current55_fixtures import (
     ledger_database as ledger_database,  # noqa: PLC0414 -- isolated restricted writer fixture
 )
 from tests.integration.test_account_locked_current_history_join_v7_repository import (

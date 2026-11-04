@@ -14,7 +14,8 @@ pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
 
 async def test_actual_unique_index_allows_one_close_intent_per_reservation(database):
-    async with database() as session, session.begin():
+    _, sessions = database
+    async with sessions() as session, session.begin():
         await session.execute(
             text(
                 "CREATE TEMP TABLE qualification_submission_outcomes "
@@ -44,9 +45,10 @@ async def test_actual_unique_index_allows_one_close_intent_per_reservation(datab
         for _ in range(2):
             await session.execute(insert, {"reservation": "a", "capture": legacy})
         await session.execute(insert, {"reservation": "a", "capture": close})
-        with pytest.raises(DBAPIError):
+        with pytest.raises(DBAPIError) as denied:
             async with session.begin_nested():
                 await session.execute(insert, {"reservation": "a", "capture": close})
+        assert denied.value.orig.sqlstate == "23505"
         await session.execute(insert, {"reservation": "b", "capture": close})
         count = await session.scalar(
             text(
@@ -58,7 +60,8 @@ async def test_actual_unique_index_allows_one_close_intent_per_reservation(datab
 
 
 async def test_close_version_cannot_be_inserted_twice_with_different_json(database):
-    async with database() as session, session.begin():
+    _, sessions = database
+    async with sessions() as session, session.begin():
         await session.execute(
             text(
                 "CREATE TEMP TABLE qualification_submission_outcomes "
@@ -81,7 +84,7 @@ async def test_close_version_cannot_be_inserted_twice_with_different_json(databa
             insert,
             {"capture": '{"version":"ctcc.native_controlled_close_intent.v1","x":1}'},
         )
-        with pytest.raises(DBAPIError):
+        with pytest.raises(DBAPIError) as denied:
             async with session.begin_nested():
                 await session.execute(
                     insert,
@@ -89,3 +92,4 @@ async def test_close_version_cannot_be_inserted_twice_with_different_json(databa
                         "capture": '{"x":2,"version":"ctcc.native_controlled_close_intent.v1"}'
                     },
                 )
+        assert denied.value.orig.sqlstate == "23505"
