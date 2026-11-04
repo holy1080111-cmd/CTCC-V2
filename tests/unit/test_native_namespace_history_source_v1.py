@@ -498,27 +498,44 @@ async def test_actual_await_uses_one_original_deadline_and_rejects_late_results(
             == "baseline"
         )
         ran = []
+        loop = asyncio.get_running_loop()
+        loop_time = loop.time()
+        original_deadline = loop_time + (0 if kind == "expired_before_send" else 0.01)
+        release_time = original_deadline + 0.001
+        state["loop_deadline"] = original_deadline
+
+        def advance_loop_clock():
+            nonlocal loop_time
+            loop_time = release_time
 
         async def operation():
             ran.append("entered")
+            release = asyncio.Event()
+            # Keep real asyncio timer and cancellation ordering. The later
+            # release also terminates the fixture if the timeout is removed.
+            completion = loop.call_at(release_time, release.set)
+            loop.call_soon(advance_loop_clock)
             try:
-                await asyncio.Event().wait()
+                await release.wait()
+                return "late-result"
             except asyncio.CancelledError:
                 ran.append("cancelled")
                 if kind == "suppressed_cancellation":
                     return "late-result"
                 raise
             finally:
+                completion.cancel()
                 ran.append("closed")
 
-        state["loop_deadline"] = asyncio.get_running_loop().time() + (
-            0 if kind == "expired_before_send" else 0.01
-        )
-        original_deadline = state["loop_deadline"]
-        with pytest.raises(
-            source.NativeNamespaceHistorySourceError, match="original_deadline_expired"
-        ):
-            await source._await(state, operation())
+        # Advance the synthetic clock only when the operation yields, so
+        # fixture setup and the pin checks cannot consume its budget.
+        with monkeypatch.context() as clock_patch:
+            clock_patch.setattr(loop, "time", lambda: loop_time)
+            with pytest.raises(
+                source.NativeNamespaceHistorySourceError,
+                match="original_deadline_expired",
+            ):
+                await source._await(state, operation())
         assert ran == (
             [] if kind == "expired_before_send" else ["entered", "cancelled", "closed"]
         )
