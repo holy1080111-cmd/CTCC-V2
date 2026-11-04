@@ -233,7 +233,7 @@ def _common_sweep_raw_source_v4(
 
     def price(at):
         age = Decimal((at - now) // timedelta(seconds=1)) / Decimal(3600)
-        if corrected and profile in {"R8", "R9", "R10"}:
+        if corrected and profile in {"R8", "R9", "R10", "R13", "R18"}:
             # A fixed NEW declared common tape, not changes to an old capture.
             # A shorter recovery supplies EMA20/50 separation, while decline
             # continues until the native pattern begins (no artificial plateau).
@@ -302,10 +302,19 @@ def _common_sweep_raw_source_v4(
             ) / Decimal(decline_hours - 2)
         else:
             value = Decimal("95.5")
+        if (
+            corrected
+            and profile in {"R13", "R18"}
+            and Decimal(-72) < age < Decimal(-18)
+        ):
+            # New pre-capture common-tape history. The departure returns to
+            # its unchanged endpoints before the original sweep setup.
+            distance = abs(age - Decimal(-45))
+            value += Decimal("0.50") * (Decimal(1) - distance / Decimal(27))
         return value.quantize(Decimal("0.00000001"))
 
     def reflected(value):
-        if corrected and profile in {"R8", "R9", "R10"}:
+        if corrected and profile in {"R8", "R9", "R10", "R13", "R18"}:
             # This one predeclared affine input map applies to EVERY common
             # child price and hence every parent OHLC, mark and quote. It does
             # not change the ATR policy or restamp a retained source.
@@ -316,7 +325,7 @@ def _common_sweep_raw_source_v4(
         age = (at - now) // timedelta(seconds=1)
         if corrected and profile == "R10":
             return -180 * 3600 < age <= -76 * 3600 or -16 * 3600 < age <= -6 * 3600
-        if corrected and profile in {"R8", "R9", "R10"}:
+        if corrected and profile in {"R8", "R9", "R10", "R13", "R18"}:
             return -180 * 3600 < age <= -76 * 3600 or -16 * 3600 < age <= -6300
         if corrected:
             return -180 * 3600 < age <= -100 * 3600 or -16 * 3600 < age <= -4 * 3600
@@ -386,7 +395,7 @@ def _common_sweep_raw_source_v4(
                     name: anchor + (value - anchor) * Decimal("0.2")
                     for name, value in values.items()
                 }
-                if profile in {"R8", "R9", "R10"}:
+                if profile in {"R8", "R9", "R10", "R13", "R18"}:
                     values = {
                         name: Decimal(100) + (value - Decimal(100)) * Decimal("0.5")
                         for name, value in values.items()
@@ -409,13 +418,17 @@ def _common_sweep_raw_source_v4(
             if corrected:
                 value = Decimal("95.5") + (value - Decimal("95.5")) * Decimal("0.2")
             value = reflected(value)
-            if corrected and profile in {"R9", "R10"}:
+            if corrected and profile in {"R9", "R10", "R13", "R18"}:
                 # ONE new pre-capture pair: a directional overshoot followed
                 # by a smaller pullback. The old R8 true/true pair remains
                 # exact under profile R8 and is a regression below. These two
                 # raw bars open after the stored 15m/1H/4H cutoff, so every
                 # already-closed parent and the original setup remain exact.
-                value = Decimal("97.90") if offset == -2 else Decimal("97.85")
+                value = (
+                    (Decimal("97.95") if offset == -2 else Decimal("97.91"))
+                    if profile in {"R13", "R18"}
+                    else (Decimal("97.90") if offset == -2 else Decimal("97.85"))
+                )
                 value = value if direction == "long" else Decimal(200) - value
             row = rows[index]
             rows[index] = row.model_copy(
@@ -426,6 +439,82 @@ def _common_sweep_raw_source_v4(
                     "low": value - Decimal("0.01"),
                 }
             )
+        if corrected and profile == "R18":
+            # A single new pre-capture physical tape. Fill every qualifying
+            # opposing gap in the detector's fixed 30-parent window, 4H first
+            # and then 1H from the same amended 5m children. An impossible
+            # pre-setup following parent is a source-design refusal.
+            threshold = Decimal("99.65") if direction == "long" else Decimal("100.35")
+
+            def parent_extrema(frame):
+                width = raw_fixture.BAR_SECONDS[frame] // 300
+                highs, lows = [], []
+                for stamp in stamps[frame]:
+                    first_child = by_open[stamp]
+                    children = rows[first_child : first_child + width]
+                    _need(len(children) == width)
+                    highs.append(max(child.high for child in children))
+                    lows.append(min(child.low for child in children))
+                return highs, lows
+
+            def fill_opposing(frame):
+                parent_stamps = stamps[frame]
+                parent_seconds = raw_fixture.BAR_SECONDS[frame]
+                highs, lows = parent_extrema(frame)
+                wicks = {}
+                for index in range(max(2, len(parent_stamps) - 30), len(parent_stamps)):
+                    if direction == "long":
+                        near_side = highs[index]
+                        far_side = lows[index - 2]
+                        unfilled = (
+                            near_side < far_side
+                            and max(highs[index + 1 :], default=near_side) < far_side
+                        )
+                        qualifies = unfilled and near_side < threshold
+                        wick = max(far_side, threshold)
+                    else:
+                        near_side = lows[index]
+                        far_side = highs[index - 2]
+                        unfilled = (
+                            near_side > far_side
+                            and min(lows[index + 1 :], default=near_side) > far_side
+                        )
+                        qualifies = unfilled and near_side > threshold
+                        wick = min(far_side, threshold)
+                    if not qualifies:
+                        continue
+                    _need(index + 1 < len(parent_stamps))
+                    following = parent_stamps[index + 1]
+                    _need(
+                        following + timedelta(seconds=parent_seconds)
+                        <= native[0].timestamp
+                    )
+                    child_index = by_open[following]
+                    previous = wicks.get(child_index)
+                    if previous is None:
+                        wicks[child_index] = wick
+                    elif direction == "long":
+                        wicks[child_index] = max(previous, wick)
+                    else:
+                        wicks[child_index] = min(previous, wick)
+                _need(len(wicks) <= 30)
+                for child_index, wick in wicks.items():
+                    row = rows[child_index]
+                    rows[child_index] = row.model_copy(
+                        update={
+                            "high": (
+                                max(row.high, wick) if direction == "long" else row.high
+                            ),
+                            "low": (
+                                min(row.low, wick) if direction == "short" else row.low
+                            ),
+                        }
+                    )
+                return len(wicks)
+
+            four_hour_fills = fill_opposing("4H")
+            one_hour_fills = fill_opposing("1H")
+            _need(1 <= four_hour_fills + one_hour_fills <= 60)
         # Actual source frames are exact finite slices/sums of the SAME tape.
         rebuilt = {}
         for tf, template in templates.items():
@@ -461,17 +550,24 @@ def _common_sweep_raw_source_v4(
     market.candles = rebuilt
     final = rows[by_open[stamps["5m"][-1]]].close
     market.received_at = now
-    market.ticker = market.ticker.model_copy(
-        update={
-            "last": final,
-            "bid": final - Decimal("0.01"),
-            "ask": final + Decimal("0.01"),
-            "open_24h": final,
-            "high_24h": final + Decimal(1),
-            "low_24h": final - Decimal(1),
-            "timestamp": now,
-        }
-    )
+    ticker_updates = {
+        "last": final,
+        "bid": final - Decimal("0.01"),
+        "ask": final + Decimal("0.01"),
+        "open_24h": final,
+        "high_24h": final + Decimal(1),
+        "low_24h": final - Decimal(1),
+        "timestamp": now,
+    }
+    if corrected and profile == "R18":
+        day = [row for row in rows if now - timedelta(hours=24) <= row.timestamp < now]
+        _need(len(day) == 288)
+        ticker_updates.update(
+            open_24h=day[0].open,
+            high_24h=max(row.high for row in day),
+            low_24h=min(row.low for row in day),
+        )
+    market.ticker = market.ticker.model_copy(update=ticker_updates)
     market.order_book = market.order_book.model_copy(
         update={
             "timestamp": now,
@@ -507,11 +603,44 @@ def _common_sweep_raw_source_v4(
     return replace(source, market=market, evaluated_at=now + timedelta(milliseconds=10))
 
 
+def _r18_sweep_pre_capture_physical_gap_fill_source_v1(direction):
+    # A distinct declared full child tape, before any capture. R15's fixed
+    # executable quote, last trade and mark remain the new source's current
+    # observations; its older parent gap history is physically different.
+    source = _common_sweep_raw_source_v4(
+        "99.5", 16, direction, corrected=True, profile="R18"
+    )
+    market = source.market.model_copy(deep=True)
+    bid, ask, midpoint = (
+        (Decimal("97.77"), Decimal("97.79"), Decimal("97.78"))
+        if direction == "long"
+        else (Decimal("102.21"), Decimal("102.23"), Decimal("102.22"))
+    )
+    market.ticker = market.ticker.model_copy(
+        update={"bid": bid, "ask": ask, "last": midpoint}
+    )
+    market.order_book = market.order_book.model_copy(
+        update={
+            "bids": [
+                row.model_copy(update={"price": bid}) for row in market.order_book.bids
+            ],
+            "asks": [
+                row.model_copy(update={"price": ask}) for row in market.order_book.asks
+            ],
+        }
+    )
+    market.mark_price = midpoint
+    assert market.ticker.low_24h <= bid < midpoint < ask <= market.ticker.high_24h
+    assert market.ticker.volume_quote_24h is None
+    assert market.ticker.timestamp == source.market.ticker.timestamp
+    assert market.order_book.timestamp == source.market.order_book.timestamp
+    assert market.received_at == source.market.received_at
+    return replace(source, market=market)
+
+
 def _owned_full_bracket_raw_source_v3(strategy, direction):
     if strategy == "liquidity_sweep_reversal":
-        return _common_sweep_raw_source_v4(
-            "99.5", 16, direction, corrected=True, profile="R10"
-        )
+        return _r18_sweep_pre_capture_physical_gap_fill_source_v1(direction)
     source = _owned_adverse_full_bracket_raw_source_v3(strategy, direction)
     if strategy != "range_reversal":
         return source
@@ -1263,5 +1392,45 @@ def test_exact_R9_valid_trigger_does_not_override_the_mathematical_veto(
     assert math["status"] == "insufficient"
     assert Decimal(math["coverage"]) < Decimal("0.35")
     assert Decimal(math["directional_support"]) < 0
+    assert value["g1"]["passed"] is True
+    assert original.execution_authority is False
+
+
+@pytest.mark.parametrize("direction", ("long", "short"))
+def test_exact_R10_missing_trigger_remains_rejected(direction, tmp_path):
+    # The prior R10 source remains an exact separate negative scenario. Its
+    # missing post-setup momentum transition cannot be inferred from R13.
+    source = _common_sweep_raw_source_v4(
+        "99.5", 16, direction, corrected=True, profile="R10"
+    )
+    capture = tmp_path / "exact-R10-missing-trigger"
+    capture.mkdir(exist_ok=False)
+    _diagnostic, _packet, _args, original = _capture_raw_family_values_v3(
+        source, "liquidity_sweep_reversal", capture
+    )
+    value = decode(original.receipt_json)
+    assert original.intent is None
+    assert value["code"] == "original_sweep_event_rejected"
+    detection = value["history_admission"]["detection"]
+    assert detection["trigger"] is None
+    assert detection["fail_codes"] == ["trigger_missing"]
+    assert value["g1"]["passed"] is True
+    assert original.execution_authority is False
+
+
+@pytest.mark.parametrize("direction", ("long", "short"))
+def test_exact_R13_original_quote_outside_zone_remains_rejected(direction, tmp_path):
+    source = _common_sweep_raw_source_v4(
+        "99.5", 16, direction, corrected=True, profile="R13"
+    )
+    capture = tmp_path / "exact-R13-outside-original-zone"
+    capture.mkdir(exist_ok=False)
+    _diagnostic, _packet, _args, original = _capture_raw_family_values_v3(
+        source, "liquidity_sweep_reversal", capture
+    )
+    value = decode(original.receipt_json)
+    assert original.intent is None
+    assert value["code"] == "fixed_initial_entry_outside_original_zone"
+    assert value["history_admission"]["code"] == "passed"
     assert value["g1"]["passed"] is True
     assert original.execution_authority is False

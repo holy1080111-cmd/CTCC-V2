@@ -2262,6 +2262,133 @@ async def test_actual_current55_restricted_b3_append_and_independent_readback(
                     )
 
 
+def _closed_current55_original_read_failure_v1(error):
+    """Report reviewed exception classes and code stages, never values or SQL.
+
+    Traceback frames are inspected only for immutable code filename/function
+    identities. No exception string, arguments, traceback source line or local
+    variables enter the diagnostic. This has no effect on reader admission.
+    """
+    from sqlalchemy import exc as sa_exc
+
+    classes = (
+        (reader55.OriginalHistoryFinancialPgReadError, "READER_WRAPPER"),
+        (reader55.current_catalog.Current0055MultiRoleError, "CURRENT55_CATALOG"),
+        (reader55.native.OriginalHistoryPgReadError, "ORIGINAL_NATIVE_READER"),
+        (reader55.native.wire.OriginalFrameWireError, "ORIGINAL_FRAME_WIRE"),
+        (reader55.stream.OriginalHistoryStreamError, "ORIGINAL_STREAM"),
+        (reader55.raw_bank.OriginalRawProofBankError, "ORIGINAL_RAW_BANK"),
+        (reader55.controlled.ControlledHistoryCurrent55Error, "CURRENT55_SQL_POLICY"),
+        (sa_exc.ProgrammingError, "SQLALCHEMY_PROGRAMMING"),
+        (sa_exc.IntegrityError, "SQLALCHEMY_INTEGRITY"),
+        (sa_exc.DataError, "SQLALCHEMY_DATA"),
+        (sa_exc.OperationalError, "SQLALCHEMY_OPERATIONAL"),
+        (sa_exc.DBAPIError, "SQLALCHEMY_DBAPI"),
+        (sa_exc.SQLAlchemyError, "SQLALCHEMY_OTHER"),
+        (TimeoutError, "TIMEOUT"),
+        (KeyError, "KEY_ERROR"),
+        (AttributeError, "ATTRIBUTE_ERROR"),
+        (TypeError, "TYPE_ERROR"),
+        (ValueError, "VALUE_ERROR"),
+    )
+    modules = (
+        (
+            "app/database/repositories/account_history_original_raw_proof_bank_current55_v1.py",
+            "READER55",
+            frozenset(
+                {
+                    "replay_original_history_api_population_from_pg_v2",
+                    "_replay_original_history_raw_bank_from_pg",
+                    "_controlled_current55_pages_v2",
+                    "_deny",
+                }
+            ),
+        ),
+        (
+            "app/database/repositories/collector_current_0055_multirole_catalog_v1.py",
+            "CATALOG55",
+            frozenset(
+                {
+                    "verify_actual_raw_history_catalog_v1",
+                    "_current55_pair",
+                    "_verify_pair",
+                    "_factory_route",
+                    "_role",
+                    "_one",
+                    "_deny",
+                }
+            ),
+        ),
+        (
+            "app/database/repositories/account_history_original_native_read_v1.py",
+            "ORIGINAL_NATIVE",
+            frozenset({"_check_request", "_backend", "_execute_one", "check", "_deny"}),
+        ),
+        (
+            "app/trade_qualification/account_history_original_stream_v1.py",
+            "ORIGINAL_STREAM",
+            frozenset(
+                {
+                    "_replay_engine",
+                    "_finish_replay_engine",
+                    "_finish_financial_stream_v3",
+                    "_deny",
+                }
+            ),
+        ),
+        (
+            "app/trade_qualification/account_original_raw_proof_bank_v1.py",
+            "RAW_BANK",
+            frozenset(
+                {
+                    "_finish_after_original_stream_v1",
+                    "_finish_after_original_stream_v2",
+                    "_consume_current_v1",
+                    "_consume_current_v2",
+                    "_deny",
+                }
+            ),
+        ),
+        (
+            "app/domain/controlled_history_current55_schema_v2.py",
+            "CURRENT55_SQL_POLICY",
+            frozenset({"_deny", "verify_catalog"}),
+        ),
+    )
+    chain = []
+    current = error
+    seen = set()
+    while current is not None and len(chain) < 6 and id(current) not in seen:
+        seen.add(id(current))
+        label = next(
+            (name for kind, name in classes if type(current) is kind),
+            "UNLISTED_EXCEPTION_CLASS",
+        )
+        stages = []
+        trace = current.__traceback__
+        visits = 0
+        while trace is not None and len(stages) < 16 and visits < 64:
+            visits += 1
+            filename = trace.tb_frame.f_code.co_filename.replace("\\", "/")
+            function = trace.tb_frame.f_code.co_name
+            for suffix, module, allowed in modules:
+                if filename.endswith("/" + suffix):
+                    known = (
+                        function if function in allowed else "OTHER_REVIEWED_FUNCTION"
+                    )
+                    stages.append(module + "." + known)
+                    break
+            trace = trace.tb_next
+        chain.append({"class": label, "stages": stages[:16]})
+        current = current.__context__
+    return {
+        "schema": "ctcc.pg55.original_financial_closed_failure.v1",
+        "chain": chain,
+        "account_complete": False,
+        "execution_authority": False,
+    }
+
+
 async def test_exact55_two_roles_replay_original33_financial_without_authority(
     monkeypatch, controlled_current55_database, request
 ):
@@ -2322,20 +2449,60 @@ async def test_exact55_two_roles_replay_original33_financial_without_authority(
                 writer, expire_on_commit=False, autoflush=False
             )
             genesis = original._request(scope, documents, revisions, lease)
-            result = await reader55.replay_original_history_api_population_from_pg_v2(
-                raw_factory,
-                genesis_request=genesis,
-                expected_checkpoint_sha256=checkpoint,
-                approved_collector_role_oid=raw_oid,
-                lineage_session_factory=writer_factory,
-                expected_financial_policy_sha256=(
-                    stream.original_history_financial_stream_policy_sha256_v3()
-                ),
-                expected_raw_bank_policy_sha256=bank.POLICY_SHA256,
-                expected_api_population_policy_sha256=(
-                    bank.API_POPULATION_POLICY_SHA256_V2
-                ),
+            # Independently prove the role failure before the longer prefix
+            # replay can consume the original fixed expiry. A stale request
+            # cannot satisfy this expected catalog error code.
+            assert datetime.now(UTC) < genesis.expires_at
+            with pytest.raises(
+                reader55.OriginalHistoryFinancialPgReadError,
+                match="^original_pg_read_uncertain$",
+            ) as wrong_role:
+                await reader55.replay_original_history_api_population_from_pg_v2(
+                    raw_factory,
+                    genesis_request=genesis,
+                    expected_checkpoint_sha256=checkpoint,
+                    approved_collector_role_oid=raw_oid,
+                    lineage_session_factory=raw_factory,
+                    expected_financial_policy_sha256=(
+                        stream.original_history_financial_stream_policy_sha256_v3()
+                    ),
+                    expected_raw_bank_policy_sha256=bank.POLICY_SHA256,
+                    expected_api_population_policy_sha256=(
+                        bank.API_POPULATION_POLICY_SHA256_V2
+                    ),
+                )
+            assert (
+                type(wrong_role.value.__context__)
+                is reader55.current_catalog.Current0055MultiRoleError
             )
+            assert datetime.now(UTC) < genesis.expires_at
+            try:
+                result = (
+                    await reader55.replay_original_history_api_population_from_pg_v2(
+                        raw_factory,
+                        genesis_request=genesis,
+                        expected_checkpoint_sha256=checkpoint,
+                        approved_collector_role_oid=raw_oid,
+                        lineage_session_factory=writer_factory,
+                        expected_financial_policy_sha256=(
+                            stream.original_history_financial_stream_policy_sha256_v3()
+                        ),
+                        expected_raw_bank_policy_sha256=bank.POLICY_SHA256,
+                        expected_api_population_policy_sha256=(
+                            bank.API_POPULATION_POLICY_SHA256_V2
+                        ),
+                    )
+                )
+            except reader55.OriginalHistoryFinancialPgReadError as error:
+                report = _closed_current55_original_read_failure_v1(error)
+                safe = json.dumps(report, sort_keys=True, separators=(",", ":"))
+                request.node.user_properties.append(
+                    ("ctcc_pg55_original_financial_closed_failure_v1", safe)
+                )
+                pytest.fail(
+                    "ctcc_pg55_original_financial_closed_failure_v1=" + safe,
+                    pytrace=False,
+                )
             receipt = json.loads(result.acquisition_receipt_json)
             assert result.observed_frames == receipt["observed_frames"] == 33
             assert receipt["original_db_prefix_replayed"] is True
@@ -2358,26 +2525,6 @@ async def test_exact55_two_roles_replay_original33_financial_without_authority(
             )
             assert receipt["admission"] == "DENY"
 
-            # The same original head cannot be replayed through a substituted
-            # lineage factory. A wrong role must return no financial receipt.
-            with pytest.raises(
-                reader55.OriginalHistoryFinancialPgReadError,
-                match="^original_pg_read_uncertain$",
-            ):
-                await reader55.replay_original_history_api_population_from_pg_v2(
-                    raw_factory,
-                    genesis_request=genesis,
-                    expected_checkpoint_sha256=checkpoint,
-                    approved_collector_role_oid=raw_oid,
-                    lineage_session_factory=raw_factory,
-                    expected_financial_policy_sha256=(
-                        stream.original_history_financial_stream_policy_sha256_v3()
-                    ),
-                    expected_raw_bank_policy_sha256=bank.POLICY_SHA256,
-                    expected_api_population_policy_sha256=(
-                        bank.API_POPULATION_POLICY_SHA256_V2
-                    ),
-                )
             async with raw.begin() as session:
                 assert (
                     await session.scalar(
