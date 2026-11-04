@@ -2,7 +2,7 @@
 
 import json
 import re
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import text
@@ -12,6 +12,10 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from app.database.repositories import (
     account_history_original_raw_proof_bank_current55_v1 as reader55,
 )
+from app.database.repositories.account_history_partition_current55_v2 import (
+    AccountHistoryPartitionRepository as Current55PartitionRepository,
+)
+from app.database.repositories.demo_control_current55_v2 import DemoControlRepositoryV2
 from app.domain import collector_current_0055_catalog_v1 as profile
 from app.domain import native_closed_report_catalog_v55 as reports
 from app.domain import native_closed_report_schema_v55 as report_schema
@@ -21,6 +25,8 @@ from app.domain import native_zero_fok_closure_schema_v55 as zero
 from app.domain.source_primitives import canonical
 from app.trade_qualification import account_history_original_stream_v1 as stream
 from app.trade_qualification import account_original_raw_proof_bank_v1 as bank
+from app.trade_qualification.demo_control import ControlPins, ControlScope
+from app.trade_qualification.demo_control_runtime import DemoControlOwner
 from scripts import current0055_native_account_source_acl_v1 as account_acl
 from scripts import current0055_runtime_grants as core_acl
 from tests.controlled_current55_fixtures import (
@@ -2389,6 +2395,49 @@ def _closed_current55_original_read_failure_v1(error):
     }
 
 
+async def _prestage_distinct_original33_before_arm(monkeypatch, admin):
+    """Keep all synthetic B1 work outside the finite native Control lease.
+
+    Original B3 33 remains unappended until after the Armed checkpoint32. No
+    stored packet, B1 row, event time, original expiry or old stopped fixture is
+    rewritten. These are declared synthetic sources, not genuine Demo reads.
+    """
+    factory = async_sessionmaker(admin, expire_on_commit=False, autoflush=False)
+    index = original.AccountObservationIndexRepository(factory, clock=original.now)
+    ledger_scope = original.LedgerScope(
+        account_id=original.UID, settlement_currency="USDT"
+    )
+    documents = []
+    for revision in range(32):
+        (
+            chain,
+            window,
+        ) = await financial_fixture._new_distinct_session_original_before_storage(
+            monkeypatch, admin, index, ledger_scope, declared_synthetic_wire=True
+        )
+        reference = original.observed.source_reference(chain)
+        appended = await index.append(
+            ledger_scope, reference, window, expected_revision=revision
+        )
+        documents.append(appended.document_json)
+    (
+        chain33,
+        window33,
+    ) = await financial_fixture._new_distinct_session_original_before_storage(
+        monkeypatch, admin, index, ledger_scope, declared_synthetic_wire=True
+    )
+    reference33 = original.observed.source_reference(chain33)
+    bindings = {
+        json.loads(raw)["reference"]["session_binding_sha256"] for raw in documents
+    }
+    assert len(documents) == len(bindings) == 32
+    assert reference33.session_binding_sha256 not in bindings
+    history_scope = original.records.HistoryPartitionScopeV1(
+        "demo", ledger_scope.account_id, "USDT"
+    )
+    return index, ledger_scope, history_scope, tuple(documents), reference33, window33
+
+
 async def test_exact55_two_roles_replay_original33_financial_without_authority(
     monkeypatch, controlled_current55_database, request
 ):
@@ -2397,15 +2446,9 @@ async def test_exact55_two_roles_replay_original33_financial_without_authority(
         pytest.skip("explicit isolated Docker PG17 fixture required")
     assert owner.url.username == "ctcc" and owner.url.password is None
 
-    # Original B1/B3/DB0052 frame semantics remain unchanged on exact head55.
-    # The helper seals one original checkpoint, then a distinct original33.
-    (
-        scope,
-        documents,
-        revisions,
-        lease,
-        checkpoint,
-    ) = await financial_fixture._distinct_prefix33(monkeypatch, owner)
+    # Provision exact role ACL before any finite native Control lease starts.
+    # The historical _distinct_prefix33 helper deliberately seeds EStop and is
+    # retained unchanged for stopped-purpose tests, never used as an Armed frame.
     async with (
         collector(owner) as (writer, writer_oid),
         collector(owner) as (custody, custody_oid),
@@ -2420,6 +2463,7 @@ async def test_exact55_two_roles_replay_original33_financial_without_authority(
         core_sql = core_acl.current55_core_grant_sql(**names)
         account_sql = account_acl.current55_native_account_source_grant_sql_v1(**names)
         assert (len(core_sql), len(account_sql)) == (28, 11)
+        arm_owner = None
         try:
             async with owner.connect() as owner_connection:
                 core = await core_acl.provision_current55_core_grants(
@@ -2448,7 +2492,109 @@ async def test_exact55_two_roles_replay_original33_financial_without_authority(
             writer_factory = async_sessionmaker(
                 writer, expire_on_commit=False, autoflush=False
             )
-            genesis = original._request(scope, documents, revisions, lease)
+            (
+                index,
+                ledger_scope,
+                scope,
+                prefix32,
+                reference33,
+                window33,
+            ) = await _prestage_distinct_original33_before_arm(monkeypatch, owner)
+            member32, linkage32 = original._member(scope, prefix32[-1])
+            checkpoint_raw = original.records.build_partition_checkpoint_v1(
+                scope=scope,
+                b3_documents=prefix32,
+                native_registrations=(None,) * 31 + (member32,),
+                previous_checkpoints=(),
+                expected_b3_policy_sha256=json.loads(prefix32[-1])["policy_sha256"],
+                expected_b3_head_sha256=original.records.digest(prefix32[-1]),
+            ).record_json
+
+            control_scope = ControlScope("demo", ledger_scope.account_id)
+            arm_repo = DemoControlRepositoryV2(writer_factory, clock=original.now)
+            arm_owner = DemoControlOwner(
+                arm_repo,
+                control_scope,
+                ControlPins("1" * 64, "2" * 64, "3" * 64),
+            )
+            started = await arm_owner.start()
+            arm = await arm_owner.request_arm(
+                expires_at=started.state.lease_until - timedelta(seconds=1)
+            )
+            lineage = await arm_repo.read_lineage(control_scope)
+            assert lineage.current_state == arm.state
+            assert lineage.current_event_sha256 == arm.event_sha256
+            assert arm.state.emergency_stop is False
+            assert arm.state.arm_request_id is not None
+            assert lineage.execution_authority is False
+            fixed_expiry = min(
+                arm.state.lease_until,
+                arm.state.arm_expires_at,
+                datetime.now(UTC) + timedelta(seconds=20),
+            )
+            assert datetime.now(UTC) < fixed_expiry
+            async with writer.begin() as connection:
+                await original.settings(connection)
+                revisions32 = (
+                    await connection.execute(
+                        text(
+                            "SELECT account_revision,ledger_revision "
+                            "FROM public.qualification_account_scopes "
+                            "WHERE environment='demo' AND account_id=:uid "
+                            "AND settlement_currency='USDT'"
+                        ),
+                        {"uid": ledger_scope.account_id},
+                    )
+                ).one()
+            checkpoint_readback = await Current55PartitionRepository(
+                writer_factory, clock=original.now
+            ).append_member_and_checkpoint(
+                scope,
+                b3_document_raw=prefix32[-1],
+                native_linkage_raw=linkage32,
+                expected_b3_policy_sha256=json.loads(prefix32[-1])["policy_sha256"],
+                expected_b3_event_sha256=original.records.digest(prefix32[-1]),
+                expected_previous_checkpoint_sha256=None,
+                expected_control_revision=arm.state.revision,
+                expected_account_revision=revisions32.account_revision,
+                expected_ledger_revision=revisions32.ledger_revision,
+                expires_at=fixed_expiry,
+                checkpoint_raw=checkpoint_raw,
+            )
+            assert checkpoint_readback.checkpoints[-1].record_json == checkpoint_raw
+            assert checkpoint_readback.members[-1].record_json == member32
+
+            final = await index.append(
+                ledger_scope, reference33, window33, expected_revision=32
+            )
+            documents = (*prefix32, final.document_json)
+            assert len(documents) == 33
+            assert original.records.digest(documents[-1]) == final.event_sha256
+            async with writer.begin() as connection:
+                await original.settings(connection)
+                revisions33 = (
+                    await connection.execute(
+                        text(
+                            "SELECT account_revision,ledger_revision "
+                            "FROM public.qualification_account_scopes "
+                            "WHERE environment='demo' AND account_id=:uid "
+                            "AND settlement_currency='USDT'"
+                        ),
+                        {"uid": ledger_scope.account_id},
+                    )
+                ).one()
+            genesis = original.wire.OriginalFrameRequestV1(
+                scope,
+                33,
+                original.records.digest(documents[-1]),
+                0,
+                None,
+                arm.state.revision,
+                revisions33.account_revision,
+                revisions33.ledger_revision,
+                fixed_expiry,
+            )
+            checkpoint = original.records.digest(checkpoint_raw)
             # Independently prove the role failure before the longer prefix
             # replay can consume the original fixed expiry. A stale request
             # cannot satisfy this expected catalog error code.
@@ -2552,9 +2698,21 @@ async def test_exact55_two_roles_replay_original33_financial_without_authority(
                 )
             )
         finally:
-            async with owner.begin() as connection:
-                for grant in reversed(core_sql + account_sql):
-                    rights_target, role = grant.removeprefix("GRANT ").rsplit(" TO ", 1)
-                    await connection.exec_driver_sql(
-                        f"REVOKE {rights_target} FROM {role}"
-                    )
+            try:
+                # A commit-uncertain acquire must be tightened too. This
+                # operates even if start() failed after commit/readback.
+                if arm_owner is not None:
+                    stopped = await arm_owner.emergency_stop()
+                    assert stopped.state.emergency_stop is True
+                    assert (
+                        await arm_repo.read_lineage(control_scope)
+                    ).current_state == stopped.state
+            finally:
+                async with owner.begin() as connection:
+                    for grant in reversed(core_sql + account_sql):
+                        rights_target, role = grant.removeprefix("GRANT ").rsplit(
+                            " TO ", 1
+                        )
+                        await connection.exec_driver_sql(
+                            f"REVOKE {rights_target} FROM {role}"
+                        )
