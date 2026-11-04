@@ -32,40 +32,51 @@ class HistoryJsonSourceGuardError(ValueError):
     """A fixed public refusal, without source payload or foreign exception text."""
 
 
-def _read_source_bytes(relative):
-    root = _ROOT
-    manifest_path = root / "MANIFEST.sha256"
-    manifest_info = manifest_path.lstat()
+_FILE_IDENTITY_FIELDS = (
+    "st_dev",
+    "st_ino",
+    "st_mode",
+    "st_nlink",
+    "st_size",
+    "st_mtime_ns",
+    "st_ctime_ns",
+)
+
+
+def _file_identity(info):
+    return tuple(getattr(info, key) for key in _FILE_IDENTITY_FIELDS)
+
+
+def _read_manifest():
+    path = _ROOT / "MANIFEST.sha256"
+    info = path.lstat()
     if (
-        not stat.S_ISREG(manifest_info.st_mode)
-        or manifest_info.st_nlink != 1
-        or manifest_path.is_symlink()
-        or getattr(manifest_info, "st_file_attributes", 0) & 1024
-        or not 0 < manifest_info.st_size <= 2 * 1024 * 1024
+        not stat.S_ISREG(info.st_mode)
+        or info.st_nlink != 1
+        or getattr(info, "st_file_attributes", 0) & 1024
+        or not 0 < info.st_size <= 2 * 1024 * 1024
     ):
         raise HistoryJsonSourceGuardError("history_json_guard_manifest_invalid")
-    manifest = manifest_path.read_bytes()
-    after_manifest = manifest_path.lstat()
-    fields = (
-        "st_dev",
-        "st_ino",
-        "st_mode",
-        "st_nlink",
-        "st_size",
-        "st_mtime_ns",
-        "st_ctime_ns",
-    )
-    if tuple(getattr(manifest_info, key) for key in fields) != tuple(
-        getattr(after_manifest, key) for key in fields
-    ):
+    raw = path.read_bytes()
+    identity = _file_identity(info)
+    if len(raw) != info.st_size or _file_identity(path.lstat()) != identity:
         raise HistoryJsonSourceGuardError("history_json_guard_manifest_changed")
-    path = root
+    return raw.splitlines(), hashlib.sha256(raw).hexdigest(), identity
+
+
+def _read_source_bytes(relative, manifest=None):
+    lines, manifest_digest, _identity = (
+        _read_manifest() if manifest is None else manifest
+    )
+    path = _ROOT
     for part in relative.split("/"):
         path /= part
-        info = path.lstat()
-        if path.is_symlink() or getattr(info, "st_file_attributes", 0) & 1024:
+        before = path.lstat()
+        if (
+            stat.S_ISLNK(before.st_mode)
+            or getattr(before, "st_file_attributes", 0) & 1024
+        ):
             raise HistoryJsonSourceGuardError("history_json_guard_source_path_changed")
-    before = path.lstat()
     if (
         not stat.S_ISREG(before.st_mode)
         or before.st_nlink != 1
@@ -73,41 +84,38 @@ def _read_source_bytes(relative):
     ):
         raise HistoryJsonSourceGuardError("history_json_guard_source_invalid")
     raw = path.read_bytes()
-    after = path.lstat()
-    if tuple(getattr(before, key) for key in fields) != tuple(
-        getattr(after, key) for key in fields
-    ):
+    if _file_identity(before) != _file_identity(path.lstat()):
         raise HistoryJsonSourceGuardError("history_json_guard_source_changed")
-    expected = hashlib.sha256(raw).hexdigest().encode() + b"  " + relative.encode()
-    matches = [
-        line
-        for line in manifest.splitlines()
-        if line.endswith(b"  " + relative.encode())
-    ]
+    suffix = b"  " + relative.encode()
+    source_digest = hashlib.sha256(raw).hexdigest()
+    expected = source_digest.encode() + suffix
+    matches = [line for line in lines if line.endswith(suffix)]
     if matches != [expected] or len(raw) != before.st_size:
         raise HistoryJsonSourceGuardError("history_json_guard_manifest_mismatch")
-    return raw, path, hashlib.sha256(manifest).hexdigest()
+    return raw, path, source_digest, manifest_digest
 
 
 def _source(relative):
-    raw, path, manifest_digest = _read_source_bytes(relative)
+    raw, path, source_digest, manifest_digest = _read_source_bytes(relative)
     parsed = ast.parse(raw, filename=str(path))
     code = compile(raw, str(path), "exec", dont_inherit=True, optimize=0)
     return (
         parsed,
         {part.co_qualname: part for part in code.co_consts if type(part) is CodeType},
-        (relative, hashlib.sha256(raw).hexdigest(), manifest_digest),
+        (relative, source_digest, manifest_digest),
     )
 
 
 def _current_sources():
+    manifest = _read_manifest()
     for relative, original_digest, original_manifest in _SOURCE_DIGESTS:
-        raw, _path, manifest_digest = _read_source_bytes(relative)
-        if (
-            hashlib.sha256(raw).hexdigest() != original_digest
-            or manifest_digest != original_manifest
-        ):
+        _raw, _path, source_digest, manifest_digest = _read_source_bytes(
+            relative, manifest
+        )
+        if source_digest != original_digest or manifest_digest != original_manifest:
             raise ValueError("history_json_guard_saved_source_changed")
+    if _file_identity((_ROOT / "MANIFEST.sha256").lstat()) != manifest[2]:
+        raise HistoryJsonSourceGuardError("history_json_guard_manifest_changed")
 
 
 def _lookups(code):
@@ -470,7 +478,9 @@ _SOURCE_DIGESTS = (_guard_source_pin, _bundle_source_pin, _maximum_source_pin)
 _BUNDLE_CODES = (_bundle_codes["_deny"], _bundle_codes["_json"])
 _BUNDLE_LOOKUPS = tuple(_lookups(code) for code in _BUNDLE_CODES)
 _OWN_DEFAULT_VALUES = {
-    "_read_source_bytes": None,
+    "_file_identity": None,
+    "_read_manifest": None,
+    "_read_source_bytes": (None,),
     "_source": None,
     "_current_sources": None,
     "_lookups": None,
@@ -531,6 +541,7 @@ _REFERENCES = tuple(
         "_BUNDLE_LOOKUPS",
         "_EXPECTED_MAXIMUM",
         "_SOURCE_DIGESTS",
+        "_FILE_IDENTITY_FIELDS",
     )
 )
 _REFERENCES_PIN = _REFERENCES
@@ -544,6 +555,8 @@ _OWN_PROFILES = tuple(
         _lookups(_codes[name]),
     )
     for name in (
+        "_file_identity",
+        "_read_manifest",
         "_read_source_bytes",
         "_source",
         "_current_sources",

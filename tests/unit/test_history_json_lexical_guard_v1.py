@@ -3,6 +3,7 @@
 import asyncio
 import re
 import sys
+from pathlib import Path
 from types import FunctionType, SimpleNamespace
 
 import pytest
@@ -24,6 +25,35 @@ def test_original_json_decoder_and_limits_still_apply():
     assert bundle.MAX_JSON_DEPTH == 32
     assert bundle.MAX_JSON_NODES == 262144
     assert bundle.MAX_BUNDLE_BYTES == 64 * 1024 * 1024
+
+
+def test_manifest_change_during_source_readback_is_refused(monkeypatch):
+    guard.require()
+    manifest = guard._ROOT / "MANIFEST.sha256"
+    guarded_source = guard._ROOT / guard.BUNDLE_PATH
+    real_read = Path.read_bytes
+    real_stat = Path.lstat
+    read_guarded_source = False
+
+    def read(path):
+        nonlocal read_guarded_source
+        raw = real_read(path)
+        if path == guarded_source:
+            read_guarded_source = True
+        return raw
+
+    def lstat(path):
+        info = real_stat(path)
+        if path == manifest and read_guarded_source:
+            fields = {name: getattr(info, name) for name in guard._FILE_IDENTITY_FIELDS}
+            fields["st_mtime_ns"] += 1
+            return SimpleNamespace(**fields)
+        return info
+
+    monkeypatch.setattr(Path, "read_bytes", read)
+    monkeypatch.setattr(Path, "lstat", lstat)
+    with pytest.raises(ValueError, match="history_json_guard_manifest_changed"):
+        guard.require()
 
 
 @pytest.mark.parametrize(
