@@ -2519,6 +2519,123 @@ async def _prestage_distinct_original33_before_arm(monkeypatch, admin):
     return index, ledger_scope, history_scope, tuple(documents), reference33, window33
 
 
+async def test_exact55_wrong_lineage_role_is_rejected_before_original_frame(
+    controlled_current55_database, request
+):
+    """Prove the real catalog route rejects a raw-role lineage on PG17.
+
+    The catalog check precedes frame SQL, so a one-frame synthetic request is
+    sufficient. No source row or Armed Control is needed for this denial.
+    """
+    from uuid import uuid4
+
+    owner = controlled_current55_database
+    if re.fullmatch(r"ctcc-final-[a-f0-9]{12}-postgres", owner.url.host or "") is None:
+        pytest.skip("explicit isolated Docker PG17 fixture required")
+    assert owner.url.username == "ctcc" and owner.url.password is None
+    async with (
+        collector(owner) as (writer, writer_oid),
+        collector(owner) as (custody, custody_oid),
+        collector(owner) as (raw, raw_oid),
+    ):
+        assert len({writer_oid, custody_oid, raw_oid}) == 3
+        names = {
+            "writer": writer.url.username,
+            "custody": custody.url.username,
+            "frame_reader": raw.url.username,
+        }
+        core_sql = core_acl.current55_core_grant_sql(**names)
+        account_sql = account_acl.current55_native_account_source_grant_sql_v1(**names)
+        assert (len(core_sql), len(account_sql)) == (28, 11)
+        try:
+            async with owner.connect() as owner_connection:
+                core = await core_acl.provision_current55_core_grants(
+                    owner_connection, **names
+                )
+            async with (
+                owner.connect() as owner_connection,
+                writer.connect() as writer_connection,
+            ):
+                account = (
+                    await account_acl.provision_current55_native_account_source_acl_v1(
+                        owner_connection, writer_connection, **names
+                    )
+                )
+            assert core["database_head"] == account["database_head"] == "0055"
+            assert account["execution_authority"] is False
+            await _verify_actual_current55_raw_catalog_pair(
+                raw, writer, raw_oid, writer_oid
+            )
+            raw_factory = async_sessionmaker(
+                raw, expire_on_commit=False, autoflush=False
+            )
+            synthetic_scope = original.records.HistoryPartitionScopeV1(
+                "demo", "55" + str(uuid4().int % 10**18).zfill(18), "USDT"
+            )
+            genesis = original.wire.OriginalFrameRequestV1(
+                synthetic_scope,
+                1,
+                "a" * 64,
+                0,
+                None,
+                1,
+                0,
+                0,
+                datetime.now(UTC) + timedelta(seconds=20),
+            )
+            negative_started_ns = monotonic_ns()
+            with pytest.raises(
+                reader55.OriginalHistoryFinancialPgReadError,
+                match="^original_pg_read_uncertain$",
+            ) as wrong_role:
+                await reader55.replay_original_history_api_population_from_pg_v2(
+                    raw_factory,
+                    genesis_request=genesis,
+                    expected_checkpoint_sha256=None,
+                    approved_collector_role_oid=raw_oid,
+                    lineage_session_factory=raw_factory,
+                    expected_financial_policy_sha256=(
+                        stream.original_history_financial_stream_policy_sha256_v3()
+                    ),
+                    expected_raw_bank_policy_sha256=bank.POLICY_SHA256,
+                    expected_api_population_policy_sha256=(
+                        bank.API_POPULATION_POLICY_SHA256_V2
+                    ),
+                )
+            assert (
+                type(wrong_role.value.__context__)
+                is reader55.current_catalog.Current0055MultiRoleError
+            )
+            assert datetime.now(UTC) < genesis.expires_at
+            request.node.user_properties.append(
+                (
+                    "ctcc_pg55_wrong_lineage_role_denied_v1",
+                    json.dumps(
+                        {
+                            "schema": "ctcc.pg55.wrong_lineage_role_denied.v1",
+                            "through": 1,
+                            "negative_elapsed_seconds": _original33_elapsed_seconds(
+                                negative_started_ns
+                            ),
+                            "catalog_denial_before_frame": True,
+                            "control_armed": False,
+                            "account_complete": False,
+                            "execution_authority": False,
+                        },
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                )
+            )
+        finally:
+            async with owner.begin() as connection:
+                for grant in reversed(core_sql + account_sql):
+                    rights_target, role = grant.removeprefix("GRANT ").rsplit(" TO ", 1)
+                    await connection.exec_driver_sql(
+                        f"REVOKE {rights_target} FROM {role}"
+                    )
+
+
 async def test_exact55_two_roles_replay_original33_financial_without_authority(
     monkeypatch, controlled_current55_database, request
 ):
@@ -2610,12 +2727,14 @@ async def test_exact55_two_roles_replay_original33_financial_without_authority(
             assert arm.state.emergency_stop is False
             assert arm.state.arm_request_id is not None
             assert lineage.execution_authority is False
-            fixed_expiry = min(
+            # This fixed deadline belongs only to the checkpoint transaction.
+            # The original reader request does not exist until B3-33 is read.
+            checkpoint_expiry = min(
                 arm.state.lease_until,
                 arm.state.arm_expires_at,
                 datetime.now(UTC) + timedelta(seconds=20),
             )
-            assert datetime.now(UTC) < fixed_expiry
+            assert datetime.now(UTC) < checkpoint_expiry
             async with writer.begin() as connection:
                 await original.settings(connection)
                 revisions32 = (
@@ -2641,7 +2760,7 @@ async def test_exact55_two_roles_replay_original33_financial_without_authority(
                 expected_control_revision=arm.state.revision,
                 expected_account_revision=revisions32.account_revision,
                 expected_ledger_revision=revisions32.ledger_revision,
-                expires_at=fixed_expiry,
+                expires_at=checkpoint_expiry,
                 checkpoint_raw=checkpoint_raw,
             )
             assert checkpoint_readback.checkpoints[-1].record_json == checkpoint_raw
@@ -2670,6 +2789,15 @@ async def test_exact55_two_roles_replay_original33_financial_without_authority(
                         {"uid": ledger_scope.account_id},
                     )
                 ).one()
+            # Mint the one original positive request only after the checkpoint,
+            # B3-33 and revision readback. It has its own unextended 20 s limit
+            # and remains bounded by the original Armed Control lease.
+            fixed_expiry = min(
+                arm.state.lease_until,
+                arm.state.arm_expires_at,
+                datetime.now(UTC) + timedelta(seconds=20),
+            )
+            assert datetime.now(UTC) < fixed_expiry
             genesis = original.wire.OriginalFrameRequestV1(
                 scope,
                 33,
@@ -2682,36 +2810,13 @@ async def test_exact55_two_roles_replay_original33_financial_without_authority(
                 fixed_expiry,
             )
             checkpoint = original.records.digest(checkpoint_raw)
-            # Independently prove the role failure before the longer prefix
-            # replay can consume the original fixed expiry. A stale request
-            # cannot satisfy this expected catalog error code.
-            assert datetime.now(UTC) < genesis.expires_at
-            with pytest.raises(
-                reader55.OriginalHistoryFinancialPgReadError,
-                match="^original_pg_read_uncertain$",
-            ) as wrong_role:
-                await reader55.replay_original_history_api_population_from_pg_v2(
-                    raw_factory,
-                    genesis_request=genesis,
-                    expected_checkpoint_sha256=checkpoint,
-                    approved_collector_role_oid=raw_oid,
-                    lineage_session_factory=raw_factory,
-                    expected_financial_policy_sha256=(
-                        stream.original_history_financial_stream_policy_sha256_v3()
-                    ),
-                    expected_raw_bank_policy_sha256=bank.POLICY_SHA256,
-                    expected_api_population_policy_sha256=(
-                        bank.API_POPULATION_POLICY_SHA256_V2
-                    ),
-                )
-            assert (
-                type(wrong_role.value.__context__)
-                is reader55.current_catalog.Current0055MultiRoleError
-            )
-            phase_elapsed_seconds["negative"] = _original33_elapsed_seconds(
+            phase_elapsed_seconds["genesis_minted"] = _original33_elapsed_seconds(
                 armed_mono_ns
             )
             assert datetime.now(UTC) < genesis.expires_at
+            phase_elapsed_seconds["positive_started"] = _original33_elapsed_seconds(
+                armed_mono_ns
+            )
             try:
                 result = (
                     await reader55.replay_original_history_api_population_from_pg_v2(
