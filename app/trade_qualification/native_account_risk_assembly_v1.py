@@ -5141,6 +5141,7 @@ _V4_PIN_FUNCTIONS = tuple(
             ),
         ),
         (_v4_wire.OriginalFrameRequestV1, ("__post_init__",)),
+        (_v4_wire.journal, ("_original_wire_event",)),
         (
             _v4_stream,
             (
@@ -5199,6 +5200,8 @@ _V4_PIN_DATA = tuple(
         ),
         (history, ("_PARTITION_CURRENT_V2",)),
         (history.current_bundle, ("SCHEMA", "POLICY_SHA256")),
+        (_v4_wire, ("journal",)),
+        (_v4_wire.journal, ("_ISSUER", "_JournalEvent")),
         (_v4_stream, ("POLICY_SHA256",)),
         (_v4_financial, ("POLICY_SHA256",)),
         (

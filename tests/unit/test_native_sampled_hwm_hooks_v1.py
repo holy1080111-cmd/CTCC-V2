@@ -786,7 +786,16 @@ def real_v4_guard_with_declared_prior_providers(monkeypatch, io):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("entry", ["public_v4", "sampled_hwm"])
 @pytest.mark.parametrize(
-    "defect", ["measurement_callee", "measurement_constant", "source_inventory"]
+    "defect",
+    [
+        "measurement_callee",
+        "measurement_constant",
+        "source_inventory",
+        "original_wire_event",
+        "original_wire_journal",
+        "original_wire_issuer",
+        "original_wire_event_type",
+    ],
 )
 async def test_both_entries_deny_changed_measurement_dependency_before_observation(
     monkeypatch, entry, defect
@@ -803,6 +812,16 @@ async def test_both_entries_deny_changed_measurement_dependency_before_observati
             )
         elif defect == "measurement_constant":
             monkeypatch.setattr(assembly._hwm_measurement, "MAX_MEASUREMENT_BYTES", 1)
+        elif defect == "original_wire_event":
+            monkeypatch.setattr(
+                assembly._v4_wire.journal, "_original_wire_event", lambda *_args: None
+            )
+        elif defect == "original_wire_journal":
+            monkeypatch.setattr(assembly._v4_wire, "journal", object())
+        elif defect == "original_wire_issuer":
+            monkeypatch.setattr(assembly._v4_wire.journal, "_ISSUER", object())
+        elif defect == "original_wire_event_type":
+            monkeypatch.setattr(assembly._v4_wire.journal, "_JournalEvent", object())
         else:
             io.flags["inventory"] += 1
         expected = (
