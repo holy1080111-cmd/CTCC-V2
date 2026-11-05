@@ -199,8 +199,13 @@ REQUIRED_CURRENT55_CASES = tuple(
             *(
                 (
                     "tests.integration.test_native_recovery_repository_pg_v1",
-                    f"test_recovery_repository_commits_and_replays_as_restricted_writer[{variant}]",
+                    (
+                        "test_recovery_repository_commits_and_replays_as_restricted_writer"
+                        f"[synthetic{fixture_index}-{variant}]"
+                    ),
                 )
+                # The shared fixture covers four direction and position-mode pairs.
+                for fixture_index in range(4)
                 for variant in ("committed", "late_rejection")
             ),
             *(

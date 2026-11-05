@@ -114,6 +114,26 @@ def components(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     return tmp_path, roots, records, full
 
 
+def test_contract_requires_each_recovery_writer_direction_mode_and_outcome():
+    module = "tests.integration.test_native_recovery_repository_pg_v1"
+    name = "test_recovery_repository_commits_and_replays_as_restricted_writer"
+    required = {
+        case.removeprefix(name)
+        for classname, case in union.REQUIRED_CURRENT55_CASES
+        if classname == module and case.startswith(name)
+    }
+    assert required == {
+        "[synthetic0-committed]",
+        "[synthetic0-late_rejection]",
+        "[synthetic1-committed]",
+        "[synthetic1-late_rejection]",
+        "[synthetic2-committed]",
+        "[synthetic2-late_rejection]",
+        "[synthetic3-committed]",
+        "[synthetic3-late_rejection]",
+    }
+
+
 def test_exact_ten_component_join_is_hermetic_only(components):
     artifacts, _, _, full = components
     result = union.verify_union(
