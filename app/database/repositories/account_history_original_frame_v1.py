@@ -316,17 +316,16 @@ def _preflight(value, request, received_at):
 def _decode_chain(value, scope, received_at):
     rows, previous, prior_recorded = [], None, None
     for number, row in enumerate(value["rows"], 1):
-        event = journal._JournalEvent(
+        event, sequence, predecessor = journal._original_wire_event(
             journal._ISSUER,
             _unhex(row["event_hex"]),
             _unhex(row["raw_hex"], optional=True),
             _unhex(row["packet_hex"], optional=True),
         )
-        data = journal.checked_event(event)
         recorded = _wire_time(row["db_recorded_at"], received_at)
         if (
-            data["sequence"] != number
-            or data["previous_sha256"] != previous
+            sequence != number
+            or predecessor != previous
             or (prior_recorded is not None and recorded < prior_recorded)
         ):
             _deny("original_frame_original_chain_changed")

@@ -1013,7 +1013,10 @@ def _json_tree(
         for key, item in value.items():
             if len(key) > 96:
                 _fail("json_key_limit")
-            normalized = re.sub(r"[^a-z0-9]", "", key.lower())
+            lowered = key.lower()
+            normalized = lowered.replace("_", "")
+            if not (normalized.isascii() and normalized.isalnum()):
+                normalized = re.sub(r"[^a-z0-9]", "", lowered)
             if normalized in _SECRET_KEYS or normalized.startswith("okaccess"):
                 _fail("secret_field_forbidden")
             _json_tree(
@@ -1039,10 +1042,11 @@ def _json_tree(
     elif kind is str:
         if len(value) > (4096 if wire else MAX_RESPONSE_BYTES * 2):
             _fail("json_text_limit")
-        try:
-            value.encode("utf-8")
-        except UnicodeError:
-            _fail("json_unicode_invalid")
+        if not value.isascii():
+            try:
+                value.encode("utf-8")
+            except UnicodeError:
+                _fail("json_unicode_invalid")
     elif kind is int:
         # OKX documents one JSON integer in account/instruments. Accept it only
         # at its exact envelope path; all other wire numbers remain rejected.

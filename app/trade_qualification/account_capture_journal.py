@@ -129,12 +129,25 @@ class _JournalEvent:
     packet_payload: bytes | None
 
     def __init__(self, issuer, event_json, raw_body=None, packet_payload=None):
-        if issuer is not _ISSUER:
-            raise AccountJournalError("owned_journal_event_required")
-        object.__setattr__(self, "event_json", event_json)
-        object.__setattr__(self, "raw_body", raw_body)
-        object.__setattr__(self, "packet_payload", packet_payload)
-        checked_event(self)
+        _initialize_journal_event(self, issuer, event_json, raw_body, packet_payload)
+
+
+def _initialize_journal_event(event, issuer, event_json, raw_body, packet_payload):
+    if issuer is not _ISSUER or type(event) is not _JournalEvent:
+        raise AccountJournalError("owned_journal_event_required")
+    object.__setattr__(event, "event_json", event_json)
+    object.__setattr__(event, "raw_body", raw_body)
+    object.__setattr__(event, "packet_payload", packet_payload)
+    return checked_event(event)
+
+
+def _original_wire_event(issuer, event_json, raw_body, packet_payload):
+    """Return the validated event and the two immutable chain-order fields."""
+    event = object.__new__(_JournalEvent)
+    record = _initialize_journal_event(
+        event, issuer, event_json, raw_body, packet_payload
+    )
+    return event, record["sequence"], record["previous_sha256"]
 
 
 def checked_event(value):
