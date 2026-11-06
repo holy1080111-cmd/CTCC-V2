@@ -14,6 +14,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
 from app.demo_automation import native_caller_v2, native_source_only_v1
 from app.demo_automation.native_private_root_v2 import (
     NativeEvidenceRootErrorV2,
