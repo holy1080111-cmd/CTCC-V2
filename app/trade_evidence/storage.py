@@ -557,6 +557,10 @@ class _WindowsDirectory:
     def mkdir(self, name: str):
         os.mkdir(_windows_native_path(self.path / name), mode=0o700)
 
+    def mkdir_inherited_acl(self, name: str):
+        self.api.validate_publish_name(name)
+        os.mkdir(_windows_native_path(self.path / name))
+
     @contextmanager
     def child(self, name: str):
         handle = self.api.open_directory(self.path / name)

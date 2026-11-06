@@ -154,3 +154,15 @@ def require_private_evidence_base_v2(raw):
     else:
         _need(info.st_uid == os.geteuid() and not info.st_mode & 0o077)
     return path
+
+
+def mkdir_private_evidence_child_v2(directory, name):
+    """Create one child under the held, validated private evidence directory."""
+    from app.trade_evidence.storage import _WindowsDirectory
+
+    if type(directory) is _WindowsDirectory:
+        # Python's Windows 0o700 ACL differs from this service's private ACL.
+        require_private_evidence_base_v2(str(directory.path))
+        directory.mkdir_inherited_acl(name)
+    else:
+        directory.mkdir(name)

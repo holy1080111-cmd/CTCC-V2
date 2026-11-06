@@ -31,7 +31,10 @@ from app.database.repositories.public_runtime_bundle_custody import (
 )
 from app.demo_automation import native_server_selectors_v2 as selectors
 from app.demo_automation.native_caller_v2 import _market_policy
-from app.demo_automation.native_private_root_v2 import require_private_evidence_base_v2
+from app.demo_automation.native_private_root_v2 import (
+    mkdir_private_evidence_child_v2,
+    require_private_evidence_base_v2,
+)
 from app.domain.source_primitives import canonical, sha
 from app.exchange.okx.private_rest import OkxDemoPrivateRestClient
 from app.trade_qualification import account_capture as capture
@@ -154,11 +157,12 @@ def _roots(settings) -> dict[str, Path]:
     created = False
     try:
         with storage._root_context(base) as directory:
-            directory.mkdir(attempt_name)
+            mkdir_private_evidence_child_v2(directory, attempt_name)
             created = True
+            require_private_evidence_base_v2(str(root))
             with directory.child(attempt_name) as attempt:
                 for name in _ROOT_NAMES:
-                    attempt.mkdir(name)
+                    mkdir_private_evidence_child_v2(attempt, name)
         paths = {name: root / name for name in _ROOT_NAMES}
         if len({storage._root_identity(path) for path in paths.values()}) != len(
             _ROOT_NAMES

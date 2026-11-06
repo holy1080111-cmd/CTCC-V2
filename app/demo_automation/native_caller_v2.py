@@ -14,7 +14,10 @@ from uuid import uuid4
 from app.api.security import require_ctcc_token
 from app.config.settings import get_settings
 from app.demo_automation import DemoAutomationBusyError, DemoAutomationSafetyError
-from app.demo_automation.native_private_root_v2 import require_private_evidence_base_v2
+from app.demo_automation.native_private_root_v2 import (
+    mkdir_private_evidence_child_v2,
+    require_private_evidence_base_v2,
+)
 from app.demo_automation.native_requests_v2 import (
     CONFIGURE_LEVERAGE_CONFIRMATION_V1,
     NativeDemoActionResultV2,
@@ -251,13 +254,14 @@ def _roots(settings, invocation_id):
     from app.trade_qualification import account_native_proof_storage as storage
 
     base = require_private_evidence_base_v2(settings.okx_demo_native_evidence_root)
+    root = base / invocation_id
     # Existing no-reparse/no-clobber native directory primitives, before GET/Arm.
     with storage._root_context(base) as directory:
-        directory.mkdir(invocation_id)
+        mkdir_private_evidence_child_v2(directory, invocation_id)
+        require_private_evidence_base_v2(str(root))
         with directory.child(invocation_id) as attempt:
             for name in _ROOT_NAMES:
-                attempt.mkdir(name)
-    root = base / invocation_id
+                mkdir_private_evidence_child_v2(attempt, name)
     roots = {name: root / name for name in _ROOT_NAMES}
     _need(
         len({storage._root_identity(path) for path in roots.values()})
