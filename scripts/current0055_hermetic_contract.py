@@ -75,6 +75,22 @@ _LINUX_PLATFORM_SKIPS = {
         "test_utf8_bom_identity_and_installer_parse_from_pinned_bytes",
     ): "Native PowerShell required",
     (
+        "tests.unit.test_native_private_root_inheritance_windows_v2",
+        "test_native_caller_children_inherit_verified_private_acl_and_no_clobber",
+    ): "Windows DACL contract",
+    (
+        "tests.unit.test_native_private_root_inheritance_windows_v2",
+        "test_native_helper_rejects_untrusted_parent_before_child_creation",
+    ): "Windows DACL contract",
+    (
+        "tests.unit.test_native_private_root_inheritance_windows_v2",
+        "test_native_validator_rejects_new_unauthorized_child_ace",
+    ): "Windows DACL contract",
+    (
+        "tests.unit.test_native_private_root_inheritance_windows_v2",
+        "test_source_only_children_inherit_verified_private_acl",
+    ): "Windows DACL contract",
+    (
         "tests.unit.test_qualification_evidence_gate",
         "test_native_windows_filesystem_root_is_rejected_without_writing",
     ): "Native Windows drive-root rejection only",
