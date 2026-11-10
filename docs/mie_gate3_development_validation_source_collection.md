@@ -17,6 +17,12 @@ it is not a protected publication timestamp or a trusted availability sample.
 The plan rejects overlaps for the same instrument, changed nested plans, missing
 or reordered ordinals, and authority coercion. It owns no native capability.
 
+`build_prospective_devval_source_plan` verifies the canonical pilot bytes and
+their retained SHA256 before mapping every prospective minute to this source
+plan. The conversion preserves the pilot's origin, planning time and ordinal
+order. It checks the native plan size and reserves the full Development
+readback interval before Validation starts.
+
 One capture still permits at most 3,000 rows, 100 rows per page, and 30 pages.
 The new collection has at most the existing 1,024 capture/attempt coordinates;
 no old 960-, 1,024-, or 4,096-coordinate limit is enlarged. For example, one

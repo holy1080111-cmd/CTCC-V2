@@ -11,11 +11,16 @@ from typing import Literal
 
 from pydantic import Field, field_validator, model_validator
 
+from app.mie.validation.artifact import _verify
 from app.mie.validation.contracts import (
     Gate3Claim,
     Gate3Contract,
     Identifier,
     require_utc,
+)
+from app.mie.validation.development_validation_source_plan_v1 import (
+    DevelopmentValidationSourceCoordinateV1,
+    DevelopmentValidationSourcePlanV1,
 )
 from app.public_market_source.public_market_receipts import (
     MINUTE_NS,
@@ -28,6 +33,7 @@ _MINUTE = timedelta(minutes=1)
 # headroom for failed attempts; this pilot is not a sufficient research history.
 MAX_PILOT_ROWS = 960
 INSTRUMENTS = ("BTC-USDT-SWAP", "ETH-USDT-SWAP")
+_MAX_PILOT_PLAN_BYTES = 16 * 1024
 
 
 def _ns(value: datetime) -> int:
@@ -141,4 +147,56 @@ class ProspectiveDevelopmentValidationPlanV1(Gate3Contract):
         )
 
 
-__all__ = ("MAX_PILOT_ROWS", "ProspectiveDevelopmentValidationPlanV1")
+def build_prospective_devval_source_plan(
+    plan_payload: bytes, *, expected_plan_sha256: str
+) -> DevelopmentValidationSourcePlanV1:
+    """Map every pinned pilot minute to the original native owner input."""
+    from app.mie.validation.development_validation_source_collection_v1 import (
+        MAX_PLAN_BYTES,
+    )
+
+    if (
+        type(plan_payload) is not bytes
+        or not 0 < len(plan_payload) <= _MAX_PILOT_PLAN_BYTES
+    ):
+        raise ValueError("devval prospective plan payload exceeds its bounds")
+    pilot = _verify(
+        plan_payload,
+        expected_sha256=expected_plan_sha256,
+        contract_type=ProspectiveDevelopmentValidationPlanV1,
+    )
+    # Leave the entire permitted durable readback interval before Validation.
+    observation_interval = timedelta(seconds=pilot.maximum_observation_lag_seconds)
+    if pilot.validation_start_at - pilot.development_end_at < observation_interval:
+        raise ValueError("devval development readback window overlaps validation")
+
+    coordinates = []
+    for ordinal in range(pilot.expected_rows):
+        partition, _, _ = pilot.coordinate(ordinal)
+        capture = pilot.capture_plan(ordinal)
+        coordinates.append(
+            DevelopmentValidationSourceCoordinateV1(
+                ordinal=ordinal,
+                partition=partition,
+                purpose="prospective_collection",
+                capture_plan=capture,
+                capture_plan_sha256=capture.canonical_sha256(),
+            )
+        )
+    source = DevelopmentValidationSourcePlanV1(
+        collection_id=pilot.plan_id,
+        origin=pilot.origin,
+        planned_at=pilot.planned_at,
+        coordinates=tuple(coordinates),
+        expected_rows=pilot.expected_rows,
+    )
+    if len(source.canonical_json_bytes()) > MAX_PLAN_BYTES:
+        raise ValueError("devval native source plan exceeds its retention budget")
+    return source
+
+
+__all__ = (
+    "MAX_PILOT_ROWS",
+    "ProspectiveDevelopmentValidationPlanV1",
+    "build_prospective_devval_source_plan",
+)

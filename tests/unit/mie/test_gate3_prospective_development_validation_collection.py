@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 from types import SimpleNamespace
 
 import pytest
-
 from app.mie.validation.artifact import ArtifactVerificationError
+from app.mie.validation.development_validation_source_collection_v1 import (
+    MAX_PLAN_BYTES,
+)
+from app.mie.validation.development_validation_source_plan_v1 import (
+    checked_development_validation_source_plan,
+)
 from app.mie.validation.prospective_development_validation_checkpoint import (
     DevelopmentValidationCollectionCheckpointV1,
     audit_development_validation_journal,
@@ -17,6 +23,7 @@ from app.mie.validation.prospective_development_validation_plan import (
     INSTRUMENTS,
     MAX_PILOT_ROWS,
     ProspectiveDevelopmentValidationPlanV1,
+    build_prospective_devval_source_plan,
 )
 from app.public_market_source.public_receipt_storage import (
     ControlledPublicReceiptJournal,
@@ -83,6 +90,72 @@ def test_future_dual_symbol_grid_is_deterministic_and_source_only():
     assert first.holdout_accessed is False
     assert first.predictive_oos_eligible is False
     assert first.runtime_consumers == 0
+
+
+def test_pinned_full_pilot_builds_exact_native_source_grid():
+    plan = pilot(development_minutes=240, validation_minutes=240).model_copy(
+        update={"origin": "https://eea.okx.com"}
+    )
+    payload = plan.canonical_json_bytes()
+    source = build_prospective_devval_source_plan(
+        payload, expected_plan_sha256=sha256(payload).hexdigest()
+    )
+    source_bytes = source.canonical_json_bytes()
+    assert len(source_bytes) <= MAX_PLAN_BYTES
+    assert (
+        checked_development_validation_source_plan(
+            source, expected_sha256=sha256(source_bytes).hexdigest()
+        )
+        == source
+    )
+    assert (source.collection_id, source.origin, source.planned_at) == (
+        plan.plan_id,
+        plan.origin,
+        plan.planned_at,
+    )
+    assert len(source.coordinates) == source.expected_rows == MAX_PILOT_ROWS
+    for ordinal, item in enumerate(source.coordinates):
+        assert item.ordinal == ordinal
+        assert item.partition == plan.coordinate(ordinal)[0]
+        assert item.purpose == "prospective_collection"
+        assert item.capture_plan.canonical_bytes() == (
+            plan.capture_plan(ordinal).canonical_bytes()
+        )
+        assert item.capture_plan_sha256 == item.capture_plan.canonical_sha256()
+    assert source.native_capture_authority is source.predictive_oos_eligible is False
+
+
+def test_prospective_source_plan_requires_matching_canonical_pilot_bytes():
+    raw = pilot().canonical_json_bytes()
+    with pytest.raises(ArtifactVerificationError, match="SHA256 mismatch"):
+        build_prospective_devval_source_plan(raw, expected_plan_sha256="0" * 64)
+    whitespace = raw + b"\n"
+    with pytest.raises(ArtifactVerificationError, match="JSON is not canonical"):
+        build_prospective_devval_source_plan(
+            whitespace, expected_plan_sha256=sha256(whitespace).hexdigest()
+        )
+
+
+@pytest.mark.parametrize("gap_minutes", [0, 1])
+def test_native_pilot_bridge_reserves_development_readback_interval(gap_minutes):
+    original = pilot()
+    validation = original.development_end_at + timedelta(minutes=gap_minutes)
+    plan = original.model_copy(
+        update={
+            "validation_start_at": validation,
+            "validation_end_at": validation + timedelta(minutes=2),
+        }
+    )
+    arguments = (plan.canonical_json_bytes(),)
+    pins = {"expected_plan_sha256": plan.canonical_sha256()}
+    if gap_minutes == 0:
+        with pytest.raises(ValueError, match="readback window overlaps"):
+            build_prospective_devval_source_plan(*arguments, **pins)
+    else:
+        assert (
+            build_prospective_devval_source_plan(*arguments, **pins).expected_rows
+            == original.expected_rows
+        )
 
 
 @pytest.mark.parametrize(
