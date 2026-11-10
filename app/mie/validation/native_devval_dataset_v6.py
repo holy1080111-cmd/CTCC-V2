@@ -6246,6 +6246,7 @@ _DATASET_DECLARED_CLASSES = (
             "__pydantic_serializer__",
             "__pydantic_validator__",
             "_open",
+            "_read_claimed_slot",
             "_read_slot",
             "claim",
             "inventory",

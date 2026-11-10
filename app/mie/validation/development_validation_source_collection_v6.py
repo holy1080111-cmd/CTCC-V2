@@ -294,6 +294,12 @@ class CollectionReadOnlyV6:
         claim = self.claim(ordinal)
         if ordinal not in self.inventory(directory):
             raise SourceCollectionError("availability_ordinal_unclaimed")
+        return self._read_claimed_slot(
+            directory, claim, expected_receipt_sha256=expected_receipt_sha256
+        )
+
+    def _read_claimed_slot(self, directory, claim, *, expected_receipt_sha256):
+        ordinal = claim.ordinal
         with directory.child(f"batch-{ordinal:08d}") as child:
             if (
                 child.read("claim.json", MAX_RECORD_BYTES)
@@ -733,26 +739,53 @@ class DevelopmentValidationAvailabilityOwnerV6:
         state.busy = True
         claim = None
         try:
-            coordinate = state.reader.plan.coordinate(ordinal)
+            reader = state.reader
+            plan = checked_development_validation_source_plan(
+                reader.plan, expected_sha256=reader.identity.plan_sha256
+            )
             if (
-                type(expected_previous_receipt_sha256s) is not tuple
+                type(ordinal) is not int
+                or not 0 <= ordinal < len(plan.coordinates)
+                or type(expected_previous_receipt_sha256s) is not tuple
                 or len(expected_previous_receipt_sha256s) != ordinal
             ):
                 raise SourceCollectionError("availability_prefix_invalid")
-            with _root_context(state.reader.root) as directory:
-                if state.reader.inventory(directory) != tuple(range(ordinal)):
+            prefix_pins = tuple(_pin(pin) for pin in expected_previous_receipt_sha256s)
+            coordinate = plan.coordinates[ordinal]
+            identity = reader.identity.canonical_sha256()
+            prefix = tuple(range(ordinal))
+            with _root_context(reader.root) as directory:
+                if reader.inventory(directory) != prefix:
                     raise SourceCollectionError("availability_ordinal_already_claimed")
-                for index, pin in enumerate(expected_previous_receipt_sha256s):
+                # Use the same verified plan for this synchronous prefix.
+                # The raw slot and receipt digest still have to replay for every ordinal.
+                for index, pin in enumerate(prefix_pins):
+                    previous_claim = OrdinalClaimV6(
+                        identity_sha256=identity,
+                        ordinal=index,
+                        capture_plan_sha256=plan.coordinates[index].capture_plan_sha256,
+                    )
                     if (
-                        state.reader._read_slot(
-                            directory, index, expected_receipt_sha256=pin
+                        reader._read_claimed_slot(
+                            directory, previous_claim, expected_receipt_sha256=pin
                         ).status
                         != "NATIVE_DURABLE_AVAILABLE"
                     ):
                         raise SourceCollectionError("availability_prefix_failed")
+                if (
+                    reader.inventory(directory) != prefix
+                    or reader.identity.canonical_sha256() != identity
+                ):
+                    raise SourceCollectionError(
+                        "availability_collection_identity_changed"
+                    )
+                record = OrdinalClaimV6(
+                    identity_sha256=identity,
+                    ordinal=ordinal,
+                    capture_plan_sha256=coordinate.capture_plan_sha256,
+                )
                 directory.mkdir(f"batch-{ordinal:08d}")
                 with directory.child(f"batch-{ordinal:08d}") as child:
-                    record = state.reader.claim(ordinal)
                     child.publish("claim.json", record.canonical_json_bytes())
                     if (
                         child.read("claim.json", MAX_RECORD_BYTES)
