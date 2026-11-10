@@ -36,9 +36,11 @@ All row availability remains the existing conservative native readiness upper
 bound. Historical warmup acquired today is available today. This builder does
 not set availability to bar close, manufacture older measured receipts, or turn
 the previously exposed historical holdout into unseen data. The dataset's
-`frozen_as_of` is the maximum of the original decisions, converted using the
-existing conservative native UTC conversion; replay never reads the current
-clock and never generates a replacement cutoff.
+`frozen_as_of` records the maximum of the original decisions, using the existing
+conservative native UTC conversion. Each partition replays features at the
+maximum of its own original decisions. The Development cutoff must fall at or
+before the Validation start. Saved replay derives the same cutoffs from the
+retained decisions.
 
 ## Actual computation and complete coordinates
 
@@ -59,10 +61,9 @@ these SWAP rows. The implementation reuses
 `replay_features_at`; it produces 15m, 1H and 4H OHLC/volume aggregates and actual
 Gate 2 feature snapshots with the existing fixed arithmetic contexts.
 
-The existing feature replay also rejects a missing or stale trailing bar at
-the frozen decision. An older window is consequently not presented as a
-current feature snapshot. In particular, two nonoverlapping historical windows
-cannot be made causally fresh just by naming them Development and Validation.
+The existing feature replay rejects a missing or stale trailing bar at each
+partition's original cutoff. Historical windows retrieved after their cutoff
+still fail the availability or freshness checks.
 This API is a bounded computational bridge, not a completed research cohort
 or a substitute for genuinely supported prospective sampling.
 

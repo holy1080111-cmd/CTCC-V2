@@ -112,6 +112,8 @@ class NativeDevvalDatasetPlanV6(Gate3Contract):
                 raise ValueError("native_devval_windows_out_of_order_or_overlap")
         if len({window.partition for window in self.windows}) != len(self.windows):
             raise ValueError("native_devval_partition_duplicated")
+        if len(self.windows) == 2 and self.windows[0].partition.value != "development":
+            raise ValueError("native_devval_development_must_precede_validation")
         return self
 
 
@@ -295,9 +297,9 @@ def materialize_native_devval_dataset_v6(
 ):
     """Pure actual aggregation/features; supplied bytes do not prove acquisition.
 
-    Callers cannot ask for an earlier or later cutoff. Every row must already be
-    available at its own immutable original decision; features use the maximum
-    of those decisions. Input order is validated, never sorted or deduplicated.
+    Each row must already be available at its immutable original decision.
+    Features use the latest original decision in their partition. The artifact
+    retains the overall maximum as frozen_as_of. Input order is validated.
     """
     _need(type(plan) is NativeDevvalDatasetPlanV6)
     plan = NativeDevvalDatasetPlanV6.model_validate(plan.model_dump(mode="python"))
@@ -308,7 +310,7 @@ def materialize_native_devval_dataset_v6(
     _need(type(groups) is tuple and len(groups) == len(source_plan.coordinates))
     groups = tuple(_group(group) for group in groups)
     _need(bool(groups))
-    as_of = max(ceil_native_utc(group.decision.cutoff.utc_ns) for group in groups)
+    partition_cutoffs: dict[str, datetime] = {}
     row_inventory = hashlib.sha256()
     row_count = 0
     selected = {
@@ -337,6 +339,10 @@ def materialize_native_devval_dataset_v6(
         window = matches[0]
         key = (coordinate.partition, group.capture_plan.instrument_id)
         _need(key in selected)
+        group_cutoff = ceil_native_utc(group.decision.cutoff.utc_ns)
+        partition_cutoffs[coordinate.partition] = max(
+            group_cutoff, partition_cutoffs.get(coordinate.partition, group_cutoff)
+        )
         for offset, row in enumerate(group.rows, start=1):
             # Source rows retain their source order. An overlap, gap, conflict,
             # swapped symbol or unexpected boundary is a refusal, never repair.
@@ -356,7 +362,7 @@ def materialize_native_devval_dataset_v6(
                 row.instrument_id == group.capture_plan.instrument_id
                 and actual_ns == expected_ns
                 and window.start_at < row.bar.closed_at <= window.end_at
-                and row.available_at <= ceil_native_utc(group.decision.cutoff.utc_ns),
+                and row.available_at <= group_cutoff,
                 "native_devval_missing_reordered_or_late_minute",
             )
             bound = BoundMinute(
@@ -384,6 +390,15 @@ def materialize_native_devval_dataset_v6(
             row_inventory.update(encoded)
             row_count += 1
     _need(row_count == source_plan.expected_rows)
+    _need(
+        len(partition_cutoffs) == len(plan.windows),
+        "native_devval_two_symbol_grid_incomplete",
+    )
+    if len(plan.windows) == 2:
+        _need(
+            partition_cutoffs["development"] <= plan.windows[1].start_at,
+            "native_devval_development_cutoff_crosses_validation",
+        )
     series = []
     for window in plan.windows:
         for symbol in plan.instruments:
@@ -410,7 +425,7 @@ def materialize_native_devval_dataset_v6(
                 replay_features_at(
                     tuple(item.row for item in timeframe.bars),
                     bar_horizon=timeframe.horizon,
-                    as_of=as_of,
+                    as_of=partition_cutoffs[window.partition.value],
                     history_bars=plan.history_bars,
                 )
                 for timeframe in aggregation.timeframes
@@ -432,7 +447,7 @@ def materialize_native_devval_dataset_v6(
         source_inventory_sha256=source_inventory_sha256,
         groups=groups,
         series=tuple(series),
-        frozen_as_of=as_of,
+        frozen_as_of=max(partition_cutoffs.values()),
         row_inventory_sha256=row_inventory.hexdigest(),
     )
     frozen = _freeze(result, contract_type=NativeDevvalDatasetV6)

@@ -163,6 +163,179 @@ def synthetic_io(monkeypatch, synthetic_grid):
     }
 
 
+@pytest.fixture(scope="module")
+def prospective_two_window_grid(synthetic_grid):
+    """Synthetic lineage with independent original decisions for both partitions."""
+    _, _, original = synthetic_grid
+    planned_at = START - timedelta(days=1)
+    shift_to_validation = END - START + timedelta(hours=4)
+    windows, coordinates, groups = [], [], []
+    for partition, shift in (
+        (DatasetPartition.DEVELOPMENT, timedelta()),
+        (DatasetPartition.VALIDATION, shift_to_validation),
+    ):
+        windows.append(
+            PartitionWindow(
+                partition=partition, start_at=START + shift, end_at=END + shift
+            )
+        )
+        offset_ns = _ns(START + shift) - _ns(START)
+        for group in original:
+            ordinal = len(groups)
+            capture = group.capture_plan.model_copy(
+                update={
+                    "created_ns": _ns(planned_at),
+                    "start_ns": group.capture_plan.start_ns + offset_ns,
+                    "end_ns": group.capture_plan.end_ns + offset_ns,
+                }
+            )
+            coordinates.append(
+                DevelopmentValidationSourceCoordinateV1(
+                    ordinal=ordinal,
+                    partition=partition.value,
+                    purpose="prospective_collection",
+                    capture_plan=capture,
+                    capture_plan_sha256=capture.canonical_sha256(),
+                )
+            )
+            blobs = {
+                name: canonical(
+                    {"synthetic_prospective_only": name, "ordinal": ordinal}
+                )
+                for name in ("receipt", "evidence", "bundle")
+            }
+            decision = group.decision.model_copy(
+                update={
+                    "cutoff": ClockStamp(
+                        utc_ns=group.decision.cutoff.utc_ns + offset_ns,
+                        monotonic_ns=group.decision.cutoff.monotonic_ns + offset_ns,
+                    ),
+                    "evidence_sha256": sha(blobs["evidence"]),
+                    "bundle_sha256": sha(blobs["bundle"]),
+                    "stage1_forensic_sha256": sha(f"forensic:{ordinal}".encode()),
+                    "ordinal_claim_sha256": sha(f"claim:{ordinal}".encode()),
+                    "source_rows_sha256": sha(f"source:{ordinal}".encode()),
+                }
+            )
+            values = {
+                "ordinal": ordinal,
+                "capture_plan": capture,
+                "available_at": group.available_at + shift,
+                "decision": decision,
+                "decision_sha256": decision.canonical_sha256(),
+                "rows": tuple(
+                    row.model_copy(
+                        update={
+                            "source_row_id": f"prospective:{ordinal}:{index}",
+                            "source_row_sha256": sha(
+                                f"prospective:{ordinal}:{index}".encode()
+                            ),
+                            "available_at": row.available_at + shift,
+                            "bar": row.bar.model_copy(
+                                update={"closed_at": row.bar.closed_at + shift}
+                            ),
+                        }
+                    )
+                    for index, row in enumerate(group.rows)
+                ),
+            }
+            for name, raw in blobs.items():
+                values[name + "_base64"] = base64.b64encode(raw).decode("ascii")
+                values[name + "_sha256"] = sha(raw)
+            groups.append(group.model_copy(update=values))
+    source = DevelopmentValidationSourcePlanV1(
+        collection_id="synthetic.prospective.two.windows",
+        origin="https://openapi.okx.com",
+        planned_at=planned_at,
+        coordinates=tuple(coordinates),
+        expected_rows=20160,
+    )
+    plan = dataset.NativeDevvalDatasetPlanV6(
+        source_plan_sha256=source.canonical_sha256(),
+        instruments=SYMBOLS,
+        windows=tuple(windows),
+    )
+    return plan, source, tuple(groups)
+
+
+@pytest.mark.parametrize("late_development", [False, True])
+def test_nonoverlapping_windows_replay_at_their_original_decisions(
+    prospective_two_window_grid, monkeypatch, late_development
+):
+    plan, source, groups = prospective_two_window_grid
+    if late_development:
+        first = groups[0]
+        late_ns = _ns(plan.windows[1].start_at + timedelta(seconds=1))
+        decision = first.decision.model_copy(
+            update={
+                "cutoff": ClockStamp(
+                    utc_ns=late_ns,
+                    monotonic_ns=first.decision.cutoff.monotonic_ns
+                    + late_ns
+                    - first.decision.cutoff.utc_ns,
+                )
+            }
+        )
+        groups = (
+            first.model_copy(
+                update={
+                    "decision": decision,
+                    "decision_sha256": decision.canonical_sha256(),
+                }
+            ),
+            *groups[1:],
+        )
+    retained = {group.ordinal: group.canonical_sha256() for group in groups}
+
+    def decode(group):
+        assert retained[group.ordinal] == group.canonical_sha256()
+
+    monkeypatch.setattr(dataset, "_validate_group_lineage", decode)
+    arguments = {
+        "plan": plan,
+        "expected_plan_sha256": plan.canonical_sha256(),
+        "source_plan": source,
+        "groups": groups,
+        "source_inventory_sha256": "a" * 64,
+    }
+    if late_development:
+        with pytest.raises(
+            dataset.NativeDatasetError, match="development_cutoff_crosses_validation"
+        ):
+            dataset.materialize_native_devval_dataset_v6(**arguments)
+        return
+    frozen = dataset.materialize_native_devval_dataset_v6(**arguments)
+    result = frozen.contract
+    assert len(result.series) == 4
+    assert sum(len(series.minutes) for series in result.series) == 20160
+    for series in result.series:
+        assert all(
+            snapshot.as_of == series.window.end_at + timedelta(milliseconds=200)
+            and snapshot.data_cutoff == series.window.end_at
+            for snapshot in series.features
+        )
+    assert result.frozen_as_of == plan.windows[-1].end_at + timedelta(milliseconds=200)
+    assert result.predictive_oos_eligible is result.execution_authority is False
+    replayed = dataset.replay_native_devval_dataset_v6(
+        frozen.payload, expected_sha256=frozen.sha256
+    )
+    assert replayed.payload == frozen.payload
+
+
+def test_validation_window_cannot_precede_development(prospective_two_window_grid):
+    plan, _, _ = prospective_two_window_grid
+    first, second = plan.windows
+    with pytest.raises(ValueError, match="development_must_precede_validation"):
+        dataset.NativeDevvalDatasetPlanV6(
+            source_plan_sha256=plan.source_plan_sha256,
+            instruments=SYMBOLS,
+            windows=(
+                first.model_copy(update={"partition": DatasetPartition.VALIDATION}),
+                second.model_copy(update={"partition": DatasetPartition.DEVELOPMENT}),
+            ),
+        )
+
+
 def test_complete_two_symbol_grid_materializes_real_aggregates_and_features(
     synthetic_io,
 ):
