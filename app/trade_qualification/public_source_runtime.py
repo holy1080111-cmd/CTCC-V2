@@ -814,10 +814,9 @@ def _complete_owned_public_market_v3(source, packet, *, _owner):
     phase = _V3_TIME_PHASES.get(source)
     if phase is None or phase.market_prefix_head is not None:
         raise PublicSourceRuntimeError("public_v3_time_phase_invalid")
-    canonical_packet = public_v2._parts(packet)[0]
-    _check_packet_binding_v2(
+    canonical_packet = _check_packet_binding_v2(
         state,
-        canonical_packet,
+        packet,
         expected_roles=("quote", "candles", "market_aux", "time_pre"),
     )
     head, events = _v3_time_prefix(
@@ -1075,8 +1074,8 @@ def _check_packet_binding(state, packet):
 def _check_packet_binding_v2(
     state, packet, *, expected_roles=("quote", "candles", "market_aux")
 ):
-    _, (_, _quote, provenance, candle_packet, market_aux, reference) = public_v2._parts(
-        packet
+    checked, (_, _quote, provenance, candle_packet, market_aux, reference) = (
+        public_v2._parts(packet)
     )
     _check_raw_inventory(
         state,
@@ -1088,6 +1087,7 @@ def _check_packet_binding_v2(
         reference,
         expected_roles=expected_roles,
     )
+    return checked
 
 
 def _check_raw_inventory(
@@ -1352,8 +1352,7 @@ async def _capture_owned(scope, policy, root, *, stage, _version=1):
                     raise PublicSourceRuntimeError("native_public_clock_rejected")
                 _accept_clock_sample(state, result)
                 if full_public:
-                    packet = public_v2._parts(packet)[0]
-                    _check_packet_binding_v2(
+                    packet = _check_packet_binding_v2(
                         state,
                         packet,
                         expected_roles=(
