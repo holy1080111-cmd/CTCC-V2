@@ -517,7 +517,7 @@ def publish_native_devval_dataset_v6(*, root, payload, expected_sha256):
     return sha(receipt)
 
 
-def _regular_bytes(path, maximum):
+def _regular_bytes(path, maximum, *, allow_empty=False):
     _need(path.is_absolute())
     for parent in (path, *path.parents):
         metadata = parent.lstat()
@@ -529,7 +529,7 @@ def _regular_bytes(path, maximum):
     _need(
         stat.S_ISREG(before.st_mode)
         and before.st_nlink == 1
-        and 0 < before.st_size <= maximum
+        and (0 if allow_empty else 1) <= before.st_size <= maximum
     )
     with path.open("rb") as stream:
         opened = os.fstat(stream.fileno())
@@ -611,6 +611,12 @@ def _source_inventory():
         )
         entries[name] = digest
     actual = []
+    empty_digest = sha(b"")
+    empty_package_markers = (
+        "app/database/__init__.py",
+        "app/database/repositories/__init__.py",
+        "app/domain/__init__.py",
+    )
     for prefix in _PREFIXES:
         directory = _ROOT / prefix
         # No namespace/link traversal: every encountered directory is verified
@@ -629,7 +635,13 @@ def _source_inventory():
                     continue
                 path = current_path / name
                 relative = path.relative_to(_ROOT).as_posix()
-                raw, identity, digest = _regular_bytes(path, _MAX_FILE)
+                allow_empty = (
+                    relative in empty_package_markers
+                    and entries.get(relative) == empty_digest
+                )
+                raw, identity, digest = _regular_bytes(
+                    path, _MAX_FILE, allow_empty=allow_empty
+                )
                 _need(
                     entries.get(relative) == digest,
                     "native_devval_source_inventory_changed",

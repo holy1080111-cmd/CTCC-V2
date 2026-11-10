@@ -603,6 +603,38 @@ def test_whole_prefix_inventory_detects_source_change_without_acquisition(
         dataset._need(after == before, "native_devval_source_inventory_changed")
 
 
+@pytest.mark.parametrize(
+    "relative,contents,manifest_contents,accepted",
+    [
+        ("app/domain/__init__.py", b"", b"", True),
+        ("app/domain/__init__.py", b"", b"nonempty", False),
+        ("app/domain/__init__.py", b"nonempty", b"", False),
+        ("app/domain/extra.py", b"", b"", False),
+    ],
+)
+def test_zero_byte_inventory_requires_exact_manifest_bound_package_marker(
+    tmp_path, monkeypatch, relative, contents, manifest_contents, accepted
+):
+    source = tmp_path / relative
+    source.parent.mkdir(parents=True)
+    source.write_bytes(contents)
+    (tmp_path / "MANIFEST.sha256").write_bytes(
+        f"{sha(manifest_contents)}  {relative}\n".encode("ascii")
+    )
+    monkeypatch.setattr(dataset, "_ROOT", tmp_path)
+    monkeypatch.setattr(dataset, "_PREFIXES", ("app/domain/",))
+    monkeypatch.setattr(dataset, "_SOURCE_CLOSURE_FILES", ())
+    if accepted:
+        with pytest.raises(ValueError):
+            dataset._regular_bytes(source, dataset._MAX_FILE)
+        (_, _, files) = dataset._source_inventory()
+        ((name, _, digest),) = files
+        assert name == relative and digest == sha(b"")
+    else:
+        with pytest.raises(ValueError):
+            dataset._source_inventory()
+
+
 def test_no_clobber_publication_keeps_accepted_dataset_on_late_retry(
     synthetic_io, tmp_path
 ):
