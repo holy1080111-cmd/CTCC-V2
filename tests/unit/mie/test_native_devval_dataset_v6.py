@@ -549,6 +549,95 @@ def test_original_acquisition_guard_still_runs_on_dataset_binding(monkeypatch):
     assert len(calls) == 1
 
 
+@pytest.mark.parametrize("defect", [None, "expected_plan", "live_plan", "readback"])
+def test_consume_reuses_original_receipt_without_skipping_plan_or_readback(
+    monkeypatch, defect
+):
+    record = _lease_record(monkeypatch, elapsed=100)
+    owner, evidence, _, receipt_pin = record["original"]
+    expected_plan = "b" * 64
+    capture_plan = "c" * 64
+    reader = owner.claim.state.reader
+    reader.identity = SimpleNamespace(plan_sha256=expected_plan)
+    reader.plan = SimpleNamespace(
+        canonical_sha256=lambda: expected_plan,
+        coordinate=lambda ordinal: SimpleNamespace(
+            capture_plan_sha256=capture_plan, capture_plan=ordinal
+        ),
+    )
+    record["decision"].sha256 = "7" * 64
+    evidence.sha256 = "d" * 64
+    evidence.payload = b"synthetic-original-evidence"
+    bundle = SimpleNamespace(
+        contract=SimpleNamespace(
+            clock_v4=SimpleNamespace(
+                source_v3=SimpleNamespace(
+                    v2_capture=SimpleNamespace(plan_sha256=capture_plan)
+                )
+            )
+        ),
+        sha256="e" * 64,
+        payload=b"synthetic-original-bundle",
+    )
+    eligibility = native.NativeAvailabilityEligibilityV6(native._ISSUER)
+    native._READY[eligibility] = (owner, evidence, bundle, receipt_pin)
+    calls = []
+
+    def original_recheck(value):
+        assert value is owner
+        calls.append("recheck")
+        if defect == "live_plan":
+            raise ValueError("synthetic live plan change")
+
+    def read(ordinal, *, expected_receipt_sha256):
+        assert ordinal == 0 and expected_receipt_sha256 == receipt_pin
+        calls.append("read")
+        if defect == "readback" and calls.count("read") == 2:
+            raise ValueError("synthetic pinned receipt refusal")
+        return SimpleNamespace(canonical_json_bytes=lambda: b"original-receipt")
+
+    def original_consume(value, *, expected_evidence_sha256):
+        assert value is eligibility and expected_evidence_sha256 == evidence.sha256
+        assert native._READY.pop(value)[0] is owner
+        original_recheck(owner)
+        read(0, expected_receipt_sha256=receipt_pin)
+        return record["decision"], ()
+
+    reader.read = read
+    monkeypatch.setattr(native, "_recheck", original_recheck)
+    monkeypatch.setattr(
+        native, "consume_for_current_future_decision_v6", original_consume
+    )
+    if defect is not None:
+        supplied = "f" * 64 if defect == "expected_plan" else expected_plan
+        with pytest.raises(
+            native.NativeAvailabilityError, match="original_consume_failed"
+        ):
+            native.consume_native_devval_group_v6(
+                eligibility, expected_source_plan_sha256=supplied
+            )
+        assert eligibility not in native._READY
+        assert (
+            calls
+            == {
+                "expected_plan": [],
+                "live_plan": ["recheck"],
+                "readback": ["recheck", "read", "recheck", "read"],
+            }[defect]
+        )
+        return
+    binding, data = native.consume_native_devval_group_v6(
+        eligibility, expected_source_plan_sha256=expected_plan
+    )
+    try:
+        assert base64.b64decode(data["receipt_base64"]) == b"original-receipt"
+        assert data["receipt_sha256"] == receipt_pin
+        assert calls == ["recheck", "read", "recheck", "read"]
+        assert eligibility not in native._READY
+    finally:
+        native.discard_native_devval_group_v6(binding)
+
+
 def test_final_replay_attempt_is_reserved_before_await_and_cannot_be_reused():
     binding = native._DevvalBindingV6(native._ISSUER)
     native._DEVVAL_LIVE[binding] = {"attempted": False}

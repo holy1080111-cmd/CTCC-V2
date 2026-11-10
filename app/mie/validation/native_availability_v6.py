@@ -713,10 +713,10 @@ def _devval_original_check(record):
         <= CONSUMER_LEASE_NS
     )
     health_fresh_at(evidence.contract.final_health.raw_bytes(), now)
-    owner.claim.state.reader.read(
+    receipt = owner.claim.state.reader.read(
         owner.claim.claim.ordinal, expected_receipt_sha256=receipt_pin
     )
-    return owner, evidence, bundle, receipt_pin
+    return owner, evidence, bundle, receipt_pin, receipt
 
 
 def consume_native_devval_group_v6(eligibility, *, expected_source_plan_sha256):
@@ -735,7 +735,8 @@ def consume_native_devval_group_v6(eligibility, *, expected_source_plan_sha256):
         _devval_runtime_check_v6()
         owner, evidence, bundle, receipt_pin = original
         _require(
-            owner.claim.state.reader.plan.canonical_sha256()
+            type(expected_source_plan_sha256) is str
+            and owner.claim.state.reader.identity.plan_sha256
             == expected_source_plan_sha256
         )
         decision, rows = consume_for_current_future_decision_v6(
@@ -748,10 +749,9 @@ def consume_native_devval_group_v6(eligibility, *, expected_source_plan_sha256):
             "replayed": False,
             "journal": None,
         }
-        _devval_original_check(record)
-        receipt = owner.claim.state.reader.read(
-            owner.claim.claim.ordinal, expected_receipt_sha256=receipt_pin
-        )
+        # The original checks still replay the live plan and pinned receipt.
+        # Reuse the receipt from the post-decision check in this synchronous scope.
+        _, _, _, _, receipt = _devval_original_check(record)
         source = bundle.contract.clock_v4.source_v3.v2_capture
         coordinate = owner.claim.state.reader.plan.coordinate(owner.claim.claim.ordinal)
         _require(coordinate.capture_plan_sha256 == source.plan_sha256)
@@ -795,7 +795,7 @@ def replay_native_devval_group_v6(binding):
 async def _replay_native_devval_group_v6(binding, record):
     try:
         _require(_DEVVAL_LIVE.get(binding) is record)
-        owner, evidence, bundle, receipt_pin = _devval_original_check(record)
+        owner, evidence, bundle, receipt_pin, _ = _devval_original_check(record)
         await _deployment_recheck(owner)
         _devval_original_check(record)
         await _custody_scope(owner)
@@ -881,7 +881,7 @@ def finish_native_devval_groups_v6(bindings):
     _devval_runtime_check_v6()
     _require(all(record is not None for record in records))
     for record in records:
-        owner, _, _, _ = _devval_original_check(record)
+        owner, _, _, _, _ = _devval_original_check(record)
         _require(record["attempted"] is True and record["replayed"] is True)
         checkpoint, files = snapshot_public_journal_v6(
             owner.claim.state.service._journal
