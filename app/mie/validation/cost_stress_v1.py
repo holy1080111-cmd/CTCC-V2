@@ -23,6 +23,7 @@ _COST_FIELDS = ("fee_bps", "funding_bps", "spread_bps", "slippage_bps")
 _MAX_PATH_BYTES = 64 * 1024 * 1024
 _MAX_PLAN_BYTES = 64 * 1024
 _MAX_REPORT_BYTES = 1024 * 1024
+_ZERO = Decimal(0)
 _ONE = Decimal(1)
 _Scenario = Literal[
     "cost_1x",
@@ -32,6 +33,11 @@ _Scenario = Literal[
     "slippage_stress",
     "funding_stress",
 ]
+
+
+def _bounded_decimal(value: Decimal, name: str) -> Decimal:
+    _bounded_decimal_tuple(value, name)
+    return _ZERO if value.is_zero() else value
 
 
 class CostStressPlanV1(Gate3Contract):
@@ -60,15 +66,17 @@ class CostStressPlanV1(Gate3Contract):
     )
     @classmethod
     def validate_decimal(cls, value: Decimal, info) -> Decimal:
-        _bounded_decimal_tuple(value, info.field_name)
-        return value
+        return _bounded_decimal(value, info.field_name)
 
     @field_validator("cost_model")
     @classmethod
     def validate_cost(cls, value: CostModel) -> CostModel:
-        for name in _COST_FIELDS:
-            _bounded_decimal_tuple(getattr(value, name), name)
-        return value
+        return value.model_copy(
+            update={
+                name: _bounded_decimal(getattr(value, name), name)
+                for name in _COST_FIELDS
+            }
+        )
 
 
 class CostStressObservationV1(Gate3Contract):
@@ -86,8 +94,7 @@ class CostStressObservationV1(Gate3Contract):
     @field_validator("asset_return", "exposure")
     @classmethod
     def validate_decimal(cls, value: Decimal, info) -> Decimal:
-        _bounded_decimal_tuple(value, info.field_name)
-        return value
+        return _bounded_decimal(value, info.field_name)
 
 
 class CostStressPathV1(Gate3Contract):
@@ -259,7 +266,12 @@ def evaluate_cost_stress_v1(
         cvar_confidence_level=plan.cvar_confidence_level,
         scenarios=tuple(scenarios),
     )
-    return _freeze(report, contract_type=CostStressReportV1)
+    frozen = _freeze(report, contract_type=CostStressReportV1)
+    if len(frozen.payload) > _MAX_REPORT_BYTES:
+        raise ArtifactVerificationError(
+            "cost stress report exceeds retained size limit"
+        )
+    return frozen
 
 
 def verify_cost_stress_v1(

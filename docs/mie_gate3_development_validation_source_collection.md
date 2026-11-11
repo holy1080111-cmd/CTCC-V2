@@ -396,6 +396,27 @@ compares the canonical binding bytes. Independent publication timing,
 the legacy score origin, and evaluator first access require their own
 evidence.
 
+### Fitted holdout minute materialization
+
+`materialize_fitted_holdout_v1` takes an already-read fitted holdout and the
+independently retained binding, acquisition receipt, and reservation pins. The
+manifest file must use `CompleteBlindWindowDataset`. The dataset file must use
+the canonical `ctcc.mie.fitted_holdout_raw_bundle.v1` format, with one original
+one-minute receipt and its exact before, page and after bytes per coordinate.
+Supply the canonical `ProspectiveCoordinatePlanV1` bytes separately. The
+preregistration already pins their hash and the plan fixes the provider origin.
+An opaque or differently versioned dataset requires its own adapter.
+
+Materialization replays the original bytes and compares the receipt, capture
+plan, raw row and timing with the pinned manifest. Each contract-volume minute
+retains its original manifest row, including separate source observation and
+durable retention fields. The replay bar becomes available at the manifest's
+decision availability time, which equals retention time. The tape hashes the
+ordered minute evidence and inherits the manifest limit of 4,096 rows per
+window across all instruments. Its scope is computational. Independent
+custody, evaluator first access, predictive OOS, Gate 4, and execution
+authority require separate evidence.
+
 ### PostgreSQL custody and one-use evaluation
 
 Migration `0056` adds a fitted binding, an acknowledgement, and one evaluation

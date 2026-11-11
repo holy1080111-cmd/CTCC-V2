@@ -5,6 +5,7 @@ from decimal import ROUND_UP, Decimal, localcontext
 
 import pytest
 
+from app.mie.validation import cost_stress_v1
 from app.mie.validation.artifact import ArtifactVerificationError
 from app.mie.validation.contracts import CostModel
 from app.mie.validation.cost_stress_v1 import (
@@ -186,3 +187,11 @@ def test_stress_rejects_self_hashed_changed_report(stress_case):
         )
     with pytest.raises(ArtifactVerificationError, match="SHA256 mismatch"):
         evaluate_cost_stress_v1(**(inputs | {"expected_path_sha256": "f" * 64}))
+
+
+def test_report_must_fit_its_own_readback_limit(stress_case, monkeypatch):
+    inputs = arguments(*stress_case)
+    report = evaluate_cost_stress_v1(**inputs)
+    monkeypatch.setattr(cost_stress_v1, "_MAX_REPORT_BYTES", len(report.payload) - 1)
+    with pytest.raises(ArtifactVerificationError, match="exceeds retained size limit"):
+        evaluate_cost_stress_v1(**inputs)

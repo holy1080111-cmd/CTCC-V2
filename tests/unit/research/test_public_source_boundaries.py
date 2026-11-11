@@ -123,6 +123,25 @@ def test_public_source_has_only_explicit_reviewed_consumers():
                 (("_replay_directory", None),),
             ),
         ),
+        APP / "mie" / "validation" / "fitted_holdout_materializer_v1.py": (
+            (
+                "app.public_market_source.public_market_capture",
+                (("replay_public_capture", None),),
+            ),
+            (
+                "app.public_market_source.public_market_receipts",
+                (
+                    ("MAX_RAW", None),
+                    ("MINUTE_NS", None),
+                    ("MeasuredPublicMinuteReceiptV1", None),
+                    ("PublicReceiptError", None),
+                    ("parsed_rows", None),
+                    ("row_content_sha", None),
+                    ("row_identity", None),
+                    ("utc_from_ns", None),
+                ),
+            ),
+        ),
         APP / "trade_qualification" / "native_namespace_history_bundle_v1.py": (
             (
                 "app.public_market_source.public_runtime_custody_v4",
@@ -600,6 +619,14 @@ def test_native_public_replay_consumers_reject_unreviewed_import(
         (
             "prospective_devval_campaign_replay_v1.py",
             "from app.public_market_source.public_receipt_storage import _replay_directory",
+        ),
+        (
+            "fitted_holdout_materializer_v1.py",
+            "from app.public_market_source.public_market_capture import capture_public_market",
+        ),
+        (
+            "fitted_holdout_materializer_v1.py",
+            "from app.public_market_source.public_market_capture import replay_public_capture as alias",
         ),
     ],
 )
