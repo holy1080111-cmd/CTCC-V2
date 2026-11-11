@@ -97,6 +97,15 @@ The returned `GlobalPublicComponentPacketV1` carries anonymous public
 evidence with `DENY` admission, zero account requests and zero order writes.
 The packet provides no qualification or execution authority.
 
+`capture_initial_global_public_market_v2` and
+`read_global_public_capture_v2` add typed SWAP ticker validation to this
+raw journal. V2 derives a deterministic receipt from the original plan,
+journal, packet and ticker-response digests. It validates the 24-hour
+contract and base-currency volumes and leaves unavailable quote-currency
+volume unknown. An incomplete or malformed typed ticker denies the V2
+result while the original V1 journal remains available for audit. V2
+retains `DENY` admission and uses the same anonymous route.
+
 ## Post-G12 invocation
 
 The legacy `publish_capture_public_recheck` coordinator is hard-denied before
