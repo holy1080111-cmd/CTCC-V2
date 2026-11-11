@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import os
 import re
 import ssl
@@ -28,6 +29,7 @@ from app.mie.validation.prospective_devval_campaign_plan_v1 import (
     ProspectiveDevvalCampaignPlanV1,
     freeze_prospective_devval_campaign_v1,
 )
+from scripts import devval_campaign_physical_catalog_v1 as catalog
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 _SQL = (
@@ -407,3 +409,143 @@ async def test_native_tls_repository_observes_dispatch_without_owning_it(
             )
             == 1
         )
+
+
+async def _catalog_native_document(owner):
+    async with owner.connect() as connection:
+        await connection.exec_driver_sql(
+            "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY"
+        )
+        await connection.exec_driver_sql("SET LOCAL statement_timeout = '8s'")
+        await connection.exec_driver_sql("SET LOCAL lock_timeout = '2s'")
+        await connection.exec_driver_sql("SET LOCAL search_path = pg_catalog, pg_temp")
+        return (await connection.exec_driver_sql(catalog.CATALOG_SQL)).scalar_one()
+
+
+def _normalize_disposable_catalog(document, engines):
+    """Normalize only independently checked nonce names in this PG fixture."""
+    owner, publisher, observer, collector = engines
+    actual_owner = owner.url.username
+    assert actual_owner and document["actor"] == document["login"] == actual_owner
+    assert document["database"] == owner.url.database
+    assert document["version"] == "170011"
+    assert document["build"].startswith("PostgreSQL 17.11")
+    assert " on " in document["build"] and document["build"].endswith("64-bit")
+    assert document["tls"] is True and document["durable"] is True
+    assert document["has_alembic"] is False
+    role_map = {
+        actual_owner: "ctcc",
+        publisher.url.username: "ctcc_dv_publisher",
+        observer.url.username: "ctcc_dv_observer",
+        collector.url.username: "ctcc_dv_collector",
+    }
+    assert len(role_map) == 4
+    assert document["namespace"]["owner"] == actual_owner
+    normalized = copy.deepcopy(document)
+    normalized.update(
+        database="ctcc_devval_campaign",
+        actor="ctcc",
+        login="ctcc",
+    )
+    normalized["namespace"]["owner"] = "ctcc"
+
+    def acl(original):
+        if original is None:
+            return None
+        assert type(original) is list
+        result = []
+        for entry in original:
+            assert type(entry) is str and entry.count("/") == 1
+            grant, grantor = entry.split("/")
+            grantee, rights = grant.split("=", 1)
+            assert grantor == actual_owner
+            assert grantee in role_map or grantee == ""
+            result.append(f"{role_map.get(grantee, '')}={rights}/ctcc")
+        return result
+
+    normalized["namespace"]["acl"] = acl(document["namespace"]["acl"])
+    for name in ("classes", "functions", "types"):
+        for row in normalized[name]:
+            assert row["owner"] == actual_owner
+            row["owner"] = "ctcc"
+            row["acl"] = acl(row["acl"])
+    normalized_acl = []
+    for row in normalized["nonowner_acl"]:
+        assert type(row) is list and len(row) == 6
+        kind, name, grantee, privilege, grantable, grantor = row
+        assert grantor == actual_owner and grantee in role_map
+        normalized_acl.append(
+            [kind, name, role_map[grantee], privilege, grantable, "ctcc"]
+        )
+    normalized["nonowner_acl"] = sorted(normalized_acl)
+    return normalized
+
+
+async def test_two_fresh_tls_campaign_catalogs_match_and_drift_is_refused(
+    monkeypatch,
+):
+    ca = os.environ.get("CTCC_DEVVAL_CUSTODY_TEST_TLS_CA_FILE")
+    if ca is None:
+        pytest.skip("explicit isolated D/V custody TLS CA required")
+    if not os.environ.get("CTCC_DEVVAL_CUSTODY_TEST_DATABASE_URL"):
+        pytest.fail("D/V custody catalog requires isolated TLS URL")
+    tls = ssl.create_default_context(cafile=ca)
+    async with _isolated_evidence_db(tls) as first:
+        first_native = await _catalog_native_document(first[0])
+        native_build = first_native["build"]
+        # This fixture compares Linux PG17.11 installs; it does not mint the
+        # separate Windows production reference embedded in the verifier.
+        monkeypatch.setattr(catalog, "SERVER_BUILD", native_build)
+        first_doc = _normalize_disposable_catalog(first_native, first)
+        first_fingerprint = catalog.inspect_catalog_document(first_doc)
+        for field, inserted, reason in (
+            ("event_triggers", "ctcc_test_event_trigger", "extra_object"),
+            ("global_default_acl", ["ctcc", "f", []], "extra_object"),
+            (
+                "nonowner_acl",
+                ["function", "_immutable", "PUBLIC", "EXECUTE", False, "ctcc"],
+                "acl_changed",
+            ),
+        ):
+            changed = copy.deepcopy(first_doc)
+            changed[field].append(inserted)
+            with pytest.raises(catalog.CatalogRefusal, match=reason):
+                catalog.inspect_catalog_document(changed)
+        changed_column = copy.deepcopy(first_doc)
+        table = next(
+            row for row in changed_column["classes"] if row["name"] == "campaigns"
+        )
+        assert table["columns"]
+        table["columns"][0][4] = "a"
+        with pytest.raises(catalog.CatalogRefusal, match="column_changed"):
+            catalog.inspect_catalog_document(changed_column)
+        async with first[0].begin() as connection:
+            await connection.exec_driver_sql(
+                "ALTER TABLE ctcc_devval_custody.campaigns ENABLE ROW LEVEL SECURITY"
+            )
+        altered = _normalize_disposable_catalog(
+            await _catalog_native_document(first[0]), first
+        )
+        monkeypatch.setattr(catalog, "EXPECTED_CATALOG_SHA256", first_fingerprint)
+        with pytest.raises(catalog.CatalogRefusal, match="physical_drift"):
+            catalog.validate_catalog_document(altered)
+
+    async with _isolated_evidence_db(tls) as second:
+        second_native = await _catalog_native_document(second[0])
+        assert second_native["build"] == native_build
+        second_doc = _normalize_disposable_catalog(second_native, second)
+        assert catalog.inspect_catalog_document(second_doc) == first_fingerprint
+        assert catalog.validate_catalog_document(second_doc) == first_fingerprint
+        async with second[0].begin() as connection:
+            await connection.exec_driver_sql(
+                """CREATE OR REPLACE FUNCTION ctcc_devval_custody._immutable()
+                   RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER
+                   SET search_path = pg_catalog, pg_temp AS $ctcc_test_drift$
+                   BEGIN RAISE EXCEPTION 'ctcc_test_only_drift'; END
+                   $ctcc_test_drift$"""
+            )
+        changed_body = _normalize_disposable_catalog(
+            await _catalog_native_document(second[0]), second
+        )
+        with pytest.raises(catalog.CatalogRefusal, match="function_changed"):
+            catalog.validate_catalog_document(changed_body)
