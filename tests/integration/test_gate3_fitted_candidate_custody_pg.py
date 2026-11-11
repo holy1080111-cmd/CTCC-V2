@@ -52,6 +52,7 @@ from app.mie.validation.prospective_devval_campaign_plan_v1 import (
 from app.mie.validation.prospective_devval_fitted_binding_v1 import (
     build_devval_candidate_binding,
 )
+from scripts import current0056_fitted_delta_catalog_v1 as fitted_delta
 from scripts import current_contract_source_scopes_v1 as source_scopes
 from tests.integration.test_gate3_canonical_schedule_claim import migrate, pin_record
 from tests.integration.test_gate3_committed_preregistration_seal import (
@@ -708,3 +709,199 @@ async def test_fitted_binding_refuses_changed_bytes_and_empty_downgrade(
     with pytest.raises(DBAPIError, match="gate3_fitted"):
         async with owner.begin() as connection:
             await connection.run_sync(_migrate_fitted, "downgrade")
+
+
+# DB0056 fitted-delta physical catalog: diagnostic only, no native startup seal.
+def _delta56_identifier(value: str) -> str:
+    assert value.isascii() and value.replace("_", "").isalnum()
+    assert value.startswith("ctcc_") and len(value) < 63
+    return '"' + value + '"'
+
+
+@pytest.fixture
+async def _delta56_two_fresh_databases():
+    url, tls = _isolated_tls_database_config()
+    assert (url.username, url.database, url.port) == ("ctcc", "ctcc", 5432)
+    assert tls.check_hostname and tls.verify_mode == ssl.CERT_REQUIRED
+    fitted = {
+        key: f"ctcc_g3f_{key}_{uuid4().hex[:12]}"
+        for key in ("publisher", "observer", "reader", "evaluator")
+    }
+    demo = tuple(
+        f"ctcc_native_{key}_{uuid4().hex[:12]}"
+        for key in ("writer", "custody", "frame")
+    )
+    names = (*fitted.values(), *demo)
+    assert len({*names, "ctcc"}) == 8
+    databases = tuple(f"ctcc_g3fcat_{uuid4().hex[:12]}" for _ in range(2))
+    assert len(set(databases)) == 2
+    admin = create_async_engine(url, poolclass=NullPool, connect_args={"ssl": tls})
+    engines = []
+    created_roles = []
+    created_databases = []
+    try:
+        fitted_delta.pinned_migration(_SOURCE_ROOT)
+        for name in names:
+            async with admin.begin() as connection:
+                await connection.execute(
+                    text(f"CREATE ROLE {_delta56_identifier(name)} LOGIN")
+                )
+            created_roles.append(name)
+        for database in databases:
+            async with admin.connect() as connection:
+                await connection.execution_options(isolation_level="AUTOCOMMIT")
+                await connection.execute(
+                    text(f"CREATE DATABASE {_delta56_identifier(database)}")
+                )
+            created_databases.append(database)
+            engine = create_async_engine(
+                url.set(database=database),
+                poolclass=NullPool,
+                connect_args={"ssl": tls},
+            )
+            engines.append(engine)
+            async with engine.begin() as connection:
+                await connection.run_sync(_migrate_runtime_custody_head)
+                for role in names:
+                    await connection.execute(
+                        text(
+                            "GRANT USAGE ON SCHEMA public TO "
+                            f"{_delta56_identifier(role)}"
+                        )
+                    )
+                for kind, role in fitted.items():
+                    for signature in _ROLES[kind]:
+                        await connection.execute(
+                            text(
+                                "GRANT EXECUTE ON FUNCTION public."
+                                f"{signature} TO {_delta56_identifier(role)}"
+                            )
+                        )
+        yield engines, fitted, demo, databases
+    finally:
+        for engine in reversed(engines):
+            await engine.dispose()
+        try:
+            for database in reversed(created_databases):
+                async with admin.connect() as connection:
+                    await connection.execution_options(isolation_level="AUTOCOMMIT")
+                    await connection.execute(
+                        text(
+                            f"DROP DATABASE {_delta56_identifier(database)} WITH (FORCE)"
+                        )
+                    )
+        finally:
+            try:
+                for role in reversed(created_roles):
+                    async with admin.begin() as connection:
+                        await connection.execute(
+                            text(f"DROP ROLE {_delta56_identifier(role)}")
+                        )
+            finally:
+                await admin.dispose()
+
+
+async def _delta56_read_catalog(engine) -> tuple[dict, str, int]:
+    async with engine.connect() as connection, connection.begin():
+        await connection.execute(
+            text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+        )
+        await connection.execute(text("SET LOCAL search_path TO pg_catalog, pg_temp"))
+        result = await connection.execute(text(fitted_delta.CATALOG_SQL))
+        value = result.scalar_one()
+        if isinstance(value, str):
+            value = json.loads(value)
+        assert type(value) is dict
+        identity = (
+            await connection.execute(
+                text("""
+                SELECT pg_catalog.current_database(), d.oid
+                FROM pg_catalog.pg_database d
+                WHERE d.datname=pg_catalog.current_database()
+            """)
+            )
+        ).one()
+        assert type(identity[0]) is str and type(identity[1]) is int
+        return value, identity[0], identity[1]
+
+
+async def _delta56_owner_change(engine, sql: str) -> None:
+    async with engine.begin() as connection:
+        await connection.execute(text(sql))
+
+
+async def test_actual0056_two_fresh_fitted_catalogs_and_drift_refusal(
+    _delta56_two_fresh_databases,
+):
+    engines, fitted, demo, databases = _delta56_two_fresh_databases
+    roles = {"owner": "ctcc", "demo_roles": demo, "fitted_roles": fitted}
+    first, first_name, first_oid = await _delta56_read_catalog(engines[0])
+    second, second_name, second_oid = await _delta56_read_catalog(engines[1])
+    assert (first_name, second_name) == databases and first_oid != second_oid
+    digest = fitted_delta.inspect_catalog_document(first, **roles)
+    assert fitted_delta.inspect_catalog_document(second, **roles) == digest
+    assert sha(canonical(first)) == digest
+    with pytest.raises(
+        fitted_delta.CatalogRefusal, match="fitted_catalog_native_reference_unsealed"
+    ):
+        fitted_delta.require_native_reference(first, **roles)
+
+    trials = (
+        (
+            (
+                "ALTER FUNCTION public.gate3_fitted_binding_read(text) "
+                "SET search_path=pg_catalog,public,pg_temp"
+            ),
+            (
+                "ALTER FUNCTION public.gate3_fitted_binding_read(text) "
+                "SET search_path=pg_catalog,pg_temp"
+            ),
+            "fitted_catalog_function_shape_changed",
+        ),
+        (
+            (
+                "GRANT EXECUTE ON FUNCTION public.gate3_fitted_binding_read(text) "
+                f"TO {_delta56_identifier(demo[0])}"
+            ),
+            (
+                "REVOKE EXECUTE ON FUNCTION public.gate3_fitted_binding_read(text) "
+                f"FROM {_delta56_identifier(demo[0])}"
+            ),
+            "fitted_catalog_function_acl_changed",
+        ),
+        (
+            (
+                "ALTER TABLE public.gate3_capture_schedule_key_claims "
+                "DISABLE TRIGGER gate3_fitted_candidate_claim_guard"
+            ),
+            (
+                "ALTER TABLE public.gate3_capture_schedule_key_claims "
+                "ENABLE ALWAYS TRIGGER gate3_fitted_candidate_claim_guard"
+            ),
+            "fitted_catalog_trigger_changed",
+        ),
+        (
+            (
+                "GRANT SELECT ON TABLE public.gate3_fitted_candidate_acks "
+                f"TO {_delta56_identifier(fitted['reader'])}"
+            ),
+            (
+                "REVOKE SELECT ON TABLE public.gate3_fitted_candidate_acks "
+                f"FROM {_delta56_identifier(fitted['reader'])}"
+            ),
+            "fitted_catalog_table_acl_changed",
+        ),
+    )
+    for mutation, undo, refusal in trials:
+        await _delta56_owner_change(engines[1], mutation)
+        try:
+            changed, name, oid = await _delta56_read_catalog(engines[1])
+            assert (name, oid) == (second_name, second_oid)
+            with pytest.raises(fitted_delta.CatalogRefusal, match=refusal):
+                fitted_delta.inspect_catalog_document(changed, **roles)
+            assert changed != first
+        finally:
+            await _delta56_owner_change(engines[1], undo)
+        restored, name, oid = await _delta56_read_catalog(engines[1])
+        assert (name, oid) == (second_name, second_oid)
+        assert fitted_delta.inspect_catalog_document(restored, **roles) == digest
