@@ -160,14 +160,25 @@ async def test_bad_campaign_fails_before_loading_a_database(monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mode", ("collect", "replay"))
+@pytest.mark.parametrize(
+    ("mode", "publish_batch"), (("collect", False), ("replay", False), ("replay", True))
+)
 async def test_collection_and_readonly_replay_use_different_entry_points(
-    monkeypatch, tmp_path, mode
+    monkeypatch, tmp_path, mode, publish_batch
 ):
     root = tmp_path.resolve()
     repository = object()
     factories = (object(), object(), object())
     events = []
+    artifact = SimpleNamespace(
+        payload=b"offline computational batch fixture",
+        sha256=sha(b"offline computational batch fixture"),
+        contract=SimpleNamespace(
+            campaign_sha256=_PIN,
+            completion_sha256="f" * 64,
+            row_inventory_sha256="0" * 64,
+        ),
+    )
 
     @asynccontextmanager
     async def runtime(args):
@@ -184,6 +195,7 @@ async def test_collection_and_readonly_replay_use_different_entry_points(
     async def replay(**kwargs):
         assert kwargs["custody_repository"] is factories[2]
         assert kwargs["expected_completion_sha256"] == "f" * 64
+        assert kwargs["include_batch"] is publish_batch
         check(kwargs)
         events.append("replay")
         return SimpleNamespace(
@@ -191,6 +203,7 @@ async def test_collection_and_readonly_replay_use_different_entry_points(
             row_inventory_sha256="0" * 64,
             development_rows=10_080,
             validation_rows=10_080,
+            batch=artifact if publish_batch else None,
         )
 
     def check(kwargs):
@@ -215,8 +228,20 @@ async def test_collection_and_readonly_replay_use_different_entry_points(
         if mode == "collect"
         else ["--campaign-sha256", _PIN, "--completion-sha256", "f" * 64]
     )
+    if publish_batch:
+        output_root = _private_root_path(tmp_path)
+        extra += ["--batch-output-root", str(output_root)]
     args = command._arguments(
         [mode, *_BASE, *_DB, *extra, "--root", str(root), "--observer-oid", "104"]
     )
     result = await command._run(args, _CHECKPOINT)
     assert events == [mode] and result["completion_sha256"] == "f" * 64
+    if publish_batch:
+        assert result["batch_sha256"] == artifact.sha256
+        assert (output_root / "batch-v1.json").read_bytes() == artifact.payload
+        receipt = (output_root / "receipt-v1.json").read_bytes()
+        assert result["batch_publication_sha256"] == sha(receipt)
+        assert json.loads(receipt)["row_inventory_sha256"] == "0" * 64
+        with pytest.raises(command.CampaignCommandError, match="output_not_empty"):
+            command._publish_batch(output_root, artifact)
+        assert (output_root / "batch-v1.json").read_bytes() == artifact.payload

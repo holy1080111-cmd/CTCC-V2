@@ -237,7 +237,7 @@ credentials, CA file, and evidence directories outside the extracted source.
 | `acknowledge` | The same campaign file and SHA, using the separate observer login |
 | `observe` | The campaign file and SHA, using the observer login. For dispatch readback, use the collector login and add `--root-binding-sha256` and `--observer-oid` |
 | `collect` | The campaign file and SHA, `--root` pointing to an empty private directory, and `--observer-oid`, using the collector login |
-| `replay` | The retained campaign SHA, `--completion-sha256`, `--root`, and `--observer-oid`, using the collector login |
+| `replay` | The retained campaign SHA, `--completion-sha256`, `--root`, and `--observer-oid`, using the collector login. Add `--batch-output-root` to retain deterministic aggregation and feature output in a separate empty private directory |
 
 For database operations, supply `--ca-file`, `--database-oid`, `--login-oid`,
 and `--publisher-oid`. Set `CTCC_DEVVAL_CAMPAIGN_DATABASE_URL` privately in
@@ -251,3 +251,18 @@ IDs. Retain the completion SHA independently for replay.
 Start collection before the Development window opens. A partial or uncertain
 operation retains its original evidence. Use `observe` for committed
 publication or dispatch resolution.
+
+### Point-in-Time batch output
+
+With `--batch-output-root`, replay uses only the minutes verified in the
+current invocation. It preserves the original minute and instrument order,
+separates Development and Validation, and requires measured receipts for
+each minute. The existing aggregation computes 15m, 1H and 4H OHLCV in
+contracts, carrying each aggregate's latest constituent availability.
+Features use the original partition cutoffs with 21 bars of history.
+
+The batch binds the campaign, completion receipt, root roster, row
+inventory, and source checkpoint. It is read back from the output directory
+and published without overwriting prior results. Repeating the operation
+against the same retained evidence in another empty directory must produce
+the same batch SHA. This artifact carries a computational claim.

@@ -22,6 +22,7 @@ from app.database.repositories.public_runtime_bundle_custody import (
 )
 from app.demo_automation.native_private_root_v2 import require_private_evidence_base_v2
 from app.domain.source_primitives import canonical, decode, sha, validate_stamps
+from app.mie.validation.artifact import FrozenGate3Artifact
 from app.mie.validation.availability import AvailabilityBasis, AvailabilityProvenance
 from app.mie.validation.batch_replay import BoundMinute
 from app.mie.validation.development_validation_source_collection_v1 import (
@@ -56,6 +57,10 @@ from app.mie.validation.post_publication_availability_v6 import (
     replay_native_availability_v6,
 )
 from app.mie.validation.prospective_development_validation_plan import _ns
+from app.mie.validation.prospective_devval_campaign_batch_v1 import (
+    DevvalCampaignBatchV1,
+    _build_batch,
+)
 from app.mie.validation.prospective_devval_campaign_custody_v1 import (
     DevvalCampaignCustodyRepositoryV1,
     DevvalCampaignDispatchClaimV1,
@@ -98,6 +103,7 @@ class DevvalCampaignReplayV1:
     development_cutoff_utc_ns: int
     validation_cutoff_utc_ns: int
     row_inventory_sha256: str
+    batch: FrozenGate3Artifact[DevvalCampaignBatchV1] | None = None
     trusted_clock_verified: ClassVar[Literal[False]] = False
     independently_protected: ClassVar[Literal[False]] = False
     predictive_oos_eligible: ClassVar[Literal[False]] = False
@@ -511,12 +517,14 @@ async def replay_prospective_devval_campaign_v1(
     witness_repository: PublicReceiptWitnessRepository,
     observation_repository: PublicReceiptPostReadRepository,
     custody_repository: RuntimeBundleCustodyRepository,
+    include_batch: bool = False,
 ) -> DevvalCampaignReplayV1:
     """Replay independently retained bytes and live DB readbacks without writes."""
     try:
         _need(
             type(root) is type(Path())
             and root.is_absolute()
+            and type(include_batch) is bool
             and type(publication_repository) is DevvalCampaignCustodyRepositoryV1
             and type(witness_repository) is PublicReceiptWitnessRepository
             and type(observation_repository) is PublicReceiptPostReadRepository
@@ -753,16 +761,32 @@ async def replay_prospective_devval_campaign_v1(
                 checkpoint=checkpoint,
                 journal_pins=journal_pins,
             )
+        minutes = tuple(rows)
+        inventory_sha256 = inventory.hexdigest()
+        batch = (
+            _build_batch(
+                campaign,
+                minutes,
+                completion_sha256=expected_completion_sha256,
+                root_binding_sha256=binding_sha,
+                row_inventory_sha256=inventory_sha256,
+                development_cutoff_utc_ns=latest["development"],
+                validation_cutoff_utc_ns=latest["validation"],
+            )
+            if include_batch
+            else None
+        )
         return DevvalCampaignReplayV1(
             expected_campaign_sha256,
             expected_completion_sha256,
             binding_sha,
-            tuple(rows),
+            minutes,
             totals["development"],
             totals["validation"],
             latest["development"],
             latest["validation"],
-            inventory.hexdigest(),
+            inventory_sha256,
+            batch,
         )
     except asyncio.CancelledError:
         raise

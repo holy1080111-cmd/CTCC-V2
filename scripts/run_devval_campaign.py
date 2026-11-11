@@ -26,8 +26,9 @@ from app.database.repositories.public_runtime_bundle_custody import (
     RuntimeBundleCustodyRepository,
 )
 from app.demo_automation.native_private_root_v2 import require_private_evidence_base_v2
-from app.domain.source_primitives import decode
+from app.domain.source_primitives import canonical, decode, sha
 from app.mie.validation.development_validation_source_collection_v1 import _root_context
+from app.mie.validation.prospective_devval_campaign_batch_v1 import _MAX_BATCH_BYTES
 from app.mie.validation.prospective_devval_campaign_custody_v1 import (
     DevvalCampaignCustodyRepositoryV1,
 )
@@ -73,7 +74,7 @@ def _arguments(arguments):
     parser.add_argument("mode", choices=_MODES)
     parser.add_argument("--source-archive", required=True, type=Path)
     parser.add_argument("--source-archive-sha256", required=True)
-    for name in ("plan", "output", "campaign", "ca-file", "root"):
+    for name in ("plan", "output", "campaign", "ca-file", "root", "batch-output-root"):
         parser.add_argument(f"--{name}", type=Path)
     for name in ("campaign-sha256", "root-binding-sha256", "completion-sha256"):
         parser.add_argument(f"--{name}")
@@ -99,6 +100,8 @@ def _arguments(arguments):
         used.update(("root", "observer_oid"))
     if mode == "replay":
         used.add("completion_sha256")
+        if args.batch_output_root is not None:
+            used.add("batch_output_root")
     if mode == "observe" and args.root_binding_sha256 is not None:
         used.update(("root_binding_sha256", "observer_oid"))
     present = {name for name, value in vars(args).items() if value is not None}
@@ -292,16 +295,60 @@ async def _run(args, checkpoint):
         replay = await replay_prospective_devval_campaign_v1(
             expected_completion_sha256=args.completion_sha256,
             custody_repository=RuntimeBundleCustodyRepository(sources[2]),
+            include_batch=args.batch_output_root is not None,
             **providers,
             **common,
         )
-        return {
+        result = {
             "campaign_sha256": pin,
             "completion_sha256": replay.completion_sha256,
             "row_inventory_sha256": replay.row_inventory_sha256,
             "development_rows": replay.development_rows,
             "validation_rows": replay.validation_rows,
         }
+    if args.batch_output_root is not None:
+        result.update(_publish_batch(args.batch_output_root.absolute(), replay.batch))
+    return result
+
+
+def _publish_batch(root, batch):
+    if batch is None:
+        raise CampaignCommandError("devval_campaign_batch_missing")
+    if sha(batch.payload) != batch.sha256:
+        raise CampaignCommandError("devval_campaign_batch_changed")
+    require_private_evidence_base_v2(str(root))
+    receipt = canonical(
+        {
+            "schema": "ctcc.mie.devval_campaign_batch_publication.v1",
+            "batch_sha256": batch.sha256,
+            "batch_bytes": len(batch.payload),
+            "campaign_sha256": batch.contract.campaign_sha256,
+            "completion_sha256": batch.contract.completion_sha256,
+            "row_inventory_sha256": batch.contract.row_inventory_sha256,
+            "predictive_oos_eligible": False,
+            "execution_authority": False,
+        }
+    )
+    with _root_context(root) as directory:
+        if directory.names():
+            raise CampaignCommandError("devval_campaign_batch_output_not_empty")
+        batch_pin = _retain(directory, "batch-v1.json", batch.payload, _MAX_BATCH_BYTES)
+        if batch_pin != batch.sha256:
+            raise CampaignCommandError("devval_campaign_batch_changed")
+        receipt_pin = _retain(directory, "receipt-v1.json", receipt, 4096)
+        _retain(
+            directory,
+            "receipt-v1.sha256",
+            receipt_pin.encode("ascii") + b"\n",
+            65,
+        )
+        if set(directory.names()) != {
+            "batch-v1.json",
+            "receipt-v1.json",
+            "receipt-v1.sha256",
+        }:
+            raise CampaignCommandError("devval_campaign_batch_output_changed")
+    return {"batch_sha256": batch_pin, "batch_publication_sha256": receipt_pin}
 
 
 def _publication_receipt(pin, readback):

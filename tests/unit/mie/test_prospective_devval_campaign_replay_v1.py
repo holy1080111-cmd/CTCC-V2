@@ -275,6 +275,18 @@ async def test_restart_replays_committed_roster_and_final_chain(
     args, calls, read, claim = _archives(
         monkeypatch, root, run_args, capture.receipt_sha256, defect=defect
     )
+    batch = object()
+
+    def build_batch(campaign, rows, **pins):
+        assert calls[-2:] == ["final:block-0000", "final:block-0001"]
+        assert len(rows) == campaign.plan.expected_rows == 3
+        assert pins["completion_sha256"] == capture.receipt_sha256
+        assert pins["development_cutoff_utc_ns"] < replay._ns(VALIDATION)
+        calls.append("batch")
+        return batch
+
+    monkeypatch.setattr(replay, "_build_batch", build_batch)
+    args["include_batch"] = True
     if os.name == "nt":
         open_directory = replay._WindowsAPI.open_directory
 
@@ -314,7 +326,9 @@ async def test_restart_replays_committed_roster_and_final_chain(
         "observe_dispatch",
         "final:block-0000",
         "final:block-0001",
+        "batch",
     ]
+    assert result.batch is batch
     assert (result.development_rows, result.validation_rows) == (2, 1)
     assert (
         result.development_cutoff_utc_ns
