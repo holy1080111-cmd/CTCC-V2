@@ -67,6 +67,9 @@ class SyntheticCapture:
             domain_clock, "native_os_clock", lambda: capture.native_os_clock()
         )
         monkeypatch.setattr(
+            domain_clock, "native_os_clock_ipc", lambda: capture.native_os_clock()
+        )
+        monkeypatch.setattr(
             capture,
             "_observe_owned_clock",
             clock._observe_owned_clock,

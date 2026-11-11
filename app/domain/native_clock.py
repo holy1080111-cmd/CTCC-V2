@@ -12,6 +12,7 @@ import time
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+from queue import Empty, Queue
 from threading import Thread
 
 from app.domain.source_primitives import (
@@ -346,6 +347,12 @@ def replay_clock_observation(payload):
         raise PublicReceiptError("clock_observation_invalid")
     diagnostic = observation["diagnostic"]
     if (
+        type(diagnostic) is dict
+        and diagnostic.get("schema_version") == "ctcc.windows_clock_diagnostic.v3"
+    ):
+        _ipc_diagnostic(diagnostic)
+        return value
+    if (
         type(diagnostic) is not dict
         or set(diagnostic)
         != {
@@ -480,6 +487,10 @@ def _check_probe(record, command_id, encoding):
 
 def _host_record(record, profile_id):
     data = decode(_check_probe(record, "host_metadata.v2", "utf-8"), _MAX_OUTPUT)
+    return _check_host_metadata(data, profile_id)
+
+
+def _check_host_metadata(data, profile_id):
     if (
         type(data) is not dict
         or set(data)
@@ -601,6 +612,201 @@ def _validate_v2(evidence):
     return evidence
 
 
+def _ipc_record(value, schema, fields):
+    if (
+        type(value) is not dict
+        or set(value) != {"schema_version", "outcome", "completed", *fields}
+        or value["schema_version"] != schema
+        or type(value["outcome"]) is not str
+        or value["outcome"]
+        not in {
+            "complete",
+            "failed",
+            "timeout",
+            "incomplete",
+            "overflow",
+            "clock_failure",
+        }
+    ):
+        raise PublicReceiptError("os_clock_diagnostic_invalid")
+    if value["completed"] is not None:
+        ClockStamp.model_validate(value["completed"])
+
+
+def _ipc_stream(stream):
+    if type(stream) is not dict or type(stream.get("truncated")) is not bool:
+        raise PublicReceiptError("os_clock_diagnostic_invalid")
+    _stream_bytes({**stream, "truncated": False})
+
+
+def _ipc_phase(value, expected):
+    _ipc_record(
+        value,
+        "ctcc.windows_host_metadata_phase.v1",
+        ("phase", "challenge", "request_start", "response"),
+    )
+    challenge = value["challenge"]
+    if value["phase"] != expected or (
+        challenge is not None
+        and (
+            type(challenge) is not str
+            or re.fullmatch(rf"CTCC-CLOCK-META/2 {expected} [a-f0-9]{{32}}", challenge)
+            is None
+        )
+    ):
+        raise PublicReceiptError("os_clock_diagnostic_invalid")
+    ClockStamp.model_validate(value["request_start"])
+    _ipc_stream(value["response"])
+
+
+def _ipc_host_payload(value, phase):
+    _ipc_phase(value, phase)
+    if (
+        value["outcome"] != "complete"
+        or value["challenge"] is None
+        or value["completed"] is None
+    ):
+        raise PublicReceiptError("native_clock_probe_failed")
+    validate_stamps((value["request_start"], value["completed"]))
+    prefix = value["challenge"].encode("ascii") + b" "
+    frame = _stream_bytes(value["response"])
+    if (
+        not frame.startswith(prefix)
+        or not frame.endswith(b"\n")
+        or frame.count(b"\n") != 1
+    ):
+        raise PublicReceiptError("native_clock_probe_failed")
+    metadata = decode(frame[len(prefix) :], _MAX_OUTPUT)
+    if type(metadata) is not dict:
+        raise PublicReceiptError("os_clock_profile_unsupported")
+    return metadata
+
+
+def _ipc_diagnostic(value):
+    if (
+        type(value) is not dict
+        or set(value)
+        != {
+            "schema_version",
+            "profile_id",
+            "resource_ids",
+            "clock_domain",
+            "host_before",
+            "status",
+            "host_after",
+            "metadata_transport",
+        }
+        or value["schema_version"] != "ctcc.windows_clock_diagnostic.v3"
+        or type(value["profile_id"]) is not str
+        or value["profile_id"] not in _PROFILE_FILES
+        or canonical(value["resource_ids"]) != canonical(RESOURCE_IDS)
+        or canonical(value["clock_domain"]) != canonical(_CLOCK_DOMAIN)
+    ):
+        raise PublicReceiptError("os_clock_diagnostic_invalid")
+    transport = value["metadata_transport"]
+    _ipc_record(
+        transport,
+        "ctcc.windows_host_metadata_transport.v1",
+        ("process_id", "process_exit_code", "stderr"),
+    )
+    pid, code = transport["process_id"], transport["process_exit_code"]
+    if (pid is not None and (type(pid) is not int or pid <= 0)) or (
+        code is not None and (type(code) is not int or pid is None)
+    ):
+        raise PublicReceiptError("os_clock_diagnostic_invalid")
+    _ipc_stream(transport["stderr"])
+    before, status, after = value["host_before"], value["status"], value["host_after"]
+    if before is not None:
+        _ipc_phase(before, "before")
+    if status is not None:
+        _ipc_record(
+            status,
+            "ctcc.windows_clock_raw_probe.v1",
+            (
+                "command_id",
+                "encoding",
+                "request_start",
+                "exit_code",
+                "stdout",
+                "stderr",
+            ),
+        )
+        if (
+            before is None
+            or status["command_id"] != "w32tm_status.v2"
+            or status["encoding"] != "cp950"
+            or (
+                status["exit_code"] is not None and type(status["exit_code"]) is not int
+            )
+        ):
+            raise PublicReceiptError("os_clock_diagnostic_invalid")
+        ClockStamp.model_validate(status["request_start"])
+        _ipc_stream(status["stdout"])
+        _ipc_stream(status["stderr"])
+    if after is not None:
+        if status is None:
+            raise PublicReceiptError("os_clock_diagnostic_invalid")
+        _ipc_phase(after, "after")
+    return transport
+
+
+def _validate_v3(evidence):
+    if set(evidence) != {"schema_version", "sample", "diagnostic", "diagnostic_sha256"}:
+        raise PublicReceiptError("os_clock_evidence_invalid")
+    data = evidence["diagnostic"]
+    transport = _ipc_diagnostic(data)
+    if sha(canonical(data)) != evidence["diagnostic_sha256"]:
+        raise PublicReceiptError("os_clock_diagnostic_invalid")
+    if (
+        transport["outcome"] != "complete"
+        or transport["process_id"] is None
+        or transport["process_exit_code"] != 0
+        or transport["completed"] is None
+        or _stream_bytes(transport["stderr"])
+    ):
+        raise PublicReceiptError("native_clock_probe_failed")
+    first, status, last = data["host_before"], data["status"], data["host_after"]
+    before, after = (
+        _check_host_metadata(_ipc_host_payload(first, "before"), data["profile_id"]),
+        _check_host_metadata(_ipc_host_payload(last, "after"), data["profile_id"]),
+    )
+    if first["challenge"].rsplit(" ", 1)[1] == last["challenge"].rsplit(" ", 1)[1]:
+        raise PublicReceiptError("native_clock_probe_failed")
+    if canonical(before) != canonical(after):
+        raise PublicReceiptError("os_clock_host_changed")
+    fields = _localized_status(_check_probe(status, "w32tm_status.v2", "cp950"))
+    stamps = (
+        first["request_start"],
+        first["completed"],
+        status["request_start"],
+        status["completed"],
+        last["request_start"],
+        last["completed"],
+        transport["completed"],
+        evidence["sample"],
+    )
+    validate_stamps(stamps)
+    if stamps[-1]["monotonic_ns"] - stamps[0]["monotonic_ns"] > _MAX_OBSERVATION_NS:
+        raise PublicReceiptError("native_clock_probe_expired")
+    lag = stamps[-1]["monotonic_ns"] - status["request_start"]["monotonic_ns"]
+    if Decimal(fields[_ENGLISH[-1]][:-1]) + Decimal(lag) / 10**9 > MAX_SYNC_AGE_SECONDS:
+        raise PublicReceiptError("os_sync_expired")
+    diagnostic = {key: value for key, value in after.items() if key != "files"}
+    diagnostic.update(
+        status_exit_code=0,
+        status_text="\n".join(f"{key}: {value}" for key, value in fields.items()),
+    )
+    _validate_v1(
+        {
+            "schema_version": "ctcc.windows_clock_observation.v1",
+            "sample": evidence["sample"],
+            "diagnostic": diagnostic,
+            "diagnostic_sha256": sha(canonical(diagnostic)),
+        }
+    )
+    return evidence
+
+
 def validate_os_clock(evidence: dict):
     """Pure replay only: neither version nor caller data grants authority."""
     canonical(evidence)
@@ -610,6 +816,8 @@ def validate_os_clock(evidence: dict):
         return _validate_v1(evidence)
     if evidence.get("schema_version") == "ctcc.windows_clock_observation.v2":
         return _validate_v2(evidence)
+    if evidence.get("schema_version") == "ctcc.windows_clock_observation.v3":
+        return _validate_v3(evidence)
     raise PublicReceiptError("os_clock_evidence_invalid")
 
 
@@ -618,6 +826,8 @@ def clock_timezone(evidence):
     data = evidence["diagnostic"]
     if evidence["schema_version"] == "ctcc.windows_clock_observation.v2":
         data = _host_record(data["host_after"], data["profile_id"])
+    elif evidence["schema_version"] == "ctcc.windows_clock_observation.v3":
+        data = _ipc_host_payload(data["host_after"], "after")
     return data["timezone_id"], data["utc_offset_minutes"]
 
 
@@ -797,6 +1007,269 @@ def native_os_clock() -> dict:
         raise NativeClockObservationError(str(exc), {"diagnostic": data}) from exc
 
 
+_HOST_QUERY_IPC_V3 = r"""
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+[Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false, $true)
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+foreach ($module in @('Microsoft.PowerShell.Management', 'Microsoft.PowerShell.Utility', 'Microsoft.PowerShell.Security')) {
+  Import-Module ([IO.Path]::Combine($PSHOME, "Modules/$module/$module.psd1"))
+}
+$PSModuleAutoLoadingPreference = 'None'
+foreach ($phase in @('before', 'after')) {
+  $request = [Console]::In.ReadLine()
+  if ($null -eq $request) {
+    if ($phase -ceq 'after') { exit 0 }
+    exit 2
+  }
+  if ($request -cnotmatch ('\ACTCC-CLOCK-META/2 ' + $phase + ' [a-f0-9]{32}\z')) { exit 2 }
+  $service = Get-Service -Name W32Time
+  $zone = Get-TimeZone
+  $files = foreach ($slot in @('w32tm.exe', 'en-US/w32tm.exe.mui', 'zh-TW/w32tm.exe.mui')) {
+    $path = [IO.Path]::Combine([Environment]::SystemDirectory, $slot)
+    $file = Get-Item -LiteralPath $path
+    $signature = Get-AuthenticodeSignature -LiteralPath $path
+    [ordered]@{
+      slot = $slot
+      sha256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+      version = ('{0}.{1}.{2}.{3}' -f $file.VersionInfo.FileMajorPart, $file.VersionInfo.FileMinorPart, $file.VersionInfo.FileBuildPart, $file.VersionInfo.FilePrivatePart)
+      signature_status = [int]$signature.Status
+    }
+  }
+  $json = [ordered]@{
+    service_state = [int]$service.Status
+    service_start_type = [int]$service.StartType
+    timezone_id = $zone.Id
+    utc_offset_minutes = [int][TimeZoneInfo]::Local.GetUtcOffset([DateTime]::UtcNow).TotalMinutes
+    files = @($files)
+  } | ConvertTo-Json -Depth 5 -Compress
+  [Console]::Out.WriteLine("$request $json")
+  [Console]::Out.Flush()
+}
+if ($null -ne [Console]::In.ReadLine()) { exit 2 }
+exit 0
+"""
+
+
+class _WindowsHostMetadataIPC:
+    """Two fresh phase challenges, one bounded local PowerShell process."""
+
+    def __init__(self, command, deadline):
+        self.command = command
+        self.deadline = deadline
+        self.process = None
+        self.frames = Queue(maxsize=4)
+        self.stderr = bytearray()
+        self.stderr_overflow = False
+        self.stderr_failed = False
+        self.readers = []
+
+    def _read_frames(self):
+        try:
+            with self.process.stdout as pipe:
+                for _ in range(3):  # two responses and one EOF/extra frame
+                    frame = pipe.readline(_MAX_OUTPUT + 1)
+                    self.frames.put_nowait(frame)
+                    if not frame.endswith(b"\n"):
+                        if frame:
+                            self.frames.put_nowait(None)
+                        return
+        except OSError:
+            self.frames.put_nowait(None)
+
+    def _read_stderr(self):
+        try:
+            with self.process.stderr as pipe:
+                while block := pipe.read(4096):
+                    remaining = _MAX_OUTPUT - len(self.stderr)
+                    self.stderr.extend(block[:remaining])
+                    if len(block) > remaining:
+                        self.stderr_overflow = True
+                        return
+        except OSError:
+            self.stderr_failed = True
+
+    def _start(self):
+        self.process = subprocess.Popen(
+            self.command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        for target in (self._read_frames, self._read_stderr):
+            reader = Thread(target=target, daemon=True)
+            reader.start()
+            self.readers.append(reader)
+
+    def _remaining(self):
+        remaining = self.deadline - time.perf_counter()
+        if remaining <= 0:
+            raise Empty
+        return remaining
+
+    def capture(self, phase):
+        started = native_stamp()
+        raw = b""
+        outcome = "failed"
+        challenge = None
+        try:
+            self._remaining()
+            if self.process is None:
+                self._start()
+            nonce = os.urandom(16).hex()
+            challenge = f"CTCC-CLOCK-META/2 {phase} {nonce}"
+            token = challenge.encode("ascii")
+            request = token + b"\n"
+            self._remaining()
+            if self.process.stdin.write(request) == len(request):
+                self.process.stdin.flush()
+                frame = self.frames.get(timeout=self._remaining())
+                if frame is not None:
+                    raw = frame
+                    if len(raw) > _MAX_OUTPUT:
+                        outcome = "overflow"
+                    elif raw.startswith(token + b" ") and raw.endswith(b"\n"):
+                        outcome = "complete"
+                    else:
+                        outcome = "incomplete"
+        except Empty:
+            outcome = "timeout"
+        except (OSError, subprocess.SubprocessError):
+            pass
+        try:
+            completed = native_stamp()
+            if outcome == "complete" and time.perf_counter() >= self.deadline:
+                outcome = "timeout"
+        except PublicReceiptError:
+            completed, outcome = None, "clock_failure"
+        return {
+            "schema_version": "ctcc.windows_host_metadata_phase.v1",
+            "phase": phase,
+            "challenge": challenge,
+            "request_start": started,
+            "completed": completed,
+            "outcome": outcome,
+            "response": _stream_record(
+                raw[:_MAX_OUTPUT], truncated=len(raw) > _MAX_OUTPUT
+            ),
+        }
+
+    def finish(self):
+        process = self.process
+        outcome, code = "failed", None
+        if process is not None:
+            outcome, code = self._finish_process(process)
+        try:
+            completed = native_stamp()
+            if outcome == "complete" and time.perf_counter() >= self.deadline:
+                outcome = "timeout"
+        except PublicReceiptError:
+            completed, outcome = None, "clock_failure"
+        return {
+            "schema_version": "ctcc.windows_host_metadata_transport.v1",
+            "process_id": None if process is None else process.pid,
+            "process_exit_code": code,
+            "completed": completed,
+            "outcome": outcome,
+            "stderr": _stream_record(
+                bytes(self.stderr), truncated=self.stderr_overflow
+            ),
+        }
+
+    def _finish_process(self, process):
+        outcome, code = "incomplete", None
+        try:
+            process.stdin.close()
+            if self.frames.get(timeout=self._remaining()) == b"":
+                code = process.wait(timeout=self._remaining())
+                for reader in self.readers:
+                    reader.join(timeout=self._remaining())
+                if not any(reader.is_alive() for reader in self.readers):
+                    self._remaining()
+                    outcome = (
+                        "complete" if code == 0 and not self.stderr_failed else "failed"
+                    )
+        except (Empty, subprocess.TimeoutExpired):
+            outcome = "timeout"
+        except (OSError, subprocess.SubprocessError):
+            outcome = "failed"
+        if outcome != "complete":
+            try:
+                if process.poll() is None:
+                    process.kill()
+                cleanup_deadline = time.perf_counter() + 1
+                code = process.wait(
+                    timeout=max(0, cleanup_deadline - time.perf_counter())
+                )
+                for reader in self.readers:
+                    reader.join(timeout=max(0, cleanup_deadline - time.perf_counter()))
+            except (OSError, subprocess.SubprocessError):
+                pass
+        if self.stderr_overflow:
+            outcome = "overflow"
+        elif self.stderr and outcome == "complete":
+            outcome = "failed"
+        return outcome, code
+
+
+def native_os_clock_ipc() -> dict:
+    directory = _system_directory()
+    executable = directory / "WindowsPowerShell/v1.0/powershell.exe"
+    if not executable.is_absolute() or not executable.is_file():
+        raise PublicReceiptError("native_clock_probe_unavailable")
+    metadata_command = [
+        str(executable),
+        "-NoProfile",
+        "-NonInteractive",
+        "-EncodedCommand",
+        base64.b64encode(_HOST_QUERY_IPC_V3.encode("utf-16-le")).decode("ascii"),
+    ]
+    domain = _windows_clock_domain()
+    deadline = time.perf_counter() + _MAX_OBSERVATION_NS / 10**9
+    data = {
+        "schema_version": "ctcc.windows_clock_diagnostic.v3",
+        "profile_id": UPDATED_PROFILE_ID,
+        "resource_ids": list(RESOURCE_IDS),
+        "clock_domain": domain,
+        "host_before": None,
+        "status": None,
+        "host_after": None,
+        "metadata_transport": None,
+    }
+    metadata = _WindowsHostMetadataIPC(metadata_command, deadline)
+    try:
+        try:
+            data["host_before"] = metadata.capture("before")
+            # Match exact files before starting the independent local status utility.
+            host = _ipc_host_payload(data["host_before"], "before")
+            data["profile_id"] = _profile_for_files(host.get("files"))
+            data["status"] = _capture_command(
+                [str(directory / "w32tm.exe"), "/query", "/status", "/verbose"],
+                "w32tm_status.v2",
+                "cp950",
+                deadline,
+            )
+            data["host_after"] = metadata.capture("after")
+        finally:
+            data["metadata_transport"] = metadata.finish()
+        sample = native_stamp()
+        if (
+            data["metadata_transport"]["outcome"] == "complete"
+            and time.perf_counter() >= deadline
+        ):
+            raise PublicReceiptError("native_clock_probe_expired")
+        evidence = {
+            "schema_version": "ctcc.windows_clock_observation.v3",
+            "sample": sample,
+            "diagnostic": data,
+            "diagnostic_sha256": sha(canonical(data)),
+        }
+        return validate_os_clock(evidence)
+    except PublicReceiptError as exc:
+        raise NativeClockObservationError(str(exc), {"diagnostic": data}) from exc
+
+
 def _native_observation_payload():
     # Only fixed native acquisition reaches registration. There is deliberately
     # no payload/result parameter or caller-supplied native adapter.
@@ -811,6 +1284,25 @@ def _native_observation_payload():
     except PublicReceiptError:
         # Setup failed before there was a returned raw observation.
         observation, outcome = None, "unobserved"
+    return _native_observation_result(observation, outcome)
+
+
+def _native_observation_payload_ipc():
+    """Explicit fixed v3 acquisition for a reviewed clock owner."""
+    try:
+        observation = native_os_clock_ipc()
+        outcome = "accepted"
+    except NativeClockObservationError as exc:
+        if type(exc) is not NativeClockObservationError:
+            raise PublicReceiptError("owned_clock_observation_unavailable") from None
+        observation = decode(exc.observation_bytes, MAX_CLOCK_PAYLOAD)
+        outcome = "rejected"
+    except PublicReceiptError:
+        observation, outcome = None, "unobserved"
+    return _native_observation_result(observation, outcome)
+
+
+def _native_observation_result(observation, outcome):
     payload = canonical(
         {
             "schema_version": CLOCK_RESULT_VERSION,

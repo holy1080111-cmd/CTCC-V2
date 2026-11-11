@@ -358,7 +358,8 @@ def replay_public_capture(receipt, raw_files):
     if receipt.os_clock_before["schema_version"] != receipt.os_clock_after[
         "schema_version"
     ] or (
-        receipt.os_clock_before["schema_version"] == "ctcc.windows_clock_observation.v2"
+        receipt.os_clock_before["schema_version"]
+        in {"ctcc.windows_clock_observation.v2", "ctcc.windows_clock_observation.v3"}
         and receipt.os_clock_before["diagnostic"]["profile_id"]
         != receipt.os_clock_after["diagnostic"]["profile_id"]
     ):

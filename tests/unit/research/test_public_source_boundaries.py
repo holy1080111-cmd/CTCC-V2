@@ -104,10 +104,25 @@ def test_public_source_has_only_explicit_reviewed_consumers():
         "app.public_market_source.public_receipt_storage.PublicJournalCheckpointV1",
         "app.public_market_source.public_receipt_storage._root_context",
     }
-    # These three later native owners replay only the named public clock or
-    # retained custody data. Keep the exact import form and cardinality pinned;
-    # no capture, publisher, or general package capability is admitted.
+    # These consumers read only the named plan, clock, or retained custody data.
+    # Keep the exact import form and cardinality pinned.
     exact_native_imports = {
+        # The campaign plan constructs immutable minute coordinates only.
+        # Keep both names, their order, and the single absolute import fixed.
+        APP / "mie" / "validation" / "prospective_devval_campaign_plan_v1.py": (
+            (
+                "app.public_market_source.public_market_receipts",
+                (("MINUTE_NS", None), ("PublicMinuteCapturePlanV1", None)),
+            ),
+        ),
+        # The campaign replay reads an already retained journal. It must not
+        # import journal creation, publishing, or fresh market capture.
+        APP / "mie" / "validation" / "prospective_devval_campaign_replay_v1.py": (
+            (
+                "app.public_market_source.public_receipt_storage",
+                (("_replay_directory", None),),
+            ),
+        ),
         APP / "trade_qualification" / "native_namespace_history_bundle_v1.py": (
             (
                 "app.public_market_source.public_runtime_custody_v4",
@@ -544,6 +559,45 @@ def test_native_public_replay_consumers_reject_unreviewed_import(
             yield unreviewed
 
     monkeypatch.setattr(sys.modules[__name__], "nodes", with_unreviewed_import)
+    with pytest.raises(AssertionError):
+        test_public_source_has_only_explicit_reviewed_consumers()
+
+
+@pytest.mark.parametrize(
+    ("consumer_name", "import_line"),
+    [
+        (
+            "prospective_devval_campaign_plan_v1.py",
+            "from app.public_market_source.public_market_capture import capture_public_market",
+        ),
+        (
+            "prospective_devval_campaign_replay_v1.py",
+            "from app.public_market_source.public_receipt_storage import initialize_public_receipt_journal",
+        ),
+        (
+            "prospective_devval_campaign_plan_v1.py",
+            "from app.public_market_source.public_market_receipts import MINUTE_NS, PublicMinuteCapturePlanV1",
+        ),
+        (
+            "prospective_devval_campaign_replay_v1.py",
+            "from app.public_market_source.public_receipt_storage import _replay_directory",
+        ),
+    ],
+)
+def test_campaign_consumers_reject_extra_or_duplicate_public_import(
+    monkeypatch, consumer_name, import_line
+):
+    test_public_source_has_only_explicit_reviewed_consumers()
+    original_nodes = nodes
+    consumer = APP / "mie" / "validation" / consumer_name
+    extra = ast.parse(import_line).body[0]
+
+    def with_extra_import(path):
+        yield from original_nodes(path)
+        if path == consumer:
+            yield extra
+
+    monkeypatch.setattr(sys.modules[__name__], "nodes", with_extra_import)
     with pytest.raises(AssertionError):
         test_public_source_has_only_explicit_reviewed_consumers()
 

@@ -17,6 +17,7 @@ PROFILE_ID = _native_clock.PROFILE_ID
 RESOURCE_IDS = _native_clock.RESOURCE_IDS
 NativeClockObservationError = _native_clock.NativeClockObservationError
 _native_observation_payload = _native_clock._native_observation_payload
+_native_observation_payload_ipc = _native_clock._native_observation_payload_ipc
 clock_timezone = _native_clock.clock_timezone
 native_os_clock = _native_clock.native_os_clock
 native_stamp = _native_clock.native_stamp
@@ -70,7 +71,7 @@ def _observe_owned_clock(attempt, stage):
         raise PublicReceiptError("owned_clock_observation_required")
     with _CLOCK_RESULTS_LOCK:
         attempt.claim_clock_stage(stage)
-    payload = _native_observation_payload()
+    payload = _native_observation_payload_ipc()
     result = _OwnedClockObservation(_CLOCK_ISSUER)
     with _CLOCK_RESULTS_LOCK:
         _CLOCK_RESULTS[result] = (attempt, stage, payload)

@@ -17,7 +17,7 @@ from app.public_market_source.public_market_receipts import (
 from tests.unit.research.public_receipt_fixtures import os_evidence
 from tests.unit.research.test_public_attempt_journal import invoke, read_attempt
 from tests.unit.research.test_public_clock_v2 import fixture as clock_fixture
-from tests.unit.research.test_public_clock_v2 import host_change, stream
+from tests.unit.research.test_public_clock_v2 import host_change, ipc_fixture, stream
 from tests.unit.research.test_public_journal_contracts import (
     MemoryDirectory,
     memory_publisher,
@@ -71,7 +71,7 @@ def rejected_runtime(monkeypatch, *, stage="before", mode="stopped", terminal=Fa
             raise PublicReceiptError("native_clock_sample_unbounded")
         return original_stamp()
 
-    monkeypatch.setattr(domain_clock, "native_os_clock", native)
+    monkeypatch.setattr(domain_clock, "native_os_clock_ipc", native)
     monkeypatch.setattr(capture, "_observe_owned_clock", clock._observe_owned_clock)
     monkeypatch.setattr(capture, "native_stamp", stamp)
     return fixture, directory, journal, observation, calls
@@ -139,13 +139,28 @@ def test_setup_without_raw_cannot_invent_a_diagnostic(monkeypatch):
     def unavailable():
         raise PublicReceiptError("PRIVATE_SETUP_VALUE")
 
-    monkeypatch.setattr(domain_clock, "native_os_clock", unavailable)
+    monkeypatch.setattr(domain_clock, "native_os_clock_ipc", unavailable)
     with pytest.raises(PublicReceiptError, match="os_clock_rejected"):
         invoke(fixture, journal)
     result = decode(
         directory.content["attempts"]["attempt-00000001"]["clock-before.json"]
     )
     assert result["outcome"] == "unobserved" and result["observation"] is None
+    assert not fixture.requests
+
+
+def test_owned_attempt_persists_and_reads_v3_phase_evidence(monkeypatch):
+    fixture, directory, journal, _ = memory_publisher(monkeypatch)
+    fixture.requests.clear()
+    evidence = ipc_fixture()
+    monkeypatch.setattr(domain_clock, "native_os_clock_ipc", lambda: evidence)
+    with journal._begin_attempt(fixture.plan) as attempt:
+        owned = clock._observe_owned_clock(attempt, "before")
+        accepted = attempt.record_clock("before", owned)
+    node = directory.content["attempts"]["attempt-00000001"]
+    assert accepted["outcome"] == "accepted"
+    assert accepted["observation"] == evidence
+    assert decode(node["clock-before.json"]) == accepted
     assert not fixture.requests
 
 

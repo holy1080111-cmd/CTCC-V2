@@ -7,6 +7,7 @@ import copy
 import io
 import itertools
 import subprocess
+import sys
 import time
 from types import SimpleNamespace
 
@@ -168,6 +169,20 @@ def test_updated_files_cannot_be_relabelled_as_historical_profile(profile_id):
     evidence["diagnostic"]["profile_id"] = clock.PROFILE_ID
     with pytest.raises(PublicReceiptError, match="profile_unsupported"):
         clock.validate_os_clock(resign(evidence))
+
+
+def test_metadata_ipc_expired_budget_never_starts_helper(monkeypatch):
+    def forbidden(*args, **kwargs):
+        raise AssertionError("must not launch")
+
+    monkeypatch.setattr(clock.subprocess, "Popen", forbidden)
+    monkeypatch.setattr(clock, "native_stamp", stamp)
+    helper = clock._WindowsHostMetadataIPC(["synthetic"], time.perf_counter() - 1)
+    first = helper.capture("before")
+    assert first["outcome"] == "timeout"
+    assert first["challenge"] is None
+    terminal = helper.finish()
+    assert terminal["process_id"] is terminal["process_exit_code"] is None
 
 
 @pytest.mark.parametrize(
@@ -505,6 +520,194 @@ def test_expired_budget_does_not_start_a_process(monkeypatch):
     )
     assert result["outcome"] == "timeout"
     assert result["exit_code"] is None
+
+
+def ipc_fixture():
+    evidence = fixture()
+    data = evidence["diagnostic"]
+    data["schema_version"] = "ctcc.windows_clock_diagnostic.v3"
+    for number, phase in enumerate(("before", "after"), start=1):
+        old = data[f"host_{phase}"]
+        token = f"CTCC-CLOCK-META/2 {phase} {number:032x}"
+        raw = base64.b64decode(old["stdout"]["base64"]).rstrip(b"\r\n")
+        data[f"host_{phase}"] = {
+            "schema_version": "ctcc.windows_host_metadata_phase.v1",
+            "phase": phase,
+            "challenge": token,
+            "request_start": old["request_start"],
+            "completed": old["completed"],
+            "outcome": "complete",
+            "response": stream(token.encode("ascii") + b" " + raw + b"\r\n"),
+        }
+    data["metadata_transport"] = {
+        "schema_version": "ctcc.windows_host_metadata_transport.v1",
+        "process_id": 55,
+        "process_exit_code": 0,
+        "completed": data["host_after"]["completed"],
+        "outcome": "complete",
+        "stderr": stream(b""),
+    }
+    evidence["schema_version"] = "ctcc.windows_clock_observation.v3"
+    return resign(evidence)
+
+
+def test_shared_metadata_helper_v3_replay_without_legacy_exit_codes():
+    evidence = ipc_fixture()
+    assert clock.validate_os_clock(evidence) == evidence
+    assert clock.clock_timezone(evidence) == clock.clock_timezone(fixture())
+    data = evidence["diagnostic"]
+    assert set(data["host_before"]) == set(data["host_after"])
+    assert "exit_code" not in data["host_before"]
+    assert "exit_code" not in data["host_after"]
+    assert data["metadata_transport"]["process_exit_code"] == 0
+
+
+@pytest.mark.parametrize("supported_profile", [True, False])
+def test_ipc_clock_profiles_first_phase_before_separate_local_status(
+    monkeypatch, tmp_path, supported_profile
+):
+    evidence = ipc_fixture()
+    data = evidence["diagnostic"]
+    executable = tmp_path / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+    executable.parent.mkdir(parents=True)
+    executable.touch()
+    monkeypatch.setattr(clock, "_system_directory", lambda: tmp_path)
+    monkeypatch.setattr(
+        clock, "_windows_clock_domain", lambda: dict(clock._CLOCK_DOMAIN)
+    )
+    monkeypatch.setattr(clock, "native_stamp", lambda: evidence["sample"])
+    calls = []
+
+    class Helper:
+        def __init__(self, command, _deadline):
+            assert command[:4] == [
+                str(executable),
+                "-NoProfile",
+                "-NonInteractive",
+                "-EncodedCommand",
+            ]
+            calls.append("helper")
+
+        def capture(self, phase):
+            calls.append(phase)
+            if phase == "before" and not supported_profile:
+                first = data["host_before"]
+                frame = base64.b64decode(first["response"]["base64"])
+                first["response"] = stream(
+                    frame.replace(clock._FILES[0]["sha256"].encode(), b"a" * 64, 1)
+                )
+            return data[f"host_{phase}"]
+
+        def finish(self):
+            calls.append("finish")
+            return data["metadata_transport"]
+
+    def status(command, command_id, encoding, _deadline):
+        assert command == [str(tmp_path / "w32tm.exe"), "/query", "/status", "/verbose"]
+        assert (command_id, encoding) == ("w32tm_status.v2", "cp950")
+        calls.append("status")
+        return data["status"]
+
+    monkeypatch.setattr(clock, "_WindowsHostMetadataIPC", Helper)
+    monkeypatch.setattr(clock, "_capture_command", status)
+    result = clock.replay_clock_observation(clock._native_observation_payload_ipc())
+    if supported_profile:
+        assert result["outcome"] == "accepted"
+        assert result["observation"] == evidence
+        assert calls == ["helper", "before", "status", "after", "finish"]
+    else:
+        assert result["outcome"] == "rejected"
+        assert result["observation"]["diagnostic"]["status"] is None
+        assert calls == ["helper", "before", "finish"]
+
+
+@pytest.mark.parametrize(
+    "change", ["replayed", "nonzero_exit", "bad_frame", "transport_time"]
+)
+def test_shared_metadata_helper_v3_fails_closed_and_retains_negative_replay(change):
+    evidence = ipc_fixture()
+    data = evidence["diagnostic"]
+    last = data["host_after"]
+    transport = data["metadata_transport"]
+    if change == "replayed":
+        previous = data["host_before"]["challenge"].rsplit(" ", 1)[1]
+        raw = base64.b64decode(last["response"]["base64"])
+        token = f"CTCC-CLOCK-META/2 after {previous}"
+        raw = raw.replace(last["challenge"].encode("ascii"), token.encode("ascii"), 1)
+        last.update(challenge=token, response=stream(raw))
+    elif change == "nonzero_exit":
+        transport["process_exit_code"] = 2
+    elif change == "bad_frame":
+        last["response"] = stream(b"unbound frame\n")
+    elif change == "transport_time":
+        transport["completed"] = stamp(0)
+    with pytest.raises(PublicReceiptError):
+        clock.validate_os_clock(resign(evidence))
+    negative = {
+        "schema_version": clock.CLOCK_RESULT_VERSION,
+        "outcome": "rejected",
+        "observation": {"diagnostic": data},
+    }
+    assert clock.replay_clock_observation(canonical(negative)) == negative
+
+
+@pytest.mark.parametrize("mode", ["clean", "extra_frame", "stderr", "malformed"])
+def test_metadata_ipc_runs_exactly_one_local_child_and_checks_its_terminal(
+    mode, monkeypatch
+):
+    script = """
+import sys
+reader, writer = sys.stdin.buffer, sys.stdout.buffer
+mode = sys.argv[1]
+for _ in range(2):
+    challenge = reader.readline()
+    if not challenge:
+        sys.exit(0)
+    if mode == 'malformed':
+        writer.write(b'unbound metadata\\r\\n')
+    else:
+        writer.write(challenge.rstrip(b'\\n') + b' {}\\r\\n')
+    writer.flush()
+if mode == 'extra_frame':
+    writer.write(b'unexpected third frame\\r\\n')
+    writer.flush()
+if mode == 'stderr':
+    sys.stderr.buffer.write(b'unexpected stderr')
+sys.exit(2 if reader.readline() else 0)
+"""
+    monkeypatch.setattr(clock.subprocess, "CREATE_NO_WINDOW", 0, raising=False)
+    stamps = itertools.count(100)
+    monkeypatch.setattr(clock, "native_stamp", lambda: stamp(next(stamps)))
+    helper = clock._WindowsHostMetadataIPC(
+        [sys.executable, "-I", "-B", "-c", script, mode], time.perf_counter() + 5
+    )
+    try:
+        before = helper.capture("before")
+        child = helper.process
+        after = None if mode == "malformed" else helper.capture("after")
+        assert helper.process is child
+    finally:
+        terminal = helper.finish()
+    assert terminal["process_id"] == child.pid
+    assert child.poll() is not None
+    assert before["request_start"] == stamp(100)
+    assert before["completed"] == stamp(101)
+    if mode == "malformed":
+        assert before["outcome"] == "incomplete"
+        return
+    assert clock._ipc_host_payload(before, "before") == {}
+    assert clock._ipc_host_payload(after, "after") == {}
+    assert after["request_start"] == stamp(102)
+    assert after["completed"] == stamp(103)
+    assert terminal["completed"] == stamp(104)
+    assert (
+        terminal["outcome"]
+        == {
+            "clean": "complete",
+            "extra_frame": "incomplete",
+            "stderr": "failed",
+        }[mode]
+    )
 
 
 @pytest.mark.parametrize(

@@ -1064,6 +1064,20 @@ _DATASET_DECLARED_MODULES = (
     (
         "app.domain.native_clock",
         (
+            "Empty",
+            "Queue",
+            "_HOST_QUERY_IPC_V3",
+            "_WindowsHostMetadataIPC",
+            "_check_host_metadata",
+            "_ipc_record",
+            "_ipc_stream",
+            "_ipc_phase",
+            "_ipc_host_payload",
+            "_ipc_diagnostic",
+            "_validate_v3",
+            "_native_observation_payload_ipc",
+            "_native_observation_result",
+            "native_os_clock_ipc",
             "CLOCK_RESULT_VERSION",
             "ClockStamp",
             "Decimal",
@@ -3285,6 +3299,7 @@ _DATASET_DECLARED_MODULES = (
     (
         "app.public_market_source.public_clock",
         (
+            "_native_observation_payload_ipc",
             "CLOCK_RESULT_VERSION",
             "Lock",
             "MAX_CLOCK_PAYLOAD",
@@ -3968,6 +3983,21 @@ _DATASET_DECLARED_CLASSES = (
             "read_retained_bundle_by_pins",
             "seal_bundle",
             "verify_deployment",
+        ),
+    ),
+    (
+        "app.domain.native_clock",
+        "_WindowsHostMetadataIPC",
+        (
+            "__ctcc_fixed_class_routes_v6__",
+            "__init__",
+            "_finish_process",
+            "_read_frames",
+            "_read_stderr",
+            "_remaining",
+            "_start",
+            "capture",
+            "finish",
         ),
     ),
     (
