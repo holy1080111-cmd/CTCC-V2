@@ -26,7 +26,7 @@ from app.database.repositories.public_runtime_bundle_custody import (
     RuntimeBundleCustodyRepository,
 )
 from app.domain.source_primitives import canonical, decode, sha
-from app.mie.validation.artifact import _verify
+from app.mie.validation.artifact import _verify, verify_prospective_preregistration
 from app.mie.validation.development_validation_source_collection_v1 import _root_context
 from app.mie.validation.prospective_devval_campaign_batch_v1 import _MAX_BATCH_BYTES
 from app.mie.validation.prospective_devval_campaign_custody_v1 import (
@@ -56,6 +56,10 @@ from app.mie.validation.prospective_devval_candidate_trials_v1 import (
     DevvalCandidateTrialPlanV1,
     DevvalLegacyScoresV1,
     _fit_candidate_trials,
+)
+from app.mie.validation.prospective_devval_fitted_binding_v1 import (
+    _MAX_FITTED_BINDING_BYTES,
+    build_devval_candidate_binding,
 )
 from app.trade_evidence.native_private_root_v2 import require_private_evidence_base_v2
 from scripts.devval_campaign_source import (
@@ -99,6 +103,8 @@ def _arguments(arguments):
         "candidate-plan",
         "legacy-scores",
         "candidate-output-root",
+        "formal-preregistration",
+        "fitted-binding-output-root",
     ):
         parser.add_argument(f"--{name}", type=Path)
     for name in (
@@ -107,6 +113,7 @@ def _arguments(arguments):
         "completion-sha256",
         "study-plan-sha256",
         "candidate-plan-sha256",
+        "formal-preregistration-sha256",
     ):
         parser.add_argument(f"--{name}")
     for name in ("database-oid", "login-oid", "publisher-oid", "observer-oid"):
@@ -144,6 +151,15 @@ def _arguments(arguments):
                         "candidate_output_root",
                     )
                 )
+                if args.formal_preregistration is not None:
+                    used.update(
+                        (
+                            "batch_output_root",
+                            "formal_preregistration",
+                            "formal_preregistration_sha256",
+                            "fitted_binding_output_root",
+                        )
+                    )
     if mode == "observe" and args.root_binding_sha256 is not None:
         used.update(("root_binding_sha256", "observer_oid"))
     present = {name for name, value in vars(args).items() if value is not None}
@@ -184,6 +200,24 @@ def _candidate_inputs(args):
         contract_type=DevvalLegacyScoresV1,
     )
     return plan, legacy_scores
+
+
+def _binding_preregistration(args):
+    root = args.fitted_binding_output_root.resolve()
+    if any(
+        other is not None and root == other.resolve()
+        for other in (
+            args.root,
+            args.batch_output_root,
+            args.study_output_root,
+            args.candidate_output_root,
+        )
+    ):
+        raise CampaignCommandError("devval_campaign_fitted_binding_output_conflict")
+    return verify_prospective_preregistration(
+        _read(args.formal_preregistration),
+        expected_sha256=args.formal_preregistration_sha256,
+    )
 
 
 def _freeze(args, checkpoint) -> dict:
@@ -309,6 +343,7 @@ async def _run(args, checkpoint):
     payload = None
     study_plan = None
     candidate_inputs = None
+    preregistration = None
     if mode != "replay":
         payload = _read(args.campaign)
         verify_prospective_devval_campaign_v1(
@@ -325,11 +360,13 @@ async def _run(args, checkpoint):
             raise CampaignCommandError("devval_campaign_study_plan_changed")
         if (
             args.batch_output_root is not None
-            and args.batch_output_root.absolute() == args.study_output_root.absolute()
+            and args.batch_output_root.resolve() == args.study_output_root.resolve()
         ):
             raise CampaignCommandError("devval_campaign_study_output_conflict")
     if args.candidate_plan is not None:
         candidate_inputs = _candidate_inputs(args)
+    if args.formal_preregistration is not None:
+        preregistration = _binding_preregistration(args)
     common = {"expected_campaign_sha256": pin, **checkpoint}
     async with _factories(args) as (repository, sources):
         if mode == "publish":
@@ -416,6 +453,25 @@ async def _run(args, checkpoint):
             )
     if args.batch_output_root is not None:
         result.update(_publish_batch(args.batch_output_root.absolute(), replay.batch))
+    if preregistration is not None:
+        fitted_binding = build_devval_candidate_binding(
+            study,
+            batch=replay.batch,
+            trial_result=candidate,
+            preregistration=preregistration,
+            expected_preregistration_sha256=args.formal_preregistration_sha256,
+            source_archive_sha256=args.source_archive_sha256,
+        )
+        result.update(
+            _publish_fitted_binding(
+                args.fitted_binding_output_root.absolute(),
+                fitted_binding,
+                batch_sha256=replay.batch.sha256,
+                study_sha256=study.sha256,
+                trial_result_sha256=candidate.sha256,
+                preregistration_sha256=args.formal_preregistration_sha256,
+            )
+        )
     return result
 
 
@@ -486,6 +542,42 @@ def _publish_candidate(
         "candidate_trials_sha256": artifact.sha256,
         "candidate_publication_sha256": receipt_pin,
         "candidate_status": status,
+    }
+
+
+def _publish_fitted_binding(
+    root,
+    artifact,
+    *,
+    batch_sha256,
+    study_sha256,
+    trial_result_sha256,
+    preregistration_sha256,
+):
+    receipt_pin = _publish_replay_artifact(
+        root,
+        "fitted-binding",
+        artifact,
+        _MAX_FITTED_BINDING_BYTES,
+        {
+            "schema": "ctcc.mie.devval_fitted_candidate_binding_publication.v1",
+            "fitted_binding_sha256": artifact.sha256,
+            "fitted_binding_bytes": len(artifact.payload),
+            "batch_sha256": batch_sha256,
+            "study_sha256": study_sha256,
+            "candidate_trials_sha256": trial_result_sha256,
+            "formal_preregistration_sha256": preregistration_sha256,
+            "computational_only": True,
+            "holdout_read": False,
+            "formal_seal_published": False,
+            "predictive_oos_eligible": False,
+            "execution_authority": False,
+        },
+    )
+    return {
+        "fitted_binding_sha256": artifact.sha256,
+        "fitted_binding_publication_sha256": receipt_pin,
+        "fitted_binding_computational_only": True,
     }
 
 

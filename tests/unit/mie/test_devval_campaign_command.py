@@ -132,6 +132,8 @@ def test_candidate_options_require_complete_replay_and_study_options(
     root = tmp_path / "capture"
     study_output = tmp_path / "study"
     candidate_output = tmp_path / "candidate"
+    batch_output = tmp_path / "batch"
+    binding_output = tmp_path / "binding"
     replay = [
         "replay",
         *_BASE,
@@ -163,16 +165,36 @@ def test_candidate_options_require_complete_replay_and_study_options(
         "--candidate-output-root",
         str(candidate_output),
     ]
+    binding = [
+        "--formal-preregistration",
+        "preregistration.json",
+        "--formal-preregistration-sha256",
+        "9" * 64,
+        "--fitted-binding-output-root",
+        str(binding_output),
+    ]
+    batch = ["--batch-output-root", str(batch_output)]
     assert command._arguments([*replay, *study]).candidate_plan is None
     parsed = command._arguments([*replay, *study, *candidate])
     assert parsed.candidate_plan == Path("candidate.json")
     assert parsed.candidate_output_root == candidate_output
+    assert parsed.formal_preregistration is None
+    with_binding = command._arguments([*replay, *study, *candidate, *binding, *batch])
+    assert with_binding.formal_preregistration == Path("preregistration.json")
+    assert with_binding.fitted_binding_output_root == binding_output
     for invalid in (
         [*replay, *candidate],
         [*replay, *study[:-2], *candidate],
         [*replay, *study, *candidate[:-2]],
         [*replay, *study, *candidate[:2], *candidate[4:]],
+        [*replay, *study, *candidate, *binding],
+        [*replay, *study, *binding, *batch],
+        [*replay, *candidate, *binding, *batch],
+        [*replay, *study, *candidate, *binding[:-2], *batch],
+        [*replay, *study, *candidate, *binding[2:], *batch],
+        [*replay, *study, *candidate, *binding[:2], *binding[4:], *batch],
         ["freeze", *_BASE, "--plan", "plan.json", "--output", "out.json", *candidate],
+        ["freeze", *_BASE, "--plan", "plan.json", "--output", "out.json", *binding],
     ):
         with pytest.raises(command.CampaignCommandError, match="command_invalid"):
             command._arguments(invalid)
@@ -181,6 +203,45 @@ def test_candidate_options_require_complete_replay_and_study_options(
     parsed.candidate_output_root = candidate_output / ".." / study_output.name
     with pytest.raises(command.CampaignCommandError, match="candidate_output_conflict"):
         command._candidate_inputs(parsed)
+
+    for existing in (root, batch_output, study_output, candidate_output):
+        with_binding.fitted_binding_output_root = binding_output / ".." / existing.name
+        with pytest.raises(
+            command.CampaignCommandError, match="fitted_binding_output_conflict"
+        ):
+            command._binding_preregistration(with_binding)
+
+    with_binding.fitted_binding_output_root = binding_output
+    monkeypatch.setattr(command, "_read", lambda *_: b"{}")
+    with pytest.raises(ValueError, match="artifact SHA256 mismatch"):
+        command._binding_preregistration(with_binding)
+
+
+def test_fitted_binding_publication_has_computational_receipt_and_no_clobber(tmp_path):
+    root = _private_root_path(tmp_path)
+    payload = b"offline fitted binding publication fixture"
+    artifact = SimpleNamespace(payload=payload, sha256=sha(payload))
+    lineage = {
+        "batch_sha256": "d" * 64,
+        "study_sha256": "a" * 64,
+        "trial_result_sha256": "b" * 64,
+        "preregistration_sha256": "c" * 64,
+    }
+    result = command._publish_fitted_binding(root, artifact, **lineage)
+    receipt_raw = (root / "receipt-v1.json").read_bytes()
+    receipt = json.loads(receipt_raw)
+    assert result["fitted_binding_sha256"] == artifact.sha256
+    assert result["fitted_binding_publication_sha256"] == sha(receipt_raw)
+    assert receipt["batch_sha256"] == lineage["batch_sha256"]
+    assert receipt["candidate_trials_sha256"] == lineage["trial_result_sha256"]
+    assert receipt["computational_only"] is True
+    assert receipt["formal_seal_published"] is False
+    assert receipt["holdout_read"] is False
+    assert receipt["execution_authority"] is False
+    with pytest.raises(command.CampaignCommandError, match="output_not_empty"):
+        command._publish_fitted_binding(root, artifact, **lineage)
+    assert (root / "fitted-binding-v1.json").read_bytes() == payload
+    assert (root / "receipt-v1.json").read_bytes() == receipt_raw
 
 
 @pytest.mark.asyncio

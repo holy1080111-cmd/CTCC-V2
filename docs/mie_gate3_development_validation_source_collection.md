@@ -318,3 +318,37 @@ and carry no predictive OOS or execution authority. The ready outcome is
 input to a separate Candidate Freeze and first-access verification process.
 That process must bind the declared trial configuration and the resulting
 fitted model to the formal evaluation registry.
+
+### Fitted candidate binding
+
+With batch, study, and candidate output enabled, replay accepts
+`--formal-preregistration`, `--formal-preregistration-sha256`, and
+`--fitted-binding-output-root`. Supply canonical prospective
+preregistration bytes and retain their SHA256 separately. The command
+checks these bytes before opening database connections and requires a
+distinct, empty private directory for the binding output.
+
+In the preregistration, keep the original trial registry and put the
+selected trial's configuration SHA256 in `candidate.configuration_sha256`.
+The binding separately records the fitted model SHA256 from the candidate
+trial result. The training dataset names the batch SHA256 as its content,
+the campaign SHA256 as its manifest, and the captured minute count and
+window boundaries as its coverage. Use `bar_interval_boundaries` and
+`available_at` for the time fields. The declared freeze time must cover
+the last measured batch cutoff. Round study dependency, purge, and embargo
+durations up to whole minutes. The embargo starts after the declared
+training dataset freeze, and the Development and Validation source
+windows must already have the full purge gap.
+
+Replay derives the binding from the authenticated batch, study, and trial
+result produced in that invocation. It publishes all three parent
+artifacts before retaining `fitted-binding-v1.json` and its receipt without
+overwriting existing files. `fitted_binding_sha256` identifies the binding
+and `fitted_binding_publication_sha256` identifies the local receipt. These
+record a computational lineage check. Formal seal publication, holdout
+access, predictive OOS acceptance, and execution have separate controls.
+For custody review, `verify_devval_candidate_binding` recomputes the study
+and candidate trials from the retained batch and legacy vector, then
+compares the canonical binding bytes. Independent publication timing,
+the legacy score origin, and evaluator first access require their own
+evidence.
