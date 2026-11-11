@@ -7,6 +7,7 @@ from hashlib import sha256
 from types import SimpleNamespace
 
 import pytest
+
 from app.mie.validation.artifact import ArtifactVerificationError
 from app.mie.validation.development_validation_source_collection_v1 import (
     MAX_PLAN_BYTES,
