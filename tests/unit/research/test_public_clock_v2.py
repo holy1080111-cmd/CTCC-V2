@@ -129,22 +129,30 @@ def test_v2_exact_profile_raw_bytes_pure_replay(language):
     ).encode("cp950")
 
 
-def test_updated_signed_profile_replays_without_rewriting_historical_profile():
+@pytest.mark.parametrize(
+    "profile_id", [clock.UPDATED_PROFILE_ID, clock.WINDOWS_9818_PROFILE_ID]
+)
+def test_updated_signed_profile_replays_without_rewriting_historical_profile(
+    profile_id,
+):
     old = fixture()
-    updated = fixture(profile_id=clock.UPDATED_PROFILE_ID)
+    updated = fixture(profile_id=profile_id)
     assert clock.validate_os_clock(old) is old
     assert clock.validate_os_clock(updated) is updated
     assert old["diagnostic"]["profile_id"] == clock.PROFILE_ID
-    assert updated["diagnostic"]["profile_id"] == clock.UPDATED_PROFILE_ID
+    assert updated["diagnostic"]["profile_id"] == profile_id
     assert (
         old["diagnostic"]["host_before"]["stdout"]["sha256"]
         != updated["diagnostic"]["host_before"]["stdout"]["sha256"]
     )
 
 
-def test_updated_profile_rejects_unknown_binary_even_with_rehashed_receipt():
-    evidence = fixture(profile_id=clock.UPDATED_PROFILE_ID)
-    files = copy.deepcopy(clock._UPDATED_FILES)
+@pytest.mark.parametrize(
+    "profile_id", [clock.UPDATED_PROFILE_ID, clock.WINDOWS_9818_PROFILE_ID]
+)
+def test_updated_profile_rejects_unknown_binary_even_with_rehashed_receipt(profile_id):
+    evidence = fixture(profile_id=profile_id)
+    files = copy.deepcopy(clock._PROFILE_FILES[profile_id])
     files[0]["sha256"] = "a" * 64
     for side in ("host_before", "host_after"):
         host_change(evidence, "files", files, side=side)
@@ -152,8 +160,11 @@ def test_updated_profile_rejects_unknown_binary_even_with_rehashed_receipt():
         clock.validate_os_clock(resign(evidence))
 
 
-def test_updated_files_cannot_be_relabelled_as_historical_profile():
-    evidence = fixture(profile_id=clock.UPDATED_PROFILE_ID)
+@pytest.mark.parametrize(
+    "profile_id", [clock.UPDATED_PROFILE_ID, clock.WINDOWS_9818_PROFILE_ID]
+)
+def test_updated_files_cannot_be_relabelled_as_historical_profile(profile_id):
+    evidence = fixture(profile_id=profile_id)
     evidence["diagnostic"]["profile_id"] = clock.PROFILE_ID
     with pytest.raises(PublicReceiptError, match="profile_unsupported"):
         clock.validate_os_clock(resign(evidence))

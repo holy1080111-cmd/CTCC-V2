@@ -1406,6 +1406,7 @@ _DEVVAL_DECLARED_MODULES = (
             "RESOURCE_IDS",
             "Thread",
             "UPDATED_PROFILE_ID",
+            "WINDOWS_9818_PROFILE_ID",
             "UTC",
             "_CHINESE",
             "_CLOCK_DOMAIN",

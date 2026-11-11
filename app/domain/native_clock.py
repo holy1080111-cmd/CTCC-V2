@@ -223,6 +223,7 @@ def _validate_v1(evidence: dict):
 
 PROFILE_ID = "ctcc.w32tm.26100_9278.en_US_zh_TW.cp950.v1"
 UPDATED_PROFILE_ID = "ctcc.w32tm.26100_9549.en_US_zh_TW.cp950.v1"
+WINDOWS_9818_PROFILE_ID = "ctcc.w32tm.26100_9818.en_US_zh_TW.cp950.v1"
 
 RESOURCE_IDS = [2501, 2502, 2508, 2535, 2536]
 
@@ -275,7 +276,19 @@ _UPDATED_FILES = [
     },
     *(dict(row) for row in _FILES[1:]),
 ]
-_PROFILE_FILES = {PROFILE_ID: _FILES, UPDATED_PROFILE_ID: _UPDATED_FILES}
+_PROFILE_FILES = {
+    PROFILE_ID: _FILES,
+    UPDATED_PROFILE_ID: _UPDATED_FILES,
+    WINDOWS_9818_PROFILE_ID: [
+        {
+            "slot": "w32tm.exe",
+            "sha256": "e81bcc55d0ed5d744b2f23417e9b2706e17a1c02a340503887679f54005570e5",
+            "version": "10.0.26100.9818",
+            "signature_status": 0,
+        },
+        *(dict(row) for row in _FILES[1:]),
+    ],
+}
 
 
 def _profile_for_files(files):
