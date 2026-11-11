@@ -138,3 +138,29 @@ synthetic provider tests, if later executed, do not prove real native 60-second
 completion, authenticated account history, full PostgreSQL acceptance, Gate3,
 OOS, Demo or Live trading. Native/provider and full matching-source acceptance
 remain separate work. No default production wiring or authority is enabled.
+
+## Live history partition custody
+
+`collect_live_account_history_v1` uses the pinned Live GET lease and private
+raw custody to collect one fixed endpoint and partition. Fills and ordinary
+orders are partitioned by product, bills span the account, and algo history
+uses one documented order type and terminal state. Each page records the
+request query, typed older cursor, first and last row IDs, raw body and headers,
+native timestamps, and preceding page digest. The caller supplies a past time
+window for fills, bills and ordinary orders. Algo history has no time filter.
+See the [Global API guide](https://www.okx.com/docs-v5/en/) and the
+[EEA API guide](https://my.okx.com/docs-v5/en/).
+
+Fills use record generation time for the query and execution time for trade
+chronology. Bills expose balance update time. Ordinary orders use creation time
+for the query. Each partition requires a separate empty terminal page, including
+after a short page. The lease and account configuration are checked on both
+sides of the collection. Archive requests stay inside an 84-day age bound,
+with windows up to 28 days and at most 16 pages per partition.
+
+Readback requires the separately held custody digest and verifies the original
+page sequence and bytes. Preserve an attempt without a verified seal for
+forensics and classify it as incomplete. A fresh attempt uses a new identifier.
+One replayed partition supplies no account completeness, historical
+point-in-time availability, funding accrual, portfolio risk, or execution
+authority. Actual exchange authentication requires its own measured evidence.

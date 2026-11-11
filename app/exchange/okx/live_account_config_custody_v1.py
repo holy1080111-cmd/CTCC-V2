@@ -93,7 +93,7 @@ def _check_file(directory, name, fd) -> None:
         _deny("live_config_custody_file_not_private")
 
 
-def _read(directory, name: str) -> bytes:
+def _read(directory, name: str, *, body_limit: int = MAX_BODY) -> bytes:
     if type(directory) is _WindowsDirectory:
         fd = directory.api.open_file(directory.path / name)
     else:
@@ -102,15 +102,15 @@ def _read(directory, name: str) -> bytes:
         )
     try:
         _check_file(directory, name, fd)
-        raw = _read_fd(fd, _LIMITS[name])
+        raw = _read_fd(fd, body_limit if name == "body.raw" else _LIMITS[name])
         _check_file(directory, name, fd)
         return raw
     finally:
         os.close(fd)
 
 
-def _publish(directory, name: str, raw: bytes) -> None:
-    if not 0 < len(raw) <= _LIMITS[name]:
+def _publish(directory, name: str, raw: bytes, *, body_limit: int = MAX_BODY) -> None:
+    if not 0 < len(raw) <= (body_limit if name == "body.raw" else _LIMITS[name]):
         _deny("live_config_custody_file_size_invalid")
     if type(directory) is _WindowsDirectory:
         # Check the ACL of the reserved file before any private bytes are written.
@@ -220,10 +220,12 @@ def _seal(
     )
 
 
-def _read_files(directory, names) -> dict[str, bytes]:
+def _read_files(directory, names, *, body_limit: int = MAX_BODY) -> dict[str, bytes]:
     if set(directory.names()) != names:
         _deny("live_config_custody_inventory_invalid")
-    return {name: _read(directory, name) for name in sorted(names)}
+    return {
+        name: _read(directory, name, body_limit=body_limit) for name in sorted(names)
+    }
 
 
 def _read_custodied_live_account_config(

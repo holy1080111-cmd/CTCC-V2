@@ -361,6 +361,7 @@ async def _inputs(monkeypatch, lab):
     replay = SimpleNamespace(
         packet=packet,
         reference=reference,
+        source_policy_sha256=current.POLICY_SHA256,
         proof_envelope_sha256=proof_pin,
         native_proof_sha256="3" * 64,
         native_readback_sha256="4" * 64,
@@ -430,7 +431,7 @@ async def _candidate(session, item):
         ],
         "source_reference": observed.reference_document(item.reference),
         "source_bundle_sha256": item.state["bundle_sha256"],
-        "source_policy_sha256": current.POLICY_SHA256,
+        "source_policy_sha256": replay.source_policy_sha256,
         "proof_envelope_sha256": replay.proof_envelope_sha256,
         "native_proof_sha256": replay.native_proof_sha256,
         "native_readback_sha256": replay.native_readback_sha256,

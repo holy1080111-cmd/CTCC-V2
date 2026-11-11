@@ -38,6 +38,7 @@ from app.exchange.okx.private_rest import build_signature, utc_iso_timestamp
 SCHEMA = "ctcc.live_account_config_raw_observation.v1"
 PATH = "/api/v5/account/config"
 MAX_BODY = 65536
+MAX_HISTORY_BODY = 524288
 MAX_HEADERS = 256
 MAX_HEADER_BYTES = 32768
 MAX_CHUNKS = 65536
@@ -66,6 +67,24 @@ _OWNED_GET_PATHS = frozenset(
         "/api/v5/trade/orders-algo-pending",
         "/api/v5/account/instruments",
         "/api/v5/account/leverage-info",
+        "/api/v5/trade/fills",
+        "/api/v5/trade/fills-history",
+        "/api/v5/account/bills",
+        "/api/v5/account/bills-archive",
+        "/api/v5/trade/orders-history",
+        "/api/v5/trade/orders-history-archive",
+        "/api/v5/trade/orders-algo-history",
+    }
+)
+_HISTORY_GET_PATHS = frozenset(
+    {
+        "/api/v5/trade/fills",
+        "/api/v5/trade/fills-history",
+        "/api/v5/account/bills",
+        "/api/v5/account/bills-archive",
+        "/api/v5/trade/orders-history",
+        "/api/v5/trade/orders-history-archive",
+        "/api/v5/trade/orders-algo-history",
     }
 )
 
@@ -133,8 +152,13 @@ def _header_digest(headers: tuple[tuple[bytes, bytes], ...]) -> str:
 
 
 def _checked_response_headers(
-    headers: tuple[tuple[bytes, bytes], ...], *, private_tokens: tuple[str, ...]
+    headers: tuple[tuple[bytes, bytes], ...],
+    *,
+    private_tokens: tuple[str, ...],
+    maximum: int = MAX_BODY,
 ) -> int | None:
+    if type(maximum) is not int or maximum not in (MAX_BODY, MAX_HISTORY_BODY):
+        _deny("live_config_body_bound")
     _header_digest(headers)
     selected: dict[bytes, bytes] = {}
     for key, value in headers:
@@ -173,8 +197,8 @@ def _checked_response_headers(
     if (
         not raw_length.isascii()
         or not raw_length.isdigit()
-        or len(raw_length) > len(str(MAX_BODY))
-        or int(raw_length) > MAX_BODY
+        or len(raw_length) > len(str(maximum))
+        or int(raw_length) > maximum
     ):
         _deny("live_config_body_bound")
     return int(raw_length)
@@ -483,13 +507,23 @@ async def _observe_owned_live_get_v1(
     if path == PATH:
         if request_path != PATH or selector is not None:
             _deny("live_config_signed_request_invalid")
+        maximum = MAX_BODY
     else:
         # The shared transport cannot widen its target by an unchecked caller.
-        from app.exchange.okx.live_account_raw_page_v1 import (
-            _checked_selector,
-            _request_path,
-        )
+        if path in _HISTORY_GET_PATHS:
+            from app.exchange.okx.live_account_history_page_v1 import (
+                _checked_selector,
+                _request_path,
+            )
 
+            maximum = MAX_HISTORY_BODY
+        else:
+            from app.exchange.okx.live_account_raw_page_v1 import (
+                _checked_selector,
+                _request_path,
+            )
+
+            maximum = MAX_BODY
         approved = _checked_selector(selector)
         if approved.path != path or _request_path(approved) != request_path:
             _deny("live_config_signed_request_invalid")
@@ -620,6 +654,7 @@ async def _observe_owned_live_get_v1(
                     *lease._pin.credentials,
                     request.headers["OK-ACCESS-SIGN"],
                 ),
+                maximum=maximum,
             )
             chunks = 0
             async for chunk in response.aiter_raw():
@@ -628,7 +663,7 @@ async def _observe_owned_live_get_v1(
                 if (
                     type(chunk) is not bytes
                     or chunks > MAX_CHUNKS
-                    or len(body) + len(chunk) > MAX_BODY
+                    or len(body) + len(chunk) > maximum
                 ):
                     _deny("live_config_body_bound")
                 body.extend(chunk)
