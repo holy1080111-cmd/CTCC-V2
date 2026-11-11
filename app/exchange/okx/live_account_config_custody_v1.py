@@ -226,10 +226,9 @@ def _read_files(directory, names) -> dict[str, bytes]:
     return {name: _read(directory, name) for name in sorted(names)}
 
 
-def read_live_account_config_custody_v1(
+def _read_custodied_live_account_config(
     private_root: Path, *, attempt_id: str, expected_custody_sha256: str
-) -> dict:
-    """Replay a stored attempt against a digest supplied from outside its directory."""
+) -> tuple[dict, LiveAccountConfigObservationV1]:
     _check_name(attempt_id)
     if (
         type(expected_custody_sha256) is not str
@@ -265,11 +264,23 @@ def read_live_account_config_custody_v1(
                 "account_complete": False,
                 "source_authenticity_verified": False,
                 "execution_authority": False,
-            }
+            }, observed
     except LiveConfigCustodyError:
         raise
     except Exception:  # noqa: BLE001 - private file, path and parser errors stay private
         _deny("live_config_custody_read_failed")
+
+
+def read_live_account_config_custody_v1(
+    private_root: Path, *, attempt_id: str, expected_custody_sha256: str
+) -> dict:
+    """Replay a stored attempt against a digest supplied from outside its directory."""
+    receipt, _ = _read_custodied_live_account_config(
+        private_root,
+        attempt_id=attempt_id,
+        expected_custody_sha256=expected_custody_sha256,
+    )
+    return receipt
 
 
 async def capture_live_account_config_to_private_custody_v1(

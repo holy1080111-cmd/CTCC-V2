@@ -21,13 +21,17 @@ from tests.unit.test_native_private_root_inheritance_windows_v2 import (
 ATTEMPT = "a" * 32
 
 
-@pytest.fixture
-def private_root(tmp_path):
+def _private_root_path(tmp_path):
     root = tmp_path / "private-custody"
     root.mkdir(mode=0o700)
     if os.name == "nt":
         _set_protected_directory_dacl(root)
     return root
+
+
+@pytest.fixture
+def private_root(tmp_path):
+    return _private_root_path(tmp_path)
 
 
 async def _capture(client, root):

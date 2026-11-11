@@ -12,6 +12,7 @@ import asyncio
 import hashlib
 import re
 import ssl
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -55,10 +56,26 @@ _SIGNED_HEADERS = {
     "OK-ACCESS-TIMESTAMP",
     "Accept-Encoding",
 }
+_OWNED_GET_PATHS = frozenset(
+    {
+        PATH,
+        "/api/v5/account/account-position-risk",
+        "/api/v5/account/balance",
+        "/api/v5/account/positions",
+        "/api/v5/trade/orders-pending",
+        "/api/v5/trade/orders-algo-pending",
+        "/api/v5/account/instruments",
+        "/api/v5/account/leverage-info",
+    }
+)
 
 
 class LiveConfigObservationError(ValueError):
     """Fixed failure code; never contains a remote body or private setting."""
+
+
+class _LivePageBodyError(ValueError):
+    """A checked current-account page refusal from the shared raw transport."""
 
 
 def _deny(code: str) -> None:
@@ -420,10 +437,28 @@ async def _close_once(resource: Any) -> None:
         raise asyncio.CancelledError
 
 
-async def observe_live_account_config_v1(
-    client: OkxLivePinnedGetClientV1, lease: LivePinnedGetLeaseV1
-) -> LiveAccountConfigObservationV1:
-    """Issue exactly one config GET and retain bounded raw bytes before decode."""
+@dataclass(frozen=True, slots=True, repr=False, eq=False)
+class _OwnedRawGetV1:
+    raw_body: bytes = field(repr=False)
+    raw_headers: tuple[tuple[bytes, bytes], ...] = field(repr=False)
+    canonical_body: bytes = field(repr=False)
+    signed_at: str
+    stamps: tuple[ClockStamp, ...]
+    request_signature_sha256: str
+    tls_certificate_sha256: str | None
+    synthetic_mock: bool
+
+
+async def _observe_owned_live_get_v1(
+    client: OkxLivePinnedGetClientV1,
+    lease: LivePinnedGetLeaseV1,
+    *,
+    path: str,
+    request_path: str,
+    validate_body: Callable[[bytes, LivePinnedGetLeaseV1, str], bytes],
+    selector: object | None = None,
+) -> _OwnedRawGetV1:
+    """Single signed, bounded, native-clock Live GET transport for fixed sources."""
     if (
         type(client) is not OkxLivePinnedGetClientV1
         or type(lease) is not LivePinnedGetLeaseV1
@@ -431,6 +466,33 @@ async def observe_live_account_config_v1(
         _deny("live_config_owner_invalid")
     if lease is not client._current_lease():
         _deny("live_config_owner_invalid")
+    if (
+        type(path) is not str
+        or path not in _OWNED_GET_PATHS
+        or type(request_path) is not str
+        or not (
+            request_path == path
+            or (
+                request_path.startswith(path + "?")
+                and re.fullmatch(r"[A-Za-z0-9/%.,_?=&-]+", request_path) is not None
+            )
+        )
+        or not callable(validate_body)
+    ):
+        _deny("live_config_signed_request_invalid")
+    if path == PATH:
+        if request_path != PATH or selector is not None:
+            _deny("live_config_signed_request_invalid")
+    else:
+        # The shared transport cannot widen its target by an unchecked caller.
+        from app.exchange.okx.live_account_raw_page_v1 import (
+            _checked_selector,
+            _request_path,
+        )
+
+        approved = _checked_selector(selector)
+        if approved.path != path or _request_path(approved) != request_path:
+            _deny("live_config_signed_request_invalid")
     synthetic = client.settings.environment == "test"
     own_client = not synthetic
     http = None
@@ -467,7 +529,7 @@ async def observe_live_account_config_v1(
             "OK-ACCESS-SIGN": build_signature(
                 timestamp=signed_at,
                 method="GET",
-                request_path=PATH,
+                request_path=request_path,
                 body="",
                 secret=lease._pin.credentials[1],
             ),
@@ -489,7 +551,7 @@ async def observe_live_account_config_v1(
             != build_signature(
                 timestamp=headers.get("OK-ACCESS-TIMESTAMP", ""),
                 method="GET",
-                request_path=PATH,
+                request_path=request_path,
                 body="",
                 secret=lease._pin.credentials[1],
             )
@@ -498,11 +560,11 @@ async def observe_live_account_config_v1(
         ):
             _deny("live_config_signed_request_invalid")
         request = http.build_request(
-            "GET", lease._pin.origin + PATH, headers=headers, content=None
+            "GET", lease._pin.origin + request_path, headers=headers, content=None
         )
         if (
             request.method != "GET"
-            or str(request.url) != lease._pin.origin + PATH
+            or str(request.url) != lease._pin.origin + request_path
             or request.content != b""
             or request.headers.get("accept-encoding") != "identity"
             or "x-simulated-trading" in request.headers
@@ -517,7 +579,7 @@ async def observe_live_account_config_v1(
                 }
             )
         )
-        client._final_dispatch_check(method="GET", path=PATH)
+        client._final_dispatch_check(method="GET", path=path)
         _check_client(http, synthetic=synthetic)
         lease.verify_current()
         body = bytearray()
@@ -552,7 +614,6 @@ async def observe_live_account_config_v1(
                 response, http, synthetic=synthetic
             )
             raw_headers = tuple(response.headers.raw)
-            headers_sha256 = _header_digest(raw_headers)
             length = _checked_response_headers(
                 raw_headers,
                 private_tokens=(
@@ -587,7 +648,7 @@ async def observe_live_account_config_v1(
         lease.verify_current()
         raw = bytes(body)
         signature = request.headers["OK-ACCESS-SIGN"]
-        canonical_body = _checked_config(raw, lease=lease, signature=signature)
+        canonical_body = validate_body(raw, lease, signature)
         if signature.encode("ascii") in raw or any(
             token.encode("utf-8") in raw for token in lease._pin.credentials
         ):
@@ -602,32 +663,21 @@ async def observe_live_account_config_v1(
             validated,
         )
         _validate_clock(stamps)
-        unsealed = LiveAccountConfigObservationV1(
+        return _OwnedRawGetV1(
             raw_body=raw,
             raw_headers=raw_headers,
+            canonical_body=canonical_body,
             signed_at=headers["OK-ACCESS-TIMESTAMP"],
             stamps=stamps,
-            lease_binding_id=lease.binding_id,
-            origin=lease._pin.origin,
-            raw_sha256=sha(raw),
-            canonical_sha256=sha(canonical_body),
-            headers_sha256=headers_sha256,
             request_signature_sha256=signed_request_sha256,
-            expected_uid_sha256=sha(lease._pin.expected_uid.encode()),
-            expected_main_uid_sha256=sha(lease._pin.expected_main_uid.encode()),
             tls_certificate_sha256=certificate_hash,
-            receipt_sha256="",
             synthetic_mock=synthetic,
         )
-        observation = replace(
-            unsealed,
-            receipt_sha256=sha(canonical(_receipt_document(unsealed))),
-        )
-        verify_live_account_config_readback_v1(observation, lease=lease)
-        return observation
     except asyncio.CancelledError:
         raise
     except LiveConfigObservationError:
+        raise
+    except _LivePageBodyError:
         raise
     except Exception:  # noqa: BLE001 - redact all HTTP and raw JSON failures
         _deny("live_config_observation_failed")
@@ -636,3 +686,41 @@ async def observe_live_account_config_v1(
             await _close_once(response)
         if own_client and http is not None:
             await _close_once(http)
+
+
+async def observe_live_account_config_v1(
+    client: OkxLivePinnedGetClientV1, lease: LivePinnedGetLeaseV1
+) -> LiveAccountConfigObservationV1:
+    """Issue exactly one config GET and retain bounded raw bytes before decode."""
+    owned = await _observe_owned_live_get_v1(
+        client,
+        lease,
+        path=PATH,
+        request_path=PATH,
+        validate_body=lambda raw, active, signature: _checked_config(
+            raw, lease=active, signature=signature
+        ),
+    )
+    unsealed = LiveAccountConfigObservationV1(
+        raw_body=owned.raw_body,
+        raw_headers=owned.raw_headers,
+        signed_at=owned.signed_at,
+        stamps=owned.stamps,
+        lease_binding_id=lease.binding_id,
+        origin=lease._pin.origin,
+        raw_sha256=sha(owned.raw_body),
+        canonical_sha256=sha(owned.canonical_body),
+        headers_sha256=_header_digest(owned.raw_headers),
+        request_signature_sha256=owned.request_signature_sha256,
+        expected_uid_sha256=sha(lease._pin.expected_uid.encode()),
+        expected_main_uid_sha256=sha(lease._pin.expected_main_uid.encode()),
+        tls_certificate_sha256=owned.tls_certificate_sha256,
+        receipt_sha256="",
+        synthetic_mock=owned.synthetic_mock,
+    )
+    observation = replace(
+        unsealed,
+        receipt_sha256=sha(canonical(_receipt_document(unsealed))),
+    )
+    verify_live_account_config_readback_v1(observation, lease=lease)
+    return observation
