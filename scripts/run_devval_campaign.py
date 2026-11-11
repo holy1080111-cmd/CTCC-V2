@@ -25,7 +25,6 @@ from app.database.repositories.public_receipt_witness import (
 from app.database.repositories.public_runtime_bundle_custody import (
     RuntimeBundleCustodyRepository,
 )
-from app.demo_automation.native_private_root_v2 import require_private_evidence_base_v2
 from app.domain.source_primitives import canonical, decode, sha
 from app.mie.validation.development_validation_source_collection_v1 import _root_context
 from app.mie.validation.prospective_devval_campaign_batch_v1 import _MAX_BATCH_BYTES
@@ -46,6 +45,12 @@ from app.mie.validation.prospective_devval_campaign_run_v1 import (
     _retain,
     run_prospective_devval_campaign_v1,
 )
+from app.mie.validation.prospective_devval_campaign_study_v1 import (
+    _MAX_STUDY_BYTES,
+    DevvalCampaignStudyPlanV1,
+    _prepare_study,
+)
+from app.trade_evidence.native_private_root_v2 import require_private_evidence_base_v2
 from scripts.devval_campaign_source import (
     DevvalSourceCheckpointError,
     verify_source_checkpoint,
@@ -74,9 +79,23 @@ def _arguments(arguments):
     parser.add_argument("mode", choices=_MODES)
     parser.add_argument("--source-archive", required=True, type=Path)
     parser.add_argument("--source-archive-sha256", required=True)
-    for name in ("plan", "output", "campaign", "ca-file", "root", "batch-output-root"):
+    for name in (
+        "plan",
+        "output",
+        "campaign",
+        "ca-file",
+        "root",
+        "batch-output-root",
+        "study-plan",
+        "study-output-root",
+    ):
         parser.add_argument(f"--{name}", type=Path)
-    for name in ("campaign-sha256", "root-binding-sha256", "completion-sha256"):
+    for name in (
+        "campaign-sha256",
+        "root-binding-sha256",
+        "completion-sha256",
+        "study-plan-sha256",
+    ):
         parser.add_argument(f"--{name}")
     for name in ("database-oid", "login-oid", "publisher-oid", "observer-oid"):
         parser.add_argument(f"--{name}", type=int)
@@ -102,6 +121,8 @@ def _arguments(arguments):
         used.add("completion_sha256")
         if args.batch_output_root is not None:
             used.add("batch_output_root")
+        if args.study_plan is not None:
+            used.update(("study_plan", "study_plan_sha256", "study_output_root"))
     if mode == "observe" and args.root_binding_sha256 is not None:
         used.update(("root_binding_sha256", "observer_oid"))
     present = {name for name, value in vars(args).items() if value is not None}
@@ -245,11 +266,26 @@ async def _run(args, checkpoint):
     mode = args.mode
     pin = args.campaign_sha256
     payload = None
+    study_plan = None
     if mode != "replay":
         payload = _read(args.campaign)
         verify_prospective_devval_campaign_v1(
             payload, expected_campaign_sha256=pin, **checkpoint
         )
+    if args.study_plan is not None:
+        raw_study = _read(args.study_plan)
+        decode(raw_study, _MAX_MANIFEST_BYTES)
+        study_plan = DevvalCampaignStudyPlanV1.model_validate_json(raw_study)
+        if (
+            study_plan.campaign_sha256 != pin
+            or study_plan.canonical_sha256() != args.study_plan_sha256
+        ):
+            raise CampaignCommandError("devval_campaign_study_plan_changed")
+        if (
+            args.batch_output_root is not None
+            and args.batch_output_root.absolute() == args.study_output_root.absolute()
+        ):
+            raise CampaignCommandError("devval_campaign_study_output_conflict")
     common = {"expected_campaign_sha256": pin, **checkpoint}
     async with _factories(args) as (repository, sources):
         if mode == "publish":
@@ -295,7 +331,7 @@ async def _run(args, checkpoint):
         replay = await replay_prospective_devval_campaign_v1(
             expected_completion_sha256=args.completion_sha256,
             custody_repository=RuntimeBundleCustodyRepository(sources[2]),
-            include_batch=args.batch_output_root is not None,
+            include_batch=args.batch_output_root is not None or study_plan is not None,
             **providers,
             **common,
         )
@@ -306,6 +342,11 @@ async def _run(args, checkpoint):
             "development_rows": replay.development_rows,
             "validation_rows": replay.validation_rows,
         }
+    if study_plan is not None:
+        study = _prepare_study(
+            replay.batch, plan=study_plan, expected_plan_sha256=args.study_plan_sha256
+        )
+        result.update(_publish_study(args.study_output_root.absolute(), study))
     if args.batch_output_root is not None:
         result.update(_publish_batch(args.batch_output_root.absolute(), replay.batch))
     return result
@@ -314,10 +355,11 @@ async def _run(args, checkpoint):
 def _publish_batch(root, batch):
     if batch is None:
         raise CampaignCommandError("devval_campaign_batch_missing")
-    if sha(batch.payload) != batch.sha256:
-        raise CampaignCommandError("devval_campaign_batch_changed")
-    require_private_evidence_base_v2(str(root))
-    receipt = canonical(
+    receipt_pin = _publish_replay_artifact(
+        root,
+        "batch",
+        batch,
+        _MAX_BATCH_BYTES,
         {
             "schema": "ctcc.mie.devval_campaign_batch_publication.v1",
             "batch_sha256": batch.sha256,
@@ -327,14 +369,42 @@ def _publish_batch(root, batch):
             "row_inventory_sha256": batch.contract.row_inventory_sha256,
             "predictive_oos_eligible": False,
             "execution_authority": False,
-        }
+        },
     )
+    return {"batch_sha256": batch.sha256, "batch_publication_sha256": receipt_pin}
+
+
+def _publish_study(root, study):
+    receipt_pin = _publish_replay_artifact(
+        root,
+        "study",
+        study,
+        _MAX_STUDY_BYTES,
+        {
+            "schema": "ctcc.mie.devval_campaign_study_publication.v1",
+            "study_sha256": study.sha256,
+            "study_bytes": len(study.payload),
+            "study_plan_sha256": study.contract.study_plan_sha256,
+            "batch_sha256": study.contract.batch_sha256,
+            "completion_sha256": study.contract.completion_sha256,
+            "predictive_oos_eligible": False,
+            "execution_authority": False,
+        },
+    )
+    return {"study_sha256": study.sha256, "study_publication_sha256": receipt_pin}
+
+
+def _publish_replay_artifact(root, name, artifact, maximum, facts):
+    if sha(artifact.payload) != artifact.sha256:
+        raise CampaignCommandError(f"devval_campaign_{name}_changed")
+    require_private_evidence_base_v2(str(root))
+    filename = f"{name}-v1.json"
+    receipt = canonical(facts)
     with _root_context(root) as directory:
         if directory.names():
-            raise CampaignCommandError("devval_campaign_batch_output_not_empty")
-        batch_pin = _retain(directory, "batch-v1.json", batch.payload, _MAX_BATCH_BYTES)
-        if batch_pin != batch.sha256:
-            raise CampaignCommandError("devval_campaign_batch_changed")
+            raise CampaignCommandError(f"devval_campaign_{name}_output_not_empty")
+        if _retain(directory, filename, artifact.payload, maximum) != artifact.sha256:
+            raise CampaignCommandError(f"devval_campaign_{name}_changed")
         receipt_pin = _retain(directory, "receipt-v1.json", receipt, 4096)
         _retain(
             directory,
@@ -343,12 +413,12 @@ def _publish_batch(root, batch):
             65,
         )
         if set(directory.names()) != {
-            "batch-v1.json",
+            filename,
             "receipt-v1.json",
             "receipt-v1.sha256",
         }:
-            raise CampaignCommandError("devval_campaign_batch_output_changed")
-    return {"batch_sha256": batch_pin, "batch_publication_sha256": receipt_pin}
+            raise CampaignCommandError(f"devval_campaign_{name}_output_changed")
+    return receipt_pin
 
 
 def _publication_receipt(pin, readback):

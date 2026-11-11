@@ -266,3 +266,23 @@ inventory, and source checkpoint. It is read back from the output directory
 and published without overwriting prior results. Repeating the operation
 against the same retained evidence in another empty directory must produce
 the same batch SHA. This artifact carries a computational claim.
+
+### Development and Validation study rows
+
+Replay also accepts `--study-plan`, `--study-plan-sha256` and
+`--study-output-root`. The plan binds the campaign SHA, the exact
+`FrozenFeatureReplayPlanV2`, event counts, and purge and embargo durations.
+Retain the canonical plan SHA separately before running the study.
+
+BTC and ETH share the later measured availability of the two base bars
+as their decision time. Each feature uses its own fixed history, and the
+label uses an exact in-partition outcome bar. The label read boundary is
+the measured source readiness of the rows required for both outcomes.
+It does not attest when an evaluator first accessed those outcomes.
+
+Expanding walk-forward folds use Development only. Validation remains a
+separate partition. A fold is refused if a training label reaches the
+validation history window, including delays in the original source
+receipts. The minimum 84-hour collection window alone cannot provide
+4H labels after 21 bars of warmup. Choose collection windows that cover
+the preregistered label horizon and sample counts before publication.

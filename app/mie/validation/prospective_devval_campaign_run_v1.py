@@ -15,10 +15,6 @@ from app.database.repositories.public_receipt_post_read_observation import (
 from app.database.repositories.public_receipt_witness import (
     PublicReceiptWitnessRepository,
 )
-from app.demo_automation.native_private_root_v2 import (
-    mkdir_private_evidence_child_v2,
-    require_private_evidence_base_v2,
-)
 from app.domain.native_clock import native_stamp
 from app.domain.source_primitives import ClockStamp, canonical, sha, validate_stamps
 from app.mie.validation import development_validation_source_collection_v6 as collection
@@ -50,6 +46,10 @@ from app.mie.validation.prospective_devval_slot_v6 import (
     capture_prospective_devval_campaign_slot_v6,
 )
 from app.mie.validation.public_checkpoint_service import PublicCheckpointCaptureService
+from app.trade_evidence.native_private_root_v2 import (
+    mkdir_private_evidence_child_v2,
+    require_private_evidence_base_v2,
+)
 
 _ROOTS = ("journal", "native", "slots")
 _ROSTER_MAX = 1024 * 1024

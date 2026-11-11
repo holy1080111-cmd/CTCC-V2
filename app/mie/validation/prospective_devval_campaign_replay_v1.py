@@ -20,7 +20,6 @@ from app.database.repositories.public_receipt_witness import (
 from app.database.repositories.public_runtime_bundle_custody import (
     RuntimeBundleCustodyRepository,
 )
-from app.demo_automation.native_private_root_v2 import require_private_evidence_base_v2
 from app.domain.source_primitives import canonical, decode, sha, validate_stamps
 from app.mie.validation.artifact import FrozenGate3Artifact
 from app.mie.validation.availability import AvailabilityBasis, AvailabilityProvenance
@@ -85,6 +84,7 @@ from app.mie.validation.prospective_devval_slot_v6 import (
 )
 from app.mie.validation.replay import PointInTimeBar
 from app.public_market_source.public_receipt_storage import _replay_directory
+from app.trade_evidence.native_private_root_v2 import require_private_evidence_base_v2
 from app.trade_evidence.storage import _root_path, _WindowsAPI, _WindowsDirectory
 
 

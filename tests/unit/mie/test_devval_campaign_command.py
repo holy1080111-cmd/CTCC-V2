@@ -245,3 +245,88 @@ async def test_collection_and_readonly_replay_use_different_entry_points(
         with pytest.raises(command.CampaignCommandError, match="output_not_empty"):
             command._publish_batch(output_root, artifact)
         assert (output_root / "batch-v1.json").read_bytes() == artifact.payload
+
+
+@pytest.mark.asyncio
+async def test_study_plan_pin_is_checked_before_custody_and_study_is_published(
+    monkeypatch, tmp_path
+):
+    output = _private_root_path(tmp_path)
+    args = command._arguments(
+        [
+            "replay",
+            *_BASE,
+            *_DB,
+            "--campaign-sha256",
+            _PIN,
+            "--completion-sha256",
+            "f" * 64,
+            "--root",
+            str(tmp_path),
+            "--observer-oid",
+            "104",
+            "--study-plan",
+            "study.json",
+            "--study-plan-sha256",
+            "8" * 64,
+            "--study-output-root",
+            str(output),
+        ]
+    )
+    plan = SimpleNamespace(campaign_sha256=_PIN, canonical_sha256=lambda: "7" * 64)
+    monkeypatch.setattr(command, "_read", lambda *_: b"{}")
+    monkeypatch.setattr(
+        command,
+        "DevvalCampaignStudyPlanV1",
+        SimpleNamespace(model_validate_json=lambda raw: plan),
+    )
+    monkeypatch.setattr(command, "_factories", lambda *_: pytest.fail("database"))
+    with pytest.raises(command.CampaignCommandError, match="study_plan_changed"):
+        await command._run(args, _CHECKPOINT)
+    assert not list(output.iterdir())
+
+    batch = object()
+    events = []
+
+    @asynccontextmanager
+    async def runtime(_args):
+        yield object(), (object(), object(), object())
+        events.append("database_closed")
+
+    async def replay(**kwargs):
+        assert kwargs["include_batch"] is True
+        events.append("source_replayed")
+        return SimpleNamespace(
+            batch=batch,
+            completion_sha256="f" * 64,
+            row_inventory_sha256="0" * 64,
+            development_rows=10_080,
+            validation_rows=10_080,
+        )
+
+    def prepare(original, *, plan, expected_plan_sha256):
+        assert original is batch and plan.canonical_sha256() == expected_plan_sha256
+        assert events == ["source_replayed", "database_closed"]
+        payload = b"offline study wiring fixture"
+        return SimpleNamespace(
+            payload=payload,
+            sha256=sha(payload),
+            contract=SimpleNamespace(
+                study_plan_sha256=expected_plan_sha256,
+                batch_sha256="a" * 64,
+                completion_sha256="f" * 64,
+            ),
+        )
+
+    plan.canonical_sha256 = lambda: "8" * 64
+    monkeypatch.setattr(command, "_factories", runtime)
+    monkeypatch.setattr(
+        command, "RuntimeBundleCustodyRepository", lambda factory: factory
+    )
+    monkeypatch.setattr(command, "replay_prospective_devval_campaign_v1", replay)
+    monkeypatch.setattr(command, "_prepare_study", prepare)
+    result = await command._run(args, _CHECKPOINT)
+    assert result["study_sha256"] == sha((output / "study-v1.json").read_bytes())
+    receipt = (output / "receipt-v1.json").read_bytes()
+    assert result["study_publication_sha256"] == sha(receipt)
+    assert json.loads(receipt)["study_plan_sha256"] == "8" * 64
