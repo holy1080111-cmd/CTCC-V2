@@ -9,17 +9,23 @@ import re
 import ssl
 from datetime import UTC, datetime, timedelta
 from importlib import import_module
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
+from alembic.config import Config
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
+from alembic.script import ScriptDirectory
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
+import app.database.models  # noqa: F401 - register the full migration metadata.
+from app.database.base import Base
+from app.database.repositories import public_runtime_bundle_custody as raw_custody
 from app.domain.source_primitives import canonical, sha
 from app.mie.validation.artifact import freeze_prospective_holdout_receipt
 from app.mie.validation.controlled_fitted_holdout_reader_v1 import (
@@ -46,6 +52,7 @@ from app.mie.validation.prospective_devval_campaign_plan_v1 import (
 from app.mie.validation.prospective_devval_fitted_binding_v1 import (
     build_devval_candidate_binding,
 )
+from scripts import current_contract_source_scopes_v1 as source_scopes
 from tests.integration.test_gate3_canonical_schedule_claim import migrate, pin_record
 from tests.integration.test_gate3_committed_preregistration_seal import (
     append_pin,
@@ -61,6 +68,7 @@ from tests.unit.mie.test_devval_fitted_binding import (
 from tests.unit.mie.test_prospective_devval_campaign_plan_v1 import plan_input
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
+_SOURCE_ROOT = Path(__file__).resolve().parents[2]
 _READ = "gate3_fitted_binding_read(text)"
 _ACK_READ = "gate3_fitted_binding_ack_read(text)"
 _ROLES = {
@@ -103,8 +111,7 @@ async def _grant(owner, names, keys):
                 )
 
 
-@pytest.fixture
-async def fitted_database():
+def _isolated_tls_database_config():
     raw_url = os.environ.get("CTCC_DEVVAL_CUSTODY_TEST_DATABASE_URL")
     ca_file = os.environ.get("CTCC_DEVVAL_CUSTODY_TEST_TLS_CA_FILE")
     if raw_url is None and ca_file is None:
@@ -123,7 +130,12 @@ async def fitted_database():
         pytest.fail(
             "fitted custody acceptance requires the isolated trust-auth TLS lab"
         )
-    tls = ssl.create_default_context(cafile=ca_file)
+    return url, ssl.create_default_context(cafile=ca_file)
+
+
+@pytest.fixture
+async def fitted_database():
+    url, tls = _isolated_tls_database_config()
     database = "ctcc_g3f_" + uuid4().hex
     names = {key: "ctcc_g3f_" + uuid4().hex for key in _ROLES}
 
@@ -195,6 +207,169 @@ async def fitted_database():
                 for role in created_roles:
                     await connection.execute(text(f"DROP ROLE {role}"))
         await admin.dispose()
+
+
+def _migrate_runtime_custody_head(connection):
+    config = Config(str(_SOURCE_ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(_SOURCE_ROOT / "migrations"))
+    script = ScriptDirectory.from_config(config)
+    scope = source_scopes.actual_current_source_scope(_SOURCE_ROOT)
+    assert scope.actual_source_head == scope.database_target == "0056"
+    assert script.get_current_head() == "0056"
+    assert script.get_revision("0056").down_revision == "0055"
+    context = MigrationContext.configure(
+        connection,
+        opts={
+            "fn": lambda heads, _: script._upgrade_revs("0056", heads),
+            "target_metadata": Base.metadata,
+            "compare_type": True,
+        },
+    )
+    assert context.get_current_heads() == ()
+    with Operations.context(context), context.begin_transaction():
+        context.run_migrations()
+    readback = source_scopes.verify_database_scope(connection, _SOURCE_ROOT, scope)
+    assert readback["source_head"] == readback["database_head"] == "0056"
+
+
+@pytest.fixture
+async def runtime_custody_actual56():
+    url, tls = _isolated_tls_database_config()
+    assert (url.username, url.database, url.port) == ("ctcc", "ctcc", 5432)
+    assert tls.check_hostname and tls.verify_mode == ssl.CERT_REQUIRED
+
+    def engine(target):
+        return create_async_engine(
+            target, poolclass=NullPool, connect_args={"ssl": tls}
+        )
+
+    database = f"ctcc_g3_raw_{uuid4().hex}"
+    login = f"ctcc_g3_raw_{uuid4().hex}"
+    target = url.set(database=database)
+    provisioner, owner, restricted = (
+        engine(url),
+        engine(target),
+        engine(target.set(username=login)),
+    )
+    created_database = created_role = False
+    try:
+        async with provisioner.connect() as connection:
+            await connection.execution_options(isolation_level="AUTOCOMMIT")
+            assert await connection.scalar(
+                text("SELECT current_setting('server_version_num')::int")
+            ) in range(170000, 180000)
+            await connection.execute(text(f'CREATE DATABASE "{database}"'))
+            created_database = True
+        async with provisioner.begin() as connection:
+            await connection.execute(text(f'CREATE ROLE "{login}" LOGIN'))
+        created_role = True
+        async with owner.begin() as connection:
+            await connection.run_sync(_migrate_runtime_custody_head)
+            for grant in (
+                "USAGE ON SCHEMA public",
+                "SELECT ON TABLE public.alembic_version",
+                "EXECUTE ON FUNCTION public.public_runtime_bundle_v1_append(text,text,text,bytea)",
+                "EXECUTE ON FUNCTION public.public_runtime_bundle_v1_read(text)",
+            ):
+                await connection.execute(text(f'GRANT {grant} TO "{login}"'))
+        yield owner, restricted, database, login
+    finally:
+        await restricted.dispose()
+        await owner.dispose()
+        try:
+            if created_database:
+                async with provisioner.connect() as connection:
+                    await connection.execution_options(isolation_level="AUTOCOMMIT")
+                    await connection.execute(
+                        text(f'DROP DATABASE "{database}" WITH (FORCE)')
+                    )
+        finally:
+            try:
+                if created_role:
+                    async with provisioner.begin() as connection:
+                        await connection.execute(text(f'DROP ROLE "{login}"'))
+            finally:
+                await provisioner.dispose()
+
+
+async def test_actual56_runtime_raw_custody_seals_and_reads_under_tls(
+    runtime_custody_actual56,
+):
+    owner, restricted, database, login = runtime_custody_actual56
+    async with restricted.connect() as connection:
+        identity = (
+            await connection.execute(
+                text("""
+                    SELECT pg_catalog.current_database(), SESSION_USER::text,
+                           SESSION_USER = CURRENT_USER,
+                           pg_catalog.inet_server_port(),
+                           EXISTS (SELECT 1 FROM pg_catalog.pg_stat_ssl
+                                   WHERE pid = pg_catalog.pg_backend_pid() AND ssl)
+                    """)
+            )
+        ).one()
+        assert tuple(identity) == (database, login, True, 5432, True)
+        assert (
+            await connection.scalar(
+                text("SELECT version_num FROM public.alembic_version")
+            )
+            == "0056"
+        )
+        with pytest.raises(DBAPIError) as denied:
+            await connection.execute(
+                text("SELECT 1 FROM public.public_runtime_raw_bundles_v1")
+            )
+        assert denied.value.orig.sqlstate == "42501"
+
+    factory = async_sessionmaker(restricted, autoflush=False, expire_on_commit=False)
+    repository = raw_custody.RuntimeBundleCustodyRepository(factory)
+    await repository.verify_deployment()
+    bundle = b'{"declared_synthetic":"current0056_runtime_raw_custody"}'
+    pins = {
+        "expected_sha256": sha(bundle),
+        "proof_envelope_sha256": sha(b"synthetic-current0056-raw-custody-proof"),
+    }
+    receipt = await repository.seal_bundle(bundle_raw=bundle, **pins)
+    committed = raw_custody._consume_runtime_bundle_custody_receipt(
+        receipt,
+        expected_bundle_sha256=pins["expected_sha256"],
+        expected_proof_envelope_sha256=pins["proof_envelope_sha256"],
+    )
+    assert committed.bundle_raw == bundle
+    assert committed.append_transaction_id != committed.readback_transaction_id
+
+    fresh = raw_custody.RuntimeBundleCustodyRepository(factory)
+    await fresh.verify_deployment()
+    retained = await fresh.read_retained_bundle_by_pins(**pins)
+    assert retained.bundle_id == committed.bundle_id
+    assert retained.bundle_raw == bundle
+    assert retained.bundle_sha256 == pins["expected_sha256"]
+    assert retained.proof_envelope_sha256 == pins["proof_envelope_sha256"]
+    assert retained.readback_transaction_id not in {
+        None,
+        committed.append_transaction_id,
+        committed.readback_transaction_id,
+    }
+    assert retained.execution_authority is False
+
+    async with owner.begin() as connection:
+        await connection.execute(
+            text("""
+                CREATE TABLE public.ctcc_g3_raw_extra_parent (
+                    bundle_id varchar(32) REFERENCES public.public_runtime_raw_bundles_v1(bundle_id)
+                )
+                """)
+        )
+    with pytest.raises(
+        raw_custody.RuntimeBundleCustodyError,
+        match="runtime_bundle_custody_unavailable",
+    ):
+        await fresh.read_retained_bundle_by_pins(**pins)
+    with pytest.raises(
+        raw_custody.RuntimeBundleCustodyError,
+        match="runtime_bundle_custody_unavailable",
+    ):
+        await raw_custody.RuntimeBundleCustodyRepository(factory).verify_deployment()
 
 
 @pytest.fixture(scope="module")

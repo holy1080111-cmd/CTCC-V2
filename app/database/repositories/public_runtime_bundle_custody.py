@@ -1061,11 +1061,12 @@ SELECT jsonb_build_object(
 """)
 
 
-async def _current0055_custody_schema_identity(session, role):
-    """Actual55 metadata on THIS custody role, never a projected writer role.
+async def _current0055_custody_schema_identity(session, role, *, expected_head):
+    """Unchanged actual55 metadata on THIS custody role, not a writer projection.
 
-    This carrier predicate does not replace the separate full55 catalogue on
-    the genuine captured writer factory required by controlled native source.
+    DB0056 adds fitted-candidate tables and a schedule-claim trigger; it does
+    not change the selected actual55 relations/functions or the DB0046 bundle
+    relation. This carrier predicate does not attest the full DB0056 catalog.
     """
     from app.domain import collector_current_0055_catalog_v1 as current55
 
@@ -1075,6 +1076,8 @@ async def _current0055_custody_schema_identity(session, role):
             diagnostic_category="current55_schema_identity",
         ) from None
 
+    if expected_head not in ("0055", "0056"):
+        deny()
     baseline = current55._required_baseline()
     if (
         current55.FROZEN_OPERATOR_DDL_SHA256
@@ -1089,7 +1092,7 @@ async def _current0055_custody_schema_identity(session, role):
     if (
         type(value) is not dict
         or set(value) != {"head", "tables", "functions"}
-        or value["head"] != ["0055"]
+        or value["head"] != [expected_head]
     ):
         deny()
     tables = value["tables"]
@@ -1303,6 +1306,7 @@ class RuntimeBundleCustodyRepository:
                 "0053",
                 "0054",
                 "0055",
+                "0056",
             }:
                 raise RuntimeBundleCustodyError(
                     "runtime_bundle_custody_unavailable",
@@ -1366,22 +1370,22 @@ class RuntimeBundleCustodyRepository:
                     session,
                     (
                         _INCOMING_CUSTODY_FK_SQL_CURRENT0054
-                        if migration_head in {"0054", "0055"}
+                        if migration_head in {"0054", "0055", "0056"}
                         else _INCOMING_CUSTODY_FK_SQL
                     ),
                     category="trigger_query",
                 )
             ).all()
         )
-        if migration_head == "0055":
+        if migration_head in {"0055", "0056"}:
             current55_identity = await _current0055_custody_schema_identity(
-                session, role
+                session, role, expected_head=migration_head
             )
-            # Actual55 adds no direct custody FK. Reuse only this unchanged
+            # Actual55/56 add no direct custody FK. Reuse only this unchanged
             # physical two-FK/four-RI validator, never54 native admission.
             foreign_key_identity = (
                 _custody_foreign_key_identity_current0054(role, triggers, incoming),
-                ("explicit_actual0055_carrier", current55_identity),
+                (f"explicit_actual{migration_head}_carrier", current55_identity),
             )
         elif migration_head == "0054":
             foreign_key_identity = _custody_foreign_key_identity_current0054(

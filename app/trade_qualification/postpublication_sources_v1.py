@@ -1456,7 +1456,7 @@ _KNOWN_SOURCE_HASHES = {
     "app/trade_qualification/account_current_source_v4.py": "d2d1bc4950c71c0cc70a7c101e0b3d86cb2ffac89d5bf7f5b6ea77b41c959068",
     "app/trade_qualification/g12_invocation_custody.py": "941274a9df5d2528abd6ec4ad5a733806e633e396b7fa89a23a0483f2a9cd111",
     "app/trade_qualification/owned_current_original_frame_v1.py": "73fc39319f3a0b5ab0a9972d556695cef396607b0d1dd3445ced4bf25fa99256",
-    "app/database/repositories/public_runtime_bundle_custody.py": "6c841ee62723601086a58796ef327a7ce2e79f41d4a86930903054e7a2287b30",
+    "app/database/repositories/public_runtime_bundle_custody.py": "6b331fa8e7607f352736642cd7adc9990fb01456f14fc410a4a6460252c8cfe6",
     "app/exchange/okx/private_rest.py": "34d66da9949e18e926b29b54115e7d7ae904dde12b4809e3bb79ac0c6ed447ee",
     "app/trade_qualification/account_runtime.py": "048c00f61dc814f473c0e2b894b45dc36b09e6a809693571fd9c301a651319c6",
     "app/trade_qualification/account_capture.py": "fe0c86997397ad30ec2391748bf5e137b4fa09b9e22f7024382ff86590385f95",

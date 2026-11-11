@@ -258,7 +258,10 @@ collection root. It reads back the committed acknowledgement and checks for an
 existing dispatch. It opens separate native read-only TLS sessions to check
 the witness, post-read and runtime-custody roles and durable database settings.
 The witness and post-read sessions must identify the same native database and
-distinct logins. The root must remain private, empty and unchanged, and the
+distinct logins. The raw runtime custody check accepts DB0056 only when the
+session reads back that exact head and verifies the preserved bundle catalog,
+including both incoming foreign keys and their four native triggers. The
+root must remain private, empty and unchanged, and the
 native time checks must complete before Development opens. The command makes
 no provider requests or dispatch claim. `collect` repeats these checks before
 creating any journal, then commits its separate one-use claim as usual. A

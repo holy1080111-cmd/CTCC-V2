@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from app.database.repositories import public_runtime_bundle_custody as custody
+from app.domain import collector_current_0055_catalog_v1 as current55
 from tests.integration import test_public_runtime_bundle_custody_repository as pg_cases
 
 
@@ -981,10 +982,125 @@ def test_current54_requires_exact_both_FKs_and_all_four_parent_actions():
         )
 
 
-@pytest.mark.parametrize("head", ["0055", "", 54, False])
+@pytest.mark.parametrize("head", ["0055", "0056", "0057", "", 54, False])
 def test_unknown_actual_version_has_no_custody_fallback(head):
     with pytest.raises(custody.RuntimeBundleCustodyError):
         asyncio.run(_run_catalog(_catalog(), migration_head=head))
+
+
+def test_actual56_uses_unchanged55_custody_carrier_with_distinct_head(monkeypatch):
+    observed = []
+
+    async def carrier(_session, _role, *, expected_head):
+        observed.append(expected_head)
+        return ("reviewed_actual55_baseline", f"head_{expected_head}_readback")
+
+    monkeypatch.setattr(custody, "_current0055_custody_schema_identity", carrier)
+    actual55 = asyncio.run(
+        _run_catalog(_declared_native_0054_ri_catalog(), migration_head="0055")
+    )
+    actual56 = asyncio.run(
+        _run_catalog(_declared_native_0054_ri_catalog(), migration_head="0056")
+    )
+    assert observed == ["0055", "0056"]
+    assert len(actual55) == len(actual56) == 64
+    assert actual55 != actual56
+
+
+def test_actual56_still_rejects_changed_native_custody_fk(monkeypatch):
+    async def carrier(_session, _role, *, expected_head):
+        assert expected_head == "0056"
+        return ("reviewed_actual55_baseline", "head_0056_readback")
+
+    monkeypatch.setattr(custody, "_current0055_custody_schema_identity", carrier)
+    changed = _declared_native_0054_ri_catalog()
+    changed[3][1].conkey = [15]
+    with pytest.raises(custody.RuntimeBundleCustodyError):
+        asyncio.run(_run_catalog(changed, migration_head="0056"))
+
+
+def test_actual56_carrier_refuses_unapproved_expected_head():
+    with pytest.raises(custody.RuntimeBundleCustodyError):
+        asyncio.run(
+            custody._current0055_custody_schema_identity(
+                object(), object(), expected_head="0057"
+            )
+        )
+
+
+def test_actual56_carrier_reads_real_head_and_unchanged55_descriptors():
+    expected_functions = current55._source_functions()
+    expected_functions["collector_issued_account_revision_guard_v1"] = (
+        current55._sha(current55._body(current55.operator.ISSUER_GUARD_SQL, "$ctcc$")),
+        True,
+        ["search_path=pg_catalog, pg_temp"],
+        False,
+    )
+    value = {
+        "head": ["0056"],
+        "tables": [
+            {
+                "name": name,
+                "owner": 24,
+                "kind": "r",
+                "persistence": "p",
+                "rls": False,
+                "force_rls": False,
+                "partition": False,
+                "inherited": False,
+                "rules": False,
+                "policies": False,
+                "columns": current55._COLUMNS[name],
+            }
+            for name in (
+                current55.operator.CLEAR_TABLE,
+                current55.operator.COUNTER_TABLE,
+            )
+        ],
+        "functions": [
+            {
+                "name": name,
+                "owner": 24,
+                "language": "plpgsql",
+                "arity": 0,
+                "defaults": 0,
+                "returns_trigger": True,
+                "returns_set": False,
+                "security_definer": descriptor[1],
+                "strict": False,
+                "leakproof": False,
+                "volatility": "v",
+                "parallel": "u",
+                "kind": "f",
+                "support_zero": True,
+                "config": descriptor[2],
+                "source_sha256": descriptor[0],
+            }
+            for name, descriptor in expected_functions.items()
+        ],
+    }
+
+    class Session:
+        async def execute(self, statement):
+            assert statement is custody._CURRENT0055_SCHEMA_IDENTITY_SQL
+            return self
+
+        def scalar_one(self):
+            return value
+
+    observed = asyncio.run(
+        custody._current0055_custody_schema_identity(
+            Session(), SimpleNamespace(owner_oid=24), expected_head="0056"
+        )
+    )
+    assert observed[0] == current55.PG17_NATIVE_BASELINE_SHA256
+    assert len(observed[1]) == 64
+    with pytest.raises(custody.RuntimeBundleCustodyError):
+        asyncio.run(
+            custody._current0055_custody_schema_identity(
+                Session(), SimpleNamespace(owner_oid=24), expected_head="0055"
+            )
+        )
 
 
 def test_missing_version_with_other_public_relations_is_not_standalone():

@@ -37,7 +37,17 @@ FITTED_CUSTODY_CASES = tuple(
         "test_fitted_binding_refuses_changed_bytes_and_empty_downgrade",
     )
 )
-REQUIRED_CURRENT56_CASES = (*previous.REQUIRED_CURRENT55_CASES, *FITTED_CUSTODY_CASES)
+CURRENT56_CUSTODY_CASES = (
+    *FITTED_CUSTODY_CASES,
+    (
+        FITTED_CUSTODY_TEST_PATH.removesuffix(".py").replace("/", "."),
+        "test_actual56_runtime_raw_custody_seals_and_reads_under_tls",
+    ),
+)
+REQUIRED_CURRENT56_CASES = (
+    *previous.REQUIRED_CURRENT55_CASES,
+    *CURRENT56_CUSTODY_CASES,
+)
 _PARENT_UPGRADE = ("migration-upgrade-parent", "migration-parent-readback")
 _EMPTY_ROUNDTRIP = (
     "migration-empty-downgrade",
@@ -128,13 +138,13 @@ def _collection(root, mode, index, identity):
         selection = previous._collection(root, mode, index, identity)
         if mode == "postgres" and index == 1:
             checked = shared.verify_pytest_report(
-                root / junit, required_cases=FITTED_CUSTODY_CASES
+                root / junit, required_cases=CURRENT56_CUSTODY_CASES
             )
             if (
                 checked["sha256"] != identity["tests"]["sha256"]
                 or checked["skipped"] != 0
             ):
-                raise ValueError("current56_fitted_custody_execution_missing")
+                raise ValueError("current56_postgres_custody_execution_missing")
         return selection
 
     report = shared.verify_pytest_report(root / junit, allow_unrelated_skips=True)
