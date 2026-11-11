@@ -46,6 +46,14 @@ The cost calculator remains descriptive/computational. It consumes normalized
 shadow exposures, applies a frozen observation/funding cadence, and has no
 order quantity, leverage, account, exchange, or execution semantics.
 
+`app.mie.validation.cost_stress_v1` reads an independently pinned scenario
+plan and return path. It checks the plan's declared pre-window timestamp,
+candidate identity, full interval coverage, and decision and return
+availability. It applies 1.0x, 1.5x, and 2.0x total cost and separately
+declared spread, slippage, and funding stresses to the fixed decisions.
+The report can be independently replayed from the original bytes. Source
+authenticity, economic OOS acceptance, and execution authority remain false.
+
 ## Authority boundary
 
 Gate 3 imports no API, risk, Demo, Live, Paper, exchange, or execution package.
