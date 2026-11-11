@@ -132,3 +132,31 @@ readback, original measured source evidence, and protected custody. The local
 manifest and caller digest grant no pre-window, predictive, or execution
 authority. This implementation adds no automatic dispatcher or writable
 resume. A partial slot stays unresolved.
+
+### Publication and committed observation
+
+The install script `scripts/sql/gate3_devval_campaign_custody_v1.sql` creates
+an append-only campaign and acknowledgement store in a dedicated evidence
+database. Its schema is separate from the trading database's Alembic lineage.
+An evidence administrator applies the script once and gives the publisher
+direct schema usage and execute access to `publish_campaign(text,text)`.
+The separately administered observer login receives schema usage and execute
+access to `read_campaign(text)` and `acknowledge_campaign(text)`. Application
+logins have no direct table privileges. The install creates no logins or grants.
+
+The Python repository requires an exact native PostgreSQL endpoint with
+hostname-verified TLS, pinned database and login OIDs, and a separately
+verified source checkpoint. The publisher returns the transaction locator
+after commit. The observer replays the entire canonical campaign before the
+acknowledgement and reads the committed acknowledgement in a fresh transaction.
+The database assigns both timestamps and refuses publication and
+acknowledgement after the first Development minute opens. Readback also
+checks the server timestamp against its local native request and response
+clock samples. An uncertain write is resolved through read-only observation.
+
+This records committed database ordering. Independent administration and
+trusted UTC need evidence from the actual deployment. The receipt carries
+no predictive or execution authority. The multi-root dispatcher must still
+bind the independent publication to the original collection roots before the
+first slot. The SQL integration fixture uses an explicitly selected isolated
+PostgreSQL lab and generated database and logins.
