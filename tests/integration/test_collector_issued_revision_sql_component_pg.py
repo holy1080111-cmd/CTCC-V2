@@ -54,6 +54,7 @@ from app.trade_qualification.reservations import LedgerScope
 from scripts import collector_current_0054_toolchain as capture54
 from scripts import current_contract_source_scopes_v1 as scopes
 from scripts import historical0054_on_current0055_observation as historical54
+from scripts import historical0054_on_current0056_observation as historical54_on56
 from tests.controlled_writer_coverage_fixtures import seed_controlled_writer_control
 from tests.current0054_fixtures import (
     ROOT,
@@ -555,6 +556,17 @@ async def _capture_database0054_owner(connection):
             connection, ROOT
         )
         historical54.verify_historical0054_owner_on_current0055(document, raw, ROOT)
+        return document, raw
+    if scope.actual_source_head == "0056":
+        (
+            document,
+            raw,
+        ) = await historical54_on56.capture_historical0054_owner_on_current0056(
+            connection, ROOT
+        )
+        historical54_on56.verify_historical0054_owner_on_current0056(
+            document, raw, ROOT
+        )
         return document, raw
     raise AssertionError("unsupported_source_for_database0054")
 

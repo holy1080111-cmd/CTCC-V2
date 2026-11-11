@@ -61,6 +61,11 @@ from app.database.models.gate3_capture_schedule_pin import Gate3CaptureScheduleP
 from app.database.models.gate3_capture_schedule_publication_ack import (
     Gate3CaptureSchedulePublicationAck,
 )
+from app.database.models.gate3_fitted_candidate_custody import (
+    Gate3FittedCandidateAck,
+    Gate3FittedCandidateBinding,
+    Gate3FittedCandidateEvaluation,
+)
 from app.database.models.gate3_preregistration_seal import (
     Gate3PreregistrationSeal,
     Gate3PreregistrationSealAck,
@@ -183,6 +188,9 @@ __all__ = [
     "Gate3CaptureScheduleLegacyInventory",
     "Gate3CaptureSchedulePin",
     "Gate3CaptureSchedulePublicationAck",
+    "Gate3FittedCandidateAck",
+    "Gate3FittedCandidateBinding",
+    "Gate3FittedCandidateEvaluation",
     "Gate3PreregistrationSeal",
     "Gate3PreregistrationSealAck",
     "MarketSnapshot",

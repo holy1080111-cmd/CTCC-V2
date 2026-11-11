@@ -82,6 +82,7 @@ POSTGRES_INTEGRATION = (
     "test_gate3_capture_schedule_pin_repository.py",
     "test_gate3_claim_trigger_alias_repair.py",
     "test_gate3_committed_preregistration_seal.py",
+    "test_gate3_fitted_candidate_custody_pg.py",
     "test_gate3_scheduled_public_minute_preflight.py",
     "test_gate3_schedule_publication_ack.py",
     "test_g12_invocation_custody_repository.py",

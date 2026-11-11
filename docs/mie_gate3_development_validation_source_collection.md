@@ -352,3 +352,31 @@ and candidate trials from the retained batch and legacy vector, then
 compares the canonical binding bytes. Independent publication timing,
 the legacy score origin, and evaluator first access require their own
 evidence.
+
+### PostgreSQL custody and one-use evaluation
+
+Migration `0056` adds a fitted binding, an acknowledgement, and one evaluation
+reservation per seal. The binding publisher, observer, read-only reviewer,
+and evaluator use separate restricted logins. Provision each login with its
+exact function grants. The migration creates the functions and tables and
+leaves role provisioning to the database administrator.
+
+Use `python -m scripts.run_gate3_fitted_custody` to `publish`,
+`acknowledge`, or `observe` with one role at a time. Keep each role's
+database URL in its own runtime environment. Pin the server host, port,
+database, login, role OIDs, TLS CA digest, source archive, and canonical
+input artifact digests independently. Store the resulting no-clobber
+receipt in a private directory.
+
+The fitted observer replays the retained candidate artifacts before it submits
+an acknowledgement. The database compares the fitted binding with the earlier
+seal and records the publisher and observer in distinct committed transactions.
+The fitted ACK must precede the capture schedule plan. A fitted schedule
+without that ACK is rejected before it can claim a public minute.
+
+`read_fitted_prospective_holdout_once` checks the pinned acquisition receipt,
+replays the candidate inputs, and reads back a fresh committed evaluation
+reservation before opening either holdout file. A read failure after that
+reservation consumes the attempt. The result carries the reservation and
+exact file bytes for computational replay. A separately controlled acquisition
+and release process must establish when the evaluator first gained access.

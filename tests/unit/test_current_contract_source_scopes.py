@@ -28,6 +28,7 @@ def _manifest(root):
 
 
 def test_source55_replays_distinct_pinned_historical_prefixes(source_tree):
+    (source_tree / scopes._TAIL["0056"][0]).unlink()
     _manifest(source_tree)
     source = source_identity(source_tree)
     assert source.head == "0055"
@@ -54,6 +55,7 @@ def test_source55_replays_distinct_pinned_historical_prefixes(source_tree):
 
 
 def test_exact_source54_scope_remains_valid_for_its_own_graph(source_tree):
+    (source_tree / scopes._TAIL["0056"][0]).unlink()
     (source_tree / scopes._TAIL["0055"][0]).unlink()
     _manifest(source_tree)
     strict = scopes.current0054_source_scope(source_tree)
@@ -63,7 +65,25 @@ def test_exact_source54_scope_remains_valid_for_its_own_graph(source_tree):
     assert strict.actual_migration_sha256 == strict.historical_prefix_sha256
 
 
-@pytest.mark.parametrize("revision", ["0054", "0055"])
+def test_source56_keeps_the_exact_db55_prefix(source_tree):
+    _manifest(source_tree)
+    source = source_identity(source_tree)
+    current = scopes.actual_current_source_scope(source_tree)
+    prior = scopes.database0055_source_scope(source_tree)
+    assert (
+        source.head == current.actual_source_head == current.database_target == "0056"
+    )
+    assert (
+        current.actual_migration_sha256
+        == current.historical_prefix_sha256
+        == source.sha256
+    )
+    assert prior.actual_source_head == "0056" and prior.database_target == "0055"
+    assert prior.actual_migration_sha256 == source.sha256
+    assert prior.historical_prefix_sha256 == scopes._PREFIX["0055"][0]
+
+
+@pytest.mark.parametrize("revision", ["0054", "0055", "0056"])
 def test_historical0052_rejects_changed_later_migration_despite_fresh_manifest(
     source_tree, revision
 ):

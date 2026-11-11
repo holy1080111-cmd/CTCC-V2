@@ -36,9 +36,11 @@ def _ns(value: datetime) -> int:
 
 @pytest.fixture(scope="module")
 def full_grid():
-    frozen = freeze_prospective_devval_campaign_v1(
-        ProspectiveDevvalCampaignPlanV1(**plan_input())
-    )
+    return synthetic_grid(ProspectiveDevvalCampaignPlanV1(**plan_input()))
+
+
+def synthetic_grid(plan: ProspectiveDevvalCampaignPlanV1):
+    frozen = freeze_prospective_devval_campaign_v1(plan)
     campaign = frozen.contract
     rows = []
     for window in (campaign.plan.development, campaign.plan.validation):

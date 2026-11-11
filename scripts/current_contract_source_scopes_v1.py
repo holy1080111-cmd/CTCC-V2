@@ -1,6 +1,6 @@
 """Explicit actual-source and historical-database scopes; never relabel a head.
 
-A verified source54 or source55 checkout can create a separate historical
+A verified source54, source55 or source56 checkout can create a separate historical
 PostgreSQL database for unchanged component contracts. Full source/manifest identity and every original
 migration-prefix byte remain checked. These scopes are not schema admission.
 """
@@ -14,6 +14,15 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 
 from scripts import manifest
+from scripts.current0056_migration_pin import (
+    HEAD as SOURCE56_HEAD,
+)
+from scripts.current0056_migration_pin import (
+    MIGRATION_INVENTORY_COUNT,
+    MIGRATION_INVENTORY_SHA256,
+    MIGRATION_PATH,
+    MIGRATION_SHA256,
+)
 from scripts.verify_migration_identity import database_head, source_identity
 
 _PREFIX = {
@@ -21,6 +30,7 @@ _PREFIX = {
     "0053": ("66d7632eb522f9a295b7c509898ad01102756f7e1d748c847829248f2970d44d", 54),
     "0054": ("505f11187e1211074b9e4b60f77a7bada7d4a5136a651cad577de772d524d5e5", 55),
     "0055": ("19673eda7f135753ee63d4c7fd483178cbbe775b829d786067963af5dd8ba2f7", 56),
+    SOURCE56_HEAD: (MIGRATION_INVENTORY_SHA256, MIGRATION_INVENTORY_COUNT),
 }
 _TAIL = {
     "0053": (
@@ -38,12 +48,14 @@ _TAIL = {
         "d578edbd18081c0a80c88ef571517fae4cf572301053c081b5df12050ad5c607",
         "0054",
     ),
+    SOURCE56_HEAD: (MIGRATION_PATH, MIGRATION_SHA256, "0055"),
 }
 _SUPPORTED = {
     "0052": frozenset(("0052",)),
     "0053": frozenset(("0052", "0053")),
     "0054": frozenset(("0052", "0053", "0054")),
     "0055": frozenset(("0052", "0053", "0054", "0055")),
+    SOURCE56_HEAD: frozenset(("0052", "0053", "0054", "0055", SOURCE56_HEAD)),
 }
 
 
@@ -152,8 +164,13 @@ def actual_current_source_scope(root):
 
 
 def database0054_source_scope(root):
-    """Bind genuine database0054 to a measured source54 or source55."""
+    """Bind genuine database0054 to a measured source54, source55 or source56."""
     return _scope(root, "0054")
+
+
+def database0055_source_scope(root):
+    """Bind genuine database0055 to a measured source55 or source56."""
+    return _scope(root, "0055")
 
 
 def current0054_source_scope(root):

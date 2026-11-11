@@ -23,6 +23,7 @@ from sqlalchemy.pool import NullPool
 
 import app.database.models  # noqa: F401 - register all ORM tables as in migrations/env.py.
 from app.database.base import Base
+from scripts.current_contract_source_scopes_v1 import database0055_source_scope
 from tests.original_frame_portable_pg_profile import (
     parse_portable_url,
     portable_profile,
@@ -39,7 +40,13 @@ def migrate_current55(connection, target="0055", *, down=False):
     config = Config(str(ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(ROOT / "migrations"))
     script = ScriptDirectory.from_config(config)
-    assert script.get_current_head() == "0055"
+    source_head = script.get_current_head()
+    if source_head == "0056":
+        scope = database0055_source_scope(ROOT)
+        assert scope.actual_source_head == source_head
+        assert scope.database_target == "0055"
+    else:
+        assert source_head == "0055"
     assert script.get_revision("0055").down_revision == "0054"
     direction = script._downgrade_revs if down else script._upgrade_revs
     # Alembic applies Base.metadata's naming convention while constructing DDL.

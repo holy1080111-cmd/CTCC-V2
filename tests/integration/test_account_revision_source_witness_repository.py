@@ -46,6 +46,7 @@ from scripts.verify_final_hermetic import (
     migration_revision_readback,
 )
 from scripts.verify_migration_identity import database_head
+from tests.current0056_fixtures import read_current0056_preserved_parent
 from tests.durable_migration_fixtures import load_migration
 from tests.integration.test_account_locked_current_history_join_v7_repository import (
     _captured_v7_pair,
@@ -104,10 +105,11 @@ async def _committed_migration_witness_state(engine, witness_sha256):
         source_scope = source_scopes.actual_current_source_scope(
             Path(__file__).resolve().parents[2]
         )
-        if source_scope.actual_source_head in {"0054", "0055"}:
+        if source_scope.actual_source_head in {"0054", "0055", "0056"}:
             operation = {
                 "0054": current54.read_current0054_migration,
                 "0055": source55.read_current0055_parent_migration,
+                "0056": read_current0056_preserved_parent,
             }[source_scope.actual_source_head]
             readback = await operation(connection)
             row = (

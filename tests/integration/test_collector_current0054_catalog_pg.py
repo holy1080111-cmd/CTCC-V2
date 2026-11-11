@@ -34,7 +34,7 @@ async def test_actual54_owner_has_exact16_18_and_custody4_native_pairs(
     current0054_database,
 ):
     scope = scopes.database0054_source_scope(ROOT)
-    assert scope.actual_source_head in {"0054", "0055"}
+    assert scope.actual_source_head in {"0054", "0055", "0056"}
     assert scope.database_target == "0054"
     value = await _owner(current0054_database)
     assert (

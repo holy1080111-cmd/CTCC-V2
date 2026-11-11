@@ -51,7 +51,7 @@ async def test_current54_partition_nonempty_downgrade_retains_whole54_catalog_an
     monkeypatch, current0054_database
 ):
     # Own a fresh DB0054 child of the actual source. The true source head stays
-    # recorded, including when the source is 0055 and the database is 0054.
+    # recorded when a later source runs the unchanged DB0054 catalog.
     source = source_scopes.database0054_source_scope(_ROOT)
     assert source.database_target == "0054"
     scope, documents, revisions, lease = await _sources(
@@ -77,6 +77,9 @@ async def test_current54_partition_nonempty_downgrade_retains_whole54_catalog_an
         )
         directory = os.environ.get("CTCC_COVERAGE_RECEIPT_DIR")
         if directory is not None:
+            historical_namespace = (
+                f"ctcc.source{source.actual_source_head}_historical0054"
+            )
             output = (
                 Path(directory) / "account-history-partition-current0054-migration.json"
             )
@@ -84,7 +87,7 @@ async def test_current54_partition_nonempty_downgrade_retains_whole54_catalog_an
                 "schema_version": (
                     "ctcc.account_history_partition_migration_acceptance.v4"
                     if source.actual_source_head == "0054"
-                    else "ctcc.source0055_historical0054.account_history_partition_migration_acceptance.v1"
+                    else f"{historical_namespace}.account_history_partition_migration_acceptance.v1"
                 ),
                 "manifest_sha256": hashlib.sha256(
                     (_ROOT / "MANIFEST.sha256").read_bytes()
@@ -123,7 +126,7 @@ async def test_current54_partition_nonempty_downgrade_retains_whole54_catalog_an
                     "schema": (
                         "ctcc.current54.nonempty_rollback_owner_catalog.v1"
                         if source.actual_source_head == "0054"
-                        else "ctcc.source0055_historical0054.nonempty_rollback_owner_catalog.v1"
+                        else f"{historical_namespace}.nonempty_rollback_owner_catalog.v1"
                     ),
                     "source_head": source.actual_source_head,
                     "database_head": "0054",

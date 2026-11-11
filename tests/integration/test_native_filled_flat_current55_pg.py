@@ -855,17 +855,30 @@ async def test_actual_current55_full_model_has_no_alembic_drift(
 ):
     from alembic.autogenerate import compare_metadata
     from alembic.migration import MigrationContext
+    from sqlalchemy import MetaData
 
     from app.database import (
         models,  # noqa: F401 - register the same complete metadata as migrations/env.py.
     )
     from app.database.base import Base
 
+    # Keep this DB0055 anchor exact when the source also describes later tables.
+    # Reflection still sees every installed table and detects extras on DB0055.
+    future_tables = {
+        "gate3_fitted_candidate_bindings",
+        "gate3_fitted_candidate_acks",
+        "gate3_fitted_candidate_evaluations",
+    }
+    target = MetaData(naming_convention=Base.metadata.naming_convention)
+    for table in Base.metadata.sorted_tables:
+        if table.name not in future_tables:
+            table.to_metadata(target)
+
     def compare(connection):
         # Match the normal alembic check configuration, without a table filter.
         return compare_metadata(
             MigrationContext.configure(connection, opts={"compare_type": True}),
-            Base.metadata,
+            target,
         )
 
     async with controlled_current55_database.begin() as connection:

@@ -1,0 +1,13 @@
+"""Reviewed source identity for the additive DB0056 migration."""
+
+HEAD = "0056"
+PARENT = "0055"
+MIGRATION_PATH = "migrations/versions/0056_gate3_fitted_candidate_custody.py"
+MIGRATION_SHA256 = "82dacd7797d7e5f2286317fb2445c1a5e4986599733617d2ff8f3b8553b3ce3b"
+MIGRATION_INVENTORY_SHA256 = (
+    "280b3f181a5591207b375c1e23f1d113b2e3f22657a9bb6f0f99cdb4c41373fc"
+)
+MIGRATION_INVENTORY_COUNT = 57
+PARENT_INVENTORY_SHA256 = (
+    "19673eda7f135753ee63d4c7fd483178cbbe775b829d786067963af5dd8ba2f7"
+)

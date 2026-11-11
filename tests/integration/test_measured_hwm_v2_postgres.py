@@ -41,6 +41,7 @@ from scripts.verify_final_hermetic import (
     migration_revision_readback,
 )
 from scripts.verify_migration_identity import database_head
+from tests.current0056_fixtures import read_current0056_preserved_parent
 from tests.durable_migration_fixtures import load_migration
 from tests.integration.test_account_observation_index_repository import (
     additional_capture,
@@ -732,6 +733,8 @@ async def test_b5_nonempty_downgrade_denies_and_rolls_back_exact_catalog(
                 return await current54.read_current0054_migration(connection)
             if source_scope.actual_source_head == "0055":
                 return await source55.read_current0055_parent_migration(connection)
+            if source_scope.actual_source_head == "0056":
+                return await read_current0056_preserved_parent(connection)
             head = await connection.run_sync(database_head)
             witness_table = await connection.scalar(
                 text(
