@@ -221,3 +221,33 @@ The DB0055 hermetic PostgreSQL component that owns this module generates
 the temporary test certificate for its private PostgreSQL container and
 mounts the public certificate into pytest. Windows classifies this module
 as PostgreSQL-only.
+
+### Operator command
+
+Run `python -B -m scripts.run_devval_campaign` from an exact extraction of
+the sealed Git archive. Every operation requires `--source-archive` and
+`--source-archive-sha256`. The command checks the archive identity and the
+extracted source before opening any database connection. Keep the archive,
+credentials, CA file, and evidence directories outside the extracted source.
+
+| Operation | Inputs |
+| --- | --- |
+| `freeze` | `--plan` with the campaign plan JSON and `--output` in a private directory |
+| `publish` | `--campaign` and `--campaign-sha256`, using the publisher login |
+| `acknowledge` | The same campaign file and SHA, using the separate observer login |
+| `observe` | The campaign file and SHA, using the observer login. For dispatch readback, use the collector login and add `--root-binding-sha256` and `--observer-oid` |
+| `collect` | The campaign file and SHA, `--root` pointing to an empty private directory, and `--observer-oid`, using the collector login |
+| `replay` | The retained campaign SHA, `--completion-sha256`, `--root`, and `--observer-oid`, using the collector login |
+
+For database operations, supply `--ca-file`, `--database-oid`, `--login-oid`,
+and `--publisher-oid`. Set `CTCC_DEVVAL_CAMPAIGN_DATABASE_URL` privately in
+the process that owns the selected login. Collection and replay also require
+`CTCC_DEVVAL_WITNESS_DATABASE_URL`, `CTCC_DEVVAL_POST_READ_DATABASE_URL`, and
+`CTCC_DEVVAL_RUNTIME_CUSTODY_DATABASE_URL`. Each URL must select its exact
+restricted PostgreSQL login, using the hostname verified by the supplied CA.
+The command emits a single JSON receipt with hashes and database transaction
+IDs. Retain the completion SHA independently for replay.
+
+Start collection before the Development window opens. A partial or uncertain
+operation retains its original evidence. Use `observe` for committed
+publication or dispatch resolution.
