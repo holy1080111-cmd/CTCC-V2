@@ -28,7 +28,7 @@ SECOND = 1_000_000_000
 SLOT0 = "slot-00000000"
 
 
-def scenario(monkeypatch, root, *, ordinal=0, clock_delay=0, mode=None):
+def scenario(monkeypatch, root, *, ordinal=0, clock_delay=0, mode=None, campaign=None):
     start = datetime(2030, 1, 1, tzinfo=UTC)
     pilot = ProspectiveDevelopmentValidationPlanV1(
         plan_id="synthetic-slot-v6",
@@ -42,7 +42,30 @@ def scenario(monkeypatch, root, *, ordinal=0, clock_delay=0, mode=None):
     )
     payload = pilot.canonical_json_bytes()
     pin = pilot.canonical_sha256()
-    plan = slot.build_prospective_devval_source_plan(payload, expected_plan_sha256=pin)
+    if campaign is None:
+        plan = slot.build_prospective_devval_source_plan(
+            payload, expected_plan_sha256=pin
+        )
+        plan_args = {"pilot_payload": payload, "expected_pilot_sha256": pin}
+        plan_binding = {"pilot_sha256": pin}
+        inventory = ("synthetic",)
+    else:
+        artifact, block = campaign
+        manifest, plan = slot.resolve_prospective_devval_campaign_block_v1(
+            artifact.payload,
+            expected_campaign_sha256=artifact.sha256,
+            block_ordinal=block,
+        )
+        plan_args = {
+            "campaign_payload": artifact.payload,
+            "expected_campaign_sha256": artifact.sha256,
+            "block_ordinal": block,
+        }
+        plan_binding = {
+            "campaign_manifest_sha256": artifact.sha256,
+            "campaign_block_ordinal": block,
+        }
+        inventory = (manifest.plan.manifest_sha256, "synthetic")
     capture_plan = plan.coordinates[ordinal].capture_plan
     close = capture_plan.end_ns
     identity = SimpleNamespace(
@@ -85,10 +108,10 @@ def scenario(monkeypatch, root, *, ordinal=0, clock_delay=0, mode=None):
         coordinate = plan.coordinates[index]
         old_claim = slot._claim(
             {
+                **plan_binding,
                 "collection_identity_sha256": COLLECTION,
-                "pilot_sha256": pin,
                 "source_plan_sha256": identity.plan_sha256,
-                "source_inventory_sha256": sha(canonical(("synthetic",))),
+                "source_inventory_sha256": sha(canonical(inventory)),
             },
             coordinate,
             prior[-1][1] if prior else None,
@@ -205,7 +228,7 @@ def scenario(monkeypatch, root, *, ordinal=0, clock_delay=0, mode=None):
         return evidence
 
     monkeypatch.setattr(slot.dataset, "_check_code", lambda: None)
-    monkeypatch.setattr(slot.dataset, "_source_inventory", lambda: ("synthetic",))
+    monkeypatch.setattr(slot.dataset, "_source_inventory", lambda: inventory)
     monkeypatch.setattr(
         slot.native_clock, "native_stamp", lambda: next(due_stamps).model_dump()
     )
@@ -224,8 +247,7 @@ def scenario(monkeypatch, root, *, ordinal=0, clock_delay=0, mode=None):
     return (
         {
             "owner": owner,
-            "pilot_payload": payload,
-            "expected_pilot_sha256": pin,
+            **plan_args,
             "expected_collection_identity_sha256": COLLECTION,
             "result_root": root,
             "ordinal": ordinal,

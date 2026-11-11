@@ -24,6 +24,9 @@ from app.mie.validation.post_publication_availability_v6 import (
 from app.mie.validation.prospective_development_validation_plan import (
     build_prospective_devval_source_plan,
 )
+from app.mie.validation.prospective_devval_campaign_plan_v1 import (
+    resolve_prospective_devval_campaign_block_v1,
+)
 
 _SLOT_FILES = {"claim.json", "decision.json", "receipt.json"}
 _MAX_SLOT_FILE = 16 * 1024
@@ -188,6 +191,55 @@ async def capture_prospective_devval_slot_v6(
     ordinal order. A partial slot is a durable refusal of further advancement.
     A saved decision is only a computational record of its original cutoff.
     """
+    return await _capture_slot(
+        owner=owner,
+        plan_payload=pilot_payload,
+        expected_plan_sha256=expected_pilot_sha256,
+        campaign_block=None,
+        expected_collection_identity_sha256=expected_collection_identity_sha256,
+        result_root=result_root,
+        ordinal=ordinal,
+        prior_receipts=prior_receipts,
+    )
+
+
+async def capture_prospective_devval_campaign_slot_v6(
+    *,
+    owner: collection.DevelopmentValidationAvailabilityOwnerV6,
+    campaign_payload: bytes,
+    expected_campaign_sha256: str,
+    block_ordinal: int,
+    expected_collection_identity_sha256: str,
+    result_root: Path,
+    ordinal: int,
+    prior_receipts: tuple[tuple[str, str], ...],
+) -> tuple[str, str]:
+    """Collect one due campaign minute with the original V6 owner and deadline."""
+    if type(block_ordinal) is not int:
+        raise ProspectiveDevvalSlotError("devval_slot_campaign_block_invalid")
+    return await _capture_slot(
+        owner=owner,
+        plan_payload=campaign_payload,
+        expected_plan_sha256=expected_campaign_sha256,
+        campaign_block=block_ordinal,
+        expected_collection_identity_sha256=expected_collection_identity_sha256,
+        result_root=result_root,
+        ordinal=ordinal,
+        prior_receipts=prior_receipts,
+    )
+
+
+async def _capture_slot(
+    *,
+    owner,
+    plan_payload,
+    expected_plan_sha256,
+    campaign_block,
+    expected_collection_identity_sha256,
+    result_root,
+    ordinal,
+    prior_receipts,
+):
     state = None
     stop_on_error = False
     eligibility = binding = None
@@ -205,9 +257,26 @@ async def capture_prospective_devval_slot_v6(
         if state is None or state.context != _context() or state.busy or state.stopped:
             raise ProspectiveDevvalSlotError("devval_slot_owner_unavailable")
         dataset._check_code()
-        plan = build_prospective_devval_source_plan(
-            pilot_payload, expected_plan_sha256=expected_pilot_sha256
-        )
+        inventory = dataset._source_inventory()
+        if campaign_block is None:
+            plan = build_prospective_devval_source_plan(
+                plan_payload, expected_plan_sha256=expected_plan_sha256
+            )
+            plan_binding = {"pilot_sha256": expected_plan_sha256}
+        else:
+            campaign, plan = resolve_prospective_devval_campaign_block_v1(
+                plan_payload,
+                expected_campaign_sha256=expected_plan_sha256,
+                block_ordinal=campaign_block,
+            )
+            if inventory[0] != campaign.plan.manifest_sha256:
+                raise ProspectiveDevvalSlotError(
+                    "devval_slot_campaign_manifest_changed"
+                )
+            plan_binding = {
+                "campaign_manifest_sha256": expected_plan_sha256,
+                "campaign_block_ordinal": campaign_block,
+            }
         plan_pin = plan.canonical_sha256()
         collection_pin = _pin(expected_collection_identity_sha256)
         reader = state.reader
@@ -235,10 +304,9 @@ async def capture_prospective_devval_slot_v6(
         coordinate = plan.coordinates[ordinal]
         close = coordinate.capture_plan.end_ns
         deadline = close + _READBACK_WINDOW_NS
-        inventory = dataset._source_inventory()
         base = {
+            **plan_binding,
             "collection_identity_sha256": collection_pin,
-            "pilot_sha256": expected_pilot_sha256,
             "source_plan_sha256": plan_pin,
             "source_inventory_sha256": sha(canonical(inventory)),
         }

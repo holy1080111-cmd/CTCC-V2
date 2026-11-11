@@ -108,3 +108,27 @@ original private role methods' inner await and verifies no caller callback runs.
 These establish plan, wiring, one-use, failure and time invariants; they are not
 real TLS, PostgreSQL, source-collection, restart/power-loss, historical PIT,
 OOS, or trading acceptance evidence.
+
+## Full prospective minute campaign
+
+The campaign manifest binds separate, four-hour-aligned Development and
+Validation windows for BTC and ETH. Each partition must cover at least
+84 hours. Each one-hour collection plan contains 120 exact coordinates in
+minute order, with BTC then ETH per minute. The minimum campaign binds
+20,160 rows across 168 ordered, distinct collection plans. The gap between
+partitions leaves the original 60-second readback window before Validation.
+
+`freeze_prospective_devval_campaign_v1` generates the canonical parent and
+every child digest. `verify_prospective_devval_campaign_v1` independently
+regenerates all child plans before publication acceptance. During collection,
+`capture_prospective_devval_campaign_slot_v6` regenerates the selected
+child, verifies its digest and the runtime source manifest, and binds the
+parent digest and child ordinal to the original V6 slot claim. The native
+lease, original capture and readback deadline apply to each minute.
+
+The declared Git commit and tree require verification against an exact source
+checkpoint. The campaign also requires separate pre-window publication and
+readback, original measured source evidence, and protected custody. The local
+manifest and caller digest grant no pre-window, predictive, or execution
+authority. This implementation adds no automatic dispatcher or writable
+resume. A partial slot stays unresolved.
