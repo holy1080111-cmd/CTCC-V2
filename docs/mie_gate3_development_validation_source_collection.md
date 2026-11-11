@@ -210,3 +210,10 @@ An incomplete run keeps its evidence and cannot produce a completed replay.
 Readback neither issues another dispatch claim nor starts a new capture.
 Independent custody, trusted absolute UTC, evaluator first access, and
 predictive qualification remain separate acceptance requirements.
+
+The isolated PostgreSQL integration suite runs the custody SQL using
+`CTCC_DEVVAL_CUSTODY_TEST_DATABASE_URL`. Set
+`CTCC_DEVVAL_CUSTODY_TEST_TLS_CA_FILE` to the isolated server's test CA to also
+exercise the native TLS repository through publication, acknowledgement,
+dispatch, and readback on fresh sessions. The server certificate must match
+the test URL host. This lab exercises synthetic plans and roles.
