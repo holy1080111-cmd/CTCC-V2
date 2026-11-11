@@ -143,6 +143,9 @@ def test_public_source_has_only_explicit_reviewed_consumers():
                 (("public_runtime_custody_v4", "public_custody"),),
             ),
         ),
+        APP / "trade_qualification" / "global_public_runtime_v1.py": (
+            ("app.public_market_source", (("public_runtime_journal", "journal"),)),
+        ),
     }
     current_custody_imports = {
         current_market_consumer: {
@@ -543,6 +546,22 @@ def test_public_source_has_only_explicit_reviewed_consumers():
             "postpublication_sources_v1.py",
             "from ..public_market_source import public_market_capture",
         ),
+        (
+            "global_public_runtime_v1.py",
+            "from app.public_market_source import public_runtime_journal as caller_alias",
+        ),
+        (
+            "global_public_runtime_v1.py",
+            "from app.public_market_source import public_runtime_journal as journal",
+        ),
+        (
+            "global_public_runtime_v1.py",
+            "from ..public_market_source import public_runtime_journal as journal",
+        ),
+        (
+            "global_public_runtime_v1.py",
+            "from app.public_market_source.public_market_capture import capture_public_market",
+        ),
     ],
 )
 def test_native_public_replay_consumers_reject_unreviewed_import(
@@ -845,6 +864,7 @@ def test_native_devval_cohort_rejects_extra_public_source_import(
 def test_runtime_consumers_cannot_access_private_writes_or_execution_authority():
     for filename in (
         "public_source_runtime.py",
+        "global_public_runtime_v1.py",
         "post_g12_public_runtime.py",
         "qualification_runtime.py",
     ):
