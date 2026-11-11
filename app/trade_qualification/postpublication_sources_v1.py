@@ -1463,7 +1463,7 @@ _KNOWN_SOURCE_HASHES = {
     "app/trade_evidence/gates.py": "7be0f614d16c42fab49e923a97890d6a09e9a512b789d940f8bb379c0e344d50",
     "app/public_market_source/public_clock.py": "33ed2e33d6626ddc1292c009c734cb8cf739eacab80769b1e0658f6fbf1f03c5",
     "app/trade_qualification/public_source_runtime.py": "bd99dd32d32d4dc7b48c89c86a6c2e7ddc26cde7e1c4ee7719e369afd05a225e",
-    "app/domain/native_clock.py": "5fcae37c99007dfba52ffe98afa2a8d51547713752e0e45efbf3122d8da41dae",
+    "app/domain/native_clock.py": "ca153b5cc94b70eca179ca5b5d61bb3c5c27d7485ebfaccbc7ff3de24d6d0ee3",
     "app/domain/source_primitives.py": "660a18a2bab787297c370d5316fa08cbf0ecf01273ea95ed990b949c4953420d",
     "app/trade_qualification/market_bridge_v2.py": "978bd603bbbe0fcd535fac3ae29ad06947eb4b428412a175480bd6ca3afa0988",
     "app/public_market_source/public_runtime_custody_v4.py": "b666b0746a9a7160f73502b9b3b31cffbcb528087acf605b1e138d61ac909b1a",
