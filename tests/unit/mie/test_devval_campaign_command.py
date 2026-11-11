@@ -126,6 +126,63 @@ def test_bad_operator_arguments_do_not_echo_values_or_load_source(monkeypatch, c
     assert captured.err.strip() == "devval_campaign_command_invalid"
 
 
+def test_candidate_options_require_complete_replay_and_study_options(
+    monkeypatch, tmp_path
+):
+    root = tmp_path / "capture"
+    study_output = tmp_path / "study"
+    candidate_output = tmp_path / "candidate"
+    replay = [
+        "replay",
+        *_BASE,
+        *_DB,
+        "--campaign-sha256",
+        _PIN,
+        "--completion-sha256",
+        "f" * 64,
+        "--root",
+        str(root),
+        "--observer-oid",
+        "104",
+    ]
+    study = [
+        "--study-plan",
+        "study.json",
+        "--study-plan-sha256",
+        "8" * 64,
+        "--study-output-root",
+        str(study_output),
+    ]
+    candidate = [
+        "--candidate-plan",
+        "candidate.json",
+        "--candidate-plan-sha256",
+        "7" * 64,
+        "--legacy-scores",
+        "legacy.json",
+        "--candidate-output-root",
+        str(candidate_output),
+    ]
+    assert command._arguments([*replay, *study]).candidate_plan is None
+    parsed = command._arguments([*replay, *study, *candidate])
+    assert parsed.candidate_plan == Path("candidate.json")
+    assert parsed.candidate_output_root == candidate_output
+    for invalid in (
+        [*replay, *candidate],
+        [*replay, *study[:-2], *candidate],
+        [*replay, *study, *candidate[:-2]],
+        [*replay, *study, *candidate[:2], *candidate[4:]],
+        ["freeze", *_BASE, "--plan", "plan.json", "--output", "out.json", *candidate],
+    ):
+        with pytest.raises(command.CampaignCommandError, match="command_invalid"):
+            command._arguments(invalid)
+
+    monkeypatch.setattr(command, "_read", lambda *_: pytest.fail("candidate file read"))
+    parsed.candidate_output_root = candidate_output / ".." / study_output.name
+    with pytest.raises(command.CampaignCommandError, match="candidate_output_conflict"):
+        command._candidate_inputs(parsed)
+
+
 @pytest.mark.asyncio
 async def test_native_factory_pins_tls_and_port_and_ignores_implicit_secrets(
     monkeypatch, tmp_path

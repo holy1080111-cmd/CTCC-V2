@@ -286,3 +286,35 @@ validation history window, including delays in the original source
 receipts. The minimum 84-hour collection window alone cannot provide
 4H labels after 21 bars of warmup. Choose collection windows that cover
 the preregistered label horizon and sample counts before publication.
+
+### Development candidate trials and Validation
+
+When replay includes study output, add `--candidate-plan`,
+`--candidate-plan-sha256`, `--legacy-scores`, and `--candidate-output-root`
+to run the candidate study in the same invocation. Use a separate, empty
+private directory for candidate output. The command verifies the canonical
+trial plan against the supplied digest and the legacy probabilities against
+the digest in that plan. The trial plan pins the exact study digest. The
+legacy probabilities must align with the feature replay digest of every
+Development and Validation row in original order. Separate custody evidence
+must establish how the supplied legacy probabilities were produced and when
+the trial plan was published.
+
+Each declared trial fits only on the training rows of a Development fold.
+The model bins either normalized momentum or velocity relative to volatility.
+It compares pooled Development Brier score with the strongest of the
+training-only constant prevalence, frozen legacy score, and no-skill baselines.
+The trial record retains rejected trials and the fold results used to choose
+the Development winner. The command then fits the winner on Development
+and evaluates it once on Validation for this invocation. A Validation
+rejection ends selection without promoting another trial. The cost model
+records declared assumptions. This stage measures predictive performance
+on Development and Validation and leaves Economic OOS for a separate run.
+
+The command publishes `candidate-v1.json` with its own receipt and SHA256.
+The receipt records `development_rejected`, `validation_rejected`, or
+`candidate_ready_for_separate_freeze`. These are completed research outcomes
+and carry no predictive OOS or execution authority. The ready outcome is
+input to a separate Candidate Freeze and first-access verification process.
+That process must bind the declared trial configuration and the resulting
+fitted model to the formal evaluation registry.

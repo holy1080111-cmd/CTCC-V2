@@ -26,6 +26,7 @@ from app.database.repositories.public_runtime_bundle_custody import (
     RuntimeBundleCustodyRepository,
 )
 from app.domain.source_primitives import canonical, decode, sha
+from app.mie.validation.artifact import _verify
 from app.mie.validation.development_validation_source_collection_v1 import _root_context
 from app.mie.validation.prospective_devval_campaign_batch_v1 import _MAX_BATCH_BYTES
 from app.mie.validation.prospective_devval_campaign_custody_v1 import (
@@ -50,6 +51,12 @@ from app.mie.validation.prospective_devval_campaign_study_v1 import (
     DevvalCampaignStudyPlanV1,
     _prepare_study,
 )
+from app.mie.validation.prospective_devval_candidate_trials_v1 import (
+    DevvalCandidateSourceV1,
+    DevvalCandidateTrialPlanV1,
+    DevvalLegacyScoresV1,
+    _fit_candidate_trials,
+)
 from app.trade_evidence.native_private_root_v2 import require_private_evidence_base_v2
 from scripts.devval_campaign_source import (
     DevvalSourceCheckpointError,
@@ -63,6 +70,7 @@ _SOURCE_ENVS = (
     "CTCC_DEVVAL_RUNTIME_CUSTODY_DATABASE_URL",
 )
 _MODES = ("freeze", "publish", "acknowledge", "observe", "collect", "replay")
+_MAX_CANDIDATE_BYTES = 16 * 1024 * 1024
 
 
 class CampaignCommandError(ValueError):
@@ -88,6 +96,9 @@ def _arguments(arguments):
         "batch-output-root",
         "study-plan",
         "study-output-root",
+        "candidate-plan",
+        "legacy-scores",
+        "candidate-output-root",
     ):
         parser.add_argument(f"--{name}", type=Path)
     for name in (
@@ -95,6 +106,7 @@ def _arguments(arguments):
         "root-binding-sha256",
         "completion-sha256",
         "study-plan-sha256",
+        "candidate-plan-sha256",
     ):
         parser.add_argument(f"--{name}")
     for name in ("database-oid", "login-oid", "publisher-oid", "observer-oid"):
@@ -123,6 +135,15 @@ def _arguments(arguments):
             used.add("batch_output_root")
         if args.study_plan is not None:
             used.update(("study_plan", "study_plan_sha256", "study_output_root"))
+            if args.candidate_plan is not None:
+                used.update(
+                    (
+                        "candidate_plan",
+                        "candidate_plan_sha256",
+                        "legacy_scores",
+                        "candidate_output_root",
+                    )
+                )
     if mode == "observe" and args.root_binding_sha256 is not None:
         used.update(("root_binding_sha256", "observer_oid"))
     present = {name for name, value in vars(args).items() if value is not None}
@@ -139,10 +160,30 @@ def _arguments(arguments):
     return args
 
 
-def _read(path: Path) -> bytes:
+def _read(path: Path, maximum: int = _MAX_MANIFEST_BYTES) -> bytes:
     path = path.absolute()
     with _read_root(path.parent) as directory:
-        return directory.read(path.name, _MAX_MANIFEST_BYTES)
+        return directory.read(path.name, maximum)
+
+
+def _candidate_inputs(args):
+    root = args.candidate_output_root.resolve()
+    if any(
+        other is not None and root == other.resolve()
+        for other in (args.root, args.study_output_root, args.batch_output_root)
+    ):
+        raise CampaignCommandError("devval_campaign_candidate_output_conflict")
+    plan = _verify(
+        _read(args.candidate_plan),
+        expected_sha256=args.candidate_plan_sha256,
+        contract_type=DevvalCandidateTrialPlanV1,
+    )
+    legacy_scores = _verify(
+        _read(args.legacy_scores, _MAX_CANDIDATE_BYTES),
+        expected_sha256=plan.legacy_scores_sha256,
+        contract_type=DevvalLegacyScoresV1,
+    )
+    return plan, legacy_scores
 
 
 def _freeze(args, checkpoint) -> dict:
@@ -267,6 +308,7 @@ async def _run(args, checkpoint):
     pin = args.campaign_sha256
     payload = None
     study_plan = None
+    candidate_inputs = None
     if mode != "replay":
         payload = _read(args.campaign)
         verify_prospective_devval_campaign_v1(
@@ -286,6 +328,8 @@ async def _run(args, checkpoint):
             and args.batch_output_root.absolute() == args.study_output_root.absolute()
         ):
             raise CampaignCommandError("devval_campaign_study_output_conflict")
+    if args.candidate_plan is not None:
+        candidate_inputs = _candidate_inputs(args)
     common = {"expected_campaign_sha256": pin, **checkpoint}
     async with _factories(args) as (repository, sources):
         if mode == "publish":
@@ -346,7 +390,30 @@ async def _run(args, checkpoint):
         study = _prepare_study(
             replay.batch, plan=study_plan, expected_plan_sha256=args.study_plan_sha256
         )
+        if candidate_inputs is not None:
+            candidate_plan, legacy_scores = candidate_inputs
+            candidate = _fit_candidate_trials(
+                study,
+                plan=candidate_plan,
+                expected_plan_sha256=args.candidate_plan_sha256,
+                legacy_scores=legacy_scores,
+                source_checkpoint=DevvalCandidateSourceV1(
+                    commit=checkpoint["expected_source_commit"],
+                    tree=checkpoint["expected_source_tree"],
+                    manifest_sha256=checkpoint["expected_source_manifest_sha256"],
+                ),
+            )
         result.update(_publish_study(args.study_output_root.absolute(), study))
+        if candidate_inputs is not None:
+            result.update(
+                _publish_candidate(
+                    args.candidate_output_root.absolute(),
+                    candidate,
+                    study_sha256=study.sha256,
+                    plan_sha256=args.candidate_plan_sha256,
+                    legacy_scores_sha256=candidate_plan.legacy_scores_sha256,
+                )
+            )
     if args.batch_output_root is not None:
         result.update(_publish_batch(args.batch_output_root.absolute(), replay.batch))
     return result
@@ -392,6 +459,34 @@ def _publish_study(root, study):
         },
     )
     return {"study_sha256": study.sha256, "study_publication_sha256": receipt_pin}
+
+
+def _publish_candidate(
+    root, artifact, *, study_sha256, plan_sha256, legacy_scores_sha256
+):
+    status = artifact.contract.status
+    receipt_pin = _publish_replay_artifact(
+        root,
+        "candidate",
+        artifact,
+        _MAX_CANDIDATE_BYTES,
+        {
+            "schema": "ctcc.mie.devval_candidate_trials_publication.v1",
+            "candidate_trials_sha256": artifact.sha256,
+            "candidate_trials_bytes": len(artifact.payload),
+            "candidate_status": status,
+            "study_sha256": study_sha256,
+            "candidate_plan_sha256": plan_sha256,
+            "legacy_scores_sha256": legacy_scores_sha256,
+            "predictive_oos_eligible": False,
+            "execution_authority": False,
+        },
+    )
+    return {
+        "candidate_trials_sha256": artifact.sha256,
+        "candidate_publication_sha256": receipt_pin,
+        "candidate_status": status,
+    }
 
 
 def _publish_replay_artifact(root, name, artifact, maximum, facts):
