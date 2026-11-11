@@ -13,10 +13,14 @@ from app.domain.source_primitives import ClockStamp, canonical, sha
 from app.mie.validation import prospective_devval_campaign_custody_v1 as custody
 from app.mie.validation import prospective_devval_campaign_run_v1 as run
 from app.mie.validation import prospective_devval_slot_v6 as slot
+from app.mie.validation.contracts import DatasetPartition, PartitionWindow
 from app.mie.validation.prospective_devval_campaign_custody_v1 import (
     DevvalCampaignCustodyRepositoryV1,
     DevvalCampaignDispatchClaimV1,
     DevvalCampaignPublicationV1,
+)
+from app.mie.validation.prospective_devval_campaign_plan_v1 import (
+    ProspectiveDevvalCampaignPlanV1,
 )
 from tests.unit.exchange.test_live_account_config_custody_v1 import _private_root_path
 
@@ -37,6 +41,25 @@ def _bracket(at):
     )
 
 
+def _actor_plan(validation_open, *, campaign_id="fixture-devval-campaign"):
+    # These actor tests substitute a two-block verifier output. Plan-grid
+    # admission is exercised separately with complete windows.
+    return ProspectiveDevvalCampaignPlanV1.model_construct(
+        campaign_id=campaign_id,
+        development=PartitionWindow(
+            partition=DatasetPartition.DEVELOPMENT,
+            start_at=OPEN,
+            end_at=OPEN + timedelta(hours=1),
+        ),
+        validation=PartitionWindow(
+            partition=DatasetPartition.VALIDATION,
+            start_at=validation_open,
+            end_at=validation_open + timedelta(hours=1),
+        ),
+        expected_rows=3,
+    )
+
+
 def _setup(monkeypatch, root, *, failure=None):
     events = []
     repository = object.__new__(DevvalCampaignCustodyRepositoryV1)
@@ -44,11 +67,7 @@ def _setup(monkeypatch, root, *, failure=None):
     witness = object.__new__(run.PublicReceiptWitnessRepository)
     observer = run.PublicReceiptPostReadRepository(None, witness)
     campaign = SimpleNamespace(
-        plan=SimpleNamespace(
-            development=SimpleNamespace(start_at=OPEN),
-            expected_rows=3,
-            block_count=2,
-        ),
+        plan=_actor_plan(OPEN + timedelta(hours=4)),
         plan_sha256=PLAN,
         source_plan_sha256s=BLOCKS,
     )
@@ -198,6 +217,27 @@ def _setup(monkeypatch, root, *, failure=None):
         "custody_session_factory": None,
     }
     return args, events
+
+
+@pytest.mark.asyncio
+async def test_research_campaign_requires_blueprint_before_claim_or_capture(
+    monkeypatch, tmp_path
+):
+    root = _private_root_path(tmp_path)
+    args, events = _setup(monkeypatch, root)
+    monkeypatch.setattr(
+        run,
+        "verify_prospective_devval_campaign_v1",
+        lambda *a, **k: SimpleNamespace(
+            plan=_actor_plan(
+                OPEN + timedelta(hours=4), campaign_id="devval:research:" + PIN
+            )
+        ),
+    )
+    with pytest.raises(run.DevvalCampaignRunError, match="devval_campaign_unresolved"):
+        await run.run_prospective_devval_campaign_v1(**args)
+    assert not events
+    assert not tuple(root.iterdir())
 
 
 @pytest.mark.asyncio

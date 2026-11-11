@@ -50,6 +50,9 @@ class DevvalCampaignBatchV1(Gate3Contract):
     source_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
     source_tree: str = Field(pattern=r"^[0-9a-f]{40}$")
     source_manifest_sha256: Sha256
+    research_blueprint_sha256: Sha256 | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     series: tuple[DevvalCampaignBatchSeriesV1, ...] = Field(min_length=4, max_length=4)
     current_claim: Literal[Gate3Claim.COMPUTATIONAL] = Gate3Claim.COMPUTATIONAL
     predictive_oos_eligible: Literal[False] = False
@@ -142,6 +145,7 @@ def _build_batch(
             source_commit=plan.declared_source_commit,
             source_tree=plan.declared_source_tree,
             source_manifest_sha256=plan.manifest_sha256,
+            research_blueprint_sha256=plan.research_blueprint_sha256,
             series=tuple(series),
         ),
         contract_type=DevvalCampaignBatchV1,

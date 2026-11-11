@@ -225,12 +225,7 @@ def _archives(monkeypatch, root, run_args, completion_pin, *, defect=None):
         replay,
         "verify_prospective_devval_campaign_v1",
         lambda *args, **kwargs: SimpleNamespace(
-            plan=SimpleNamespace(
-                expected_rows=3,
-                block_count=2,
-                development=SimpleNamespace(start_at=OPEN),
-                validation=SimpleNamespace(start_at=VALIDATION),
-            ),
+            plan=runner_fixture._actor_plan(VALIDATION),
             plan_sha256=runner_fixture.PLAN,
             source_plan_sha256s=runner_fixture.BLOCKS,
         ),

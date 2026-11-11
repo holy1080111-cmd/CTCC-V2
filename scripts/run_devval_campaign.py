@@ -34,7 +34,9 @@ from app.mie.validation.prospective_devval_campaign_custody_v1 import (
 )
 from app.mie.validation.prospective_devval_campaign_plan_v1 import (
     _MAX_MANIFEST_BYTES,
+    RESEARCH_CAMPAIGN_PREFIX,
     ProspectiveDevvalCampaignPlanV1,
+    _read_manifest,
     freeze_prospective_devval_campaign_v1,
     verify_prospective_devval_campaign_v1,
 )
@@ -61,7 +63,14 @@ from app.mie.validation.prospective_devval_fitted_binding_v1 import (
     _MAX_FITTED_BINDING_BYTES,
     build_devval_candidate_binding,
 )
+from app.mie.validation.prospective_devval_research_blueprint_v1 import (
+    verify_research_campaign,
+    verify_research_study_plan,
+    verify_research_study_result,
+    verify_research_trial_plan,
+)
 from app.trade_evidence.native_private_root_v2 import require_private_evidence_base_v2
+from scripts.compile_devval_research_blueprint import _read_research_blueprint
 from scripts.devval_campaign_source import (
     DevvalSourceCheckpointError,
     verify_source_checkpoint,
@@ -105,6 +114,7 @@ def _arguments(arguments):
         "candidate-output-root",
         "formal-preregistration",
         "fitted-binding-output-root",
+        "research-blueprint",
     ):
         parser.add_argument(f"--{name}", type=Path)
     for name in (
@@ -114,6 +124,7 @@ def _arguments(arguments):
         "study-plan-sha256",
         "candidate-plan-sha256",
         "formal-preregistration-sha256",
+        "research-blueprint-sha256",
     ):
         parser.add_argument(f"--{name}")
     for name in ("database-oid", "login-oid", "publisher-oid", "observer-oid"):
@@ -162,6 +173,8 @@ def _arguments(arguments):
                     )
     if mode == "observe" and args.root_binding_sha256 is not None:
         used.update(("root_binding_sha256", "observer_oid"))
+    if args.research_blueprint is not None:
+        used.update(("research_blueprint", "research_blueprint_sha256"))
     present = {name for name, value in vars(args).items() if value is not None}
     if present != used | {"mode", "source_archive", "source_archive_sha256"}:
         raise CampaignCommandError("devval_campaign_command_invalid")
@@ -180,6 +193,30 @@ def _read(path: Path, maximum: int = _MAX_MANIFEST_BYTES) -> bytes:
     path = path.absolute()
     with _read_root(path.parent) as directory:
         return directory.read(path.name, maximum)
+
+
+def _bound_campaign_blueprint(args, plan):
+    research_campaign = plan.campaign_id.startswith(RESEARCH_CAMPAIGN_PREFIX)
+    if research_campaign and args.research_blueprint is None:
+        raise CampaignCommandError("devval_campaign_research_blueprint_required")
+    if not research_campaign:
+        if args.research_blueprint is not None:
+            raise CampaignCommandError("devval_campaign_research_blueprint_unexpected")
+        return None
+    blueprint = _read_research_blueprint(
+        args.research_blueprint, args.research_blueprint_sha256
+    )
+    verify_research_campaign(plan, blueprint)
+    return blueprint
+
+
+def _require_campaign_source(plan, checkpoint):
+    if (
+        plan.declared_source_commit != checkpoint["expected_source_commit"]
+        or plan.declared_source_tree != checkpoint["expected_source_tree"]
+        or plan.manifest_sha256 != checkpoint["expected_source_manifest_sha256"]
+    ):
+        raise CampaignCommandError("devval_campaign_source_changed")
 
 
 def _candidate_inputs(args):
@@ -224,12 +261,8 @@ def _freeze(args, checkpoint) -> dict:
     raw = _read(args.plan)
     decode(raw, _MAX_MANIFEST_BYTES)
     plan = ProspectiveDevvalCampaignPlanV1.model_validate_json(raw)
-    if (
-        plan.declared_source_commit != checkpoint["expected_source_commit"]
-        or plan.declared_source_tree != checkpoint["expected_source_tree"]
-        or plan.manifest_sha256 != checkpoint["expected_source_manifest_sha256"]
-    ):
-        raise CampaignCommandError("devval_campaign_source_changed")
+    _require_campaign_source(plan, checkpoint)
+    _bound_campaign_blueprint(args, plan)
     frozen = freeze_prospective_devval_campaign_v1(plan)
     output = args.output.absolute()
     require_private_evidence_base_v2(str(output.parent))
@@ -344,11 +377,15 @@ async def _run(args, checkpoint):
     study_plan = None
     candidate_inputs = None
     preregistration = None
-    if mode != "replay":
+    if mode == "replay":
+        manifest = _read_manifest(_read(args.root / "campaign.json"), pin)
+        _require_campaign_source(manifest.plan, checkpoint)
+    else:
         payload = _read(args.campaign)
-        verify_prospective_devval_campaign_v1(
+        manifest = verify_prospective_devval_campaign_v1(
             payload, expected_campaign_sha256=pin, **checkpoint
         )
+    blueprint = _bound_campaign_blueprint(args, manifest.plan)
     if args.study_plan is not None:
         raw_study = _read(args.study_plan)
         decode(raw_study, _MAX_MANIFEST_BYTES)
@@ -363,8 +400,12 @@ async def _run(args, checkpoint):
             and args.batch_output_root.resolve() == args.study_output_root.resolve()
         ):
             raise CampaignCommandError("devval_campaign_study_output_conflict")
+        if blueprint is not None:
+            verify_research_study_plan(blueprint, manifest, study_plan)
     if args.candidate_plan is not None:
         candidate_inputs = _candidate_inputs(args)
+        if blueprint is not None:
+            verify_research_trial_plan(blueprint, *candidate_inputs)
     if args.formal_preregistration is not None:
         preregistration = _binding_preregistration(args)
     common = {"expected_campaign_sha256": pin, **checkpoint}
@@ -401,6 +442,7 @@ async def _run(args, checkpoint):
             capture = await run_prospective_devval_campaign_v1(
                 campaign_payload=payload,
                 custody_session_factory=sources[2],
+                research_blueprint=blueprint,
                 **providers,
                 **common,
             )
@@ -413,6 +455,7 @@ async def _run(args, checkpoint):
             expected_completion_sha256=args.completion_sha256,
             custody_repository=RuntimeBundleCustodyRepository(sources[2]),
             include_batch=args.batch_output_root is not None or study_plan is not None,
+            research_blueprint=blueprint,
             **providers,
             **common,
         )
@@ -427,6 +470,8 @@ async def _run(args, checkpoint):
         study = _prepare_study(
             replay.batch, plan=study_plan, expected_plan_sha256=args.study_plan_sha256
         )
+        if blueprint is not None:
+            verify_research_study_result(blueprint, study.contract)
         if candidate_inputs is not None:
             candidate_plan, legacy_scores = candidate_inputs
             candidate = _fit_candidate_trials(
@@ -461,6 +506,7 @@ async def _run(args, checkpoint):
             preregistration=preregistration,
             expected_preregistration_sha256=args.formal_preregistration_sha256,
             source_archive_sha256=args.source_archive_sha256,
+            research_blueprint=blueprint,
         )
         result.update(
             _publish_fitted_binding(

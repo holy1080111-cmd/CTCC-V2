@@ -18,6 +18,7 @@ from app.mie.validation.prospective_devval_campaign_plan_v1 import (
     ProspectiveDevvalCampaignPlanV1,
     verify_prospective_devval_campaign_v1,
 )
+from scripts import compile_devval_research_blueprint as compiler
 from scripts import devval_campaign_source as source
 from scripts import manifest
 from scripts import run_devval_campaign as command
@@ -42,6 +43,17 @@ _DB = [
     "102",
 ]
 _CAMPAIGN = ["--campaign", "campaign.json", "--campaign-sha256", _PIN]
+
+
+def _manifest_stub(campaign_id="devval:fixture"):
+    return SimpleNamespace(
+        plan=SimpleNamespace(
+            campaign_id=campaign_id,
+            declared_source_commit=_CHECKPOINT["expected_source_commit"],
+            declared_source_tree=_CHECKPOINT["expected_source_tree"],
+            manifest_sha256=_CHECKPOINT["expected_source_manifest_sha256"],
+        )
+    )
 
 
 def _archive(root: Path, path: Path) -> str:
@@ -114,6 +126,48 @@ def test_freeze_writes_original_campaign_once_without_database(
     assert command.main(args) == 1
     assert output.read_bytes() == raw
     assert not capsys.readouterr().out
+
+
+def test_research_compiler_publishes_only_canonical_plan_once(
+    monkeypatch, tmp_path, capsys
+):
+    base = _private_root_path(tmp_path)
+    blueprint_path = base / "blueprint.json"
+    blueprint_pin = "6" * 64
+    blueprint = object()
+    output = base / "research-plan.json"
+    campaign_input = plan_input()
+    campaign_input["campaign_id"] = f"devval:research:{blueprint_pin}"
+    plan = ProspectiveDevvalCampaignPlanV1(**campaign_input)
+    monkeypatch.setattr(compiler, "verify_source_checkpoint", lambda *_: _CHECKPOINT)
+
+    def read(path, pin):
+        assert path == blueprint_path and pin == blueprint_pin
+        return blueprint
+
+    def compile_plan(original):
+        assert original is blueprint
+        return plan
+
+    monkeypatch.setattr(compiler, "_read_research_blueprint", read)
+    monkeypatch.setattr(compiler, "compile_research_campaign", compile_plan)
+    args = [
+        *_BASE,
+        "--blueprint",
+        str(blueprint_path),
+        "--blueprint-sha256",
+        blueprint_pin,
+        "--output",
+        str(output),
+    ]
+    assert compiler.main(args) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["campaign_plan_sha256"] == plan.canonical_sha256()
+    assert result["blueprint_sha256"] == blueprint_pin
+    assert result["computational_only"] is True
+    assert result["campaign_published"] is result["execution_authority"] is False
+    assert compiler.main(args) == 1
+    assert output.read_bytes() == plan.canonical_json_bytes()
 
 
 def test_bad_operator_arguments_do_not_echo_values_or_load_source(monkeypatch, capsys):
@@ -330,12 +384,16 @@ async def test_collection_and_readonly_replay_use_different_entry_points(
         assert kwargs["expected_source_tree"] == _CHECKPOINT["expected_source_tree"]
         assert kwargs["witness_repository"].session_factory is factories[0]
         assert kwargs["observation_repository"].session_factory is factories[1]
+        assert kwargs["research_blueprint"] is None
 
     monkeypatch.setattr(command, "_factories", runtime)
     monkeypatch.setattr(command, "_read", lambda *_: b"fixture")
     monkeypatch.setattr(
-        command, "verify_prospective_devval_campaign_v1", lambda *_a, **_kw: None
+        command,
+        "verify_prospective_devval_campaign_v1",
+        lambda *_a, **_kw: _manifest_stub(),
     )
+    monkeypatch.setattr(command, "_read_manifest", lambda *_: _manifest_stub())
     monkeypatch.setattr(
         command, "RuntimeBundleCustodyRepository", lambda factory: factory
     )
@@ -393,6 +451,7 @@ async def test_study_plan_pin_is_checked_before_custody_and_study_is_published(
     )
     plan = SimpleNamespace(campaign_sha256=_PIN, canonical_sha256=lambda: "7" * 64)
     monkeypatch.setattr(command, "_read", lambda *_: b"{}")
+    monkeypatch.setattr(command, "_read_manifest", lambda *_: _manifest_stub())
     monkeypatch.setattr(
         command,
         "DevvalCampaignStudyPlanV1",
@@ -448,3 +507,92 @@ async def test_study_plan_pin_is_checked_before_custody_and_study_is_published(
     receipt = (output / "receipt-v1.json").read_bytes()
     assert result["study_publication_sha256"] == sha(receipt)
     assert json.loads(receipt)["study_plan_sha256"] == "8" * 64
+
+
+@pytest.mark.asyncio
+async def test_research_replay_binds_campaign_study_and_trials_before_database(
+    monkeypatch, tmp_path
+):
+    blueprint_pin = "6" * 64
+    manifest = _manifest_stub(f"devval:research:{blueprint_pin}")
+    replay = [
+        "replay",
+        *_BASE,
+        *_DB,
+        "--campaign-sha256",
+        _PIN,
+        "--completion-sha256",
+        "f" * 64,
+        "--root",
+        str(tmp_path),
+        "--observer-oid",
+        "104",
+    ]
+    blueprint_args = [
+        "--research-blueprint",
+        "blueprint.json",
+        "--research-blueprint-sha256",
+        blueprint_pin,
+    ]
+    monkeypatch.setattr(command, "_read", lambda *_: b"{}")
+    monkeypatch.setattr(command, "_read_manifest", lambda *_: manifest)
+    monkeypatch.setattr(command, "_factories", lambda *_: pytest.fail("database"))
+    with pytest.raises(command.CampaignCommandError, match="blueprint_required"):
+        await command._run(command._arguments(replay), _CHECKPOINT)
+    for partial in (blueprint_args[:2], blueprint_args[2:]):
+        with pytest.raises(command.CampaignCommandError, match="command_invalid"):
+            command._arguments([*replay, *partial])
+
+    args = command._arguments(
+        [
+            *replay,
+            *blueprint_args,
+            "--study-plan",
+            "study.json",
+            "--study-plan-sha256",
+            "8" * 64,
+            "--study-output-root",
+            str(tmp_path / "study"),
+            "--candidate-plan",
+            "trial.json",
+            "--candidate-plan-sha256",
+            "7" * 64,
+            "--legacy-scores",
+            "legacy.json",
+            "--candidate-output-root",
+            str(tmp_path / "candidate"),
+        ]
+    )
+    with pytest.raises(command.CampaignCommandError, match="blueprint_unexpected"):
+        command._bound_campaign_blueprint(args, _manifest_stub().plan)
+
+    blueprint = object()
+    study = SimpleNamespace(campaign_sha256=_PIN, canonical_sha256=lambda: "8" * 64)
+    trial, legacy = object(), object()
+    checks = []
+    monkeypatch.setattr(command, "_read_research_blueprint", lambda *_: blueprint)
+    monkeypatch.setattr(
+        command,
+        "DevvalCampaignStudyPlanV1",
+        SimpleNamespace(model_validate_json=lambda _: study),
+    )
+    monkeypatch.setattr(command, "_candidate_inputs", lambda _: (trial, legacy))
+
+    def verify_campaign(plan, original):
+        assert plan is manifest.plan and original is blueprint
+        checks.append("campaign")
+
+    def verify_study(original, original_manifest, plan):
+        assert original is blueprint and original_manifest is manifest and plan is study
+        checks.append("study")
+
+    def reject_trial(original, plan, scores):
+        assert original is blueprint and plan is trial and scores is legacy
+        assert checks == ["campaign", "study"]
+        raise ValueError("fixture_trial_blueprint_changed")
+
+    monkeypatch.setattr(command, "verify_research_campaign", verify_campaign)
+    monkeypatch.setattr(command, "verify_research_study_plan", verify_study)
+    monkeypatch.setattr(command, "verify_research_trial_plan", reject_trial)
+    with pytest.raises(ValueError, match="fixture_trial_blueprint_changed"):
+        await command._run(args, _CHECKPOINT)

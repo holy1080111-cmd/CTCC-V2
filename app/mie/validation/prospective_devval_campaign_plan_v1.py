@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta
 from typing import Literal
 
@@ -36,15 +37,12 @@ _MINIMUM_WINDOW = timedelta(hours=21 * 4)
 _MAX_BLOCKS = 1008
 _MAX_MANIFEST_BYTES = 128 * 1024
 _ROWS_PER_BLOCK = 60 * len(INSTRUMENTS)
+RESEARCH_CAMPAIGN_PREFIX = "devval:research:"
 
 
-class ProspectiveDevvalCampaignPlanV1(Gate3Contract):
-    """Finite source-only plan intended for publication before either window."""
+class DevvalCampaignCaptureCoordinatesV1(Gate3Contract):
+    """Complete source coordinates before the campaign identifier is assigned."""
 
-    schema_version: Literal["ctcc.mie.gate3.prospective_devval_campaign_plan.v1"] = (
-        "ctcc.mie.gate3.prospective_devval_campaign_plan.v1"
-    )
-    campaign_id: Identifier
     planned_at: datetime
     declared_source_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
     declared_source_tree: str = Field(pattern=r"^[0-9a-f]{40}$")
@@ -76,7 +74,7 @@ class ProspectiveDevvalCampaignPlanV1(Gate3Contract):
         return require_utc(value, "planned_at")
 
     @model_validator(mode="after")
-    def complete_grid(self) -> ProspectiveDevvalCampaignPlanV1:
+    def complete_grid(self) -> DevvalCampaignCaptureCoordinatesV1:
         if (
             self.development.partition != DatasetPartition.DEVELOPMENT
             or self.validation.partition != DatasetPartition.VALIDATION
@@ -101,6 +99,34 @@ class ProspectiveDevvalCampaignPlanV1(Gate3Contract):
             (window.end_at - window.start_at) // _BLOCK
             for window in (self.development, self.validation)
         )
+
+
+class ProspectiveDevvalCampaignPlanV1(DevvalCampaignCaptureCoordinatesV1):
+    """Finite source-only plan intended for publication before either window."""
+
+    schema_version: Literal["ctcc.mie.gate3.prospective_devval_campaign_plan.v1"] = (
+        "ctcc.mie.gate3.prospective_devval_campaign_plan.v1"
+    )
+    campaign_id: Identifier
+
+    @field_validator("campaign_id")
+    @classmethod
+    def check_research_id(cls, value: str) -> str:
+        if (
+            value.startswith(RESEARCH_CAMPAIGN_PREFIX)
+            and re.fullmatch(
+                r"[0-9a-f]{64}", value.removeprefix(RESEARCH_CAMPAIGN_PREFIX)
+            )
+            is None
+        ):
+            raise ValueError("devval research campaign identifier must pin a blueprint")
+        return value
+
+    @property
+    def research_blueprint_sha256(self) -> str | None:
+        if self.campaign_id.startswith(RESEARCH_CAMPAIGN_PREFIX):
+            return self.campaign_id.removeprefix(RESEARCH_CAMPAIGN_PREFIX)
+        return None
 
 
 class ProspectiveDevvalCampaignManifestV1(Gate3Contract):

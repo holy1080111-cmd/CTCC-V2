@@ -39,6 +39,9 @@ from app.mie.validation.prospective_devval_fitted_binding_v1 import (
     DevvalFittedCandidateBindingV1,
     verify_devval_candidate_binding,
 )
+from app.mie.validation.prospective_devval_research_blueprint_v1 import (
+    DevvalResearchBlueprintV1,
+)
 
 _ROLE = Literal["publisher", "observer", "reader", "evaluator"]
 _SHA = re.compile(r"[0-9a-f]{64}\Z")
@@ -97,6 +100,7 @@ class FittedCandidateInputsV1:
     preregistration: Gate3ProspectivePreregistration
     expected_preregistration_sha256: str
     source_archive_sha256: str
+    research_blueprint: DevvalResearchBlueprintV1 | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,6 +195,7 @@ def _verified(inputs: FittedCandidateInputsV1) -> DevvalFittedCandidateBindingV1
             preregistration=inputs.preregistration,
             expected_preregistration_sha256=inputs.expected_preregistration_sha256,
             source_archive_sha256=inputs.source_archive_sha256,
+            research_blueprint=inputs.research_blueprint,
         )
     except Exception:  # noqa: BLE001 - Original evidence details stay private.
         raise Gate3FittedCustodyError("FITTED_CUSTODY_REPLAY_REFUSED") from None

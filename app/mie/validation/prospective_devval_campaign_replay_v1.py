@@ -76,6 +76,10 @@ from app.mie.validation.prospective_devval_campaign_run_v1 import (
     _ROSTER_MAX,
     _observation,
 )
+from app.mie.validation.prospective_devval_research_blueprint_v1 import (
+    DevvalResearchBlueprintV1,
+    verify_research_campaign,
+)
 from app.mie.validation.prospective_devval_slot_v6 import (
     _claim,
     _slot,
@@ -518,6 +522,7 @@ async def replay_prospective_devval_campaign_v1(
     observation_repository: PublicReceiptPostReadRepository,
     custody_repository: RuntimeBundleCustodyRepository,
     include_batch: bool = False,
+    research_blueprint: DevvalResearchBlueprintV1 | None = None,
 ) -> DevvalCampaignReplayV1:
     """Replay independently retained bytes and live DB readbacks without writes."""
     try:
@@ -550,6 +555,7 @@ async def replay_prospective_devval_campaign_v1(
             expected_campaign_sha256=expected_campaign_sha256,
             **source_checkpoint,
         )
+        verify_research_campaign(campaign.plan, research_blueprint)
         final = _json(
             final_raw,
             _RECEIPT_MAX,

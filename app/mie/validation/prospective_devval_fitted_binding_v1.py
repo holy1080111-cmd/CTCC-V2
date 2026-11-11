@@ -29,6 +29,12 @@ from app.mie.validation.prospective_devval_candidate_trials_v1 import (
     DevvalLegacyScoresV1,
     _fit_candidate_trials,
 )
+from app.mie.validation.prospective_devval_research_blueprint_v1 import (
+    DevvalResearchBlueprintV1,
+    verify_research_batch_and_study,
+    verify_research_trial_plan,
+    verify_research_trial_policy,
+)
 
 _BAR_SECONDS = 60
 _SOURCE = "okx.public_market_source"
@@ -193,6 +199,7 @@ def build_devval_candidate_binding(
     preregistration: Gate3ProspectivePreregistration,
     expected_preregistration_sha256: str,
     source_archive_sha256: str,
+    research_blueprint: DevvalResearchBlueprintV1 | None = None,
 ) -> FrozenGate3Artifact[DevvalFittedCandidateBindingV1]:
     """Combine same-invocation replay artifacts for independent custody review."""
     if type(preregistration) is not Gate3ProspectivePreregistration:
@@ -204,6 +211,11 @@ def build_devval_candidate_binding(
     captured = _read_artifact(batch, DevvalCampaignBatchV1, _MAX_BATCH_BYTES)
     prepared = _read_artifact(study, DevvalCampaignStudyV1, _MAX_STUDY_BYTES)
     trials = _read_artifact(trial_result, DevvalCandidateTrialsV1, _MAX_TRIAL_BYTES)
+    verify_research_batch_and_study(research_blueprint, captured, prepared)
+    if research_blueprint is not None:
+        verify_research_trial_policy(
+            research_blueprint, trials.legacy_source_sha256, trials.plan
+        )
     if (
         prepared.plan.campaign_sha256 != captured.campaign_sha256
         or prepared.batch_sha256 != batch.sha256
@@ -289,6 +301,7 @@ def verify_devval_candidate_binding(
     preregistration: Gate3ProspectivePreregistration,
     expected_preregistration_sha256: str,
     source_archive_sha256: str,
+    research_blueprint: DevvalResearchBlueprintV1 | None = None,
 ) -> DevvalFittedCandidateBindingV1:
     """Recompute retained study and fitted bytes before comparing a binding."""
     if type(payload) is not bytes or not 1 <= len(payload) <= _MAX_FITTED_BINDING_BYTES:
@@ -302,6 +315,10 @@ def verify_devval_candidate_binding(
     recorded_trials = _read_artifact(
         trial_result, DevvalCandidateTrialsV1, _MAX_TRIAL_BYTES
     )
+    if research_blueprint is not None:
+        verify_research_trial_plan(
+            research_blueprint, recorded_trials.plan, legacy_scores
+        )
     replayed_study = _prepare_study(
         batch, plan=prepared.plan, expected_plan_sha256=expected.study_plan_sha256
     )
@@ -323,6 +340,7 @@ def verify_devval_candidate_binding(
         preregistration=preregistration,
         expected_preregistration_sha256=expected_preregistration_sha256,
         source_archive_sha256=source_archive_sha256,
+        research_blueprint=research_blueprint,
     )
     if replayed_binding.payload != payload:
         raise DevvalFittedBindingError("BINDING_REPLAY_MISMATCH")

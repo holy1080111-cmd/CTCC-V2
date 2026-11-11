@@ -39,6 +39,10 @@ from app.mie.validation.prospective_devval_campaign_plan_v1 import (
     _source_plan,
     verify_prospective_devval_campaign_v1,
 )
+from app.mie.validation.prospective_devval_research_blueprint_v1 import (
+    DevvalResearchBlueprintV1,
+    verify_research_campaign,
+)
 from app.mie.validation.prospective_devval_slot_v6 import (
     _MAX_SLOT_FILE,
     _READBACK_WINDOW_NS,
@@ -240,6 +244,7 @@ async def run_prospective_devval_campaign_v1(
     witness_repository: PublicReceiptWitnessRepository,
     observation_repository: PublicReceiptPostReadRepository,
     custody_session_factory: async_sessionmaker[AsyncSession],
+    research_blueprint: DevvalResearchBlueprintV1 | None = None,
 ) -> DevvalCampaignCaptureV1:
     """Start one explicit run before its first window, with no writable resume."""
     try:
@@ -263,6 +268,7 @@ async def run_prospective_devval_campaign_v1(
             expected_campaign_sha256=expected_campaign_sha256,
             **source_checkpoint,
         )
+        verify_research_campaign(campaign.plan, research_blueprint)
         dataset._check_code()
         inventory = dataset._source_inventory()
         if inventory[0] != expected_source_manifest_sha256:

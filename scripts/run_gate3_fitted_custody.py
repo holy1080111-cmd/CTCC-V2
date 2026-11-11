@@ -51,6 +51,7 @@ from app.mie.validation.prospective_devval_fitted_binding_v1 import (
     DevvalFittedCandidateBindingV1,
 )
 from app.trade_evidence.native_private_root_v2 import require_private_evidence_base_v2
+from scripts.compile_devval_research_blueprint import _read_research_blueprint
 from scripts.devval_campaign_source import verify_source_checkpoint
 from scripts.run_devval_campaign import _read
 
@@ -96,6 +97,8 @@ def _arguments(arguments):
     ):
         parser.add_argument(f"--{name}", required=True)
     parser.add_argument("--ack-sha256")
+    parser.add_argument("--research-blueprint", type=Path)
+    parser.add_argument("--research-blueprint-sha256")
     for name in ("database-host", "database-name", "login-name"):
         parser.add_argument(f"--{name}", required=True)
     parser.add_argument("--database-port", required=True, type=int)
@@ -108,8 +111,20 @@ def _arguments(arguments):
     ):
         parser.add_argument(f"--{name}", required=True, type=int)
     args = parser.parse_args(arguments)
+    inputs = (
+        args.source_archive,
+        args.binding,
+        args.batch,
+        args.study,
+        args.trials,
+        args.legacy,
+        args.preregistration,
+        args.ca_file,
+        *((args.research_blueprint,) if args.research_blueprint is not None else ()),
+    )
     if (
         (args.mode == "observe") != (args.ack_sha256 is not None)
+        or (args.research_blueprint is None) != (args.research_blueprint_sha256 is None)
         or any(
             type(value) is not str or _PIN.fullmatch(value) is None
             for name, value in vars(args).items()
@@ -127,17 +142,7 @@ def _arguments(arguments):
         )
         or any(
             not isinstance(value, Path) or not value.is_absolute()
-            for value in (
-                args.source_archive,
-                args.binding,
-                args.batch,
-                args.study,
-                args.trials,
-                args.legacy,
-                args.preregistration,
-                args.ca_file,
-                args.output,
-            )
+            for value in (*inputs, args.output)
         )
     ):
         raise FittedCustodyCommandError("gate3_fitted_command_invalid")
@@ -149,16 +154,6 @@ def _arguments(arguments):
         or (args.mode == "observe" and args.login_oid in role_oids)
     ):
         raise FittedCustodyCommandError("gate3_fitted_command_role_invalid")
-    inputs = (
-        args.source_archive,
-        args.binding,
-        args.batch,
-        args.study,
-        args.trials,
-        args.legacy,
-        args.preregistration,
-        args.ca_file,
-    )
     if len({value.resolve() for value in inputs}) != len(inputs) or any(
         value.resolve() == args.output.resolve() for value in inputs
     ):
@@ -181,6 +176,15 @@ def _inputs(args, checkpoint) -> FittedCandidateInputsV1:
     )
     batch = _artifact(
         args.batch, args.batch_sha256, DevvalCampaignBatchV1, _MAX_BATCH_BYTES
+    )
+    if batch.contract.research_blueprint_sha256 != args.research_blueprint_sha256:
+        raise FittedCustodyCommandError("gate3_fitted_research_blueprint_changed")
+    blueprint = (
+        _read_research_blueprint(
+            args.research_blueprint, args.research_blueprint_sha256
+        )
+        if args.research_blueprint is not None
+        else None
     )
     study = _artifact(
         args.study, args.study_sha256, DevvalCampaignStudyV1, _MAX_STUDY_BYTES
@@ -218,6 +222,7 @@ def _inputs(args, checkpoint) -> FittedCandidateInputsV1:
         preregistration=preregistration,
         expected_preregistration_sha256=args.preregistration_sha256,
         source_archive_sha256=args.source_archive_sha256,
+        research_blueprint=blueprint,
     )
 
 

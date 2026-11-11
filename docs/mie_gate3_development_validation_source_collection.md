@@ -287,6 +287,33 @@ receipts. The minimum 84-hour collection window alone cannot provide
 4H labels after 21 bars of warmup. Choose collection windows that cover
 the preregistered label horizon and sample counts before publication.
 
+### Commit the research configuration before capture
+
+For a new research campaign, retain the canonical `DevvalResearchBlueprintV1`
+JSON and its SHA256 before publishing the source campaign. The blueprint
+contains the source coordinates and checkpoint, feature and label settings,
+split and minimum sample requirements, ordered trial registry, cost assumptions,
+selection thresholds, and legacy score source digest. The source checkpoint
+also pins the built-in baseline and trial implementations.
+
+Run `python -m scripts.compile_devval_research_blueprint` with `--blueprint`,
+`--blueprint-sha256`, `--source-archive`, `--source-archive-sha256`, and
+`--output` in a private evidence directory. The compiled source plan carries
+the blueprint SHA256 in its `devval:research:` identifier. The compiler checks
+the expected bar and label counts, the permitted receipt delay, the partition
+gap, and whether the calendar can support the declared Development folds.
+An 84-hour window gives 21 complete 4H bars and cannot support a 21-bar history
+plus a 4H outcome. Final fold membership is recalculated from measured arrivals.
+
+Pass `--research-blueprint` and `--research-blueprint-sha256` to every
+`run_devval_campaign` invocation for that plan. Replay checks the study and
+trial settings against the blueprint before reading data and requires the
+declared minimum fold count before publishing research results. The replay
+batch retains the blueprint digest. Supply the same independently retained
+blueprint and digest when reviewing the fitted binding through
+`run_gate3_fitted_custody`. Retain the actual pre-window database publication
+and independent acknowledgement as separate evidence of timing.
+
 ### Development candidate trials and Validation
 
 When replay includes study output, add `--candidate-plan`,

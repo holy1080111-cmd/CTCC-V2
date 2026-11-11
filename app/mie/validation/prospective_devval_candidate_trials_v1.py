@@ -68,13 +68,8 @@ class DevvalCandidateTrialV1(Gate3Contract):
         return self
 
 
-class DevvalCandidateTrialPlanV1(Gate3Contract):
-    schema_version: Literal["ctcc.mie.devval_candidate_trial_plan.v1"] = (
-        "ctcc.mie.devval_candidate_trial_plan.v1"
-    )
+class DevvalCandidateTrialPolicyV1(Gate3Contract):
     candidate_id: Identifier
-    study_sha256: Sha256
-    legacy_scores_sha256: Sha256
     trial_registry: TrialRegistry
     trials: tuple[DevvalCandidateTrialV1, ...] = Field(min_length=1, max_length=64)
     cost_model: CostModel
@@ -84,7 +79,7 @@ class DevvalCandidateTrialPlanV1(Gate3Contract):
     reliability_bin_count: int = Field(ge=2, le=100)
 
     @model_validator(mode="after")
-    def validate_registry(self) -> DevvalCandidateTrialPlanV1:
+    def validate_registry(self) -> DevvalCandidateTrialPolicyV1:
         pinned = tuple(
             (trial.trial_id, trial.configuration_sha256)
             for trial in self.trial_registry.trials
@@ -100,6 +95,14 @@ class DevvalCandidateTrialPlanV1(Gate3Contract):
                 "trial registry must pin all configured Brier trials in order"
             )
         return self
+
+
+class DevvalCandidateTrialPlanV1(DevvalCandidateTrialPolicyV1):
+    schema_version: Literal["ctcc.mie.devval_candidate_trial_plan.v1"] = (
+        "ctcc.mie.devval_candidate_trial_plan.v1"
+    )
+    study_sha256: Sha256
+    legacy_scores_sha256: Sha256
 
 
 class DevvalLegacyScoreRowV1(Gate3Contract):

@@ -35,11 +35,7 @@ class DevvalCampaignStudyError(ValueError):
     """Fixed refusal without private evidence details or source prices."""
 
 
-class DevvalCampaignStudyPlanV1(Gate3Contract):
-    schema_version: Literal["ctcc.mie.devval_campaign_study_plan.v1"] = (
-        "ctcc.mie.devval_campaign_study_plan.v1"
-    )
-    campaign_sha256: Sha256
+class DevvalCampaignStudyPolicyV1(Gate3Contract):
     feature_plan: FrozenFeatureReplayPlanV2
     minimum_training_events: int = Field(gt=0)
     fold_validation_events: int = Field(gt=0)
@@ -50,6 +46,13 @@ class DevvalCampaignStudyPlanV1(Gate3Contract):
     embargo_seconds: int = Field(gt=0)
     step_events: int | None = Field(default=None, gt=0)
     maximum_folds: int | None = Field(default=None, gt=0)
+
+
+class DevvalCampaignStudyPlanV1(DevvalCampaignStudyPolicyV1):
+    schema_version: Literal["ctcc.mie.devval_campaign_study_plan.v1"] = (
+        "ctcc.mie.devval_campaign_study_plan.v1"
+    )
+    campaign_sha256: Sha256
 
 
 class DevvalCampaignStudyRowV1(Gate3Contract):
