@@ -122,6 +122,12 @@ def _checked_response_headers(
     selected: dict[bytes, bytes] = {}
     for key, value in headers:
         lower = key.lower()
+        if lower.startswith(b"ok-access-") or lower in {
+            b"authorization",
+            b"proxy-authorization",
+            b"cookie",
+        }:
+            _deny("live_config_credential_echo_rejected")
         if lower in {
             b"content-type",
             b"content-encoding",
@@ -230,6 +236,7 @@ def _check_no_credential_echo(value: Any, secrets: tuple[str, ...]) -> None:
         if type(item) is str and any(secret in item for secret in secrets):
             _deny("live_config_credential_echo_rejected")
         if type(item) is dict:
+            pending.extend(item)
             pending.extend(item.values())
         elif type(item) is list:
             pending.extend(item)
@@ -253,7 +260,10 @@ def _checked_config(
             or row["mainUid"] != lease._pin.expected_main_uid
         ):
             _deny("live_config_account_identity_mismatch")
-        _check_no_credential_echo(payload, (*lease._pin.credentials, signature))
+        private_tokens = (*lease._pin.credentials, signature)
+        if any(token.encode("utf-8") in raw for token in private_tokens):
+            _deny("live_config_credential_echo_rejected")
+        _check_no_credential_echo(payload, private_tokens)
         return canonical(payload)
     except LiveConfigObservationError:
         raise
