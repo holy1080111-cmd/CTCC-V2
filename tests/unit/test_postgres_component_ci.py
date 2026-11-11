@@ -309,8 +309,9 @@ def test_actual_post_common_finally_refuses_unknown_cleanup_and_retains_failure_
 
 def test_pg2_owns_every_whole_module_and_keeps_both_stateful_anchors_on_zero():
     owned = [selection.postgres_paths(index) for index in range(2)]
-    assert len(selection.POSTGRES_TEST_PATHS) == 86
-    assert [len(paths) for paths in owned] == [40, 46]
+    assert len(selection.POSTGRES_TEST_PATHS) == 87
+    assert [len(paths) for paths in owned] == [40, 47]
+    assert selection.DEVVAL_CUSTODY_TEST_PATH in owned[1]
     assert not owned[0] & owned[1]
     assert owned[0] | owned[1] == selection.POSTGRES_TEST_PATHS
     assert selection.POSTGRES_ANCHOR_PATHS <= owned[0]

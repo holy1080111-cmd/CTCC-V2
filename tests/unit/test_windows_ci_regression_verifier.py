@@ -212,6 +212,11 @@ def test_integration_module_classification_fails_on_new_module(tmp_path: Path):
     for name in (*verifier.NO_DB_INTEGRATION, *verifier.POSTGRES_INTEGRATION):
         (integration / name).write_text("pass\n", encoding="utf-8")
     assert verifier.test_selection(tmp_path)[0] == "tests/unit"
+    assert "test_devval_campaign_custody_pg_v1.py" in verifier.POSTGRES_INTEGRATION
+    assert (
+        "tests/integration/test_devval_campaign_custody_pg_v1.py"
+        not in verifier.test_selection(tmp_path)
+    )
 
     (integration / "test_new_unclassified.py").write_text("pass\n", encoding="utf-8")
     with pytest.raises(

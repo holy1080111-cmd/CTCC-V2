@@ -75,6 +75,7 @@ POSTGRES_INTEGRATION = (
     "test_demo_control_repository.py",
     "test_demo_event_history_epoch_repository.py",
     "test_durable_migration_downgrade.py",
+    "test_devval_campaign_custody_pg_v1.py",
     "test_gate3_blind_window_schedule_ack_binding_repository.py",
     "test_gate3_canonical_schedule_claim.py",
     "test_gate3_canonical_sql_repair.py",

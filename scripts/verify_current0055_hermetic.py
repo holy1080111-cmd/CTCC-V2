@@ -6,14 +6,16 @@ import json
 import os
 import re
 import tarfile
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from uuid import uuid4
 
 from scripts import current0055_hermetic_contract as contract
 from scripts import verify_final_hermetic as shared
 from scripts.current0055_catalog_receipt import verify_current55_catalog_report
+from scripts.devval_hermetic_tls import devval_tls
 from scripts.evidence_json import read_evidence_json
+from scripts.verify_linux_shard import DEVVAL_CUSTODY_TEST_PATH, postgres_paths
 
 _POSTGRES = "postgres:17-alpine@sha256:f02121de6f74d30d8a94cd1d9584125e2178d7e6c377d8130112d4e52d867995"
 _REDIS = "redis:8-alpine@sha256:bd999b5cfee25fb24b8320a31fddbd69f462df44c8138c66e369582937beebc0"
@@ -130,6 +132,12 @@ def _admit_archive(args, archive_bytes=None):
     expected_runner = files[contract.RUNNER_PATH]["sha256"]
     if contract.digest(Path(__file__).read_bytes()) != expected_runner:
         raise ValueError("current55_runner_does_not_match_archive")
+    tls_source = Path(__file__).with_name("devval_hermetic_tls.py")
+    if (
+        contract.digest(tls_source.read_bytes())
+        != files["scripts/devval_hermetic_tls.py"]["sha256"]
+    ):
+        raise ValueError("current55_devval_tls_helper_does_not_match_archive")
     contract.migration_digest(files)
     return raw, files, expected_runner
 
@@ -220,6 +228,10 @@ def _run(args, index, raw, files, runner_sha, root):
     run = shared.Run(root)
     resources = []
     anchor = contract.component_is_anchor(args.suite, index)
+    needs_devval_tls = (
+        args.suite != "shard" and DEVVAL_CUSTODY_TEST_PATH in postgres_paths(index)
+    )
+    tls_resources = ExitStack()
 
     def command(stage, *command_args, **options):
         run.command(stage, ["docker", *command_args], **options)
@@ -294,6 +306,7 @@ def _run(args, index, raw, files, runner_sha, root):
         ):
             raise RuntimeError("current55_docker_network_not_internal")
         resources.append(("container", postgres))
+        tls = tls_resources.enter_context(devval_tls(needs_devval_tls, postgres))
         command(
             "postgres-start",
             "run",
@@ -310,7 +323,9 @@ def _run(args, index, raw, files, runner_sha, root):
             "POSTGRES_DB=ctcc",
             "-e",
             "POSTGRES_HOST_AUTH_METHOD=trust",
+            *(tls.postgres_mount if tls else ()),
             _POSTGRES,
+            *(tls.postgres_command if tls else ()),
         )
         resources.append(("container", redis))
         command(
@@ -405,12 +420,13 @@ def _run(args, index, raw, files, runner_sha, root):
         container(
             stage,
             *_test_command(args.suite, index),
-            mounts=test_mount,
+            mounts=(*test_mount, *(tls.pytest_mount if tls else ())),
             extra_environment=(
                 "-e",
                 "CTCC_RUN_B3_PREFIX_33=1",
                 "-e",
                 "CTCC_B3_SCALE_RECEIPT_DIR=/validation-results",
+                *(tls.pytest_environment if tls else ()),
             ),
             timeout=shared.FULL_TEST_TIMEOUT_SECONDS,
         )
@@ -498,7 +514,10 @@ def _run(args, index, raw, files, runner_sha, root):
         )
         raise
     finally:
-        cleanup = shared.cleanup_resources(resources, run_id)
+        try:
+            cleanup = shared.cleanup_resources(resources, run_id)
+        finally:
+            tls_resources.close()
         _write(root / "cleanup.json", cleanup)
         identity["cleanup"] = (
             "PASS" if all(item["status"] != "FAIL" for item in cleanup) else "FAIL"

@@ -11,8 +11,10 @@ import hashlib
 import json
 from pathlib import Path
 
+DEVVAL_CUSTODY_TEST_PATH = "tests/integration/test_devval_campaign_custody_pg_v1.py"
 POSTGRES_TEST_PATHS = frozenset(
     {
+        DEVVAL_CUSTODY_TEST_PATH,
         "tests/integration/test_qualification_ledger_repository.py",
         "tests/integration/test_qualification_ledger_restricted_role_repository.py",
         "tests/integration/test_qualification_submission_intent_repository.py",

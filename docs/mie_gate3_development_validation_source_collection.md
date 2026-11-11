@@ -217,3 +217,7 @@ The isolated PostgreSQL integration suite runs the custody SQL using
 exercise the native TLS repository through publication, acknowledgement,
 dispatch, and readback on fresh sessions. The server certificate must match
 the test URL host. This lab exercises synthetic plans and roles.
+The DB0055 hermetic PostgreSQL component that owns this module generates
+the temporary test certificate for its private PostgreSQL container and
+mounts the public certificate into pytest. Windows classifies this module
+as PostgreSQL-only.
