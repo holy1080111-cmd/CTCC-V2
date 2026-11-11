@@ -632,10 +632,15 @@ async def _fetch(
     _isolated_client(client, require_empty_cookies=False)
     if _source is None:
         route = None
+        origin = BASE_URL
     else:
-        from app.trade_qualification.public_source_runtime import _owned_public_route
+        from app.trade_qualification.public_source_runtime import (
+            _owned_public_route,
+            _owned_rest_origin,
+        )
 
         route = _owned_public_route(_source)
+        origin = _owned_rest_origin(_source)
     started = _utc(clock())
     if previous is not None and started < previous:
         raise CandleCollectionError("batch_clock_reversed")
@@ -645,7 +650,7 @@ async def _fetch(
     request = (
         httpx.Request(
             "GET",
-            BASE_URL + ENDPOINT,
+            origin + ENDPOINT,
             params=parameters,
             headers={
                 "Accept": "application/json",
@@ -730,7 +735,7 @@ async def _fetch(
         body = bytearray(raw)
     rows, canonical = _parse(bytes(body))
     return CandlePage(
-        origin=BASE_URL if route is None else route.rest_origin,
+        origin=origin,
         instrument_id=instrument,
         timeframe=timeframe,
         page_index=index,

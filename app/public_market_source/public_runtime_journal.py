@@ -36,6 +36,53 @@ _LOCK = Lock()
 MAX_EVENTS = 4096
 MAX_RAW = 32 * 1024 * 1024
 MAX_TOTAL = 64 * 1024 * 1024
+GLOBAL_INITIAL_PLAN = "ctcc.public.initial_global_runtime_plan.v1"
+GLOBAL_PACKET = "ctcc.public.global_component_packet.v1"
+GLOBAL_ENVIRONMENT = "anonymous_global_public"
+GLOBAL_REST_ORIGIN = "https://openapi.okx.com"
+GLOBAL_WS_ORIGIN = "wss://ws.okx.com:443/ws/v5/public"
+GLOBAL_INSTRUMENTS = ("BTC-USDT-SWAP", "ETH-USDT-SWAP")
+_GLOBAL_USER_AGENTS = {
+    "quote": "CTCC-source-quote/1",
+    "candles": "CTCC-source-candles/1",
+    "market_aux": "CTCC-source-market-aux/1",
+    "time_pre": "CTCC-source-global-time/1",
+    "time_post": "CTCC-source-global-time/1",
+}
+GLOBAL_ROUTE_SHA256 = sha(
+    canonical(
+        {
+            "schema_version": "ctcc.public.global_component_route.v1",
+            "environment": GLOBAL_ENVIRONMENT,
+            "rest_origin": GLOBAL_REST_ORIGIN,
+            "ws_origin": GLOBAL_WS_ORIGIN,
+            "instruments": GLOBAL_INSTRUMENTS,
+            "rest_method": "GET",
+            "rest_user_agents": _GLOBAL_USER_AGENTS,
+            "authenticated_requests": False,
+            "tls_hostname_required": True,
+            "redirects": False,
+            "retries": 0,
+            "exchange_time_bracket": True,
+            "native_clock": "ctcc.windows_clock_observation.v3",
+        }
+    )
+)
+_INITIAL_PLAN_FIELDS = frozenset(
+    {
+        "schema_version",
+        "stage",
+        "invocation_id",
+        "environment",
+        "report_id",
+        "instrument_id",
+        "invocation_started",
+        "expires_at",
+        "rest_origin",
+        "ws_origin",
+        "policy_sha256",
+    }
+)
 _PUBLIC_WS_ORIGINS = frozenset(
     {
         "wss://ws.okx.com:443/ws/v5/public",
@@ -391,6 +438,7 @@ def _replay_open_v3_prefix(attempt, *, market_packet=None):
             "ctcc.public.initial_runtime_plan.v3",
             "ctcc.public.runtime_plan.v3",
             "ctcc.public.initial_runtime_plan.v4",
+            GLOBAL_INITIAL_PLAN,
         }
     ):
         raise PublicReceiptError("runtime_v3_prefix_plan_invalid")
@@ -479,6 +527,8 @@ def _time(value):
 
 
 def _validate_plan(plan):
+    if type(plan) is dict and plan.get("schema_version") == GLOBAL_INITIAL_PLAN:
+        return _validate_global_initial_plan(plan)
     if (
         type(plan) is dict
         and plan.get("schema_version") == "ctcc.public.initial_runtime_plan.v4"
@@ -559,27 +609,20 @@ def _validate_plan(plan):
 
 
 def _validate_initial_plan(plan):
-    # No G12, candidate, event, or qualification-policy claim exists at this
-    # stage. An initial observation time must never stand in for publication.
     if (
-        set(plan)
-        != {
-            "schema_version",
-            "stage",
-            "invocation_id",
-            "environment",
-            "report_id",
-            "instrument_id",
-            "invocation_started",
-            "expires_at",
-            "rest_origin",
-            "ws_origin",
-            "policy_sha256",
-        }
-        or plan["stage"] != "initial_public"
+        set(plan) != _INITIAL_PLAN_FIELDS
         or plan["environment"] != "demo"
         or plan["rest_origin"] != "https://www.okx.com"
         or plan["ws_origin"] not in _PUBLIC_WS_ORIGINS
+    ):
+        raise PublicReceiptError("runtime_initial_plan_invalid")
+    _validate_initial_identity(plan)
+
+
+def _validate_initial_identity(plan):
+    # An initial observation time never stands in for a publication barrier.
+    if (
+        plan["stage"] != "initial_public"
         or type(plan["invocation_id"]) is not str
         or re.fullmatch("[0-9a-f]{32}", plan["invocation_id"]) is None
         or type(plan["instrument_id"]) is not str
@@ -596,6 +639,21 @@ def _validate_initial_plan(plan):
     ).total_seconds()
     if not 0 < lifetime <= 60:
         raise PublicReceiptError("runtime_initial_plan_chronology_invalid")
+
+
+def _validate_global_initial_plan(plan):
+    if (
+        type(plan) is not dict
+        or set(plan) != _INITIAL_PLAN_FIELDS | {"global_route_sha256"}
+        or plan["schema_version"] != GLOBAL_INITIAL_PLAN
+        or plan["environment"] != GLOBAL_ENVIRONMENT
+        or plan["rest_origin"] != GLOBAL_REST_ORIGIN
+        or plan["ws_origin"] != GLOBAL_WS_ORIGIN
+        or plan["global_route_sha256"] != GLOBAL_ROUTE_SHA256
+        or plan["instrument_id"] not in GLOBAL_INSTRUMENTS
+    ):
+        raise PublicReceiptError("runtime_global_initial_plan_invalid")
+    _validate_initial_identity(plan)
 
 
 def _validate_v2_plan(plan):
@@ -721,6 +779,7 @@ def _plan_start(plan):
         "ctcc.public.initial_runtime_plan.v2",
         "ctcc.public.initial_runtime_plan.v3",
         "ctcc.public.initial_runtime_plan.v4",
+        GLOBAL_INITIAL_PLAN,
     }:
         return plan["invocation_started"]
     return plan["barrier"]
@@ -728,6 +787,9 @@ def _plan_start(plan):
 
 def _plan_tls_hostnames(plan):
     """Use the validated exact route table; do not parse a caller URL here."""
+    if plan["schema_version"] == GLOBAL_INITIAL_PLAN:
+        _validate_global_initial_plan(plan)
+        return "openapi.okx.com", "ws.okx.com"
     if "registration_region" in plan:
         rest, ws, rest_hostname, ws_hostname = demo_public_v2_route(
             plan["registration_region"]
@@ -749,6 +811,7 @@ def _packet_stage_matches(plan, barrier, *, exact=False):
         "ctcc.public.initial_runtime_plan.v2",
         "ctcc.public.initial_runtime_plan.v3",
         "ctcc.public.initial_runtime_plan.v4",
+        GLOBAL_INITIAL_PLAN,
     }:
         return barrier is None
     return barrier is not None and (
@@ -797,6 +860,15 @@ def _routed_request_headers(plan, role):
     ]
 
 
+def _global_request_headers(role):
+    return [
+        ["accept", "application/json"],
+        ["accept-encoding", "identity"],
+        ["host", "openapi.okx.com"],
+        ["user-agent", _GLOBAL_USER_AGENTS[role]],
+    ]
+
+
 def _public_system_time(raw):
     """Replay only OKX system-time semantics, never market-source timestamps."""
     if type(raw) is not bytes or not 0 < len(raw) <= 4096:
@@ -827,12 +899,14 @@ def _replay_semantics(plan, summary, events, payloads, *, market_packet=None):
     complete = summary["disposition"] == "captured"
     before_seen, after_seen = False, False
     first_clock = None
+    global_public = plan["schema_version"] == GLOBAL_INITIAL_PLAN
     v3 = plan["schema_version"] in {
         "ctcc.public.initial_runtime_plan.v3",
         "ctcc.public.initial_runtime_plan.v4",
         "ctcc.public.runtime_plan.v3",
+        GLOBAL_INITIAL_PLAN,
     }
-    time_ids, time_validated = [], set()
+    time_ids, time_validated = [], {}
     for event, raw in zip(events, payloads, strict=True):
         kind, meta = event["kind"], event["metadata"]
         stamp = None
@@ -854,7 +928,7 @@ def _replay_semantics(plan, summary, events, payloads, *, market_packet=None):
             if (
                 kind == "clock_after"
                 and v3
-                and (len(time_ids) != 2 or time_validated != set(time_ids))
+                and (len(time_ids) != 2 or time_validated.keys() != set(time_ids))
             ):
                 raise PublicReceiptError("runtime_v3_time_order_invalid")
             if value["outcome"] == "accepted":
@@ -862,7 +936,9 @@ def _replay_semantics(plan, summary, events, payloads, *, market_packet=None):
                 if evidence["schema_version"] not in {
                     _RUNTIME_CLOCK_V2,
                     _RUNTIME_CLOCK_IPC,
-                }:
+                } or (
+                    global_public and evidence["schema_version"] != _RUNTIME_CLOCK_IPC
+                ):
                     raise PublicReceiptError("runtime_native_clock_version_required")
                 if kind == "clock_before":
                     first_clock = evidence
@@ -903,7 +979,7 @@ def _replay_semantics(plan, summary, events, payloads, *, market_packet=None):
                 "query",
                 "started",
             }
-            if routed:
+            if routed or global_public:
                 expected_keys.add("request_headers")
             if (
                 set(meta) != expected_keys
@@ -982,6 +1058,10 @@ def _replay_semantics(plan, summary, events, payloads, *, market_packet=None):
                 plan, meta["role"]
             ):
                 raise PublicReceiptError("runtime_demo_request_headers_invalid")
+            if global_public and meta["request_headers"] != _global_request_headers(
+                meta["role"]
+            ):
+                raise PublicReceiptError("runtime_global_request_headers_invalid")
             stamp = meta["started"]
             requests[meta["id"]] = {
                 "request": meta,
@@ -1044,7 +1124,13 @@ def _replay_semantics(plan, summary, events, payloads, *, market_packet=None):
                 > 5_000_000_000
             ):
                 raise PublicReceiptError("runtime_v3_time_validation_invalid")
-            time_validated.add(meta["id"])
+            time_validated[meta["id"]] = int(server_ms)
+            if (
+                global_public
+                and len(time_validated) == 2
+                and (time_validated[time_ids[1]] < time_validated[time_ids[0]])
+            ):
+                raise PublicReceiptError("runtime_global_exchange_clock_reversed")
             stamp = meta["validated"]
         elif kind in {
             "headers",
@@ -1273,6 +1359,7 @@ def _replay_semantics(plan, summary, events, payloads, *, market_packet=None):
                     "ctcc.public.initial_runtime_plan.v3",
                     "ctcc.public.initial_runtime_plan.v4",
                     "ctcc.public.runtime_plan.v3",
+                    GLOBAL_INITIAL_PLAN,
                 }
                 else observations[0].get("bundle_sha256")
             )
@@ -1308,7 +1395,7 @@ def _replay_semantics(plan, summary, events, payloads, *, market_packet=None):
                     len(time_ids) != 2
                     or [requests[index]["request"]["role"] for index in time_ids]
                     != ["time_pre", "time_post"]
-                    or time_validated != set(time_ids)
+                    or time_validated.keys() != set(time_ids)
                 )
             )
         ):
@@ -1342,6 +1429,21 @@ def _replay_semantics(plan, summary, events, payloads, *, market_packet=None):
 
 
 def _packet_join(plan, packet, requests, websocket):
+    global_public = plan["schema_version"] == GLOBAL_INITIAL_PLAN
+    if global_public and (
+        packet.get("schema_version") != GLOBAL_PACKET
+        or packet.get("environment") != GLOBAL_ENVIRONMENT
+        or any(
+            packet.get(name) != plan[name]
+            for name in (
+                "global_route_sha256",
+                "rest_origin",
+                "ws_origin",
+                "policy_sha256",
+            )
+        )
+    ):
+        raise PublicReceiptError("runtime_global_packet_plan_mismatch")
     if plan["schema_version"] in {
         "ctcc.public.initial_runtime_plan.v2",
         "ctcc.public.runtime_plan.v2",
@@ -1401,6 +1503,8 @@ def _packet_join(plan, packet, requests, websocket):
     ]
     remaining = list(requests.values())
     for record in records:
+        if global_public and record.get("origin") != GLOBAL_REST_ORIGIN:
+            raise PublicReceiptError("runtime_global_packet_origin_mismatch")
         matched = [
             item
             for item in remaining

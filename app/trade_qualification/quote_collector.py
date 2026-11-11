@@ -606,10 +606,15 @@ async def _collect_one(
     _public_client(client, require_empty_cookies=False)
     if _source is None:
         route = None
+        origin = BASE_URL
     else:
-        from app.trade_qualification.public_source_runtime import _owned_public_route
+        from app.trade_qualification.public_source_runtime import (
+            _owned_public_route,
+            _owned_rest_origin,
+        )
 
         route = _owned_public_route(_source)
+        origin = _owned_rest_origin(_source)
     started = _utc(clock())
     if previous is not None and started < previous:
         raise QuoteCollectionError("batch_clock_reversed")
@@ -621,7 +626,7 @@ async def _collect_one(
     request = (
         httpx.Request(
             "GET",
-            BASE_URL + path,
+            origin + path,
             params=params,
             headers={
                 "Accept": "application/json",
@@ -711,7 +716,7 @@ async def _collect_one(
     _values(role, row)
     return EndpointObservation(
         role=role,
-        origin=BASE_URL if route is None else route.rest_origin,
+        origin=origin,
         endpoint=path,
         parameters=tuple(sorted(params.items())),
         instrument_id=instrument,

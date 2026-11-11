@@ -79,6 +79,24 @@ qualification or entry policy. Failure retains the attempted directory; never
 erase its tail to repeat the attempt. Real clock/TLS/WS/storage acceptance requires
 actual native evidence; synthetic tests are not that evidence.
 
+## Anonymous Global public components
+
+Use `capture_initial_global_public_market_v1` from
+`app.trade_qualification.global_public_runtime_v1` with the bounded policy
+above and a new private empty directory. The initial-only scope admits
+`BTC-USDT-SWAP` and `ETH-USDT-SWAP` on the fixed Global REST origin
+`https://openapi.okx.com` and public WebSocket
+`wss://ws.okx.com:443/ws/v5/public`. The owner validates native IPC before and
+after the capture and brackets the component requests with two fixed public
+server-time observations.
+
+Save the returned plan and journal SHA-256 values separately. Pass them as
+`expected_plan_sha256` and `expected_journal_sha256` to
+`read_global_public_capture_v1` to reopen and replay the original journal.
+The returned `GlobalPublicComponentPacketV1` carries anonymous public
+evidence with `DENY` admission, zero account requests and zero order writes.
+The packet provides no qualification or execution authority.
+
 ## Post-G12 invocation
 
 The legacy `publish_capture_public_recheck` coordinator is hard-denied before

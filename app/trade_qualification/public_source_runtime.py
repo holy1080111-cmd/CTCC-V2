@@ -172,7 +172,21 @@ def _owned_public_route(source):
     return _planned_public_route(state["plan"])
 
 
+def _owned_rest_origin(source):
+    state = _state(source)
+    _fence_v2_demo_transport(state)
+    plan = state["plan"]
+    if plan.get("schema_version") == _runtime_journal.GLOBAL_INITIAL_PLAN:
+        return _runtime_journal.GLOBAL_REST_ORIGIN
+    route = _planned_public_route(plan)
+    return quotes.BASE_URL if route is None else route.rest_origin
+
+
 def _owned_ws_endpoint(source):
+    plan = _state(source)["plan"]
+    if plan.get("schema_version") == _runtime_journal.GLOBAL_INITIAL_PLAN:
+        _runtime_journal._validate_global_initial_plan(plan)
+        return _runtime_journal.GLOBAL_WS_ORIGIN
     route = _owned_public_route(source)
     return (
         ws.PUBLIC_WS_URL
@@ -191,6 +205,9 @@ def _fence_v2_demo_transport(state):
     """
     plan = state.get("plan")
     if type(plan) is dict:
+        if plan.get("schema_version") == _runtime_journal.GLOBAL_INITIAL_PLAN:
+            _runtime_journal._validate_global_initial_plan(plan)
+            return
         if plan.get("schema_version") == "ctcc.public.initial_runtime_plan.v4":
             _require_owned_v4_route(state)
             return
@@ -287,6 +304,10 @@ class _CapturedInitialPublicV4(_CapturedPublic):
     __slots__ = ()
 
 
+class _CapturedInitialGlobalPublic(_CapturedPublic):
+    __slots__ = ()
+
+
 def _require_owned_v4_route(state):
     from app.trade_qualification import demo_operational_route_v4 as operational
 
@@ -365,6 +386,7 @@ def _new_owned_client(source, role):
         "ctcc.public.initial_runtime_plan.v3",
         "ctcc.public.initial_runtime_plan.v4",
         "ctcc.public.runtime_plan.v3",
+        _runtime_journal.GLOBAL_INITIAL_PLAN,
     }
     v3_time = v3 and role in {"time_pre", "time_post"}
     if (
@@ -445,8 +467,15 @@ def _http_tls(source, client, response):
     stream = response.extensions.get("network_stream")
     if stream is None:
         raise PublicSourceRuntimeError("public_tls_binding_missing")
-    route = _planned_public_route(_state(source)["plan"])
-    hostname = "www.okx.com" if route is None else route.rest_hostname
+    plan = _state(source)["plan"]
+    route = _planned_public_route(plan)
+    hostname = (
+        _runtime_journal._plan_tls_hostnames(plan)[0]
+        if plan.get("schema_version") == _runtime_journal.GLOBAL_INITIAL_PLAN
+        else "www.okx.com"
+        if route is None
+        else route.rest_hostname
+    )
     return _tls_proof(stream.get_extra_info("ssl_object"), context, hostname)
 
 
@@ -474,6 +503,16 @@ def _request_scope(source, client, request, started):
     _fence_v2_demo_transport(state)
     role, _ = _verified_client(source, client)
     route = _planned_public_route(state["plan"])
+    global_public = (
+        state["plan"].get("schema_version") == _runtime_journal.GLOBAL_INITIAL_PLAN
+    )
+    host = (
+        _runtime_journal._plan_tls_hostnames(state["plan"])[0]
+        if global_public
+        else "www.okx.com"
+        if route is None
+        else route.rest_hostname
+    )
     time_role = role in {"time_pre", "time_post"}
     if (
         state["plan"].get("schema_version")
@@ -481,6 +520,7 @@ def _request_scope(source, client, request, started):
             "ctcc.public.initial_runtime_plan.v3",
             "ctcc.public.initial_runtime_plan.v4",
             "ctcc.public.runtime_plan.v3",
+            _runtime_journal.GLOBAL_INITIAL_PLAN,
         }
         and not time_role
     ):
@@ -489,13 +529,14 @@ def _request_scope(source, client, request, started):
         "ctcc.public.initial_runtime_plan.v3",
         "ctcc.public.initial_runtime_plan.v4",
         "ctcc.public.runtime_plan.v3",
+        _runtime_journal.GLOBAL_INITIAL_PLAN,
     }:
         raise PublicSourceRuntimeError("public_request_scope_invalid")
     if (
         type(request) is not httpx.Request
         or request.method != "GET"
         or request.url.scheme != "https"
-        or request.url.host != ("www.okx.com" if route is None else route.rest_hostname)
+        or request.url.host != host
         or request.url.port not in (None, 443)
         or request.content
     ):
@@ -558,6 +599,13 @@ def _request_scope(source, client, request, started):
         or request.headers.get("accept-encoding") != "identity"
     ):
         raise PublicSourceRuntimeError("public_request_headers_invalid")
+    request_headers = sorted(
+        [name.lower(), value] for name, value in request.headers.items()
+    )
+    if global_public and request_headers != _runtime_journal._global_request_headers(
+        role
+    ):
+        raise PublicSourceRuntimeError("public_request_headers_invalid")
     index = state["request_count"]
     if index >= 64:
         raise PublicSourceRuntimeError("public_request_limit")
@@ -566,17 +614,21 @@ def _request_scope(source, client, request, started):
         "id": index,
         "role": role,
         "method": "GET",
-        "origin": quotes.BASE_URL if route is None else route.rest_origin,
+        "origin": (
+            _runtime_journal.GLOBAL_REST_ORIGIN
+            if global_public
+            else quotes.BASE_URL
+            if route is None
+            else route.rest_origin
+        ),
         "endpoint": request.url.path,
         "query": pairs,
         "started": state["last"],
     }
-    if route is not None:
+    if route is not None or global_public:
         # These are fixed public headers only; no credential or cookie can enter
         # the journal because the exact Demo request was checked above.
-        metadata["request_headers"] = tuple(
-            sorted((name.lower(), value) for name, value in request.headers.items())
-        )
+        metadata["request_headers"] = tuple(tuple(item) for item in request_headers)
     _event(source, "request", metadata)
     if time_role:
         state.setdefault("time_started", {})[role] = state["last"]
@@ -816,7 +868,7 @@ def _complete_owned_public_market_v3(source, packet, *, _owner):
     phase = _V3_TIME_PHASES.get(source)
     if phase is None or phase.market_prefix_head is not None:
         raise PublicSourceRuntimeError("public_v3_time_phase_invalid")
-    canonical_packet = _check_packet_binding_v2(
+    canonical_packet = _check_bracket_packet_binding(
         state,
         packet,
         expected_roles=("quote", "candles", "market_aux", "time_pre"),
@@ -864,7 +916,7 @@ def _require_v3_post_time_phase(source):
     )
     if head != phase.market_prefix_head:
         raise PublicSourceRuntimeError("public_v3_time_phase_changed")
-    _check_packet_binding_v2(
+    _check_bracket_packet_binding(
         state,
         phase.market_packet,
         expected_roles=("quote", "candles", "market_aux", "time_pre"),
@@ -882,6 +934,7 @@ async def _fetch_owned_public_time_v3(source, role):
             "ctcc.public.initial_runtime_plan.v3",
             "ctcc.public.runtime_plan.v3",
             "ctcc.public.initial_runtime_plan.v4",
+            _runtime_journal.GLOBAL_INITIAL_PLAN,
         }
         or role not in {"time_pre", "time_post"}
         or role in state.get("time_http", {})
@@ -900,14 +953,26 @@ async def _fetch_owned_public_time_v3(source, role):
     else:
         _require_v3_post_time_phase(source)
     route = _planned_public_route(state["plan"])
-    if route is None:
+    global_public = (
+        state["plan"].get("schema_version") == _runtime_journal.GLOBAL_INITIAL_PLAN
+    )
+    if route is None and not global_public:
         raise PublicSourceRuntimeError("public_v3_time_route_invalid")
     client = _new_owned_client(source, role)
     cancelled = False
     validation_head = None
     try:
         started = _sample(source)
-        request = demo_origin.build_demo_public_time_request_v3(route, role)
+        request = (
+            httpx.Request(
+                "GET",
+                _runtime_journal.GLOBAL_REST_ORIGIN + "/api/v5/public/time",
+                headers=dict(_runtime_journal._global_request_headers(role)),
+                extensions={"timeout": httpx.Timeout(2).as_dict()},
+            )
+            if global_public
+            else demo_origin.build_demo_public_time_request_v3(route, role)
+        )
         raw, _, _ = await _fetch_http(
             source,
             client,
@@ -966,14 +1031,10 @@ def _ws_options(source, started):
         "ctcc.public.initial_runtime_plan.v3",
         "ctcc.public.initial_runtime_plan.v4",
         "ctcc.public.runtime_plan.v3",
+        _runtime_journal.GLOBAL_INITIAL_PLAN,
     }:
         _require_v3_pre_market_phase(source)
-    route = _planned_public_route(state["plan"])
-    endpoint = (
-        ws.PUBLIC_WS_URL
-        if route is None
-        else demo_origin.build_demo_public_ws_endpoint(route)
-    )
+    endpoint = _owned_ws_endpoint(source)
     if state["ws_claimed"] or started != utc_from_ns(state["last"]["utc_ns"]):
         raise PublicSourceRuntimeError("public_socket_already_claimed")
     state["ws_claimed"] = True
@@ -1092,6 +1153,25 @@ def _check_packet_binding_v2(
     return checked
 
 
+def _check_bracket_packet_binding(state, packet, *, expected_roles):
+    if state["plan"].get("schema_version") == _runtime_journal.GLOBAL_INITIAL_PLAN:
+        from app.trade_qualification.global_public_runtime_v1 import _checked_packet
+
+        checked = _checked_packet(packet)
+        _check_raw_inventory(
+            state,
+            (
+                *checked.quote.provenance,
+                *(page for frame in checked.candles.frames for page in frame.pages),
+                *checked.market_aux.provenance,
+            ),
+            checked.ws,
+            expected_roles=expected_roles,
+        )
+        return checked
+    return _check_packet_binding_v2(state, packet, expected_roles=expected_roles)
+
+
 def _check_raw_inventory(
     state, observations, reference, *, expected_roles=("quote", "candles", "market_aux")
 ):
@@ -1188,19 +1268,33 @@ async def _capture_initial_public_v4(initial_scope, policy, root):
     )
 
 
+async def _capture_initial_global_public(scope, policy, root):
+    return await _capture_owned(scope, policy, root, stage="initial_public", _version=5)
+
+
 async def _capture_owned(scope, policy, root, *, stage, _version=1):
     # The common transport never accepts a caller plan/DTO as ownership. Each
     # stage consumes its own exact private issuer before any clock or IO.
     if (
         type(stage) is not str
         or type(_version) is not int
-        or _version not in (1, 2, 3, 4)
+        or _version not in (1, 2, 3, 4, 5)
     ):
         raise PublicSourceRuntimeError("public_capture_stage_invalid")
     full_public = _version in (2, 3, 4)
+    global_public = _version == 5
+    if global_public and stage != "initial_public":
+        raise PublicSourceRuntimeError("public_global_initial_stage_required")
     if _version == 4 and stage != "initial_public":
         raise PublicSourceRuntimeError("public_v4_initial_stage_required")
-    if stage == "post_publication":
+    if global_public:
+        from app.trade_qualification.global_public_runtime_v1 import _take_scope
+
+        claim = _take_scope(scope)
+        version = _runtime_journal.GLOBAL_INITIAL_PLAN
+        boundary = claim["invocation_started"]
+        carrier_type, results = _CapturedInitialGlobalPublic, _INITIAL_RESULTS
+    elif stage == "post_publication":
         from app.trade_qualification.post_g12_public_runtime import (
             _take_publication,
             _take_publication_v2,
@@ -1306,7 +1400,7 @@ async def _capture_owned(scope, policy, root, *, stage, _version=1):
         "ws_records": [],
     }
     state["policy"] = selected
-    if full_public:
+    if full_public or global_public:
         state["plan"] = plan
     state["deadline"] = state["loop"].time() + selected.total_timeout_seconds
     state["clock"] = lambda: _sample(source)
@@ -1324,13 +1418,20 @@ async def _capture_owned(scope, policy, root, *, stage, _version=1):
                 if result["outcome"] != "accepted":
                     raise PublicSourceRuntimeError("native_public_clock_rejected")
                 _accept_clock_sample(state, result)
-                if _version in (3, 4):
+                if _version in (3, 4, 5):
                     await _fetch_owned_public_time_v3(source, "time_pre")
-                    packet = await (
-                        public_v2._collect_owned_public_market_v4(source)
-                        if _version == 4
-                        else public_v2._collect_owned_public_market_v2(source)
-                    )
+                    if global_public:
+                        from app.trade_qualification.global_public_runtime_v1 import (
+                            _collect_owned_global_components,
+                        )
+
+                        packet = await _collect_owned_global_components(source)
+                    else:
+                        packet = await (
+                            public_v2._collect_owned_public_market_v4(source)
+                            if _version == 4
+                            else public_v2._collect_owned_public_market_v2(source)
+                        )
                     packet = _complete_owned_public_market_v3(
                         source, packet, _owner=_ISSUER
                     )
@@ -1353,8 +1454,8 @@ async def _capture_owned(scope, policy, root, *, stage, _version=1):
                 if result["outcome"] != "accepted":
                     raise PublicSourceRuntimeError("native_public_clock_rejected")
                 _accept_clock_sample(state, result)
-                if full_public:
-                    packet = _check_packet_binding_v2(
+                if full_public or global_public:
+                    packet = _check_bracket_packet_binding(
                         state,
                         packet,
                         expected_roles=(
@@ -1364,7 +1465,7 @@ async def _capture_owned(scope, policy, root, *, stage, _version=1):
                             "time_pre",
                             "time_post",
                         )
-                        if _version in (3, 4)
+                        if _version in (3, 4, 5)
                         else ("quote", "candles", "market_aux"),
                     )
                 else:
@@ -1373,7 +1474,7 @@ async def _capture_owned(scope, policy, root, *, stage, _version=1):
                 _sample(source)
                 encoded = (
                     packet.packet_json
-                    if full_public
+                    if full_public or global_public
                     else canonical(packet.model_dump(mode="json", round_trip=True))
                 )
                 _append(
@@ -1457,6 +1558,12 @@ def _consume_initial_public_capture_v4(value, invocation):
     )
 
 
+def _consume_initial_global_public(value, invocation):
+    return _consume_capture(
+        value, invocation, _CapturedInitialGlobalPublic, _INITIAL_RESULTS
+    )
+
+
 def _consume_capture(value, invocation, expected, registry):
     if type(value) is not expected:
         raise PublicSourceRuntimeError("owned_public_capture_required")
@@ -1476,6 +1583,10 @@ def _consume_capture(value, invocation, expected, registry):
     validate_stamps((result[6], stamp))
     if utc_from_ns(stamp["utc_ns"]) >= result[7]:
         raise PublicSourceRuntimeError("public_capture_expired")
+    if expected is _CapturedInitialGlobalPublic:
+        from app.trade_qualification.global_public_runtime_v1 import _checked_packet
+
+        return _checked_packet(result[4]), result[5], stamp
     packet = (
         public_v2._parts(result[4])[0]
         if expected
@@ -1517,6 +1628,10 @@ def _replay_captured_packet(plan_raw, summary_raw, packet_raw):
     summary = decode(summary_raw, MAX_RAW)
     if summary["disposition"] != "captured":
         raise PublicSourceRuntimeError("public_capture_incomplete")
+    if plan["schema_version"] == _runtime_journal.GLOBAL_INITIAL_PLAN:
+        from app.trade_qualification.global_public_runtime_v1 import _replay_packet
+
+        return _replay_packet(plan_raw, plan, summary, packet_raw)
     if plan["schema_version"] in {
         "ctcc.public.initial_runtime_plan.v2",
         "ctcc.public.runtime_plan.v2",
