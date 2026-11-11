@@ -147,6 +147,24 @@ def _args(campaign):
 
 
 @pytest.mark.asyncio
+async def test_dispatch_availability_uses_only_read_queries(monkeypatch, campaign):
+    already_claimed = {"database_read_at": START - timedelta(minutes=1)}
+    repo, commands = _setup(
+        monkeypatch,
+        campaign,
+        role="collector",
+        outputs=[(None, COLLECTOR, "113"), (already_claimed, COLLECTOR, "114")],
+    )
+    await repo.verify_undispatched(expected_campaign_sha256=campaign.sha256)
+    with pytest.raises(
+        custody.DevvalCampaignCustodyError,
+        match="devval_custody_dispatch_already_claimed",
+    ):
+        await repo.verify_undispatched(expected_campaign_sha256=campaign.sha256)
+    assert commands == [custody._DISPATCH_READ, custody._DISPATCH_READ]
+
+
+@pytest.mark.asyncio
 async def test_publisher_commits_once_and_cannot_read_as_observer(
     monkeypatch, campaign
 ):

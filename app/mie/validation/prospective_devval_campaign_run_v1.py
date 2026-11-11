@@ -39,6 +39,9 @@ from app.mie.validation.prospective_devval_campaign_plan_v1 import (
     _source_plan,
     verify_prospective_devval_campaign_v1,
 )
+from app.mie.validation.prospective_devval_capture_dependencies_v1 import (
+    verify_devval_capture_dependencies as _verify_capture_dependencies,
+)
 from app.mie.validation.prospective_devval_research_blueprint_v1 import (
     DevvalResearchBlueprintV1,
     verify_research_campaign,
@@ -72,6 +75,20 @@ class DevvalCampaignCaptureV1:
     block_receipt_sha256s: tuple[str, ...]
     row_count: int
     receipt_sha256: str
+    predictive_oos_eligible: ClassVar[Literal[False]] = False
+    execution_authority: ClassVar[Literal[False]] = False
+
+
+@dataclass(frozen=True, slots=True)
+class DevvalCampaignPreflightV1:
+    campaign_sha256: str
+    plan_sha256: str
+    publication_xid: str
+    acknowledgement_xid: str
+    planned_blocks: int
+    planned_rows: int
+    first_open_utc_ns: int
+    observed_utc_ns: int
     predictive_oos_eligible: ClassVar[Literal[False]] = False
     execution_authority: ClassVar[Literal[False]] = False
 
@@ -232,6 +249,122 @@ def _seal_block(root, block, prior, dispatch_sha, previous_sha) -> str:
         )
 
 
+async def _inspect_capture_start(
+    root,
+    campaign_payload,
+    campaign_pin,
+    checkpoint,
+    publication_repository,
+    witness_repository,
+    observation_repository,
+    custody_session_factory,
+    research_blueprint,
+):
+    if (
+        type(root) is not type(Path())
+        or not root.is_absolute()
+        or type(publication_repository) is not DevvalCampaignCustodyRepositoryV1
+        or publication_repository._role != "collector"
+        or type(witness_repository) is not PublicReceiptWitnessRepository
+        or type(observation_repository) is not PublicReceiptPostReadRepository
+        or observation_repository.witness_repository is not witness_repository
+    ):
+        _deny("devval_campaign_runtime_invalid")
+    campaign = verify_prospective_devval_campaign_v1(
+        campaign_payload, expected_campaign_sha256=campaign_pin, **checkpoint
+    )
+    verify_research_campaign(campaign.plan, research_blueprint)
+    dataset._check_code()
+    inventory = dataset._source_inventory()
+    if inventory[0] != checkpoint["expected_source_manifest_sha256"]:
+        _deny("devval_campaign_source_changed")
+    first_open = _ns(campaign.plan.development.start_at)
+    started = _tick()
+    _early(started, first_open)
+    root_id = _private(root)
+    with _root_context(root) as directory:
+        if directory.names():
+            _deny("devval_campaign_already_claimed")
+    publication = await publication_repository.read(
+        campaign_payload, expected_campaign_sha256=campaign_pin, **checkpoint
+    )
+    now = _tick(started)
+    _early(now, first_open)
+    if (
+        type(publication) is not DevvalCampaignPublicationV1
+        or publication.acknowledged_at is None
+        or publication.acknowledgement_xid is None
+        or publication.native_readback is None
+        or publication.database_read_at >= campaign.plan.development.start_at
+        or publication.campaign_sha256 != campaign_pin
+        or publication.plan_sha256 != campaign.plan_sha256
+        or _private(root) != root_id
+    ):
+        _deny("devval_campaign_publication_not_admitted")
+    await publication_repository.verify_undispatched(
+        expected_campaign_sha256=campaign_pin
+    )
+    await _verify_capture_dependencies(
+        witness_repository, observation_repository, custody_session_factory
+    )
+    dataset._check_code()
+    if _private(root) != root_id or dataset._source_inventory() != inventory:
+        _deny("devval_campaign_preflight_identity_changed")
+    with _root_context(root) as directory:
+        if directory.names():
+            _deny("devval_campaign_already_claimed")
+    now = _tick(now)
+    _early(now, first_open)
+    return campaign, inventory, publication, root_id, now, first_open
+
+
+async def preflight_prospective_devval_campaign_v1(
+    *,
+    root: Path,
+    campaign_payload: bytes,
+    expected_campaign_sha256: str,
+    expected_source_commit: str,
+    expected_source_tree: str,
+    expected_source_manifest_sha256: str,
+    publication_repository: DevvalCampaignCustodyRepositoryV1,
+    witness_repository: PublicReceiptWitnessRepository,
+    observation_repository: PublicReceiptPostReadRepository,
+    custody_session_factory: async_sessionmaker[AsyncSession],
+    research_blueprint: DevvalResearchBlueprintV1 | None = None,
+) -> DevvalCampaignPreflightV1:
+    """Check pre-window custody and an unclaimed root without starting capture."""
+    try:
+        campaign, _, publication, _, now, first_open = await _inspect_capture_start(
+            root,
+            campaign_payload,
+            expected_campaign_sha256,
+            {
+                "expected_source_commit": expected_source_commit,
+                "expected_source_tree": expected_source_tree,
+                "expected_source_manifest_sha256": expected_source_manifest_sha256,
+            },
+            publication_repository,
+            witness_repository,
+            observation_repository,
+            custody_session_factory,
+            research_blueprint,
+        )
+        return DevvalCampaignPreflightV1(
+            expected_campaign_sha256,
+            campaign.plan_sha256,
+            publication.publication_xid,
+            publication.acknowledgement_xid,
+            campaign.plan.block_count,
+            campaign.plan.expected_rows,
+            first_open,
+            now.utc_ns,
+        )
+    except DevvalCampaignRunError:
+        raise
+    except Exception:  # noqa: BLE001 - Keep private source and connection details out of output.
+        _deny("devval_campaign_preflight_unresolved")
+
+
 async def run_prospective_devval_campaign_v1(
     *,
     root: Path,
@@ -248,57 +381,35 @@ async def run_prospective_devval_campaign_v1(
 ) -> DevvalCampaignCaptureV1:
     """Start one explicit run before its first window, with no writable resume."""
     try:
-        if (
-            type(root) is not type(Path())
-            or not root.is_absolute()
-            or type(publication_repository) is not DevvalCampaignCustodyRepositoryV1
-            or publication_repository._role != "collector"
-            or type(witness_repository) is not PublicReceiptWitnessRepository
-            or type(observation_repository) is not PublicReceiptPostReadRepository
-            or observation_repository.witness_repository is not witness_repository
-        ):
-            _deny("devval_campaign_runtime_invalid")
         source_checkpoint = {
             "expected_source_commit": expected_source_commit,
             "expected_source_tree": expected_source_tree,
             "expected_source_manifest_sha256": expected_source_manifest_sha256,
         }
-        campaign = verify_prospective_devval_campaign_v1(
+        (
+            campaign,
+            inventory,
+            publication,
+            root_id,
+            now,
+            first_open,
+        ) = await _inspect_capture_start(
+            root,
             campaign_payload,
-            expected_campaign_sha256=expected_campaign_sha256,
-            **source_checkpoint,
+            expected_campaign_sha256,
+            source_checkpoint,
+            publication_repository,
+            witness_repository,
+            observation_repository,
+            custody_session_factory,
+            research_blueprint,
         )
-        verify_research_campaign(campaign.plan, research_blueprint)
-        dataset._check_code()
-        inventory = dataset._source_inventory()
-        if inventory[0] != expected_source_manifest_sha256:
-            _deny("devval_campaign_source_changed")
-        first_open = _ns(campaign.plan.development.start_at)
-        started = _tick()
-        _early(started, first_open)
-        root_id = _private(root)
         with _root_context(root) as directory:
-            if directory.names():
-                _deny("devval_campaign_already_claimed")
+            if directory.names() or _root_identity(root) != root_id:
+                _deny("devval_campaign_root_changed")
+            now = _tick(now)
+            _early(now, first_open)
             _retain(directory, "campaign.json", campaign_payload, _RECEIPT_MAX)
-        publication = await publication_repository.read(
-            campaign_payload,
-            expected_campaign_sha256=expected_campaign_sha256,
-            **source_checkpoint,
-        )
-        now = _tick(started)
-        _early(now, first_open)
-        if (
-            type(publication) is not DevvalCampaignPublicationV1
-            or publication.acknowledged_at is None
-            or publication.acknowledgement_xid is None
-            or publication.native_readback is None
-            or publication.database_read_at >= campaign.plan.development.start_at
-            or publication.campaign_sha256 != expected_campaign_sha256
-            or publication.plan_sha256 != campaign.plan_sha256
-            or _private(root) != root_id
-        ):
-            _deny("devval_campaign_publication_not_admitted")
         blocks = []
         for ordinal in range(campaign.plan.block_count):
             plan = _source_plan(campaign.plan, campaign.plan_sha256, ordinal)

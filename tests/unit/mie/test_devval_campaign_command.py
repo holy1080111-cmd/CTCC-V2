@@ -333,7 +333,8 @@ async def test_bad_campaign_fails_before_loading_a_database(monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("mode", "publish_batch"), (("collect", False), ("replay", False), ("replay", True))
+    ("mode", "publish_batch"),
+    (("preflight", False), ("collect", False), ("replay", False), ("replay", True)),
 )
 async def test_collection_and_readonly_replay_use_different_entry_points(
     monkeypatch, tmp_path, mode, publish_batch
@@ -356,6 +357,22 @@ async def test_collection_and_readonly_replay_use_different_entry_points(
     async def runtime(args):
         assert args.mode == mode
         yield repository, factories
+
+    async def preflight(**kwargs):
+        assert kwargs["campaign_payload"] == b"fixture"
+        assert kwargs["custody_session_factory"] is factories[2]
+        check(kwargs)
+        events.append("preflight")
+        return SimpleNamespace(
+            campaign_sha256=_PIN,
+            plan_sha256="1" * 64,
+            publication_xid="101",
+            acknowledgement_xid="102",
+            planned_blocks=168,
+            planned_rows=20_160,
+            first_open_utc_ns=2_000,
+            observed_utc_ns=1_000,
+        )
 
     async def collect(**kwargs):
         assert kwargs["campaign_payload"] == b"fixture"
@@ -397,21 +414,42 @@ async def test_collection_and_readonly_replay_use_different_entry_points(
     monkeypatch.setattr(
         command, "RuntimeBundleCustodyRepository", lambda factory: factory
     )
+    monkeypatch.setattr(command, "preflight_prospective_devval_campaign_v1", preflight)
     monkeypatch.setattr(command, "run_prospective_devval_campaign_v1", collect)
     monkeypatch.setattr(command, "replay_prospective_devval_campaign_v1", replay)
     extra = (
         _CAMPAIGN
-        if mode == "collect"
+        if mode in ("preflight", "collect")
         else ["--campaign-sha256", _PIN, "--completion-sha256", "f" * 64]
     )
     if publish_batch:
         output_root = _private_root_path(tmp_path)
         extra += ["--batch-output-root", str(output_root)]
-    args = command._arguments(
-        [mode, *_BASE, *_DB, *extra, "--root", str(root), "--observer-oid", "104"]
-    )
+    argv = [mode, *_BASE, *_DB, *extra, "--root", str(root), "--observer-oid", "104"]
+    args = command._arguments(argv)
     result = await command._run(args, _CHECKPOINT)
-    assert events == [mode] and result["completion_sha256"] == "f" * 64
+    assert events == [mode]
+    if mode == "preflight":
+        assert result == {
+            "campaign_sha256": _PIN,
+            "plan_sha256": "1" * 64,
+            "publication_xid": "101",
+            "acknowledgement_xid": "102",
+            "planned_blocks": 168,
+            "planned_rows": 20_160,
+            "first_open_utc_ns": 2_000,
+            "observed_utc_ns": 1_000,
+            "source_role_readback": True,
+            "capture_started": False,
+            "dispatch_claimed": False,
+            "provider_requests": 0,
+        }
+        for invalid in (argv[:-2], [*argv, "--output", str(root / "receipt.json")]):
+            with pytest.raises(command.CampaignCommandError, match="command_invalid"):
+                command._arguments(invalid)
+        assert not list(root.iterdir())
+    else:
+        assert result["completion_sha256"] == "f" * 64
     if publish_batch:
         assert result["batch_sha256"] == artifact.sha256
         assert (output_root / "batch-v1.json").read_bytes() == artifact.payload

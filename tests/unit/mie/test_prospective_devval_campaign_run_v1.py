@@ -102,9 +102,26 @@ def _setup(monkeypatch, root, *, failure=None):
 
     async def read(payload, **pins):
         assert payload == PAYLOAD and pins["expected_campaign_sha256"] == PIN
-        assert (root / "campaign.json").read_bytes() == PAYLOAD
+        assert not tuple(root.iterdir())
         events.append("publication")
         return observed
+
+    async def verify_undispatched(*, expected_campaign_sha256):
+        assert expected_campaign_sha256 == PIN
+        assert not tuple(root.iterdir())
+        events.append("dispatch_read")
+        if failure == "already_dispatched":
+            raise custody.DevvalCampaignCustodyError(
+                "devval_custody_dispatch_already_claimed"
+            )
+
+    async def verify_dependencies(original_witness, original_observer, factory):
+        assert original_witness is witness
+        assert original_observer is observer
+        assert factory is None
+        events.append("dependencies")
+        if failure == "dependency":
+            raise OSError("private fixture dependency failure")
 
     async def prepare(
         base, plan, ordinal, original_witness, original_observer, factory
@@ -189,6 +206,7 @@ def _setup(monkeypatch, root, *, failure=None):
     )
     monkeypatch.setattr(run, "_source_plan", lambda plan, pin, ordinal: plans[ordinal])
     monkeypatch.setattr(run, "_prepare_block", prepare)
+    monkeypatch.setattr(run, "_verify_capture_dependencies", verify_dependencies)
     monkeypatch.setattr(run, "_block_pins", lambda root, block: None)
     monkeypatch.setattr(run, "_wait_due", wait_due)
     monkeypatch.setattr(run, "capture_prospective_devval_campaign_slot_v6", capture)
@@ -203,6 +221,7 @@ def _setup(monkeypatch, root, *, failure=None):
     monkeypatch.setattr(run.dataset, "_check_code", lambda: None)
     monkeypatch.setattr(run.dataset, "_source_inventory", lambda: (SOURCE, "synthetic"))
     monkeypatch.setattr(repository, "read", read)
+    monkeypatch.setattr(repository, "verify_undispatched", verify_undispatched)
     monkeypatch.setattr(repository, "claim_dispatch", claim)
     args = {
         "root": root,
@@ -241,6 +260,70 @@ async def test_research_campaign_requires_blueprint_before_claim_or_capture(
 
 
 @pytest.mark.asyncio
+async def test_preflight_reads_committed_state_without_claiming_local_roots(
+    monkeypatch, tmp_path
+):
+    root = _private_root_path(tmp_path)
+    args, events = _setup(monkeypatch, root)
+    result = await run.preflight_prospective_devval_campaign_v1(**args)
+    assert result.campaign_sha256 == PIN
+    assert result.plan_sha256 == PLAN
+    assert result.publication_xid == "107"
+    assert result.acknowledgement_xid == "108"
+    assert result.planned_blocks == 2
+    assert result.planned_rows == 3
+    assert result.first_open_utc_ns == run._ns(OPEN)
+    assert result.observed_utc_ns == run._ns(OPEN - timedelta(seconds=20))
+    assert events == ["publication", "dispatch_read", "dependencies"]
+    assert not tuple(root.iterdir())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure", ["unacknowledged", "late", "already_dispatched", "dependency"]
+)
+async def test_preflight_refusal_leaves_root_pristine(failure, monkeypatch, tmp_path):
+    root = _private_root_path(tmp_path)
+    args, events = _setup(monkeypatch, root, failure=failure)
+    with pytest.raises(run.DevvalCampaignRunError):
+        await run.preflight_prospective_devval_campaign_v1(**args)
+    expected_events = {
+        "unacknowledged": ["publication"],
+        "late": ["publication"],
+        "already_dispatched": ["publication", "dispatch_read"],
+        "dependency": ["publication", "dispatch_read", "dependencies"],
+    }
+    assert events == expected_events[failure]
+    assert not tuple(root.iterdir())
+
+
+@pytest.mark.asyncio
+async def test_collect_rechecks_publication_after_successful_preflight(
+    monkeypatch, tmp_path
+):
+    root = _private_root_path(tmp_path)
+    args, events = _setup(monkeypatch, root)
+    await run.preflight_prospective_devval_campaign_v1(**args)
+    assert not tuple(root.iterdir())
+
+    async def changed_publication(payload, **pins):
+        assert payload == PAYLOAD and pins["expected_campaign_sha256"] == PIN
+        assert not tuple(root.iterdir())
+        events.append("publication_changed")
+
+    monkeypatch.setattr(args["publication_repository"], "read", changed_publication)
+    with pytest.raises(run.DevvalCampaignRunError):
+        await run.run_prospective_devval_campaign_v1(**args)
+    assert events == [
+        "publication",
+        "dispatch_read",
+        "dependencies",
+        "publication_changed",
+    ]
+    assert not tuple(root.iterdir())
+
+
+@pytest.mark.asyncio
 async def test_campaign_binds_every_root_before_first_slot_and_never_resumes(
     monkeypatch, tmp_path
 ):
@@ -249,6 +332,8 @@ async def test_campaign_binds_every_root_before_first_slot_and_never_resumes(
     result = await run.run_prospective_devval_campaign_v1(**args)
     assert events == [
         "publication",
+        "dispatch_read",
+        "dependencies",
         "root:0",
         "root:1",
         "dispatch",
@@ -267,7 +352,16 @@ async def test_campaign_binds_every_root_before_first_slot_and_never_resumes(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "failure", ["unacknowledged", "late", "root_conflict", "uncertain", "slot"]
+    "failure",
+    [
+        "unacknowledged",
+        "late",
+        "already_dispatched",
+        "dependency",
+        "root_conflict",
+        "uncertain",
+        "slot",
+    ],
 )
 async def test_campaign_failure_preserves_claim_and_does_not_advance(
     failure, monkeypatch, tmp_path
@@ -276,20 +370,45 @@ async def test_campaign_failure_preserves_claim_and_does_not_advance(
     args, events = _setup(monkeypatch, root, failure=failure)
     with pytest.raises(run.DevvalCampaignRunError):
         await run.run_prospective_devval_campaign_v1(**args)
-    assert (root / "campaign.json").read_bytes() == PAYLOAD
+    if failure in ("unacknowledged", "late", "already_dispatched", "dependency"):
+        assert not tuple(root.iterdir())
+    else:
+        assert (root / "campaign.json").read_bytes() == PAYLOAD
     assert not (root / "complete.json").exists()
     if failure in ("unacknowledged", "late"):
         assert events == ["publication"]
+    elif failure == "already_dispatched":
+        assert events == ["publication", "dispatch_read"]
+    elif failure == "dependency":
+        assert events == ["publication", "dispatch_read", "dependencies"]
     elif failure == "root_conflict":
-        assert events == ["publication", "root:0", "root:1"]
+        assert events == [
+            "publication",
+            "dispatch_read",
+            "dependencies",
+            "root:0",
+            "root:1",
+        ]
     elif failure == "uncertain":
-        assert events == ["publication", "root:0", "root:1", "dispatch"]
+        assert events == [
+            "publication",
+            "dispatch_read",
+            "dependencies",
+            "root:0",
+            "root:1",
+            "dispatch",
+        ]
         assert not (root / "dispatch.json").exists()
     else:
         assert events[-2:] == [(0, 0), (0, 1)]
         assert not (root / "block-0000/complete.json").exists()
-    with pytest.raises(run.DevvalCampaignRunError, match="already_claimed"):
-        await run.run_prospective_devval_campaign_v1(**args)
+    if failure in ("unacknowledged", "late", "already_dispatched", "dependency"):
+        with pytest.raises(run.DevvalCampaignRunError):
+            await run.run_prospective_devval_campaign_v1(**args)
+        assert not tuple(root.iterdir())
+    else:
+        with pytest.raises(run.DevvalCampaignRunError, match="already_claimed"):
+            await run.run_prospective_devval_campaign_v1(**args)
 
 
 @pytest.mark.asyncio

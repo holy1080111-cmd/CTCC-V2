@@ -46,6 +46,7 @@ from app.mie.validation.prospective_devval_campaign_replay_v1 import (
 )
 from app.mie.validation.prospective_devval_campaign_run_v1 import (
     _retain,
+    preflight_prospective_devval_campaign_v1,
     run_prospective_devval_campaign_v1,
 )
 from app.mie.validation.prospective_devval_campaign_study_v1 import (
@@ -82,7 +83,15 @@ _SOURCE_ENVS = (
     "CTCC_DEVVAL_POST_READ_DATABASE_URL",
     "CTCC_DEVVAL_RUNTIME_CUSTODY_DATABASE_URL",
 )
-_MODES = ("freeze", "publish", "acknowledge", "observe", "collect", "replay")
+_MODES = (
+    "freeze",
+    "publish",
+    "acknowledge",
+    "observe",
+    "preflight",
+    "collect",
+    "replay",
+)
 _MAX_CANDIDATE_BYTES = 16 * 1024 * 1024
 
 
@@ -143,9 +152,9 @@ def _arguments(arguments):
             "publisher_oid",
         }
     )
-    if mode in ("publish", "acknowledge", "observe", "collect"):
+    if mode in ("publish", "acknowledge", "observe", "preflight", "collect"):
         used.add("campaign")
-    if mode in ("collect", "replay"):
+    if mode in ("preflight", "collect", "replay"):
         used.update(("root", "observer_oid"))
     if mode == "replay":
         used.add("completion_sha256")
@@ -301,6 +310,7 @@ async def _factories(args):
         tuple(_url(name) for name in _SOURCE_ENVS)
         if mode
         in (
+            "preflight",
             "collect",
             "replay",
         )
@@ -438,14 +448,31 @@ async def _run(args, checkpoint):
             "witness_repository": witness,
             "observation_repository": observation,
         }
-        if mode == "collect":
-            capture = await run_prospective_devval_campaign_v1(
+        if mode in ("preflight", "collect"):
+            collection = dict(
                 campaign_payload=payload,
                 custody_session_factory=sources[2],
                 research_blueprint=blueprint,
                 **providers,
                 **common,
             )
+            if mode == "preflight":
+                readiness = await preflight_prospective_devval_campaign_v1(**collection)
+                return {
+                    "campaign_sha256": readiness.campaign_sha256,
+                    "plan_sha256": readiness.plan_sha256,
+                    "publication_xid": readiness.publication_xid,
+                    "acknowledgement_xid": readiness.acknowledgement_xid,
+                    "planned_blocks": readiness.planned_blocks,
+                    "planned_rows": readiness.planned_rows,
+                    "first_open_utc_ns": readiness.first_open_utc_ns,
+                    "observed_utc_ns": readiness.observed_utc_ns,
+                    "source_role_readback": True,
+                    "capture_started": False,
+                    "dispatch_claimed": False,
+                    "provider_requests": 0,
+                }
+            capture = await run_prospective_devval_campaign_v1(**collection)
             return {
                 "campaign_sha256": pin,
                 "completion_sha256": capture.receipt_sha256,

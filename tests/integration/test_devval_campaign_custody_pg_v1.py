@@ -346,6 +346,7 @@ async def test_native_tls_repository_observes_dispatch_without_owning_it(
     assert publication.publication_xid == acknowledgement.publication_xid
     assert publication.database_oid == acknowledgement.database_oid == database_oid
     collection = repository(collector, "collector")
+    await collection.verify_undispatched(expected_campaign_sha256=pin)
     with pytest.raises(
         DevvalCampaignCustodyError, match="devval_custody_dispatch_missing"
     ):
@@ -357,6 +358,10 @@ async def test_native_tls_repository_observes_dispatch_without_owning_it(
     _dispatch_document(original)
 
     fresh = repository(collector, "collector")
+    with pytest.raises(
+        DevvalCampaignCustodyError, match="devval_custody_dispatch_already_claimed"
+    ):
+        await fresh.verify_undispatched(expected_campaign_sha256=pin)
     read_publication, observed = await fresh.observe_dispatch(
         payload, **binding, **checkpoint
     )

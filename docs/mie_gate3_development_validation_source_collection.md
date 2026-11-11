@@ -236,12 +236,13 @@ credentials, CA file, and evidence directories outside the extracted source.
 | `publish` | `--campaign` and `--campaign-sha256`, using the publisher login |
 | `acknowledge` | The same campaign file and SHA, using the separate observer login |
 | `observe` | The campaign file and SHA, using the observer login. For dispatch readback, use the collector login and add `--root-binding-sha256` and `--observer-oid` |
+| `preflight` | The same inputs and restricted logins as `collect` |
 | `collect` | The campaign file and SHA, `--root` pointing to an empty private directory, and `--observer-oid`, using the collector login |
 | `replay` | The retained campaign SHA, `--completion-sha256`, `--root`, and `--observer-oid`, using the collector login. Add `--batch-output-root` to retain deterministic aggregation and feature output in a separate empty private directory |
 
 For database operations, supply `--ca-file`, `--database-oid`, `--login-oid`,
 and `--publisher-oid`. Set `CTCC_DEVVAL_CAMPAIGN_DATABASE_URL` privately in
-the process that owns the selected login. Collection and replay also require
+the process that owns the selected login. Preflight, collection and replay also require
 `CTCC_DEVVAL_WITNESS_DATABASE_URL`, `CTCC_DEVVAL_POST_READ_DATABASE_URL`, and
 `CTCC_DEVVAL_RUNTIME_CUSTODY_DATABASE_URL`. Each URL must select its exact
 restricted PostgreSQL login, using the hostname verified by the supplied CA.
@@ -251,6 +252,18 @@ IDs. Retain the completion SHA independently for replay.
 Start collection before the Development window opens. A partial or uncertain
 operation retains its original evidence. Use `observe` for committed
 publication or dispatch resolution.
+
+After publication and acknowledgement, run `preflight` with the intended
+collection root. It reads back the committed acknowledgement and checks for an
+existing dispatch. It opens separate native read-only TLS sessions to check
+the witness, post-read and runtime-custody roles and durable database settings.
+The witness and post-read sessions must identify the same native database and
+distinct logins. The root must remain private, empty and unchanged, and the
+native time checks must complete before Development opens. The command makes
+no provider requests or dispatch claim. `collect` repeats these checks before
+creating any journal, then commits its separate one-use claim as usual. A
+successful preflight is a current observation. Independent custody, absolute
+UTC verification and sustained minute throughput require their own evidence.
 
 ### Point-in-Time batch output
 

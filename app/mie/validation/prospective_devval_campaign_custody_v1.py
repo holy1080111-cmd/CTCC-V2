@@ -432,6 +432,21 @@ class DevvalCampaignCustodyRepositoryV1:
             raise DevvalCampaignCustodyError("devval_custody_observer_changed")
         return result
 
+    async def verify_undispatched(self, *, expected_campaign_sha256: str) -> None:
+        """Check the collector grant and committed claim before creating journals."""
+        if self._role != "collector":
+            raise DevvalCampaignCustodyError("devval_custody_wrong_login_role")
+        if (
+            type(expected_campaign_sha256) is not str
+            or _PIN.fullmatch(expected_campaign_sha256) is None
+        ):
+            raise DevvalCampaignCustodyError("devval_custody_dispatch_binding_invalid")
+        row, _, _ = await self._transaction(
+            _DISPATCH_READ, {"sha": expected_campaign_sha256}
+        )
+        if row is not None:
+            raise DevvalCampaignCustodyError("devval_custody_dispatch_already_claimed")
+
     async def claim_dispatch(
         self,
         payload: bytes,
