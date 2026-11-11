@@ -6,20 +6,20 @@ and V4 retain their original server-clock and research limitations unchanged.
 
 from __future__ import annotations
 
-import json
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 
 from pydantic import Field, StrictInt, field_validator, model_validator
 
-from app.domain import native_clock
 from app.domain.source_primitives import ClockStamp, canonical, sha, validate_stamps
 from app.mie.validation.artifact import _verify
 from app.mie.validation.contracts import Gate3Contract, Sha256
 from app.mie.validation.post_publication_availability_v4 import (
     NativePostReadHealthV4,
     PostPublicationClockEvidenceV4,
+    accepted_health,
     health_fresh_at,
+    same_native_observation_domain,
 )
 
 CONSUMER_LEASE_NS = 5_000_000_000
@@ -59,17 +59,8 @@ def ceil_native_utc(value: int) -> datetime:
 
 
 def same_health_domain(first: NativePostReadHealthV4, last: NativePostReadHealthV4):
-    left = native_clock.validate_os_clock(json.loads(first.raw_bytes())["observation"])[
-        "diagnostic"
-    ]
-    right = native_clock.validate_os_clock(json.loads(last.raw_bytes())["observation"])[
-        "diagnostic"
-    ]
-    if (
-        left["profile_id"] != right["profile_id"]
-        or canonical(left["clock_domain"]) != canonical(right["clock_domain"])
-        or native_clock._host_record(left["host_after"], left["profile_id"])
-        != native_clock._host_record(right["host_before"], right["profile_id"])
+    if not same_native_observation_domain(
+        accepted_health(first.raw_bytes()), accepted_health(last.raw_bytes())
     ):
         raise ValueError("availability_native_domain_changed")
 

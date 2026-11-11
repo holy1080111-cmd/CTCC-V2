@@ -230,7 +230,7 @@ async def _acquire_native_post_read_clock(
             before = _health()
         else:
             retained.phase(_retention, "health_before")
-            raw = native_clock._native_observation_payload()
+            raw = native_clock._native_observation_payload_ipc()
             retained.health(_retention, "before", raw)
             before = NativePostReadHealthV4(
                 raw_base64=base64.b64encode(raw).decode("ascii"), raw_sha256=sha(raw)
@@ -356,7 +356,7 @@ async def _acquire_native_post_read_clock(
             after = _health()
         else:
             retained.phase(_retention, "health_after")
-            raw = native_clock._native_observation_payload()
+            raw = native_clock._native_observation_payload_ipc()
             retained.health(_retention, "after", raw)
             after = NativePostReadHealthV4(
                 raw_base64=base64.b64encode(raw).decode("ascii"), raw_sha256=sha(raw)

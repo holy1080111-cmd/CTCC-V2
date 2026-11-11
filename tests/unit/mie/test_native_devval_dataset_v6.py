@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import base64
+import subprocess
+import sys
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, localcontext
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -1035,10 +1038,7 @@ def test_effective_class_routes_stay_stable_for_normal_models_methods_and_live_r
     assert native._devval_data_pin_v6(native._DEVVAL_LIVE) == registry_before
 
 
-@pytest.mark.parametrize("slot", ("__new__", "__init__", "model_post_init"))
-def test_inherited_or_new_subclass_constructor_slot_is_not_hidden_by_class_identity(
-    monkeypatch, slot
-):
+def _assert_constructor_slot_substitution_denied(monkeypatch, slot):
     from app.mie.features.models import FeatureWindow
 
     marker = native._DEVVAL_CLASS_ROUTE_BINDING_V6
@@ -1060,6 +1060,31 @@ def test_inherited_or_new_subclass_constructor_slot_is_not_hidden_by_class_ident
         monkeypatch.setattr(FeatureWindow, slot, replacement)
     with pytest.raises(native.NativeAvailabilityError, match="runtime_binding_changed"):
         native._devval_check_runtime_pins_v6(pins)
+
+
+@pytest.mark.parametrize("slot", ("__new__", "__init__", "model_post_init"))
+def test_inherited_or_new_subclass_constructor_slot_is_not_hidden_by_class_identity(
+    monkeypatch, slot
+):
+    if slot != "__new__":
+        _assert_constructor_slot_substitution_denied(monkeypatch, slot)
+        return
+
+    # CPython can retain the changed constructor slot after deleting __new__.
+    code = """
+from pytest import MonkeyPatch
+from tests.unit.mie.test_native_devval_dataset_v6 import (
+    _assert_constructor_slot_substitution_denied,
+)
+with MonkeyPatch.context() as patch:
+    _assert_constructor_slot_substitution_denied(patch, '__new__')
+"""
+    subprocess.run(
+        [sys.executable, "-B", "-c", code],
+        cwd=Path(__file__).resolve().parents[3],
+        check=True,
+        timeout=45,
+    )
 
 
 @pytest.mark.parametrize(

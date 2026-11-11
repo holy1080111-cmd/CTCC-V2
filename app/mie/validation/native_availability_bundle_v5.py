@@ -17,7 +17,10 @@ from app.mie.features import FeatureBar
 from app.mie.validation.artifact import _freeze, _verify
 from app.mie.validation.contracts import Gate3Contract, Sha256, require_utc
 from app.mie.validation.post_publication_availability_v4 import (
+    CLOCK_OBSERVATION_IPC,
     PostPublicationClockEvidenceV4,
+    accepted_health,
+    same_native_observation_domain,
 )
 from app.mie.validation.post_publication_availability_v5 import AvailabilityContractV5
 from app.public_market_source.public_attempt_journal import (
@@ -143,6 +146,25 @@ class _Files:
         yield _Files(self.files, self.prefix + name + "/")
 
 
+def _verify_v6_public_clock(receipt, readback_complete, clock):
+    health = accepted_health(clock.health_before.raw_bytes())
+    observations = receipt.os_clock_before, receipt.os_clock_after, health
+    versions = {item["schema_version"] for item in observations}
+    if CLOCK_OBSERVATION_IPC not in versions:
+        return
+    if versions != {CLOCK_OBSERVATION_IPC} or not same_native_observation_domain(
+        receipt.os_clock_after, health
+    ):
+        raise ValueError("availability_public_native_domain_changed")
+    validate_stamps(
+        (
+            receipt.validation_complete,
+            readback_complete,
+            health["diagnostic"]["host_before"]["request_start"],
+        )
+    )
+
+
 def _replay_source(bundle):
     files = {f.path: f.raw() for f in bundle.files}
     root = _Files(files)
@@ -254,6 +276,13 @@ def _replay_source(bundle):
                     or receipt.plan_sha256 != source.v2_capture.plan_sha256
                 ):
                     raise ValueError("availability_bundle_source_pin_mismatch")
+                if (
+                    bundle.schema_version
+                    == "ctcc.mie.native_availability_raw_bundle.v6"
+                ):
+                    _verify_v6_public_clock(
+                        receipt, entry["payload_readback_complete"], bundle.clock_v4
+                    )
                 by_identity = {r.source_row_identity: r for r in source.v2_capture.rows}
                 if len(by_identity) != len(receipt.rows):
                     raise ValueError("availability_bundle_row_count_mismatch")

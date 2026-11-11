@@ -39,9 +39,16 @@ from app.mie.validation.post_publication_availability_v4 import (
     NativePostReadHealthV4,
     PostPublicationClockEvidenceV4,
     replay_post_read_clock_v4,
+    same_native_observation_domain,
     utc_nanoseconds,
 )
-from tests.unit.research.test_public_clock_v2 import EN, resign, status_change
+from tests.unit.research.test_public_clock_v2 import (
+    EN,
+    ipc_fixture,
+    resign,
+    status_change,
+    stream,
+)
 from tests.unit.research.test_public_clock_v2 import fixture as clock_fixture
 
 pytest_plugins = (
@@ -148,23 +155,50 @@ def coherent_witness_rows(frozen, checkpoint):
     return corrected, tuple(rows)
 
 
-def synthetic_health(wall, monotonic):
-    observed = clock_fixture()
-    stamp = {"utc_ns": wall, "monotonic_ns": monotonic}
+def _stamp_health(observed, stamp):
     observed["sample"] = stamp
     for kind in ("host_before", "status", "host_after"):
         observed["diagnostic"][kind]["request_start"] = dict(stamp)
         observed["diagnostic"][kind]["completed"] = dict(stamp)
+    if "metadata_transport" in observed["diagnostic"]:
+        observed["diagnostic"]["metadata_transport"]["completed"] = dict(stamp)
+    return resign(observed)
+
+
+def synthetic_ipc_observation(stamp):
+    return _stamp_health(ipc_fixture(), stamp)
+
+
+def synthetic_health(wall, monotonic, *, ipc=False):
+    stamp = {"utc_ns": wall, "monotonic_ns": monotonic}
+    observed = _stamp_health(ipc_fixture() if ipc else clock_fixture(), stamp)
     raw = canonical(
         {
             "schema_version": owner.native_clock.CLOCK_RESULT_VERSION,
             "outcome": "accepted",
-            "observation": resign(observed),
+            "observation": observed,
         }
     )
     return NativePostReadHealthV4(
         raw_base64=base64.b64encode(raw).decode("ascii"), raw_sha256=sha(raw)
     )
+
+
+def test_ipc_domain_comparison_uses_exact_decoded_host_facts():
+    original = ipc_fixture()
+    changed = ipc_fixture()
+    for name in ("host_before", "host_after"):
+        phase = changed["diagnostic"][name]
+        prefix = phase["challenge"].encode("ascii") + b" "
+        frame = base64.b64decode(phase["response"]["base64"])
+        host = json.loads(frame[len(prefix) :])
+        host["timezone_id"] = "Tokyo Standard Time"
+        host["utc_offset_minutes"] = 540
+        phase["response"] = stream(prefix + canonical(host) + b"\r\n")
+    changed = resign(changed)
+    owner.native_clock.validate_os_clock(changed)
+    assert same_native_observation_domain(original, ipc_fixture())
+    assert not same_native_observation_domain(original, changed)
 
 
 @pytest.fixture

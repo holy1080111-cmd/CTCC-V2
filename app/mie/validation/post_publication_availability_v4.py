@@ -24,6 +24,8 @@ MAX_BRACKET_NS = 5_000_000_000
 SAMPLE_LEASE_NS = 5_000_000_000
 PG_QUANTUM_NS = 1000
 PG_LAST_FILETIME_TICK_NS = 900
+CLOCK_OBSERVATION_V2 = "ctcc.windows_clock_observation.v2"
+CLOCK_OBSERVATION_IPC = "ctcc.windows_clock_observation.v3"
 
 
 def utc_nanoseconds(value: datetime) -> int:
@@ -34,12 +36,36 @@ def utc_nanoseconds(value: datetime) -> int:
 
 def accepted_health(raw: bytes) -> dict:
     value = native_clock.replay_clock_observation(raw)
-    if (
-        value["outcome"] != "accepted"
-        or value["observation"]["schema_version"] != "ctcc.windows_clock_observation.v2"
-    ):
+    if value["outcome"] != "accepted" or value["observation"]["schema_version"] not in {
+        CLOCK_OBSERVATION_V2,
+        CLOCK_OBSERVATION_IPC,
+    }:
         raise ValueError("post_read_native_health_required")
     return value["observation"]
+
+
+def _clock_host_snapshot(observation, phase):
+    data = observation["diagnostic"]
+    record = data[f"host_{phase}"]
+    if observation["schema_version"] == CLOCK_OBSERVATION_V2:
+        return native_clock._host_record(record, data["profile_id"])
+    if observation["schema_version"] == CLOCK_OBSERVATION_IPC:
+        return native_clock._check_host_metadata(
+            native_clock._ipc_host_payload(record, phase), data["profile_id"]
+        )
+    raise ValueError("post_read_native_health_required")
+
+
+def same_native_observation_domain(first, last):
+    """Compare successive observations after exact native replay."""
+    left, right = first["diagnostic"], last["diagnostic"]
+    return (
+        first["schema_version"] == last["schema_version"]
+        and left["profile_id"] == right["profile_id"]
+        and canonical(left["clock_domain"]) == canonical(right["clock_domain"])
+        and canonical(_clock_host_snapshot(first, "after"))
+        == canonical(_clock_host_snapshot(last, "before"))
+    )
 
 
 def health_fresh_at(raw: bytes, stamp: ClockStamp) -> dict:
@@ -158,13 +184,7 @@ class PostPublicationClockEvidenceV4(Gate3Contract):
         after = health_fresh_at(
             self.health_after.raw_bytes(), self.sample_observation_completed
         )
-        left, right = before["diagnostic"], after["diagnostic"]
-        if (
-            left["profile_id"] != right["profile_id"]
-            or canonical(left["clock_domain"]) != canonical(right["clock_domain"])
-            or native_clock._host_record(left["host_after"], left["profile_id"])
-            != native_clock._host_record(right["host_before"], right["profile_id"])
-        ):
+        if not same_native_observation_domain(before, after):
             raise ValueError("post_read_native_profile_changed")
         validate_stamps(
             [
@@ -172,7 +192,7 @@ class PostPublicationClockEvidenceV4(Gate3Contract):
                 self.data_readback_completed.model_dump(),
                 self.sample_before.model_dump(),
                 self.sample_after.model_dump(),
-                right["host_before"]["request_start"],
+                after["diagnostic"]["host_before"]["request_start"],
                 after["sample"],
                 self.sample_observation_completed.model_dump(),
             ]

@@ -18,7 +18,10 @@ from app.mie.validation import native_post_read_clock_v4 as stage1
 from app.mie.validation import native_stage1_forensics_v6 as forensic
 from tests.unit.mie import test_native_availability_v5 as fixture_v5
 
-raw_case = fixture_v5.raw_case
+
+@pytest.fixture
+def raw_case(request, monkeypatch):
+    return fixture_v5.build_raw_case(monkeypatch, ipc=getattr(request, "param", True))
 
 
 @pytest.fixture
@@ -60,10 +63,12 @@ def flow6(raw_case, monkeypatch, tmp_path):
             state["offset"] = 20_000_000
             return flow.case.clock.health_after.raw_bytes()
         return fixture_v5.synthetic_health(
-            flow.case.wall + state["offset"], flow.case.mono + state["offset"]
+            flow.case.wall + state["offset"],
+            flow.case.mono + state["offset"],
+            ipc=flow.case.ipc,
         ).raw_bytes()
 
-    monkeypatch.setattr(owner.native_clock, "_native_observation_payload", health)
+    monkeypatch.setattr(owner.native_clock, "_native_observation_payload_ipc", health)
 
     async def execute(session, statement, parameters=None):
         if statement is not stage1._SAMPLE_SQL:
@@ -128,6 +133,7 @@ def receipt(flow):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("raw_case", [True, False], indirect=True)
 async def test_v6_full_owned_positive_transcript_db46_bundle_and_one_use(flow6):
     token = await capture(flow6)
     evidence_pin = owner.evidence_sha256_v6(token)
@@ -153,6 +159,9 @@ async def test_v6_full_owned_positive_transcript_db46_bundle_and_one_use(flow6):
         bundle_raw, expected_sha256=decision.contract.bundle_sha256
     )
     assert base64.b64decode(replay.stage1_forensic_base64) == snapshot.payload
+    schema = "ctcc.windows_clock_observation." + ("v3" if flow6.case.ipc else "v2")
+    final_health = (flow6.root / "batch-00000000/final-health.json").read_bytes()
+    assert json.loads(final_health)["observation"]["schema_version"] == schema
     assert flow6.state["health_calls"] == 3 and flow6.state["sample_calls"] == 1
     assert (
         flow6.state["capture_count"] == flow6.state["seal_count"] == 1
@@ -162,6 +171,33 @@ async def test_v6_full_owned_positive_transcript_db46_bundle_and_one_use(flow6):
         owner.consume_for_current_future_decision_v6(
             token, expected_evidence_sha256=evidence_pin
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("legacy_phases", "sealed"),
+    [({2}, 0), ({1, 2}, 0), ({3}, 1)],
+    ids=["mixed-stage1", "mixed-public-stage1", "mixed-final"],
+)
+async def test_v6_never_accepts_mixed_clock_transports(
+    flow6, monkeypatch, legacy_phases, sealed
+):
+    producer = owner.native_clock._native_observation_payload_ipc
+
+    def mixed():
+        raw = producer()
+        if flow6.state["health_calls"] in legacy_phases:
+            stamp = json.loads(raw)["observation"]["sample"]
+            return fixture_v5.synthetic_health(
+                stamp["utc_ns"], stamp["monotonic_ns"]
+            ).raw_bytes()
+        return raw
+
+    monkeypatch.setattr(owner.native_clock, "_native_observation_payload_ipc", mixed)
+    with pytest.raises(ValueError, match="availability_attempt_unresolved"):
+        await capture(flow6)
+    assert flow6.state["seal_count"] == sealed
+    assert receipt(flow6).status == "FAILED_RETAINED"
 
 
 @pytest.mark.asyncio
@@ -180,7 +216,9 @@ async def test_before_health_raw_retained_before_original_validation(
         if kind == "unobserved"
         else b"malformed actual payload"
     )
-    monkeypatch.setattr(owner.native_clock, "_native_observation_payload", lambda: raw)
+    monkeypatch.setattr(
+        owner.native_clock, "_native_observation_payload_ipc", lambda: raw
+    )
     with pytest.raises(ValueError):
         await capture(flow6)
     files = originals(flow6)
@@ -321,7 +359,7 @@ async def test_after_health_raw_retained_even_when_rejected_without_replacement(
         calls += 1
         return flow6.case.clock.health_before.raw_bytes() if calls == 1 else rejected
 
-    monkeypatch.setattr(owner.native_clock, "_native_observation_payload", health)
+    monkeypatch.setattr(owner.native_clock, "_native_observation_payload_ipc", health)
     with pytest.raises(ValueError):
         await capture(flow6)
     files = originals(flow6)
@@ -344,7 +382,9 @@ async def test_after_health_raw_retained_even_when_rejected_without_replacement(
 async def test_unsupported_health_never_stringified_or_replaced(
     flow6, monkeypatch, bad
 ):
-    monkeypatch.setattr(owner.native_clock, "_native_observation_payload", lambda: bad)
+    monkeypatch.setattr(
+        owner.native_clock, "_native_observation_payload_ipc", lambda: bad
+    )
     with pytest.raises(ValueError):
         await capture(flow6)
     files = originals(flow6)

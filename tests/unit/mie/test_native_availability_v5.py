@@ -65,7 +65,10 @@ from app.mie.validation.post_publication_availability_v5 import (
 from app.public_market_source import public_market_capture as capture
 from app.public_market_source import public_receipt_storage as journal_storage
 from app.public_market_source.public_market_receipts import parsed_rows, utc_from_ns
-from tests.unit.mie.test_native_post_read_clock_v4 import synthetic_health
+from tests.unit.mie.test_native_post_read_clock_v4 import (
+    synthetic_health,
+    synthetic_ipc_observation,
+)
 from tests.unit.research import public_receipt_fixtures
 from tests.unit.research.public_receipt_fixtures import storage_fixture_capture
 from tests.unit.research.test_public_journal_contracts import memory_publisher
@@ -73,6 +76,14 @@ from tests.unit.research.test_public_journal_contracts import memory_publisher
 
 @pytest.fixture
 def raw_case(monkeypatch):
+    return build_raw_case(monkeypatch)
+
+
+def build_raw_case(monkeypatch, *, ipc=False):
+    if ipc:
+        monkeypatch.setattr(
+            public_receipt_fixtures, "os_evidence", synthetic_ipc_observation
+        )
     old_plan = public_receipt_fixtures.plan_for
 
     def historical(rows=240):
@@ -239,6 +250,9 @@ def raw_case(monkeypatch):
         available_at=observation.observed_at,
     )
     wall, mono = utc_nanoseconds(v3.available_at + timedelta(seconds=10)), 10**9
+    if ipc:
+        last = packet.os_clock_after["sample"]
+        mono = last["monotonic_ns"] + wall - last["utc_ns"]
     stamp = lambda n: ClockStamp(utc_ns=wall + n, monotonic_ns=mono + n)
     identity = {
         "backend_pid": 123,
@@ -254,7 +268,7 @@ def raw_case(monkeypatch):
     clock = PostPublicationClockEvidenceV4(
         source_v3=v3,
         source_v3_sha256=v3.canonical_sha256(),
-        health_before=synthetic_health(wall, mono),
+        health_before=synthetic_health(wall, mono, ipc=ipc),
         data_readback_completed=stamp(1_000_000),
         sample_before=stamp(2_000_000),
         database_sample={
@@ -262,7 +276,7 @@ def raw_case(monkeypatch):
             "sampled_at": v3.available_at + timedelta(seconds=10, milliseconds=3),
         },
         sample_after=stamp(4_000_000),
-        health_after=synthetic_health(wall + 5_000_000, mono + 5_000_000),
+        health_after=synthetic_health(wall + 5_000_000, mono + 5_000_000, ipc=ipc),
         sample_observation_completed=stamp(6_000_000),
     )
     packed_files = []
@@ -301,6 +315,7 @@ def raw_case(monkeypatch):
         wall=wall,
         mono=mono,
         stamp=stamp,
+        ipc=ipc,
     )
 
 

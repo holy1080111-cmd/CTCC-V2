@@ -486,7 +486,7 @@ async def _complete(acquisition, source):
         )
         _require(current_checkpoint == checkpoint and current_files == files)
         # Fixed native health, retained even if rejected; no caller clock/provider.
-        health_raw = native_clock._native_observation_payload()
+        health_raw = native_clock._native_observation_payload_ipc()
         _require(
             type(health_raw) is bytes
             and 0 < len(health_raw) <= native_clock.MAX_CLOCK_PAYLOAD
@@ -2672,6 +2672,7 @@ _DEVVAL_DECLARED_MODULES = (
         "app.mie.validation.native_availability_bundle_v5",
         (
             "AvailabilityContractV5",
+            "CLOCK_OBSERVATION_IPC",
             "ControlledPublicReceiptJournal",
             "Decimal",
             "FeatureBar",
@@ -2694,6 +2695,8 @@ _DEVVAL_DECLARED_MODULES = (
             "_replay_source",
             "_root_context",
             "_verify",
+            "_verify_v6_public_clock",
+            "accepted_health",
             "annotations",
             "base64",
             "bind_measured_attempt",
@@ -2709,6 +2712,7 @@ _DEVVAL_DECLARED_MODULES = (
             "replay_native_availability_bundle_v5",
             "replay_public_capture",
             "require_utc",
+            "same_native_observation_domain",
             "sha",
             "snapshot_public_journal_v5",
             "utc_from_ns",
@@ -3094,6 +3098,8 @@ _DEVVAL_DECLARED_MODULES = (
     (
         "app.mie.validation.post_publication_availability_v4",
         (
+            "CLOCK_OBSERVATION_IPC",
+            "CLOCK_OBSERVATION_V2",
             "ClockStamp",
             "Decimal",
             "Field",
@@ -3111,6 +3117,7 @@ _DEVVAL_DECLARED_MODULES = (
             "SAMPLE_LEASE_NS",
             "Sha256",
             "UTC",
+            "_clock_host_snapshot",
             "_verify",
             "accepted_health",
             "annotations",
@@ -3124,6 +3131,7 @@ _DEVVAL_DECLARED_MODULES = (
             "native_clock",
             "replay_post_read_clock_v4",
             "require_utc",
+            "same_native_observation_domain",
             "sha",
             "utc_nanoseconds",
             "validate_stamps",
@@ -3185,17 +3193,17 @@ _DEVVAL_DECLARED_MODULES = (
             "UTC",
             "_EPOCH",
             "_verify",
+            "accepted_health",
             "annotations",
             "canonical",
             "ceil_native_utc",
             "datetime",
             "field_validator",
             "health_fresh_at",
-            "json",
             "model_validator",
-            "native_clock",
             "replay_native_availability_v6",
             "same_health_domain",
+            "same_native_observation_domain",
             "sha",
             "timedelta",
             "validate_stamps",
