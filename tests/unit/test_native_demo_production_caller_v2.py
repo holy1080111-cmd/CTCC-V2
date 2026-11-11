@@ -21,6 +21,10 @@ from app.demo_automation.native_requests_v2 import (
     NativeDemoArmExecuteRequestV2,
 )
 from app.domain.demo_automation import ARM_PHRASE, EXECUTE_PHRASE
+from app.exchange.okx import native_demo_write_v2 as write
+from app.trade_qualification import native_continuation_guard_v1 as guard
+from app.trade_qualification import native_ledger_runtime_v2 as ledger
+from tests.unit.native_function_primitive_fixture_v1 import foreign_primitive_v1
 
 
 def _request(**changes):
@@ -34,6 +38,58 @@ def _request(**changes):
     }
     values.update(changes)
     return NativeDemoArmExecuteRequestV2(**values)
+
+
+def test_native_write_guard_rejects_a_replaced_shared_stop_check(monkeypatch):
+    async def admit_anything(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(caller, "_lock_shared_native_write_control_v2", admit_anything)
+    with pytest.raises(guard.NativeSourceClosureError):
+        write._NATIVE_GUARD()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("purpose", ("entry", "close", "leverage"))
+async def test_physical_gate_requires_shared_stop_readback_after_tls(
+    purpose, monkeypatch
+):
+    calls = []
+    gate, session = object(), object()
+    record = {"state": object(), "session": session, "tls_ready": False}
+    if purpose == "close":
+        record["close_purpose"] = write._CLOSE_INTENT_KEY_V1
+    elif purpose == "leverage":
+        record["configuration_purpose"] = write._LEVERAGE_CONFIGURATION_KEY_V1
+
+    async def locked_readback(*_args, **_kwargs):
+        calls.append("native-readback")
+
+    async def shared_stop(actual, *, action):
+        assert actual is session
+        assert action == (
+            "configure_leverage" if purpose == "leverage" else "arm_execute"
+        )
+        assert record["tls_ready"] is False
+        calls.append("shared-stop")
+        raise DemoAutomationSafetyError("synthetic_shared_stop")
+
+    monkeypatch.setattr(caller, "_lock_shared_native_write_control_v2", shared_stop)
+    monkeypatch.setattr(ledger, "_lock_native_intent_for_transport_v2", locked_readback)
+    monkeypatch.setattr(
+        write._native_leverage_configuration, "lock_after_tls_v1", locked_readback
+    )
+    primitive = foreign_primitive_v1(
+        write._PhysicalWriteGateV2.tls_ready_after_locked_readback,
+        {
+            "_checked_gate": lambda actual: record if actual is gate else None,
+            "_close_function_v1": lambda *_args: locked_readback,
+        },
+    )
+    with pytest.raises(DemoAutomationSafetyError, match="synthetic_shared_stop"):
+        await primitive(gate)
+    assert calls == ["native-readback", "shared-stop"]
+    assert record["tls_ready"] is False
 
 
 def test_explicit_request_contains_no_source_truth():

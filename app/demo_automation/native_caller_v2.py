@@ -13,6 +13,7 @@ from uuid import uuid4
 
 from app.api.security import require_ctcc_token
 from app.config.settings import get_settings
+from app.database.repositories.demo_automation import DemoAutomationRepository
 from app.demo_automation import DemoAutomationBusyError, DemoAutomationSafetyError
 from app.demo_automation.native_private_root_v2 import (
     mkdir_private_evidence_child_v2,
@@ -248,6 +249,44 @@ def _ready(service, state):
         "native_demo_live_or_paper_configuration_denied",
     )
     return settings
+
+
+async def _read_shared_native_write_control_v2(service, state):
+    from app.database.session import AsyncSessionFactory
+
+    repository = service.repository
+    _need(
+        type(repository) is DemoAutomationRepository
+        and repository.session_factory is AsyncSessionFactory,
+        "native_demo_shared_control_repository_required",
+    )
+    revision = await repository.read_native_write_control_revision()
+    _ready(service, state)
+    if "shared_control_revision" in state:
+        _need(
+            revision == state["shared_control_revision"],
+            "native_demo_shared_control_changed",
+        )
+    return revision
+
+
+async def _lock_shared_native_write_control_v2(session, *, action):
+    from app.database.session import AsyncSessionFactory
+    from app.demo_automation.runtime import safe_demo_automation
+
+    state = _ACTIVE.get(safe_demo_automation)
+    _need(
+        state is not None
+        and state["action"] == action
+        and type(state.get("shared_control_revision")) is int
+        and session.get_bind() is AsyncSessionFactory.kw["bind"].sync_engine,
+        "native_demo_shared_control_admission_required",
+    )
+    _ready(safe_demo_automation, state)
+    await DemoAutomationRepository.read_native_write_control_in_transaction(
+        session, expected_revision=state["shared_control_revision"]
+    )
+    _ready(safe_demo_automation, state)
 
 
 def _roots(settings, invocation_id):
@@ -559,8 +598,14 @@ async def perform_native_demo_action_v2(service, request, *, operator_token):
         }
         _ACTIVE[service] = state
         failure = None
+        retain_failure = False
         try:
             _ready(service, state)
+            if action in ("arm_execute", "configure_leverage"):
+                state[
+                    "shared_control_revision"
+                ] = await _read_shared_native_write_control_v2(service, state)
+            retain_failure = True
             state["roots"] = _roots(settings, invocation_id)
             state["market_policy"] = _market_policy(settings)
             await _cold_history(service, state, instrument)
@@ -590,14 +635,14 @@ async def perform_native_demo_action_v2(service, request, *, operator_token):
                 _ready(service, state)
                 if action == "configure_leverage":
                     await require_ctcc_token(operator_token)
-                    _ready(service, state)
+                    await _read_shared_native_write_control_v2(service, state)
                     _check_request_v2(request, selected)
                     return await _configure_leverage_v1(
                         service, state, request, selected
                     )
                 if action == "arm_execute":
                     await require_ctcc_token(operator_token)
-                    _ready(service, state)
+                    await _read_shared_native_write_control_v2(service, state)
                     _check_request_v2(request, selected)
                     # Captured BEFORE prepare: this shortens the actual native
                     # lease. The native owner independently enforces its cap.
@@ -770,7 +815,7 @@ async def perform_native_demo_action_v2(service, request, *, operator_token):
                         raise DemoAutomationSafetyError(
                             "native_demo_stop_persistence_unknown"
                         ) from None
-            elif failure is not None:
+            elif failure is not None and retain_failure:
                 # Preserve accepted files and actual partial source/factory
                 # owners. No delete, retry, partial reconcile or unknown->empty.
                 _HELD[invocation_id] = state

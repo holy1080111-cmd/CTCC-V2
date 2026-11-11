@@ -11,7 +11,7 @@ from decimal import Decimal
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import update
+from sqlalchemy import text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
@@ -197,6 +197,112 @@ async def test_two_writers_one_revision_then_stale_stop_preserves_trade_state(
     with pytest.raises(DemoAutomationStateConflict):
         await writer_b.save_state(latch_clear)
     assert (await owner.load_state())["emergency_stop"] is True
+
+
+async def test_native_write_rejects_cross_factory_stop_and_stale_revision_after_clear(
+    repository,
+):
+    owner, sessions = repository
+    other_sessions = async_sessionmaker(
+        sessions.kw["bind"], expire_on_commit=False, autoflush=False
+    )
+    other = DemoAutomationRepository(other_sessions)
+    await owner.save_state(initial_state())
+    original_revision = await owner.read_native_write_control_revision()
+    assert original_revision == 1
+
+    async with sessions() as session, session.begin():
+        await DemoAutomationRepository.read_native_write_control_in_transaction(
+            session, expected_revision=original_revision
+        )
+
+    stop_revision = await other.latch_emergency_stop("native_cross_factory_stop")
+    assert stop_revision == original_revision + 1
+    with pytest.raises(DemoAutomationStateConflict):
+        await owner.read_native_write_control_revision()
+    with pytest.raises(DemoAutomationStateConflict):
+        async with sessions() as session, session.begin():
+            await DemoAutomationRepository.read_native_write_control_in_transaction(
+                session, expected_revision=stop_revision
+            )
+
+    # Model the durable CAS performed by explicit legacy clear after flat
+    # reconciliation. Its sticky restart marker must remain true.
+    cleared = await other.load_state()
+    assert cleared is not None and cleared["_restart_latch_required"] is True
+    cleared.update(
+        emergency_stop=False,
+        locked=False,
+        lock_reasons=[],
+        _control_revision=stop_revision + 1,
+    )
+    await other.save_state(cleared)
+    fresh_revision = await owner.read_native_write_control_revision()
+    assert fresh_revision == stop_revision + 1
+    with pytest.raises(DemoAutomationStateConflict):
+        async with sessions() as session, session.begin():
+            await DemoAutomationRepository.read_native_write_control_in_transaction(
+                session, expected_revision=original_revision
+            )
+    async with sessions() as session, session.begin():
+        await DemoAutomationRepository.read_native_write_control_in_transaction(
+            session, expected_revision=fresh_revision
+        )
+
+
+async def test_native_write_share_fence_holds_second_factory_stop_until_transaction_exit(
+    repository,
+):
+    owner, sessions = repository
+    other_sessions = async_sessionmaker(
+        sessions.kw["bind"], expire_on_commit=False, autoflush=False
+    )
+    other = DemoAutomationRepository(other_sessions)
+    await owner.save_state(initial_state())
+    original_revision = await owner.read_native_write_control_revision()
+    waiting_on_update_lock = text("""
+        SELECT EXISTS (
+            SELECT 1 FROM pg_catalog.pg_locks
+            WHERE locktype = 'relation'
+              AND relation = pg_catalog.to_regclass('demo_automation_state')
+              AND pid <> pg_catalog.pg_backend_pid()
+              AND mode = 'RowExclusiveLock'
+              AND NOT granted
+        )
+    """)
+
+    stop = None
+    try:
+        async with sessions() as session, session.begin():
+            await DemoAutomationRepository.read_native_write_control_in_transaction(
+                session, expected_revision=original_revision
+            )
+            stop = asyncio.create_task(
+                other.latch_emergency_stop("native_share_fence_stop")
+            )
+            async with asyncio.timeout(5):
+                while not await session.scalar(waiting_on_update_lock):
+                    if stop.done():
+                        await stop
+                        pytest.fail("EStop completed before the native fence released")
+                    await asyncio.sleep(0.01)
+            assert not stop.done()
+            await DemoAutomationRepository.read_native_write_control_in_transaction(
+                session, expected_revision=original_revision
+            )
+            assert not stop.done()
+
+        assert await asyncio.wait_for(stop, timeout=5) == original_revision + 1
+    finally:
+        if stop is not None:
+            if not stop.done():
+                stop.cancel()
+            await asyncio.gather(stop, return_exceptions=True)
+
+    stopped = await owner.load_state()
+    assert stopped is not None and stopped["emergency_stop"] is True
+    with pytest.raises(DemoAutomationStateConflict):
+        await owner.read_native_write_control_revision()
 
 
 @pytest.mark.parametrize(

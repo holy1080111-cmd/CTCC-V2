@@ -759,7 +759,6 @@ class SafeDemoAutomation:
         native_persistence = revoke_native_for_service_v2(self, emergency=True)
         self._engage_emergency("emergency_stop_engaged")
         was_recovered = self._recovered
-        await native_persistence
         # This also covers cancellation after a DB commit but before readback.
         # Only a confirmed write from a current copy may restore local recovery.
         self._recovered = False
@@ -809,8 +808,15 @@ class SafeDemoAutomation:
                 )
         finally:
             # A blocked, failed or cancelled DB write must not leave the
-            # existing scheduler running in this process.
-            await self.stop()
+            # existing scheduler running or skip scoped native revocation.
+            # Finish the shared transaction before taking any native locks.
+            try:
+                await native_persistence
+            except BaseException:
+                self._recovered = False
+                raise
+            finally:
+                await self.stop()
         return await self.status()
 
     async def clear_emergency_stop(self) -> DemoAutomationStatus:

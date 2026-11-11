@@ -9,6 +9,7 @@ from app.database.repositories.demo_automation import (
     DemoAutomationRepository,
     DemoAutomationStateConflict,
 )
+from app.demo_automation import DemoAutomationSafetyError, native_caller_v2
 from tests.unit.test_demo_automation import (
     FakeDemo,
     MemoryAutomationRepository,
@@ -26,6 +27,46 @@ class SharedControlRepository(MemoryAutomationRepository):
                 "demo_automation_control_revision_conflict"
             )
         await super().save_state(state)
+
+
+@pytest.mark.asyncio
+async def test_shared_estop_survives_scoped_native_persistence_failure(monkeypatch):
+    service = make_service(FakeDemo())
+    repository = SharedControlRepository()
+    service.repository = repository
+    await service.recover()
+    scheduler_stopped = False
+
+    def revoke(target, *, emergency):
+        assert target is service
+
+        async def persist():
+            nonlocal scheduler_stopped
+            if emergency:
+                observed = await repository.load_state()
+                assert observed["emergency_stop"] is True
+                assert observed["locked"] is True
+                assert observed["armed"] is False
+                raise DemoAutomationSafetyError("synthetic_native_stop_failure")
+            scheduler_stopped = True
+
+        return persist()
+
+    monkeypatch.setattr(native_caller_v2, "revoke_native_for_service_v2", revoke)
+    with pytest.raises(
+        DemoAutomationSafetyError, match="synthetic_native_stop_failure"
+    ):
+        await service.emergency_stop()
+
+    assert scheduler_stopped
+    assert service._recovered is False
+    restarted = make_service(FakeDemo())
+    restarted.repository = repository
+    await restarted.recover()
+    status = await restarted.status()
+    assert status.emergency_stop is True
+    assert status.locked is True
+    assert status.armed is False
 
 
 @pytest.mark.asyncio

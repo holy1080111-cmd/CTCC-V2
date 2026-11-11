@@ -4,7 +4,7 @@ from copy import deepcopy
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import delete, select, true, update
+from sqlalchemy import delete, select, text, true, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -95,6 +95,59 @@ class DemoAutomationRepository:
             )
         return revision
 
+    async def read_native_write_control_revision(self) -> int:
+        async with self.session_factory() as session:
+            return await self.read_native_write_control_in_transaction(session)
+
+    @staticmethod
+    async def read_native_write_control_in_transaction(
+        session: AsyncSession, *, expected_revision: int | None = None
+    ) -> int:
+        """Read the shared negative control without granting native Arm.
+
+        At dispatch, hold the singleton table against concurrent writes until
+        the existing native transport transaction exits. SHARE uses the
+        restricted writer's existing MAINTAIN grant.
+        """
+        if expected_revision is not None:
+            if (
+                type(expected_revision) is not int
+                or expected_revision < 1
+                or not session.in_transaction()
+                or session.in_nested_transaction()
+            ):
+                raise DemoAutomationStateConflict(
+                    "native_demo_shared_control_transaction_unconfirmed"
+                )
+            await session.execute(
+                text("LOCK TABLE demo_automation_state IN SHARE MODE")
+            )
+        control = (
+            await session.execute(
+                text(
+                    "SELECT control_revision, armed, emergency_stop, locked, "
+                    "restart_latch_required, lock_reasons "
+                    "FROM demo_automation_state WHERE id=1"
+                )
+            )
+        ).one_or_none()
+        if control is None:
+            raise DemoAutomationStateConflict("native_demo_shared_control_missing")
+        revision, armed, emergency_stop, locked, restart_latch, reasons = control
+        if (
+            type(revision) is not int
+            or revision < 1
+            or (expected_revision is not None and revision != expected_revision)
+            or armed is not False
+            or emergency_stop is not False
+            or locked is not False
+            or type(restart_latch) is not bool
+            or type(reasons) is not list
+            or reasons
+        ):
+            raise DemoAutomationStateConflict("native_demo_shared_control_inhibited")
+        return revision
+
     async def save_state(self, state: dict[str, Any]) -> None:
         # These two internal keys are protocol metadata, not model columns.
         # A successful write must advance the revision exactly once. Every
@@ -159,6 +212,7 @@ class DemoAutomationRepository:
         The row lock serializes this operation with CAS state writes.
         """
         async with self.session_factory() as session, session.begin():
+            await session.execute(text("SET LOCAL synchronous_commit='on'"))
             row = await session.scalar(
                 select(DemoAutomationState)
                 .where(DemoAutomationState.id == 1)

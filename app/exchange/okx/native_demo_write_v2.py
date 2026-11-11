@@ -27,6 +27,7 @@ import h11
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.demo_automation import native_caller_v2 as _native_caller
 from app.domain.native_clock import native_stamp
 from app.domain.source_primitives import utc_from_ns
 from app.exchange.okx import (
@@ -387,8 +388,10 @@ class _PhysicalWriteGateV2:
 
         record = _checked_gate(self)
         _need(not record["tls_ready"], "native_demo_write_duplicate_tls")
+        action = "arm_execute"
         if record.get("configuration_purpose") is _LEVERAGE_CONFIGURATION_KEY_V1:
             await _native_leverage_configuration.lock_after_tls_v1(record)
+            action = "configure_leverage"
         elif record.get("close_purpose") is _CLOSE_INTENT_KEY_V1:
             await _close_function_v1(record, "_lock_owned_native_close_transport_v1")(
                 record["state"], session=record["session"], key=_CLOSE_INTENT_KEY_V1
@@ -397,6 +400,11 @@ class _PhysicalWriteGateV2:
             await ledger._lock_native_intent_for_transport_v2(
                 record["state"], session=record["session"], key=_INTENT_KEY
             )
+        # Acquire only after TLS and native readback. Keep the same transaction
+        # through SSL/raw writes so a committed shared stop cannot race them.
+        await _native_caller._lock_shared_native_write_control_v2(
+            record["session"], action=action
+        )
         _checked_gate(self)
         record["tls_ready"] = True
 
@@ -1999,5 +2007,28 @@ _NATIVE_GUARD = _native_guard.install_native_guards_v1(
         _native_ledger._zero_event55.schema,
         _native_ledger._zero_event55.live_schema,
     ),
-    bindings=_VENDOR_ADMISSION_V2.bindings,
+    bindings=(
+        *_VENDOR_ADMISSION_V2.bindings,
+        (
+            _native_caller,
+            "_lock_shared_native_write_control_v2",
+            _native_caller._lock_shared_native_write_control_v2,
+        ),
+        (
+            _native_caller,
+            "_read_shared_native_write_control_v2",
+            _native_caller._read_shared_native_write_control_v2,
+        ),
+        (_native_caller, "_ready", _native_caller._ready),
+        (
+            _native_caller.DemoAutomationRepository,
+            "read_native_write_control_revision",
+            _native_caller.DemoAutomationRepository.read_native_write_control_revision,
+        ),
+        (
+            _native_caller.DemoAutomationRepository,
+            "read_native_write_control_in_transaction",
+            _native_caller.DemoAutomationRepository.read_native_write_control_in_transaction,
+        ),
+    ),
 )
