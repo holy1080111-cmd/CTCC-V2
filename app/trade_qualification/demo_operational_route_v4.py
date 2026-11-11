@@ -22,7 +22,7 @@ from weakref import WeakKeyDictionary, ref
 
 import httpx
 
-from app.domain.native_clock import native_os_clock, native_stamp, validate_os_clock
+from app.domain.native_clock import native_os_clock_ipc, native_stamp, validate_os_clock
 from app.domain.source_primitives import canonical, sha, utc_from_ns, validate_stamps
 from app.exchange.okx.private_rest import (
     OkxDemoPrivateRestClient,
@@ -558,7 +558,7 @@ async def probe_initial_demo_operational_route_v4(
             raise DemoOperationalRouteV4Error("demo_v4_session_already_probed")
         _PROBES[session] = _STARTED
     try:
-        validate_os_clock(native_os_clock())
+        validate_os_clock(native_os_clock_ipc())
         started = native_stamp()
         request, _signature = collector._signed_request(
             _ConfigSpec(plan.origin),
@@ -600,7 +600,7 @@ async def probe_initial_demo_operational_route_v4(
                     raise DemoOperationalRouteV4Error("demo_v4_native_tls_required")
                 context = client._transport._pool._ssl_context
                 checked_plan, checked_route = _checked_objects(session, private_client)
-                validate_os_clock(native_os_clock())
+                validate_os_clock(native_os_clock_ipc())
                 if (
                     checked_route != route
                     or checked_plan.origin != route.rest_origin

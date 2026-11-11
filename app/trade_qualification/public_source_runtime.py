@@ -31,7 +31,9 @@ from app.domain.source_primitives import (
     validate_stamps,
 )
 from app.public_market_source.public_clock import (
+    _RUNTIME_CLOCK_IPC,
     _observe_owned_runtime_clock,
+    _runtime_clock_pair_matches,
 )
 from app.public_market_source.public_runtime_journal import (
     _SAFE_CLOCK_FAILURE_CODES,
@@ -1491,14 +1493,21 @@ def _consume_capture(value, invocation, expected, registry):
 
 def _accept_clock_sample(state, result):
     evidence = result["observation"]
-    if evidence["schema_version"] != "ctcc.windows_clock_observation.v2":
+    if evidence["schema_version"] != _RUNTIME_CLOCK_IPC:
         raise PublicSourceRuntimeError("native_public_clock_version_required")
+    previous = state.get("accepted_clock")
+    if previous is not None and not _runtime_clock_pair_matches(previous, evidence):
+        raise PublicSourceRuntimeError("native_public_clock_domain_changed")
     stamp = evidence["sample"]
     validate_stamps(
         (state["last"], evidence["diagnostic"]["host_before"]["request_start"], stamp)
     )
-    if utc_from_ns(stamp["utc_ns"]) >= state["expires_at"]:
+    if (
+        utc_from_ns(stamp["utc_ns"]) >= state["expires_at"]
+        or state["loop"].time() >= state["deadline"]
+    ):
         raise PublicSourceRuntimeError("public_source_expired")
+    state["accepted_clock"] = evidence
     state["last"] = stamp
 
 

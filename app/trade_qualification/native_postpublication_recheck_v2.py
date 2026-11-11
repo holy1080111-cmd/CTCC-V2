@@ -151,7 +151,7 @@ def _public(state):
         if event["kind"] in {"request", "ws_connect"}:
             measured._after(state["barrier"], event["metadata"]["started"])
         elif event["kind"] in {"clock_before", "clock_after"}:
-            measured._clock_after(
+            measured._public_clock_after(
                 state["barrier"],
                 native.read(
                     f"event-{event['index']:04d}.raw", measured.runtime.MAX_RAW
@@ -901,5 +901,71 @@ _NATIVE_GUARD = _native_guard.install_native_guards_v1(
         _owned_fixed_v2._owned_quote_v2,
         _owned_fixed_v2._owned_selection_v2,
         _owned_fixed_v2._owned_family_policy_v2,
+    ),
+    bindings=tuple(
+        (namespace, name, vars(namespace)[name])
+        for namespace, names in (
+            (
+                market.operational,
+                (
+                    "_probe_initial_demo_operational_route_retained_v4",
+                    "probe_initial_demo_operational_route_v4",
+                    "native_os_clock_ipc",
+                ),
+            ),
+            (
+                measured.runtime,
+                (
+                    "_capture_initial_public_v4",
+                    "_capture_owned",
+                    "_accept_clock_sample",
+                    "_observe_owned_runtime_clock",
+                    "_runtime_clock_pair_matches",
+                    "_RUNTIME_CLOCK_IPC",
+                ),
+            ),
+            (
+                measured.public_custody.journal,
+                ("replay_runtime_attempt", "_replay_semantics", "_record_clock"),
+            ),
+            (
+                measured.public_clock,
+                (
+                    "_RUNTIME_CLOCK_V2",
+                    "_RUNTIME_CLOCK_IPC",
+                    "_native_clock",
+                    "_native_observation_payload_ipc",
+                    "_observe_owned_runtime_clock",
+                    "_runtime_clock_pair_matches",
+                    "replay_clock_observation",
+                ),
+            ),
+            (
+                measured.public_clock._native_clock,
+                (
+                    "native_os_clock_ipc",
+                    "_capture_command",
+                    "_check_host_metadata",
+                    "_ipc_diagnostic",
+                    "_ipc_host_payload",
+                    "_validate_v3",
+                    "_WindowsHostMetadataIPC",
+                ),
+            ),
+            (
+                measured.public_clock._native_clock._WindowsHostMetadataIPC,
+                (
+                    "__init__",
+                    "_read_frames",
+                    "_read_stderr",
+                    "_start",
+                    "_remaining",
+                    "capture",
+                    "finish",
+                    "_finish_process",
+                ),
+            ),
+        )
+        for name in names
     ),
 )

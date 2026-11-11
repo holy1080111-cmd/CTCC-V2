@@ -19,11 +19,15 @@ from weakref import ref
 import httpx
 import pytest
 
+from app.trade_qualification import (
+    native_postpublication_support_v2 as native_clock_reader,
+)
 from app.trade_qualification import postpublication_sources_v1 as source
 from app.trade_qualification.engine import evaluate_pre_evidence
 from tests.unit.qualification_engine_fixtures import engine_inputs
 from tests.unit.research import test_owned_current_original_frame_v1 as native_fixture
 from tests.unit.research.test_owned_public_runtime_p1 import SyntheticClock
+from tests.unit.research.test_public_clock_v2 import ipc_fixture
 from tests.unit.test_qualification_account_collector import Stream
 from tests.unit.test_qualification_market_bridge import v2_engine_source
 
@@ -720,6 +724,21 @@ def test_strict_causal_barrier_rejects_equal_or_earlier_request(axis, delta):
         source._after(barrier, stamp)
 
 
+@pytest.mark.parametrize("reader", [source, native_clock_reader])
+def test_postpublication_public_ipc_preserves_barrier_and_private_v2(reader):
+    observation = ipc_fixture()
+    raw = source.public_clock._native_clock._native_observation_result(
+        observation, "accepted"
+    )
+    started = observation["diagnostic"]["host_before"]["request_start"]
+    earlier = {key: value - 1 for key, value in started.items()}
+    reader._public_clock_after(earlier, raw)
+    with pytest.raises(ValueError, match="postpublication_request_not_after_barrier"):
+        reader._public_clock_after(started, raw)
+    with pytest.raises(ValueError, match="postpublication_clock_incomplete"):
+        reader._clock_after(earlier, raw)
+
+
 @pytest.mark.parametrize(
     "leaf",
     [
@@ -727,6 +746,7 @@ def test_strict_causal_barrier_rejects_equal_or_earlier_request(axis, delta):
         "sha",
         "validate_stamps",
         "_clock_after",
+        "_public_clock_after",
         "_lineage",
         "_fresh_session",
         "_secret_public_journal",

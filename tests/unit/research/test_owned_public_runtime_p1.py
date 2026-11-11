@@ -1,6 +1,7 @@
 """Synthetic end-to-end P1 contracts; no native TLS/path/clock acceptance claim."""
 
 import asyncio
+import base64
 import copy
 import os
 import pickle
@@ -24,7 +25,7 @@ from app.public_market_source.public_market_receipts import (
 from app.trade_qualification import post_g12_public_runtime as coordinator
 from app.trade_qualification import public_source_runtime as runtime
 from tests.unit.research.test_public_clock_v2 import fixture as healthy_clock
-from tests.unit.research.test_public_clock_v2 import resign
+from tests.unit.research.test_public_clock_v2 import ipc_fixture, resign, stream
 from tests.unit.research.test_public_journal_contracts import MemoryDirectory
 from tests.unit.test_qualification_one_shot import (
     CaptureHarness,
@@ -52,10 +53,18 @@ class SyntheticClock:
         return value
 
     def health(self):
-        value = healthy_clock()
+        return self._stamp_health(healthy_clock())
+
+    def ipc_health(self):
+        return self._stamp_health(ipc_fixture())
+
+    def _stamp_health(self, value):
+        data = value["diagnostic"]
         for name in ("host_before", "status", "host_after"):
-            value["diagnostic"][name]["request_start"] = self.stamp()
-            value["diagnostic"][name]["completed"] = self.stamp()
+            data[name]["request_start"] = self.stamp()
+            data[name]["completed"] = self.stamp()
+        if "metadata_transport" in data:
+            data["metadata_transport"]["completed"] = data["host_after"]["completed"]
         value["sample"] = self.stamp()
         return resign(value)
 
@@ -77,7 +86,7 @@ def synthetic_runtime(
     monkeypatch.setattr(journal, "_root_context", root)
     monkeypatch.setattr(runtime, "native_stamp", clock.stamp)
     monkeypatch.setattr(coordinator, "native_stamp", clock.stamp)
-    monkeypatch.setattr(domain_clock, "native_os_clock", clock.health)
+    monkeypatch.setattr(domain_clock, "native_os_clock_ipc", clock.ipc_health)
     harness = CaptureHarness(monkeypatch, source, clock)
     factory = runtime.public._new_client
     proof = {
@@ -175,6 +184,55 @@ def resign_journal(directory, mutate):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["historical-v2", "mixed-versions", "changed-host"])
+async def test_runtime_replays_historical_v2_but_refuses_ipc_pair_drift(
+    inputs, tmp_path, monkeypatch, change
+):
+    _, directory, _, _ = synthetic_runtime(monkeypatch, inputs)
+    result = await invoke(inputs, tmp_path)
+    assert result.packet is not None
+
+    def replace_clock(event, directory):
+        if event["kind"] not in {"clock_before", "clock_after"}:
+            return
+        if change != "historical-v2" and event["kind"] == "clock_before":
+            return
+        name = f"event-{event['index']:04d}.raw"
+        raw = decode(directory.content[name])
+        evidence = raw["observation"]
+        if change == "changed-host":
+            for phase in ("before", "after"):
+                record = evidence["diagnostic"][f"host_{phase}"]
+                prefix = record["challenge"].encode("ascii") + b" "
+                frame = base64.b64decode(record["response"]["base64"])
+                host = decode(frame[len(prefix) :])
+                host.update(timezone_id="Tokyo Standard Time", utc_offset_minutes=540)
+                record["response"] = stream(prefix + canonical(host) + b"\r\n")
+        else:
+            legacy = healthy_clock()
+            legacy["sample"] = evidence["sample"]
+            for phase in ("host_before", "status", "host_after"):
+                for stamp in ("request_start", "completed"):
+                    legacy["diagnostic"][phase][stamp] = evidence["diagnostic"][phase][
+                        stamp
+                    ]
+            evidence = legacy
+        raw["observation"] = resign(evidence)
+        directory.content[name] = canonical(raw)
+        event.update(
+            raw_bytes=len(directory.content[name]),
+            raw_sha256=sha(directory.content[name]),
+        )
+
+    resign_journal(directory, replace_clock)
+    if change == "historical-v2":
+        assert replay(directory)[0]["disposition"] == "captured"
+    else:
+        with pytest.raises(PublicReceiptError, match="runtime_clock_domain_changed"):
+            replay(directory)
+
+
+@pytest.mark.asyncio
 async def test_same_invocation_raw_collectors_bridge_recheck_no_authority(
     inputs, tmp_path, monkeypatch
 ):
@@ -194,6 +252,13 @@ async def test_same_invocation_raw_collectors_bridge_recheck_no_authority(
     assert not result.atomic_risk_reserved and not result.original_source_verified
     summary, events = replay(directory)
     assert summary["disposition"] == "captured"
+    assert [
+        decode(directory.content[f"event-{event['index']:04d}.raw"])["observation"][
+            "schema_version"
+        ]
+        for event in events
+        if event["kind"].startswith("clock_")
+    ] == [clock_module._RUNTIME_CLOCK_IPC] * 2
     assert result.journal_sha256 == sha(directory.content["summary.json"])
     assert all(req.method == "GET" for req in harness.requests)
     assert not any(
@@ -231,7 +296,7 @@ async def test_real_returned_bytes_retained_on_rejection(
     if failure == "clock_before":
         monkeypatch.setattr(
             domain_clock,
-            "native_os_clock",
+            "native_os_clock_ipc",
             lambda: (_ for _ in ()).throw(PublicReceiptError("native_denied")),
         )
     elif failure == "malformed":
@@ -366,10 +431,10 @@ async def test_before_health_must_be_after_barrier_even_when_healthy(
     inputs, tmp_path, monkeypatch
 ):
     clock, _directory, harness, _ = synthetic_runtime(monkeypatch, inputs)
-    stale = clock.health()
+    stale = clock.ipc_health()
     stale["diagnostic"]["host_before"]["request_start"]["monotonic_ns"] = 0
     stale = resign(stale)
-    monkeypatch.setattr(domain_clock, "native_os_clock", lambda: stale)
+    monkeypatch.setattr(domain_clock, "native_os_clock_ipc", lambda: stale)
     result = await invoke(inputs, tmp_path)
     assert result.code == "public_runtime_denied"
     assert not harness.requests and not harness.connections
@@ -502,13 +567,13 @@ async def test_after_clock_failure_retains_all_public_raw_and_denies(
         nonlocal calls
         calls += 1
         if calls == 1:
-            return clock.health()
-        value = clock.health()
+            return clock.ipc_health()
+        value = clock.ipc_health()
         raise clock_module.NativeClockObservationError(
             "synthetic_fixed_clock_denied", {"diagnostic": value["diagnostic"]}
         )
 
-    monkeypatch.setattr(domain_clock, "native_os_clock", health)
+    monkeypatch.setattr(domain_clock, "native_os_clock_ipc", health)
     result = await invoke(inputs, tmp_path)
     assert result.code == "public_runtime_denied"
     summary, events = replay(directory)

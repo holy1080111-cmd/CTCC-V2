@@ -9,7 +9,7 @@ from threading import Lock
 from weakref import WeakKeyDictionary
 
 import app.domain.native_clock as _native_clock
-from app.domain.source_primitives import PublicReceiptError
+from app.domain.source_primitives import PublicReceiptError, canonical
 
 CLOCK_RESULT_VERSION = _native_clock.CLOCK_RESULT_VERSION
 MAX_CLOCK_PAYLOAD = _native_clock.MAX_CLOCK_PAYLOAD
@@ -27,6 +27,26 @@ validate_os_clock = _native_clock.validate_os_clock
 _CLOCK_ISSUER = object()
 _CLOCK_RESULTS = WeakKeyDictionary()
 _CLOCK_RESULTS_LOCK = Lock()
+_RUNTIME_CLOCK_V2 = "ctcc.windows_clock_observation.v2"
+_RUNTIME_CLOCK_IPC = "ctcc.windows_clock_observation.v3"
+
+
+def _runtime_clock_pair_matches(first, last):
+    """Compare two independently replayed component-clock observations."""
+    version = first["schema_version"]
+    if version != last["schema_version"]:
+        return False
+    if version == _RUNTIME_CLOCK_V2:
+        return True  # Historical v2 pairs keep their original validation.
+    if version != _RUNTIME_CLOCK_IPC:
+        return False
+    left, right = first["diagnostic"], last["diagnostic"]
+    return (
+        left["profile_id"] == right["profile_id"]
+        and canonical(left["clock_domain"]) == canonical(right["clock_domain"])
+        and canonical(_native_clock._ipc_host_payload(left["host_after"], "after"))
+        == canonical(_native_clock._ipc_host_payload(right["host_before"], "before"))
+    )
 
 
 class _OwnedClockObservation:
@@ -83,7 +103,7 @@ def _observe_owned_runtime_clock(attempt, stage):
     from app.public_market_source.public_runtime_journal import _claim_runtime_clock
 
     _claim_runtime_clock(attempt, stage)
-    payload = _native_observation_payload()
+    payload = _native_observation_payload_ipc()
     result = _OwnedClockObservation(_CLOCK_ISSUER)
     with _CLOCK_RESULTS_LOCK:
         _CLOCK_RESULTS[result] = (attempt, stage, payload)

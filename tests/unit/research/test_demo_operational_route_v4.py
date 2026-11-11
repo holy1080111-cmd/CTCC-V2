@@ -11,7 +11,7 @@ from weakref import ref
 import httpx
 import pytest
 
-from app.domain.source_primitives import sha
+from app.domain.source_primitives import PublicReceiptError, sha
 from app.trade_qualification import demo_operational_route_v4 as route_v4
 from tests.unit.research.test_demo_session_route_preflight import _client, _session
 
@@ -70,7 +70,7 @@ async def test_mock_transport_cannot_issue_operational_lease(monkeypatch):
         calls += 1
         return httpx.Response(200, json={"code": "0", "msg": "", "data": []})
 
-    monkeypatch.setattr(route_v4, "native_os_clock", dict)
+    monkeypatch.setattr(route_v4, "native_os_clock_ipc", dict)
     monkeypatch.setattr(route_v4, "validate_os_clock", lambda _value: None)
     monkeypatch.setattr(
         route_v4,
@@ -184,7 +184,7 @@ def _native_config_fixture(monkeypatch, body):
     monkeypatch.setattr(client, "send", send)
     monkeypatch.setattr(route_v4, "_native_client", lambda: client)
     monkeypatch.setattr(route_v4.ssl, "SSLObject", SyntheticTLS)
-    monkeypatch.setattr(route_v4, "native_os_clock", dict)
+    monkeypatch.setattr(route_v4, "native_os_clock_ipc", dict)
     monkeypatch.setattr(route_v4, "validate_os_clock", lambda _value: None)
     monkeypatch.setattr(
         route_v4,
@@ -192,6 +192,30 @@ def _native_config_fixture(monkeypatch, body):
         lambda: {"utc_ns": 1_760_000_000_000_000_000, "monotonic_ns": 100},
     )
     return client, response
+
+
+@pytest.mark.asyncio
+async def test_second_ipc_health_failure_does_not_send_signed_config(monkeypatch):
+    client, _ = _native_config_fixture(monkeypatch, httpx.ByteStream(_config()))
+    health_calls = 0
+
+    def health():
+        nonlocal health_calls
+        health_calls += 1
+        if health_calls == 2:
+            raise PublicReceiptError("native_clock_probe_expired")
+        return {}
+
+    async def send(*_args, **_kwargs):
+        pytest.fail("a rejected local clock must never send the signed request")
+
+    monkeypatch.setattr(route_v4, "native_os_clock_ipc", health)
+    monkeypatch.setattr(client, "send", send)
+    with pytest.raises(
+        route_v4.DemoOperationalRouteV4Error, match="demo_v4_probe_unavailable"
+    ):
+        await route_v4.probe_initial_demo_operational_route_v4(_session(), _client())
+    assert health_calls == 2 and client.is_closed
 
 
 @pytest.mark.asyncio

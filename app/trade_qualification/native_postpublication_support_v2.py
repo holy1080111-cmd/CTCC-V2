@@ -27,11 +27,24 @@ def _after(barrier, stamp):
 
 
 def _clock_after(barrier, raw):
+    """Retained signed account proof remains exact v2."""
+    _clock_after_schema(barrier, raw, ("ctcc.windows_clock_observation.v2",))
+
+
+def _public_clock_after(barrier, raw):
+    _clock_after_schema(
+        barrier,
+        raw,
+        (public_clock._RUNTIME_CLOCK_V2, public_clock._RUNTIME_CLOCK_IPC),
+    )
+
+
+def _clock_after_schema(barrier, raw, schemas):
     result = public_clock.replay_clock_observation(raw)
     if result["outcome"] != "accepted":
         _deny("postpublication_clock_incomplete")
     observation = result["observation"]
-    if observation["schema_version"] != "ctcc.windows_clock_observation.v2":
+    if observation["schema_version"] not in schemas:
         _deny("postpublication_clock_incomplete")
     _after(barrier, observation["diagnostic"]["host_before"]["request_start"])
 

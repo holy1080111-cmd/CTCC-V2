@@ -319,11 +319,24 @@ def _fresh_session(state):
 
 
 def _clock_after(barrier, raw):
+    """Retained signed account proof remains exact v2."""
+    _clock_after_schema(barrier, raw, ("ctcc.windows_clock_observation.v2",))
+
+
+def _public_clock_after(barrier, raw):
+    _clock_after_schema(
+        barrier,
+        raw,
+        (public_clock._RUNTIME_CLOCK_V2, public_clock._RUNTIME_CLOCK_IPC),
+    )
+
+
+def _clock_after_schema(barrier, raw, schemas):
     result = public_clock.replay_clock_observation(raw)
     if result["outcome"] != "accepted":
         _deny("postpublication_clock_incomplete")
     observation = result["observation"]
-    if observation["schema_version"] != "ctcc.windows_clock_observation.v2":
+    if observation["schema_version"] not in schemas:
         _deny("postpublication_clock_incomplete")
     _after(barrier, observation["diagnostic"]["host_before"]["request_start"])
 
@@ -686,7 +699,7 @@ def _replay_sources(state):
         if event["kind"] == "request" or event["kind"] == "ws_connect":
             _after(state["barrier"], event["metadata"]["started"])
         elif event["kind"] in {"clock_before", "clock_after"}:
-            _clock_after(
+            _public_clock_after(
                 state["barrier"],
                 directory.read(f"event-{event['index']:04d}.raw", runtime.MAX_RAW),
             )
@@ -1461,21 +1474,21 @@ _KNOWN_SOURCE_HASHES = {
     "app/trade_qualification/account_runtime.py": "048c00f61dc814f473c0e2b894b45dc36b09e6a809693571fd9c301a651319c6",
     "app/trade_qualification/account_capture.py": "fe0c86997397ad30ec2391748bf5e137b4fa09b9e22f7024382ff86590385f95",
     "app/trade_evidence/gates.py": "7be0f614d16c42fab49e923a97890d6a09e9a512b789d940f8bb379c0e344d50",
-    "app/public_market_source/public_clock.py": "143a3f5b651454267904148f382c1a499133e4b9441801417928a570feaa2da8",
-    "app/trade_qualification/public_source_runtime.py": "bd99dd32d32d4dc7b48c89c86a6c2e7ddc26cde7e1c4ee7719e369afd05a225e",
+    "app/public_market_source/public_clock.py": "8e38d03ee48a257ff2c08a5d2032f0f751b1dcb15c7455d2988b7c3c6168ca31",
+    "app/trade_qualification/public_source_runtime.py": "65a07f33b858055c39207b2c1f077746709583865b3fc0b9ef482693922a8074",
     "app/domain/native_clock.py": "f371d475f4d37a8cab3d00b21091cb15c82785619ac116225da426d025dd4f0a",
     "app/domain/source_primitives.py": "660a18a2bab787297c370d5316fa08cbf0ecf01273ea95ed990b949c4953420d",
     "app/trade_qualification/market_bridge_v2.py": "978bd603bbbe0fcd535fac3ae29ad06947eb4b428412a175480bd6ca3afa0988",
     "app/public_market_source/public_runtime_custody_v4.py": "b666b0746a9a7160f73502b9b3b31cffbcb528087acf605b1e138d61ac909b1a",
     "app/trade_qualification/recheck_models.py": "fc1e07bf5e84a1978ce41c41a4e84250f4449e9c0abb41ad86b426c747184fc4",
-    "app/trade_qualification/demo_operational_route_v4.py": "2d96ff4e0f830829e5d76c5b5b2173ae019b6a2a70fc66f4607f8d7d6898f35f",
+    "app/trade_qualification/demo_operational_route_v4.py": "541ccd07cadad014db06b61409cfe26f1a9b811e1a84702697e74d61558bfa37",
     "app/trade_qualification/account_native_runtime.py": "610bfe13181744925d66801624f064f597c31e7959b0405b6aa8ef78473e556c",
     "app/trade_qualification/account_collector.py": "6ea758f8cb02acc608eb918506f765a62aa44e72ff063fbc85202223397af6b7",
     "app/trade_qualification/account_capture_journal.py": "a68bc042208eccb0f45ea0f4a46a39d6332b1a5732e6e50645757a70a7c9720d",
     "app/trade_qualification/demo_public_origin.py": "14ea0410408d308257f87443045caa557ffbbc8a3d0ac3c1dc74a6c3595d8f20",
     "app/trade_qualification/public_market_collector.py": "6742a28ccbf1937a772a946c0ffc4b3c36524bb91e93b2554c3053abf6e113bf",
     "app/trade_qualification/public_market_collector_v2.py": "3a34151d1a7e418f8efc2c456cd48fc294652f1fe80a2fe8e4caf1d942d7fedd",
-    "app/public_market_source/public_runtime_journal.py": "5706889e3e819852a11777738b2798e2e8f8f16ddea77734e328c2dea79a8dd7",
+    "app/public_market_source/public_runtime_journal.py": "cef6f2370e409447119676ddd31431841084cacd28d8ea3e521a93a4e739e23b",
 }
 
 # These are existing engineering caps, not caller choices or new tolerances.
@@ -1559,6 +1572,7 @@ for _namespace, _name in (
     (public_custody.journal, "_KINDS"),
     (public_custody.journal, "replay_runtime_attempt"),
     (public_custody.journal, "_replay_semantics"),
+    (public_custody.journal, "_record_clock"),
     (runtime, "MAX_RAW"),
     (account, "runtime"),
     (account.runtime, "collector"),
@@ -1577,6 +1591,7 @@ for _namespace, _name in (
     (account, "_chain_replay"),
     (market.operational, "_OWNED_ROUTES"),
     (market.operational, "probe_initial_demo_operational_route_v4"),
+    (market.operational, "native_os_clock_ipc"),
     (market.operational, "_probe_initial_demo_operational_route_retained_v4"),
     (market.operational, "_consume_initial_route_state_v4"),
     (market.operational, "_owned_route_state_v4"),
@@ -1620,6 +1635,8 @@ for _namespace, _name in (
     (sys.modules[__name__], "_check"),
     (sys.modules[__name__], "_fresh_session"),
     (sys.modules[__name__], "_clock_after"),
+    (sys.modules[__name__], "_clock_after_schema"),
+    (sys.modules[__name__], "_public_clock_after"),
     (sys.modules[__name__], "_replay_sources"),
     (sys.modules[__name__], "_links"),
     (sys.modules[__name__], "_run"),
@@ -1669,6 +1686,22 @@ for _namespace, _name in (
     (gates, "verify_pre_evidence_versioned"),
     (gates, "publish_qualification_evidence_liquidity_v2"),
     (public_clock, "replay_clock_observation"),
+    (public_clock, "_RUNTIME_CLOCK_V2"),
+    (public_clock, "_RUNTIME_CLOCK_IPC"),
+    (public_clock, "_native_clock"),
+    (public_clock, "_native_observation_payload_ipc"),
+    (public_clock, "_observe_owned_runtime_clock"),
+    (public_clock, "_runtime_clock_pair_matches"),
+    (public_clock._native_clock, "_check_host_metadata"),
+    (public_clock._native_clock, "_ipc_diagnostic"),
+    (public_clock._native_clock, "_ipc_host_payload"),
+    (public_clock._native_clock, "_validate_v3"),
+    (public_clock._native_clock, "native_os_clock_ipc"),
+    (runtime, "_RUNTIME_CLOCK_IPC"),
+    (runtime, "_accept_clock_sample"),
+    (runtime, "_capture_owned"),
+    (runtime, "_observe_owned_runtime_clock"),
+    (runtime, "_runtime_clock_pair_matches"),
     (runtime, "_native_recheck_root"),
 ):
     _value = vars(_namespace)[_name]

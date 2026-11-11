@@ -826,6 +826,7 @@ def _replay_semantics(plan, summary, events, payloads, *, market_packet=None):
     last = boundary
     complete = summary["disposition"] == "captured"
     before_seen, after_seen = False, False
+    first_clock = None
     v3 = plan["schema_version"] in {
         "ctcc.public.initial_runtime_plan.v3",
         "ctcc.public.initial_runtime_plan.v4",
@@ -836,7 +837,12 @@ def _replay_semantics(plan, summary, events, payloads, *, market_packet=None):
         kind, meta = event["kind"], event["metadata"]
         stamp = None
         if kind.startswith("clock_"):
-            from app.public_market_source.public_clock import replay_clock_observation
+            from app.public_market_source.public_clock import (
+                _RUNTIME_CLOCK_IPC,
+                _RUNTIME_CLOCK_V2,
+                _runtime_clock_pair_matches,
+                replay_clock_observation,
+            )
 
             value = replay_clock_observation(raw)
             if kind == "clock_before":
@@ -853,8 +859,17 @@ def _replay_semantics(plan, summary, events, payloads, *, market_packet=None):
                 raise PublicReceiptError("runtime_v3_time_order_invalid")
             if value["outcome"] == "accepted":
                 evidence = value["observation"]
-                if evidence["schema_version"] != "ctcc.windows_clock_observation.v2":
+                if evidence["schema_version"] not in {
+                    _RUNTIME_CLOCK_V2,
+                    _RUNTIME_CLOCK_IPC,
+                }:
                     raise PublicReceiptError("runtime_native_clock_version_required")
+                if kind == "clock_before":
+                    first_clock = evidence
+                elif first_clock is None or not _runtime_clock_pair_matches(
+                    first_clock, evidence
+                ):
+                    raise PublicReceiptError("runtime_clock_domain_changed")
                 validate_stamps(
                     (
                         last,
