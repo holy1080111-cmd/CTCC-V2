@@ -1,8 +1,8 @@
 """Explicit restricted-role custody for one fitted prospective candidate.
 
-Run publish, acknowledge, and observe as separate operator invocations with
-their own directly granted PostgreSQL logins. This command never reads a
-holdout, reserves an evaluation, contacts an exchange, or trades.
+Run publish, acknowledge, observe, and recover-ack as separate operator
+invocations with their own directly granted PostgreSQL logins. This command
+never reads a holdout, reserves an evaluation, contacts an exchange, or trades.
 """
 
 from __future__ import annotations
@@ -72,7 +72,9 @@ class _Parser(argparse.ArgumentParser):
 
 def _arguments(arguments):
     parser = _Parser(description=__doc__, allow_abbrev=False)
-    parser.add_argument("mode", choices=("publish", "acknowledge", "observe"))
+    parser.add_argument(
+        "mode", choices=("publish", "acknowledge", "observe", "recover-ack")
+    )
     for name in (
         "source-archive",
         "binding",
@@ -151,7 +153,7 @@ def _arguments(arguments):
         len(role_oids) != 3
         or (args.mode == "publish" and args.login_oid != args.publisher_oid)
         or (args.mode == "acknowledge" and args.login_oid != args.observer_oid)
-        or (args.mode == "observe" and args.login_oid in role_oids)
+        or (args.mode in {"observe", "recover-ack"} and args.login_oid in role_oids)
     ):
         raise FittedCustodyCommandError("gate3_fitted_command_role_invalid")
     if len({value.resolve() for value in inputs}) != len(inputs) or any(
@@ -276,6 +278,7 @@ async def _execute(args, inputs):
             "publish": "publisher",
             "acknowledge": "observer",
             "observe": "reader",
+            "recover-ack": "reader",
         }[args.mode]
         repository = Gate3FittedCandidateCustodyV1(
             factory,
@@ -297,6 +300,23 @@ async def _execute(args, inputs):
                 "binding_sha256": result.binding_sha256,
                 "publication_xid": result.publication_xid,
                 "publisher_oid": result.publisher_oid,
+            }
+        if args.mode == "recover-ack":
+            recovered = await repository.recover_acknowledgement(inputs)
+            observed = recovered.acknowledgement
+            return {
+                "seal_sha256": observed.seal_sha256,
+                "binding_sha256": observed.binding_sha256,
+                "publication_xid": observed.publication_xid,
+                "acknowledgement_xid": observed.acknowledgement_xid,
+                "observed_ack_sha256": observed.ack_sha256,
+                "publisher_oid": observed.publisher_oid,
+                "observer_oid": observed.observer_oid,
+                "binding_recorded_at": observed.recorded_at.isoformat(),
+                "acknowledged_at": observed.acknowledged_at.isoformat(),
+                "database_read_at": observed.database_read_at.isoformat(),
+                "independent_ack_pin_verified": False,
+                "custody_writes": 0,
             }
         if args.mode == "acknowledge":
             result = await repository.acknowledge(inputs)
@@ -334,7 +354,11 @@ def _retain_result(args, result):
     output = args.output
     require_private_evidence_base_v2(str(output.parent))
     document = {
-        "schema": "ctcc.mie.gate3_fitted_custody_command.v1",
+        "schema": (
+            "ctcc.mie.gate3_fitted_ack_recovery.v1"
+            if args.mode == "recover-ack"
+            else "ctcc.mie.gate3_fitted_custody_command.v1"
+        ),
         "operation": args.mode,
         "source_archive_sha256": args.source_archive_sha256,
         **result,

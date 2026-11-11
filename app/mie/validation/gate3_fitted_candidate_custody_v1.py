@@ -58,6 +58,28 @@ _READ_ACK = text(
     "SELECT a.*, pg_catalog.clock_timestamp() AS database_read_at "
     "FROM public.gate3_fitted_binding_ack_read(:seal) AS a"
 )
+_NON_READER_SIGNATURES = (
+    "gate3_fitted_binding_append(text,text,text)",
+    "gate3_fitted_binding_ack_append(text,text)",
+    "gate3_fitted_evaluation_append(text,text,text,text,text,text)",
+    "gate3_fitted_evaluation_read(text)",
+)
+_READER_ONLY = (
+    "NOT ("
+    + " OR ".join(
+        f"pg_catalog.has_function_privilege(SESSION_USER, 'public.{signature}', 'EXECUTE')"
+        for signature in _NON_READER_SIGNATURES
+    )
+    + ")"
+)
+_RECOVERY_BINDING = text(
+    f"SELECT observed.*, {_READER_ONLY} AS fitted_reader_only "
+    f"FROM ({_READ_BINDING.text}) AS observed"
+)
+_RECOVERY_ACK = text(
+    f"SELECT observed.*, {_READER_ONLY} AS fitted_reader_only "
+    f"FROM ({_READ_ACK.text}) AS observed"
+)
 _APPEND_ACK = text("SELECT public.gate3_fitted_binding_ack_append(:seal, :binding)")
 _READ_EVALUATION = text(
     "SELECT e.*, pg_catalog.clock_timestamp() AS database_read_at "
@@ -128,6 +150,16 @@ class FittedCandidateAcknowledgedV1:
     database_read_at: datetime
     ack_sha256: str
     binding: DevvalFittedCandidateBindingV1 = field(repr=False)
+    predictive_oos_eligible: ClassVar[Literal[False]] = False
+    execution_authority: ClassVar[Literal[False]] = False
+
+
+@dataclass(frozen=True, slots=True)
+class FittedCandidateAckRecoveryV1:
+    """Observation of a committed ACK before independently pinning its digest."""
+
+    acknowledgement: FittedCandidateAcknowledgedV1
+    independent_ack_pin_verified: ClassVar[Literal[False]] = False
     predictive_oos_eligible: ClassVar[Literal[False]] = False
     execution_authority: ClassVar[Literal[False]] = False
 
@@ -360,14 +392,16 @@ class Gate3FittedCandidateCustodyV1:
         if self._role not in allowed:
             raise Gate3FittedCustodyError("FITTED_CUSTODY_ROLE_REFUSED")
 
-    async def _read_binding(self, inputs, checked):
+    async def _read_binding(self, inputs, checked, *, reader_only=False):
         row, readback_xid = await self._transaction(
-            _READ_BINDING,
+            _RECOVERY_BINDING if reader_only else _READ_BINDING,
             {"seal": inputs.expected_preregistration_sha256},
             read=True,
         )
         if row is None:
             raise Gate3FittedCustodyError("FITTED_CUSTODY_BINDING_MISSING")
+        if reader_only and row.get("fitted_reader_only") is not True:
+            raise Gate3FittedCustodyError("FITTED_CUSTODY_RECOVERY_ROLE_REFUSED")
         try:
             raw = row["binding_json"].encode("utf-8")
             recorded = _time(row["recorded_at"])
@@ -393,18 +427,22 @@ class Gate3FittedCandidateCustodyV1:
         except Exception:  # noqa: BLE001 - SQL types and payload are private.
             raise Gate3FittedCustodyError("FITTED_CUSTODY_BINDING_MISMATCH") from None
 
-    async def _read_acknowledged(self, inputs, checked):
+    async def _read_acknowledged(self, inputs, checked, *, reader_only=False):
         (
             recorded,
             _,
             publication_xid,
             publication_readback_xid,
-        ) = await self._read_binding(inputs, checked)
+        ) = await self._read_binding(inputs, checked, reader_only=reader_only)
         row, ack_readback_xid = await self._transaction(
-            _READ_ACK, {"seal": inputs.expected_preregistration_sha256}, read=True
+            _RECOVERY_ACK if reader_only else _READ_ACK,
+            {"seal": inputs.expected_preregistration_sha256},
+            read=True,
         )
         if row is None:
             raise Gate3FittedCustodyError("FITTED_CUSTODY_ACK_MISSING")
+        if reader_only and row.get("fitted_reader_only") is not True:
+            raise Gate3FittedCustodyError("FITTED_CUSTODY_RECOVERY_ROLE_REFUSED")
         try:
             acknowledged = _time(row["acknowledged_at"])
             read_at = _time(row["database_read_at"])
@@ -513,6 +551,15 @@ class Gate3FittedCandidateCustodyV1:
         if result.ack_sha256 != expected_ack_sha256:
             raise Gate3FittedCustodyError("FITTED_CUSTODY_ACK_PIN_MISMATCH")
         return result
+
+    async def recover_acknowledgement(
+        self, inputs: FittedCandidateInputsV1
+    ) -> FittedCandidateAckRecoveryV1:
+        """Observe a lost ACK receipt using independently pinned inputs and a reader login."""
+        self._require_role("reader")
+        checked = _verified(inputs)
+        acknowledged = await self._read_acknowledged(inputs, checked, reader_only=True)
+        return FittedCandidateAckRecoveryV1(acknowledgement=acknowledged)
 
     async def reserve_evaluation(
         self,

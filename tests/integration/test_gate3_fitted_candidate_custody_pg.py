@@ -519,6 +519,69 @@ async def test_fitted_binding_role_separation_and_immutable_readback(
         )
 
 
+async def test_fitted_ack_recovery_reads_one_committed_ack_under_tls(
+    fitted_database, fitted_inputs_source, monkeypatch, tmp_path
+):
+    engines, repos, _ = fitted_database
+    inputs, _ = await _fitted_proposal(engines, fitted_inputs_source)
+    await _accept_seal(engines, inputs)
+    committed = await repos["publisher"].publish(inputs)
+
+    async def lost_readback(*_args, **_kwargs):
+        raise Gate3FittedCustodyError("TEST_ACK_RECEIPT_LOST_AFTER_COMMIT")
+
+    observer = repos["observer"]
+    reader = repos["reader"]
+    with monkeypatch.context() as scoped:
+        scoped.setattr(observer, "_read_acknowledged", lost_readback)
+        with pytest.raises(
+            Gate3FittedCustodyError, match="TEST_ACK_RECEIPT_LOST_AFTER_COMMIT"
+        ):
+            await observer.acknowledge(inputs)
+
+    async def counts():
+        async with engines["owner"].connect() as connection:
+            result = await connection.execute(
+                text(
+                    "SELECT (SELECT count(*) FROM public.gate3_fitted_candidate_bindings), "
+                    "(SELECT count(*) FROM public.gate3_fitted_candidate_acks), "
+                    "(SELECT count(*) FROM public.gate3_fitted_candidate_evaluations)"
+                )
+            )
+            return tuple(result.one())
+
+    assert await counts() == (1, 1, 0)
+    with pytest.raises(Gate3FittedCustodyError, match="^FITTED_CUSTODY_ROLE_REFUSED$"):
+        await observer.recover_acknowledgement(inputs)
+    with monkeypatch.context() as scoped:
+        # The real observer retains its ACK append grant under this app label.
+        scoped.setattr(observer, "_role", "reader")
+        with pytest.raises(
+            Gate3FittedCustodyError, match="^FITTED_CUSTODY_RECOVERY_ROLE_REFUSED$"
+        ):
+            await observer.recover_acknowledgement(inputs)
+
+    recovered = await reader.recover_acknowledgement(inputs)
+    observed = recovered.acknowledgement
+    assert observed.seal_sha256 == inputs.expected_preregistration_sha256
+    assert observed.binding_sha256 == committed.binding_sha256 == inputs.binding.sha256
+    assert observed.publication_xid == committed.publication_xid
+    assert observed.acknowledgement_xid != committed.publication_xid
+    assert not recovered.independent_ack_pin_verified
+    assert not recovered.predictive_oos_eligible and not recovered.execution_authority
+
+    pin_path = tmp_path / "reviewed-ack.sha256"
+    with pin_path.open("x", encoding="ascii") as stream:
+        stream.write(observed.ack_sha256 + "\n")
+    pinned = await reader.read_acknowledged(
+        inputs, expected_ack_sha256=pin_path.read_text(encoding="ascii").strip()
+    )
+    assert pinned.ack_sha256 == observed.ack_sha256
+    assert pinned.acknowledgement_xid == observed.acknowledgement_xid
+    assert pinned.database_read_at >= observed.database_read_at
+    assert await counts() == (1, 1, 0)
+
+
 async def test_fitted_evaluation_is_once_and_after_permitted_access(
     fitted_database, fitted_inputs_source, tmp_path
 ):

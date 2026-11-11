@@ -411,6 +411,19 @@ database, login, role OIDs, TLS CA digest, source archive, and canonical
 input artifact digests independently. Store the resulting no-clobber
 receipt in a private directory.
 
+If an acknowledgement may have committed before its local receipt was retained,
+use `recover-ack` with the same independently pinned binding, seal, source and
+parent artifacts. This command uses the existing read-only reviewer login and a
+new output path. It reads back the committed record and retains its
+`observed_ack_sha256` with `independent_ack_pin_verified=false`. It performs no
+custody writes. Review and retain the digest separately before using it with
+`observe --ack-sha256`. An absent or inconsistent record leaves the ACK
+unresolved.
+
+The original binding's exact source checkpoint must include this recovery
+command. Older checkpoints require a separately reviewed historical readback
+that preserves the original source identity.
+
 The fitted observer replays the retained candidate artifacts before it submits
 an acknowledgement. The database compares the fitted binding with the earlier
 seal and records the publisher and observer in distinct committed transactions.
