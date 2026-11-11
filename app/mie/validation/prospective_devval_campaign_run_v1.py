@@ -115,6 +115,8 @@ def _retain(directory, name, raw: bytes, maximum: int) -> str:
 
 
 def _observation(publication: DevvalCampaignPublicationV1) -> dict:
+    if publication.native_readback is None:
+        _deny("devval_campaign_publication_clock_missing")
     return {
         "campaign_sha256": publication.campaign_sha256,
         "plan_sha256": publication.plan_sha256,
@@ -128,6 +130,9 @@ def _observation(publication: DevvalCampaignPublicationV1) -> dict:
         "acknowledged_at": publication.acknowledged_at.isoformat(),
         "database_read_at": publication.database_read_at.isoformat(),
         "readback_xid": publication.readback_xid,
+        "native_readback": [
+            stamp.model_dump() for stamp in publication.native_readback
+        ],
     }
 
 
@@ -281,6 +286,7 @@ async def run_prospective_devval_campaign_v1(
             type(publication) is not DevvalCampaignPublicationV1
             or publication.acknowledged_at is None
             or publication.acknowledgement_xid is None
+            or publication.native_readback is None
             or publication.database_read_at >= campaign.plan.development.start_at
             or publication.campaign_sha256 != expected_campaign_sha256
             or publication.plan_sha256 != campaign.plan_sha256
@@ -317,7 +323,7 @@ async def run_prospective_devval_campaign_v1(
             _block_pins(root, block)
         binding = canonical(
             {
-                "schema": "ctcc.mie.devval_campaign_root_roster.v1",
+                "schema": "ctcc.mie.devval_campaign_root_roster.v2",
                 "publication": _observation(publication),
                 "root_identity": root_id,
                 "source_inventory_sha256": sha(canonical(inventory)),

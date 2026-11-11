@@ -121,6 +121,7 @@ def _verify_slot(child, claim, coordinate, collection_pin, native_pin, slot_pin)
     ):
         raise ProspectiveDevvalSlotError("devval_slot_readback_changed")
     _pin(receipt["journal_replay_sha256"])
+    return receipt, decision
 
 
 def _verify_prefix(directory, prior, plan, base):

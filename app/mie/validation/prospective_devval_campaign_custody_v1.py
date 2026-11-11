@@ -18,7 +18,7 @@ from app.database.repositories.public_runtime_bundle_custody import (
     _native_engine,
 )
 from app.domain.native_clock import native_stamp
-from app.domain.source_primitives import canonical, validate_stamps
+from app.domain.source_primitives import ClockStamp, canonical, validate_stamps
 from app.mie.validation.development_validation_source_collection_v1 import _context
 from app.mie.validation.prospective_development_validation_plan import _ns
 from app.mie.validation.prospective_devval_campaign_plan_v1 import (
@@ -96,6 +96,7 @@ class DevvalCampaignPublicationV1:
     acknowledgement_xid: str | None
     database_read_at: datetime
     readback_xid: str
+    native_readback: tuple[ClockStamp, ClockStamp] | None = None
     independently_protected: ClassVar[Literal[False]] = False
     trusted_clock_verified: ClassVar[Literal[False]] = False
     predictive_oos_eligible: ClassVar[Literal[False]] = False
@@ -111,6 +112,7 @@ class DevvalCampaignDispatchClaimV1:
     claimed_at: datetime
     database_read_at: datetime
     readback_xid: str
+    native_readback: tuple[ClockStamp, ClockStamp] | None = None
 
 
 def _require_dispatch_claim(claim, campaign_sha256):
@@ -123,9 +125,26 @@ def _require_dispatch_claim(claim, campaign_sha256):
 
 
 def _dispatch_document(claim: DevvalCampaignDispatchClaimV1) -> bytes:
+    pair = claim.native_readback
+    if (
+        type(pair) is not tuple
+        or len(pair) != 2
+        or any(type(stamp) is not ClockStamp for stamp in pair)
+    ):
+        raise DevvalCampaignCustodyError("devval_custody_dispatch_clock_missing")
+    try:
+        stamps = validate_stamps(tuple(stamp.model_dump() for stamp in pair))
+        if not stamps[0].utc_ns <= _ns(claim.database_read_at) <= stamps[1].utc_ns:
+            raise DevvalCampaignCustodyError("devval_custody_dispatch_clock_changed")
+    except DevvalCampaignCustodyError:
+        raise
+    except Exception:  # noqa: BLE001 - Never expose a caller's raw clock data.
+        raise DevvalCampaignCustodyError(
+            "devval_custody_dispatch_clock_changed"
+        ) from None
     return canonical(
         {
-            "schema": "ctcc.mie.devval_campaign_dispatch.v1",
+            "schema": "ctcc.mie.devval_campaign_dispatch.v2",
             "campaign_sha256": claim.campaign_sha256,
             "root_binding_sha256": claim.root_binding_sha256,
             "collector_role_oid": claim.collector_role_oid,
@@ -133,6 +152,7 @@ def _dispatch_document(claim: DevvalCampaignDispatchClaimV1) -> bytes:
             "claimed_at": claim.claimed_at.isoformat(),
             "database_read_at": claim.database_read_at.isoformat(),
             "readback_xid": claim.readback_xid,
+            "native_readback": [stamp.model_dump() for stamp in stamps],
             "predictive_oos_eligible": False,
             "execution_authority": False,
         }
@@ -222,6 +242,7 @@ def _readback(row, *, campaign, payload, pin, transaction, stamps):
         acknowledgement_xid=ack_xid,
         database_read_at=observed,
         readback_xid=transaction.xid,
+        native_readback=(stamps[0], stamps[1]),
     )
 
 
@@ -310,6 +331,8 @@ class DevvalCampaignCustodyRepositoryV1:
                 await session.execute(text("SET LOCAL synchronous_commit = on"))
                 await session.execute(text("SET LOCAL statement_timeout = '8s'"))
                 await session.execute(text("SET LOCAL lock_timeout = '2s'"))
+                if statement is _READ or statement is _DISPATCH_READ:
+                    await session.execute(text("SET TRANSACTION READ ONLY"))
                 facts = (await session.execute(_SESSION)).mappings().one()
                 if (
                     facts["direct_login"] is not True
@@ -490,9 +513,85 @@ class DevvalCampaignCustodyRepositoryV1:
             claimed,
             observed,
             reader.xid,
+            (stamps[0], stamps[1]),
         )
         _OWNED_DISPATCHES[claim] = _context()
         return claim
+
+    async def observe_dispatch(
+        self,
+        payload: bytes,
+        *,
+        expected_campaign_sha256: str,
+        root_binding_sha256: str,
+        **source_checkpoint: Unpack[_SourceCheckpoint],
+    ) -> tuple[DevvalCampaignPublicationV1, DevvalCampaignDispatchClaimV1]:
+        """Resolve committed campaign and dispatch rows without a write or lease."""
+        if self._role != "collector":
+            raise DevvalCampaignCustodyError("devval_custody_wrong_login_role")
+        if (
+            type(root_binding_sha256) is not str
+            or _PIN.fullmatch(root_binding_sha256) is None
+        ):
+            raise DevvalCampaignCustodyError("devval_custody_dispatch_binding_invalid")
+        campaign = self._manifest(
+            payload,
+            expected_campaign_sha256=expected_campaign_sha256,
+            **source_checkpoint,
+        )
+        publication, publication_reader = await self._read(
+            campaign, payload, expected_campaign_sha256
+        )
+        row, dispatch_reader, stamps = await self._transaction(
+            _DISPATCH_READ, {"sha": expected_campaign_sha256}
+        )
+        if row is None:
+            raise DevvalCampaignCustodyError("devval_custody_dispatch_missing")
+        try:
+            claimed, observed = _utc(row["claimed_at"]), _utc(row["database_read_at"])
+            dispatch_xid = row["dispatch_xid"]
+            first_open = campaign.plan.development.start_at
+            if (
+                publication.observer_role_oid != self._observer_oid
+                or publication.acknowledged_at is None
+                or publication.acknowledgement_xid is None
+                or row["campaign_sha256"] != expected_campaign_sha256
+                or row["root_binding_sha256"] != root_binding_sha256
+                or row["collector_role_oid"] != self._login_oid
+                or not _xid(dispatch_xid)
+                or len(
+                    {
+                        publication.publication_xid,
+                        publication.acknowledgement_xid,
+                        dispatch_xid,
+                        publication_reader.xid,
+                        dispatch_reader.xid,
+                    }
+                )
+                != 5
+                or not publication.acknowledged_at <= claimed < first_open
+                or observed < max(claimed, publication.database_read_at)
+                or not stamps[0].utc_ns <= _ns(observed) <= stamps[1].utc_ns
+            ):
+                raise DevvalCampaignCustodyError(
+                    "devval_custody_dispatch_observation_changed"
+                )
+        except DevvalCampaignCustodyError:
+            raise
+        except Exception:  # noqa: BLE001 - Never expose private SQL result values.
+            raise DevvalCampaignCustodyError(
+                "devval_custody_dispatch_observation_changed"
+            ) from None
+        return publication, DevvalCampaignDispatchClaimV1(
+            expected_campaign_sha256,
+            root_binding_sha256,
+            self._login_oid,
+            dispatch_xid,
+            claimed,
+            observed,
+            dispatch_reader.xid,
+            (stamps[0], stamps[1]),
+        )
 
     async def publish(
         self,

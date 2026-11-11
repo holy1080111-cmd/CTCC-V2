@@ -28,6 +28,15 @@ BLOCKS = ("d" * 64, "e" * 64)
 PAYLOAD = b"synthetic campaign bytes"
 
 
+def _bracket(at):
+    return (
+        ClockStamp(utc_ns=run._ns(at - timedelta(milliseconds=1)), monotonic_ns=1),
+        ClockStamp(
+            utc_ns=run._ns(at + timedelta(milliseconds=1)), monotonic_ns=2_000_001
+        ),
+    )
+
+
 def _setup(monkeypatch, root, *, failure=None):
     events = []
     repository = object.__new__(DevvalCampaignCustodyRepositoryV1)
@@ -69,6 +78,7 @@ def _setup(monkeypatch, root, *, failure=None):
         "108",
         OPEN if failure == "late" else OPEN - timedelta(minutes=2),
         "109",
+        _bracket(OPEN if failure == "late" else OPEN - timedelta(minutes=2)),
     )
 
     async def read(payload, **pins):
@@ -123,6 +133,7 @@ def _setup(monkeypatch, root, *, failure=None):
             OPEN - timedelta(seconds=31),
             OPEN - timedelta(seconds=30),
             "112",
+            _bracket(OPEN - timedelta(seconds=30)),
         )
         custody._OWNED_DISPATCHES[result] = custody._context()
         return result
@@ -281,6 +292,7 @@ async def test_slot_requires_owned_dispatch_and_exact_retained_root(tmp_path):
         OPEN - timedelta(seconds=31),
         OPEN - timedelta(seconds=30),
         "112",
+        _bracket(OPEN - timedelta(seconds=30)),
     )
     args = {
         "campaign_sha256": PIN,

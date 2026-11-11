@@ -329,3 +329,36 @@ async def test_collector_claim_requires_same_committed_ack_and_fresh_readback(
     if failure not in ("changed_ack", "unknown"):
         expected.append(custody._DISPATCH_READ)
     assert commands == expected
+
+
+@pytest.mark.asyncio
+async def test_archived_dispatch_observation_never_issues_owned_claim(
+    monkeypatch, campaign
+):
+    observed_at = START + timedelta(hours=5)
+    raw = {**_row(campaign, acknowledged=True), "database_read_at": observed_at}
+    pin = "f" * 64
+    archived = {
+        "campaign_sha256": campaign.sha256,
+        "root_binding_sha256": pin,
+        "collector_role_oid": COLLECTOR,
+        "dispatch_xid": "121",
+        "claimed_at": START - timedelta(seconds=30),
+        "database_read_at": observed_at,
+    }
+    repo, commands = _setup(
+        monkeypatch,
+        campaign,
+        role="collector",
+        outputs=((raw, COLLECTOR, "130"), (archived, COLLECTOR, "131")),
+    )
+    publication, claim = await repo.observe_dispatch(
+        campaign.payload, root_binding_sha256=pin, **_args(campaign)
+    )
+    assert publication.native_readback and claim.native_readback
+    assert claim.claimed_at < START < claim.database_read_at
+    assert commands == [custody._READ, custody._DISPATCH_READ]
+    with pytest.raises(
+        custody.DevvalCampaignCustodyError, match="dispatch_owner_required"
+    ):
+        custody._require_dispatch_claim(claim, campaign.sha256)

@@ -187,3 +187,26 @@ Any unresolved write, partial slot, clock discontinuity, or missed deadline
 stops the run. A restart leaves the original local and database claims intact.
 There is no writable restart path. The receipts record capture progress and
 grant no predictive or execution authority.
+
+### Completed campaign readback
+
+The v2 roster and dispatch documents retain the original local UTC and
+monotonic samples bracketing the database reads. A later database read
+confirms the immutable publication and dispatch fields. The original
+brackets still have to establish readback before the first Development
+minute opens.
+
+`replay_prospective_devval_campaign_v1` takes the separately retained final
+receipt SHA and source checkpoint. It verifies the roster, all directory
+identities, the block chain, and every minute's V6 evidence and decision.
+Each block's original journal is read against the final persisted witness,
+and retained source custody and post-read observations are independently
+read again. After the last database read, the verifier checks the retained
+minute evidence and journal bytes again. The result contains the original
+measured minutes, original partition cutoffs, and a deterministic row inventory
+digest. Development decisions must end strictly before Validation opens.
+
+An incomplete run keeps its evidence and cannot produce a completed replay.
+Readback neither issues another dispatch claim nor starts a new capture.
+Independent custody, trusted absolute UTC, evaluator first access, and
+predictive qualification remain separate acceptance requirements.
