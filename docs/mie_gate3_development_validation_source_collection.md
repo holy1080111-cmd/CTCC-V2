@@ -130,8 +130,7 @@ The declared Git commit and tree require verification against an exact source
 checkpoint. The campaign also requires separate pre-window publication and
 readback, original measured source evidence, and protected custody. The local
 manifest and caller digest grant no pre-window, predictive, or execution
-authority. This implementation adds no automatic dispatcher or writable
-resume. A partial slot stays unresolved.
+authority. Startup is explicit and a partial slot stays unresolved.
 
 ### Publication and committed observation
 
@@ -157,6 +156,34 @@ clock samples. An uncertain write is resolved through read-only observation.
 This records committed database ordering. Independent administration and
 trusted UTC need evidence from the actual deployment. The receipt carries
 no predictive or execution authority. The multi-root dispatcher must still
-bind the independent publication to the original collection roots before the
+bind the committed observation to the original collection roots before the
 first slot. The SQL integration fixture uses an explicitly selected isolated
 PostgreSQL lab and generated database and logins.
+
+### One-time campaign dispatch
+
+Apply `scripts/sql/gate3_devval_campaign_dispatch_claim_v1.sql` to the same
+evidence database after the publication schema. Give a third restricted
+collector login direct schema usage and execute access to
+`read_campaign(text)`, `claim_dispatch(text,text)`, and
+`read_dispatch_claim(text)`. That login has no publication or acknowledgement
+write rights. The immutable database claim allows one collector per campaign,
+even across different local directories.
+
+`run_prospective_devval_campaign_v1` starts explicitly before the first
+Development window. It requires a new private directory, the collector
+repository and the original witness, post-read and source-custody providers.
+It replays the committed acknowledgement, creates every block's separate
+journal, native and result directories, and binds their exact identities and
+genesis digests to one roster. The collector commits its roster digest and
+reads the claim in another transaction before the first window opens.
+
+The runner waits on the native clock and dispatches each exact slot in
+plan order through the original V6 owner. Each slot requires the database
+dispatch claim in the same task and verifies its retained receipt, roster,
+and result-directory identity. Local block and final receipts retain the
+ordered digests.
+Any unresolved write, partial slot, clock discontinuity, or missed deadline
+stops the run. A restart leaves the original local and database claims intact.
+There is no writable restart path. The receipts record capture progress and
+grant no predictive or execution authority.

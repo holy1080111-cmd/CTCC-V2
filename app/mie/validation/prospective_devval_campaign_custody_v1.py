@@ -8,6 +8,7 @@ import ssl
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import ClassVar, Literal, TypedDict, Unpack
+from weakref import WeakKeyDictionary
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
@@ -17,18 +18,23 @@ from app.database.repositories.public_runtime_bundle_custody import (
     _native_engine,
 )
 from app.domain.native_clock import native_stamp
-from app.domain.source_primitives import validate_stamps
+from app.domain.source_primitives import canonical, validate_stamps
+from app.mie.validation.development_validation_source_collection_v1 import _context
 from app.mie.validation.prospective_development_validation_plan import _ns
 from app.mie.validation.prospective_devval_campaign_plan_v1 import (
     ProspectiveDevvalCampaignManifestV1,
     verify_prospective_devval_campaign_v1,
 )
 
-_ROLE = Literal["publisher", "observer"]
+_ROLE = Literal["publisher", "observer", "collector"]
 _XID = re.compile(r"[1-9][0-9]{0,19}")
+_PIN = re.compile(r"[a-f0-9]{64}")
 _READ = text("SELECT * FROM ctcc_devval_custody.read_campaign(:sha)")
 _PUBLISH = text("SELECT ctcc_devval_custody.publish_campaign(:sha, :payload)")
 _ACK = text("SELECT ctcc_devval_custody.acknowledge_campaign(:sha)")
+_DISPATCH_CLAIM = text("SELECT ctcc_devval_custody.claim_dispatch(:sha, :binding)")
+_DISPATCH_READ = text("SELECT * FROM ctcc_devval_custody.read_dispatch_claim(:sha)")
+_OWNED_DISPATCHES = WeakKeyDictionary()
 _SESSION = text("""
     SELECT d.oid::bigint AS database_oid, r.oid::bigint AS login_oid,
            SESSION_USER::text AS login_name,
@@ -94,6 +100,58 @@ class DevvalCampaignPublicationV1:
     trusted_clock_verified: ClassVar[Literal[False]] = False
     predictive_oos_eligible: ClassVar[Literal[False]] = False
     execution_authority: ClassVar[Literal[False]] = False
+
+
+@dataclass(frozen=True, slots=True, eq=False, weakref_slot=True)
+class DevvalCampaignDispatchClaimV1:
+    campaign_sha256: str
+    root_binding_sha256: str
+    collector_role_oid: int
+    dispatch_xid: str
+    claimed_at: datetime
+    database_read_at: datetime
+    readback_xid: str
+
+
+def _require_dispatch_claim(claim, campaign_sha256):
+    if (
+        type(claim) is not DevvalCampaignDispatchClaimV1
+        or _OWNED_DISPATCHES.get(claim) != _context()
+        or claim.campaign_sha256 != campaign_sha256
+    ):
+        raise DevvalCampaignCustodyError("devval_custody_dispatch_owner_required")
+
+
+def _dispatch_document(claim: DevvalCampaignDispatchClaimV1) -> bytes:
+    return canonical(
+        {
+            "schema": "ctcc.mie.devval_campaign_dispatch.v1",
+            "campaign_sha256": claim.campaign_sha256,
+            "root_binding_sha256": claim.root_binding_sha256,
+            "collector_role_oid": claim.collector_role_oid,
+            "dispatch_xid": claim.dispatch_xid,
+            "claimed_at": claim.claimed_at.isoformat(),
+            "database_read_at": claim.database_read_at.isoformat(),
+            "readback_xid": claim.readback_xid,
+            "predictive_oos_eligible": False,
+            "execution_authority": False,
+        }
+    )
+
+
+def _publication_identity(publication: DevvalCampaignPublicationV1) -> tuple:
+    return (
+        publication.campaign_sha256,
+        publication.plan_sha256,
+        publication.campaign_id,
+        publication.database_oid,
+        publication.recorded_at,
+        publication.publisher_role_oid,
+        publication.publication_xid,
+        publication.acknowledged_at,
+        publication.observer_role_oid,
+        publication.acknowledgement_xid,
+    )
 
 
 def _oid(value) -> bool:
@@ -182,10 +240,11 @@ class DevvalCampaignCustodyRepositoryV1:
         expected_database_oid: int,
         expected_login_oid: int,
         expected_publisher_role_oid: int,
+        expected_observer_role_oid: int | None = None,
     ):
         if (
             type(role) is not str
-            or role not in ("publisher", "observer")
+            or role not in ("publisher", "observer", "collector")
             or any(
                 type(value) is not str or not value for value in (host, database, login)
             )
@@ -196,6 +255,14 @@ class DevvalCampaignCustodyRepositoryV1:
             or not _oid(expected_publisher_role_oid)
             or (expected_login_oid == expected_publisher_role_oid)
             != (role == "publisher")
+            or (
+                role == "collector"
+                and (
+                    not _oid(expected_observer_role_oid)
+                    or expected_observer_role_oid
+                    in (expected_login_oid, expected_publisher_role_oid)
+                )
+            )
             or type(session_factory) is not async_sessionmaker
             or session_factory.class_ is not AsyncSession
             or not set(session_factory.kw) <= {"bind", "autoflush", "expire_on_commit"}
@@ -207,6 +274,7 @@ class DevvalCampaignCustodyRepositoryV1:
         self._database_oid = expected_database_oid
         self._login_oid = expected_login_oid
         self._publisher_oid = expected_publisher_role_oid
+        self._observer_oid = expected_observer_role_oid
         self._engine = session_factory.kw.get("bind")
         self._require_native_engine()
         self._factory = async_sessionmaker(
@@ -258,7 +326,11 @@ class DevvalCampaignCustodyRepositoryV1:
                 )
                 before = native_stamp()
                 result = await session.execute(statement, parameters)
-                row = result.mappings().one_or_none() if statement is _READ else None
+                row = (
+                    result.mappings().one_or_none()
+                    if statement is _READ or statement is _DISPATCH_READ
+                    else None
+                )
                 after = native_stamp()
                 stamps = validate_stamps((before, after))
                 self._require_native_engine()
@@ -325,7 +397,7 @@ class DevvalCampaignCustodyRepositoryV1:
         **source_checkpoint: Unpack[_SourceCheckpoint],
     ) -> DevvalCampaignPublicationV1:
         """Read-only resolution with no write or qualification side effect."""
-        if self._role != "observer":
+        if self._role not in ("observer", "collector"):
             raise DevvalCampaignCustodyError("devval_custody_wrong_login_role")
         campaign = self._manifest(
             payload,
@@ -333,7 +405,94 @@ class DevvalCampaignCustodyRepositoryV1:
             **source_checkpoint,
         )
         result, _ = await self._read(campaign, payload, expected_campaign_sha256)
+        if self._role == "collector" and result.observer_role_oid != self._observer_oid:
+            raise DevvalCampaignCustodyError("devval_custody_observer_changed")
         return result
+
+    async def claim_dispatch(
+        self,
+        payload: bytes,
+        *,
+        expected_campaign_sha256: str,
+        root_binding_sha256: str,
+        expected_publication: DevvalCampaignPublicationV1,
+        **source_checkpoint: Unpack[_SourceCheckpoint],
+    ) -> DevvalCampaignDispatchClaimV1:
+        """Bind one collector and root inventory, then read the committed claim."""
+        if self._role != "collector":
+            raise DevvalCampaignCustodyError("devval_custody_wrong_login_role")
+        if (
+            type(root_binding_sha256) is not str
+            or _PIN.fullmatch(root_binding_sha256) is None
+            or type(expected_publication) is not DevvalCampaignPublicationV1
+        ):
+            raise DevvalCampaignCustodyError("devval_custody_dispatch_binding_invalid")
+        campaign = self._manifest(
+            payload,
+            expected_campaign_sha256=expected_campaign_sha256,
+            **source_checkpoint,
+        )
+        first_open = campaign.plan.development.start_at
+        publication, preflight = await self._read(
+            campaign, payload, expected_campaign_sha256
+        )
+        if (
+            _publication_identity(publication)
+            != _publication_identity(expected_publication)
+            or publication.observer_role_oid != self._observer_oid
+            or publication.acknowledged_at is None
+            or publication.database_read_at >= first_open
+            or native_stamp()["utc_ns"] >= _ns(first_open)
+        ):
+            raise DevvalCampaignCustodyError("devval_custody_dispatch_not_admitted")
+        _, written, _ = await self._transaction(
+            _DISPATCH_CLAIM,
+            {"sha": expected_campaign_sha256, "binding": root_binding_sha256},
+        )
+        row, reader, stamps = await self._transaction(
+            _DISPATCH_READ, {"sha": expected_campaign_sha256}
+        )
+        if row is None:
+            raise DevvalCampaignCustodyError("devval_custody_dispatch_unresolved")
+        try:
+            claimed, observed = _utc(row["claimed_at"]), _utc(row["database_read_at"])
+            if (
+                row["campaign_sha256"] != expected_campaign_sha256
+                or row["root_binding_sha256"] != root_binding_sha256
+                or row["collector_role_oid"] != self._login_oid
+                or row["dispatch_xid"] != written.xid
+                or len(
+                    {
+                        preflight.xid,
+                        written.xid,
+                        reader.xid,
+                        publication.publication_xid,
+                        publication.acknowledgement_xid,
+                    }
+                )
+                != 5
+                or not publication.database_read_at <= claimed <= observed < first_open
+                or not stamps[0].utc_ns <= _ns(observed) <= stamps[1].utc_ns
+                or native_stamp()["utc_ns"] >= _ns(first_open)
+            ):
+                raise DevvalCampaignCustodyError("devval_custody_dispatch_unresolved")
+        except DevvalCampaignCustodyError:
+            raise
+        except Exception:  # noqa: BLE001 - Invalid database results stay private.
+            raise DevvalCampaignCustodyError(
+                "devval_custody_dispatch_unresolved"
+            ) from None
+        claim = DevvalCampaignDispatchClaimV1(
+            expected_campaign_sha256,
+            root_binding_sha256,
+            self._login_oid,
+            written.xid,
+            claimed,
+            observed,
+            reader.xid,
+        )
+        _OWNED_DISPATCHES[claim] = _context()
+        return claim
 
     async def publish(
         self,

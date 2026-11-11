@@ -19,7 +19,11 @@ from app.mie.validation.prospective_devval_campaign_plan_v1 import (
     verify_prospective_devval_campaign_v1,
 )
 from app.public_market_source.public_market_receipts import MINUTE_NS
-from tests.unit.mie.test_prospective_devval_slot_v6 import ORIGINAL, scenario
+from tests.unit.mie.test_prospective_devval_slot_v6 import (
+    DISPATCH_RECEIPT,
+    ORIGINAL,
+    scenario,
+)
 
 START = datetime(2030, 1, 1, tzinfo=UTC)
 DEV_END = START + timedelta(hours=84)
@@ -184,6 +188,7 @@ async def test_campaign_slot_reuses_native_one_use_receipt_and_binds_parent(
     assert original == ORIGINAL and sha((root / "receipt.json").read_bytes()) == receipt
     assert claim["campaign_manifest_sha256"] == campaign.sha256
     assert claim["campaign_block_ordinal"] == 84
+    assert claim["campaign_dispatch_receipt_sha256"] == DISPATCH_RECEIPT
     assert "pilot_sha256" not in claim
     assert calls[:3] == ["capture", "consume", "replay"]
 

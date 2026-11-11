@@ -24,6 +24,7 @@ EVIDENCE = "c" * 64
 BUNDLE = "d" * 64
 CLAIM = "e" * 64
 JOURNAL = "f" * 64
+DISPATCH_RECEIPT = "8" * 64
 SECOND = 1_000_000_000
 SLOT0 = "slot-00000000"
 
@@ -56,16 +57,27 @@ def scenario(monkeypatch, root, *, ordinal=0, clock_delay=0, mode=None, campaign
             expected_campaign_sha256=artifact.sha256,
             block_ordinal=block,
         )
+        dispatch_claim = object()
         plan_args = {
             "campaign_payload": artifact.payload,
             "expected_campaign_sha256": artifact.sha256,
             "block_ordinal": block,
+            "dispatch_claim": dispatch_claim,
         }
         plan_binding = {
             "campaign_manifest_sha256": artifact.sha256,
             "campaign_block_ordinal": block,
+            "campaign_dispatch_receipt_sha256": DISPATCH_RECEIPT,
         }
         inventory = (manifest.plan.manifest_sha256, "synthetic")
+
+        def require_dispatch(claim, pin):
+            assert claim is dispatch_claim and pin == artifact.sha256
+
+        monkeypatch.setattr(slot, "_require_dispatch_claim", require_dispatch)
+        monkeypatch.setattr(
+            slot, "_dispatch_slot_pin", lambda *args, **kwargs: DISPATCH_RECEIPT
+        )
     capture_plan = plan.coordinates[ordinal].capture_plan
     close = capture_plan.end_ns
     identity = SimpleNamespace(

@@ -26,10 +26,13 @@ _SQL = (
     Path(__file__).resolve().parents[2]
     / "scripts/sql/gate3_devval_campaign_custody_v1.sql"
 )
+_DISPATCH_SQL = _SQL.with_name("gate3_devval_campaign_dispatch_claim_v1.sql")
 _SCHEMA = "ctcc_devval_custody"
 _PUBLISH = text("SELECT ctcc_devval_custody.publish_campaign(:sha, :payload)")
 _ACK = text("SELECT ctcc_devval_custody.acknowledge_campaign(:sha)")
 _READ = text("SELECT * FROM ctcc_devval_custody.read_campaign(:sha)")
+_CLAIM = text("SELECT ctcc_devval_custody.claim_dispatch(:sha,:binding)")
+_CLAIM_READ = text("SELECT * FROM ctcc_devval_custody.read_dispatch_claim(:sha)")
 
 
 @pytest.fixture
@@ -51,6 +54,7 @@ async def evidence_db():
     database = f"ctcc_dv_{nonce}"
     publisher = f"ctcc_dvp_{nonce}"
     observer = f"ctcc_dvo_{nonce}"
+    collector = f"ctcc_dvc_{nonce}"
     admin = create_async_engine(url, poolclass=NullPool)
     database_created = False
     roles_created = False
@@ -63,6 +67,7 @@ async def evidence_db():
         async with admin.begin() as connection:
             await connection.execute(text(f"CREATE ROLE {publisher} LOGIN"))
             await connection.execute(text(f"CREATE ROLE {observer} LOGIN"))
+            await connection.execute(text(f"CREATE ROLE {collector} LOGIN"))
         roles_created = True
         db_url = url.set(database=database)
         owner = create_async_engine(db_url, poolclass=NullPool)
@@ -72,19 +77,27 @@ async def evidence_db():
             await connection_raw.driver_connection.execute(
                 _SQL.read_text(encoding="utf-8")
             )
+            await connection_raw.driver_connection.execute(
+                _DISPATCH_SQL.read_text(encoding="utf-8")
+            )
         async with owner.begin() as connection:
             await connection.execute(
-                text(f"GRANT USAGE ON SCHEMA {_SCHEMA} TO {publisher}, {observer}")
+                text(
+                    f"GRANT USAGE ON SCHEMA {_SCHEMA} TO {publisher}, {observer}, {collector}"
+                )
             )
             for function, actor in (
                 ("publish_campaign(text,text)", publisher),
                 ("acknowledge_campaign(text)", observer),
                 ("read_campaign(text)", observer),
+                ("read_campaign(text)", collector),
+                ("claim_dispatch(text,text)", collector),
+                ("read_dispatch_claim(text)", collector),
             ):
                 await connection.execute(
                     text(f"GRANT EXECUTE ON FUNCTION {_SCHEMA}.{function} TO {actor}")
                 )
-        for actor in (publisher, observer):
+        for actor in (publisher, observer, collector):
             engines.append(
                 create_async_engine(db_url.set(username=actor), poolclass=NullPool)
             )
@@ -98,7 +111,9 @@ async def evidence_db():
                 await connection.execute(text(f"DROP DATABASE {database}"))
         if roles_created:
             async with admin.begin() as connection:
-                await connection.execute(text(f"DROP ROLE {publisher}, {observer}"))
+                await connection.execute(
+                    text(f"DROP ROLE {publisher}, {observer}, {collector}")
+                )
         await admin.dispose()
 
 
@@ -136,7 +151,7 @@ def scheduled_campaign():
 async def test_sql_observer_reads_only_committed_campaign_and_seals_ack(
     evidence_db, scheduled_campaign
 ):
-    _, publisher, observer = evidence_db
+    _, publisher, observer, _ = evidence_db
     pin = {"sha": scheduled_campaign.sha256}
     payload = scheduled_campaign.payload.decode()
     async with publisher.begin() as write:
@@ -181,7 +196,7 @@ async def test_sql_observer_reads_only_committed_campaign_and_seals_ack(
 async def test_sql_custody_rejects_cross_role_and_owner_mutations(
     evidence_db, scheduled_campaign
 ):
-    owner, publisher, observer = evidence_db
+    owner, publisher, observer, _ = evidence_db
     pin = {"sha": scheduled_campaign.sha256}
     payload = scheduled_campaign.payload.decode()
     for engine, query, parameters in (
@@ -210,3 +225,36 @@ async def test_sql_custody_rejects_cross_role_and_owner_mutations(
             with pytest.raises(DBAPIError, match="immutable"):
                 async with owner.begin() as connection:
                     await connection.execute(text(query))
+
+
+async def test_sql_campaign_dispatch_has_one_committed_collector_root(
+    evidence_db, scheduled_campaign
+):
+    _, publisher, observer, collector = evidence_db
+    pin = {"sha": scheduled_campaign.sha256}
+    binding = {**pin, "binding": "4" * 64}
+    async with publisher.begin() as write:
+        await write.execute(
+            _PUBLISH, {**pin, "payload": scheduled_campaign.payload.decode()}
+        )
+    with pytest.raises(DBAPIError):
+        async with collector.begin() as write:
+            await write.execute(_CLAIM, binding)
+    async with observer.begin() as write:
+        await write.execute(_ACK, pin)
+    with pytest.raises(DBAPIError):
+        async with observer.begin() as wrong_role:
+            await wrong_role.execute(_CLAIM, binding)
+    async with collector.begin() as write:
+        xid = await write.scalar(text("SELECT pg_current_xact_id()::text"))
+        await write.execute(_CLAIM, binding)
+        async with collector.begin() as read:
+            assert (await read.execute(_CLAIM_READ, pin)).one_or_none() is None
+    async with collector.begin() as read:
+        result = (await read.execute(_CLAIM_READ, pin)).mappings().one()
+    assert result["root_binding_sha256"] == binding["binding"]
+    assert result["dispatch_xid"] == xid
+    assert result["claimed_at"] <= result["database_read_at"]
+    with pytest.raises(DBAPIError):
+        async with collector.begin() as duplicate:
+            await duplicate.execute(_CLAIM, {**pin, "binding": "5" * 64})

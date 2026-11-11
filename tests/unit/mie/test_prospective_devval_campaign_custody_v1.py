@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ssl
+from dataclasses import replace
 from datetime import timedelta
 
 import pytest
@@ -21,6 +22,7 @@ from tests.unit.mie.test_prospective_devval_campaign_plan_v1 import START, plan_
 DB = 81
 PUBLISHER = 82
 OBSERVER = 83
+COLLECTOR = 84
 SOURCE_CHECKPOINT = {
     "expected_source_commit": "a" * 40,
     "expected_source_tree": "b" * 40,
@@ -98,6 +100,8 @@ def _setup(monkeypatch, campaign, *, role, outputs):
     repo = object.__new__(custody.DevvalCampaignCustodyRepositoryV1)
     repo._role = role
     repo._publisher_oid = PUBLISHER
+    repo._observer_oid = OBSERVER
+    repo._login_oid = COLLECTOR if role == "collector" else OBSERVER
     commands = []
     iterator = iter(outputs)
 
@@ -272,3 +276,56 @@ def test_clock_bracket_refuses_future_server_observation(campaign):
             transaction=custody._Transaction(DB, OBSERVER, "112"),
             stamps=(first, last),
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [None, "changed_ack", "unknown", "same_xid"])
+async def test_collector_claim_requires_same_committed_ack_and_fresh_readback(
+    failure, monkeypatch, campaign
+):
+    raw = _row(campaign, acknowledged=True)
+    root_pin = "e" * 64
+    dispatch_row = {
+        "campaign_sha256": campaign.sha256,
+        "root_binding_sha256": root_pin,
+        "collector_role_oid": COLLECTOR,
+        "dispatch_xid": "121",
+        "claimed_at": START - timedelta(seconds=50),
+        "database_read_at": START - timedelta(seconds=49),
+    }
+    result = (dispatch_row, COLLECTOR, "121" if failure == "same_xid" else "122")
+    repo, commands = _setup(
+        monkeypatch,
+        campaign,
+        role="collector",
+        outputs=(
+            (raw, COLLECTOR, "119"),
+            (raw, COLLECTOR, "120"),
+            custody.DevvalCampaignCustodyError("devval_custody_transaction_unresolved")
+            if failure == "unknown"
+            else (None, COLLECTOR, "121"),
+            result,
+        ),
+    )
+    publication = await repo.read(campaign.payload, **_args(campaign))
+    if failure == "changed_ack":
+        publication = replace(publication, acknowledgement_xid="900")
+    call = repo.claim_dispatch(
+        campaign.payload,
+        root_binding_sha256=root_pin,
+        expected_publication=publication,
+        **_args(campaign),
+    )
+    if failure is None:
+        claim = await call
+        assert claim.root_binding_sha256 == root_pin
+        assert claim.dispatch_xid == "121" and claim.readback_xid == "122"
+    else:
+        with pytest.raises(custody.DevvalCampaignCustodyError):
+            await call
+    expected = [custody._READ, custody._READ]
+    if failure != "changed_ack":
+        expected.append(custody._DISPATCH_CLAIM)
+    if failure not in ("changed_ack", "unknown"):
+        expected.append(custody._DISPATCH_READ)
+    assert commands == expected

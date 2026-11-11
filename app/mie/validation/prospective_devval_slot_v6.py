@@ -15,6 +15,7 @@ from app.mie.validation.development_validation_source_collection_v1 import (
     _context,
     _pin,
     _root_context,
+    _root_identity,
 )
 from app.mie.validation.post_publication_availability_v4 import utc_nanoseconds
 from app.mie.validation.post_publication_availability_v6 import (
@@ -24,6 +25,11 @@ from app.mie.validation.post_publication_availability_v6 import (
 from app.mie.validation.prospective_development_validation_plan import (
     build_prospective_devval_source_plan,
 )
+from app.mie.validation.prospective_devval_campaign_custody_v1 import (
+    DevvalCampaignDispatchClaimV1,
+    _dispatch_document,
+    _require_dispatch_claim,
+)
 from app.mie.validation.prospective_devval_campaign_plan_v1 import (
     resolve_prospective_devval_campaign_block_v1,
 )
@@ -32,6 +38,7 @@ _SLOT_FILES = {"claim.json", "decision.json", "receipt.json"}
 _MAX_SLOT_FILE = 16 * 1024
 _MAX_EVIDENCE_BASE64 = 4 * 1024 * 1024
 _READBACK_WINDOW_NS = 60_000_000_000
+_DISPATCH_ROSTER_MAX = 1024 * 1024
 _RECEIPT_SCHEMA = "ctcc.mie.devval_slot_readback.v6"
 _RECEIPT_FIELDS = {
     "schema",
@@ -175,6 +182,43 @@ def _check_original(data, coordinate, capture_started, deadline):
     return decision, public_readback_ns
 
 
+def _dispatch_slot_pin(
+    claim,
+    *,
+    campaign_sha256,
+    block_ordinal,
+    plan_sha256,
+    collection_sha256,
+    result_root,
+) -> str:
+    _require_dispatch_claim(claim, campaign_sha256)
+    block_name = f"block-{block_ordinal:04d}"
+    if result_root.name != "slots" or result_root.parent.name != block_name:
+        raise ProspectiveDevvalSlotError("devval_slot_dispatch_root_changed")
+    root = result_root.parent.parent
+    expected = _dispatch_document(claim)
+    with _root_context(root) as directory:
+        binding = directory.read("roots.json", _DISPATCH_ROSTER_MAX)
+        if (
+            sha(binding) != claim.root_binding_sha256
+            or directory.read("dispatch.json", _MAX_SLOT_FILE) != expected
+        ):
+            raise ProspectiveDevvalSlotError("devval_slot_dispatch_binding_changed")
+        roster = decode(binding, _DISPATCH_ROSTER_MAX)
+        block = roster["blocks"][block_ordinal]
+        with directory.child(block_name) as block_dir, block_dir.child("slots"):
+            if (
+                roster["root_identity"] != list(_root_identity(root))
+                or block["block"] != block_name
+                or block["source_plan_sha256"] != plan_sha256
+                or block["collection_identity_sha256"] != collection_sha256
+                or block["directory_identities"]["slots"]
+                != list(_root_identity(result_root))
+            ):
+                raise ProspectiveDevvalSlotError("devval_slot_dispatch_root_changed")
+    return sha(expected)
+
+
 async def capture_prospective_devval_slot_v6(
     *,
     owner: collection.DevelopmentValidationAvailabilityOwnerV6,
@@ -196,6 +240,7 @@ async def capture_prospective_devval_slot_v6(
         plan_payload=pilot_payload,
         expected_plan_sha256=expected_pilot_sha256,
         campaign_block=None,
+        dispatch_claim=None,
         expected_collection_identity_sha256=expected_collection_identity_sha256,
         result_root=result_root,
         ordinal=ordinal,
@@ -213,15 +258,18 @@ async def capture_prospective_devval_campaign_slot_v6(
     result_root: Path,
     ordinal: int,
     prior_receipts: tuple[tuple[str, str], ...],
+    dispatch_claim: DevvalCampaignDispatchClaimV1,
 ) -> tuple[str, str]:
     """Collect one due campaign minute with the original V6 owner and deadline."""
     if type(block_ordinal) is not int:
         raise ProspectiveDevvalSlotError("devval_slot_campaign_block_invalid")
+    _require_dispatch_claim(dispatch_claim, expected_campaign_sha256)
     return await _capture_slot(
         owner=owner,
         plan_payload=campaign_payload,
         expected_plan_sha256=expected_campaign_sha256,
         campaign_block=block_ordinal,
+        dispatch_claim=dispatch_claim,
         expected_collection_identity_sha256=expected_collection_identity_sha256,
         result_root=result_root,
         ordinal=ordinal,
@@ -235,6 +283,7 @@ async def _capture_slot(
     plan_payload,
     expected_plan_sha256,
     campaign_block,
+    dispatch_claim,
     expected_collection_identity_sha256,
     result_root,
     ordinal,
@@ -302,6 +351,15 @@ async def _capture_slot(
             ):
                 raise ProspectiveDevvalSlotError("devval_slot_root_overlaps_source")
         coordinate = plan.coordinates[ordinal]
+        if campaign_block is not None:
+            plan_binding["campaign_dispatch_receipt_sha256"] = _dispatch_slot_pin(
+                dispatch_claim,
+                campaign_sha256=expected_plan_sha256,
+                block_ordinal=campaign_block,
+                plan_sha256=plan_pin,
+                collection_sha256=collection_pin,
+                result_root=result_root,
+            )
         close = coordinate.capture_plan.end_ns
         deadline = close + _READBACK_WINDOW_NS
         base = {
