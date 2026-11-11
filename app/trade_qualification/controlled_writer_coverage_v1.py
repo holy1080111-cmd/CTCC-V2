@@ -303,7 +303,8 @@ def _source_material(held, replay):
     identity = receipt["identity"]
     counts = receipt["inventory_row_counts"]
     if (
-        receipt["policy_sha256"] != current.V7_POLICY_SHA256
+        replay.source_policy_sha256 != account.POLICY_SHA256
+        or receipt["policy_sha256"] != current.V7_POLICY_SHA256
         or receipt["blocking_reasons"] != []
         or receipt["observed_inventory_state"] != "observed_empty_supported_queries"
         or receipt["observed_flat"] is not True

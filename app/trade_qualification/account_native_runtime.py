@@ -917,6 +917,7 @@ async def _capture_initial_current(
     *,
     _exposure_sink=None,
     _v7_diagnostic_sink=None,
+    _v7_diagnostic_9549_only=False,
 ):
     """Only an active exact initial issuer reaches this actual acquisition."""
     state = native._state(stage)
@@ -975,10 +976,13 @@ async def _capture_initial_current(
                 )
             )
         elif _v7_diagnostic_sink is not None:
-            proof_schema, proof_policy_sha256 = (
-                proof.contract_for_v7_9549_diagnostic_owned_before(
-                    selected, files["host-before.json"]
-                )
+            selector = (
+                proof.contract_for_v7_9549_diagnostic_owned_before
+                if _v7_diagnostic_9549_only
+                else proof.contract_for_v7_diagnostic_owned_before
+            )
+            proof_schema, proof_policy_sha256 = selector(
+                selected, files["host-before.json"]
             )
         files["exchange-plan.json"] = plan.canonical_bytes()
         _secret_checked(files["exchange-plan.json"], before_tokens)
@@ -1137,8 +1141,9 @@ async def _capture_initial_current(
     ):
         raise proof.NativeAccountProofError("native_account_source_expired")
     if _v7_diagnostic_sink is not None:
-        if proof_schema != proof.V7_9549_DIAGNOSTIC_SCHEMA or replay.packet != packet:
+        if proof_schema not in proof.V7_DIAGNOSTIC_SCHEMAS or replay.packet != packet:
             raise proof.NativeAccountProofError("native_account_v7_diagnostic_invalid")
+        current_windows_profile = proof_schema == proof.V7_9818_DIAGNOSTIC_SCHEMA
         at = utc_from_ns(issue["utc_ns"])
         gateway_audit = gateway.audit_recorded_demo_account_gateway_causality(
             chain=chain,
@@ -1176,9 +1181,17 @@ async def _capture_initial_current(
         counts = current_source["inventory_row_counts"]
         receipt = canonical(
             {
-                "schema_version": "ctcc.initial_native_v7_chronology_diagnostic.w32tm_9549.v1",
+                "schema_version": (
+                    "ctcc.initial_native_v7_chronology_diagnostic.w32tm_9818.v1"
+                    if current_windows_profile
+                    else "ctcc.initial_native_v7_chronology_diagnostic.w32tm_9549.v1"
+                ),
                 "policy_sha256": proof_policy_sha256,
-                "native_clock_profile_id": proof.public_clock.UPDATED_PROFILE_ID,
+                "native_clock_profile_id": (
+                    proof.public_clock.WINDOWS_9818_PROFILE_ID
+                    if current_windows_profile
+                    else proof.public_clock.UPDATED_PROFILE_ID
+                ),
                 "scope_sha256": proof.scope_sha256(scope),
                 "original_source_reference_sha256": sha(
                     canonical(observed.reference_document(reference))
@@ -1717,6 +1730,7 @@ async def capture_native_v7_9549_chronology_diagnostic(
                 session_factory,
                 proof_root,
                 _v7_diagnostic_sink=observations,
+                _v7_diagnostic_9549_only=True,
             )
             if (
                 type(result) is not InitialNativeAccountDiagnostic

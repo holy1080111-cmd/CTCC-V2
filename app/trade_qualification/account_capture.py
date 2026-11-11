@@ -337,9 +337,13 @@ def _bounded_api(function):
 
 
 def _utc(value):
-    if type(value) is not datetime or not any(
-        type(value.tzinfo) is trusted for trusted in (timezone, ZoneInfo, TzInfo)
-    ):
+    if type(value) is not datetime:
+        _fail("clock_invalid")
+    tz = value.tzinfo
+    if tz is UTC:
+        return value
+    tz_type = type(tz)
+    if tz_type is not timezone and tz_type is not ZoneInfo and tz_type is not TzInfo:
         _fail("clock_invalid")
     return value.astimezone(UTC)
 
@@ -708,28 +712,7 @@ def _guard(value, depth=0, budget=None):
     if depth > 20 or budget[0] < 0:
         _fail("record_traversal_limit")
     kind = type(value)
-    is_model = False
-    for model in _MODELS:
-        if kind is model:
-            is_model = True
-            break
-    if is_model:
-        raw = value.__dict__
-        extra = value.__pydantic_extra__
-        private = value.__pydantic_private__
-        if (
-            type(raw) is not dict
-            or any(type(key) is not str for key in raw)
-            or set(raw) != set(kind.model_fields)
-            or (extra is not None and (type(extra) is not dict or len(extra) != 0))
-            or (
-                private is not None and (type(private) is not dict or len(private) != 0)
-            )
-        ):
-            _fail("record_fields_invalid")
-        for item in raw.values():
-            _guard(item, depth + 1, budget)
-    elif kind is tuple:
+    if kind is tuple:
         if len(value) > 8192:
             _fail("record_sequence_limit")
         for item in value:
@@ -754,16 +737,46 @@ def _guard(value, depth=0, budget=None):
         if abs(value) > MAX_PACKET_BYTES:
             _fail("record_integer_limit")
     elif value is not None and kind is not bool:
-        _fail("record_scalar_invalid")
+        for model in _MODELS:
+            if kind is model:
+                break
+        else:
+            _fail("record_scalar_invalid")
+        raw = value.__dict__
+        extra = value.__pydantic_extra__
+        private = value.__pydantic_private__
+        fields = kind.model_fields
+        if (
+            type(raw) is not dict
+            or len(raw) != len(fields)
+            or any(type(key) is not str or key not in fields for key in raw)
+            or (extra is not None and (type(extra) is not dict or len(extra) != 0))
+            or (
+                private is not None and (type(private) is not dict or len(private) != 0)
+            )
+        ):
+            _fail("record_fields_invalid")
+        for item in raw.values():
+            _guard(item, depth + 1, budget)
 
 
 def _plain(value):
     kind = type(value)
+    if kind is tuple:
+        return tuple(_plain(item) for item in value)
+    if (
+        kind is str
+        or kind is bytes
+        or kind is datetime
+        or kind is Decimal
+        or kind is int
+        or kind is bool
+        or value is None
+    ):
+        return value
     for model in _MODELS:
         if kind is model:
             return {key: _plain(item) for key, item in value.__dict__.items()}
-    if kind is tuple:
-        return tuple(_plain(item) for item in value)
     return value
 
 
@@ -779,9 +792,6 @@ def _copy(value, expected):
 
 def _json_value(value):
     kind = type(value)
-    for model in _MODELS:
-        if kind is model:
-            return {key: _json_value(item) for key, item in value.__dict__.items()}
     if kind is dict:
         return {key: _json_value(item) for key, item in value.items()}
     if kind is tuple:
@@ -792,6 +802,11 @@ def _json_value(value):
         return _utc(value).isoformat()
     if kind is Decimal:
         return str(value)
+    if kind is str or kind is int or kind is bool or value is None:
+        return value
+    for model in _MODELS:
+        if kind is model:
+            return {key: _json_value(item) for key, item in value.__dict__.items()}
     return value
 
 
@@ -1023,7 +1038,7 @@ def _json_tree(
                 item,
                 wire=wire,
                 allow_instrument_code=allow_instrument_code,
-                path=(*path, key),
+                path=(*path, key) if wire and allow_instrument_code else (),
                 depth=depth + 1,
                 budget=budget,
             )
@@ -1035,7 +1050,7 @@ def _json_tree(
                 item,
                 wire=wire,
                 allow_instrument_code=allow_instrument_code,
-                path=(*path, None),
+                path=(*path, None) if wire and allow_instrument_code else (),
                 depth=depth + 1,
                 budget=budget,
             )

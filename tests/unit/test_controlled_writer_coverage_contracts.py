@@ -30,6 +30,8 @@ from tests.controlled_writer_coverage_fixtures import (
 @pytest.fixture
 def synthetic_io(monkeypatch, tmp_path):
     """Replace fixed I/O only. Never expose a fixture-made live binding/owner."""
+    # Initialize the lazy write guard before replacing its clock dependency.
+    coverage._guard_denials()
     io = SimpleNamespace(
         tick=0,
         offset_ns=0,
@@ -598,6 +600,7 @@ def test_forged_objects_without_live_registry_never_issue_authority(forged):
         "blocked",
         "different_main_uid",
         "old_policy",
+        "new_source_policy",
     ],
 )
 def test_original_current_inventory_fields_cannot_be_filled_or_coerced(defect):
@@ -630,17 +633,27 @@ def test_original_current_inventory_fields_cannot_be_filled_or_coerced(defect):
         document["blocking_reasons"] = ["incomplete"]
     elif defect == "different_main_uid":
         identity["main_uid"] = "999"
-    else:
+    elif defect == "old_policy":
         document["policy_sha256"] = "0" * 64
     native = canonical({"stage": {"started": {"utc_ns": 1, "monotonic_ns": 1}}})
     held = {"bundle_raw": canonical({"native_proof_hex": native.hex()})}
     replay = SimpleNamespace(
         current_receipt_json=canonical(document),
+        source_policy_sha256=(
+            coverage.account.WINDOWS_9818_POLICY_SHA256
+            if defect == "new_source_policy"
+            else coverage.account.POLICY_SHA256
+        ),
         packet=SimpleNamespace(
             plan=SimpleNamespace(expected_uid="730048", expected_main_uid="730048")
         ),
     )
-    with pytest.raises(coverage.ControlledWriterCoverageError):
+    expected = (
+        "controlled_writer_coverage_current_inventory_incomplete"
+        if defect == "new_source_policy"
+        else None
+    )
+    with pytest.raises(coverage.ControlledWriterCoverageError, match=expected):
         coverage._source_material(held, replay)
 
 

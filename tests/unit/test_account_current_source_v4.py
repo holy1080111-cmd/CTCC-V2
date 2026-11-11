@@ -48,7 +48,15 @@ from tests.unit.test_qualification_account_collector import (
 
 
 @contextmanager
-def setup(monkeypatch, tmp_path, *, exposed=False, anchor="fresh", echo=None):
+def setup(
+    monkeypatch,
+    tmp_path,
+    *,
+    exposed=False,
+    anchor="fresh",
+    echo=None,
+    profile_id=proof.public_clock.UPDATED_PROFILE_ID,
+):
     holder = {}
     native_client_factory = route.collector._new_client
 
@@ -105,9 +113,7 @@ def setup(monkeypatch, tmp_path, *, exposed=False, anchor="fresh", echo=None):
         monkeypatch.setattr(
             native.clock,
             "native_os_clock",
-            lambda: synthetic_host(
-                samples, profile_id=proof.public_clock.UPDATED_PROFILE_ID
-            ),
+            lambda: synthetic_host(samples, profile_id=profile_id),
         )
         monkeypatch.setattr(runtime, "_configured_factory", lambda _factory: True)
         monkeypatch.setattr(custody, "_native_engine", lambda _engine: True)
@@ -225,13 +231,37 @@ def setup(monkeypatch, tmp_path, *, exposed=False, anchor="fresh", echo=None):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("exposed", [False, True])
+@pytest.mark.parametrize(
+    "profile_id,source_policy,proof_schema,readback_schema",
+    [
+        (
+            proof.public_clock.UPDATED_PROFILE_ID,
+            source.POLICY_SHA256,
+            proof.V7_9549_DIAGNOSTIC_SCHEMA,
+            storage.V7_9549_DIAGNOSTIC_READBACK_SCHEMA,
+        ),
+        (
+            proof.public_clock.WINDOWS_9818_PROFILE_ID,
+            source.WINDOWS_9818_POLICY_SHA256,
+            proof.V7_9818_DIAGNOSTIC_SCHEMA,
+            storage.V7_9818_DIAGNOSTIC_READBACK_SCHEMA,
+        ),
+    ],
+)
 async def test_original_acquisition_and_exact_custody_earn_current_source_only(
-    monkeypatch, tmp_path, exposed
+    monkeypatch,
+    tmp_path,
+    exposed,
+    profile_id,
+    source_policy,
+    proof_schema,
+    readback_schema,
 ):
-    with setup(monkeypatch, tmp_path, exposed=exposed) as state:
+    with setup(monkeypatch, tmp_path, exposed=exposed, profile_id=profile_id) as state:
         owner = await source.acquire_initial_demo_account_source_v4(**state.args)
         operands = source.consume_owned_current_demo_account_v4(owner)
         receipt = json.loads(operands.receipt_json)
+        assert receipt["policy_sha256"] == source_policy
         assert operands.source_authenticity_verified is True
         assert operands.current_page_chains_complete is True
         assert operands.durable_raw_readback_verified is True
@@ -256,6 +286,14 @@ async def test_original_acquisition_and_exact_custody_earn_current_source_only(
             is exposed
         )
         assert set(state.native_files) == {*proof.FILES, "proof.json", "readback.json"}
+        assert (
+            json.loads(state.native_files["proof.json"])["schema_version"]
+            == proof_schema
+        )
+        assert (
+            json.loads(state.native_files["readback.json"])["schema_version"]
+            == readback_schema
+        )
         assert "account-route-attempt.v4.raw" in state.route_files
         assert state.route_response.is_closed and state.route_client.is_closed
         assert all(request.method == "GET" for request in state.harness.requests)
@@ -266,6 +304,7 @@ async def test_original_acquisition_and_exact_custody_earn_current_source_only(
             replay.source_authenticity_verified is replay.execution_authority is False
         )
         assert replay.packet == operands.packet
+        assert replay.source_policy_sha256 == source_policy
         with pytest.raises(source.CurrentAccountSourceV4Error):
             source.consume_owned_current_demo_account_v4(owner)
         with pytest.raises(
@@ -276,11 +315,19 @@ async def test_original_acquisition_and_exact_custody_earn_current_source_only(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("case", ["raw", "partial", "proof", "identity"])
+@pytest.mark.parametrize(
+    "case",
+    ["raw", "partial", "proof", "identity", "old_policy_on_new", "new_policy_on_old"],
+)
 async def test_rehashed_tampered_or_partial_saved_bundle_never_replays(
     monkeypatch, tmp_path, case
 ):
-    with setup(monkeypatch, tmp_path) as state:
+    profile_id = (
+        proof.public_clock.WINDOWS_9818_PROFILE_ID
+        if case == "old_policy_on_new"
+        else proof.public_clock.UPDATED_PROFILE_ID
+    )
+    with setup(monkeypatch, tmp_path, profile_id=profile_id) as state:
         owner = await source.acquire_initial_demo_account_source_v4(**state.args)
         source.consume_owned_current_demo_account_v4(owner)
         document = json.loads(state.saved["raw"])
@@ -293,6 +340,14 @@ async def test_rehashed_tampered_or_partial_saved_bundle_never_replays(
             native_doc = json.loads(bytes.fromhex(document["native_proof_hex"]))
             native_doc["policy_sha256"] = proof.V7_FLAT_POLICY_SHA256
             document["native_proof_hex"] = canonical(native_doc).hex()
+        elif case in {"old_policy_on_new", "new_policy_on_old"}:
+            incorrect = (
+                source.POLICY_SHA256
+                if case == "old_policy_on_new"
+                else source.WINDOWS_9818_POLICY_SHA256
+            )
+            document["policy_sha256"] = incorrect
+            document["proof_envelope"]["policy_sha256"] = incorrect
         else:
             document["route_proof"]["account_identity"]["uid"] = "9999"
         raw = canonical(document)

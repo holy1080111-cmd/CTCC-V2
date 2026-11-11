@@ -275,7 +275,7 @@ async def record_owned_current_revision_lineage_v1(source):
                     ],
                     "source_reference": observed.reference_document(replay.reference),
                     "source_bundle_sha256": state["bundle_sha256"],
-                    "source_policy_sha256": current.POLICY_SHA256,
+                    "source_policy_sha256": replay.source_policy_sha256,
                     "proof_envelope_sha256": replay.proof_envelope_sha256,
                     "native_proof_sha256": replay.native_proof_sha256,
                     "native_readback_sha256": replay.native_readback_sha256,

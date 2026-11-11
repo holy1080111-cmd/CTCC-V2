@@ -36,13 +36,13 @@ from tests.unit.test_qualification_account_capture import wire
 from tests.unit.test_qualification_account_collector import credentials
 
 
-def _updated_hosts(files):
+def _updated_hosts(files, *, profile_id=proof.public_clock.UPDATED_PROFILE_ID):
     changed = dict(files)
     for phase in ("before", "after"):
         name = f"host-{phase}.json"
         host = json.loads(changed[name])
         old = host["observation"]
-        updated = clock_fixture(profile_id=proof.public_clock.UPDATED_PROFILE_ID)
+        updated = clock_fixture(profile_id=profile_id)
         updated["sample"] = old["sample"]
         for kind in ("host_before", "status", "host_after"):
             for edge in ("request_start", "completed"):
@@ -194,8 +194,38 @@ async def test_mixed_profile_wrong_policy_and_missing_owned_before_fail(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_9818_proof_refuses_9549_host_after_even_with_rehashed_files(monkeypatch):
+    raw, files, chain, scope, _ = await companion_fixture(
+        monkeypatch,
+        current_v7=True,
+        gateway_case="ordered",
+        verify_baseline=False,
+    )
+    observed = _updated_hosts(
+        files, profile_id=proof.public_clock.WINDOWS_9818_PROFILE_ID
+    )
+    value = json.loads(raw)
+    value["schema_version"] = proof.V7_9818_DIAGNOSTIC_SCHEMA
+    value["policy_sha256"] = proof.V7_9818_DIAGNOSTIC_POLICY_SHA256
+    observed["host-after.json"] = _updated_hosts(files)["host-after.json"]
+    value["clock_file_sha256"] = {name: sha(body) for name, body in observed.items()}
+    packed = canonical(value)
+    with pytest.raises(proof.NativeAccountProofError, match="clock_profile_invalid"):
+        proof.replay_native_account_proof(
+            packed,
+            files=observed,
+            chain=chain,
+            scope=scope,
+            expected_proof_sha256=sha(packed),
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "profile_id", [None, proof.public_clock.WINDOWS_9818_PROFILE_ID]
+)
 async def test_old_host_profile_stops_owned_v7_diagnostic_before_any_http(
-    monkeypatch,
+    monkeypatch, profile_id
 ):
     selected = current_plan_v7()
     session = ControlledDemoAccountSession(
@@ -206,7 +236,9 @@ async def test_old_host_profile_stops_owned_v7_diagnostic_before_any_http(
     samples = Samples()
     monkeypatch.setattr(native_clock.clock, "native_stamp", samples)
     monkeypatch.setattr(
-        native_clock.clock, "native_os_clock", lambda: synthetic_host(samples)
+        native_clock.clock,
+        "native_os_clock",
+        lambda: synthetic_host(samples, profile_id=profile_id),
     )
     directory = MemoryDirectory({})
 
@@ -244,6 +276,7 @@ async def test_old_host_profile_stops_owned_v7_diagnostic_before_any_http(
             object(),
             Path.cwd(),
             _v7_diagnostic_sink=[],
+            _v7_diagnostic_9549_only=profile_id is not None,
         )
     assert calls == []
     assert set(directory.names()) == {"host-before.json"}

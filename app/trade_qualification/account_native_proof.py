@@ -35,6 +35,8 @@ EXPOSED_V4_SCHEMA = "ctcc.demo_account_exposed_native_clock_proof.v4"
 EXPOSED_9549_SCHEMA = "ctcc.demo_account_exposed_native_clock_proof.w32tm_9549.v1"
 V7_FLAT_SCHEMA = "ctcc.demo_account_native_clock_proof.v5"
 V7_9549_DIAGNOSTIC_SCHEMA = "ctcc.demo_account_v7_native_chronology.w32tm_9549.v1"
+V7_9818_DIAGNOSTIC_SCHEMA = "ctcc.demo_account_v7_native_chronology.w32tm_9818.v1"
+V7_DIAGNOSTIC_SCHEMAS = (V7_9549_DIAGNOSTIC_SCHEMA, V7_9818_DIAGNOSTIC_SCHEMA)
 ALGO_V6_SCHEMA = "ctcc.demo_account_algo_history_native_clock_proof.v1"
 MAX_PROOF = 2 * 1024 * 1024
 FILES = (
@@ -187,6 +189,14 @@ V7_9549_DIAGNOSTIC_POLICY_BYTES = canonical(
     }
 )
 V7_9549_DIAGNOSTIC_POLICY_SHA256 = sha(V7_9549_DIAGNOSTIC_POLICY_BYTES)
+V7_9818_DIAGNOSTIC_POLICY_BYTES = canonical(
+    {
+        **decode(V7_9549_DIAGNOSTIC_POLICY_BYTES),
+        "schema_version": "ctcc.demo_account_v7_native_chronology_policy.w32tm_9818.v1",
+        "clock_profile": public_clock.WINDOWS_9818_PROFILE_ID,
+    }
+)
+V7_9818_DIAGNOSTIC_POLICY_SHA256 = sha(V7_9818_DIAGNOSTIC_POLICY_BYTES)
 ALGO_V6_POLICY_BYTES = canonical(
     {
         "schema_version": "ctcc.demo_account_algo_history_native_clock_policy.v1",
@@ -272,9 +282,9 @@ def contract_for_v7_9549_diagnostic_plan(plan):
     return V7_9549_DIAGNOSTIC_SCHEMA, V7_9549_DIAGNOSTIC_POLICY_SHA256
 
 
-def contract_for_v7_9549_diagnostic_owned_before(plan, host_before_raw):
+def contract_for_v7_diagnostic_owned_before(plan, host_before_raw):
     """Decode the runtime's owned sample; the active native stage owns its IO."""
-    contract = contract_for_v7_9549_diagnostic_plan(plan)
+    prior_contract = contract_for_v7_9549_diagnostic_plan(plan)
     if type(host_before_raw) is not bytes:
         raise NativeAccountProofError("native_account_clock_profile_invalid")
     try:
@@ -282,16 +292,24 @@ def contract_for_v7_9549_diagnostic_owned_before(plan, host_before_raw):
         if replay["outcome"] != "accepted":
             raise NativeAccountProofError("native_account_host_clock_rejected")
         observation = replay["observation"]
-        if (
-            observation["schema_version"] != "ctcc.windows_clock_observation.v2"
-            or observation["diagnostic"]["profile_id"]
-            != public_clock.UPDATED_PROFILE_ID
-        ):
+        if observation["schema_version"] != "ctcc.windows_clock_observation.v2":
             raise NativeAccountProofError("native_account_clock_profile_invalid")
+        profile = observation["diagnostic"]["profile_id"]
     except NativeAccountProofError:
         raise
     except Exception:  # noqa: BLE001 -- no host details escape
         raise NativeAccountProofError("native_account_clock_profile_invalid") from None
+    if profile == public_clock.UPDATED_PROFILE_ID:
+        return prior_contract
+    if profile == public_clock.WINDOWS_9818_PROFILE_ID:
+        return V7_9818_DIAGNOSTIC_SCHEMA, V7_9818_DIAGNOSTIC_POLICY_SHA256
+    raise NativeAccountProofError("native_account_clock_profile_invalid")
+
+
+def contract_for_v7_9549_diagnostic_owned_before(plan, host_before_raw):
+    contract = contract_for_v7_diagnostic_owned_before(plan, host_before_raw)
+    if contract != (V7_9549_DIAGNOSTIC_SCHEMA, V7_9549_DIAGNOSTIC_POLICY_SHA256):
+        raise NativeAccountProofError("native_account_clock_profile_invalid")
     return contract
 
 
@@ -431,9 +449,9 @@ def _source(chain, scope, *, proof_schema=SCHEMA):
         EXPOSED_V4_SCHEMA,
         EXPOSED_9549_SCHEMA,
         V7_FLAT_SCHEMA,
-        V7_9549_DIAGNOSTIC_SCHEMA,
+        *V7_DIAGNOSTIC_SCHEMAS,
     }:
-        v7 = proof_schema in {V7_FLAT_SCHEMA, V7_9549_DIAGNOSTIC_SCHEMA}
+        v7 = proof_schema == V7_FLAT_SCHEMA or proof_schema in V7_DIAGNOSTIC_SCHEMAS
         current.verify_current_account_sources(
             chain,
             reference=reference,
@@ -677,6 +695,7 @@ def _clocks(files, *, stage, scope_sha, expected_profile=public_clock.PROFILE_ID
     if expected_profile not in {
         public_clock.PROFILE_ID,
         public_clock.UPDATED_PROFILE_ID,
+        public_clock.WINDOWS_9818_PROFILE_ID,
     }:
         raise NativeAccountProofError("native_account_clock_profile_invalid")
     if (
@@ -781,7 +800,7 @@ def _replay(raw, files, chain, scope, expected):
             EXPOSED_V4_SCHEMA,
             EXPOSED_9549_SCHEMA,
             V7_FLAT_SCHEMA,
-            V7_9549_DIAGNOSTIC_SCHEMA,
+            *V7_DIAGNOSTIC_SCHEMAS,
             ALGO_V6_SCHEMA,
         }
         or value["policy_sha256"]
@@ -792,6 +811,7 @@ def _replay(raw, files, chain, scope, expected):
             EXPOSED_9549_SCHEMA: EXPOSED_9549_POLICY_SHA256,
             V7_FLAT_SCHEMA: V7_FLAT_POLICY_SHA256,
             V7_9549_DIAGNOSTIC_SCHEMA: V7_9549_DIAGNOSTIC_POLICY_SHA256,
+            V7_9818_DIAGNOSTIC_SCHEMA: V7_9818_DIAGNOSTIC_POLICY_SHA256,
             ALGO_V6_SCHEMA: ALGO_V6_POLICY_SHA256,
         }[value["schema_version"]]
     ):
@@ -842,11 +862,11 @@ def _replay(raw, files, chain, scope, expected):
         files,
         stage=stage,
         scope_sha=value["scope_sha256"],
-        expected_profile=(
-            public_clock.UPDATED_PROFILE_ID
-            if proof_schema in {EXPOSED_9549_SCHEMA, V7_9549_DIAGNOSTIC_SCHEMA}
-            else public_clock.PROFILE_ID
-        ),
+        expected_profile={
+            EXPOSED_9549_SCHEMA: public_clock.UPDATED_PROFILE_ID,
+            V7_9549_DIAGNOSTIC_SCHEMA: public_clock.UPDATED_PROFILE_ID,
+            V7_9818_DIAGNOSTIC_SCHEMA: public_clock.WINDOWS_9818_PROFILE_ID,
+        }.get(proof_schema, public_clock.PROFILE_ID),
     )
     witnesses = value["witnesses"]
     if (
@@ -974,7 +994,7 @@ def _replay(raw, files, chain, scope, expected):
         and w["stream"]
         in (
             current.V7_CURRENT_STREAMS
-            if proof_schema in {V7_FLAT_SCHEMA, V7_9549_DIAGNOSTIC_SCHEMA}
+            if proof_schema == V7_FLAT_SCHEMA or proof_schema in V7_DIAGNOSTIC_SCHEMAS
             else current.CURRENT_STREAMS
         )
     )
@@ -1024,7 +1044,8 @@ def _replay(raw, files, chain, scope, expected):
             else {
                 "expected_policy_sha256": (
                     current.V7_POLICY_SHA256
-                    if proof_schema in {V7_FLAT_SCHEMA, V7_9549_DIAGNOSTIC_SCHEMA}
+                    if proof_schema == V7_FLAT_SCHEMA
+                    or proof_schema in V7_DIAGNOSTIC_SCHEMAS
                     else current.V6_POLICY_SHA256
                 )
             }
@@ -1042,7 +1063,7 @@ def _replay(raw, files, chain, scope, expected):
             or any(type(count) is not int or count != 0 for count in counts.values())
         ):
             raise NativeAccountProofError("native_account_v7_inventory_incomplete")
-    if proof_schema == V7_9549_DIAGNOSTIC_SCHEMA:
+    if proof_schema in V7_DIAGNOSTIC_SCHEMAS:
         counts = current_data["inventory_row_counts"]
         if (
             current_data["schema_version"]
@@ -1118,7 +1139,7 @@ def _replay(raw, files, chain, scope, expected):
             or current_data["blocking_reasons"] != expected_blockers
         ):
             raise NativeAccountProofError("native_account_exposure_source_missing")
-    elif proof_schema != V7_9549_DIAGNOSTIC_SCHEMA and (
+    elif proof_schema not in V7_DIAGNOSTIC_SCHEMAS and (
         current_data["blocking_reasons"] or current_data["observed_flat"] is not True
     ):
         raise NativeAccountProofError(

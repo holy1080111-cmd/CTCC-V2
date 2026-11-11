@@ -61,6 +61,15 @@ POLICY_BYTES = canonical(
     }
 )
 POLICY_SHA256 = sha(POLICY_BYTES)
+WINDOWS_9818_POLICY_BYTES = canonical(
+    {
+        **decode(POLICY_BYTES),
+        "version": "ctcc.demo_current_account_source.w32tm_9818.v1",
+        "source": "same_invocation_native_V7_B1_and_9818_companion",
+        "native_proof_policy_sha256": proof.V7_9818_DIAGNOSTIC_POLICY_SHA256,
+    }
+)
+WINDOWS_9818_POLICY_SHA256 = sha(WINDOWS_9818_POLICY_BYTES)
 _CURRENT = WeakKeyDictionary()
 _INITIAL = WeakKeyDictionary()
 _MAX_NATIVE_WALL_SECONDS = 30
@@ -106,6 +115,7 @@ class RecordedCurrentAccountBundleV4:
     native_readback_sha256: str
     expires_at: datetime
     monotonic_deadline_ns: int
+    source_policy_sha256: str = POLICY_SHA256
     source_authenticity_verified: Literal[False] = field(default=False, init=False)
     account_complete: Literal[False] = field(default=False, init=False)
     post_g12_eligible: Literal[False] = field(default=False, init=False)
@@ -202,6 +212,21 @@ def _chain_replay(rows):
     return tuple(result)
 
 
+def _current_bundle_policy(native_doc):
+    contract = (native_doc["schema_version"], native_doc["policy_sha256"])
+    if contract == (
+        proof.V7_9549_DIAGNOSTIC_SCHEMA,
+        proof.V7_9549_DIAGNOSTIC_POLICY_SHA256,
+    ):
+        return POLICY_SHA256
+    if contract == (
+        proof.V7_9818_DIAGNOSTIC_SCHEMA,
+        proof.V7_9818_DIAGNOSTIC_POLICY_SHA256,
+    ):
+        return WINDOWS_9818_POLICY_SHA256
+    _deny("account_v4_bundle_invalid")
+
+
 def replay_current_account_bundle_v4(raw, *, expected_sha256):
     """Exact original-byte replay; deliberately cannot remint a native owner."""
     try:
@@ -227,17 +252,14 @@ def replay_current_account_bundle_v4(raw, *, expected_sha256):
                 "proof_envelope",
             }
             or document["schema_version"] != SCHEMA
-            or document["policy_sha256"] != POLICY_SHA256
         ):
             _deny("account_v4_bundle_invalid")
         route = document["route_proof"]
         replay_operational_proof_v4(route)
         native_raw = _unhex(document["native_proof_hex"], proof.MAX_PROOF)
         native_doc = proof._canonical_document(native_raw)
-        if (
-            native_doc["schema_version"] != proof.V7_9549_DIAGNOSTIC_SCHEMA
-            or native_doc["policy_sha256"] != proof.V7_9549_DIAGNOSTIC_POLICY_SHA256
-        ):
+        source_policy = _current_bundle_policy(native_doc)
+        if document["policy_sha256"] != source_policy:
             _deny("account_v4_bundle_invalid")
         chain = _chain_replay(document["chain"])
         reference = observed.source_reference(chain)
@@ -301,7 +323,7 @@ def replay_current_account_bundle_v4(raw, *, expected_sha256):
                 "readback_complete",
                 "execution_authority",
             }
-            or readback["schema_version"] != storage.V7_9549_DIAGNOSTIC_READBACK_SCHEMA
+            or readback["schema_version"] != storage._readback_schema(native_doc)
             or readback["proof_sha256"] != sha(native_raw)
             or readback["clock_file_sha256"]
             != {name: sha(value) for name, value in files.items()}
@@ -320,7 +342,7 @@ def replay_current_account_bundle_v4(raw, *, expected_sha256):
         ):
             _deny("account_v4_bundle_invalid")
         envelope = {
-            "policy_sha256": POLICY_SHA256,
+            "policy_sha256": source_policy,
             "route_proof_sha256": sha(canonical(route)),
             "native_proof_sha256": sha(native_raw),
             "native_readback_sha256": sha(readback_raw),
@@ -338,6 +360,7 @@ def replay_current_account_bundle_v4(raw, *, expected_sha256):
             sha(readback_raw),
             replay.expires_at,
             replay.monotonic_deadline_ns,
+            source_policy,
         )
     except Exception:  # noqa: BLE001 -- private raw/parser failures stay private
         raise CurrentAccountSourceV4Error("account_v4_bundle_invalid") from None
@@ -346,10 +369,11 @@ def replay_current_account_bundle_v4(raw, *, expected_sha256):
 def _freeze_bundle(route_proof, chain, directory):
     native_raw = directory.read("proof.json", proof.MAX_PROOF)
     readback_raw = directory.read("readback.json", storage.MAX_PART)
+    source_policy = _current_bundle_policy(proof._canonical_document(native_raw))
     reference = observed.source_reference(chain)
     rows = _chain_document(chain)
     envelope = {
-        "policy_sha256": POLICY_SHA256,
+        "policy_sha256": source_policy,
         "route_proof_sha256": sha(canonical(route_proof)),
         "native_proof_sha256": sha(native_raw),
         "native_readback_sha256": sha(readback_raw),
@@ -359,7 +383,7 @@ def _freeze_bundle(route_proof, chain, directory):
     raw = canonical(
         {
             "schema_version": SCHEMA,
-            "policy_sha256": POLICY_SHA256,
+            "policy_sha256": source_policy,
             "route_proof": route_proof,
             "native_proof_hex": native_raw.hex(),
             "native_readback_hex": readback_raw.hex(),
@@ -606,7 +630,11 @@ async def _acquire_native(initial):
             chain,
             reference,
             replay.packet,
-            proof_schema=proof.V7_9549_DIAGNOSTIC_SCHEMA,
+            proof_schema=(
+                proof.V7_9818_DIAGNOSTIC_SCHEMA
+                if replay.source_policy_sha256 == WINDOWS_9818_POLICY_SHA256
+                else proof.V7_9549_DIAGNOSTIC_SCHEMA
+            ),
         )
         storage.read_native_account_companion(
             root,
@@ -687,7 +715,7 @@ def consume_owned_current_demo_account_v4(source):
         receipt = canonical(
             {
                 "schema_version": "ctcc.demo_current_account_operands.v4",
-                "policy_sha256": POLICY_SHA256,
+                "policy_sha256": replay.source_policy_sha256,
                 "bundle_sha256": state["bundle_sha256"],
                 "custody_id": state["custody_id"],
                 "source_reference": observed.reference_document(replay.reference),
