@@ -16,18 +16,16 @@ from app.domain.source_primitives import (
     utc_from_ns,
     validate_stamps,
 )
-from app.exchange.okx.parsers import parse_swap_ticker_v2
-from app.exchange.okx.symbols import to_canonical_symbol
-from app.market.quality.candles import inspect_candles_at
 from app.mie.validation.contracts import require_utc
 from app.trade_qualification import candle_collector as candles
 from app.trade_qualification import global_public_runtime_v1 as public
-from app.trade_qualification import quote_collector as quotes
-from app.trade_qualification.funding_observation_v2 import parse_funding_observation_v2
 from app.trade_qualification.global_public_capture_companion_v1 import (
     GlobalPublicCompanionError,
     read_global_public_companion_v1,
     verify_global_public_companion_publication_v1,
+)
+from app.trade_qualification.global_public_runtime_v2 import (
+    project_global_public_market_snapshot_v2,
 )
 
 
@@ -143,56 +141,13 @@ def replay_legacy_baseline_market_v1(
         ):
             raise LegacyBaselineMarketReplayError("legacy_market_candle_tail_missing")
 
-        ticker_raw, mark_raw, funding_raw = packet.quote.provenance
-        ticker = parse_swap_ticker_v2(
-            quotes._row(quotes._parse(ticker_raw.response_body)[0], instrument_id)
+        market, following_settlement = project_global_public_market_snapshot_v2(
+            packet, evaluated_at=decision
         )
-        (mark_price,) = quotes._values(
-            "mark",
-            quotes._row(quotes._parse(mark_raw.response_body)[0], instrument_id),
-        )
-        funding = parse_funding_observation_v2(
-            funding_raw.response_body,
-            source_kind="rest",
-            instrument_id=instrument_id,
-            acquisition_started_at=funding_raw.request_started_at,
-            received_at=funding_raw.received_at,
-            completed_at=funding_raw.completed_at,
-        )
-        if funding.forecast.settlement_at <= decision:
+        if market.next_funding_time is None or market.next_funding_time <= decision:
             raise LegacyBaselineMarketReplayError("legacy_market_funding_expired")
-        series = {
-            frame.timeframe: list(frame.candles) for frame in packet.candles.frames
-        }
-        quality = {
-            bar: inspect_candles_at(rows, bar, current_time=decision)
-            for bar, rows in series.items()
-        }
-        if not all(report.ok for report in quality.values()):
+        if not all(report.ok for report in market.quality.values()):
             raise LegacyBaselineMarketReplayError("legacy_market_candle_quality_failed")
-        market = MarketSnapshot(
-            symbol=to_canonical_symbol(instrument_id),
-            instrument_id=instrument_id,
-            ticker=ticker,
-            mark_price=mark_price,
-            funding_rate=funding.forecast.rate,
-            next_funding_time=funding.forecast.settlement_at,
-            open_interest_contracts=packet.market_aux.open_interest.contracts,
-            open_interest_currency=packet.market_aux.open_interest.currency,
-            order_book=packet.market_aux.book.order_book,
-            candles=series,
-            quality=quality,
-            received_at=max(
-                *(row.completed_at for row in packet.quote.provenance),
-                *(row.completed_at for row in packet.market_aux.provenance),
-                *(
-                    page.completed_at
-                    for frame in packet.candles.frames
-                    for page in frame.pages
-                ),
-                packet.ws.ticker.received_at,
-            ),
-        )
         receipt = canonical(
             {
                 "schema_version": "ctcc.mie.legacy_baseline_market_replay.v1",
@@ -204,8 +159,8 @@ def replay_legacy_baseline_market_v1(
                 "capture_deadline_at": deadline.isoformat(),
                 "post_readback_receipt_sha256": expected_post_readback_receipt_sha256,
                 "snapshot_received_at": market.received_at.isoformat(),
-                "funding_forecast_settlement_at": funding.forecast.settlement_at.isoformat(),
-                "funding_following_forecast_at": funding.following_settlement_forecast_at.isoformat(),
+                "funding_forecast_settlement_at": market.next_funding_time.isoformat(),
+                "funding_following_forecast_at": following_settlement.isoformat(),
                 "plan_sha256": expected_plan_sha256,
                 "journal_sha256": expected_journal_sha256,
                 "packet_sha256": expected_packet_sha256,

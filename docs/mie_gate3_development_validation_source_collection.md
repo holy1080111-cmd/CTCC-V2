@@ -509,6 +509,16 @@ pass at that time. This computational report leaves the original study
 unchanged. Independent custody and a separately preregistered joint
 study replay remain required for predictive evaluation.
 
+`score_joint_devval_companion_event_v1` binds the exact schedule, coverage,
+batch and scorer configuration digests. It reopens both original companions
+and reproduces both market receipt digests at the common decision time
+before calculating either raw score. An incomplete event retains both
+aggregate identities and two missing scores, without opening market files.
+The selected legacy strategy uses its existing direction selector and
+predicate weights. A neutral direction keeps an empty score. Probability
+calibration requires a separate pre-window policy and Development-only
+training.
+
 The adapter checks the post-readback sample against the pinned summary clock,
 the capture deadline and the decision time. It requires fresh quote, book,
 mark, funding, open interest and WS observations, plus the exact 4H, 1H, 15m
