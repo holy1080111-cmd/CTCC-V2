@@ -486,3 +486,15 @@ and leaves probabilities null for bins with insufficient Development data.
 The returned lineage joins all child receipts to the feature inventory and
 the forecasts. Formal first access and predictive eligibility remain subject
 to independent evidence.
+
+`score_fitted_holdout_v1` joins the exact forecast slots with separately
+pinned baseline predictions and outcome labels. The plan fixes the candidate,
+baseline specifications, label horizon, missing-data policy, and thresholds
+before the first window. The constant-prevalence baseline must match the
+Development counts in the frozen model. An incomplete slot remains in the
+report and prevents scoring. Complete inputs produce Brier score, log loss,
+calibration error, reliability bins, and baseline differences, with descriptive
+paired intervals computed separately inside each child window. The formal
+evaluation still requires independently verified outcomes, legacy baseline
+scoring, publication and first access. This report grants no OOS or Gate 4
+authority.
