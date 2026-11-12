@@ -44,9 +44,17 @@ CURRENT56_CUSTODY_CASES = (
         "test_actual56_runtime_raw_custody_seals_and_reads_under_tls",
     ),
 )
+CURRENT56_NATIVE_ROLE_CASES = tuple(
+    (FITTED_CUSTODY_TEST_PATH.removesuffix(".py").replace("/", "."), name)
+    for name in (
+        "test_actual0056_full_native_role_observation_tls",
+        "test_actual0056_full_native_role_rejects_swapped_roles_and_extra_grant",
+    )
+)
+CURRENT56_PG1_REQUIRED_CASES = (*CURRENT56_CUSTODY_CASES, *CURRENT56_NATIVE_ROLE_CASES)
 REQUIRED_CURRENT56_CASES = (
     *previous.REQUIRED_CURRENT55_CASES,
-    *CURRENT56_CUSTODY_CASES,
+    *CURRENT56_PG1_REQUIRED_CASES,
 )
 _PARENT_UPGRADE = ("migration-upgrade-parent", "migration-parent-readback")
 _EMPTY_ROUNDTRIP = (
@@ -138,7 +146,7 @@ def _collection(root, mode, index, identity):
         selection = previous._collection(root, mode, index, identity)
         if mode == "postgres" and index == 1:
             checked = shared.verify_pytest_report(
-                root / junit, required_cases=CURRENT56_CUSTODY_CASES
+                root / junit, required_cases=CURRENT56_PG1_REQUIRED_CASES
             )
             if (
                 checked["sha256"] != identity["tests"]["sha256"]

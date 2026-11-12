@@ -74,6 +74,7 @@ jobs:
             ${{ runner.temp }}/ctcc-validation/crash-probe/*.json
             ${{ runner.temp }}/ctcc-validation/test-results/*.xml
             ${{ runner.temp }}/ctcc-validation/test-results/*.json
+            ${{ runner.temp }}/ctcc-validation/test-results/postgres-progress.log
           if-no-files-found: error
           retention-days: 30
 

@@ -29,6 +29,12 @@ parameter identity, and proves disjoint full coverage. All23 required PG cases
 and65 required modules must be owned exactly once across PG0/PG1. Auxiliary
 preflight and predecessor reports do not increase the full-suite unique count.
 
+DB0056 PostgreSQL components retain an append-only case progress log with the
+selected order digest, source module, and test identity digest for each start
+and finish. Each event is flushed before the test advances, so an interrupted
+worker can leave an attributable prefix. The prefix serves as a diagnostic;
+acceptance still requires the complete collection, JUnit, and cleanup readback.
+
 The PG case-stage cap remains7200s, overall driver budget9900s, cleanup budget300s
 and GitHub job cap180min. Failure, timeout, missing report or uncertain cleanup
 remains failure. Historical timings and old CI/test counts cannot establish this
@@ -43,3 +49,18 @@ CI and independent raw-artifact readback.
 
 Trading remains disabled. This validation partition creates no source, account,
 G6, risk, order, Demo or Live authority and makes no profitability claim.
+
+## DB0056 native role observation
+
+The DB0056 diagnostic binds the owner, writer, frame reader and raw custody
+logins to the same database and postmaster. Each session checks its observed
+migration head and TLS status. The owner catalog and the restricted reader
+catalogs retain their distinct transaction and role requirements. The two
+disposable PostgreSQL cases run in the existing fitted custody PG1 module and
+exercise the reviewed 42 Demo grants, role swaps, and excess fitted access. Both
+cases must appear as passed in the PG1 evidence and the full Linux result.
+
+This observation keeps startup admission at `DENY`. A full deployment
+requires native catalog evidence and an independently verified startup
+readback with the API's restricted credentials. The owner connection belongs
+only to the isolated test or reviewed provisioning process.

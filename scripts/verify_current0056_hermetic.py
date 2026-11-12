@@ -26,7 +26,11 @@ from scripts.verify_current0055_hermetic import (
     _isolated_client,
     _write,
 )
-from scripts.verify_linux_shard import DEVVAL_CUSTODY_TEST_PATH, postgres_paths
+from scripts.verify_linux_shard import (
+    DEVVAL_CUSTODY_TEST_PATH,
+    POSTGRES_PROGRESS_OPTION,
+    postgres_paths,
+)
 
 _EXACT_HOST_HELPERS = (
     "current0055_catalog_receipt.py",
@@ -63,6 +67,7 @@ def _test_command(mode, index):
         f"--ctcc-linux-suite={mode}",
         f"--ctcc-linux-{option}={index}",
         f"--ctcc-linux-collection-json={collection}",
+        *((POSTGRES_PROGRESS_OPTION,) if mode == "postgres" else ()),
         f"--junitxml={junit}",
         "tests",
     )

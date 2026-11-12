@@ -7,6 +7,8 @@ import json
 import os
 import re
 import ssl
+from contextlib import AsyncExitStack
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from importlib import import_module
 from pathlib import Path
@@ -24,8 +26,12 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 import app.database.models  # noqa: F401 - register the full migration metadata.
+from app.core import native_role_preflight_0056_full_diagnostic_v1 as observation
 from app.database.base import Base
 from app.database.repositories import public_runtime_bundle_custody as raw_custody
+from app.demo_automation.native_server_selectors_v2 import (
+    ConfiguredNativeDemoFactoriesV2,
+)
 from app.domain.source_primitives import canonical, sha
 from app.mie.validation.artifact import freeze_prospective_holdout_receipt
 from app.mie.validation.controlled_fitted_holdout_reader_v1 import (
@@ -52,6 +58,9 @@ from app.mie.validation.prospective_devval_campaign_plan_v1 import (
 from app.mie.validation.prospective_devval_fitted_binding_v1 import (
     build_devval_candidate_binding,
 )
+from scripts import current0055_native_account_source_acl_v1 as account_acl
+from scripts import current0055_native_lifecycle_acl_v1 as lifecycle_acl
+from scripts import current0055_runtime_grants as core_acl
 from scripts import current0056_fitted_delta_catalog_v1 as fitted_delta
 from scripts import current_contract_source_scopes_v1 as source_scopes
 from tests.integration.test_gate3_canonical_schedule_claim import migrate, pin_record
@@ -905,3 +914,217 @@ async def test_actual0056_two_fresh_fitted_catalogs_and_drift_refusal(
         restored, name, oid = await _delta56_read_catalog(engines[1])
         assert (name, oid) == (second_name, second_oid)
         assert fitted_delta.inspect_catalog_document(restored, **roles) == digest
+
+
+_ROLE_OBS56_IDENTITY = text("""
+SELECT current_user::text, session_user::text,
+       pg_catalog.current_setting('role'), pg_catalog.pg_backend_pid(),
+       (SELECT oid::bigint FROM pg_catalog.pg_roles WHERE rolname=current_user),
+       EXISTS(SELECT 1 FROM pg_catalog.pg_stat_ssl
+              WHERE pid=pg_catalog.pg_backend_pid() AND ssl),
+       pg_catalog.current_setting('server_version_num'),
+       (SELECT oid::bigint FROM pg_catalog.pg_database
+        WHERE datname=pg_catalog.current_database()),
+       pg_catalog.pg_postmaster_start_time(),
+       pg_catalog.inet_server_addr()::text,
+       pg_catalog.inet_server_port()
+""")
+_ROLE_OBS56_REFUSAL = "^native_roles_0056_observation_unavailable$"
+
+
+async def _install_test_demo_grants(owner, demo):
+    names = dict(zip(("writer", "custody", "frame_reader"), demo, strict=True))
+    core, account = account_acl._plans(**names)
+    previous, lifecycle = lifecycle_acl._plans(**names)
+    assert core == core_acl._plan(**names) and previous == core + account
+    assert (len(core), len(account), len(lifecycle)) == (28, 11, 3)
+    plan = previous + lifecycle
+    assert all(not grant.target.startswith("gate3_fitted_") for grant in plan)
+
+    async with owner.begin() as connection:
+        owner_oid = await connection.scalar(observation.current55._OWNER_OID_SQL)
+        assert type(owner_oid) is int and owner_oid > 0
+        role_oids = await core_acl._roles(connection, demo, owner_oid)
+        expected = core_acl._expected_acl(plan, role_oids, owner_oid)
+        before = await core_acl._target_oids(
+            connection, expected, owner_oid, granted=False
+        )
+        await core_acl._access(
+            connection, plan, role_oids, granted=False, targets=before
+        )
+        for grant in plan:
+            await connection.exec_driver_sql(grant.sql())
+        assert (
+            await core_acl._target_oids(connection, expected, owner_oid, granted=True)
+            == before
+        )
+        await core_acl._access(
+            connection, plan, role_oids, granted=True, targets=before
+        )
+
+
+async def _verify_actual_tls_roles(engines):
+    async with AsyncExitStack() as stack:
+        connections = [
+            await stack.enter_async_context(engine.connect()) for engine in engines
+        ]
+        observed = [
+            tuple((await connection.execute(_ROLE_OBS56_IDENTITY)).one())
+            for connection in connections
+        ]
+    names = tuple(engine.url.username for engine in engines)
+    assert len(set(names)) == 4
+    assert tuple(row[:3] for row in observed) == tuple(
+        (name, name, "none") for name in names
+    )
+    assert len({row[3] for row in observed}) == len({row[4] for row in observed}) == 4
+    assert all(row[5] is True and row[6] == "170011" for row in observed)
+    assert len({row[7:] for row in observed}) == 1
+
+
+@pytest.fixture
+async def _actual_0056_role_observation_lab():
+    url, tls = _isolated_tls_database_config()
+    assert (url.username, url.database, url.port) == ("ctcc", "ctcc", 5432)
+    assert tls.check_hostname and tls.verify_mode == ssl.CERT_REQUIRED
+    database = f"ctcc_native_obs56_{uuid4().hex[:12]}"
+    demo = tuple(
+        f"ctcc_obs56_{role}_{uuid4().hex[:12]}"
+        for role in ("writer", "custody", "frame")
+    )
+    database_sql = _delta56_identifier(database)
+    assert len(set(demo)) == 3
+
+    def engine(target):
+        return create_async_engine(
+            target, poolclass=NullPool, connect_args={"ssl": tls}
+        )
+
+    target = url.set(database=database)
+    admin = engine(url)
+    owner = engine(target)
+    role_engines = tuple(engine(target.set(username=name)) for name in demo)
+    created_database = False
+    created_roles = False
+    try:
+        async with admin.connect() as connection:
+            await connection.execution_options(isolation_level="AUTOCOMMIT")
+            initial = tuple((await connection.execute(_ROLE_OBS56_IDENTITY)).one())
+            assert initial[:3] == ("ctcc", "ctcc", "none")
+            assert initial[5] is True and initial[6] == "170011"
+            await connection.execute(text(f"CREATE DATABASE {database_sql}"))
+            created_database = True
+        async with admin.begin() as connection:
+            for name in demo:
+                await connection.execute(
+                    text(f"CREATE ROLE {_delta56_identifier(name)} LOGIN")
+                )
+        created_roles = True
+        async with owner.begin() as connection:
+            await connection.run_sync(_migrate_runtime_custody_head)
+        await _install_test_demo_grants(owner, demo)
+        await _verify_actual_tls_roles((owner, *role_engines))
+        factories = tuple(
+            async_sessionmaker(bound, autoflush=False, expire_on_commit=False)
+            for bound in (owner, *role_engines)
+        )
+        owner_factory, writer_factory, custody_factory, frame_factory = factories
+        yield (
+            owner,
+            owner_factory,
+            ConfiguredNativeDemoFactoriesV2(
+                writer_factory,
+                custody_factory,
+                frame_factory,
+                role_engines[1],
+                role_engines[2],
+            ),
+        )
+    finally:
+        try:
+            async with AsyncExitStack() as stack:
+                for candidate in (owner, *role_engines):
+                    stack.push_async_callback(candidate.dispose)
+        finally:
+            try:
+                if created_database:
+                    async with admin.connect() as connection:
+                        await connection.execution_options(isolation_level="AUTOCOMMIT")
+                        await connection.execute(
+                            text(f"DROP DATABASE {database_sql} WITH (FORCE)")
+                        )
+            finally:
+                try:
+                    if created_roles:
+                        async with admin.begin() as connection:
+                            for name in reversed(demo):
+                                await connection.execute(
+                                    text(f"DROP ROLE {_delta56_identifier(name)}")
+                                )
+                finally:
+                    await admin.dispose()
+
+
+async def test_actual0056_full_native_role_observation_tls(
+    _actual_0056_role_observation_lab,
+):
+    _, owner_factory, selected = _actual_0056_role_observation_lab
+    first = await observation.observe_native_roles_0056_v1(
+        selected, owner_factory=owner_factory, source=_SOURCE_ROOT
+    )
+    second = await observation.observe_native_roles_0056_v1(
+        selected, owner_factory=owner_factory, source=_SOURCE_ROOT
+    )
+    assert first == second
+    assert first.database_head == "0056"
+    assert first.admission == "DENY"
+    assert first.native_reference_sealed is first.native_baseline_admission is False
+    assert first.startup_admission is first.execution_authority is False
+    assert first.account_complete is False
+
+
+async def test_actual0056_full_native_role_rejects_swapped_roles_and_extra_grant(
+    _actual_0056_role_observation_lab,
+):
+    owner, owner_factory, selected = _actual_0056_role_observation_lab
+    args = {"owner_factory": owner_factory, "source": _SOURCE_ROOT}
+    baseline = await observation.observe_native_roles_0056_v1(selected, **args)
+    swapped = replace(
+        selected,
+        writer_factory=selected.frame_reader_factory,
+        frame_reader_factory=selected.writer_factory,
+        frame_reader_engine=selected.writer_factory.kw["bind"],
+    )
+    with pytest.raises(
+        observation.NativeRoles0056ObservationError, match=_ROLE_OBS56_REFUSAL
+    ):
+        await observation.observe_native_roles_0056_v1(swapped, **args)
+
+    writer = selected.writer_factory.kw["bind"]
+    writer_name = _delta56_identifier(writer.url.username)
+    relation = "public.gate3_fitted_candidate_bindings"
+    async with owner.begin() as connection:
+        await connection.execute(
+            text(f"GRANT SELECT ON TABLE {relation} TO {writer_name}")
+        )
+    try:
+        async with writer.connect() as connection:
+            assert (
+                await connection.scalar(
+                    text(
+                        "SELECT pg_catalog.has_table_privilege(current_user,:relation,'SELECT')"
+                    ),
+                    {"relation": relation},
+                )
+                is True
+            )
+        with pytest.raises(
+            observation.NativeRoles0056ObservationError, match=_ROLE_OBS56_REFUSAL
+        ):
+            await observation.observe_native_roles_0056_v1(selected, **args)
+    finally:
+        async with owner.begin() as connection:
+            await connection.execute(
+                text(f"REVOKE SELECT ON TABLE {relation} FROM {writer_name}")
+            )
+    assert await observation.observe_native_roles_0056_v1(selected, **args) == baseline

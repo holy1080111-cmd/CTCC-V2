@@ -13,6 +13,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from scripts import current0056_hermetic_contract as current56_contract
+from scripts import verify_current0056_hermetic as current56
 from scripts import verify_final_hermetic as host
 from scripts import verify_linux_shard as selection
 from scripts import verify_linux_shard_union as reader
@@ -364,6 +366,39 @@ def test_pg2_keeps_all_required_cases_and_modules_once_across_both_roles():
     assert selection.SHARD_COUNT == 8
 
 
+@pytest.mark.parametrize(
+    "removed",
+    [
+        "test_actual0056_full_native_role_observation_tls",
+        "test_actual0056_full_native_role_rejects_swapped_roles_and_extra_grant",
+    ],
+)
+def test_current56_pg1_readback_refuses_missing_native_role_case(
+    monkeypatch, tmp_path, removed
+):
+    module = selection.FITTED_CUSTODY_TEST_PATH
+    cases = [name for _, name in current56_contract.CURRENT56_CUSTODY_CASES] + [
+        "test_actual0056_full_native_role_observation_tls",
+        "test_actual0056_full_native_role_rejects_swapped_roles_and_extra_grant",
+    ]
+    report_path, _ = current56_contract.component_report_paths("postgres", 1)
+    report = tmp_path / report_path
+    report.parent.mkdir(parents=True)
+    accepted_prior_checks = object()
+    monkeypatch.setattr(
+        current56_contract.previous, "_collection", lambda *_: accepted_prior_checks
+    )
+
+    def readback(names):
+        _junit(report, [f"{module}::{name}" for name in names])
+        identity = {"tests": {"sha256": _sha(report.read_bytes())}}
+        return current56_contract._collection(tmp_path, "postgres", 1, identity)
+
+    assert readback(cases) is accepted_prior_checks
+    with pytest.raises(ValueError, match="^pytest_required_execution_not_verified$"):
+        readback([name for name in cases if name != removed])
+
+
 @pytest.mark.parametrize("index", [True, False, -1, 2, "0"])
 def test_pg2_source_selector_refuses_noncanonical_component_index(index):
     assert selection.postgres_paths(0)
@@ -423,6 +458,120 @@ def test_actual_pg2_collection_hooks_write_selected_observed_and_exact_junit(
     assert record["shard_index"] is None
     assert record["full_nodeids"] == full
     assert record["selected_nodeids"] == record["observed_nodeids"] == expected
+
+
+def test_current56_enables_progress_only_for_postgres_without_filtering():
+    for mode, index in (("postgres", 0), ("postgres", 1), ("shard", 1), ("full", None)):
+        command = current56._test_command(mode, index)
+        assert command[-1] == "tests"
+        assert (selection.POSTGRES_PROGRESS_OPTION in command) == (mode == "postgres")
+        assert "-k" not in command and "-m" not in command[3:]
+
+
+def test_postgres_progress_preserves_crash_prefix_and_redacts_nodeids(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(selection, "_OBSERVED", set())
+    path = tmp_path / "postgres-progress.log"
+    monkeypatch.setattr(selection, "POSTGRES_PROGRESS_PATH", path)
+    collection = tmp_path / "postgres-collection.json"
+    selected = [
+        f"{selection.FITTED_CUSTODY_TEST_PATH}::test_synthetic[param-plain-{index}]"
+        for index in (0, 1)
+    ]
+    other = "tests/unit/test_offline.py::test_not_selected"
+    full = [selected[0], other, selected[1]]
+    options = {
+        "--ctcc-linux-suite": "postgres",
+        "--ctcc-linux-shard-index": None,
+        "--ctcc-linux-postgres-component-index": 1,
+        "--ctcc-linux-collection-json": str(collection),
+    }
+    manager = pytest.PytestPluginManager()
+    config = SimpleNamespace(
+        getoption=options.__getitem__,
+        rootpath=tmp_path,
+        option=SimpleNamespace(ctcc_linux_postgres_progress=True),
+        pluginmanager=manager,
+        hook=SimpleNamespace(pytest_deselected=lambda **_kwargs: None),
+    )
+    session = SimpleNamespace()
+    items = [
+        SimpleNamespace(nodeid=nodeid, path=tmp_path / nodeid.split("::", 1)[0])
+        for nodeid in full
+    ]
+    synced = []
+    real_fsync = selection.os.fsync
+
+    def fsync(fd):
+        real_fsync(fd)
+        synced.append(fd)
+
+    monkeypatch.setattr(selection.os, "fsync", fsync)
+    selection.pytest_collection_modifyitems(session, config, items)
+    assert [item.nodeid for item in items] == selected
+    assert session._ctcc_linux_collection["selected_nodeids"] == selected
+    assert manager.get_plugin("ctcc_postgres_case_progress") is not None
+    location = (selection.FITTED_CUSTODY_TEST_PATH, 0, "synthetic")
+    try:
+        manager.hook.pytest_runtest_logstart(nodeid=selected[0], location=location)
+        manager.hook.pytest_runtest_logfinish(nodeid=selected[0], location=location)
+        manager.hook.pytest_runtest_logstart(nodeid=selected[1], location=location)
+        # Simulate an unexpected exit before case_finish and sessionfinish.
+        raw = path.read_bytes()
+        assert not collection.exists()
+        assert len(synced) == 4 + (selection.os.name == "posix")
+        assert b"param-plain" not in raw and b"test_synthetic" not in raw
+        rows = [json.loads(line) for line in raw.splitlines()]
+        selected_bytes = json.dumps(selected, separators=(",", ":")).encode("ascii")
+        assert rows[0] == {
+            "schema": "ctcc.linux_postgres_progress.v1",
+            "event": "collection",
+            "postgres_component_index": 1,
+            "selected_count": 2,
+            "selected_order_sha256": _sha(selected_bytes),
+        }
+        assert rows[1:] == [
+            {
+                "event": event,
+                "selection_index": ordinal,
+                "source_module": selection.FITTED_CUSTODY_TEST_PATH,
+                "node_sha256": _sha(selected[ordinal].encode("utf-8")),
+            }
+            for event, ordinal in (
+                ("case_start", 0),
+                ("case_finish", 0),
+                ("case_start", 1),
+            )
+        ]
+        with pytest.raises(FileExistsError):
+            selection._PostgresCaseProgress(path, 1, selected)
+        assert path.read_bytes() == raw
+    finally:
+        manager.hook.pytest_unconfigure(config=config)
+
+
+def test_postgres_progress_option_rejects_a_collection_outside_its_mount(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(
+        selection,
+        "POSTGRES_PROGRESS_PATH",
+        tmp_path / "test-results" / "postgres-progress.log",
+    )
+    options = {
+        "--ctcc-linux-suite": "postgres",
+        "--ctcc-linux-shard-index": None,
+        "--ctcc-linux-postgres-component-index": 1,
+        "--ctcc-linux-collection-json": str(tmp_path / "postgres-collection.json"),
+    }
+    config = SimpleNamespace(
+        getoption=options.__getitem__,
+        option=SimpleNamespace(ctcc_linux_postgres_progress=True),
+    )
+    with pytest.raises(ValueError, match="^postgres_progress_scope_invalid$"):
+        selection.pytest_collection_modifyitems(SimpleNamespace(), config, [])
+    assert not selection.POSTGRES_PROGRESS_PATH.exists()
 
 
 def test_actual_pg2_sessionfinish_cannot_claim_unobserved_selected_case(

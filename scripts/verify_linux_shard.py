@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 
 DEVVAL_CUSTODY_TEST_PATH = "tests/integration/test_devval_campaign_custody_pg_v1.py"
@@ -108,6 +109,8 @@ POSTGRES_TEST_PATHS = frozenset(
 SHARD_COUNT = 8
 POSTGRES_COMPONENT_COUNT = 2
 POSTGRES_COMPONENT_SCHEMA = "ctcc.linux_postgres_component_collection.v1"
+POSTGRES_PROGRESS_PATH = Path("/validation-results/postgres-progress.log")
+POSTGRES_PROGRESS_OPTION = "--ctcc-linux-postgres-progress"
 POSTGRES_ANCHOR_PATHS = frozenset(
     {
         "tests/integration/test_controlled_writer_coverage_repository.py",
@@ -116,6 +119,80 @@ POSTGRES_ANCHOR_PATHS = frozenset(
     }
 )
 _OBSERVED: set[str] = set()
+
+
+class _PostgresCaseProgress:
+    """Keep an append-only diagnostic independent of pytest finalizers."""
+
+    def __init__(self, path: Path, index: int, selected: list[str]):
+        self._cases = {
+            nodeid: {
+                "selection_index": ordinal,
+                "source_module": nodeid.split("::", 1)[0],
+                "node_sha256": hashlib.sha256(nodeid.encode("utf-8")).hexdigest(),
+            }
+            for ordinal, nodeid in enumerate(selected)
+        }
+        selected_bytes = json.dumps(selected, separators=(",", ":")).encode("ascii")
+        fd = os.open(
+            path,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | os.O_APPEND
+            | getattr(os, "O_BINARY", 0),
+            0o644,
+        )
+        try:
+            if os.name == "posix":
+                os.fchmod(fd, 0o644)  # The host retains this redacted diagnostic.
+            self._stream = os.fdopen(fd, "wb", buffering=0)
+        except BaseException:
+            os.close(fd)
+            raise
+        try:
+            self._write(
+                {
+                    "schema": "ctcc.linux_postgres_progress.v1",
+                    "event": "collection",
+                    "postgres_component_index": index,
+                    "selected_count": len(selected),
+                    "selected_order_sha256": hashlib.sha256(selected_bytes).hexdigest(),
+                }
+            )
+            if os.name == "posix":
+                directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    os.fsync(directory)
+                finally:
+                    os.close(directory)
+        except BaseException:
+            self._stream.close()
+            raise
+
+    def _write(self, record):
+        line = (
+            json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n"
+        ).encode("ascii")
+        if self._stream.write(line) != len(line):
+            raise OSError("postgres_progress_short_write")
+        self._stream.flush()
+        os.fsync(self._stream.fileno())
+
+    def _case(self, event, nodeid):
+        case = self._cases.get(nodeid)
+        if case is None:
+            raise ValueError("postgres_progress_case_invalid")
+        self._write({"event": event, **case})
+
+    def pytest_runtest_logstart(self, nodeid):
+        self._case("case_start", nodeid)
+
+    def pytest_runtest_logfinish(self, nodeid):
+        self._case("case_finish", nodeid)
+
+    def pytest_unconfigure(self):
+        self._stream.close()
 
 
 def module_shard(path: str) -> int:
@@ -172,11 +249,17 @@ def pytest_addoption(parser):
     group.addoption("--ctcc-linux-shard-index", type=int)
     group.addoption("--ctcc-linux-postgres-component-index", type=int)
     group.addoption("--ctcc-linux-collection-json")
+    group.addoption(POSTGRES_PROGRESS_OPTION, action="store_true", default=False)
 
 
 def pytest_collection_modifyitems(session, config, items):
     mode = config.getoption("--ctcc-linux-suite")
+    retain_progress = getattr(
+        getattr(config, "option", None), "ctcc_linux_postgres_progress", False
+    )
     if mode is None:
+        if retain_progress:
+            raise ValueError("postgres_progress_scope_invalid")
         return
     shard_index = config.getoption("--ctcc-linux-shard-index")
     pg_index = config.getoption("--ctcc-linux-postgres-component-index")
@@ -202,6 +285,12 @@ def pytest_collection_modifyitems(session, config, items):
         )
     ):
         raise ValueError("linux_shard_arguments_invalid")
+    if retain_progress and (
+        mode != "postgres"
+        or pg_index is None
+        or Path(target).parent != POSTGRES_PROGRESS_PATH.parent
+    ):
+        raise ValueError("postgres_progress_scope_invalid")
     full = [item.nodeid for item in items]
     if not full or len(full) != len(set(full)):
         raise ValueError("linux_full_collection_missing_or_duplicate")
@@ -233,6 +322,21 @@ def pytest_collection_modifyitems(session, config, items):
             postgres_component_role="anchor" if pg_index == 0 else "cases_only",
         )
     session._ctcc_linux_collection_path = Path(target)
+    if retain_progress:
+        progress = _PostgresCaseProgress(
+            POSTGRES_PROGRESS_PATH,
+            pg_index,
+            session._ctcc_linux_collection["selected_nodeids"],
+        )
+        try:
+            if (
+                config.pluginmanager.register(progress, "ctcc_postgres_case_progress")
+                is None
+            ):
+                raise ValueError("postgres_progress_plugin_unavailable")
+        except BaseException:
+            progress.pytest_unconfigure()
+            raise
 
 
 def pytest_runtest_logreport(report):
