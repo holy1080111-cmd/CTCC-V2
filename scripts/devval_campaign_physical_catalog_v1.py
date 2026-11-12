@@ -13,7 +13,10 @@ import json
 import os
 import re
 import stat
+import sys
 from pathlib import Path
+
+from scripts.evidence_json import read_evidence_json
 
 SOURCE = Path(__file__).resolve().parents[1]
 SQL_PINS = {
@@ -22,6 +25,13 @@ SQL_PINS = {
 }
 EXPECTED_CATALOG_SHA256 = ""  # No native reference has been admitted.
 SCHEMA = "ctcc.devval.campaign.physical_catalog.v1"
+HERMETIC_CATALOG_ENV = "CTCC_DEVVAL_RETAIN_HERMETIC_CATALOGS"
+HERMETIC_CATALOG_FILE = "devval-campaign-native-catalogs.json"
+MAX_HERMETIC_CATALOG_BYTES = 256 * 1024
+HERMETIC_CATALOG_CASE = (
+    "tests.integration.test_devval_campaign_custody_pg_v1",
+    "test_two_fresh_tls_campaign_catalogs_match_and_drift_is_refused",
+)
 SERVER_BUILD = (
     "PostgreSQL 17.11 on x86_64-windows, compiled by msvc-19.44.35229, 64-bit"
 )
@@ -358,7 +368,11 @@ def catalog_digest(document: dict) -> str:
 
 
 def inspect_catalog_document(document: dict) -> str:
-    """Pure physical shape/body check; fingerprint is diagnostic only."""
+    """Pure physical shape/body check for the fixed production profile."""
+    return _inspect_catalog_document(document, server_build=SERVER_BUILD)
+
+
+def _inspect_catalog_document(document: dict, *, server_build: str) -> str:
     _need(type(document) is dict, "campaign_catalog_document_invalid")
     _need(
         len(_canonical(document)) <= 1_000_000,
@@ -369,7 +383,7 @@ def inspect_catalog_document(document: dict) -> str:
         and document.get("database") == "ctcc_devval_campaign"
         and document.get("actor") == document.get("login") == "ctcc"
         and document.get("version") == "170011"
-        and document.get("build") == SERVER_BUILD
+        and document.get("build") == server_build
         and document.get("tls") is True
         and document.get("durable") is True
         and document.get("has_alembic") is False
@@ -496,6 +510,123 @@ def inspect_catalog_document(document: dict) -> str:
     )
     digest = catalog_digest(document)
     return digest
+
+
+def verify_hermetic_linux_catalogs(raw: bytes) -> None:
+    """Recompute both diagnostic fingerprints without admitting a profile."""
+    _need(
+        type(raw) is bytes and 0 < len(raw) <= MAX_HERMETIC_CATALOG_BYTES,
+        "campaign_catalog_evidence_size",
+    )
+    evidence = read_evidence_json(raw)
+    _need(
+        type(evidence) is dict
+        and _canonical(evidence) == raw
+        and set(evidence)
+        == {
+            "schema",
+            "case",
+            "scope",
+            "sql_sha256",
+            "server_build",
+            "catalogs",
+            "windows_reference_admitted",
+            "execution_authority",
+        }
+        and evidence["schema"] == "ctcc.devval.hermetic_linux_catalog_pair.v1"
+        and evidence["case"] == list(HERMETIC_CATALOG_CASE)
+        and evidence["scope"] == "two_disposable_linux_tls_installations"
+        and evidence["sql_sha256"] == SQL_PINS
+        and evidence["windows_reference_admitted"] is False
+        and evidence["execution_authority"] is False,
+        "campaign_catalog_evidence_identity",
+    )
+    build = evidence["server_build"]
+    _need(
+        type(build) is str
+        and re.fullmatch(
+            r"PostgreSQL 17\.11(?: [^\r\n]{1,160})? on [\w.+-]*linux[\w.+-]*, compiled by [^\r\n]{1,160}, 64-bit",
+            build,
+            flags=re.ASCII,
+        )
+        is not None,
+        "campaign_catalog_evidence_not_linux_pg17_11",
+    )
+    rows = evidence["catalogs"]
+    _need(type(rows) is list and len(rows) == 2, "campaign_catalog_evidence_pair")
+    for row in rows:
+        _need(
+            type(row) is dict
+            and set(row)
+            == {
+                "document",
+                "catalog_sha256",
+                "native_document_sha256",
+                "fixture_database_sha256",
+            }
+            and all(
+                type(row[key]) is str and _HEX.fullmatch(row[key]) is not None
+                for key in (
+                    "catalog_sha256",
+                    "native_document_sha256",
+                    "fixture_database_sha256",
+                )
+            ),
+            "campaign_catalog_evidence_row",
+        )
+        _need(
+            _inspect_catalog_document(row["document"], server_build=build)
+            == row["catalog_sha256"],
+            "campaign_catalog_evidence_hash_changed",
+        )
+    first, second = rows
+    _need(
+        first["document"] == second["document"]
+        and first["catalog_sha256"] == second["catalog_sha256"]
+        and first["native_document_sha256"] != second["native_document_sha256"]
+        and first["fixture_database_sha256"] != second["fixture_database_sha256"],
+        "campaign_catalog_evidence_pair",
+    )
+
+
+def retain_hermetic_linux_catalogs(first_native, first_doc, second_native, second_doc):
+    """Opt-in test-only output in the existing fixed hermetic results mount."""
+    from app.trade_evidence.storage import _posix_root, _root_path
+
+    _need(sys.platform == "linux", "campaign_catalog_evidence_not_linux_pg17_11")
+    rows = [
+        {
+            "document": normalized,
+            "catalog_sha256": catalog_digest(normalized),
+            "native_document_sha256": catalog_digest(native),
+            "fixture_database_sha256": catalog_digest(
+                {"fixture_database": native["database"]}
+            ),
+        }
+        for native, normalized in (
+            (first_native, first_doc),
+            (second_native, second_doc),
+        )
+    ]
+    raw = _canonical(
+        {
+            "schema": "ctcc.devval.hermetic_linux_catalog_pair.v1",
+            "case": HERMETIC_CATALOG_CASE,
+            "scope": "two_disposable_linux_tls_installations",
+            "sql_sha256": SQL_PINS,
+            "server_build": first_native["build"],
+            "catalogs": rows,
+            "windows_reference_admitted": False,
+            "execution_authority": False,
+        }
+    )
+    verify_hermetic_linux_catalogs(raw)
+    with _posix_root(_root_path(Path("/validation-results"))) as results:
+        results.publish(HERMETIC_CATALOG_FILE, raw)
+        _need(
+            results.read(HERMETIC_CATALOG_FILE, MAX_HERMETIC_CATALOG_BYTES) == raw,
+            "campaign_catalog_evidence_readback",
+        )
 
 
 def validate_catalog_document(document: dict) -> str:

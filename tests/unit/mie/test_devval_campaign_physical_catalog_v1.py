@@ -1,9 +1,12 @@
 """Pure synthetic controls; no PostgreSQL, TLS or private material is opened."""
 
 import copy
+import xml.etree.ElementTree as ET
+from hashlib import sha256
 
 import pytest
 
+from scripts import current0056_hermetic_contract as current56
 from scripts import devval_campaign_physical_catalog_v1 as catalog
 
 
@@ -148,3 +151,87 @@ def test_observer_refuses_before_any_connection_without_native_reference():
 
     with pytest.raises(catalog.CatalogRefusal, match="catalog_reference_unsealed"):
         asyncio.run(catalog.observe_catalog(NoConnect()))
+
+
+def _linux_catalog_pair():
+    document = _document()
+    document["build"] = (
+        "PostgreSQL 17.11 (Debian 17.11-1.pgdg13+1) on x86_64-pc-linux-gnu, "
+        "compiled by gcc 14.2.0, 64-bit"
+    )
+    return {
+        "schema": "ctcc.devval.hermetic_linux_catalog_pair.v1",
+        "case": list(catalog.HERMETIC_CATALOG_CASE),
+        "scope": "two_disposable_linux_tls_installations",
+        "sql_sha256": dict(catalog.SQL_PINS),
+        "server_build": document["build"],
+        "catalogs": [
+            {
+                "document": copy.deepcopy(document),
+                "catalog_sha256": catalog.catalog_digest(document),
+                "native_document_sha256": str(index) * 64,
+                "fixture_database_sha256": str(index + 2) * 64,
+            }
+            for index in (1, 2)
+        ],
+        "windows_reference_admitted": False,
+        "execution_authority": False,
+    }
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["missing_catalog", "same_install", "changed_hash", "repinned_body", "promoted"],
+)
+def test_hermetic_pair_checks_both_catalogs_without_admitting_windows(mutation):
+    document = _linux_catalog_pair()
+    catalog.verify_hermetic_linux_catalogs(catalog._canonical(document))
+    assert catalog.EXPECTED_CATALOG_SHA256 == ""
+    first, second = document["catalogs"]
+    if mutation == "missing_catalog":
+        document["catalogs"].pop()
+    elif mutation == "same_install":
+        second["fixture_database_sha256"] = first["fixture_database_sha256"]
+    elif mutation == "changed_hash":
+        second["catalog_sha256"] = "e" * 64
+    elif mutation == "repinned_body":
+        second["document"]["functions"][0]["source_sha256"] = "e" * 64
+        second["catalog_sha256"] = catalog.catalog_digest(second["document"])
+    else:
+        document["windows_reference_admitted"] = True
+    with pytest.raises(catalog.CatalogRefusal):
+        catalog.verify_hermetic_linux_catalogs(catalog._canonical(document))
+
+
+def test_current56_binds_linux_catalog_pair_to_the_exact_passing_junit(tmp_path):
+    artifact = f"test-results/{catalog.HERMETIC_CATALOG_FILE}"
+    assert artifact in current56.component_artifacts("postgres", 1)
+    assert artifact in current56.component_artifacts("full", None)
+    assert artifact not in current56.component_artifacts("postgres", 0)
+    assert artifact not in current56.component_artifacts("shard", 1)
+    evidence = tmp_path / artifact
+    evidence.parent.mkdir()
+    evidence.write_bytes(catalog._canonical(_linux_catalog_pair()))
+    junit_path, _ = current56.component_report_paths("postgres", 1)
+    junit = tmp_path / junit_path
+    suites = ET.Element("testsuites")
+    suite = ET.SubElement(
+        suites, "testsuite", tests="1", failures="0", errors="0", skipped="0"
+    )
+    module, case_name = catalog.HERMETIC_CATALOG_CASE
+    case = ET.SubElement(suite, "testcase", classname=module, name=case_name)
+    report = ET.tostring(suites)
+    junit.write_bytes(report)
+    identity = {"tests": {"sha256": sha256(report).hexdigest()}}
+    files = {name: {"sha256": digest} for name, digest in catalog.SQL_PINS.items()}
+    current56._verify_devval_catalog_evidence(tmp_path, "postgres", 1, identity, files)
+    with pytest.raises(ValueError, match="source_or_test_changed"):
+        current56._verify_devval_catalog_evidence(tmp_path, "postgres", 1, identity, {})
+    case.set("name", "test_other_success")
+    report = ET.tostring(suites)
+    junit.write_bytes(report)
+    identity["tests"]["sha256"] = sha256(report).hexdigest()
+    with pytest.raises(ValueError, match="pytest_required_execution_not_verified"):
+        current56._verify_devval_catalog_evidence(
+            tmp_path, "postgres", 1, identity, files
+        )

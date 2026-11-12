@@ -549,3 +549,8 @@ async def test_two_fresh_tls_campaign_catalogs_match_and_drift_is_refused(
         )
         with pytest.raises(catalog.CatalogRefusal, match="function_changed"):
             catalog.validate_catalog_document(changed_body)
+
+    if os.environ.get(catalog.HERMETIC_CATALOG_ENV) == "1":
+        catalog.retain_hermetic_linux_catalogs(
+            first_native, first_doc, second_native, second_doc
+        )

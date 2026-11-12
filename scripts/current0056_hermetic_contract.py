@@ -8,6 +8,7 @@ import tarfile
 from pathlib import Path
 
 from scripts import current0055_hermetic_contract as previous
+from scripts import devval_campaign_physical_catalog_v1 as devval_catalog
 from scripts import verify_final_hermetic as shared
 from scripts.current0055_catalog_receipt import verify_current55_catalog_report
 from scripts.current0056_migration_pin import (
@@ -20,7 +21,11 @@ from scripts.current0056_migration_pin import (
     PARENT_INVENTORY_SHA256,
 )
 from scripts.evidence_json import read_evidence_json
-from scripts.verify_linux_shard import FITTED_CUSTODY_TEST_PATH
+from scripts.verify_linux_shard import (
+    DEVVAL_CUSTODY_TEST_PATH,
+    FITTED_CUSTODY_TEST_PATH,
+    postgres_paths,
+)
 
 RUNNER_CONTRACT = "ctcc.current0056.hermetic.v1"
 RUNNER_PATH = "scripts/verify_current0056_hermetic.py"
@@ -93,13 +98,42 @@ def component_stage_names(mode, index):
     )
 
 
+def requires_devval_catalog(mode, index):
+    return mode in {"postgres", "full"} and DEVVAL_CUSTODY_TEST_PATH in postgres_paths(
+        index
+    )
+
+
 def component_artifacts(mode, index):
     artifacts = previous.component_artifacts(mode, index)
+    if requires_devval_catalog(mode, index):
+        artifacts.add(f"test-results/{devval_catalog.HERMETIC_CATALOG_FILE}")
     if component_is_anchor(mode, index):
         artifacts.update(
             f"{stage}.log" for stage in (*_PARENT_UPGRADE, *_EMPTY_ROUNDTRIP)
         )
     return artifacts
+
+
+def _verify_devval_catalog_evidence(root, mode, index, identity, files):
+    junit, _ = component_report_paths(mode, index)
+    checked = shared.verify_pytest_report(
+        root / junit,
+        required_cases=(devval_catalog.HERMETIC_CATALOG_CASE,),
+        allow_unrelated_skips=mode == "full",
+    )
+    if checked["sha256"] != identity["tests"]["sha256"] or any(
+        files.get(path, {}).get("sha256") != pin
+        for path, pin in devval_catalog.SQL_PINS.items()
+    ):
+        raise ValueError("current56_devval_catalog_source_or_test_changed")
+    devval_catalog.verify_hermetic_linux_catalogs(
+        _read(
+            root,
+            f"test-results/{devval_catalog.HERMETIC_CATALOG_FILE}",
+            maximum=devval_catalog.MAX_HERMETIC_CATALOG_BYTES,
+        )
+    )
 
 
 def migration_digest(files):
@@ -368,6 +402,8 @@ def verify_current56_component(
         raise ValueError("current56_component_migration_not_bound")
     _cleanup(_read(root, "cleanup.json"), prefix, anchor=anchor)
     selection = _collection(root, mode, index, identity)
+    if requires_devval_catalog(mode, index):
+        _verify_devval_catalog_evidence(root, mode, index, identity, files)
     if anchor:
         catalog = verify_current55_catalog_report(root / CATALOG_REPORT)
         recovery = shared.verify_pytest_report(

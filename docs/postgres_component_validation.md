@@ -64,3 +64,9 @@ This observation keeps startup admission at `DENY`. A full deployment
 requires native catalog evidence and an independently verified startup
 readback with the API's restricted credentials. The owner connection belongs
 only to the isolated test or reviewed provisioning process.
+
+The current DB0056 PG1 and monolithic runs retain the two normalized Linux
+PG17.11 catalogs from the Development/Validation TLS drift test. The component
+verifier checks both catalogs, the SQL source digests, and the passing JUnit
+case before accepting the component. The receipt carries the diagnostic Linux
+build. The Windows production profile still requires its own native reference.

@@ -12,6 +12,7 @@ from uuid import uuid4
 from scripts import current0056_hermetic_contract as contract
 from scripts import verify_final_hermetic as shared
 from scripts.current0055_catalog_receipt import verify_current55_catalog_report
+from scripts.devval_campaign_physical_catalog_v1 import HERMETIC_CATALOG_ENV
 from scripts.devval_hermetic_tls import devval_tls
 from scripts.evidence_json import read_evidence_json
 from scripts.verify_current0055_hermetic import (
@@ -26,17 +27,14 @@ from scripts.verify_current0055_hermetic import (
     _isolated_client,
     _write,
 )
-from scripts.verify_linux_shard import (
-    DEVVAL_CUSTODY_TEST_PATH,
-    POSTGRES_PROGRESS_OPTION,
-    postgres_paths,
-)
+from scripts.verify_linux_shard import POSTGRES_PROGRESS_OPTION
 
 _EXACT_HOST_HELPERS = (
     "current0055_catalog_receipt.py",
     "current0055_hermetic_contract.py",
     "current0056_hermetic_contract.py",
     "current0056_migration_pin.py",
+    "devval_campaign_physical_catalog_v1.py",
     "devval_hermetic_tls.py",
     "evidence_json.py",
     "verify_current0055_hermetic.py",
@@ -202,9 +200,7 @@ def _run(args, index, raw, files, runner_sha, root):
     run = shared.Run(root)
     resources = []
     anchor = contract.component_is_anchor(args.suite, index)
-    needs_devval_tls = (
-        args.suite != "shard" and DEVVAL_CUSTODY_TEST_PATH in postgres_paths(index)
-    )
+    needs_devval_tls = contract.requires_devval_catalog(args.suite, index)
     tls_resources = ExitStack()
 
     def command(stage, *command_args, **options):
@@ -444,6 +440,7 @@ def _run(args, index, raw, files, runner_sha, root):
                 "-e",
                 "CTCC_B3_SCALE_RECEIPT_DIR=/validation-results",
                 *(tls.pytest_environment if tls else ()),
+                *(("-e", f"{HERMETIC_CATALOG_ENV}=1") if needs_devval_tls else ()),
             ),
             timeout=shared.FULL_TEST_TIMEOUT_SECONDS,
         )
