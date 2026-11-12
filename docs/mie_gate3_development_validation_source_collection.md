@@ -499,6 +499,16 @@ before the next 5m close. For a future joint replay, retain both symbols'
 measured minute availability and companion readback times. Apply the
 same decision time to both and retain any missing or rejected event.
 
+`audit_devval_joint_companion_coverage_v1` uses the verified schedule and
+batch digests to replay both companions at the later of the two measured
+aggregate availability times and the two companion readbacks. The audit
+compares the overlapping closed 15m, 1H and 4H bars, including volume in
+contracts. It records every scheduled event and its per-symbol status.
+An event receives a joint decision time only after both market replays
+pass at that time. This computational report leaves the original study
+unchanged. Independent custody and a separately preregistered joint
+study replay remain required for predictive evaluation.
+
 The adapter checks the post-readback sample against the pinned summary clock,
 the capture deadline and the decision time. It requires fresh quote, book,
 mark, funding, open interest and WS observations, plus the exact 4H, 1H, 15m
