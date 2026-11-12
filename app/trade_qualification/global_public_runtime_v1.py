@@ -353,14 +353,21 @@ class GlobalPublicCaptureV1:
     qualification_performed: Literal[False] = field(default=False, init=False)
 
 
-def _post_readback_receipt(packet, plan_sha256, journal_sha256, sample):
+def _post_readback_receipt(
+    *,
+    instrument_id: str,
+    plan_sha256: str,
+    journal_sha256: str,
+    packet_sha256: str,
+    sample: ClockStamp,
+) -> bytes:
     return canonical(
         {
             "schema_version": "ctcc.public.global_post_readback_sample.v1",
-            "instrument_id": packet.instrument_id,
+            "instrument_id": instrument_id,
             "plan_sha256": plan_sha256,
             "journal_sha256": journal_sha256,
-            "packet_sha256": packet.bundle_sha256,
+            "packet_sha256": packet_sha256,
             "sample": sample.model_dump(),
         }
     )
@@ -429,7 +436,11 @@ async def capture_initial_global_public_market_v1(
             journal_pin,
             packet,
             post_readback_receipt_json=_post_readback_receipt(
-                packet, plan_pin, journal_pin, ClockStamp.model_validate(sample)
+                instrument_id=packet.instrument_id,
+                plan_sha256=plan_pin,
+                journal_sha256=journal_pin,
+                packet_sha256=packet.bundle_sha256,
+                sample=ClockStamp.model_validate(sample),
             ),
         )
     except asyncio.CancelledError:
@@ -443,7 +454,11 @@ async def capture_initial_global_public_market_v1(
 
 
 def read_global_public_capture_v1(
-    root, *, expected_plan_sha256, expected_journal_sha256
+    root,
+    *,
+    expected_plan_sha256,
+    expected_journal_sha256,
+    expected_root_identity: tuple[int, int] | None = None,
 ):
     """Reopen exact original bytes; audit data cannot issue another capture."""
     if (
@@ -453,11 +468,29 @@ def read_global_public_capture_v1(
             type(pin) is not str or re.fullmatch(r"[a-f0-9]{64}", pin) is None
             for pin in (expected_plan_sha256, expected_journal_sha256)
         )
+        or (
+            expected_root_identity is not None
+            and (
+                type(expected_root_identity) is not tuple
+                or len(expected_root_identity) != 2
+                or any(type(value) is not int for value in expected_root_identity)
+            )
+        )
     ):
         raise GlobalPublicCaptureError("global_public_readback_unavailable")
     try:
         identity = runtime._native_recheck_root_identity(root)
+        if expected_root_identity is not None and identity != expected_root_identity:
+            raise GlobalPublicCaptureError("global_public_journal_readback_changed")
         with runtime._reopen_runtime_journal(root) as directory:
+            if hasattr(directory, "fd"):
+                held = os.fstat(directory.fd)
+                if identity != (held.st_dev, held.st_ino):
+                    raise GlobalPublicCaptureError(
+                        "global_public_journal_readback_changed"
+                    )
+            if runtime._native_recheck_root_identity(root) != identity:
+                raise GlobalPublicCaptureError("global_public_journal_readback_changed")
             plan = directory.read("plan.json", journal.MAX_RAW)
             summary = directory.read("summary.json", journal.MAX_RAW)
             if (
@@ -478,6 +511,8 @@ def read_global_public_capture_v1(
                 or runtime._native_recheck_root_identity(root) != identity
             ):
                 raise GlobalPublicCaptureError("global_public_journal_readback_changed")
+        if runtime._native_recheck_root_identity(root) != identity:
+            raise GlobalPublicCaptureError("global_public_journal_readback_changed")
         return GlobalPublicCaptureV1(
             "initial_global_public_replayed",
             expected_plan_sha256,

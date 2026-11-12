@@ -134,6 +134,7 @@ def test_public_source_has_only_explicit_reviewed_consumers():
                     ("MAX_RAW", None),
                     ("MINUTE_NS", None),
                     ("MeasuredPublicMinuteReceiptV1", None),
+                    ("PublicMinuteCapturePlanV1", None),
                     ("PublicReceiptError", None),
                     ("parsed_rows", None),
                     ("row_content_sha", None),
@@ -164,6 +165,16 @@ def test_public_source_has_only_explicit_reviewed_consumers():
         ),
         APP / "trade_qualification" / "global_public_runtime_v1.py": (
             ("app.public_market_source", (("public_runtime_journal", "journal"),)),
+        ),
+        APP / "trade_qualification" / "global_public_capture_companion_v1.py": (
+            (
+                "app.public_market_source.public_market_receipts",
+                (("ReceiptContract", None), ("Sha", None), ("checked", None)),
+            ),
+            (
+                "app.public_market_source.public_receipt_storage",
+                (("NATIVE_DEVICE_MAX", None), ("NATIVE_INODE_MAX", None)),
+            ),
         ),
     }
     current_custody_imports = {
@@ -581,6 +592,10 @@ def test_public_source_has_only_explicit_reviewed_consumers():
             "global_public_runtime_v1.py",
             "from app.public_market_source.public_market_capture import capture_public_market",
         ),
+        (
+            "global_public_capture_companion_v1.py",
+            "from app.public_market_source.public_receipt_storage import initialize_public_receipt_journal",
+        ),
     ],
 )
 def test_native_public_replay_consumers_reject_unreviewed_import(
@@ -892,6 +907,7 @@ def test_runtime_consumers_cannot_access_private_writes_or_execution_authority()
     for filename in (
         "public_source_runtime.py",
         "global_public_runtime_v1.py",
+        "global_public_capture_companion_v1.py",
         "post_g12_public_runtime.py",
         "qualification_runtime.py",
     ):

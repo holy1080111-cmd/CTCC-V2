@@ -467,6 +467,23 @@ after its sealed journal readback. Retain those exact sample bytes and their
 digest separately from the journal. The pre-seal summary clock alone cannot
 satisfy the replay cutoff.
 
+`capture_global_public_with_companion_v1` uses one anonymous capture and
+publishes that sample as `post-readback.json` in a separate pre-existing,
+empty service-owned directory. The original journal retains its exact file
+inventory. Publication first reopens that journal and verifies its pinned
+bytes and native directory identity. Retain the returned canonical
+publication bytes and their digest independently. After restart,
+`replay_legacy_baseline_market_from_companion_v1` verifies the publication
+digest and both native directory identities, then reopens the exact
+companion and raw journal.
+
+The companion uses the existing exclusive-create, file flush and readback
+boundary. A partial write or a missing digest prevents replay. The original
+capture and any partial file remain available for inspection. The recorded
+clock measures completion of the original journal readback. Independent
+publication-time evidence is required for a claim about when the companion
+itself could be read.
+
 The adapter checks the post-readback sample against the pinned summary clock,
 the capture deadline and the decision time. It requires fresh quote, book,
 mark, funding, open interest and WS observations, plus the exact 4H, 1H, 15m

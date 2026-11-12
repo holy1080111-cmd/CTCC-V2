@@ -21,8 +21,7 @@ from tests.unit.test_qualification_one_shot import ms
 from tests.unit.test_qualification_public_market_collector import policy
 
 
-async def capture(owned_global, root, *, funding_state="current"):
-    directory, harness = owned_global
+def configure_funding_server(harness, *, funding_state="current"):
     original = harness.public
 
     def server(request):
@@ -47,6 +46,11 @@ async def capture(owned_global, root, *, funding_state="current"):
         return rows
 
     harness.public = server
+
+
+async def capture(owned_global, root, *, funding_state="current"):
+    directory, harness = owned_global
+    configure_funding_server(harness, funding_state=funding_state)
     recorded = await public.capture_initial_global_public_market_v1(
         root,
         instrument_id="BTC-USDT-SWAP",

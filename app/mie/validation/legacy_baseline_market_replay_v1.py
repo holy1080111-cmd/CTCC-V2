@@ -24,6 +24,11 @@ from app.trade_qualification import candle_collector as candles
 from app.trade_qualification import global_public_runtime_v1 as public
 from app.trade_qualification import quote_collector as quotes
 from app.trade_qualification.funding_observation_v2 import parse_funding_observation_v2
+from app.trade_qualification.global_public_capture_companion_v1 import (
+    GlobalPublicCompanionError,
+    read_global_public_companion_v1,
+    verify_global_public_companion_publication_v1,
+)
 
 
 class LegacyBaselineMarketReplayError(ValueError):
@@ -55,6 +60,7 @@ def replay_legacy_baseline_market_v1(
     expected_market_policy_sha256: str,
     post_readback_receipt_json: bytes,
     expected_post_readback_receipt_sha256: str,
+    expected_journal_root_identity: tuple[int, int] | None = None,
 ) -> ReplayedLegacyBaselineMarketV1:
     """Join independently retained pins to a reopened native public journal."""
     if (
@@ -81,6 +87,7 @@ def replay_legacy_baseline_market_v1(
             root,
             expected_plan_sha256=expected_plan_sha256,
             expected_journal_sha256=expected_journal_sha256,
+            expected_root_identity=expected_journal_root_identity,
         )
         packet = capture.packet
         completion_sample = capture.journal_completion_sample
@@ -93,7 +100,11 @@ def replay_legacy_baseline_market_v1(
         ):
             raise LegacyBaselineMarketReplayError("legacy_market_source_scope_changed")
         if post_readback_receipt_json != public._post_readback_receipt(
-            packet, expected_plan_sha256, expected_journal_sha256, readback_sample
+            instrument_id=instrument_id,
+            plan_sha256=expected_plan_sha256,
+            journal_sha256=expected_journal_sha256,
+            packet_sha256=expected_packet_sha256,
+            sample=readback_sample,
         ):
             raise LegacyBaselineMarketReplayError(
                 "legacy_market_post_readback_scope_changed"
@@ -211,3 +222,38 @@ def replay_legacy_baseline_market_v1(
     except (ValueError, TypeError, AttributeError, KeyError, ArithmeticError):
         raise LegacyBaselineMarketReplayError("legacy_market_replay_refused") from None
     return ReplayedLegacyBaselineMarketV1(market, receipt)
+
+
+def replay_legacy_baseline_market_from_companion_v1(
+    journal_root: Path,
+    companion_root: Path,
+    *,
+    publication_json: bytes,
+    expected_publication_sha256: str,
+    decision_at: datetime,
+) -> ReplayedLegacyBaselineMarketV1:
+    """Reopen the pinned companion after restart before replaying the raw journal."""
+    try:
+        publication = verify_global_public_companion_publication_v1(
+            publication_json, expected_sha256=expected_publication_sha256
+        )
+        raw = read_global_public_companion_v1(
+            journal_root, companion_root, publication=publication
+        )
+        result = replay_legacy_baseline_market_v1(
+            journal_root,
+            instrument_id=publication.instrument_id,
+            decision_at=decision_at,
+            expected_plan_sha256=publication.plan_sha256,
+            expected_journal_sha256=publication.journal_sha256,
+            expected_packet_sha256=publication.packet_sha256,
+            expected_market_policy_sha256=publication.market_policy_sha256,
+            post_readback_receipt_json=raw,
+            expected_post_readback_receipt_sha256=publication.companion_sha256,
+            expected_journal_root_identity=publication.journal_root_identity,
+        )
+    except (GlobalPublicCompanionError, OSError):
+        raise LegacyBaselineMarketReplayError(
+            "legacy_market_companion_refused"
+        ) from None
+    return result
