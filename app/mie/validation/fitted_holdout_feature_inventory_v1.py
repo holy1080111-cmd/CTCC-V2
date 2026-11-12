@@ -127,6 +127,14 @@ class FittedHoldoutForecastReplayV1:
     forecasts: FrozenGate3Artifact[FittedHoldoutForecastsV1]
 
 
+@dataclass(frozen=True, slots=True, repr=False)
+class _FittedHoldoutSourceReplayV1:
+    campaign: ProspectiveCampaignV2
+    plan: FrozenFeatureReplayPlanV2
+    features: FittedHoldoutFeatureInventoryBuildV1
+    rows: tuple[tuple[PointInTimeBar, ...], tuple[PointInTimeBar, ...]]
+
+
 def _checked_child_binding(
     child: FittedHoldoutChildReadbackInputV1,
     reference: CampaignChildV2,
@@ -313,14 +321,14 @@ def _causal_feature_events(
     return tuple(result)
 
 
-def build_fitted_holdout_feature_inventory_v1(
+def _rebuild_fitted_holdout_source_v1(
     *,
     campaign_bytes: bytes,
     expected_campaign_sha256: str,
     feature_plan: FrozenFeatureReplayPlanV2,
     children: tuple[FittedHoldoutChildReadbackInputV1, ...],
-) -> FittedHoldoutFeatureInventoryBuildV1:
-    """Reproduce every synchronized feature slot from exact prior custody bytes."""
+) -> _FittedHoldoutSourceReplayV1:
+    """Retain the exact same verified aggregates for later outcome replay."""
     if (
         type(campaign_bytes) is not bytes
         or not 1 <= len(campaign_bytes) <= 64 * 1024
@@ -464,7 +472,30 @@ def build_fitted_holdout_feature_inventory_v1(
         ),
         contract_type=FittedHoldoutFeatureLineageV1,
     )
-    return FittedHoldoutFeatureInventoryBuildV1(inventory=inventory, lineage=lineage)
+    return _FittedHoldoutSourceReplayV1(
+        campaign=campaign,
+        plan=plan,
+        features=FittedHoldoutFeatureInventoryBuildV1(
+            inventory=inventory, lineage=lineage
+        ),
+        rows=(tuple(stitched[0]), tuple(stitched[1])),
+    )
+
+
+def build_fitted_holdout_feature_inventory_v1(
+    *,
+    campaign_bytes: bytes,
+    expected_campaign_sha256: str,
+    feature_plan: FrozenFeatureReplayPlanV2,
+    children: tuple[FittedHoldoutChildReadbackInputV1, ...],
+) -> FittedHoldoutFeatureInventoryBuildV1:
+    """Reproduce every synchronized feature slot from exact prior custody bytes."""
+    return _rebuild_fitted_holdout_source_v1(
+        campaign_bytes=campaign_bytes,
+        expected_campaign_sha256=expected_campaign_sha256,
+        feature_plan=feature_plan,
+        children=children,
+    ).features
 
 
 def replay_fitted_holdout_forecasts_v1(

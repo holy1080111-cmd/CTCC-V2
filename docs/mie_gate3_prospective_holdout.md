@@ -509,3 +509,14 @@ reservation is read back does it inspect or open the protected files.
 An ambiguous or failed reservation stops the entire read. Previously committed
 slots stay consumed, and a file error produces no partial campaign result.
 Independent custody and first-access evidence remain separate from this check.
+
+For source-bound outcome labels, `build_fitted_holdout_outcomes_v1` verifies
+the previously pinned forecast, feature inventory, and declared replay cutoff
+before reconstructing the sealed source. It replays the same forecast and
+checks the timestamp and availability of every source bar required for each
+label. Each outcome retains the exact base and target rows, the contributing
+child identities, and the outcome-window hash. A missing row, changed
+forecast, or observation after the cutoff prevents publication of the bundle.
+
+The declared cutoff fixes the replay inputs. Independent acquisition and
+evaluation records are still required for formal OOS acceptance.
