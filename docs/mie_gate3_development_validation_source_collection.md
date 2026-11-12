@@ -484,6 +484,21 @@ clock measures completion of the original journal readback. Independent
 publication-time evidence is required for a claim about when the companion
 itself could be read.
 
+`capture_global_public_with_measured_companion_v1` adds a native clock
+sample after a separate readback of the stored companion. Its record
+binds the canonical publication and companion digests. The verifier
+reopens the original file and checks both samples against the original
+clock bracket. Retain this record independently for future replay.
+
+`freeze_global_devval_companion_schedule_v1` derives a complete schedule
+of BTC and ETH closes for a new Global research blueprint. It binds the
+campaign, source, scorer configuration and reviewed market policy, with
+quote, book and other auxiliary observations and WS freshness capped at
+five seconds. Each close has a common cutoff inside its original bar and
+before the next 5m close. For a future joint replay, retain both symbols'
+measured minute availability and companion readback times. Apply the
+same decision time to both and retain any missing or rejected event.
+
 The adapter checks the post-readback sample against the pinned summary clock,
 the capture deadline and the decision time. It requires fresh quote, book,
 mark, funding, open interest and WS observations, plus the exact 4H, 1H, 15m

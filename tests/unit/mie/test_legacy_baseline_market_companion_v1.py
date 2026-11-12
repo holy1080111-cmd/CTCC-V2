@@ -2,18 +2,23 @@
 
 import pytest
 
-from app.domain.source_primitives import decode, sha, utc_from_ns
+from app.domain.source_primitives import canonical, decode, sha, utc_from_ns
 from app.mie.validation.legacy_baseline_market_replay_v1 import (
     LegacyBaselineMarketReplayError,
     replay_legacy_baseline_market_from_companion_v1,
 )
 from app.public_market_source.public_receipt_storage import _root_identity
+from app.trade_qualification import (
+    global_public_capture_companion_v1 as companion_source,
+)
 from app.trade_qualification import global_public_runtime_v1 as public
 from app.trade_qualification import public_source_runtime as native
 from app.trade_qualification.global_public_capture_companion_v1 import (
     GlobalPublicCompanionError,
     capture_global_public_with_companion_v1,
+    capture_global_public_with_measured_companion_v1,
     read_global_public_companion_v1,
+    verify_global_public_measured_companion_v1,
 )
 from tests.unit.mie.test_legacy_baseline_market_replay_v1 import (
     configure_funding_server,
@@ -199,4 +204,98 @@ async def test_raw_journal_changes_after_capture_block_companion_publication(
         await capture(raw, companion)
     assert not list(companion.iterdir())
     assert journal.content["summary.json"].endswith(b"\n")
+    harness.assert_closed()
+
+
+@pytest.mark.asyncio
+async def test_measured_clock_follows_final_native_companion_readback(
+    source_pair, monkeypatch
+):
+    raw, companion, journal, harness = source_pair
+    reads = []
+    original_read = companion_source.read_global_public_companion_v1
+
+    def read(*args, **kwargs):
+        payload = original_read(*args, **kwargs)
+        reads.append(payload)
+        return payload
+
+    def completed():
+        assert len(reads) == 2
+        assert reads[-1] == (companion / "post-readback.json").read_bytes()
+        return harness.clock.stamp()
+
+    monkeypatch.setattr(companion_source, "read_global_public_companion_v1", read)
+    monkeypatch.setattr(companion_source, "native_stamp", completed)
+    publication, measured = await capture_global_public_with_measured_companion_v1(
+        raw,
+        companion,
+        instrument_id="BTC-USDT-SWAP",
+        market_policy=policy(counts=(240,) * 4),
+    )
+    earlier = decode(reads[-1])["sample"]
+    assert measured.readback_completed.utc_ns > earlier["utc_ns"]
+    assert measured.readback_completed.monotonic_ns > earlier["monotonic_ns"]
+    assert measured.companion_sha256 == publication.companion_sha256
+    assert measured.publication_sha256 == publication.canonical_sha256()
+    assert (
+        measured.independent_availability_verified
+        is measured.execution_authority
+        is False
+    )
+    requests_before, journal_before = len(harness.requests), dict(journal.content)
+    wire = measured.canonical_bytes()
+    verified = verify_global_public_measured_companion_v1(
+        raw,
+        companion,
+        publication=publication,
+        readback_json=wire,
+        expected_readback_sha256=sha(wire),
+    )
+    assert verified == measured
+    for update in (
+        {"publication_sha256": "0" * 64},
+        {"readback_completed": earlier},
+        {"independent_availability_verified": True},
+    ):
+        changed = canonical(decode(wire) | update)
+        with pytest.raises(
+            GlobalPublicCompanionError,
+            match="global_companion_readback_measurement_refused",
+        ):
+            verify_global_public_measured_companion_v1(
+                raw,
+                companion,
+                publication=publication,
+                readback_json=changed,
+                expected_readback_sha256=sha(changed),
+            )
+    assert len(harness.requests) == requests_before
+    assert journal.content == journal_before
+    harness.assert_closed()
+
+
+@pytest.mark.asyncio
+async def test_clock_failure_after_publication_preserves_native_companion(
+    source_pair, monkeypatch
+):
+    raw, companion, journal, harness = source_pair
+
+    def reversed_clock():
+        original = decode((companion / "post-readback.json").read_bytes())["sample"]
+        return {key: value - 1 for key, value in original.items()}
+
+    monkeypatch.setattr(companion_source, "native_stamp", reversed_clock)
+    with pytest.raises(
+        GlobalPublicCompanionError,
+        match="global_companion_readback_measurement_refused",
+    ):
+        await capture_global_public_with_measured_companion_v1(
+            raw,
+            companion,
+            instrument_id="BTC-USDT-SWAP",
+            market_policy=policy(counts=(240,) * 4),
+        )
+    assert (companion / "post-readback.json").is_file()
+    assert decode(journal.content["summary.json"])["disposition"] == "captured"
     harness.assert_closed()

@@ -8,7 +8,8 @@ from typing import Annotated, Literal
 
 from pydantic import Field, field_validator
 
-from app.domain.source_primitives import ClockStamp, decode, sha
+from app.domain.native_clock import native_stamp
+from app.domain.source_primitives import ClockStamp, decode, sha, validate_stamps
 from app.public_market_source.public_market_receipts import (
     ReceiptContract,
     Sha,
@@ -35,6 +36,12 @@ class GlobalPublicCompanionError(ValueError):
     """Fixed refusal without a path, payload, or connection detail."""
 
 
+def _unverified_availability(value):
+    if value is not False:
+        raise GlobalPublicCompanionError("global_companion_pin_invalid")
+    return value
+
+
 class GlobalPublicCapturePublicationV1(ReceiptContract):
     schema_version: Literal["ctcc.public.global_companion_publication.v1"] = (
         "ctcc.public.global_companion_publication.v1"
@@ -50,12 +57,24 @@ class GlobalPublicCapturePublicationV1(ReceiptContract):
     independent_availability_verified: Literal[False] = False
     execution_authority: Literal[False] = False
 
-    @field_validator("independent_availability_verified", mode="before")
-    @classmethod
-    def no_independent_availability(cls, value):
-        if value is not False:
-            raise GlobalPublicCompanionError("global_companion_pin_invalid")
-        return value
+    _no_independent_availability = field_validator(
+        "independent_availability_verified", mode="before"
+    )(_unverified_availability)
+
+
+class GlobalPublicCompanionReadbackV1(ReceiptContract):
+    schema_version: Literal["ctcc.public.global_companion_readback.v1"] = (
+        "ctcc.public.global_companion_readback.v1"
+    )
+    publication_sha256: Sha
+    companion_sha256: Sha
+    readback_completed: ClockStamp
+    independent_availability_verified: Literal[False] = False
+    execution_authority: Literal[False] = False
+
+    _no_independent_availability = field_validator(
+        "independent_availability_verified", mode="before"
+    )(_unverified_availability)
 
 
 def verify_global_public_companion_publication_v1(
@@ -76,6 +95,19 @@ def verify_global_public_companion_publication_v1(
         return publication
     except ValueError:
         raise GlobalPublicCompanionError("global_companion_pin_invalid") from None
+
+
+def _measured_companion_readback(publication, companion, completed):
+    original, observed = validate_stamps(
+        (decode(companion, _MAX_BYTES)["sample"], completed)
+    )
+    if observed.monotonic_ns <= original.monotonic_ns:
+        raise GlobalPublicCompanionError("global_companion_readback_clock_invalid")
+    return GlobalPublicCompanionReadbackV1(
+        publication_sha256=publication.canonical_sha256(),
+        companion_sha256=publication.companion_sha256,
+        readback_completed=observed.model_dump(),
+    )
 
 
 def _paths(journal_root, companion_root):
@@ -256,4 +288,64 @@ async def capture_global_public_with_companion_v1(
     except Exception:  # noqa: BLE001 -- preserve raw and partial artifacts on failure.
         raise GlobalPublicCompanionError(
             "global_companion_publication_refused"
+        ) from None
+
+
+async def capture_global_public_with_measured_companion_v1(
+    journal_root: Path,
+    companion_root: Path,
+    *,
+    instrument_id: str,
+    market_policy: PublicMarketCollectionPolicy,
+) -> tuple[GlobalPublicCapturePublicationV1, GlobalPublicCompanionReadbackV1]:
+    """Measure the final native companion readback of the original capture."""
+    publication = await capture_global_public_with_companion_v1(
+        journal_root,
+        companion_root,
+        instrument_id=instrument_id,
+        market_policy=market_policy,
+    )
+    try:
+        companion = read_global_public_companion_v1(
+            journal_root, companion_root, publication=publication
+        )
+        return publication, _measured_companion_readback(
+            publication, companion, native_stamp()
+        )
+    except ValueError:
+        raise GlobalPublicCompanionError(
+            "global_companion_readback_measurement_refused"
+        ) from None
+
+
+def verify_global_public_measured_companion_v1(
+    journal_root: Path,
+    companion_root: Path,
+    *,
+    publication: GlobalPublicCapturePublicationV1,
+    readback_json: bytes,
+    expected_readback_sha256: str,
+) -> GlobalPublicCompanionReadbackV1:
+    """Recheck an externally pinned native sample without sampling a new clock."""
+    try:
+        if (
+            type(readback_json) is not bytes
+            or not 0 < len(readback_json) <= _MAX_BYTES
+            or type(expected_readback_sha256) is not str
+            or sha(readback_json) != expected_readback_sha256
+        ):
+            raise GlobalPublicCompanionError("global_companion_readback_pin_invalid")
+        recorded = GlobalPublicCompanionReadbackV1.model_validate_json(readback_json)
+        companion = read_global_public_companion_v1(
+            journal_root, companion_root, publication=publication
+        )
+        checked_record = _measured_companion_readback(
+            publication, companion, recorded.readback_completed.model_dump()
+        )
+        if checked_record.canonical_bytes() != readback_json:
+            raise GlobalPublicCompanionError("global_companion_readback_pin_invalid")
+        return checked_record
+    except ValueError:
+        raise GlobalPublicCompanionError(
+            "global_companion_readback_measurement_refused"
         ) from None
