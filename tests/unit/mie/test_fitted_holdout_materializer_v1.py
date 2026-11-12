@@ -9,6 +9,7 @@ from pydantic import ValidationError
 
 from app.domain.source_primitives import sha
 from app.mie.validation import controlled_fitted_holdout_reader_v1 as reader
+from app.mie.validation import fitted_holdout_materializer_v1 as source_prep
 from app.mie.validation.artifact import (
     ArtifactVerificationError,
     FrozenGate3Artifact,
@@ -26,6 +27,7 @@ from app.mie.validation.fitted_holdout_materializer_v1 import (
     FittedHoldoutRawBundleV1,
     FittedHoldoutRawCaptureV1,
     materialize_fitted_holdout_v1,
+    prepare_fitted_holdout_source_v1,
 )
 from app.mie.validation.gate3_fitted_candidate_custody_v1 import (
     FittedCandidateInputsV1,
@@ -41,8 +43,7 @@ from app.public_market_source.public_market_receipts import parsed_rows
 from tests.unit.mie.test_gate3_blind_window_dataset import fixture_inputs
 
 
-@pytest.fixture
-def materializer_case(monkeypatch):
+def _source_inputs(monkeypatch, *, origin=None):
     args, captures_by_journal = fixture_inputs(monkeypatch)
     seal = args["preregistration"]
     window = seal.prospective_holdout
@@ -51,7 +52,7 @@ def materializer_case(monkeypatch):
     ]
     coordinates = ProspectiveCoordinatePlanV1(
         holdout_id=window.holdout_id,
-        origin=original_entries[0][0].origin,
+        origin=origin or original_entries[0][0].origin,
         instrument_ids=window.instrument_ids,
         start_at=window.start_at,
         end_at=window.end_at,
@@ -62,11 +63,23 @@ def materializer_case(monkeypatch):
         coordinates.canonical_sha256()
     )
     seal = Gate3ProspectivePreregistration.model_validate(seal_fields)
-    seal_sha = seal.canonical_sha256()
+    return {
+        "preregistration": seal,
+        "expected_preregistration_sha256": seal.canonical_sha256(),
+        "segments": args["segments"],
+        "coordinate_plan_bytes": coordinates.canonical_json_bytes(),
+    }, original_entries
+
+
+@pytest.fixture
+def materializer_case(monkeypatch):
+    source_args, original_entries = _source_inputs(monkeypatch)
+    seal = source_args["preregistration"]
+    seal_sha = source_args["expected_preregistration_sha256"]
     manifest = bind_complete_blind_window_dataset(
         preregistration=seal,
         expected_preregistration_sha256=seal_sha,
-        segments=args["segments"],
+        segments=source_args["segments"],
     )
     window = seal.prospective_holdout
     bundle = FittedHoldoutRawBundleV1(
@@ -81,6 +94,9 @@ def materializer_case(monkeypatch):
             for _, receipt, raw, _ in original_entries
         ),
     )
+    prepared = prepare_fitted_holdout_source_v1(**source_args)
+    assert prepared.manifest.payload == manifest.canonical_json_bytes()
+    assert prepared.dataset.payload == bundle.canonical_json_bytes()
     binding_bytes = b"synthetic fitted binding"
     binding_sha = sha(binding_bytes)
     inputs = FittedCandidateInputsV1(
@@ -111,11 +127,11 @@ def materializer_case(monkeypatch):
 
     def invocation(*, manifest_bytes=None, dataset_bytes=None, coordinate_bytes=None):
         if manifest_bytes is None:
-            manifest_bytes = manifest.canonical_json_bytes()
+            manifest_bytes = prepared.manifest.payload
         if dataset_bytes is None:
-            dataset_bytes = bundle.canonical_json_bytes()
+            dataset_bytes = prepared.dataset.payload
         if coordinate_bytes is None:
-            coordinate_bytes = coordinates.canonical_json_bytes()
+            coordinate_bytes = source_args["coordinate_plan_bytes"]
         read_at = window.first_permitted_access_at
         dataset = DatasetIdentity(
             dataset_id="holdout:synthetic:fitted-minute-wire:v1",
@@ -177,6 +193,26 @@ def materializer_case(monkeypatch):
 
     first_raw_rows, _ = parsed_rows(original_entries[0][2]["page-000.raw"])
     return invocation, manifest, bundle, first_raw_rows[0], verified
+
+
+def test_source_preparation_refuses_origin_outside_sealed_coordinates(monkeypatch):
+    args, _ = _source_inputs(monkeypatch, origin="https://eea.okx.com")
+    with pytest.raises(
+        FittedHoldoutMaterializationError, match="fitted_holdout_raw_source_mismatch"
+    ):
+        prepare_fitted_holdout_source_v1(**args)
+
+
+def test_source_preparation_respects_protected_reader_wire_limit(monkeypatch):
+    args, _ = _source_inputs(monkeypatch)
+    prepared = prepare_fitted_holdout_source_v1(**args)
+    monkeypatch.setattr(
+        source_prep, "MAX_DATASET_BYTES", len(prepared.dataset.payload) - 1
+    )
+    with pytest.raises(
+        FittedHoldoutMaterializationError, match="fitted_holdout_source_size_exceeded"
+    ):
+        prepare_fitted_holdout_source_v1(**args)
 
 
 def test_replays_exact_bound_minutes_deterministically(materializer_case):

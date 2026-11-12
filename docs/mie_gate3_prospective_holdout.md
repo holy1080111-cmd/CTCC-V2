@@ -452,3 +452,18 @@ separately before any predictive claim can be considered.
 Until all evidence steps pass, Gate 4 remains blocked and no decision or
 execution authority changes. Completing step 5's synthetic contract does not
 substitute for any of the real evidence steps.
+
+### Fitted holdout source preparation
+
+The source custodian can call `prepare_fitted_holdout_source_v1` with the
+independently retained preregistration and journal pins and the exact sealed
+coordinate-plan bytes. The function replays the original journals, validates the
+complete minute grid and source origin, and returns the canonical manifest and
+raw dataset with their digests. Each raw capture carries its original receipt
+and exact server-time and candle response bytes. Both artifacts fit the
+protected reader's byte limits.
+
+The custodian retains the two artifacts under the protected acquisition policy.
+The controlled evaluator uses their digests in the acquisition receipt and
+reads them through the existing reservation boundary. Preparation performs no
+publication or evaluator access and does not attest to independent custody.

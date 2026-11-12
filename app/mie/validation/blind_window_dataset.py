@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Literal
@@ -244,6 +245,24 @@ def bind_complete_blind_window_dataset(
     The caller must retain each journal checkpoint/pin outside the journals.
     This function validates supplied pins, but cannot establish their custody.
     """
+    return _bind_complete_blind_window_dataset(
+        preregistration=preregistration,
+        expected_preregistration_sha256=expected_preregistration_sha256,
+        segments=segments,
+    )
+
+
+def _bind_complete_blind_window_dataset(
+    *,
+    preregistration: Gate3ProspectivePreregistration,
+    expected_preregistration_sha256: str,
+    segments: tuple[BlindWindowJournalSegment, ...],
+    retain_original: Callable[
+        [PublicMinuteCapturePlanV1, MeasuredPublicMinuteReceiptV1, dict[str, bytes]],
+        None,
+    ]
+    | None = None,
+) -> CompleteBlindWindowDataset:
     if (
         type(preregistration) is not Gate3ProspectivePreregistration
         or type(expected_preregistration_sha256) is not str
@@ -395,6 +414,8 @@ def bind_complete_blind_window_dataset(
             )
             capture_ids.add(receipt.capture_id)
             source_identities.add(locator["identity"])
+            if retain_original is not None:
+                retain_original(plan, receipt, raw_files)
         if segment.journal.checkpoint.canonical_sha256() != checkpoint_sha:
             raise BlindWindowDatasetError("journal changed during readback")
         checkpoint_hashes.append(checkpoint_sha)
