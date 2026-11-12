@@ -651,9 +651,22 @@ async def test_fitted_evaluation_is_once_and_after_permitted_access(
         while await _now(engines["owner"]) < permitted:
             await asyncio.sleep(1)
 
+    evaluator = repos["evaluator"]
+    db_now = await _now(engines["owner"])
+    with pytest.raises(
+        Gate3FittedCustodyError, match="^FITTED_CUSTODY_GLOBAL_TIME_NOT_REACHED$"
+    ):
+        await evaluator.reserve_evaluation(
+            inputs,
+            expected_ack_sha256=ack.ack_sha256,
+            receipt_sha256=receipt.sha256,
+            dataset_sha256=sha(dataset),
+            not_before=db_now + timedelta(hours=1),
+        )
+
     async def reader():
         return await read_fitted_prospective_holdout_once(
-            custody=repos["evaluator"],
+            custody=evaluator,
             inputs=inputs,
             expected_ack_sha256=ack.ack_sha256,
             receipt_bytes=receipt.payload,
@@ -681,6 +694,25 @@ async def test_fitted_evaluation_is_once_and_after_permitted_access(
         not observed.independent_first_access_verified
         and not observed.execution_authority
     )
+    # The later SQL gate now reaches the append function. The durable unique
+    # reservation still rejects the second attempt on this exact seal.
+    with pytest.raises(
+        Gate3FittedCustodyError, match="^FITTED_CUSTODY_TRANSACTION_UNRESOLVED$"
+    ):
+        await evaluator.reserve_evaluation(
+            inputs,
+            expected_ack_sha256=ack.ack_sha256,
+            receipt_sha256=receipt.sha256,
+            dataset_sha256=sha(dataset),
+            not_before=permitted,
+        )
+    async with engines["owner"].connect() as connection:
+        assert (
+            await connection.scalar(
+                text("SELECT count(*) FROM public.gate3_fitted_candidate_evaluations")
+            )
+            == 1
+        )
 
 
 async def test_fitted_binding_refuses_changed_bytes_and_empty_downgrade(

@@ -12,7 +12,7 @@ import re
 import secrets
 import ssl
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import ClassVar, Literal
 
 from sqlalchemy import text
@@ -88,6 +88,11 @@ _READ_EVALUATION = text(
 _APPEND_EVALUATION = text(
     "SELECT public.gate3_fitted_evaluation_append("
     ":seal, :binding, :ack_xid, :receipt, :dataset, :attempt)"
+)
+_APPEND_EVALUATION_NOT_BEFORE = text(
+    "SELECT public.gate3_fitted_evaluation_append("
+    ":seal, :binding, :ack_xid, :receipt, :dataset, :attempt) "
+    "WHERE pg_catalog.clock_timestamp() >= CAST(:minimum AS timestamptz)"
 )
 _SESSION = text(
     "SELECT d.oid::bigint AS database_oid, r.oid::bigint AS login_oid, "
@@ -349,7 +354,9 @@ class Gate3FittedCandidateCustodyV1:
         except Exception:  # noqa: BLE001 - Never reveal engine internals.
             raise Gate3FittedCustodyError("FITTED_CUSTODY_ENGINE_INVALID") from None
 
-    async def _transaction(self, statement, parameters, *, read: bool):
+    async def _transaction(
+        self, statement, parameters, *, read: bool, require_write_row: bool = False
+    ):
         self._require_engine()
         try:
             async with asyncio.timeout(12), self._factory() as session, session.begin():
@@ -375,6 +382,10 @@ class Gate3FittedCandidateCustodyV1:
                 ):
                     raise Gate3FittedCustodyError("FITTED_CUSTODY_SESSION_INVALID")
                 result = await session.execute(statement, parameters)
+                if require_write_row and (read or result.one_or_none() is None):
+                    raise Gate3FittedCustodyError(
+                        "FITTED_CUSTODY_GLOBAL_TIME_NOT_REACHED"
+                    )
                 row = result.mappings().one_or_none() if read else None
                 self._require_engine()
                 xid = facts["xid"]
@@ -568,26 +579,43 @@ class Gate3FittedCandidateCustodyV1:
         expected_ack_sha256: str,
         receipt_sha256: str,
         dataset_sha256: str,
+        not_before: datetime | None = None,
     ) -> FittedEvaluationReservationV1:
         self._require_role("evaluator")
         if not _pin(receipt_sha256) or not _pin(dataset_sha256):
             raise Gate3FittedCustodyError("FITTED_CUSTODY_EVALUATION_PIN_INVALID")
+        if not_before is not None and (
+            type(not_before) is not datetime
+            or not_before.tzinfo is None
+            or not_before.utcoffset() != timedelta(0)
+        ):
+            raise Gate3FittedCustodyError("FITTED_CUSTODY_GLOBAL_TIME_INVALID")
+        minimum = _time(not_before) if not_before is not None else None
         acknowledged = await self.read_acknowledged(
             inputs, expected_ack_sha256=expected_ack_sha256
         )
         attempt = sha(secrets.token_bytes(32))
-        _, written_xid = await self._transaction(
-            _APPEND_EVALUATION,
-            {
-                "seal": acknowledged.seal_sha256,
-                "binding": acknowledged.binding_sha256,
-                "ack_xid": acknowledged.acknowledgement_xid,
-                "receipt": receipt_sha256,
-                "dataset": dataset_sha256,
-                "attempt": attempt,
-            },
-            read=False,
-        )
+        parameters = {
+            "seal": acknowledged.seal_sha256,
+            "binding": acknowledged.binding_sha256,
+            "ack_xid": acknowledged.acknowledgement_xid,
+            "receipt": receipt_sha256,
+            "dataset": dataset_sha256,
+            "attempt": attempt,
+        }
+        if minimum is None:
+            # Preserve the legacy single-child call and its exact SQL path.
+            _, written_xid = await self._transaction(
+                _APPEND_EVALUATION, parameters, read=False
+            )
+        else:
+            parameters["minimum"] = minimum
+            _, written_xid = await self._transaction(
+                _APPEND_EVALUATION_NOT_BEFORE,
+                parameters,
+                read=False,
+                require_write_row=True,
+            )
         row, reservation_readback_xid = await self._transaction(
             _READ_EVALUATION, {"seal": acknowledged.seal_sha256}, read=True
         )
@@ -615,6 +643,7 @@ class Gate3FittedCandidateCustodyV1:
                 or reserved < acknowledged.acknowledged_at
                 or reserved
                 < inputs.preregistration.prospective_holdout.first_permitted_access_at
+                or (minimum is not None and reserved < minimum)
                 or read_at < reserved
             ):
                 raise Gate3FittedCustodyError("FITTED_CUSTODY_EVALUATION_MISMATCH")

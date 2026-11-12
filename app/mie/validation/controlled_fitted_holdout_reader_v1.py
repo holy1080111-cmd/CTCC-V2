@@ -197,6 +197,49 @@ def verify_fitted_holdout_readback_v1(
     )
 
 
+def _read_pinned_reserved_pair(
+    *,
+    reservation: FittedEvaluationReservationV1,
+    inputs: FittedCandidateInputsV1,
+    receipt_bytes: bytes,
+    expected_receipt_sha256: str,
+    manifest_path: Path,
+    dataset_path: Path,
+) -> tuple[ControlledFittedHoldoutReadV1, tuple[int, int], tuple[int, int]]:
+    """Internal post-commit file read; only a reserving caller may invoke it."""
+    receipt = _verified_receipt(inputs, receipt_bytes, expected_receipt_sha256)
+    _require_matching_reservation(reservation, inputs, receipt, expected_receipt_sha256)
+    if (
+        not isinstance(manifest_path, Path)
+        or not manifest_path.is_absolute()
+        or not isinstance(dataset_path, Path)
+        or not dataset_path.is_absolute()
+        or manifest_path == dataset_path
+    ):
+        raise ControlledHoldoutReadError("fitted_holdout_inputs_invalid")
+    try:
+        if os.path.samefile(manifest_path, dataset_path):
+            raise ControlledHoldoutReadError("fitted_holdout_paths_match")
+    except OSError:
+        raise ControlledHoldoutReadError(
+            "fitted_holdout_path_identity_unavailable"
+        ) from None
+    dataset = receipt.holdout_dataset
+    manifest, manifest_identity = _read_pinned_file(
+        manifest_path, dataset.manifest_sha256, MAX_MANIFEST_BYTES
+    )
+    content, dataset_identity = _read_pinned_file(
+        dataset_path, dataset.content_sha256, MAX_DATASET_BYTES
+    )
+    if manifest_identity == dataset_identity:
+        raise ControlledHoldoutReadError("fitted_holdout_file_identity_matches")
+    return (
+        ControlledFittedHoldoutReadV1(reservation, manifest, content),
+        manifest_identity,
+        dataset_identity,
+    )
+
+
 async def read_fitted_prospective_holdout_once(
     *,
     custody: Gate3FittedCandidateCustodyV1,
@@ -227,19 +270,12 @@ async def read_fitted_prospective_holdout_once(
     )
     _require_matching_reservation(reservation, inputs, receipt, expected_receipt_sha256)
 
-    try:
-        if os.path.samefile(manifest_path, dataset_path):
-            raise ControlledHoldoutReadError("fitted_holdout_paths_match")
-    except OSError:
-        raise ControlledHoldoutReadError(
-            "fitted_holdout_path_identity_unavailable"
-        ) from None
-    manifest, manifest_identity = _read_pinned_file(
-        manifest_path, dataset.manifest_sha256, MAX_MANIFEST_BYTES
+    readback, _, _ = _read_pinned_reserved_pair(
+        reservation=reservation,
+        inputs=inputs,
+        receipt_bytes=receipt_bytes,
+        expected_receipt_sha256=expected_receipt_sha256,
+        manifest_path=manifest_path,
+        dataset_path=dataset_path,
     )
-    content, dataset_identity = _read_pinned_file(
-        dataset_path, dataset.content_sha256, MAX_DATASET_BYTES
-    )
-    if manifest_identity == dataset_identity:
-        raise ControlledHoldoutReadError("fitted_holdout_file_identity_matches")
-    return ControlledFittedHoldoutReadV1(reservation, manifest, content)
+    return readback

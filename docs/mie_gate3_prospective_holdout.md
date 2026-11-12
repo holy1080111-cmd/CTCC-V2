@@ -498,3 +498,14 @@ paired intervals computed separately inside each child window. The formal
 evaluation still requires independently verified outcomes, legacy baseline
 scoring, publication and first access. This report grants no OOS or Gate 4
 authority.
+
+The controlled campaign reader verifies every sealed child, acquisition
+receipt, fitted binding, and committed acknowledgement before attempting any
+evaluation reservation. The PostgreSQL clock must reach the latest of the
+campaign access time and all receipt times before the append function can run.
+The reader checks each committed reservation again. Only after every child
+reservation is read back does it inspect or open the protected files.
+
+An ambiguous or failed reservation stops the entire read. Previously committed
+slots stay consumed, and a file error produces no partial campaign result.
+Independent custody and first-access evidence remain separate from this check.
