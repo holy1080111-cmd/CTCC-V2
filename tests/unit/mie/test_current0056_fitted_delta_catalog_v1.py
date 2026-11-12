@@ -119,7 +119,15 @@ def synthetic_catalog() -> dict:
         "table_grants": [],
         "triggers": triggers,
         "constraints": [
-            {"name": name, "validated": True} for name in sorted(catalog.CONSTRAINTS)
+            {
+                "name": name,
+                "table": table,
+                "type": constraint_type,
+                "validated": True,
+                "deferrable": constraint_type == "t",
+                "deferred": constraint_type == "t",
+            }
+            for name, (table, constraint_type) in sorted(catalog.CONSTRAINTS.items())
         ],
         "indexes": [
             {"name": name, "valid": True, "ready": True}
@@ -179,6 +187,62 @@ class FittedDeltaInertTests(unittest.TestCase):
             catalog.CatalogRefusal, "fitted_catalog_trigger_changed"
         ):
             catalog.inspect_catalog_document(changed, **ROLES)
+
+    def test_exact_deferred_commit_guard_constraints_required(self):
+        document = synthetic_catalog()
+        expected_guards = {
+            "gate3_fitted_binding_commit_guard": "gate3_fitted_candidate_bindings",
+            "gate3_fitted_ack_commit_guard": "gate3_fitted_candidate_acks",
+            "gate3_fitted_evaluation_commit_guard": "gate3_fitted_candidate_evaluations",
+        }
+        self.assertEqual(
+            {
+                row["name"]: row["table"]
+                for row in document["constraints"]
+                if row["type"] == "t"
+            },
+            expected_guards,
+        )
+        self.assertEqual(len(document["constraints"]), 17)
+        catalog.inspect_catalog_document(document, **ROLES)
+
+        for field, value in (
+            ("name", "unrecognized_constraint_trigger"),
+            ("table", "gate3_fitted_candidate_bindings"),
+            ("type", "c"),
+            ("validated", False),
+            ("deferrable", False),
+            ("deferred", False),
+        ):
+            changed = copy.deepcopy(document)
+            guard = next(
+                row
+                for row in changed["constraints"]
+                if row["name"] == "gate3_fitted_ack_commit_guard"
+            )
+            guard[field] = value
+            with self.assertRaisesRegex(
+                catalog.CatalogRefusal, "fitted_catalog_constraint_changed", msg=field
+            ):
+                catalog.inspect_catalog_document(changed, **ROLES)
+
+        for extra in (False, True):
+            changed = copy.deepcopy(document)
+            guard = next(
+                row
+                for row in changed["constraints"]
+                if row["name"] == "gate3_fitted_evaluation_commit_guard"
+            )
+            if extra:
+                changed["constraints"].append(guard | {"name": "extra_guard"})
+            else:
+                changed["constraints"].remove(guard)
+            with self.assertRaisesRegex(
+                catalog.CatalogRefusal,
+                "fitted_catalog_constraint_changed",
+                msg=f"extra={extra}",
+            ):
+                catalog.inspect_catalog_document(changed, **ROLES)
 
     def test_wrong_head_and_extra_acl_denied(self):
         changed = synthetic_catalog()

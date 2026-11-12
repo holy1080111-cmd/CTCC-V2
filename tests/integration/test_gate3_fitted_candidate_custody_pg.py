@@ -879,6 +879,21 @@ async def test_actual0056_two_fresh_fitted_catalogs_and_drift_refusal(
     first, first_name, first_oid = await _delta56_read_catalog(engines[0])
     second, second_name, second_oid = await _delta56_read_catalog(engines[1])
     assert (first_name, second_name) == databases and first_oid != second_oid
+    expected_commit_guards = [
+        ("gate3_fitted_ack_commit_guard", "gate3_fitted_candidate_acks"),
+        ("gate3_fitted_binding_commit_guard", "gate3_fitted_candidate_bindings"),
+        ("gate3_fitted_evaluation_commit_guard", "gate3_fitted_candidate_evaluations"),
+    ]
+    for document in (first, second):
+        observed_commit_guards = sorted(
+            (row["name"], row["table"])
+            for row in document["constraints"]
+            if row["type"] == "t"
+            and row["validated"] is True
+            and row["deferrable"] is True
+            and row["deferred"] is True
+        )
+        assert observed_commit_guards == expected_commit_guards
     digest = fitted_delta.inspect_catalog_document(first, **roles)
     assert fitted_delta.inspect_catalog_document(second, **roles) == digest
     assert sha(canonical(first)) == digest

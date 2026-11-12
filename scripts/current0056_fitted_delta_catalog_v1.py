@@ -17,13 +17,12 @@ MIGRATION_SHA256 = "82dacd7797d7e5f2286317fb2445c1a5e4986599733617d2ff8f3b8553b3
 EXPECTED_NATIVE_REFERENCE_SHA256 = ""  # Must be established by two real fresh installs.
 SCHEMA = "ctcc.current0056.fitted_delta.physical_catalog.inert.v1"
 _HEX = re.compile(r"[a-f0-9]{64}\Z")
-TABLES = frozenset(
-    {
-        "gate3_fitted_candidate_bindings",
-        "gate3_fitted_candidate_acks",
-        "gate3_fitted_candidate_evaluations",
-    }
-)
+_TABLE_BY_KIND = {
+    "binding": "gate3_fitted_candidate_bindings",
+    "ack": "gate3_fitted_candidate_acks",
+    "evaluation": "gate3_fitted_candidate_evaluations",
+}
+TABLES = frozenset(_TABLE_BY_KIND.values())
 INTERNAL = frozenset(
     {
         "gate3_fitted_role(integer)",
@@ -68,24 +67,38 @@ INDEXES = frozenset(
         "pk_gate3_fitted_candidate_evaluations",
     }
 )
-CONSTRAINTS = frozenset(
-    {
-        "pk_gate3_fitted_candidate_bindings",
-        "fk_gate3_fitted_binding_seal",
-        "uq_gate3_fitted_candidate_bindings_binding_sha256",
-        "ck_gate3_fitted_candidate_bindings_hashes",
-        "ck_gate3_fitted_candidate_bindings_payload",
-        "ck_gate3_fitted_candidate_bindings_xids",
-        "pk_gate3_fitted_candidate_acks",
-        "fk_gate3_fitted_ack_binding",
-        "ck_gate3_fitted_candidate_acks_hashes",
-        "ck_gate3_fitted_candidate_acks_xids",
-        "pk_gate3_fitted_candidate_evaluations",
-        "fk_gate3_fitted_evaluation_ack",
-        "ck_gate3_fitted_candidate_evaluations_hashes",
-        "ck_gate3_fitted_candidate_evaluations_xids",
-    }
-)
+_CONSTRAINT_TYPES_BY_KIND = {
+    "binding": {
+        "pk_gate3_fitted_candidate_bindings": "p",
+        "fk_gate3_fitted_binding_seal": "f",
+        "uq_gate3_fitted_candidate_bindings_binding_sha256": "u",
+        "ck_gate3_fitted_candidate_bindings_hashes": "c",
+        "ck_gate3_fitted_candidate_bindings_payload": "c",
+        "ck_gate3_fitted_candidate_bindings_xids": "c",
+    },
+    "ack": {
+        "pk_gate3_fitted_candidate_acks": "p",
+        "fk_gate3_fitted_ack_binding": "f",
+        "ck_gate3_fitted_candidate_acks_hashes": "c",
+        "ck_gate3_fitted_candidate_acks_xids": "c",
+    },
+    "evaluation": {
+        "pk_gate3_fitted_candidate_evaluations": "p",
+        "fk_gate3_fitted_evaluation_ack": "f",
+        "ck_gate3_fitted_candidate_evaluations_hashes": "c",
+        "ck_gate3_fitted_candidate_evaluations_xids": "c",
+    },
+}
+# PostgreSQL records every user-defined constraint trigger in both pg_trigger
+# and pg_constraint. DB0056 declares each commit guard initially deferred.
+CONSTRAINTS = {
+    name: (_TABLE_BY_KIND[kind], constraint_type)
+    for kind, types in _CONSTRAINT_TYPES_BY_KIND.items()
+    for name, constraint_type in types.items()
+} | {
+    f"gate3_fitted_{kind}_commit_guard": (table, "t")
+    for kind, table in _TABLE_BY_KIND.items()
+}
 
 
 class CatalogRefusal(ValueError):
@@ -445,11 +458,7 @@ def inspect_catalog_document(
             deferred = False
         else:
             kind = name.removeprefix("gate3_fitted_").split("_", 1)[0]
-            expected_table = {
-                "binding": "gate3_fitted_candidate_bindings",
-                "ack": "gate3_fitted_candidate_acks",
-                "evaluation": "gate3_fitted_candidate_evaluations",
-            }[kind]
+            expected_table = _TABLE_BY_KIND[kind]
             suffix = name.removeprefix("gate3_fitted_" + kind + "_")
             expected_function = (
                 "gate3_fitted_" + kind + "_insert_guard"
@@ -468,8 +477,14 @@ def inspect_catalog_document(
         )
     _need(
         len(document["constraints"]) == len(CONSTRAINTS)
-        and {r.get("name") for r in document["constraints"]} == CONSTRAINTS
-        and all(r.get("validated") is True for r in document["constraints"]),
+        and {row.get("name") for row in document["constraints"]} == CONSTRAINTS.keys()
+        and all(
+            (row.get("table"), row.get("type")) == CONSTRAINTS[row["name"]]
+            and row.get("validated") is True
+            and row.get("deferrable") is (row["type"] == "t")
+            and row.get("deferred") is (row["type"] == "t")
+            for row in document["constraints"]
+        ),
         "fitted_catalog_constraint_changed",
     )
     _need(
