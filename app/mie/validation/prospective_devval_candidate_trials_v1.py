@@ -33,6 +33,7 @@ from app.mie.validation.metrics import (
 from app.mie.validation.prospective_devval_campaign_study_v1 import (
     DevvalCampaignStudyV1,
 )
+from app.mie.validation.replay import PointInTimeReplaySnapshot
 
 _MODEL_VERSION = "empirical-probability-bins.v1"
 _HALF = Decimal("0.5")
@@ -195,8 +196,8 @@ class DevvalCandidateTrialsV1(Gate3Contract):
     execution_authority: Literal[False] = False
 
 
-def _bin_index(row, trial):
-    snapshot = row.feature.feature_snapshot
+def _bin_index(replay: PointInTimeReplaySnapshot, trial: DevvalCandidateTrialV1) -> int:
+    snapshot = replay.feature_snapshot
     value = (
         snapshot.momentum.normalized_momentum
         if trial.feature == "normalized_momentum"
@@ -205,30 +206,37 @@ def _bin_index(row, trial):
     return bisect_right(trial.bin_edges, value)
 
 
+def _fitted_bin_probability(
+    trial: DevvalCandidateTrialV1, observations: int, positives: int
+) -> Decimal | None:
+    if observations < trial.minimum_bin_observations:
+        return None
+    with localcontext(_ARITHMETIC_CONTEXT):
+        return (Decimal(positives) + _HALF * trial.prior_weight) / (
+            Decimal(observations) + trial.prior_weight
+        )
+
+
 def _fit_bins(rows, trial):
     counts = [0] * (len(trial.bin_edges) + 1)
     positives = counts.copy()
     for row in rows:
-        index = _bin_index(row, trial)
+        index = _bin_index(row.feature, trial)
         counts[index] += 1
         positives[index] += int(row.label.positive)
 
-    with localcontext(_ARITHMETIC_CONTEXT):
-        return tuple(
-            _ModelBin(
-                observations=count,
-                positives=positive,
-                probability=(Decimal(positive) + _HALF * trial.prior_weight)
-                / (Decimal(count) + trial.prior_weight)
-                if count >= trial.minimum_bin_observations
-                else None,
-            )
-            for count, positive in zip(counts, positives, strict=True)
+    return tuple(
+        _ModelBin(
+            observations=count,
+            positives=positive,
+            probability=_fitted_bin_probability(trial, count, positive),
         )
+        for count, positive in zip(counts, positives, strict=True)
+    )
 
 
 def _predictions(rows, trial, bins):
-    return tuple(bins[_bin_index(row, trial)].probability for row in rows)
+    return tuple(bins[_bin_index(row.feature, trial)].probability for row in rows)
 
 
 def _labels(rows):

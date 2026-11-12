@@ -475,3 +475,14 @@ reports the number of leading and trailing minutes outside complete buckets.
 The latest durable minute availability determines each bar's availability.
 The prospective campaign checks that each child leaves time to retain its final
 minute before the evaluator may first read the dataset.
+
+`replay_fitted_holdout_forecasts_v1` rebuilds the exact campaign declaration
+from every child seal and schedule. It checks each original capture plan
+against that schedule, checks each reservation against the campaign's first
+allowed access time, and replays 4H features from the verified minute data at
+the later availability time of the two current bars. Every child must bind
+the same fitted model and research policy. Inference uses the retained model
+and leaves probabilities null for bins with insufficient Development data.
+The returned lineage joins all child receipts to the feature inventory and
+the forecasts. Formal first access and predictive eligibility remain subject
+to independent evidence.
