@@ -266,3 +266,14 @@ typed receipt。`replay_range_reservation` 保留供離線計算測試，legacy
 `ReservationRequest`／`reserve()` 保留為不可送單的 durable ledger 機制測試。
 所有 OKX entry POST 在最終 transport 邊界仍為硬拒絕。只有新的來源擁有者在
 本次 G12 後發出可重播且不可由 caller 建構的 R7 憑證，才可設計正向保留路徑。
+
+### Native R7 拒絕證據
+
+首次重查因公開資料過期、成本報價過期或固定交易的經濟性不符而拒絕時，
+會嘗試在同一證據根目錄保存獨立的 `r7-denial-<invocation-id>` 紀錄。
+`decision.json` 綁定原候選、固定 Entry／SL／TP、G12 發布、重新取得的來源、
+可取得的報價與拒絕原因。`readback.json` 記錄讀回時間與決策雜湊。
+
+經濟性拒絕會在相同成本條件下比較新舊可執行價格。這個比較能檢驗價格差異
+是否足以讓淨報酬風險比低於原門檻。兩次報價之間的變動時間仍待原始觀測證明。
+回執寫入或讀回失敗時，原拒絕結果照常回傳，已寫入的位元組保留供鑑識。

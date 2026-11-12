@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys as _native_sys
 from collections.abc import Coroutine
 from dataclasses import dataclass
@@ -57,6 +58,7 @@ _DYNAMIC_RISK_KEY_V2 = object()
 _PUBLIC_SOURCE_KEY_V2 = object()
 _OWNERS = WeakKeyDictionary()
 _PUBLIC_SCAN_HOLDS = {}
+_DENIAL_MAX_BYTES = 16 * 1024
 
 
 class NativeR7Error(ValueError):
@@ -347,7 +349,210 @@ def _prefix_policy(original):
     return policy
 
 
-def _evaluate(state, *, active=(), observed_at=None):
+def _denial_quote(ticker):
+    return {
+        "bid": str(ticker.bid),
+        "ask": str(ticker.ask),
+        "source_generated_at": ticker.source_generated_at.isoformat(),
+        "request_started_at": ticker.request_started_at.isoformat(),
+        "body_completed_at": ticker.body_completed_at.isoformat(),
+        "raw_body_sha256": ticker.raw_body_sha256,
+    }
+
+
+def _denial_scenario(scenario):
+    net = scenario.measured("net_rr")
+    cost = scenario.measured("cost_per_base")
+    return {
+        "entry": str(scenario.entry),
+        "code": scenario.code,
+        "net_rr": None if net is None else str(net),
+        "cost_per_base": None if cost is None else str(cost),
+    }
+
+
+def _retain_terminal_denial(
+    state,
+    *,
+    code,
+    g1,
+    packet,
+    issued,
+    at,
+    context=None,
+    costs_policy=None,
+    scenarios=None,
+):
+    """Retain a diagnostic only after the owned invocation has decided to deny."""
+    if (
+        state.get("closed", False)
+        or not state.get("started", False)
+        or asyncio.current_task() is not state["task"]
+    ):
+        return
+    try:
+        _native_guard.check_saved_native_guard_v1(state)
+        published = state["published"]
+        publication._require_actual_publication(published)
+        facts = published["facts"]
+        fixed = facts.original
+        baseline = facts.snapshot.quote.ticker
+        current = None if context is None else context.quote.ticker
+        direction = fixed.result.direction
+        costs = None
+        if scenarios is not None:
+            baseline_reference = baseline.ask if direction == "long" else baseline.bid
+            comparison = economics._scenario(
+                entry=baseline_reference,
+                stop=fixed.result.stop_loss,
+                target=fixed.result.take_profit,
+                direction=direction,
+                quote=context.quote,
+                policy=costs_policy,
+            )
+            candidate, executable = scenarios
+            adverse = (
+                executable.entry > baseline_reference
+                if direction == "long"
+                else executable.entry < baseline_reference
+            )
+            costs = {
+                "candidate": _denial_scenario(candidate),
+                "executable": _denial_scenario(executable),
+                "baseline_reference_with_current_costs": _denial_scenario(comparison),
+                "minimum_net_rr": str(costs_policy.minimum_net_rr),
+                "adverse_executable_move": adverse,
+                "adverse_reference_alone_sufficient_for_net_rr_failure": (
+                    adverse
+                    and candidate.math_checks_passed
+                    and comparison.math_checks_passed
+                    and executable.code == "net_rr_below_minimum"
+                ),
+            }
+        invocation_id = facts.claim.invocation_id
+        if (
+            type(invocation_id) is not str
+            or len(invocation_id) != 32
+            or any(char not in "0123456789abcdef" for char in invocation_id)
+        ):
+            return
+        raw = canonical(
+            {
+                "schema_version": "ctcc.native_r7_terminal_denial.v1",
+                "invocation_id": invocation_id,
+                "candidate_sha256": fixed.candidate_sha256,
+                "event_key_sha256": sha(fixed.original_event_key.encode()),
+                "policy_sha256": fixed.original_policy_sha256,
+                "g12_evaluation_sha256": facts.evaluation_sha256,
+                "g12_report_sha256": facts.receipt.report_sha256,
+                "g12_custody_publication_sha256": facts.publication.publication_sha256,
+                "evidence_prepared_at": facts.snapshot.prepared_at.isoformat(),
+                "publication_completed_at": facts.receipt.completed_at.isoformat(),
+                "post_readback_barrier": state["barrier"],
+                "evaluated_at": at.isoformat(),
+                "earliest_deadline": state["deadline"].isoformat(),
+                "public_bundle_sha256": state["public_state"]["bundle_sha256"],
+                "public_packet_sha256": packet.bundle_sha256,
+                "account_issuer_sha256": issued.issuer_sha256,
+                "account_issued_row_sha256": issued.issued_row_sha256,
+                "current_g1_sha256": g1.evaluation_sha256,
+                "current_g1_code": g1.gate.code,
+                "current_g1_policy_sha256": g1.policy_sha256,
+                "direction": direction,
+                "entry": str(fixed.result.candidate_entry),
+                "stop_loss": str(fixed.result.stop_loss),
+                "take_profit": str(fixed.result.take_profit),
+                "original_ticker": _denial_quote(baseline),
+                "current_ticker": None if current is None else _denial_quote(current),
+                "denial_code": code,
+                "category": (
+                    "economics" if scenarios is not None else "data_freshness"
+                ),
+                "quote_age_evidence": None
+                if costs_policy is None
+                else {
+                    "maximum_seconds": costs_policy.maximum_quote_age_seconds,
+                    "mark_source_at": context.quote.mark.exchange_data_return_at.isoformat(),
+                    "funding_source_at": context.quote.funding.exchange_data_return_at.isoformat(),
+                    "capture_completed_at": context.quote.capture_completed_at.isoformat(),
+                },
+                "costs": costs,
+                "movement_during_render_proven": False,
+                "admission": "DENY",
+                "execution_authority": False,
+            }
+        )
+        if not 0 < len(raw) <= _DENIAL_MAX_BYTES:
+            return
+        account.scan_issued_metadata_v1(
+            state["account_binding"], raw, key=_ACCOUNT_KEY_V2
+        )
+        _publish_denial_packet(
+            published["root"],
+            facts,
+            invocation_id,
+            raw,
+            barrier=state["barrier"],
+            binding=state["account_binding"],
+        )
+    except Exception:  # noqa: BLE001 -- a missing receipt cannot repair or mask denial.
+        return
+
+
+def _publish_denial_packet(root, facts, invocation_id, raw, *, barrier, binding):
+    """Use the existing native no-clobber writer, outside the six G12 files."""
+    native = publication.custody.public_source_runtime
+    directory_name = f"r7-denial-{invocation_id}"
+    expected = facts.claim.values["evidence_root_sha256"]
+    with native._native_recheck_root(root) as parent:
+        identity = native._native_recheck_root_identity(root)
+        if hasattr(parent, "fd"):
+            held = os.fstat(parent.fd)
+            if identity != (held.st_dev, held.st_ino):
+                return
+        if sha(canonical([str(root), *identity])) != expected or any(
+            name.casefold() == directory_name for name in parent.names()
+        ):
+            return
+        parent.mkdir(directory_name)
+        with parent.child(directory_name) as directory:
+            child_identity = native._native_recheck_root_identity(directory.path)
+            if hasattr(directory, "fd"):
+                held = os.fstat(directory.fd)
+                if child_identity != (held.st_dev, held.st_ino):
+                    return
+            directory.publish("decision.json", raw)
+            if directory.read("decision.json", _DENIAL_MAX_BYTES) != raw:
+                return
+            if native._native_recheck_root_identity(root) != identity:
+                return
+            retained = native_stamp()
+            measured._after(barrier, retained)
+            receipt = canonical(
+                {
+                    "schema_version": "ctcc.native_r7_terminal_denial_readback.v1",
+                    "decision_sha256": sha(raw),
+                    "decision_readback_completed": retained,
+                    "g12_custody_publication_sha256": facts.publication.publication_sha256,
+                    "execution_authority": False,
+                }
+            )
+            account.scan_issued_metadata_v1(binding, receipt, key=_ACCOUNT_KEY_V2)
+            directory.publish("readback.json", receipt)
+        # Open a separate child handle for verification. A late failure leaves
+        # immutable bytes in place and does not create execution authority.
+        with parent.child(directory_name) as readback:
+            if (
+                native._native_recheck_root_identity(readback.path) != child_identity
+                or set(readback.names()) != {"decision.json", "readback.json"}
+                or readback.read("decision.json", _DENIAL_MAX_BYTES) != raw
+                or readback.read("readback.json", _DENIAL_MAX_BYTES) != receipt
+                or native._native_recheck_root_identity(root) != identity
+            ):
+                raise ValueError("native_r7_denial_readback_failed")
+
+
+def _evaluate(state, *, active=(), observed_at=None, retain_denial=False):
     """Same math runs again under the existing UID/control/scope transaction."""
     original, _, previous, stamp = _check(state)
     issued = _fresh_account(state)
@@ -371,6 +576,15 @@ def _evaluate(state, *, active=(), observed_at=None):
         evaluated_at=at,
     )
     if not g1.passed:
+        if retain_denial and g1.gate.code == "stale_market_data":
+            _retain_terminal_denial(
+                state,
+                code="native_r7_current_g1_rejected",
+                g1=g1,
+                packet=packet,
+                issued=issued,
+                at=at,
+            )
         _deny("native_r7_current_g1_rejected")
     context = market.public_market_context_v2(
         packet, expected_bundle_sha256=packet.bundle_sha256, evaluated_at=at
@@ -477,6 +691,17 @@ def _evaluate(state, *, active=(), observed_at=None):
         json.dumps(decode(original["policy_raw"])["economics"]), strict=True
     )
     if not economics.quote_within_economics_policy_age_v2(packet, costs_policy, at):
+        if retain_denial:
+            _retain_terminal_denial(
+                state,
+                code="native_r7_original_cost_quote_stale",
+                g1=g1,
+                packet=packet,
+                issued=issued,
+                at=at,
+                context=context,
+                costs_policy=costs_policy,
+            )
         _deny("native_r7_original_cost_quote_stale")
     result = fixed.result
     current_fixed = _owned_fixed_v2.evaluate_owned_fixed_protection_v2(
@@ -529,6 +754,18 @@ def _evaluate(state, *, active=(), observed_at=None):
         for entry in (result.candidate_entry, reference)
     )
     if not all(item.math_checks_passed for item in scenarios):
+        if retain_denial:
+            _retain_terminal_denial(
+                state,
+                code="native_r7_fixed_economics_rejected",
+                g1=g1,
+                packet=packet,
+                issued=issued,
+                at=at,
+                context=context,
+                costs_policy=costs_policy,
+                scenarios=scenarios,
+            )
         _deny("native_r7_fixed_economics_rejected")
     specs = [
         item
@@ -815,7 +1052,7 @@ async def _capture(state):
                 state.pop("pending_account"), key=_ACCOUNT_KEY_V2
             )
             _register_postpublication_public_scan_v2(state)
-            evaluated = _evaluate(state)
+            evaluated = _evaluate(state, retain_denial=True)
             state["prepared_proof"] = evaluated[-1]
             state["prepared_proof_sha256"] = sha(evaluated[-1])
             owner = object.__new__(OwnedNativePostpublicationR7V2)
@@ -905,6 +1142,10 @@ _NATIVE_GUARD = _native_guard.install_native_guards_v1(
     bindings=tuple(
         (namespace, name, vars(namespace)[name])
         for namespace, names in (
+            (
+                publication.custody.public_source_runtime,
+                ("_native_recheck_root", "_native_recheck_root_identity"),
+            ),
             (
                 market.operational,
                 (
