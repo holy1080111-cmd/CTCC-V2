@@ -457,3 +457,24 @@ reservation before opening either holdout file. A read failure after that
 reservation consumes the attempt. The result carries the reservation and
 exact file bytes for computational replay. A separately controlled acquisition
 and release process must establish when the evaluator first gained access.
+### Full market inputs for the legacy score
+
+The minute dataset does not contain the full market inputs used by the legacy
+strategy service. `replay_legacy_baseline_market_v1` reopens a separately
+retained anonymous Global raw journal using exact plan, journal, packet, and
+collection-policy digests. The capture also returns a native clock sample taken
+after its sealed journal readback. Retain those exact sample bytes and their
+digest separately from the journal. The pre-seal summary clock alone cannot
+satisfy the replay cutoff.
+
+The adapter checks the post-readback sample against the pinned summary clock,
+the capture deadline and the decision time. It requires fresh quote, book,
+mark, funding, open interest and WS observations, plus the exact 4H, 1H, 15m
+and 5m candle tails.
+The snapshot follows the direct strategy service convention that
+`next_funding_time` holds the upcoming `fundingTime`. The receipt records that
+settlement separately from the following forecast.
+
+The receipt binds the reconstructed market snapshot to its source pins.
+Independent custody and clock evidence, a preregistered legacy scorer, and a
+Development-only calibration remain required for a predictive baseline.

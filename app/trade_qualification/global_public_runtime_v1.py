@@ -16,7 +16,7 @@ from weakref import WeakKeyDictionary
 from pydantic import Field, field_validator, model_validator
 
 from app.domain.native_clock import native_stamp
-from app.domain.source_primitives import canonical, sha, utc_from_ns
+from app.domain.source_primitives import ClockStamp, canonical, decode, sha, utc_from_ns
 from app.public_market_source import public_runtime_journal as journal
 from app.trade_qualification import candle_collector as candles
 from app.trade_qualification import market_aux_collector as aux
@@ -341,11 +341,29 @@ class GlobalPublicCaptureV1:
     plan_sha256: str | None = None
     journal_sha256: str | None = None
     packet: GlobalPublicComponentPacketV1 | None = field(default=None, repr=False)
+    journal_completion_sample: ClockStamp | None = field(default=None, kw_only=True)
+    invocation_expires_at: datetime | None = field(default=None, kw_only=True)
+    post_readback_receipt_json: bytes | None = field(
+        default=None, repr=False, kw_only=True
+    )
     admission: Literal["DENY"] = field(default="DENY", init=False)
     account_requests: Literal[0] = field(default=0, init=False)
     order_writes: Literal[0] = field(default=0, init=False)
     execution_authority: Literal[False] = field(default=False, init=False)
     qualification_performed: Literal[False] = field(default=False, init=False)
+
+
+def _post_readback_receipt(packet, plan_sha256, journal_sha256, sample):
+    return canonical(
+        {
+            "schema_version": "ctcc.public.global_post_readback_sample.v1",
+            "instrument_id": packet.instrument_id,
+            "plan_sha256": plan_sha256,
+            "journal_sha256": journal_sha256,
+            "packet_sha256": packet.bundle_sha256,
+            "sample": sample.model_dump(),
+        }
+    )
 
 
 async def capture_initial_global_public_market_v1(
@@ -401,14 +419,18 @@ async def capture_initial_global_public_market_v1(
             "expires_at": expires,
         }
         carrier = await runtime._capture_initial_global_public(scope, policy, root)
-        packet, journal_pin, _ = runtime._consume_initial_global_public(
+        packet, journal_pin, sample = runtime._consume_initial_global_public(
             carrier, invocation
         )
+        plan_pin = sha(canonical(full_plan))
         return GlobalPublicCaptureV1(
             "initial_global_public_captured",
-            sha(canonical(full_plan)),
+            plan_pin,
             journal_pin,
             packet,
+            post_readback_receipt_json=_post_readback_receipt(
+                packet, plan_pin, journal_pin, ClockStamp.model_validate(sample)
+            ),
         )
     except asyncio.CancelledError:
         raise
@@ -436,8 +458,12 @@ def read_global_public_capture_v1(
     try:
         identity = runtime._native_recheck_root_identity(root)
         with runtime._reopen_runtime_journal(root) as directory:
+            plan = directory.read("plan.json", journal.MAX_RAW)
             summary = directory.read("summary.json", journal.MAX_RAW)
-            if sha(summary) != expected_journal_sha256:
+            if (
+                sha(plan) != expected_plan_sha256
+                or sha(summary) != expected_journal_sha256
+            ):
                 raise GlobalPublicCaptureError("global_public_journal_pin_changed")
             result, _, packet = runtime.replay_public_runtime(
                 directory, expected_plan_sha256=expected_plan_sha256
@@ -445,6 +471,9 @@ def read_global_public_capture_v1(
             if (
                 result["disposition"] != "captured"
                 or type(packet) is not GlobalPublicComponentPacketV1
+                or canonical(result) != summary
+                or packet.bundle_sha256 != result["packet_sha256"]
+                or directory.read("plan.json", journal.MAX_RAW) != plan
                 or directory.read("summary.json", journal.MAX_RAW) != summary
                 or runtime._native_recheck_root_identity(root) != identity
             ):
@@ -454,6 +483,8 @@ def read_global_public_capture_v1(
             expected_plan_sha256,
             expected_journal_sha256,
             packet,
+            journal_completion_sample=ClockStamp.model_validate(result["completed"]),
+            invocation_expires_at=journal._time(decode(plan)["expires_at"]),
         )
     except Exception:  # noqa: BLE001 -- no private root or raw content escapes.
         raise GlobalPublicCaptureError("global_public_readback_unavailable") from None
