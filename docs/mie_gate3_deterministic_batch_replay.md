@@ -204,3 +204,18 @@ The verifier does not reauthenticate source transport or establish independent
 custody of pins. Point-in-time predictive eligibility, sealed OOS, Gate 4,
 execution, and Live acceptance remain false. Focused tests use synthetic
 manifests and aggregate outputs; no full historical replay is part of CI.
+
+## Moving-block stress diagnostic
+
+`moving_block_net_outcomes_v1` replays a pinned normalized cost path and
+resamples contiguous blocks of the resulting net period returns. The plan binds
+the candidate, the earlier cost plan, the source window and row count, the seed,
+the block length, and the report settings. The path's byte digest is pinned
+separately when replaying the later observations. Sampling is deterministic,
+without wraparound, and clips the final block to the original row count. Costs
+remain fixed at their original observations across sampled block boundaries.
+
+This report describes uncertainty in the normalized series. A declared plan
+date does not establish independent preregistration, and the diagnostic does not
+authenticate market sources or report execution latency, realized trades, or
+economic OOS acceptance. All execution and acceptance flags remain false.
