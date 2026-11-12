@@ -20,6 +20,9 @@ from app.mie.validation.blind_window_dataset import (
     bind_complete_blind_window_dataset,
 )
 from app.mie.validation.contracts import DatasetIdentity, Gate3Claim
+from app.mie.validation.fitted_holdout_aggregation_v1 import (
+    aggregate_fitted_holdout_readback_v1,
+)
 from app.mie.validation.fitted_holdout_materializer_v1 import (
     FittedHoldoutMaterializationError,
     FittedHoldoutMinuteTapeV1,
@@ -125,7 +128,13 @@ def materializer_case(monkeypatch):
 
     monkeypatch.setattr(reader, "_read_pinned_file", no_holdout_open)
 
-    def invocation(*, manifest_bytes=None, dataset_bytes=None, coordinate_bytes=None):
+    def invocation(
+        *,
+        manifest_bytes=None,
+        dataset_bytes=None,
+        coordinate_bytes=None,
+        process=materialize_fitted_holdout_v1,
+    ):
         if manifest_bytes is None:
             manifest_bytes = prepared.manifest.payload
         if dataset_bytes is None:
@@ -177,7 +186,7 @@ def materializer_case(monkeypatch):
             reserved_at=read_at,
             database_read_at=read_at + timedelta(seconds=1),
         )
-        return materialize_fitted_holdout_v1(
+        return process(
             reader.ControlledFittedHoldoutReadV1(
                 reservation, manifest_bytes, dataset_bytes
             ),
@@ -193,6 +202,20 @@ def materializer_case(monkeypatch):
 
     first_raw_rows, _ = parsed_rows(original_entries[0][2]["page-000.raw"])
     return invocation, manifest, bundle, first_raw_rows[0], verified
+
+
+def test_aggregation_rebuilds_the_tape_from_verified_custody_bytes(materializer_case):
+    invoke, manifest, bundle, _, _ = materializer_case
+    tape = invoke()
+    aggregate = invoke(process=aggregate_fitted_holdout_readback_v1).contract
+    assert aggregate.tape_sha256 == tape.sha256
+    assert aggregate.partition == "prospective_holdout"
+    assert aggregate.manifest_sha256 == manifest.canonical_sha256()
+    assert aggregate.dataset_sha256 == bundle.canonical_sha256()
+    assert aggregate.instrument_ids == manifest.instrument_ids
+    assert all(
+        not frame.bars for series in aggregate.series for frame in series.timeframes
+    )
 
 
 def test_source_preparation_refuses_origin_outside_sealed_coordinates(monkeypatch):

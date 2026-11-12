@@ -467,3 +467,11 @@ The custodian retains the two artifacts under the protected acquisition policy.
 The controlled evaluator uses their digests in the acquisition receipt and
 reads them through the existing reservation boundary. Preparation performs no
 publication or evaluator access and does not attest to independent custody.
+
+After the controlled read, `aggregate_fitted_holdout_readback_v1` replays the
+same raw files in memory and checks every minute in the sealed UTC grid. It
+produces complete UTC-aligned 15-minute, 1-hour and 4-hour bars. Each frame
+reports the number of leading and trailing minutes outside complete buckets.
+The latest durable minute availability determines each bar's availability.
+The prospective campaign checks that each child leaves time to retain its final
+minute before the evaluator may first read the dataset.

@@ -15,6 +15,7 @@ from app.mie.validation.prospective import Gate3ProspectivePreregistration
 from app.mie.validation.prospective_campaign_v2 import (
     MAX_CAMPAIGN_ROWS,
     MAX_CHILD_ROWS,
+    CampaignChildV2,
     ProspectiveCampaignError,
     ProspectiveCampaignV2,
     freeze_prospective_campaign_v2,
@@ -217,6 +218,14 @@ def test_capacity_and_forged_eligibility_rejected() -> None:
     forged["predictive_oos_eligible"] = True
     with pytest.raises(ValidationError):
         ProspectiveCampaignV2.model_validate(forged)
+
+
+def test_campaign_child_refuses_read_at_final_bar_close() -> None:
+    child = full_campaign().contract.children[-1]
+    changed = child.model_dump(mode="python")
+    changed["first_permitted_access_at"] = child.end_at
+    with pytest.raises(ValidationError, match="no time to retain the final minute"):
+        CampaignChildV2.model_validate(changed)
 
 
 def test_changed_feature_plan_pin_and_child_plan_rejected() -> None:

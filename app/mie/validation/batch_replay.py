@@ -8,22 +8,11 @@ from __future__ import annotations
 
 import hashlib
 from datetime import datetime, timedelta
-from decimal import (
-    ROUND_HALF_EVEN,
-    Context,
-    Decimal,
-    DivisionByZero,
-    Inexact,
-    InvalidOperation,
-    Overflow,
-    localcontext,
-)
 from typing import Literal
 
 from pydantic import Field, model_validator
 
 from app.mie.contracts import ForecastHorizon
-from app.mie.features import FeatureBar
 from app.mie.validation.archive_batch import (
     ArchiveBatchManifest,
     conservative_batch_rows,
@@ -36,6 +25,7 @@ from app.mie.validation.contracts import (
     PartitionWindow,
     Sha256,
 )
+from app.mie.validation.minute_ohlcv_core_v1 import aggregate_ohlcv_group
 from app.mie.validation.replay import (
     PointInTimeBar,
     PointInTimeReplaySnapshot,
@@ -188,42 +178,20 @@ def aggregate_point_in_time_minutes(
             )
 
     timeframes = []
-    # Context's omitted fields inherit mutable DefaultContext settings. Pin
-    # every field so a caller cannot change aggregate bytes via that process
-    # global, including in nested Decimal operations.
-    arithmetic = Context(
-        prec=256,
-        rounding=ROUND_HALF_EVEN,
-        Emin=-999999,
-        Emax=999999,
-        capitals=1,
-        clamp=0,
-        flags=[],
-        traps=[InvalidOperation, DivisionByZero, Overflow, Inexact],
-    )
     for label, seconds in TARGETS:
         width = seconds // 60
         bars = []
         for start in range(0, len(minutes), width):
             group = minutes[start : start + width]
             group_sha256 = _checked_minute_sha256(group)
-            with localcontext(arithmetic):
-                volume = sum((item.row.bar.volume for item in group), Decimal(0))
-            bar = FeatureBar(
-                closed_at=group[-1].row.bar.closed_at,
-                open=group[0].row.bar.open,
-                high=max(item.row.bar.high for item in group),
-                low=min(item.row.bar.low for item in group),
-                close=group[-1].row.bar.close,
-                volume=volume,
-            )
+            bar, available_at = aggregate_ohlcv_group(tuple(item.row for item in group))
             bars.append(
                 AggregateBar(
                     row=PointInTimeBar(
                         source_row_id=f"aggregate:{seconds}:{group_sha256}",
                         source_row_sha256=group_sha256,
                         instrument_id=plan.instrument_id,
-                        available_at=max(item.row.available_at for item in group),
+                        available_at=available_at,
                         bar=bar,
                     ),
                     constituent_sha256=group_sha256,

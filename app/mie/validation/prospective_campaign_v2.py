@@ -74,12 +74,13 @@ class CampaignChildV2(Gate3Contract):
 
     @model_validator(mode="after")
     def exact_child_grid(self) -> CampaignChildV2:
+        if self.first_permitted_access_at <= self.end_at:
+            raise ValueError("campaign child has no time to retain the final minute")
         if (
             self.expected_rows % ROWS_PER_FOUR_HOURS
             or self.end_at - self.start_at
             != timedelta(minutes=self.expected_rows // len(INSTRUMENTS))
             or self.end_at <= self.start_at
-            or self.first_permitted_access_at < self.end_at
             or self.seal_declared_at >= self.schedule_declared_at
             or self.schedule_declared_at >= self.start_at
             or any(
