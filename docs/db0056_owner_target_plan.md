@@ -51,3 +51,32 @@ Exit `2` means fresh logins observed the exact scoped grants and an unchanged
 physical target. The command confirms the restricted PostgreSQL principals and
 their privileges. It does not establish which authentication mechanism was
 used. Exit `1` is a refusal. The check does not apply or retry a grant.
+
+## Apply one owner grant plan
+
+Use a POSIX owner terminal with one persistent owner-private journal directory
+per deployment host. Keep the owner DSN separate from the three restricted
+runtime DSNs. The latter must point to the same reviewed TLS target so the
+command can independently read them back after commit.
+
+```text
+python -B -m scripts.native_owner_grant_0056_v2 --apply-reviewed-grant --plan-file /private/plan/db0056-target-grant-pins.json --plan-file-sha256 <file digest> --owner-dsn-file /private/owner-dsn --ca-file /private/ca.pem --source-archive-file /reviewed/CTCC-source.tar --journal-directory /private/grant-journal
+```
+
+The command shows `CTCC_DB0056_GRANT_42 <file digest>` and requires the exact
+phrase through the interactive terminal. This records the operator's intent.
+It makes no claim of independent reviewer identity. The command independently
+rechecks the approved plan and real owner catalogs, writes and reads back the
+attempt marker, and applies the 42 inherited grants inside one locked
+PostgreSQL transaction. The lock and exact pre-grant check also protect the
+database if two hosts try to provision it.
+
+Exit `2` and `GRANTED_AND_OBSERVED` report the exact committed grant and
+successful fresh restricted-role login checks. Exit `1` reports a refusal.
+Exit `3` requires reconciliation. Re-run the command with
+`--reconcile-only` in place of `--apply-reviewed-grant` to recheck the
+granted state. The reconciliation command never grants permissions or reopens
+an attempt. A result that cannot prove the exact granted ACL stays
+`RECONCILIATION_INCONCLUSIVE`. Preserve the attempt journal even if a fresh
+read later confirms the grants. These commands leave startup and execution
+admission at `DENY`.

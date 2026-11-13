@@ -1961,7 +1961,8 @@ async def test_actual0056_draft_locked_owner_grant_and_separate_role_readback(
     tmp_path,
     monkeypatch,
 ):
-    """A disposable lab invokes the private draft; the public entry stays off."""
+    """Run the attended grant operation against a disposable TLS cluster."""
+    from scripts import native_owner_grant_0056_v2 as attended_grant
     from scripts import native_owner_postgrant_readback_0056_v1 as postgrant_readback
 
     owner, owner_factory, selected, _ = _actual_0056_ungranted_lab
@@ -2027,16 +2028,6 @@ async def test_actual0056_draft_locked_owner_grant_and_separate_role_readback(
         raw_fitted_owner_readwrite_sha256=sha(canonical(fitted_write)),
         exact_42_plan_sha256=pregrant.exact_grant_plan_sha256,
     )
-    physical = await owner_grant_draft._read_before(owner_factory, pins)
-    async with owner.begin() as connection:
-        await owner_grant_draft._locked_grant(connection, pins, physical)
-    await owner_grant_draft._readback(owner, pins, physical)
-    restricted = await observation.observe_restricted_native_roles_0056_v1(
-        selected, source=_SOURCE_ROOT
-    )
-    assert restricted.database_head == "0056"
-    assert restricted.startup_admission is restricted.execution_authority is False
-
     # The fixture supplies the isolated product-shaped role set at the
     # configuration boundary. The readback itself opens four fresh verified
     # TLS engines and queries the actual scoped PostgreSQL catalogs.
@@ -2055,14 +2046,34 @@ async def test_actual0056_draft_locked_owner_grant_and_separate_role_readback(
     settings = type(
         "ScopedSettings", (), {"ctcc_native_pg_tls_ca_sha256": pins.route.ca_sha256}
     )()
+    monkeypatch.setattr(attended_grant, "get_settings", lambda: settings)
     monkeypatch.setattr(postgrant_readback, "get_settings", lambda: settings)
     monkeypatch.setattr(
         postgrant_readback.selectors,
         "select_configured_native_demo_factories_v2",
         lambda: selected,
     )
-    observed = await postgrant_readback.observe_owner_postgrant_readback_0056_v1(
-        pins, owner_dsn_file=owner_dsn, ca_file=ca_file, source_archive_file=archive
+    digest = postgrant_readback.target_plan._retain_private_plan(private, pins)
+    confirmations = []
+    monkeypatch.setattr(
+        attended_grant, "confirm_owner_grant_0056_v1", confirmations.append
+    )
+    options = {
+        "plan_file": private / "db0056-target-grant-pins.json",
+        "plan_file_sha256": digest,
+        "owner_dsn_file": owner_dsn,
+        "ca_file": ca_file,
+        "source_archive_file": archive,
+        "journal_directory": private,
+    }
+    observed = await attended_grant.apply_attended_owner_grant_0056_v2(**options)
+    assert observed["status"] == "GRANTED_AND_OBSERVED"
+    assert observed["grant_statements"] == 42
+    assert observed["operator_confirmation_received"] is True
+    assert observed["external_approval_authenticated"] is False
+    assert confirmations == [digest]
+    restricted = await observation.observe_restricted_native_roles_0056_v1(
+        selected, source=_SOURCE_ROOT
     )
     assert (
         observed["cluster_system_identifier_sha256"]
@@ -2081,16 +2092,14 @@ async def test_actual0056_draft_locked_owner_grant_and_separate_role_readback(
     assert observed["password_authentication_verified"] is False
     assert observed["admission"] == "DENY"
     assert observed["startup_admission"] is observed["execution_authority"] is False
-    with pytest.raises(postgrant_readback.OwnerPostgrantReadbackRefusal):
-        await postgrant_readback.observe_owner_postgrant_readback_0056_v1(
-            replace(
-                pins,
-                route=replace(pins.route, cluster_system_identifier_sha256="f" * 64),
-            ),
-            owner_dsn_file=owner_dsn,
-            ca_file=ca_file,
-            source_archive_file=archive,
-        )
+    with pytest.raises(attended_grant.OwnerGrantAttemptNeedsReconciliation):
+        await attended_grant.apply_attended_owner_grant_0056_v2(**options)
+    assert confirmations == [digest]
+    reconciled = await attended_grant.reconcile_owner_grant_0056_v2(**options)
+    assert reconciled["status"] == "EXACT_GRANTED_ACL_OBSERVED"
+    assert reconciled["attempt_status"] == "OBSERVED_GRANTED"
+    assert reconciled["commit_attributed_to_attempt"] is True
+    assert reconciled["admission"] == "DENY"
     with pytest.raises(owner_grant_draft.OwnerGrantRefusal):
         await owner_grant_draft.grant_reviewed_owner_0056_v1(pins)
 

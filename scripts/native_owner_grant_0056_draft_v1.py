@@ -139,7 +139,7 @@ def _physical(document: dict) -> dict:
     }
 
 
-async def _read_before(factory, pins: OwnerGrantDraftPinsV1) -> dict:
+async def _read_before(factory, pins: OwnerGrantDraftPinsV1, *, reviewed=False) -> dict:
     names = _names(pins)
     observed = await pregrant56.observe_owner_pregrant_diagnostic_0056(
         factory,
@@ -148,6 +148,12 @@ async def _read_before(factory, pins: OwnerGrantDraftPinsV1) -> dict:
         custody=names[1],
         frame_reader=names[2],
     )
+    _need(type(reviewed) is bool)
+    if reviewed:
+        # Grant authority is independent of this portable evidence match.
+        from scripts.native_owner_target_plan_0056_v1 import _reviewed_portable
+
+        _reviewed_portable(observed)
     _need(
         observed.inherited_native_definitions_sha256
         == pins.portable_inherited_definitions_sha256
