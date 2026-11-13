@@ -49,7 +49,10 @@ def _is_reparse(value: os.stat_result) -> bool:
     return bool(getattr(value, "st_file_attributes", 0) & _REPARSE_POINT)
 
 
-def _read_ca(path: Path) -> bytes:
+def _read_bounded_regular_file_v1(path: Path, maximum_bytes: int) -> bytes:
+    """Acquire private regular bytes without following a leaf or parent link."""
+    if type(maximum_bytes) is not int or not 0 < maximum_bytes <= _MAX_CA_BYTES:
+        _deny()
     if type(path) is not _PATH_TYPE or not path.is_absolute() or ".." in path.parts:
         _deny()
     # Reject symlink/reparse ancestors at acquisition. Ancestor renames remain
@@ -62,7 +65,7 @@ def _read_ca(path: Path) -> bytes:
     if (
         not stat.S_ISREG(before.st_mode)
         or _is_reparse(before)
-        or not 0 < before.st_size <= _MAX_CA_BYTES
+        or not 0 < before.st_size <= maximum_bytes
     ):
         _deny()
     flags = (
@@ -79,11 +82,11 @@ def _read_ca(path: Path) -> bytes:
         ):
             _deny()
         with os.fdopen(descriptor, "rb", closefd=False) as stream:
-            payload = stream.read(_MAX_CA_BYTES + 1)
+            payload = stream.read(maximum_bytes + 1)
         after_open = os.fstat(descriptor)
         after_path = path.lstat()
         if (
-            not 0 < len(payload) <= _MAX_CA_BYTES
+            not 0 < len(payload) <= maximum_bytes
             or len(payload) != opened.st_size
             or _file_identity(opened) != _file_identity(after_open)
             or _file_identity(opened) != _file_identity(after_path)
@@ -93,6 +96,10 @@ def _read_ca(path: Path) -> bytes:
         return payload
     finally:
         os.close(descriptor)
+
+
+def _read_ca(path: Path) -> bytes:
+    return _read_bounded_regular_file_v1(path, _MAX_CA_BYTES)
 
 
 def verified_native_pg_tls_context_v1(
