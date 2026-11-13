@@ -24,6 +24,7 @@ from scripts.current0056_migration_pin import (
 )
 from scripts.evidence_json import read_evidence_json
 from scripts.verify_linux_shard import (
+    DB0056_CONTROL_MONITOR_TEST_PATH,
     DEVVAL_CUSTODY_TEST_PATH,
     FITTED_CUSTODY_TEST_PATH,
     postgres_paths,
@@ -60,9 +61,18 @@ CURRENT56_NATIVE_ROLE_CASES = tuple(
         "test_actual0056_native_lifespan_denies_before_recovery_cas",
         "test_actual0056_owner_grant_lock_and_rollback",
         "test_actual0056_restricted_account_control_read_replays_exact_scope",
+        "test_actual0056_restricted_ledger_replays_retained_control_bound_intent",
     )
 )
-CURRENT56_PG1_REQUIRED_CASES = (*CURRENT56_CUSTODY_CASES, *CURRENT56_NATIVE_ROLE_CASES)
+CONTROL_MONITOR_CASE = (
+    DB0056_CONTROL_MONITOR_TEST_PATH.removesuffix(".py").replace("/", "."),
+    "test_actual0056_control_monitor_joins_exact_release_and_restricted_tls",
+)
+CURRENT56_PG1_REQUIRED_CASES = (
+    *CURRENT56_CUSTODY_CASES,
+    *CURRENT56_NATIVE_ROLE_CASES,
+    CONTROL_MONITOR_CASE,
+)
 PREDICTION_CUSTODY_CASE = (
     "tests.integration.test_public_runtime_bundle_custody_repository",
     "test_validation_prediction_precursor_uses_actual_db0046_commit_and_readback",

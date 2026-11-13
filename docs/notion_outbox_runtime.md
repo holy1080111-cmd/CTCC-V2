@@ -227,3 +227,23 @@ Supply the exact spool digest from the private reconciliation tools.
 The command reads the original lineage under the restricted writer's
 transaction and rolls the transaction back. Its output records PostgreSQL
 verification. The local outbox and Notion delivery retain their own checks.
+
+To project that same eligible DB0056 spool to the local outbox, run the
+explicit projector from the exact installed release. Set
+`submission_outbox_root` to an existing owner-private directory and use the
+spool's configured `submission_outbox_queue_namespace`. A configured
+`notion_outbox_root` must point to the same directory.
+
+    python -B -m scripts.project_native_terminal_report_0056_v1 \
+      --descriptor-file /path/to/private/db0056-deployment-descriptor.json \
+      --source-archive-file /path/to/exact-release.tar \
+      --spool-sha256 <spool-digest>
+
+`LOCAL_PROJECTION_VERIFIED` means the command committed or found the immutable
+PostgreSQL receipt and verified it in a fresh transaction against the exact
+durable local envelope and journal. For `PROJECTION_UNCONFIRMED`, preserve the
+queue files and retry the same spool after investigating the failure. The
+projector can adopt a matching durable pair left before receipt confirmation.
+If a committed receipt exists and its local pair is missing or invalid, preserve
+the remaining files and reconcile the missing evidence before proceeding.
+The projector has no Notion delivery or order execution authority.

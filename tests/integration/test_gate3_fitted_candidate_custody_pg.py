@@ -3711,6 +3711,173 @@ async def test_actual0056_restricted_ledger_preflight_holds_schema_fence(
             )
 
 
+async def test_actual0056_restricted_ledger_replays_retained_control_bound_intent(
+    _actual_0056_role_observation_lab,
+):
+    from app.core import native_ledger_preflight_0056_v1 as preflight
+    from app.core.native_role_witness_0056_v1 import (
+        observe_restricted_native_roles_0056_witness_v1,
+    )
+    from app.database.models.qualification_ledger import (
+        QualificationAccountScope,
+        QualificationReservation,
+        QualificationReservationTransition,
+    )
+    from app.database.repositories.demo_control import DemoControlRepository
+    from app.trade_qualification import control_bound_ledger as bound
+    from app.trade_qualification import demo_control as control
+    from app.trade_qualification import reservations as reservation
+    from app.trade_qualification.submission_intent import build_submission_intent
+    from tests.unit.qualification_execution_binding_fixtures import (
+        consumed_receipt,
+        execution_binding,
+    )
+    from tests.unit.qualification_ledger_fixtures import ledger_fixture
+
+    _, owner_factory, factories, _ = _actual_0056_role_observation_lab
+
+    async def seed(account_id, *, corrupt):
+        fixture = await asyncio.to_thread(ledger_fixture, account_id=account_id)
+        request = fixture.request
+        scope = request.scope
+        control_scope = control.ControlScope(scope.environment, scope.account_id)
+        binding = execution_binding(fixture)
+        session_id = json.loads(binding.account_packet_json)["plan"][
+            "session_binding_id"
+        ]
+        pins = control.ControlPins(
+            "a" * 64,
+            request.origin.original_policy_sha256,
+            control.digest(session_id),
+        )
+        clock = fixture.now
+        repo = DemoControlRepository(owner_factory, clock=lambda: clock)
+        token = b"ctcc_unit_test_control_token_001"
+        first = await repo.acquire(
+            control_scope, owner_token=token, pins=pins, command_id="a" * 64
+        )
+        armed = await repo.change(
+            control_scope,
+            owner_token=token,
+            owner_epoch=first.state.owner_epoch,
+            expected_revision=first.state.revision,
+            action="arm_requested",
+            command_id="b" * 64,
+            arm_expires_at=clock + timedelta(seconds=20),
+        )
+        consumed = consumed_receipt(fixture)
+        reserved = consumed.model_copy(
+            update={"state": "reserved", "state_revision": 1, "ledger_revision": 2}
+        )
+        reserve_raw = bound.build_reserved_evidence(
+            request, reserved, armed.state, armed.event_sha256, checked_at=clock
+        )
+        inner = build_submission_intent(request, consumed, execution_binding=binding)
+        intent = bound.build_control_bound_intent(
+            request, inner, reserve_raw, armed.state, armed.event_sha256
+        )
+        clock += timedelta(seconds=30)
+        stopped = await repo.latch_stop(control_scope, command_id="c" * 64)
+
+        # Seed historical rows as owner of this disposable DB. The actual
+        # reader receives only its production-defined restricted grants.
+        coordinates = {
+            "environment": scope.environment,
+            "account_id": account_id,
+            "settlement_currency": scope.settlement_currency,
+        }
+        async with owner_factory.begin() as session:
+            session.add(
+                QualificationAccountScope(
+                    **coordinates,
+                    account_revision=1,
+                    ledger_revision=3,
+                    claims_json=reservation.canonical(fixture.claims),
+                    claims_sha256=reservation.digest(fixture.claims),
+                    created_at=fixture.now,
+                    updated_at=fixture.now,
+                )
+            )
+            await session.flush()
+            session.add(
+                QualificationReservation(
+                    **coordinates,
+                    reservation_id=consumed.reservation_id,
+                    original_event_key=consumed.original_event_key,
+                    report_id=consumed.report_id,
+                    instrument_id=consumed.instrument_id,
+                    direction=consumed.direction,
+                    correlation_group=consumed.correlation_group,
+                    request_json=reservation.canonical(request),
+                    request_sha256=consumed.request_sha256,
+                    coverage_json=reservation.canonical(consumed.coverage),
+                    risk_amount=consumed.coverage.risk_amount,
+                    margin_amount=consumed.coverage.margin_amount,
+                    notional_amount=consumed.coverage.notional_amount,
+                    state=consumed.state,
+                    state_revision=consumed.state_revision,
+                    deadline=consumed.deadline,
+                    created_at=consumed.created_at,
+                    updated_at=consumed.updated_at,
+                )
+            )
+            await session.flush()
+            session.add_all(
+                [
+                    QualificationReservationTransition(
+                        reservation_id=consumed.reservation_id,
+                        state_revision=1,
+                        from_state=None,
+                        to_state="reserved",
+                        reason_code=bound.RESERVED_REASON,
+                        evidence_json="{}" if corrupt else reserve_raw,
+                        occurred_at=reserved.updated_at,
+                    ),
+                    QualificationReservationTransition(
+                        reservation_id=consumed.reservation_id,
+                        state_revision=2,
+                        from_state="reserved",
+                        to_state="consumed",
+                        reason_code=bound.CONSUMED_REASON,
+                        evidence_json=intent.canonical_json,
+                        occurred_at=consumed.updated_at,
+                    ),
+                ]
+            )
+        return scope, stopped, consumed.reservation_id
+
+    roles = await observe_restricted_native_roles_0056_witness_v1(
+        factories, source=_SOURCE_ROOT
+    )
+    scope, stopped, _ = await seed("730016", corrupt=False)
+    async with factories.writer_factory() as session, session.begin():
+        observed = await preflight.read_locked_native_ledger_preflight_0056_v1(
+            factories, roles, session, scope
+        )
+        assert (
+            observed.unresolved_reservation_count
+            == observed.unresolved_consumed_intent_count
+            == 1
+        )
+        assert observed.control_event_sha256 == stopped.event_sha256
+        assert observed.emergency_stop and not observed.stored_arm_present
+        assert observed.admission == "DENY" and not observed.execution_authority
+
+    corrupt_scope, _, corrupt_id = await seed("730017", corrupt=True)
+    with pytest.raises(
+        preflight.NativeLedgerPreflight0056Error,
+        match="^native_ledger_0056_preflight_refused$",
+    ):
+        async with factories.writer_factory() as session, session.begin():
+            await preflight.read_locked_native_ledger_preflight_0056_v1(
+                factories, roles, session, corrupt_scope
+            )
+    async with owner_factory() as session:
+        assert (
+            await session.get(QualificationReservation, corrupt_id)
+        ).state == "consumed"
+
+
 async def test_actual0056_terminal_report_reader_checks_grant_and_refuses_missing_spool(
     _actual_0056_role_observation_lab,
     monkeypatch,

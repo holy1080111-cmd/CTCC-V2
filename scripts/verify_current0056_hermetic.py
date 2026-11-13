@@ -152,6 +152,11 @@ _FITTED_CASES = (
     ),
     (
         fitted_measurement.CASE[0],
+        "test_actual0056_restricted_ledger_replays_retained_control_bound_intent",
+    ),
+    contract.CONTROL_MONITOR_CASE,
+    (
+        fitted_measurement.CASE[0],
         "test_actual0056_held_frame_reader_uses_same_transaction_and_real_catalog",
     ),
     (
@@ -314,6 +319,16 @@ def _run(args, index, raw, files, runner_sha, root):
         "--mount",
         f"type=bind,src={root / 'identity.json'},dst=/ctcc-run-identity.json,readonly",
     )
+    archive_mount = ()
+    if contract.requires_devval_catalog(args.suite, index):
+        retained_archive = root / "admitted-test-source.tar"
+        with retained_archive.open("xb") as file:
+            file.write(raw)
+        retained_archive.chmod(0o444)
+        archive_mount = (
+            "--mount",
+            f"type=bind,src={retained_archive},dst=/ctcc-admitted-test-source.tar,readonly",
+        )
     identity = {
         "commit": args.commit,
         "tree": args.tree,
@@ -587,6 +602,7 @@ def _run(args, index, raw, files, runner_sha, root):
                 *(source_mount if needs_devval_tls else ()),
                 *(identity_mount if needs_devval_tls else ()),
                 *(tls.pytest_mount if tls else ()),
+                *archive_mount,
             ),
             extra_environment=(
                 "-e",

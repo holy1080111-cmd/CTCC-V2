@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from itertools import pairwise
 from typing import Literal
 
 from sqlalchemy import func, select, text
@@ -15,6 +17,9 @@ from app.core.native_stopped_control_genesis_0056_v1 import _require_role_witnes
 from app.database.models.account_issued_revision import (
     DemoCollectorIssuedAccountRevision,
 )
+from app.database.models.account_revision_collector_lineage import (
+    DemoCollectorCurrentRevisionLineage,
+)
 from app.database.models.qualification_ledger import (
     QualificationAccountScope,
     QualificationReservation,
@@ -23,10 +28,11 @@ from app.database.models.qualification_ledger import (
 from app.database.repositories import qualification_ledger as ledger
 from app.database.repositories import qualification_native_checkpoint_v2 as checkpoint
 from app.domain import native_filled_flat_closure_schema_v55 as closure
-from app.domain.source_primitives import canonical, sha
-from app.trade_qualification import control_bound_ledger
+from app.domain.source_primitives import canonical, decode, sha
+from app.trade_qualification import control_bound_ledger, reservations
 from app.trade_qualification.demo_control import ControlScope
 from app.trade_qualification.reservations import LedgerScope, checked_bootstrap
+from app.trade_qualification.submission_intent import replay_submission_intent
 
 _READ_COMMITTED = text("SET TRANSACTION ISOLATION LEVEL READ COMMITTED")
 _JOURNAL_FENCE = text(
@@ -35,16 +41,19 @@ _JOURNAL_FENCE = text(
     "IN SHARE MODE NOWAIT"
 )
 _ISSUED_FENCE = text(
-    "LOCK TABLE public.demo_collector_issued_account_revisions IN ACCESS SHARE MODE NOWAIT"
+    "LOCK TABLE public.demo_collector_issued_account_revisions, "
+    "public.demo_collector_current_revision_lineages IN ACCESS SHARE MODE NOWAIT"
 )
 _MODELS = (
     QualificationAccountScope,
     QualificationReservation,
     QualificationReservationTransition,
     DemoCollectorIssuedAccountRevision,
+    DemoCollectorCurrentRevisionLineage,
 )
 _EVENT_LIMIT = 2048
 _CURRENCY_LIMIT = 128
+_INTENT_REPLAY_BYTES = 64 * 1024 * 1024
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 
 
@@ -198,6 +207,256 @@ async def _unresolved_under_uid_lock(session, scope, held):
     return rows, intents
 
 
+async def _verify_native_intent_issuance(session, request, control_state, event, held):
+    from app.database.repositories import account_issued_revision_current55_v1 as issued
+
+    issued_row = await session.get(
+        DemoCollectorIssuedAccountRevision,
+        request.issuer_sha256,
+        populate_existing=True,
+    )
+    held()
+    _need(type(issued_row) is DemoCollectorIssuedAccountRevision)
+    issued_raw = issued._snapshot(
+        issued_row, DemoCollectorIssuedAccountRevision, issued._ISSUED_COLUMNS
+    )
+    coordinates = (
+        request.scope.environment,
+        request.scope.account_id,
+        request.scope.settlement_currency,
+    )
+    _need(
+        sha(issued_raw) == request.issued_row_sha256
+        and sha(issued_row.proof_json.encode()) == request.issuer_sha256
+        and sha(issued_row.claims_json.encode()) == issued_row.claims_sha256
+        and (
+            issued_row.environment,
+            issued_row.account_id,
+            issued_row.settlement_currency,
+        )
+        == coordinates
+        and issued_row.account_revision == request.expected_account_revision
+        and issued_row.ledger_revision == request.expected_ledger_revision
+        and issued_row.control_revision == control_state.revision
+        and issued_row.control_event_sha256 == event
+        and request.origin.deadline <= issued_row.original_expires_at
+    )
+    lineage = await session.get(
+        DemoCollectorCurrentRevisionLineage,
+        issued_row.source_lineage_sha256,
+        populate_existing=True,
+    )
+    held()
+    _need(
+        type(lineage) is DemoCollectorCurrentRevisionLineage
+        and sha(lineage.lineage_json.encode())
+        == lineage.lineage_sha256
+        == issued_row.source_lineage_sha256
+        and (lineage.environment, lineage.account_id, lineage.settlement_currency)
+        == coordinates
+    )
+    return sha(issued._lineage_snapshot_v1(lineage))
+
+
+async def _replay_consumed_under_uid_lock(session, scope, held, currencies, rows):
+    """Authenticate retained intent bytes in the fenced snapshot, without admission."""
+    from app.trade_qualification import native_ledger_contracts_v2 as native
+
+    expected_intents = [row for row in rows if row[7] is not None]
+    currency_revisions = {
+        currency: (account, revision, updated_at)
+        for currency, account, revision, _, updated_at in currencies
+    }
+    byte_count = 0
+    verified = []
+    for (
+        reservation_id,
+        state,
+        revision,
+        transition_id,
+        _,
+        _,
+        reason,
+        intent_sha,
+        request_sha,
+    ) in expected_intents:
+        record = await session.get(
+            QualificationReservation, reservation_id, populate_existing=True
+        )
+        held()
+        _need(
+            type(record) is QualificationReservation
+            and (record.environment, record.account_id)
+            == (scope.environment, scope.account_id)
+            and (record.state, record.state_revision, record.request_sha256)
+            == (state, revision, request_sha)
+        )
+        chain = tuple(
+            (
+                await session.scalars(
+                    select(QualificationReservationTransition)
+                    .filter_by(reservation_id=reservation_id)
+                    .order_by(QualificationReservationTransition.state_revision)
+                    .limit(4)
+                )
+            ).all()
+        )
+        held()
+        _need(
+            len(chain) == revision
+            and all(type(row) is QualificationReservationTransition for row in chain)
+            and tuple(row.state_revision for row in chain)
+            == tuple(range(1, revision + 1))
+            and chain[0].from_state is None
+            and chain[0].to_state == "reserved"
+            and chain[0].occurred_at == record.created_at
+            and chain[1].id == transition_id
+            and chain[1].from_state == "reserved"
+            and chain[1].to_state == "consumed"
+            and chain[1].reason_code == reason
+            and chain[-1].to_state == state
+            and chain[-1].occurred_at == record.updated_at
+            and all(
+                left.to_state == right.from_state
+                and left.occurred_at <= right.occurred_at
+                for left, right in pairwise(chain)
+            )
+        )
+        raw_request = record.request_json.encode()
+        raw_evidence = tuple(
+            row.evidence_json.encode() if row.evidence_json is not None else None
+            for row in chain
+        )
+        byte_count += len(raw_request) + sum(
+            len(raw) for raw in raw_evidence if raw is not None
+        )
+        _need(
+            byte_count <= _INTENT_REPLAY_BYTES
+            and sha(raw_request) == request_sha
+            and raw_evidence[1] is not None
+            and sha(raw_evidence[1]) == intent_sha
+        )
+        request = reservations.decode_reservation_request(record.request_json)
+        _need(
+            (
+                request.scope.environment,
+                request.scope.account_id,
+                request.scope.settlement_currency,
+            )
+            == (record.environment, record.account_id, record.settlement_currency)
+            and reservations.reservation_id(
+                request.scope, request.origin.original_event_key
+            )
+            == reservation_id
+        )
+        lineage_sha = None
+        is_native = native.is_native_request(request)
+        if reason == control_bound_ledger.CONSUMED_REASON:
+            _need(chain[0].reason_code == control_bound_ledger.RESERVED_REASON)
+            envelope, consumed = control_bound_ledger.replay_control_bound_intent(
+                chain[1].evidence_json, request, expected_sha256=intent_sha
+            )
+            _need(
+                json.loads(envelope.canonical_json)["reservation_binding_json"]
+                == chain[0].evidence_json
+            )
+            _, control_state, event = control_bound_ledger.replay_reserved_evidence(
+                chain[0].evidence_json, request
+            )
+            held()
+            await locked.DemoControlRepositoryV2.verify_historical_binding(
+                session, control_state, event
+            )
+            held()
+            if is_native:
+                _need(
+                    revision == 2
+                    or chain[2].reason_code == "post_submit_native_uncertain_v1"
+                )
+                if revision == 3:
+                    _need(raw_evidence[2] is not None)
+                    uncertainty = decode(raw_evidence[2], 1024)
+                    _need(
+                        type(uncertainty) is dict
+                        and set(uncertainty)
+                        == {"version", "intent_sha256", "capture_sha256"}
+                        and uncertainty["version"]
+                        == "ctcc.native_uncertain_observation.v1"
+                        and uncertainty["intent_sha256"] == intent_sha
+                        and type(uncertainty["capture_sha256"]) is str
+                        and _SHA256.fullmatch(uncertainty["capture_sha256"]) is not None
+                    )
+                lineage_sha = await _verify_native_intent_issuance(
+                    session, request, control_state, event, held
+                )
+        else:
+            _need(
+                not is_native
+                and reason == "consumed_with_submit_intent"
+                and chain[0].reason_code == "risk_reserved"
+                and chain[0].evidence_json is None
+            )
+            _, consumed = replay_submission_intent(
+                chain[1].evidence_json, request, expected_sha256=intent_sha
+            )
+        account_revision, ledger_revision, scope_updated_at = currency_revisions[
+            record.settlement_currency
+        ]
+        _need(
+            consumed.scope == request.scope
+            and consumed.reservation_id == reservation_id
+            and consumed.updated_at == chain[1].occurred_at
+            and record.updated_at <= scope_updated_at
+            and request.expected_account_revision
+            <= consumed.account_revision
+            <= account_revision
+            and request.expected_ledger_revision + 2
+            <= consumed.ledger_revision
+            <= ledger_revision
+            and (
+                not is_native
+                or consumed.ledger_revision == request.expected_ledger_revision + 2
+            )
+            and all(
+                getattr(record, field) == getattr(consumed, field)
+                for field in (
+                    "original_event_key",
+                    "report_id",
+                    "instrument_id",
+                    "direction",
+                    "correlation_group",
+                    "request_sha256",
+                    "deadline",
+                    "created_at",
+                )
+            )
+            and reservations.canonical(consumed.coverage) == record.coverage_json
+            and (record.risk_amount, record.margin_amount, record.notional_amount)
+            == (
+                consumed.coverage.risk_amount,
+                consumed.coverage.margin_amount,
+                consumed.coverage.notional_amount,
+            )
+        )
+        verified.append(
+            [
+                reservation_id,
+                lineage_sha,
+                [
+                    [
+                        row.id,
+                        row.reason_code,
+                        row.occurred_at.isoformat(),
+                        sha(raw) if raw is not None else None,
+                    ]
+                    for row, raw in zip(chain, raw_evidence, strict=True)
+                ],
+            ]
+        )
+        held()
+    return verified
+
+
 async def _uid_ledger_checkpoint(session, scope, held, selected):
     currencies = tuple(
         (
@@ -231,8 +490,12 @@ async def _uid_ledger_checkpoint(session, scope, held, selected):
         in currencies
     )
     unresolved, consumed = await _unresolved_under_uid_lock(session, scope, held)
+    verified = await _replay_consumed_under_uid_lock(
+        session, scope, held, currencies, unresolved
+    )
+    _need(len(verified) == consumed)
     checkpoint = {
-        "schema": "ctcc.demo.db0056.uid_ledger_checkpoint.v1",
+        "schema": "ctcc.demo.db0056.uid_ledger_checkpoint.v2",
         "currencies": [
             [
                 currency,
@@ -244,6 +507,7 @@ async def _uid_ledger_checkpoint(session, scope, held, selected):
             for currency, account_revision, ledger_revision, claims, updated_at in currencies
         ],
         "unresolved": [list(row) for row in unresolved],
+        "verified_consumed_intents": verified,
     }
     return len(unresolved), consumed, sha(canonical(checkpoint))
 

@@ -1,15 +1,25 @@
 """Focused checks for the DB0056 ledger preflight's unresolved-intent counts."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 
 from app.core import native_ledger_preflight_0056_v1 as preflight
-from app.database.models.qualification_ledger import QualificationAccountScope
-from app.trade_qualification.control_bound_ledger import CONSUMED_REASON
-from app.trade_qualification.reservations import LedgerScope
+from app.database.models.qualification_ledger import (
+    QualificationAccountScope,
+    QualificationReservation,
+    QualificationReservationTransition,
+)
+from app.domain.source_primitives import sha
+from app.trade_qualification.control_bound_ledger import (
+    CONSUMED_REASON,
+    RESERVED_REASON,
+)
+from app.trade_qualification.reservations import LedgerScope, canonical
+from tests.unit.qualification_execution_binding_fixtures import consumed_receipt
+from tests.unit.test_control_bound_ledger import records as records  # noqa: PLC0414
 
 _SCOPE = LedgerScope(account_id="123", settlement_currency="USDT")
 _HASH = "4" * 64
@@ -120,6 +130,8 @@ async def test_uid_fingerprint_binds_second_currency_and_exact_hold_not_just_cou
     secondary = ("USDC", 1, 1, _HASH, now)
     holds = AsyncMock(return_value=((_DURABLE_CONSUMED,), 1))
     monkeypatch.setattr(preflight, "_unresolved_under_uid_lock", holds)
+    replay = AsyncMock(return_value=[[_DURABLE_CONSUMED[0], None, []]])
+    monkeypatch.setattr(preflight, "_replay_consumed_under_uid_lock", replay)
     held = Mock()
 
     async def digest(currencies):
@@ -134,3 +146,121 @@ async def test_uid_fingerprint_binds_second_currency_and_exact_hold_not_just_cou
     holds.return_value = (((*_DURABLE_CONSUMED[:-2], "5" * 64, _HASH),), 1)
     changed_first_hold = await digest((secondary, requesting))
     assert len({baseline, changed_second_currency, changed_first_hold}) == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("control_bound", [False, True])
+async def test_held_replay_checks_committed_bytes_and_currency_revisions(
+    records, monkeypatch, control_bound
+):
+    fixture, state, expectation, _, reserve_raw, inner, envelope = records
+    request = fixture.request
+    consumed = consumed_receipt(fixture)
+    scope = consumed.scope
+    row = QualificationReservation(
+        environment=scope.environment,
+        account_id=scope.account_id,
+        settlement_currency=scope.settlement_currency,
+        reservation_id=consumed.reservation_id,
+        state=consumed.state,
+        state_revision=consumed.state_revision,
+        request_json=canonical(request),
+        coverage_json=canonical(consumed.coverage),
+        risk_amount=consumed.coverage.risk_amount,
+        margin_amount=consumed.coverage.margin_amount,
+        notional_amount=consumed.coverage.notional_amount,
+        **{
+            field: getattr(consumed, field)
+            for field in (
+                "original_event_key",
+                "report_id",
+                "instrument_id",
+                "direction",
+                "correlation_group",
+                "request_sha256",
+                "deadline",
+                "created_at",
+                "updated_at",
+            )
+        },
+    )
+    intent = envelope if control_bound else inner
+    reserved = QualificationReservationTransition(
+        id=4,
+        from_state=None,
+        to_state="reserved",
+        state_revision=1,
+        reason_code=RESERVED_REASON if control_bound else "risk_reserved",
+        evidence_json=reserve_raw if control_bound else None,
+        occurred_at=consumed.created_at,
+    )
+    transition = QualificationReservationTransition(
+        id=5,
+        from_state="reserved",
+        to_state="consumed",
+        state_revision=2,
+        reason_code=CONSUMED_REASON if control_bound else "consumed_with_submit_intent",
+        evidence_json=intent.canonical_json,
+        occurred_at=consumed.updated_at,
+    )
+    session = SimpleNamespace(
+        get=AsyncMock(return_value=row),
+        scalars=AsyncMock(
+            return_value=SimpleNamespace(all=lambda: [reserved, transition])
+        ),
+    )
+    check_control = AsyncMock()
+    monkeypatch.setattr(
+        preflight.locked.DemoControlRepositoryV2,
+        "verify_historical_binding",
+        check_control,
+    )
+    currency = (
+        scope.settlement_currency,
+        consumed.account_revision,
+        consumed.ledger_revision,
+        _HASH,
+        fixture.now + timedelta(seconds=10),
+    )
+    metadata = (
+        consumed.reservation_id,
+        row.state,
+        row.state_revision,
+        transition.id,
+        transition.state_revision,
+        transition.from_state,
+        transition.reason_code,
+        intent.sha256,
+        consumed.request_sha256,
+    )
+    result = await preflight._replay_consumed_under_uid_lock(
+        session, scope, Mock(), [currency], [metadata]
+    )
+    assert [item[0] for item in result] == [consumed.reservation_id]
+    assert result[0][2][1][-1] == intent.sha256
+    if control_bound:
+        check_control.assert_awaited_once_with(session, state, expectation.event_sha256)
+    else:
+        check_control.assert_not_awaited()
+
+    with pytest.raises(preflight.NativeLedgerPreflight0056Error):
+        await preflight._replay_consumed_under_uid_lock(
+            session,
+            scope,
+            Mock(),
+            [(currency[0], currency[1], currency[2] - 1, *currency[3:])],
+            [metadata],
+        )
+    with pytest.raises(preflight.NativeLedgerPreflight0056Error):
+        await preflight._replay_consumed_under_uid_lock(
+            session,
+            scope,
+            Mock(),
+            [currency],
+            [(*metadata[:-2], sha(b"changed"), metadata[-1])],
+        )
+    reserved.evidence_json = "{}"
+    with pytest.raises(preflight.NativeLedgerPreflight0056Error):
+        await preflight._replay_consumed_under_uid_lock(
+            session, scope, Mock(), [currency], [metadata]
+        )

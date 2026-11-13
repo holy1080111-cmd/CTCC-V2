@@ -311,8 +311,8 @@ def test_actual_post_common_finally_refuses_unknown_cleanup_and_retains_failure_
 
 def test_pg2_owns_every_whole_module_and_keeps_both_stateful_anchors_on_zero():
     owned = [selection.postgres_paths(index) for index in range(2)]
-    assert len(selection.POSTGRES_TEST_PATHS) == 89
-    assert [len(paths) for paths in owned] == [40, 49]
+    assert len(selection.POSTGRES_TEST_PATHS) == 90
+    assert [len(paths) for paths in owned] == [40, 50]
     assert selection.DEVVAL_CUSTODY_TEST_PATH in owned[1]
     assert selection.FITTED_CUSTODY_TEST_PATH in owned[1]
     assert selection.DEVVAL_PREDICTION_DIAGNOSTIC_TEST_PATH in owned[1]
@@ -332,6 +332,7 @@ def test_pg2_owns_every_whole_module_and_keeps_both_stateful_anchors_on_zero():
         if path in selection.POSTGRES_ANCHOR_PATHS:
             expected = 0
         elif path in (
+            selection.DB0056_CONTROL_MONITOR_TEST_PATH,
             selection.FITTED_CUSTODY_TEST_PATH,
             selection.DEVVAL_PREDICTION_DIAGNOSTIC_TEST_PATH,
         ):
@@ -379,20 +380,14 @@ def test_pg2_keeps_all_required_cases_and_modules_once_across_both_roles():
         "test_actual0056_native_lifespan_denies_before_recovery_cas",
         "test_actual0056_owner_grant_lock_and_rollback",
         "test_actual0056_restricted_account_control_read_replays_exact_scope",
+        "test_actual0056_restricted_ledger_replays_retained_control_bound_intent",
+        current56_contract.CONTROL_MONITOR_CASE[1],
     ],
 )
 def test_current56_pg1_readback_refuses_missing_native_role_case(
     monkeypatch, tmp_path, removed
 ):
-    module = selection.FITTED_CUSTODY_TEST_PATH
-    cases = [name for _, name in current56_contract.CURRENT56_CUSTODY_CASES] + [
-        "test_actual0056_full_native_role_observation_tls",
-        "test_actual0056_verified_ca_rejects_wrong_server_hostname",
-        "test_actual0056_full_native_role_rejects_swapped_roles_and_extra_grant",
-        "test_actual0056_native_lifespan_denies_before_recovery_cas",
-        "test_actual0056_owner_grant_lock_and_rollback",
-        "test_actual0056_restricted_account_control_read_replays_exact_scope",
-    ]
+    cases = current56_contract.CURRENT56_PG1_REQUIRED_CASES
     report_path, _ = current56_contract.component_report_paths("postgres", 1)
     report = tmp_path / report_path
     report.parent.mkdir(parents=True)
@@ -402,13 +397,15 @@ def test_current56_pg1_readback_refuses_missing_native_role_case(
     )
 
     def readback(names):
-        _junit(report, [f"{module}::{name}" for name in names])
+        _junit(
+            report, [f"{module.replace('.', '/')}.py::{name}" for module, name in names]
+        )
         identity = {"tests": {"sha256": _sha(report.read_bytes())}}
         return current56_contract._collection(tmp_path, "postgres", 1, identity)
 
     assert readback(cases) is accepted_prior_checks
     with pytest.raises(ValueError, match="^pytest_required_execution_not_verified$"):
-        readback([name for name in cases if name != removed])
+        readback([case for case in cases if case[1] != removed])
 
 
 @pytest.mark.parametrize("index", [True, False, -1, 2, "0"])
@@ -513,7 +510,7 @@ def test_fitted_diagnostic_is_explicit_and_cases_only(
     if accepted:
         args, observed = current56._arguments()
         assert args.fitted_catalog_diagnostic is True and observed == 1
-        assert len(set(current56._FITTED_CASES)) == len(current56._FITTED_CASES) == 32
+        assert len(set(current56._FITTED_CASES)) == len(current56._FITTED_CASES) == 34
         assert current56_contract.devval_catalog.HERMETIC_CATALOG_CASE in (
             current56._FITTED_CASES
         )
@@ -536,6 +533,7 @@ def test_fitted_diagnostic_is_explicit_and_cases_only(
             "test_actual0056_draft_locked_owner_grant_and_separate_role_readback",
             "test_actual0056_reviewed_owner_target_plan_has_no_grant",
             "test_actual0056_restricted_account_control_read_replays_exact_scope",
+            "test_actual0056_restricted_ledger_replays_retained_control_bound_intent",
             "test_actual0056_restricted_writer_control_replays_and_holds_uid_lock",
             "test_actual0056_restricted_writer_creates_only_exact_stopped_genesis",
             "test_actual0056_restart_recovery_revokes_existing_account_arm",
@@ -548,6 +546,10 @@ def test_fitted_diagnostic_is_explicit_and_cases_only(
                 "tests.integration.test_gate3_fitted_candidate_custody_pg",
                 name,
             ) in current56._FITTED_CASES
+        assert (
+            "tests.integration.test_db0056_control_monitor_pg",
+            "test_actual0056_control_monitor_joins_exact_release_and_restricted_tls",
+        ) in current56._FITTED_CASES
         assert current56._FITTED_JUNIT not in current56_contract.component_artifacts(
             "postgres", 1
         )

@@ -1,7 +1,7 @@
 """Verify DB0056 selects historical reporting only inside the owning transaction."""
 
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, AsyncSessionTransaction
 
 from app.database.repositories import native_closed_reporting_0056_v1 as subject
 from scripts import native_report_lineage_status_0056_v1 as cli
+from scripts import project_native_terminal_report_0056_v1 as projector
 from tests.unit.test_native_startup_control_observation_0056_v1 import (
     scenario,  # noqa: F401
 )
@@ -178,6 +179,186 @@ async def test_report_observation_replays_once_and_always_rolls_back(
 
 def test_missing_projection_receipt_remains_unknown():
     assert subject._read_projection_digest(None, None) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "fault",
+    [
+        None,
+        "different_role",
+        "locked",
+        "insert_refused",
+        "commit_ack_lost",
+        "file_lost",
+        "namespace",
+    ],
+)
+async def test_local_projection_requires_commit_and_fresh_readback(
+    scenario,  # noqa: F811
+    monkeypatch,
+    tmp_path,
+    fault,
+):
+    now = subject.outbox.actual_utc()
+    report = subject.historical.NativeTerminalReportDataV55(
+        SimpleNamespace(
+            instrument_id="BTC-USDT-SWAP",
+            direction="long",
+            original_source_sha256="1" * 64,
+            original_evidence_sha256="2" * 64,
+        ),
+        "synthetic-report",
+        "trend_pullback",
+        "synthetic-order-reference",
+        now - timedelta(seconds=2),
+        now - timedelta(seconds=1),
+    )
+    spool = subject.QualificationReportSpool(
+        spool_id=SPOOL,
+        report_sha256=REPORT,
+        policy_sha256=POLICY,
+        eligible=True,
+        queue_namespace="wrong" if fault == "namespace" else "test",
+        created_at=now,
+    )
+    policy = subject.outbox.OutboxPolicy()
+    roles = subject.NativeRoleIdentity0056V2(
+        91,
+        92,
+        ("writer", "custody", "frame"),
+        (1, 2, 3),
+        "8" * 64,
+        "7" * 64,
+        "6" * 64,
+        DEFINITIONS,
+        "5" * 64,
+    )
+    witness = subject.witness56.RestrictedNativeRoles0056WitnessV1(
+        subject.roles56.RestrictedNativeRoles0056ObservationV1(
+            DEFINITIONS, "4" * 64, "3" * 64, "5" * 64
+        ),
+        "9" * 64 if fault == "different_role" else roles.server_incarnation_sha256,
+        roles.role_route_sha256,
+    )
+    monkeypatch.setattr(
+        subject.witness56,
+        "observe_restricted_native_roles_0056_witness_v1",
+        AsyncMock(return_value=witness),
+    )
+    settings = object()
+    monkeypatch.setattr(subject, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        subject, "_configured_projection_queue", lambda _: (tmp_path, "test")
+    )
+    calls, receipts, staged = [], [], {}
+    committed = None
+
+    async def read(session, _engine, _roles, _names, _route, requested, *, lock=False):
+        assert requested == SPOOL and session.in_transaction()
+        calls.append((session, lock))
+        if lock and fault == "locked":
+            subject._need(False)
+        if not lock:
+            assert calls[-2][0] is not session
+            assert not calls[-2][0].in_transaction()
+            assert committed is not None
+        return spool, report, policy, subject._read_projection_digest(committed, spool)
+
+    def add(session, receipt):
+        assert session not in staged
+        staged[session] = receipt
+
+    async def flush(session):
+        receipt = staged.pop(session)
+        assert type(receipt) is subject.QualificationReportProjectionReceipt
+        assert receipt.spool_id == SPOOL and receipt.queue_namespace == "test"
+        assert receipt.report_sha256 == REPORT and receipt.policy_sha256 == POLICY
+        if fault == "insert_refused" and len(calls) == 1:
+            raise RuntimeError("private DB trigger refusal")
+        receipts.append(receipt)
+
+    original_exit = AsyncSessionTransaction.__aexit__
+
+    async def commit(transaction, *args):
+        nonlocal committed
+        await original_exit(transaction, *args)
+        if args == (None, None, None) and receipts:
+            committed = receipts[-1]
+            if fault == "commit_ack_lost" and len(calls) == 1:
+                raise RuntimeError("private SQL driver error after the commit")
+
+    monkeypatch.setattr(subject, "_read_held", read)
+    monkeypatch.setattr(AsyncSession, "add", add)
+    monkeypatch.setattr(AsyncSession, "flush", flush)
+    monkeypatch.setattr(AsyncSessionTransaction, "__aexit__", commit)
+    args = {
+        "spool_id": SPOOL,
+        "queue_namespace": "test",
+        "root": tmp_path,
+        "expected_roles": roles,
+    }
+    project = subject._project_terminal_report_0056_v1
+    file = tmp_path / (report.report_id + ".json")
+    journal = tmp_path / (report.report_id + ".state") / "00000001.json"
+    original_pair = None
+    if fault is not None and fault != "file_lost":
+        with pytest.raises(
+            subject.NativeTerminalReport0056Error,
+            match="^native_terminal_report_0056_unavailable$",
+        ):
+            await project(scenario.selected, **args)
+        if fault in {"different_role", "locked", "namespace"}:
+            assert not file.exists() and not journal.exists() and not receipts
+            return
+        assert len(calls) == 1 and len(receipts) == (fault == "commit_ack_lost")
+        original_pair = file.read_bytes(), journal.read_bytes()
+
+    first = await project(scenario.selected, **args)
+    before = file.read_bytes(), journal.read_bytes()
+    if original_pair is not None:
+        assert before == original_pair
+    if fault == "file_lost":
+        file.unlink()
+        with pytest.raises(subject.NativeTerminalReport0056Error):
+            await project(scenario.selected, **args)
+        assert not file.exists() and journal.read_bytes() == before[1]
+    else:
+        second = await project(scenario.selected, **args)
+        assert first == second
+        assert (file.read_bytes(), journal.read_bytes()) == before
+        assert [lock for _, lock in calls[-2:]] == [True, False]
+    assert len(receipts) == 1
+    assert first.projection_receipt_envelope_sha256 == receipts[0].envelope_sha256
+    assert first.local_outbox_verified is True
+    assert first.delivery_authority is first.execution_authority is False
+    assert first.admission == "DENY"
+
+
+def test_local_projection_cli_does_not_claim_zero_db_writes_on_failure(
+    monkeypatch, capsys
+):
+    failure = AsyncMock(side_effect=RuntimeError("private report or settings"))
+    monkeypatch.setattr(
+        projector, "project_configured_native_terminal_report_0056_v1", failure
+    )
+    assert (
+        projector.main(
+            [
+                "--descriptor-file",
+                "private-descriptor",
+                "--source-archive-file",
+                "private-source",
+                "--spool-sha256",
+                SPOOL,
+            ]
+        )
+        == 1
+    )
+    result = capsys.readouterr().out
+    assert '"status":"PROJECTION_UNCONFIRMED"' in result
+    assert '"order_writes":0' in result and '"notion_writes":0' in result
+    assert "private" not in result and "database_mutations" not in result
 
 
 @pytest.mark.asyncio

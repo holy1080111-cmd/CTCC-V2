@@ -73,6 +73,7 @@ POSTGRES_INTEGRATION = (
     "test_demo_automation_control_cas_repository.py",
     "test_demo_control_durability_probe.py",
     "test_demo_control_repository.py",
+    "test_db0056_control_monitor_pg.py",
     "test_demo_event_history_epoch_repository.py",
     "test_durable_migration_downgrade.py",
     "test_devval_campaign_custody_pg_v1.py",

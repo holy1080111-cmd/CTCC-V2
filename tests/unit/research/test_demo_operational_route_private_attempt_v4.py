@@ -34,6 +34,7 @@ async def test_failed_probe_retains_private_bounded_observed_bytes_without_lease
             uid=session._plan.expected_uid, main_uid=session._plan.expected_main_uid
         )
     )
+    deadline = None
 
     class Body(httpx.AsyncByteStream):
         closed = False
@@ -41,6 +42,10 @@ async def test_failed_probe_retains_private_bounded_observed_bytes_without_lease
         async def __aiter__(self):
             yield payload
             if failure == "timeout":
+                # Resume only after the reader has retained this chunk. Let
+                # the real timeout context cancel the stalled next read.
+                assert deadline is not None
+                deadline.reschedule(asyncio.get_running_loop().time())
                 await asyncio.Event().wait()
 
         async def aclose(self):
@@ -49,7 +54,14 @@ async def test_failed_probe_retains_private_bounded_observed_bytes_without_lease
     body = Body()
     client, response = _native_config_fixture(monkeypatch, body)
     if failure == "timeout":
-        monkeypatch.setattr(route, "_MAX_CONFIG_WALL_SECONDS", 0.03)
+
+        def capture_deadline(when):
+            nonlocal deadline
+            assert when > asyncio.get_running_loop().time()
+            deadline = asyncio.timeout(None)
+            return deadline
+
+        monkeypatch.setattr(route.asyncio, "timeout_at", capture_deadline)
     if failure == "rejected":
         response.status_code = 401
     if failure == "late_cleanup":
