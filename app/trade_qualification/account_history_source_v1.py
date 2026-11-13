@@ -800,9 +800,17 @@ async def acquire_native_history_current_source_v2(
 
 
 async def acquire_configured_history_current_source_0056_v1(
-    *, selection, read_session, private_client, raw_root, companion_root
+    *,
+    selection,
+    read_session,
+    private_client,
+    raw_root,
+    companion_root,
+    bootstrap_only=False,
 ):
     """Collect and immediately burn the configured DB0056 diagnostic owner."""
+    if type(bootstrap_only) is not bool:
+        _deny("native_history_0056_source_purpose_required")
     from app.demo_automation.native_server_selectors_v2 import (
         _SOURCE_ONLY_0056,
         _record,
@@ -827,6 +835,7 @@ async def acquire_configured_history_current_source_0056_v1(
         companion_root=companion_root,
         _partition_key=_PARTITION_CURRENT_V2,
         _source_selection_0056=selection,
+        _source_bootstrap_only_0056=bootstrap_only,
     )
     state = _OWNERS.pop(owner, None)
     if state is None:
@@ -855,6 +864,7 @@ async def _acquire_native_history_source(
     _asof_history_start=None,
     _controlled_asof_token=None,
     _source_selection_0056=None,
+    _source_bootstrap_only_0056=False,
     _json_guard=_json_lexical_guard.require,
     _json_binding=_json_lexical_guard.BINDING,
     _json_module=_json_lexical_guard,
@@ -890,6 +900,10 @@ async def _acquire_native_history_source(
         scope_config.__post_init__()
         partition_reader_type = AccountHistoryPartitionRepository
         source56 = None
+        if _source_bootstrap_only_0056 is not False and (
+            _source_bootstrap_only_0056 is not True or _source_selection_0056 is None
+        ):
+            _deny("native_history_0056_source_purpose_required")
         if _source_selection_0056 is not None:
             if (
                 _controlled_asof_token is not None
@@ -1021,6 +1035,12 @@ async def _acquire_native_history_source(
                         custody_factory
                     )
                     await _checked_await(state, custody_repo.verify_deployment())
+                    if (
+                        _source_bootstrap_only_0056
+                        and (await _checked_await(state, index_repo._batch(scope)))
+                        is not None
+                    ):
+                        _deny("native_history_0056_bootstrap_already_recorded")
                     files = {
                         "host-before.json": native._host_observation(stage, "before")
                     }
@@ -1095,6 +1115,8 @@ async def _acquire_native_history_source(
                         _deny("native_history_original_source_changed")
                     latest = await _checked_await(state, index_repo._batch(scope))
                     revision = 0 if latest is None else latest.sequence
+                    if _source_bootstrap_only_0056 and revision != 0:
+                        _deny("native_history_0056_bootstrap_already_recorded")
                     if type(revision) is not int or not 0 <= revision < (
                         2**63 - 1
                         if _partition_key is _PARTITION_CURRENT_V2

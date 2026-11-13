@@ -64,7 +64,7 @@ class DemoControlRepository0056V1:
     lifetime replay for disarmed ownership and safety tightening only.
     """
 
-    def __init__(self, selected, *, roles, scope, clock):
+    def __init__(self, selected, *, roles, scope, clock, expected_acquire_event=None):
         _need(
             type(selected) is ConfiguredNativeDemoFactoriesV2
             and type(roles) is RestrictedNativeRoles0056WitnessV1
@@ -75,6 +75,11 @@ class DemoControlRepository0056V1:
         self._roles = roles
         self._scope = control.checked(scope, control.ControlScope)
         self._clock = clock
+        self._expected_acquire_event = (
+            None
+            if expected_acquire_event is None
+            else control.sha(expected_acquire_event)
+        )
 
     @property
     def session_factory(self):
@@ -172,6 +177,8 @@ class DemoControlRepository0056V1:
                     before,
                     check,
                 ):
+                    if action == "acquire" and self._expected_acquire_event is not None:
+                        _need(before.event == self._expected_acquire_event)
                     state = transition(before.state, before.metadata[9])
                     _need(
                         state.scope == scope

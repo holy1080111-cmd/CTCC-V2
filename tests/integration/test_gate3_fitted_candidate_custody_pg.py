@@ -2286,6 +2286,12 @@ async def test_actual0056_full_native_role_observation_tls(
 async def test_actual0056_held_frame_reader_uses_same_transaction_and_real_catalog(
     _actual_0056_role_observation_lab,
 ):
+    from app.core.native_role_witness_0056_v1 import (
+        observe_restricted_native_roles_0056_witness_v1,
+    )
+    from app.trade_qualification import account_history_source_v1 as history_source
+    from app.trade_qualification import native_controlled_account_source_v6 as source_v6
+
     _, _, selected, _ = _actual_0056_role_observation_lab
     frame_factory = selected.frame_reader_factory
     writer_factory = selected.writer_factory
@@ -2346,6 +2352,43 @@ async def test_actual0056_held_frame_reader_uses_same_transaction_and_real_catal
         with pytest.raises(held_frame56.NativeFrameReader0056Error):
             await held_frame56.verify_held_frame_catalog_0056_v1(
                 session, fence, writer_factory, custody_factory, frame_factory
+            )
+
+    roles = await observe_restricted_native_roles_0056_witness_v1(
+        selected, source=_SOURCE_ROOT
+    )
+    original_pin, reader, _ = history_source._clone_factory(frame_factory)
+    v6_state = {
+        "reader_factory": reader,
+        "factories": ((), (frame_factory, original_pin)),
+    }
+    async with reader() as session, session.begin():
+        for statement in (
+            "SET TRANSACTION ISOLATION LEVEL READ COMMITTED",
+            "SET LOCAL search_path TO pg_catalog,public,pg_temp",
+            "SET LOCAL TIME ZONE 'UTC'",
+            "SET LOCAL lock_timeout='1000ms'",
+            "SET LOCAL statement_timeout='1000ms'",
+        ):
+            await session.execute(text(statement))
+        tx = session.sync_session.get_transaction()
+        rebound = await source_v6._reader_role_0056_v6(
+            v6_state, session, fence, selected, roles
+        )
+        assert rebound == observed["current0056"]["raw"]["role"]["oid"]
+        assert session.sync_session.get_transaction() is tx
+        bad = replace(
+            roles,
+            observation=replace(
+                roles.observation, granted_inherited_acl_shape_sha256="f" * 64
+            ),
+        )
+        with pytest.raises(
+            source_v6.ControlledAccountSourceError,
+            match="original_0056_frame_role_changed",
+        ):
+            await source_v6._reader_role_0056_v6(
+                v6_state, session, fence, selected, bad
             )
 
 

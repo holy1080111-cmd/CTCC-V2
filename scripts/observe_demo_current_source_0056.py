@@ -31,6 +31,11 @@ def main(arguments=None) -> int:
         help="Collect the original CURRENT-index history bundle under a fresh lease.",
     )
     mode.add_argument(
+        "--bootstrap-history",
+        action="store_true",
+        help="Create and reread the first source observation while stopped.",
+    )
+    mode.add_argument(
         "--restart-inventory",
         action="store_true",
         help="Observe fresh exchange inventory and local exposure around the stopped account.",
@@ -41,10 +46,12 @@ def main(arguments=None) -> int:
         help="Compare stopped Control and ledger checkpoints around real CURRENT data.",
     )
     args = parser.parse_args(arguments)
-    if args.include_history:
+    if args.include_history or args.bootstrap_history:
         try:
             digest = asyncio.run(
-                observe_configured_current_history_0056_v1(args.instrument)
+                observe_configured_current_history_0056_v1(
+                    args.instrument, bootstrap_only=args.bootstrap_history
+                )
             )
         except NativeHistorySource0056Error as exc:
             print(str(exc), file=sys.stderr)
@@ -55,7 +62,11 @@ def main(arguments=None) -> int:
         print(
             json.dumps(
                 {
-                    "status": "CURRENT_HISTORY_OBSERVED",
+                    "status": (
+                        "MEASURED_HISTORY_GENESIS_OBSERVED"
+                        if args.bootstrap_history
+                        else "CURRENT_HISTORY_OBSERVED"
+                    ),
                     "database_head": "0056",
                     "receipt_sha256": digest,
                     "history_tail_closed": False,

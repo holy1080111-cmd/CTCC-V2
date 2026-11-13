@@ -33,6 +33,32 @@ class NativeDemoControlPrepared0056:
     execution_authority: Literal[False] = field(default=False, init=False)
 
 
+def _control_pins(record, roles, scope, genesis, policy, inventory):
+    return control.ControlPins(
+        config_sha256=sha(
+            canonical(
+                {
+                    "schema_version": "ctcc.native_demo_control.config.0056.v1",
+                    "plan_sha256": selectors.capture.plan_sha256(record.current_plan),
+                    "scope": [
+                        scope.environment,
+                        scope.account_id,
+                        scope.settlement_currency,
+                    ],
+                    "measured_genesis_sha256": genesis.source_sha256,
+                    "configured_policy_sha256": policy.selected_settings_sha256,
+                    "writer_inventory_sha256": inventory[0]["writer_sha256"],
+                    "selector_sha256": record.route_evidence.binding_sha256,
+                    "database_role_route_sha256": roles.role_route_sha256,
+                    "database_server_incarnation_sha256": roles.server_incarnation_sha256,
+                }
+            )
+        ),
+        policy_sha256=policy.selected_settings_sha256,
+        credential_session_sha256=sha(record.read_session.binding_id.encode("ascii")),
+    )
+
+
 async def prepare_configured_demo_control_0056(
     selection,
 ) -> NativeDemoControlPrepared0056:
@@ -69,33 +95,7 @@ async def prepare_configured_demo_control_0056(
             drawdown_window_started_at=genesis.window_started_at
         )
         inventory = native._package_inventory_controlled55_v1()
-        pins = control.ControlPins(
-            config_sha256=sha(
-                canonical(
-                    {
-                        "schema_version": "ctcc.native_demo_control.config.0056.v1",
-                        "plan_sha256": selectors.capture.plan_sha256(
-                            record.current_plan
-                        ),
-                        "scope": [
-                            scope.environment,
-                            scope.account_id,
-                            scope.settlement_currency,
-                        ],
-                        "measured_genesis_sha256": genesis.source_sha256,
-                        "configured_policy_sha256": policy.selected_settings_sha256,
-                        "writer_inventory_sha256": inventory[0]["writer_sha256"],
-                        "selector_sha256": record.route_evidence.binding_sha256,
-                        "database_role_route_sha256": roles.role_route_sha256,
-                        "database_server_incarnation_sha256": roles.server_incarnation_sha256,
-                    }
-                )
-            ),
-            policy_sha256=policy.selected_settings_sha256,
-            credential_session_sha256=sha(
-                record.read_session.binding_id.encode("ascii")
-            ),
-        )
+        pins = _control_pins(record, roles, scope, genesis, policy, inventory)
         after = await repository.read(control_scope)
         require_same_selection()
         if (
@@ -138,3 +138,40 @@ async def inspect_configured_demo_control_0056(
             return result
     finally:
         await _dispose(selection, factories)
+
+
+async def verify_configured_demo_control_lifecycle_0056(
+    instrument_id: str,
+) -> ControlObservation:
+    """Prove the same selected account can acquire and release disarmed Control."""
+    owner = None
+    selection = factories = None
+    try:
+        settings = _settings(instrument_id)
+        client = OkxDemoPrivateRestClient(settings=settings)
+        with client.pinned_read_session() as lease:
+            selection = (
+                await selectors._select_configured_demo_controlled_identity_0056(
+                    private_client=client,
+                    read_session=lease,
+                    instrument_ids=(instrument_id,),
+                )
+            )
+            factories = selection.factories
+            owner = await previous.prepare_selected_demo_control_owner_0056(selection)
+            result = await owner.release()
+            owner = None
+            if (
+                result.state.arm_request_id is not None
+                or result.execution_authority is not False
+            ):
+                raise selectors.NativeDemoCallerReadinessErrorV2(
+                    "native_demo_control_0056_release_changed"
+                ) from None
+            return result
+    finally:
+        try:
+            if owner is not None:
+                await owner.emergency_stop()
+        finally:
+            await _dispose(selection, factories)

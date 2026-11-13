@@ -56,9 +56,25 @@ async def test_actual0056_restricted_control_repository_reads_back_lifecycle(
     historical = DemoControlRepository(owner_factory, clock=clock)
     genesis = await historical.latch_stop(scope, command_id="a" * 64)
     current = repository56.DemoControlRepository0056V1(
-        selected, roles=roles, scope=scope, clock=clock
+        selected,
+        roles=roles,
+        scope=scope,
+        clock=clock,
+        expected_acquire_event=genesis.event_sha256,
     )
     assert (await current.verify_native_deployment_v2()).state == genesis.state
+    stale = repository56.DemoControlRepository0056V1(
+        selected,
+        roles=roles,
+        scope=scope,
+        clock=clock,
+        expected_acquire_event="7" * 64,
+    )
+    with pytest.raises(repository56.DemoControlRepository0056Error):
+        await DemoControlOwner(
+            stale, scope, ControlPins("b" * 64, "c" * 64, "d" * 64)
+        ).start()
+    assert (await current.read(scope)).event_sha256 == genesis.event_sha256
     pending_sessions = []
     original = repository56.DemoControlRepository._store
 

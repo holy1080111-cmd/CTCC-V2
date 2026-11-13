@@ -1,4 +1,4 @@
-"""Same-invocation controlled current55 financial source and owned issuer.
+"""Same-invocation controlled financial source and owned issuer.
 
 The original OFF/bootstrap V5 purpose is unchanged. This new purpose starts
 only from the genuine already-Armed runtime owner, uses the original native
@@ -23,6 +23,9 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings as configured
+from app.core import native_frame_reader_0056_v1 as frame56
+from app.core import native_locked_demo_control_0056_v1 as control56
+from app.core import native_role_witness_0056_v1 as witness56
 from app.database.models.account_revision_collector_lineage import (
     DemoCollectorCurrentRevisionLineage as Lineage,
 )
@@ -42,12 +45,14 @@ from app.database.repositories import (
 from app.database.repositories import (
     collector_current_0055_multirole_catalog_v1 as catalog55,
 )
+from app.database.repositories import demo_control_current56_v1 as repository56
 from app.database.repositories import (
     demo_operator_acknowledgements_current55_v1 as operator55,
 )
 from app.database.repositories import public_runtime_bundle_custody as custody
 from app.database.repositories.demo_control_current55_v2 import DemoControlRepositoryV2
 from app.database.repositories.qualification_ledger import QualificationLedgerRepository
+from app.demo_automation import native_server_selectors_v2 as selector56
 from app.domain import account_history_partition_v1 as partition_policy
 from app.domain import native_clock
 from app.domain import source_primitives as clock_contract
@@ -426,6 +431,10 @@ def _retire_v6(state, *, uncertain, _original_retire=_RETIRE_SOURCE_V6):
 
 async def _admit_writer_v6(state):
     _check_v6(state)
+    database = _owned_database_0056_v6(state)
+    if database is not None:
+        await _admit_writer_0056_v6(state, *database)
+        return
     async with state["control"]["factory"]() as session, session.begin():
         await session.execute(
             text("SET LOCAL search_path TO pg_catalog,public,pg_temp")
@@ -442,6 +451,69 @@ async def _admit_writer_v6(state):
         expected = state["control"]["observation"]
         if actual != expected.state or event != expected.event_sha256:
             _deny("controlled_account_original_Control_changed")
+    _check_v6(state)
+
+
+def _owned_database_0056_v6(state):
+    ctrl = state["control"]
+    repository = ctrl["repository"]
+    roles, factories = ctrl.get("db0056_roles"), ctrl.get("db0056_factories")
+    if roles is factories is None and type(repository) is DemoControlRepositoryV2:
+        return None
+    if (
+        type(repository) is not repository56.DemoControlRepository0056V1
+        or type(roles) is not witness56.RestrictedNativeRoles0056WitnessV1
+        or type(factories) is not selector56.ConfiguredNativeDemoFactoriesV2
+    ):
+        _deny("controlled_account_original_0056_owner_required")
+    selected_record, selected_factories, selected_roles = (
+        selector56._controlled_identity_0056(ctrl["identity_selection"])
+    )
+    if (
+        selected_record is not ctrl["identity_record"]
+        or selected_factories is not factories
+        or selected_roles is not roles
+        or ctrl["factory"] is not factories.writer_factory
+        or ctrl["custody_original_factory"] is not factories.custody_factory
+        or selected_record.raw_reader_factory is not factories.frame_reader_factory
+        or selected_record.read_session is not ctrl["read_session"]
+        or selected_record.private_client is not ctrl["private_client"]
+        or selected_record.current_plan is not ctrl["plan"]
+        or repository.session_factory is not ctrl["factory"]
+        or repository._selected is not factories
+        or repository._roles is not roles
+        or repository._scope != ctrl["scope"]
+    ):
+        _deny("controlled_account_original_0056_owner_changed")
+    return factories, roles
+
+
+async def _admit_writer_0056_v6(state, factories, roles):
+    ctrl = state["control"]
+    async with (
+        ctrl["factory"]() as session,
+        session.begin(),
+        control56.held_native_writer_control_0056_v1(
+            factories,
+            session,
+            ctrl["scope"],
+            roles=roles,
+            purpose=control56.NativeWriterControlPurpose0056.PREPARE_OBSERVATION,
+        ) as held,
+    ):
+        _check_v6(state)
+        held.check_held()
+        actual = held.observation.control
+        expected = ctrl["observation"]
+        if (
+            actual.state != expected.state
+            or actual.event_sha256 != expected.event_sha256
+            or not expected.observed_at <= actual.observed_at < state["expires_at"]
+            or not actual.state.arm_intent_current(actual.observed_at)
+            or actual.state.owner_sha256 != ctrl["owner_sha256"]
+            or actual.state.pins != ctrl["pins"]
+        ):
+            _deny("controlled_account_original_0056_Control_changed")
     _check_v6(state)
 
 
@@ -1066,6 +1138,7 @@ async def _bank_v6(state):
 
 async def _reader_role_v6(state):
     _check_v6(state)
+    database = _owned_database_0056_v6(state)
     async with state["reader_factory"]() as session, session.begin():
         for query in (
             "SET TRANSACTION ISOLATION LEVEL READ COMMITTED",
@@ -1076,23 +1149,89 @@ async def _reader_role_v6(state):
         ):
             await session.execute(text(query))
             _check_v6(state)
-        actual = await lineage55._metadata(session)
-        _check_v6(state)
-        state["reader_role_oid"] = actual[3]
 
         class CatalogFence:
             def check(self):
                 return utc_from_ns(_check_v6(state)["utc_ns"])
 
-        await catalog55.verify_actual_raw_history_catalog_v1(
-            session,
-            CatalogFence(),
-            actual[3],
-            state["control"]["factory"],
-            state["reader_factory"],
-        )
+        fence = CatalogFence()
+        if database is None:
+            actual = await lineage55._metadata(session)
+            _check_v6(state)
+            await catalog55.verify_actual_raw_history_catalog_v1(
+                session,
+                fence,
+                actual[3],
+                state["control"]["factory"],
+                state["reader_factory"],
+            )
+            reader_oid = actual[3]
+        else:
+            reader_oid = await _reader_role_0056_v6(state, session, fence, *database)
         _check_v6(state)
     _check_v6(state)
+    state["reader_role_oid"] = reader_oid
+
+
+async def _reader_role_0056_v6(state, session, fence, factories, roles):
+    reader = state["reader_factory"]
+    routes, names = frame56._checked_factories(
+        session,
+        factories.writer_factory,
+        factories.custody_factory,
+        reader,
+    )
+    raw_pin = history._factory_pin(factories.frame_reader_factory)
+    if (
+        state["factories"][1][:2] != (factories.frame_reader_factory, raw_pin)
+        or history._factory_pin(reader)[1:] != raw_pin[1:]
+    ):
+        _deny("controlled_account_original_0056_frame_factory_changed")
+    route = selector56._database_route(reader.kw["bind"].url)
+    raw_before = await frame56._identity(session, fence, names[2])
+    proof_bytes = await frame56.verify_held_frame_catalog_0056_v1(
+        session,
+        fence,
+        factories.writer_factory,
+        factories.custody_factory,
+        reader,
+    )
+    fence.check()
+    actual = decode(proof_bytes, 4 * 1024 * 1024)
+    graphs = actual["current0056"]
+    profile = graphs["profile"]
+    writer_name, writer_oid = (
+        graphs["writer"]["role"]["name"],
+        graphs["writer"]["role"]["oid"],
+    )
+    writer_identity = (writer_name, writer_name, "none", writer_oid, *raw_before[4:])
+    if (
+        writer_name != names[0]
+        or actual["schema"] != "ctcc.native_only.held_frame_catalog_0056.v1"
+        or actual["database_head"] != "0056"
+        or actual["granted_inherited_acl_shape_sha256"]
+        != roles.observation.granted_inherited_acl_shape_sha256
+        or profile["native_definitions_sha256"]
+        != roles.observation.inherited_native_definitions_sha256
+        or witness56.runtime_witness_0056(writer_identity, names, (route,) * 3)
+        != (roles.server_incarnation_sha256, roles.role_route_sha256)
+        or graphs["raw"]["role"]["oid"] != raw_before[3]
+        or actual["account_complete"] is not False
+        or actual["execution_authority"] is not False
+        or actual["admission"] != "DENY"
+    ):
+        _deny("controlled_account_original_0056_frame_role_changed")
+    if await frame56._identity(session, fence, names[2]) != raw_before:
+        _deny("controlled_account_original_0056_frame_transaction_changed")
+    fence.check()
+    if (
+        frame56._checked_factories(
+            session, factories.writer_factory, factories.custody_factory, reader
+        )[0]
+        != routes
+    ):
+        _deny("controlled_account_original_0056_frame_factory_changed")
+    return raw_before[3]
 
 
 def _source_stamp_v6(state, *, source_sha256, observed_at, received_at):
@@ -7577,6 +7716,15 @@ def _install_source_kernel_v6():
             issuer55.issuer_transaction.locked,
             issuer55.issuer_transaction.writer56,
             issuer55.issuer_transaction.writer56.inherited,
+            repository56,
+            control56,
+            frame56,
+            frame56.roles56,
+            frame56.roles55,
+            frame56.pair56,
+            frame56.partition_policy,
+            frame56.frame_policy,
+            witness56,
             lineage55,
             catalog55,
             catalog55.frame_policy,

@@ -130,3 +130,21 @@ configuration request. The original first account measurement must replay,
 and fresh transactions must agree on the current Control event. The output
 shows the revision, emergency stop, recorded Arm request and measurement
 digest. Control writes, order writes and execution authority remain disabled.
+
+
+For a stopped account with no CURRENT index, explicitly capture its original
+measurement before preparing Control.
+
+    python -B -m scripts.observe_demo_current_source_0056 --instrument BTC-USDT-SWAP --bootstrap-history
+
+This checks the empty index before history collection and enforces the original
+sequence-one constraint at append. If a late check fails after the append,
+durable records remain. Inspect the original measurement with the read-only
+preparation command before retrying a failed initialization.
+
+To verify disarmed ownership against the same configured identity, add
+`--verify-disarmed-lifecycle` to the preparation command. This acquires and
+releases the durable owner and independently reads back the released Control
+state. The command can update Control and can latch a stop if release is
+uncertain. A failed command reports the mutation as unconfirmed. It sends no
+orders and issues no Arm request.

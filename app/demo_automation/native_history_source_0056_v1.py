@@ -33,7 +33,9 @@ class NativeHistorySource0056Error(ValueError):
     """Stable refusal; source rows and private deployment settings stay local."""
 
 
-async def _capture(settings, instrument_id: str, root: Path) -> bytes:
+async def _capture(
+    settings, instrument_id: str, root: Path, *, bootstrap_only: bool = False
+) -> bytes:
     selection = factories = None
     client = OkxDemoPrivateRestClient(settings=settings)
     try:
@@ -47,15 +49,36 @@ async def _capture(settings, instrument_id: str, root: Path) -> bytes:
             role_evidence = selection.source_roles_0056
             scope = ControlScope("demo", selection.scope_config.expected_uid)
             before = await _observe_control(factories, scope, role_evidence)
+            if bootstrap_only:
+                _need(
+                    before.control.state.emergency_stop is True,
+                    "native_history_0056_bootstrap_stop_required",
+                )
             digest = await history.acquire_configured_history_current_source_0056_v1(
                 selection=selection,
                 read_session=lease,
                 private_client=client,
                 raw_root=root / _PARTS[0],
                 companion_root=root / _PARTS[1],
+                bootstrap_only=bootstrap_only,
             )
             after = await _observe_control(factories, scope, role_evidence)
             _readback_control(before, after)
+            if bootstrap_only:
+                from app.trade_qualification.native_demo_control_owner_v2 import (
+                    _read_genesis,
+                )
+                from app.trade_qualification.reservations import LedgerScope
+
+                genesis = await _read_genesis(
+                    factories.writer_factory,
+                    LedgerScope(
+                        account_id=scope.account_id, settlement_currency="USDT"
+                    ),
+                )
+                final = await _observe_control(factories, scope, role_evidence)
+                _readback_control(after, final)
+                after = final
             _need(
                 selection.factories is factories
                 and selection.source_roles_0056 is role_evidence
@@ -69,6 +92,11 @@ async def _capture(settings, instrument_id: str, root: Path) -> bytes:
                 "database_head": "0056",
                 "admission": "DENY",
                 "history_bundle_sha256": digest,
+                **(
+                    {"measured_genesis_sha256": genesis.source_sha256}
+                    if bootstrap_only
+                    else {}
+                ),
                 "capture_contract": "ctcc.demo_account_plan.v5",
                 "current_v7_page_chains_verified": False,
                 "control_revision": after.control.state.revision,
@@ -89,15 +117,22 @@ async def _capture(settings, instrument_id: str, root: Path) -> bytes:
         await _dispose(selection, factories)
 
 
-async def observe_configured_current_history_0056_v1(instrument_id: str) -> str:
+async def observe_configured_current_history_0056_v1(
+    instrument_id: str, *, bootstrap_only: bool = False
+) -> str:
     """Return only the hash of the privately retained diagnostic receipt."""
     root = None
     try:
+        _need(
+            type(bootstrap_only) is bool, "native_history_0056_source_purpose_required"
+        )
         settings = _settings(instrument_id)
         require_private_evidence_base_v2(settings.okx_demo_native_evidence_root)
         root = _attempt(settings, leaf_prefix="db0056-history-", parts=_PARTS)
         async with asyncio.timeout(120):
-            receipt = await _capture(settings, instrument_id, root)
+            receipt = await _capture(
+                settings, instrument_id, root, bootstrap_only=bootstrap_only
+            )
         with storage._root_context(root) as directory:
             directory.publish(_RECEIPT, receipt)
             _need(

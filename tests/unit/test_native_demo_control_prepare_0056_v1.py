@@ -1,5 +1,6 @@
 """Purpose separation before any signed Demo configuration read."""
 
+from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -159,3 +160,53 @@ async def test_prepare_replays_genesis_between_exact_control_reads(monkeypatch, 
     assert result.source_genesis_sha256 == genesis.source_sha256
     assert result.execution_authority is False
     assert repo.read.await_count == 2 and read_genesis.await_count == 1
+
+
+@pytest.mark.parametrize("release_known", [True, False])
+async def test_explicit_lifecycle_tightens_after_uncertain_release(
+    monkeypatch, release_known
+):
+    lease = object()
+    client = SimpleNamespace(pinned_read_session=lambda: nullcontext(lease))
+    selection = SimpleNamespace(factories=object())
+    select = AsyncMock(return_value=selection)
+    stopped = control.stopped_genesis(
+        control.ControlScope("demo", "730001"), datetime(2026, 11, 14, tzinfo=UTC)
+    )
+    observation = ControlObservation(stopped, "1" * 64, stopped.updated_at)
+    owner = SimpleNamespace(
+        release=AsyncMock(
+            return_value=observation,
+            side_effect=None if release_known else ValueError("unknown"),
+        ),
+        emergency_stop=AsyncMock(),
+    )
+    acquire = AsyncMock(return_value=owner)
+    dispose = AsyncMock()
+    monkeypatch.setattr(prepare, "_settings", Mock(return_value=object()))
+    monkeypatch.setattr(prepare, "OkxDemoPrivateRestClient", Mock(return_value=client))
+    monkeypatch.setattr(
+        selectors, "_select_configured_demo_controlled_identity_0056", select
+    )
+    monkeypatch.setattr(
+        prepare.previous, "prepare_selected_demo_control_owner_0056", acquire
+    )
+    monkeypatch.setattr(prepare, "_dispose", dispose)
+
+    if release_known:
+        assert (
+            await prepare.verify_configured_demo_control_lifecycle_0056(_INSTRUMENTS[0])
+            is observation
+        )
+        owner.emergency_stop.assert_not_awaited()
+    else:
+        with pytest.raises(ValueError, match="unknown"):
+            await prepare.verify_configured_demo_control_lifecycle_0056(_INSTRUMENTS[0])
+        owner.emergency_stop.assert_awaited_once()
+
+    select.assert_awaited_once_with(
+        private_client=client, read_session=lease, instrument_ids=_INSTRUMENTS
+    )
+    acquire.assert_awaited_once_with(selection)
+    owner.release.assert_awaited_once()
+    dispose.assert_awaited_once_with(selection, selection.factories)

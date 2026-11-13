@@ -24,6 +24,7 @@ from app.database.repositories import (
 )
 from app.database.repositories import demo_control as historical_repository
 from app.database.repositories import demo_control_current55_v2 as repository_v2
+from app.database.repositories import demo_control_current56_v1 as repository56
 from app.database.repositories import (
     demo_operator_acknowledgements_current55_v1 as operator_repository,
 )
@@ -205,9 +206,20 @@ def _selected_record_v3(state):
     )
 
     controlled_source._REQUIRE_SOURCE_KERNEL_V6()
-    value = selector._replay_configured_demo_identity_selection_v2(
-        state["identity_selection"], key=_SOURCE_KEY
-    )
+    if state.get("db0056_roles") is None:
+        value = selector._replay_configured_demo_identity_selection_v2(
+            state["identity_selection"], key=_SOURCE_KEY
+        )
+    else:
+        value, factories, roles = selector._controlled_identity_0056(
+            state["identity_selection"]
+        )
+        if (
+            factories is not state["db0056_factories"]
+            or roles is not state["db0056_roles"]
+            or type(state["repository"]) is not repository56.DemoControlRepository0056V1
+        ):
+            _deny("native_demo_control_original_db0056_selection_changed")
     if (
         type(value) is not selector.ConfiguredDemoIdentityRecordV2
         or value != state["identity_record"]
@@ -330,6 +342,7 @@ async def _prepare_configured_demo_control_owner_v2(
     custody_session_factory,
     _identity_selection=None,
     _identity_record=None,
+    _db0056=None,
 ):
     """Create the real configured owner; acquire is disarmed and does not clear."""
     from app.database.session import AsyncSessionFactory
@@ -367,36 +380,80 @@ async def _prepare_configured_demo_control_owner_v2(
     if writer_route[1] != custody_route[1]:
         _deny("native_demo_control_same_database_route_required")
     custody_repository = custody.RuntimeBundleCustodyRepository(owned_custody_factory)
-    repository = repository_v2.DemoControlRepositoryV2(AsyncSessionFactory, clock=_NOW)
-    # Exact actual55 admission precedes the original sequence-one source read.
-    await repository.verify_native_deployment_v2()
-    read_session.verify_current()
-    genesis = await _read_genesis(AsyncSessionFactory, scope)
-    read_session.verify_current()
-    configured_policy = financial.capture_configured_owned_risk_policy_v1(
-        drawdown_window_started_at=genesis.window_started_at
-    )
-    inventory = native._package_inventory_controlled55_v1()
-    pins = control.ControlPins(
-        config_sha256=sha(
-            canonical(
-                {
-                    "schema_version": "ctcc.native_demo_control.config.v2",
-                    "plan_sha256": capture.plan_sha256(plan),
-                    "scope": [
-                        scope.environment,
-                        scope.account_id,
-                        scope.settlement_currency,
-                    ],
-                    "measured_genesis_sha256": genesis.source_sha256,
-                    "configured_policy_sha256": configured_policy.selected_settings_sha256,
-                    "writer_inventory_sha256": inventory[0]["writer_sha256"],
-                }
-            )
-        ),
-        policy_sha256=configured_policy.selected_settings_sha256,
-        credential_session_sha256=sha(read_session.binding_id.encode("ascii")),
-    )
+    db0056_roles = db0056_factories = None
+    if _db0056 is None:
+        repository = repository_v2.DemoControlRepositoryV2(
+            AsyncSessionFactory, clock=_NOW
+        )
+        await repository.verify_native_deployment_v2()
+        read_session.verify_current()
+        genesis = await _read_genesis(AsyncSessionFactory, scope)
+        read_session.verify_current()
+        configured_policy = financial.capture_configured_owned_risk_policy_v1(
+            drawdown_window_started_at=genesis.window_started_at
+        )
+        inventory = native._package_inventory_controlled55_v1()
+        pins = control.ControlPins(
+            config_sha256=sha(
+                canonical(
+                    {
+                        "schema_version": "ctcc.native_demo_control.config.v2",
+                        "plan_sha256": capture.plan_sha256(plan),
+                        "scope": [
+                            scope.environment,
+                            scope.account_id,
+                            scope.settlement_currency,
+                        ],
+                        "measured_genesis_sha256": genesis.source_sha256,
+                        "configured_policy_sha256": configured_policy.selected_settings_sha256,
+                        "writer_inventory_sha256": inventory[0]["writer_sha256"],
+                    }
+                )
+            ),
+            policy_sha256=configured_policy.selected_settings_sha256,
+            credential_session_sha256=sha(read_session.binding_id.encode("ascii")),
+        )
+    else:
+        from app.demo_automation import native_server_selectors_v2 as selector
+        from app.trade_qualification import (
+            native_demo_control_prepare_0056_v1 as prepare56,
+        )
+
+        record, db0056_factories, db0056_roles = selector._controlled_identity_0056(
+            _identity_selection
+        )
+        if (
+            record is not _identity_record
+            or db0056_factories.writer_factory is not AsyncSessionFactory
+            or db0056_factories.custody_factory is not custody_session_factory
+            or type(_db0056) is not tuple
+            or len(_db0056) != 2
+            or _db0056[0] is not db0056_factories
+            or _db0056[1] is not db0056_roles
+        ):
+            _deny("native_demo_control_original_db0056_selection_changed")
+        control_scope = control.ControlScope("demo", scope.account_id)
+        reader = repository56.DemoControlRepository0056V1(
+            db0056_factories, roles=db0056_roles, scope=control_scope, clock=_NOW
+        )
+        before = await reader.verify_native_deployment_v2()
+        read_session.verify_current()
+        genesis = await _read_genesis(AsyncSessionFactory, scope)
+        read_session.verify_current()
+        configured_policy = financial.capture_configured_owned_risk_policy_v1(
+            drawdown_window_started_at=genesis.window_started_at
+        )
+        inventory = native._package_inventory_controlled55_v1()
+        pins = prepare56._control_pins(
+            record, db0056_roles, scope, genesis, configured_policy, inventory
+        )
+        repository = repository56.DemoControlRepository0056V1(
+            db0056_factories,
+            roles=db0056_roles,
+            scope=control_scope,
+            clock=_NOW,
+            expected_acquire_event=before.event_sha256,
+        )
     owner = original.DemoControlOwner(
         repository,
         control.ControlScope("demo", scope.account_id),
@@ -411,6 +468,8 @@ async def _prepare_configured_demo_control_owner_v2(
         "plan": plan,
         "identity_selection": _identity_selection,
         "identity_record": _identity_record,
+        "db0056_roles": db0056_roles,
+        "db0056_factories": db0056_factories,
         "settings": configured.get_settings(),
         "settings_pin": native._v3_data_pin(configured.get_settings().__dict__),
         "plan_sha256": capture.plan_sha256(plan),
@@ -479,6 +538,30 @@ async def prepare_selected_demo_control_owner_v3(selection):
                 _identity_record=selected,
             )
     except BaseException as error:  # noqa: BLE001 -- retain original ownership and fail closed on unknown/cancellation.
+        _raise_fixed(error, "native_demo_control_preparation_failed")
+
+
+async def prepare_selected_demo_control_owner_0056(selection):
+    """Acquire a disarmed Control owner from the genuine configured selection."""
+    from app.demo_automation import native_server_selectors_v2 as selector
+    from app.trade_qualification import native_controlled_account_source_v6 as source
+
+    source._REQUIRE_SOURCE_KERNEL_V6()
+    selected, factories, roles = selector._controlled_identity_0056(selection)
+    if type(selected) is not selector.ConfiguredDemoIdentityRecordV2:
+        _deny("native_demo_control_genuine_server_selector_required")
+    try:
+        async with asyncio.timeout(30):
+            return await _prepare_configured_demo_control_owner_v2(
+                read_session=selected.read_session,
+                private_client=selected.private_client,
+                current_account_plan=selected.current_plan,
+                custody_session_factory=selected.custody_factory,
+                _identity_selection=selection,
+                _identity_record=selected,
+                _db0056=(factories, roles),
+            )
+    except BaseException as error:  # noqa: BLE001 -- fixed refusal for the configured owner.
         _raise_fixed(error, "native_demo_control_preparation_failed")
 
 
@@ -861,6 +944,7 @@ def _make_kernel():
             "configured",
             "indexed",
             "repository_v2",
+            "repository56",
             "historical_repository",
             "operator_repository",
             "lineage_repository",
@@ -950,6 +1034,7 @@ def _make_kernel():
             measured,
             financial,
             repository_v2,
+            repository56,
             historical_repository,
             operator_repository,
             lineage_repository,

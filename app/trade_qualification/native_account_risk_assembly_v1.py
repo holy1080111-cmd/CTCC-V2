@@ -7985,6 +7985,8 @@ _CONTROLLED_SOURCE_PATHS_V1 = (
     "app/trade_qualification/native_continuation_guard_v1.py",
     "app/database/repositories/account_issued_revision_current55_v1.py",
     "app/database/repositories/native_issuer_transaction.py",
+    "app/database/repositories/demo_control_current56_v1.py",
+    "app/trade_qualification/native_demo_control_prepare_0056_v1.py",
     "app/core/native_writer_observation_0056_v1.py",
     "app/core/native_locked_demo_control_0056_v1.py",
     "app/domain/collector_current_0056_inherited_catalog_v1.py",
