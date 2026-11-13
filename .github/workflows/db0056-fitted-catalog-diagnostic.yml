@@ -50,6 +50,7 @@ jobs:
             ${{ runner.temp }}/ctcc-fitted-catalog/*.json
             ${{ runner.temp }}/ctcc-fitted-catalog/*.log
             ${{ runner.temp }}/ctcc-fitted-catalog/test-results/*.xml
+            ${{ runner.temp }}/ctcc-fitted-catalog/test-results/devval-campaign-native-catalogs.json
             ${{ runner.temp }}/ctcc-fitted-catalog/test-results/current0056-fitted-catalog-single-redacted.json
             ${{ runner.temp }}/ctcc-fitted-catalog/test-results/current0056-inherited-native-catalog-redacted.json
           if-no-files-found: error

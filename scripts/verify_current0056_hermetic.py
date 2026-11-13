@@ -48,6 +48,7 @@ _EXACT_HOST_HELPERS = (
 _PARENT_HEAD_SQL = "SELECT version_num FROM public.alembic_version"
 _FITTED_JUNIT = "test-results/fitted-catalog-diagnostic.xml"
 _FITTED_CASES = (
+    contract.devval_catalog.HERMETIC_CATALOG_CASE,
     fitted_measurement.CASE,
     fitted_measurement.INHERITED_CASE,
     (
@@ -641,6 +642,7 @@ def _diagnostic_artifacts(steps):
         "steps.json",
         "cleanup.json",
         _FITTED_JUNIT,
+        f"test-results/{contract.devval_catalog.HERMETIC_CATALOG_FILE}",
         f"test-results/{fitted_measurement.FILE}",
         f"test-results/{fitted_measurement.INHERITED_FILE}",
         *(f"{step['name']}.log" for step in steps),
@@ -741,6 +743,13 @@ def verify_fitted_catalog_diagnostic(root, raw, files):
     )
     if junit != identity["tests"] or junit["passed"] != len(_FITTED_CASES):
         raise ValueError("fitted_catalog_diagnostic_test_scope_changed")
+    contract.devval_catalog.verify_hermetic_linux_catalogs(
+        contract._read(
+            root,
+            f"test-results/{contract.devval_catalog.HERMETIC_CATALOG_FILE}",
+            maximum=contract.devval_catalog.MAX_HERMETIC_CATALOG_BYTES,
+        )
+    )
     return contract.verify_fitted_and_inherited_catalogs(root, identity, files)
 
 

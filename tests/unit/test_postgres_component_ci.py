@@ -507,7 +507,10 @@ def test_fitted_diagnostic_is_explicit_and_cases_only(
     if accepted:
         args, observed = current56._arguments()
         assert args.fitted_catalog_diagnostic is True and observed == 1
-        assert len(current56._FITTED_CASES) == 8
+        assert len(current56._FITTED_CASES) == 9
+        assert current56_contract.devval_catalog.HERMETIC_CATALOG_CASE in (
+            current56._FITTED_CASES
+        )
         assert current56_contract.PREDICTION_CUSTODY_CASE in current56._FITTED_CASES
         for name in (
             "test_actual0056_native_lifespan_denies_before_recovery_cas",

@@ -591,7 +591,7 @@ def verify_hermetic_linux_catalogs(raw: bytes) -> None:
 
 def retain_hermetic_linux_catalogs(first_native, first_doc, second_native, second_doc):
     """Opt-in test-only output in the existing fixed hermetic results mount."""
-    from app.trade_evidence.storage import _posix_root, _root_path
+    from scripts.current0056_fitted_catalog_measurement_v1 import _publish_redacted
 
     _need(sys.platform == "linux", "campaign_catalog_evidence_not_linux_pg17_11")
     rows = [
@@ -621,12 +621,7 @@ def retain_hermetic_linux_catalogs(first_native, first_doc, second_native, secon
         }
     )
     verify_hermetic_linux_catalogs(raw)
-    with _posix_root(_root_path(Path("/validation-results"))) as results:
-        results.publish(HERMETIC_CATALOG_FILE, raw)
-        _need(
-            results.read(HERMETIC_CATALOG_FILE, MAX_HERMETIC_CATALOG_BYTES) == raw,
-            "campaign_catalog_evidence_readback",
-        )
+    _publish_redacted(HERMETIC_CATALOG_FILE, raw)
 
 
 def validate_catalog_document(document: dict) -> str:
