@@ -2,6 +2,7 @@
 
 import asyncio
 import ssl
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
@@ -13,7 +14,10 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import NullPool
 
+from app.core import native_account_control_observation_0056_v1 as account56
 from app.core import native_startup_control_observation_0056_v1 as subject
+from app.database.models.demo_control import DemoAccountControl
+from app.trade_qualification.demo_control import stopped_genesis
 
 _START = datetime(2026, 1, 1, tzinfo=UTC)
 
@@ -244,3 +248,61 @@ async def test_cancellation_does_not_produce_observation(scenario):
     scenario.error = asyncio.CancelledError()
     with pytest.raises(asyncio.CancelledError):
         await subject.observe_startup_control_0056_v1(scenario.selected)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "fault", [None, "different-scope", "clock-regressed", "replay-denied"]
+)
+async def test_account_control_uses_exact_scope_and_replays_inside_same_snapshot(
+    scenario, monkeypatch, fault
+):
+    scope = account56.ControlScope("demo", "000123")
+    seen = []
+    row = DemoAccountControl()
+    state = stopped_genesis(scope, _START + timedelta(seconds=2))
+
+    async def get(session, model, key):
+        assert model is DemoAccountControl
+        assert key == ("demo", "000123")
+        seen.append(session)
+        return row
+
+    async def replay(session, actual):
+        assert actual is row
+        seen.append(session)
+        if fault == "replay-denied":
+            raise ValueError("private journal payload")
+        if fault == "different-scope":
+            return replace(
+                state, scope=account56.ControlScope("demo", "000124")
+            ), "a" * 64
+        return state, "a" * 64
+
+    async def clock(session, statement):
+        assert statement is account56._CLOCK_SQL
+        seen.append(session)
+        return _START if fault == "clock-regressed" else _START + timedelta(seconds=3)
+
+    monkeypatch.setattr(AsyncSession, "get", get)
+    monkeypatch.setattr(AsyncSession, "scalar", clock)
+    monkeypatch.setattr(account56.DemoControlRepositoryV2, "_snapshot", replay)
+
+    if fault is None:
+        result = await account56.observe_account_control_0056_v1(
+            scenario.selected, scope
+        )
+        assert result.control.state == state
+        assert result.control.event_sha256 == "a" * 64
+        assert result.control.observed_at == _START + timedelta(seconds=3)
+        assert result.execution_authority is result.startup_admission is False
+        assert result.control.execution_authority is False
+    else:
+        with pytest.raises(
+            subject.NativeStartupControl0056Error,
+            match="^native_startup_control_0056_unavailable$",
+        ):
+            await account56.observe_account_control_0056_v1(scenario.selected, scope)
+    assert len(seen) >= 2
+    assert all(session is scenario.sessions[0] for session in seen)
+    assert not any("FOR UPDATE" in statement for statement in scenario.sql)

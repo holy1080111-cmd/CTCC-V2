@@ -63,6 +63,10 @@ _FITTED_CASES = (
         "test_actual0056_owner_grant_lock_and_rollback",
     ),
     (
+        fitted_measurement.CASE[0],
+        "test_actual0056_restricted_account_control_read_replays_exact_scope",
+    ),
+    (
         "tests.integration.test_qualification_submission_intent_repository",
         "test_diagnose_uncertain_v1_intent_replay_without_raw_values",
     ),

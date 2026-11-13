@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import ssl
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -116,6 +117,10 @@ def _require_session(session, writer, transaction):
         and session.sync_session.get_transaction() is transaction
         and transaction.is_active
         and session.sync_session.get_nested_transaction() is None
+        and not any(
+            len(getattr(session.sync_session.dispatch, event))
+            for event in session.sync_session.dispatch._event_names
+        )
     )
 
 
@@ -135,8 +140,8 @@ async def _identity(session, writer, name):
     return actor, snapshot
 
 
-async def observe_startup_control_0056_v1(selected):
-    """Observe a pre-provisioned writer without taking recovery or API authority."""
+@asynccontextmanager
+async def _restricted_read_snapshot_0056(selected):
     try:
         writer_factory, writer, names, routes = _factory_pins(selected)
         pinned_migration(_SOURCE)
@@ -151,16 +156,22 @@ async def observe_startup_control_0056_v1(selected):
             await _exact_existing_acl(await session.connection(), names, first[0][3])
             await roles56._require_no_effective_demo_fitted_execute(session, names)
             _require_session(session, writer, transaction)
-            row = (await session.execute(_CONTROL_SQL)).mappings().one_or_none()
-            soak = (await session.execute(_RUNNING_SOAK_SQL)).scalar_one_or_none()
-            control = _checked_control(None if row is None else dict(row), soak)
+            yield session
             _require(await _identity(session, writer, names[0]) == first)
             _require_session(session, writer, transaction)
         _require(_factory_pins(selected) == (writer_factory, writer, names, routes))
-        return NativeStartupControl0056ObservationV1(control)
     except asyncio.CancelledError:
         raise
     except NativeStartupControl0056Error:
         raise
     except Exception:  # noqa: BLE001 -- Never expose private rows, SQL, or route facts.
         _require(False)
+
+
+async def observe_startup_control_0056_v1(selected):
+    """Observe a pre-provisioned writer without taking recovery or API authority."""
+    async with _restricted_read_snapshot_0056(selected) as session:
+        row = (await session.execute(_CONTROL_SQL)).mappings().one_or_none()
+        soak = (await session.execute(_RUNNING_SOAK_SQL)).scalar_one_or_none()
+        control = _checked_control(None if row is None else dict(row), soak)
+    return NativeStartupControl0056ObservationV1(control)
