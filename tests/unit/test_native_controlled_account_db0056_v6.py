@@ -252,3 +252,50 @@ async def test_db0056_frame_proof_matches_selected_role_and_server(
             source.ControlledAccountSourceError, match="original_0056_frame"
         ):
             await source._reader_role_0056_v6(state, session, fence, factories, roles)
+
+
+@pytest.mark.parametrize("drift", [None, "writer", "custody"])
+async def test_controlled_history_moves_once_with_exact_owned_factories(
+    monkeypatch, selected, drift
+):
+    ctrl = selected.state["control"]
+    ctrl["custody_factory"] = object()
+    ctrl["read_session"] = SimpleNamespace(binding_id="original")
+    ctrl["identity_record"].read_session = ctrl["read_session"]
+    selected.state.update(
+        scope_config=object(),
+        invocation_id="1" * 32,
+        current_record=SimpleNamespace(
+            packet=SimpleNamespace(barrier_completed_at=_AT)
+        ),
+    )
+    original = selected.state
+    monkeypatch.setattr(source, "_check_v6", Mock())
+    invocations = {}
+    monkeypatch.setattr(source, "_HISTORY_USES_V6", invocations)
+    token = object.__new__(source._HistoryUseV6)
+    invocations[token] = original
+    args = {
+        "read_session": ctrl["read_session"],
+        "private_client": ctrl["private_client"],
+        "scope_config": original["scope_config"],
+        "session_factory": object() if drift == "writer" else ctrl["factory"],
+        "custody_session_factory": (
+            object() if drift == "custody" else ctrl["custody_factory"]
+        ),
+        "key": source.history._CONTROLLED_CURRENT_KEY_V4,
+    }
+    if drift is None:
+        started_at, session_key, profile = source._consume_controlled_history_use_v6(
+            token, **args
+        )
+        assert started_at == _AT - timedelta(days=7, seconds=60)
+        assert len(session_key) == 64
+        assert profile[0] is selected.factories and profile[1] is selected.roles
+    else:
+        with pytest.raises(
+            source.ControlledAccountSourceError, match="original_context_changed"
+        ):
+            source._consume_controlled_history_use_v6(token, **args)
+    with pytest.raises(source.ControlledAccountSourceError, match="already_moved"):
+        source._consume_controlled_history_use_v6(token, **args)

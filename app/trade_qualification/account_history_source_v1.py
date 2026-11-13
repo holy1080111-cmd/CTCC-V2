@@ -899,6 +899,7 @@ async def _acquire_native_history_source(
             _deny("native_history_lease_required")
         scope_config.__post_init__()
         partition_reader_type = AccountHistoryPartitionRepository
+        controlled56 = None
         source56 = None
         if _source_bootstrap_only_0056 is not False and (
             _source_bootstrap_only_0056 is not True or _source_selection_0056 is None
@@ -939,22 +940,25 @@ async def _acquire_native_history_source(
                 native_account_risk_assembly_v1 as controlled_native,
             )
 
-            _asof_history_start, session_key = (
+            _asof_history_start, session_key, controlled56 = (
                 controlled_native._consume_controlled_history_use_v6(
                     _controlled_asof_token,
                     read_session=read_session,
                     private_client=private_client,
                     scope_config=scope_config,
+                    session_factory=session_factory,
+                    custody_session_factory=custody_session_factory,
                     key=_CONTROLLED_CURRENT_KEY_V4,
                 )
             )
-            # Selection occurs ONLY after the genuine Armed55 one-use token
-            # was successfully consumed. No caller class/mode/head is accepted.
-            from app.database.repositories.account_history_partition_current55_v2 import (
-                AccountHistoryPartitionRepository as Controlled55PartitionRepository,
-            )
+            # A DB0056 profile is returned only by the consumed native owner.
+            # The source-only selector remains a distinct purpose.
+            if controlled56 is None:
+                from app.database.repositories.account_history_partition_current55_v2 import (
+                    AccountHistoryPartitionRepository as Controlled55PartitionRepository,
+                )
 
-            partition_reader_type = Controlled55PartitionRepository
+                partition_reader_type = Controlled55PartitionRepository
         if (
             session_key in _SESSION_USES
             or len(_SESSION_USES) >= _MAX_SESSION_TOMBSTONES
@@ -1132,20 +1136,27 @@ async def _acquire_native_history_source(
                             scope.account_id,
                             scope.settlement_currency,
                         )
-                        if source56 is None:
+                        if source56 is None and controlled56 is None:
                             partition_reader = partition_reader_type(
                                 factory, clock=clock
                             )
                         else:
-                            _require_source_history_revision_0056(revision)
+                            if source56 is not None:
+                                _require_source_history_revision_0056(revision)
                             from app.database.repositories.account_history_partition_current56_source_v1 import (
                                 Db0056SourcePartitionReaderV1,
                             )
 
+                            selected, selected_roles = (
+                                controlled56
+                                if source56 is None
+                                else (
+                                    source56["factories"],
+                                    source56["source_roles_0056"],
+                                )
+                            )
                             partition_reader = Db0056SourcePartitionReaderV1(
-                                source56["factories"],
-                                clock=clock,
-                                expected_roles=source56["source_roles_0056"],
+                                selected, clock=clock, expected_roles=selected_roles
                             )
                         partition = await _checked_await(
                             state, partition_reader.read(partition_scope)

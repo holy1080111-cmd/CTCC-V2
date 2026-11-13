@@ -49,6 +49,13 @@ _EXACT_HOST_HELPERS = (
     "verify_linux_shard.py",
 )
 _PARENT_HEAD_SQL = "SELECT version_num FROM public.alembic_version"
+_PG_TLS_READY = _PG_READY.replace(
+    "        exec pg_isready",
+    r"""        autovacuum="$(psql -X -h 127.0.0.1 -U ctcc -d ctcc -tA -v ON_ERROR_STOP=1 -c 'SHOW autovacuum')"
+        [ "$autovacuum" = off ]
+        printf 'CTCC_EPHEMERAL_PG_AUTOVACUUM=%s\n' "$autovacuum"
+        exec pg_isready""",
+)
 _FITTED_JUNIT = "test-results/fitted-catalog-diagnostic.xml"
 PREDICTION_DIAGNOSTIC_CASE = (
     "tests.integration.test_devval_prediction_custody_diagnostic_pg_v1",
@@ -456,7 +463,9 @@ def _run(args, index, raw, files, runner_sha, root):
         ):
             raise RuntimeError("current56_docker_network_not_internal")
         resources.append(("container", postgres))
-        tls = tls_resources.enter_context(devval_tls(needs_devval_tls, postgres))
+        tls = tls_resources.enter_context(
+            devval_tls(needs_devval_tls, postgres, disable_autovacuum=needs_devval_tls)
+        )
         command(
             "postgres-start",
             "run",
@@ -491,7 +500,7 @@ def _run(args, index, raw, files, runner_sha, root):
             network,
             _REDIS,
         )
-        ready("postgres-ready", postgres, _PG_READY)
+        ready("postgres-ready", postgres, _PG_TLS_READY if tls else _PG_READY)
         ready("redis-ready", redis, _REDIS_READY)
         container("copied-manifest", "python", "scripts/manifest.py", "--check")
         container(
@@ -712,7 +721,11 @@ def _run(args, index, raw, files, runner_sha, root):
                 api,
             )
             command("postgres-restart", "restart", "--time", "10", postgres, timeout=90)
-            ready("postgres-ready-after-restart", postgres, _PG_READY)
+            ready(
+                "postgres-ready-after-restart",
+                postgres,
+                _PG_TLS_READY if tls else _PG_READY,
+            )
             command("redis-restart", "restart", "--time", "10", redis, timeout=90)
             ready("redis-ready-after-restart", redis, _REDIS_READY)
             command("api-restart", "restart", "--time", "10", api, timeout=90)
@@ -887,7 +900,9 @@ def verify_fitted_catalog_diagnostic(root, raw, files):
         != str(len(files)).encode()
         or b"manifest check passed:" not in contract._read(root, "copied-manifest.log")
         or contract._read(root, "redis-ready.log").strip() != b"PONG"
-        or b"accepting connections" not in contract._read(root, "postgres-ready.log")
+        or not contract.postgres_ready_readback(
+            contract._read(root, "postgres-ready.log"), ephemeral_tls=True
+        )
         or contract._read(root, "migration-reservation-unique.log").strip()
         != contract.RESERVATION_UNIQUE
         or b"No new upgrade operations detected"

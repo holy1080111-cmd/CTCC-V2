@@ -129,6 +129,7 @@ _EMPTY_ROUNDTRIP = (
 )
 _SHA = re.compile(r"[0-9a-f]{64}")
 _GIT = re.compile(r"[0-9a-f]{40}")
+_EPHEMERAL_AUTOVACUUM = b"CTCC_EPHEMERAL_PG_AUTOVACUUM="
 _FULL_OBSERVED: set[str] = set()
 
 digest = previous.digest
@@ -195,6 +196,15 @@ def component_stage_names(mode, index):
 def requires_devval_catalog(mode, index):
     return mode in {"postgres", "full"} and DEVVAL_CUSTODY_TEST_PATH in postgres_paths(
         index
+    )
+
+
+def postgres_ready_readback(raw, *, ephemeral_tls):
+    settings = [
+        line for line in raw.splitlines() if line.startswith(_EPHEMERAL_AUTOVACUUM)
+    ]
+    return b"accepting connections" in raw and settings == (
+        [_EPHEMERAL_AUTOVACUUM + b"off"] if ephemeral_tls else []
     )
 
 
@@ -549,7 +559,10 @@ def verify_current56_component(
         or _read(root, "copied-source-exact.log").strip() != str(len(files)).encode()
         or b"manifest check passed:" not in _read(root, "copied-manifest.log")
         or _read(root, "redis-ready.log").strip() != b"PONG"
-        or b"accepting connections" not in _read(root, "postgres-ready.log")
+        or not postgres_ready_readback(
+            _read(root, "postgres-ready.log"),
+            ephemeral_tls=requires_devval_catalog(mode, index),
+        )
         or _read(root, "migration-reservation-unique.log").strip() != RESERVATION_UNIQUE
         or _read(root, report_stage + ".log")
         .splitlines()
@@ -593,8 +606,10 @@ def verify_current56_component(
             or first_id != last_id
             or first_time >= last_time
             or _read(root, "redis-ready-after-restart.log").strip() != b"PONG"
-            or b"accepting connections"
-            not in _read(root, "postgres-ready-after-restart.log")
+            or not postgres_ready_readback(
+                _read(root, "postgres-ready-after-restart.log"),
+                ephemeral_tls=requires_devval_catalog(mode, index),
+            )
             or migration_readback(
                 _read(root, "migration-identity-after-restart.log"), expected_migration
             )

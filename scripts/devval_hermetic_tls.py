@@ -77,8 +77,21 @@ def _openssl(*arguments: str) -> None:
         raise DevvalTlsError("devval_tls_generation_failed")
 
 
+def _postgres_command(*, disable_autovacuum: bool) -> tuple[str, ...]:
+    if type(disable_autovacuum) is not bool:
+        raise DevvalTlsError("devval_tls_selection_invalid")
+    # A fresh isolated DB0056 fixture applies explicit NOWAIT catalog locks.
+    # Keep background maintenance out of that test, leaving its locks intact.
+    command = _POSTGRES_BOOT
+    if disable_autovacuum:
+        command = command.rstrip("\n") + " -c autovacuum=off\n"
+    return "sh", "-ceu", command
+
+
 @contextmanager
-def devval_tls(needed: bool, postgres_host: str) -> Iterator[DevvalTlsConfig | None]:
+def devval_tls(
+    needed: bool, postgres_host: str, *, disable_autovacuum: bool = False
+) -> Iterator[DevvalTlsConfig | None]:
     """Yield no-clobber ephemeral test TLS mounts, then remove owned leaves.
 
     The caller inserts ``postgres_mount`` before the pinned postgres image and
@@ -87,7 +100,8 @@ def devval_tls(needed: bool, postgres_host: str) -> Iterator[DevvalTlsConfig | N
     original postgres entrypoint for normal initdb and privilege drop.
     ``pytest_mount`` binds only the public certificate, never the key.
     """
-    if type(needed) is not bool:
+    postgres_command = _postgres_command(disable_autovacuum=disable_autovacuum)
+    if type(needed) is not bool or (disable_autovacuum and not needed):
         raise DevvalTlsError("devval_tls_selection_invalid")
     if not needed:
         yield None
@@ -147,7 +161,7 @@ def devval_tls(needed: bool, postgres_host: str) -> Iterator[DevvalTlsConfig | N
                 "--tmpfs",
                 f"{_GUEST_PRIVATE}:rw,nosuid,nodev,noexec,size=64k,mode=0700",
             ),
-            postgres_command=("sh", "-ceu", _POSTGRES_BOOT),
+            postgres_command=postgres_command,
             wrong_hostname_alias=f"{postgres_host}-wrong-host",
             pytest_mount=(
                 "--mount",

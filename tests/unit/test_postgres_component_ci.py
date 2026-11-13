@@ -14,6 +14,7 @@ from types import SimpleNamespace
 import pytest
 
 from scripts import current0056_hermetic_contract as current56_contract
+from scripts import devval_hermetic_tls as tls
 from scripts import verify_current0056_hermetic as current56
 from scripts import verify_final_hermetic as host
 from scripts import verify_linux_shard as selection
@@ -29,6 +30,49 @@ from tests.unit.test_linux_shard_ci import (
     _sha,
     synthetic_sealed_native_identity_baseline,  # noqa: F401 -- scoped synthetic catalog IO fixture.
 )
+
+
+def test_only_selected_db0056_tls_postgres_disables_autovacuum():
+    default = tls._postgres_command(disable_autovacuum=False)
+    isolated = tls._postgres_command(disable_autovacuum=True)
+    assert default[:2] == isolated[:2] == ("sh", "-ceu")
+    assert "autovacuum" not in default[2]
+    assert (
+        isolated[2].splitlines()[-1]
+        == default[2].splitlines()[-1] + " -c autovacuum=off"
+    )
+    assert "SHOW autovacuum" in current56._PG_TLS_READY
+    assert "SHOW autovacuum" not in current56._PG_READY
+    assert current56_contract.requires_devval_catalog("postgres", 1) is True
+    assert current56_contract.requires_devval_catalog("postgres", 0) is False
+    with (
+        pytest.raises(tls.DevvalTlsError),
+        tls.devval_tls(False, "unused", disable_autovacuum=True),
+    ):
+        pytest.fail("non-TLS test acquired DB0056-specific launch flags")
+
+
+@pytest.mark.parametrize(
+    ("marker", "ephemeral_tls", "expected"),
+    [
+        (b"", False, True),
+        (b"", True, False),
+        (b"CTCC_EPHEMERAL_PG_AUTOVACUUM=off\n", True, True),
+        (b"CTCC_EPHEMERAL_PG_AUTOVACUUM=on\n", True, False),
+        (b"CTCC_EPHEMERAL_PG_AUTOVACUUM=off\n" * 2, True, False),
+        (b"CTCC_EPHEMERAL_PG_AUTOVACUUM=off\n", False, False),
+    ],
+)
+def test_db0056_tls_ready_requires_actual_setting_readback(
+    marker, ephemeral_tls, expected
+):
+    assert (
+        current56_contract.postgres_ready_readback(
+            marker + b"127.0.0.1:5432 - accepting connections\n",
+            ephemeral_tls=ephemeral_tls,
+        )
+        is expected
+    )
 
 
 def _root(artifacts, index):

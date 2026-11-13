@@ -739,7 +739,14 @@ async def _synchronize_mirror_v6(state):
 
 
 def _consume_controlled_history_use_v6(
-    token, *, read_session, private_client, scope_config, key
+    token,
+    *,
+    read_session,
+    private_client,
+    scope_config,
+    session_factory,
+    custody_session_factory,
+    key,
 ):
     if (
         key is not history._CONTROLLED_CURRENT_KEY_V4
@@ -755,18 +762,24 @@ def _consume_controlled_history_use_v6(
         read_session is not ctrl["read_session"]
         or private_client is not ctrl["private_client"]
         or scope_config != state["scope_config"]
+        or session_factory is not ctrl["factory"]
+        or custody_session_factory is not ctrl["custody_factory"]
     ):
         _deny("controlled_account_history_original_context_changed")
     original = record.packet.barrier_completed_at - timedelta(days=7, seconds=60)
     requested = original.replace(microsecond=(original.microsecond // 1000) * 1000)
-    return requested, sha(
-        canonical(
-            {
-                "schema_version": "ctcc.native_controlled_history_once.v6",
-                "credential_session_binding": read_session.binding_id,
-                "invocation_id": state["invocation_id"],
-            }
-        )
+    return (
+        requested,
+        sha(
+            canonical(
+                {
+                    "schema_version": "ctcc.native_controlled_history_once.v6",
+                    "credential_session_binding": read_session.binding_id,
+                    "invocation_id": state["invocation_id"],
+                }
+            )
+        ),
+        _owned_database_0056_v6(state),
     )
 
 
