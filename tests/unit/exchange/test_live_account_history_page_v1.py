@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from hashlib import sha256
 
 import httpx
 import pytest
@@ -122,7 +123,17 @@ async def test_history_page_signed_raw_readback_and_private_archive() -> None:
                 == page.receipt_sha256
             )
             meta = live_account_history_page_receipt_document_v1(page)
-            assert "105" not in str(meta) and "103" not in str(meta)
+            cursor_hash = sha256(b"105").hexdigest()
+            assert meta["selector"]["after_sha256"] == cursor_hash
+            assert meta["selector"]["query"] == [
+                ["after", cursor_hash],
+                ["begin", BEGIN],
+                ["end", END],
+                ["instType", "SWAP"],
+                ["limit", "100"],
+            ]
+            assert meta["row_ids_sha256"] == sha256(b'["103","101"]').hexdigest()
+            assert "after" not in meta["selector"] and "row_ids" not in meta
             replay = reconstruct_live_account_history_page_v1(
                 page.raw_body, page.raw_headers, meta, selector
             )
