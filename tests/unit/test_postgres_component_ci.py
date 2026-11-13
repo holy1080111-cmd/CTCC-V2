@@ -384,6 +384,7 @@ def test_pg2_keeps_all_required_cases_and_modules_once_across_both_roles():
         "test_actual0056_restricted_ledger_replays_retained_control_bound_intent",
         current56_contract.CONTROL_MONITOR_CASE[1],
         current56_contract.CONTROL_LIFECYCLE_CASE[1],
+        current56_contract.LEGACY_CONTROL_GENESIS_CASE[1],
         current56_contract.REPORT_RESUME_CASE[1],
         current56_contract.INITIAL_TRANSPORT_CASE[1],
     ],
@@ -533,7 +534,7 @@ def test_fitted_diagnostic_is_explicit_and_cases_only(
     if accepted:
         args, observed = current56._arguments()
         assert args.fitted_catalog_diagnostic is True and observed == 1
-        assert len(set(current56._FITTED_CASES)) == len(current56._FITTED_CASES) == 37
+        assert len(set(current56._FITTED_CASES)) == len(current56._FITTED_CASES) == 38
         assert current56_contract.devval_catalog.HERMETIC_CATALOG_CASE in (
             current56._FITTED_CASES
         )

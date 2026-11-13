@@ -29,6 +29,121 @@ pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 _ARCHIVE = Path("/ctcc-admitted-test-source.tar")
 
 
+async def test_actual0056_owner_initializes_legacy_singleton_only_as_stopped(
+    _actual_0056_role_observation_lab,  # noqa: F811
+):
+    from app.core import native_role_preflight_0056_full_diagnostic_v1 as roles56
+    from app.core.native_role_witness_0056_v1 import (
+        observe_restricted_native_roles_0056_witness_v1,
+    )
+    from app.database.models.demo_automation import DemoAutomationFingerprint
+    from app.database.repositories import (
+        native_legacy_control_genesis_0056_v1 as genesis,
+    )
+    from app.database.repositories.demo_control import DemoControlRepository
+    from app.trade_qualification.demo_control import ControlScope
+    from scripts import native_owner_postgrant_readback_0056_v1 as postgrant
+    from scripts import native_owner_route_preflight_0056_v1 as owner_route
+
+    owner_engine, owner_factory, selected, _ = _actual_0056_role_observation_lab
+    owner = owner_engine.url
+    async with owner_factory() as session, session.begin():
+        profile = (await session.execute(owner_route._PROFILE_SQL)).one()
+        actor = await roles56._identity_at_0056(session, owner.username)
+    pins = owner_route.OwnerRoutePinsV1(
+        "1" * 64,
+        "2" * 64,
+        sha(profile[11].encode("ascii")),
+        owner.host,
+        owner.port,
+        owner.database,
+        owner.username,
+        profile[5],
+        profile[4],
+        "0056",
+    )
+    role_witness = await observe_restricted_native_roles_0056_witness_v1(
+        selected, source=control.deployment._SOURCE
+    )
+    scoped_control = DemoControlRepository(
+        owner_factory, clock=lambda: datetime.now(UTC) - timedelta(seconds=1)
+    )
+    scope = ControlScope("demo", "730032")
+    stop = await scoped_control.latch_stop(scope, command_id="a" * 64)
+    arguments = {
+        "event_sha256": stop.event_sha256,
+        "pins": pins,
+        "server_incarnation_sha256": postgrant._owner_server_sha256(actor),
+    }
+    seed = genesis.seed_owner_legacy_control_genesis_0056_v1
+    async with selected.writer_factory() as restricted, restricted.begin():
+        with pytest.raises(DBAPIError) as denied:
+            await restricted.execute(
+                text("INSERT INTO public.demo_automation_state(id) VALUES (1)")
+            )
+        assert denied.value.orig.sqlstate == "42501"
+    with pytest.raises(genesis.LegacyControlGenesis0056Error):
+        await seed(owner_factory, **arguments, reconcile_only=True)
+    with pytest.raises(genesis.LegacyControlGenesis0056Error):
+        await seed(
+            owner_factory,
+            **{**arguments, "event_sha256": "b" * 64},
+            reconcile_only=False,
+        )
+    async with owner_engine.begin() as competing:
+        await competing.execute(
+            text("LOCK TABLE public.demo_automation_runs IN ROW EXCLUSIVE MODE")
+        )
+        with pytest.raises(genesis.LegacyControlGenesis0056Error):
+            await seed(owner_factory, **arguments, reconcile_only=False)
+    async with owner_factory() as session, session.begin():
+        session.add(
+            DemoAutomationFingerprint(
+                fingerprint="c" * 64,
+                expires_at=datetime.now(UTC) + timedelta(days=1),
+                details={},
+            )
+        )
+    with pytest.raises(genesis.LegacyControlGenesis0056Error):
+        await seed(owner_factory, **arguments, reconcile_only=False)
+    async with owner_factory() as session, session.begin():
+        assert await session.get(DemoAutomationState, 1) is None
+        saved = await session.get(DemoAutomationFingerprint, "c" * 64)
+        assert saved is not None
+        await session.delete(saved)
+    created = await seed(owner_factory, **arguments, reconcile_only=False)
+    assert created.status == "STOPPED_CREATED"
+    assert created.emergency_stop is created.locked is True
+    assert (
+        created.armed
+        is created.startup_admission
+        is created.execution_authority
+        is False
+    )
+    assert created.updated_at > stop.state.updated_at
+    assert created.control_revision == 1
+    replay = await seed(owner_factory, **arguments, reconcile_only=True)
+    assert replay.status == "STOPPED_OBSERVED"
+    assert replay.updated_at == created.updated_at
+    await genesis.read_restricted_legacy_control_genesis_0056_v1(
+        selected,
+        role_witness,
+        event_sha256=stop.event_sha256,
+        expected_at=created.updated_at,
+    )
+    async with owner_factory() as session, session.begin():
+        saved = await session.get(DemoAutomationState, 1)
+        assert saved.restart_latch_required is True
+        assert saved.baseline_equity is saved.peak_equity is None
+        assert (
+            saved.lock_reasons[-1]
+            == f"native_legacy_genesis_control_{stop.event_sha256}"
+        )
+        await session.execute(update(DemoAutomationState).values(control_revision=2))
+    with pytest.raises(genesis.LegacyControlGenesis0056Error):
+        await seed(owner_factory, **arguments, reconcile_only=False)
+
+
 async def test_actual0056_restricted_control_repository_reads_back_lifecycle(
     _actual_0056_role_observation_lab,  # noqa: F811
     monkeypatch,

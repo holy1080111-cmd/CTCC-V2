@@ -156,6 +156,7 @@ _FITTED_CASES = (
     ),
     contract.CONTROL_MONITOR_CASE,
     contract.CONTROL_LIFECYCLE_CASE,
+    contract.LEGACY_CONTROL_GENESIS_CASE,
     contract.REPORT_RESUME_CASE,
     contract.INITIAL_TRANSPORT_CASE,
     (

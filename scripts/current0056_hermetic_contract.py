@@ -85,6 +85,10 @@ CONTROL_LIFECYCLE_CASE = (
     DB0056_CONTROL_MONITOR_TEST_PATH.removesuffix(".py").replace("/", "."),
     "test_actual0056_restricted_control_repository_reads_back_lifecycle",
 )
+LEGACY_CONTROL_GENESIS_CASE = (
+    DB0056_CONTROL_MONITOR_TEST_PATH.removesuffix(".py").replace("/", "."),
+    "test_actual0056_owner_initializes_legacy_singleton_only_as_stopped",
+)
 REPORT_RESUME_CASE = (
     DB0056_REPORT_RESUME_TEST_PATH.removesuffix(".py").replace("/", "."),
     "test_actual0056_report_resume_refuses_missing_cleanup_no_new_rows",
@@ -98,6 +102,7 @@ CURRENT56_PG1_REQUIRED_CASES = (
     *CURRENT56_NATIVE_ROLE_CASES,
     CONTROL_MONITOR_CASE,
     CONTROL_LIFECYCLE_CASE,
+    LEGACY_CONTROL_GENESIS_CASE,
     REPORT_RESUME_CASE,
     INITIAL_TRANSPORT_CASE,
 )

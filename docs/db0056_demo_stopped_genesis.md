@@ -64,6 +64,30 @@ transaction. It reports the Control revision, emergency stop and whether an Arm
 request is recorded. An old or ambiguous digest causes a refusal. The output
 contains no account identifier. The stop and any recorded Arm remain as stored.
 
+## Initialize a missing legacy stop on an empty deployment
+
+After verifying the original account stop, the database owner can initialize
+the separate legacy control singleton. Use the exact installed source archive,
+the private owner grant plan and deployment descriptor, and the current Control
+event digest. Run from a terminal where a human can enter the printed
+confirmation, with the Demo runtime, workers and trading disabled.
+
+```text
+python -B -m scripts.initialize_legacy_demo_control_0056 --owner-plan-file <plan> --owner-plan-sha256 <plan-digest> --owner-dsn-file <private-owner-dsn> --descriptor-file <descriptor> --descriptor-sha256 <descriptor-digest> --source-archive-file <archive> --control-event-sha256 <event-digest> --initialize-stopped
+```
+
+The owner session locks the existing account and checks for records of prior
+control, trades, exchange mirrors or reservations before creating the singleton.
+The initial revision stays locked, disarmed and stopped. Equity remains unknown.
+Routine startup and the restricted writer have no permission to perform this
+initialization. Existing legacy state is preserved. The command does not connect
+to OKX, confirm a flat exchange account or grant startup or execution admission.
+
+If the commit is uncertain, replace `--initialize-stopped` with
+`--reconcile-only` and use the same inputs. This checks the existing marker
+without issuing a new insert. Separate owner and restricted sessions must both
+verify the committed result.
+
 ## Verify restart inventory
 
 With the stop in place, record fresh position, ordinary order and eight
