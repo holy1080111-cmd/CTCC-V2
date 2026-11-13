@@ -34,7 +34,7 @@ jobs:
           archive="$RUNNER_TEMP/ctcc-source.tar"
           git -c core.autocrlf=false -c core.eol=lf archive --format=tar --output="$archive" "$commit"
           digest=$(sha256sum "$archive" | cut -d ' ' -f 1)
-          python3 -m scripts.verify_final_hermetic \
+          python3 -m scripts.verify_current0056_hermetic \
             --archive "$archive" --archive-sha256 "$digest" \
             --commit "$commit" --tree "$tree" \
             --suite postgres --postgres-component-index 1 --fitted-catalog-diagnostic \
