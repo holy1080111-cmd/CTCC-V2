@@ -19,7 +19,7 @@ services:
         API_TOKEN="$$(cat /run/secrets/analysis_api_token)"
         export DATABASE_URL API_TOKEN
         alembic upgrade head
-        exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
+        exec uvicorn app.main:app --uds /run/ctcc-analysis/api.sock --no-proxy-headers --workers 1
     environment:
       ENVIRONMENT: production
       TRADING_MODE: analysis_only
@@ -52,8 +52,8 @@ services:
     secrets:
       - analysis_database_url
       - analysis_api_token
-    ports:
-      - __LOOPBACK_PORT_JSON__
+    volumes:
+      - analysis_socket:/run/ctcc-analysis
     networks: [analysis_internal]
     depends_on:
       postgres:
@@ -65,11 +65,31 @@ services:
     cpus: "0.75"
     mem_limit: 1g
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/readiness', timeout=3)"]
+      test: ["CMD", "python", "-B", "-m", "scripts.local_analysis_ingress", "--check-backend"]
       interval: 20s
       timeout: 5s
       retries: 5
       start_period: 30s
+
+  ingress:
+    image: ctcc-analysis-__INSTALL_ID__:__SOURCE_SHORT__
+    pull_policy: never
+    entrypoint: ["python", "-B", "-m", "scripts.local_analysis_ingress"]
+    command: []
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    ports:
+      - __LOOPBACK_PORT_JSON__
+    volumes:
+      - analysis_socket:/run/ctcc-analysis:ro
+    networks: [analysis_ingress]
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+    cpus: "0.25"
+    mem_limit: 128m
 
   postgres:
     image: postgres:17-alpine@sha256:f02121de6f74d30d8a94cd1d9584125e2178d7e6c377d8130112d4e52d867995
@@ -109,8 +129,11 @@ services:
 networks:
   analysis_internal:
     internal: true
+  analysis_ingress:
+    driver: bridge
 
 volumes:
+  analysis_socket:
   postgres_data:
   redis_data:
 
