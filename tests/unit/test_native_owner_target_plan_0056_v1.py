@@ -78,7 +78,9 @@ def test_inspection_output_contains_no_route_or_role_names_or_oids():
 @pytest.mark.asyncio
 async def test_bad_archive_stops_before_owner_dsn_or_database(monkeypatch):
     invalid = Mock(side_effect=ValueError("private source path"))
-    monkeypatch.setattr(subject, "_verify_reviewed_archive", invalid)
+    monkeypatch.setattr(
+        subject, "require_exact_installed_owner_source_0056_v1", invalid
+    )
     prepare = Mock()
     open_engine = Mock()
     monkeypatch.setattr(subject, "prepare_route", prepare)
@@ -110,7 +112,10 @@ async def test_reopens_owner_route_after_catalog_and_never_calls_grant(
     after = SimpleNamespace(**vars(before))
     if change:
         after.migration_sha256 = "0" * 64
-    monkeypatch.setattr(subject, "_verify_reviewed_archive", Mock())
+    verify_source = Mock()
+    monkeypatch.setattr(
+        subject, "require_exact_installed_owner_source_0056_v1", verify_source
+    )
     monkeypatch.setattr(subject, "_require_private_file", Mock())
     prepare = Mock(side_effect=(before, after))
     monkeypatch.setattr(subject, "prepare_route", prepare)
@@ -152,6 +157,7 @@ async def test_reopens_owner_route_after_catalog_and_never_calls_grant(
         assert receipt["portable_reference_matched"] is True
         assert receipt["status"] == "OBSERVED_DENY"
     assert prepare.call_count == 2
+    assert verify_source.call_count == (1 if change else 2)
     target.assert_awaited_once_with(factory, inputs)
     destroy.assert_awaited_once()
     write.assert_not_awaited()

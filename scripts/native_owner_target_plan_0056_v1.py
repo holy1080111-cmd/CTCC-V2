@@ -23,6 +23,9 @@ from app.trade_evidence.native_private_root_v2 import (
 from scripts import current0056_native_owner_pregrant_v1 as owner_pregrant
 from scripts import native_owner_grant_0056_draft_v1 as draft
 from scripts.evidence_json import read_evidence_json
+from scripts.native_owner_reviewed_source_0056_v1 import (
+    require_exact_installed_owner_source_0056_v1,
+)
 from scripts.native_owner_route_preflight_0056_v1 import (
     OwnerRoutePinsV1,
     preflight_owner_route_0056_v1,
@@ -31,7 +34,6 @@ from scripts.native_owner_route_preflight_0056_v1 import _prepare as prepare_rou
 from scripts.native_owner_upgrade_0056_v1 import (
     OwnerUpgradePinsV1,
     _checked_profile,
-    _verify_reviewed_archive,
 )
 
 _SOURCE = Path(__file__).resolve().parents[1]
@@ -258,7 +260,9 @@ async def observe_reviewed_owner_target_plan_0056_v1(
     try:
         _need(type(inputs) is OwnerTargetPlanInputsV1)
         inputs.role_names()
-        _verify_reviewed_archive(inputs.source, source_archive_file)
+        require_exact_installed_owner_source_0056_v1(
+            _SOURCE, inputs.source, source_archive_file
+        )
         _require_private_file(owner_dsn_file)
         route = inputs.source.route
         prepared = prepare_route(route, owner_dsn_file=owner_dsn_file, ca_file=ca_file)
@@ -290,6 +294,9 @@ async def observe_reviewed_owner_target_plan_0056_v1(
             and after.manifest_sha256 == prepared.manifest_sha256
             and after.migration_sha256 == prepared.migration_sha256
             and after.route_sha256 == prepared.route_sha256
+        )
+        require_exact_installed_owner_source_0056_v1(
+            _SOURCE, inputs.source, source_archive_file
         )
         return _receipt(pins, reference_sha)
     except (asyncio.CancelledError, OwnerTargetPlanRefusal):
