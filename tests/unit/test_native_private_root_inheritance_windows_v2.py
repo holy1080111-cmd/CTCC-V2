@@ -78,13 +78,15 @@ def _owner_sid_string() -> str:
         kernel.CloseHandle(token)
 
 
-def _set_protected_directory_dacl(path: Path, *, extra_users: bool = False) -> None:
+def _set_protected_directory_dacl(
+    path: Path, *, extra_users: bool = False, initialize_owner: bool = False
+) -> None:
     """Protect one disposable directory with inheritable owner/SYSTEM/Admin ACEs."""
     owner_sid = _owner_sid_string()
     entries = f"(A;OICI;FA;;;{owner_sid})(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
     if extra_users:
         entries += "(A;OICI;FR;;;BU)"
-    sddl = "D:P" + entries
+    sddl = (f"O:{owner_sid}" if initialize_owner else "") + "D:P" + entries
     adv = ctypes.WinDLL("advapi32", use_last_error=True)
     kernel = ctypes.WinDLL("kernel32", use_last_error=True)
     adv.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
@@ -101,6 +103,12 @@ def _set_protected_directory_dacl(path: Path, *, extra_users: bool = False) -> N
         ctypes.POINTER(wintypes.BOOL),
     ]
     adv.GetSecurityDescriptorDacl.restype = wintypes.BOOL
+    adv.GetSecurityDescriptorOwner.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(wintypes.BOOL),
+    ]
+    adv.GetSecurityDescriptorOwner.restype = wintypes.BOOL
     adv.SetNamedSecurityInfoW.argtypes = [
         wintypes.LPWSTR,
         wintypes.DWORD,
@@ -132,12 +140,23 @@ def _set_protected_directory_dacl(path: Path, *, extra_users: bool = False) -> N
             or not dacl.value
         ):
             raise ctypes.WinError(ctypes.get_last_error())
-        # SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION.
+        owner = ctypes.c_void_p()
+        # DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION.
+        flags = 0x00000004 | 0x80000000
+        if initialize_owner:
+            if (
+                not adv.GetSecurityDescriptorOwner(
+                    descriptor, ctypes.byref(owner), ctypes.byref(defaulted)
+                )
+                or not owner.value
+            ):
+                raise ctypes.WinError(ctypes.get_last_error())
+            flags |= 0x00000001  # OWNER_SECURITY_INFORMATION.
         status = adv.SetNamedSecurityInfoW(
             str(path),
-            1,
-            0x00000004 | 0x80000000,
-            None,
+            1,  # SE_FILE_OBJECT.
+            flags,
+            owner if initialize_owner else None,
             None,
             dacl,
             None,
@@ -151,7 +170,7 @@ def _set_protected_directory_dacl(path: Path, *, extra_users: bool = False) -> N
 def _protected_base(tmp_path: Path) -> Path:
     base = tmp_path / "native-private"
     base.mkdir()
-    _set_protected_directory_dacl(base)
+    _set_protected_directory_dacl(base, initialize_owner=True)
     assert require_private_evidence_base_v2(str(base)) == base
     return base
 

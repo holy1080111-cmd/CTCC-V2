@@ -25,7 +25,7 @@ def _private_root_path(tmp_path):
     root = tmp_path / "private-custody"
     root.mkdir(mode=0o700)
     if os.name == "nt":
-        _set_protected_directory_dacl(root)
+        _set_protected_directory_dacl(root, initialize_owner=True)
     return root
 
 
