@@ -232,7 +232,7 @@ class _Session:
         self.state["events"].append((self.name, "begin"))
         yield
 
-    async def execute(self, statement):
+    async def execute(self, statement, parameters=None):
         text = str(statement)
         self.state["events"].append((self.name, text))
         if text == str(subject._HEAD):
@@ -241,6 +241,23 @@ class _Session:
             return _Result([(head, tls) for head in heads])
         if text == str(subject.current55._OWNER_OID_SQL):
             return _Result(101)
+        if text == str(subject._FITTED_DEMO_ACCESS):
+            assert parameters == {"roles": ["writer", "custody", "frame"]}
+            rows = [
+                (role, routine, False)
+                for role in parameters["roles"]
+                for routine in subject._FITTED_FUNCTION_NAMES
+            ]
+            fault = self.state.get("fitted_access_fault")
+            if fault == "effective-execute":
+                role, routine, _ = rows[0]
+                rows[0] = (role, routine, True)
+            elif fault == "missing-routine":
+                rows.pop()
+            elif fault == "unexpected-routine":
+                role, _, _ = rows[0]
+                rows[0] = (role, "gate3_fitted_unexpected", False)
+            return _Result(rows)
         if text == subject.fitted.CATALOG_SQL:
             values = self.state["fitted"]
             return _Result(values.pop(0))
@@ -403,6 +420,9 @@ async def test_full_observation_binds_sessions_and_never_admits(scenario):
     assert ("frame", "frame:True") in events
     assert ("writer", "frame:False") in events
     assert ("writer+frame", "pair") in events
+    assert events.index(("writer", "acl")) < events.index(
+        ("writer", str(subject._FITTED_DEMO_ACCESS))
+    )
     assert events.index(
         ("custody", "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
     ) < events.index(("custody", str(subject._HEAD)))
@@ -427,6 +447,9 @@ async def test_full_observation_binds_sessions_and_never_admits(scenario):
         "writer-tls",
         "old-pair-schema",
         "pair-native-admission",
+        "effective-execute",
+        "missing-routine",
+        "unexpected-routine",
     ],
 )
 async def test_full_observation_fails_closed_on_drift(scenario, fault):
@@ -447,6 +470,8 @@ async def test_full_observation_fails_closed_on_drift(scenario, fault):
         state["pair_override"]["schema"] = (
             "ctcc.collector_current0055.actual_multirole_catalog.v1"
         )
+    elif fault in {"effective-execute", "missing-routine", "unexpected-routine"}:
+        state["fitted_access_fault"] = fault
     else:
         state["pair_override"]["native_baseline_admission"] = True
     with pytest.raises(

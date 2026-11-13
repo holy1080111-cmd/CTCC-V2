@@ -1175,3 +1175,53 @@ async def test_actual0056_full_native_role_rejects_swapped_roles_and_extra_grant
                 text(f"REVOKE SELECT ON TABLE {relation} FROM {writer_name}")
             )
     assert await observation.observe_native_roles_0056_v1(selected, **args) == baseline
+
+    # PUBLIC EXECUTE is effective without an ACL directly naming a Demo role.
+    routine = "public.gate3_fitted_binding_read(text)"
+    demo_names = tuple(
+        factory.kw["bind"].url.username
+        for factory in (
+            selected.writer_factory,
+            selected.custody_factory,
+            selected.frame_reader_factory,
+        )
+    )
+    async with owner.begin() as connection:
+        await connection.exec_driver_sql(
+            f"GRANT EXECUTE ON FUNCTION {routine} TO PUBLIC"
+        )
+    try:
+        async with writer.connect() as connection:
+            assert (
+                await connection.scalar(
+                    text(
+                        "SELECT pg_catalog.has_function_privilege(current_user,:routine,'EXECUTE')"
+                    ),
+                    {"routine": routine},
+                )
+                is True
+            )
+        async with selected.writer_factory() as session, session.begin():
+            await observation.current55._session_settings(session, frame=False)
+            writer_oid = await session.scalar(
+                text("SELECT current_user::regrole::oid::bigint")
+            )
+            await observation.current55._exact_existing_acl(
+                await session.connection(), demo_names, writer_oid
+            )
+            with pytest.raises(
+                observation.NativeRoles0056ObservationError, match=_ROLE_OBS56_REFUSAL
+            ):
+                await observation._require_no_effective_demo_fitted_execute(
+                    session, demo_names
+                )
+        with pytest.raises(
+            observation.NativeRoles0056ObservationError, match=_ROLE_OBS56_REFUSAL
+        ):
+            await observation.observe_native_roles_0056_v1(selected, **args)
+    finally:
+        async with owner.begin() as connection:
+            await connection.exec_driver_sql(
+                f"REVOKE EXECUTE ON FUNCTION {routine} FROM PUBLIC"
+            )
+    assert await observation.observe_native_roles_0056_v1(selected, **args) == baseline

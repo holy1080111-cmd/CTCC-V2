@@ -33,6 +33,19 @@ SELECT version_num::text,
        )
 FROM public.alembic_version
 """)
+_FITTED_FUNCTION_NAMES = frozenset(
+    signature.partition("(")[0] for signature in fitted.INTERNAL | fitted.APIS.keys()
+)
+_FITTED_DEMO_ACCESS = text("""
+SELECT r.rolname::text, p.proname::text,
+       pg_catalog.has_function_privilege(r.oid, p.oid, 'EXECUTE')
+FROM pg_catalog.pg_roles r
+CROSS JOIN pg_catalog.pg_proc p
+JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+WHERE r.rolname::text = ANY(CAST(:roles AS text[]))
+  AND n.nspname = 'public'
+  AND pg_catalog.starts_with(p.proname::text, 'gate3_fitted_')
+""")
 _OWNER_SETTINGS = (
     "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ",
     "SET TRANSACTION READ ONLY",
@@ -97,6 +110,16 @@ async def _restricted_identity(session, name, *, frame):
     return await _identity_at_0056(session, name)
 
 
+async def _require_no_effective_demo_fitted_execute(session, names) -> None:
+    rows = (await session.execute(_FITTED_DEMO_ACCESS, {"roles": list(names)})).all()
+    expected = {(name, routine) for name in names for routine in _FITTED_FUNCTION_NAMES}
+    _need(
+        len(rows) == len(expected)
+        and all(type(row[2]) is bool and row[2] is False for row in rows)
+        and {(row[0], row[1]) for row in rows} == expected
+    )
+
+
 async def _owner_fitted_catalog(owner_factory, owner_name, demo_names):
     async with owner_factory() as session, session.begin():
         for statement in _OWNER_SETTINGS:
@@ -133,6 +156,9 @@ async def _restricted_frame_writer(writer, frame, names):
         await current55._exact_existing_acl(
             await writer_session.connection(), names[:3], writer_identity[3]
         )
+        # The inherited ACL reader checks direct routine grants. Effective
+        # EXECUTE here also catches PUBLIC on the new fitted routines.
+        await _require_no_effective_demo_fitted_execute(writer_session, names[:3])
 
         partition = await _catalog(frame_session, partition_policy.CATALOG_SQL)
         partition_policy.verify_account_history_partition_catalog(partition)
