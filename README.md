@@ -7,8 +7,9 @@ Live remains default OFF and requires contemporaneous operator authorization.
 
 ## Use CTCC analysis with a saved market snapshot
 
-The [local analysis installation](docs/local_analysis_installation.md) runs
-the dashboard and persists manual Paper state on this PC.
+The [Windows offline viewer](docs/offline_snapshot_only_windows.md) opens saved
+snapshots without Docker. The [local analysis installation](docs/local_analysis_installation.md)
+adds the persistent manual Paper ledger.
 
 Open `/dashboard` in the local analysis installation, enter its local CTCC
 API token, and select an unmodified MarketSnapshot JSON file. A connected

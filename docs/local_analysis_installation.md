@@ -2,6 +2,9 @@
 
 This installation runs the CTCC dashboard and offline analysis API on this PC. It does not connect to OKX or enable Demo or Live trading. The generated Compose file publishes the dashboard on `127.0.0.1` through a dedicated relay. CTCC, PostgreSQL and Redis stay on an internal Docker network. The relay listens on a separate network and can forward only to the API's mounted Unix socket. PostgreSQL and Redis use separate persistent volumes. It never reads the host `.env` or an OKX key.
 
+Use the [Windows offline viewer](offline_snapshot_only_windows.md) for snapshot
+analysis without Docker or Paper state.
+
 ## Prepare and verify
 
 From a clean CTCC Git checkout with Python 3.12 available:
