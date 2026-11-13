@@ -73,6 +73,7 @@ from scripts import current0056_native_owner_pregrant_v1 as owner_pregrant
 from scripts import current0056_postgrant_acl_measurement_v1 as postgrant_acl
 from scripts import current_contract_source_scopes_v1 as source_scopes
 from scripts import devval_campaign_physical_catalog_v1 as devval_catalog
+from scripts import native_owner_grant_0056_draft_v1 as owner_grant_draft
 from scripts import native_owner_route_preflight_0056_v1 as owner_route
 from scripts import native_owner_upgrade_0056_v1 as owner_upgrade
 from scripts import verify_final_hermetic as archive_checks
@@ -1940,6 +1941,86 @@ async def test_actual0056_owner_grant_lock_and_rollback(
         == before.inherited_native_definitions_sha256
     )
     assert readback.startup_admission is readback.execution_authority is False
+
+
+async def test_actual0056_draft_locked_owner_grant_and_separate_role_readback(
+    _actual_0056_ungranted_lab,
+):
+    """A disposable lab invokes the private draft; the public entry stays off."""
+    owner, owner_factory, selected, _ = _actual_0056_ungranted_lab
+    names = tuple(
+        factory.kw["bind"].url.username
+        for factory in (
+            selected.writer_factory,
+            selected.custody_factory,
+            selected.frame_reader_factory,
+        )
+    )
+    roles = dict(zip(("writer", "custody", "frame_reader"), names, strict=True))
+    pregrant = await owner_pregrant.observe_owner_pregrant_diagnostic_0056(
+        owner_factory, source=_SOURCE_ROOT, **roles
+    )
+    readwrite = await owner_pregrant._read_owner_pregrant_graph_0056(
+        owner_factory, owner.url.username, names, readwrite=True
+    )
+    async with owner.begin() as connection:
+        for setting in _GRANT_TX_SETTINGS:
+            await connection.exec_driver_sql(setting)
+        await connection.exec_driver_sql("SET LOCAL search_path TO pg_catalog, pg_temp")
+        fitted_write = await connection.scalar(
+            text(fitted_delta.OWNER_READWRITE_CATALOG_SQL)
+        )
+        fitted_delta.inspect_owner_readwrite_catalog(
+            fitted_write, owner=owner.url.username, demo_roles=names
+        )
+    identity, _, _ = fitted_measurement._read_hermetic_inputs()
+    source = source_scopes.actual_current_source_scope(_SOURCE_ROOT)
+    async with owner.connect() as connection:
+        profile = tuple(
+            (await connection.execute(owner_grant_draft._PROFILE_SQL)).one()
+        )
+        role_oids = await core_acl._roles(connection, names, profile[4])
+    pins = owner_grant_draft.OwnerGrantDraftPinsV1(
+        source_commit=identity["commit"],
+        source_tree=identity["tree"],
+        source_archive_sha256=identity["archive_sha256"],
+        route=owner_route.OwnerRoutePinsV1(
+            source_manifest_sha256=source.manifest_sha256,
+            ca_sha256=os.environ["CTCC_DEVVAL_CUSTODY_TEST_TLS_CA_SHA256"],
+            cluster_system_identifier_sha256=sha(profile[11].encode("ascii")),
+            host=owner.url.host,
+            port=owner.url.port,
+            database=owner.url.database,
+            owner=owner.url.username,
+            database_oid=profile[5],
+            owner_oid=profile[4],
+            database_head="0056",
+        ),
+        writer=names[0],
+        custody=names[1],
+        frame_reader=names[2],
+        writer_oid=role_oids[names[0]],
+        custody_oid=role_oids[names[1]],
+        frame_reader_oid=role_oids[names[2]],
+        portable_inherited_definitions_sha256=pregrant.inherited_native_definitions_sha256,
+        portable_fitted_pregrant_normalized_sha256=pregrant.fitted_normalized_owner_catalog_sha256,
+        raw_inherited_owner_readonly_sha256=pregrant.inherited_raw_owner_graph_sha256,
+        raw_inherited_owner_readwrite_sha256=readwrite[2],
+        raw_fitted_owner_readonly_sha256=pregrant.fitted_raw_owner_catalog_sha256,
+        raw_fitted_owner_readwrite_sha256=sha(canonical(fitted_write)),
+        exact_42_plan_sha256=pregrant.exact_grant_plan_sha256,
+    )
+    physical = await owner_grant_draft._read_before(owner_factory, pins)
+    async with owner.begin() as connection:
+        await owner_grant_draft._locked_grant(connection, pins, physical)
+    await owner_grant_draft._readback(owner, pins, physical)
+    restricted = await observation.observe_restricted_native_roles_0056_v1(
+        selected, source=_SOURCE_ROOT
+    )
+    assert restricted.database_head == "0056"
+    assert restricted.startup_admission is restricted.execution_authority is False
+    with pytest.raises(owner_grant_draft.OwnerGrantRefusal):
+        await owner_grant_draft.grant_reviewed_owner_0056_v1(pins)
 
 
 async def test_actual0056_full_native_role_observation_tls(

@@ -100,6 +100,10 @@ _FITTED_CASES = (
     ),
     (
         fitted_measurement.CASE[0],
+        "test_actual0056_draft_locked_owner_grant_and_separate_role_readback",
+    ),
+    (
+        fitted_measurement.CASE[0],
         "test_actual0056_restricted_account_control_read_replays_exact_scope",
     ),
     (
