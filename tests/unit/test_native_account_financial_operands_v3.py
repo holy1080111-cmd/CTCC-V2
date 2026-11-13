@@ -85,6 +85,11 @@ def _admit_declared_synthetic_providers(monkeypatch, extra=()):
 @asynccontextmanager
 async def synthetic_full_source_v3(monkeypatch, tmp_path, *, defect=None):
     """Fresh full original history fixture; fixed synthetic coverage/DB I/O."""
+    # This case exercises the final source fence after the full 33-source
+    # replay. Keep its synthetic lease within the existing 60-second original
+    # source bound so a slow CI worker cannot reach the unrelated wall-clock
+    # timeout before the deliberately inserted B3 growth is read back.
+    lease_seconds = 60 if defect == "late_B3_at_last_coverage" else 20
     original_bootstrap_collect = bootstrap._collect_recorded
     with acquisition_fixture(monkeypatch, tmp_path) as source_io:
         lease = source_io.args["read_session"]
@@ -137,9 +142,9 @@ async def synthetic_full_source_v3(monkeypatch, tmp_path, *, defect=None):
                 packet=packet,
                 reference=current_ref,
                 current_receipt_json=receipt,
-                expires_at=checked + timedelta(seconds=20),
+                expires_at=checked + timedelta(seconds=lease_seconds),
                 monotonic_deadline_ns=source_io.samples()["monotonic_ns"]
-                + 20_000_000_000,
+                + lease_seconds * 1_000_000_000,
             )
             audit = canonical(
                 {
@@ -170,7 +175,7 @@ async def synthetic_full_source_v3(monkeypatch, tmp_path, *, defect=None):
                         emergency_stop=True,
                         arm_request_id=None,
                         revision=1,
-                        lease_until=checked + timedelta(seconds=20),
+                        lease_until=checked + timedelta(seconds=lease_seconds),
                     )
                 ),
                 "coverage": SimpleNamespace(
