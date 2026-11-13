@@ -96,6 +96,10 @@ _FITTED_CASES = (
     ),
     (
         fitted_measurement.CASE[0],
+        "test_actual0056_configured_startup_cli_is_readonly_and_denies_shell_gate",
+    ),
+    (
+        fitted_measurement.CASE[0],
         "test_actual0056_stable_role_identity_on_distinct_connections",
     ),
     (

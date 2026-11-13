@@ -2419,6 +2419,123 @@ async def test_actual0056_inert_startup_candidate_binds_source_roles_and_control
     assert result.deployment_role_route_sha256 == measured.role_route_sha256
 
 
+async def test_actual0056_configured_startup_cli_is_readonly_and_denies_shell_gate(
+    _actual_0056_role_observation_lab,
+    tmp_path,
+):
+    """Run the separate configured process against the actual isolated TLS roles."""
+    from app.core import native_role_witness_0056_v1 as witness56
+    from app.core import native_startup_control_observation_0056_v1 as startup56
+    from app.database.models.demo_automation import DemoAutomationState
+    from scripts import native_startup_0056_diagnostic_cli_v1 as cli
+
+    _, owner_factory, selected, _ = _actual_0056_role_observation_lab
+    identity, files, files_raw = fitted_measurement._read_hermetic_inputs()
+    source = fitted_measurement.source_identity(identity, files, files_raw)
+    instant = datetime(2026, 1, 1, tzinfo=UTC)
+    async with owner_factory.begin() as session:
+        session.add(
+            DemoAutomationState(
+                id=1,
+                control_revision=7,
+                session_date=instant.date(),
+                armed=True,
+                restart_latch_required=True,
+                updated_at=instant,
+            )
+        )
+    measured = await witness56.observe_restricted_native_roles_0056_witness_v1(
+        selected, source=_SOURCE_ROOT
+    )
+    control = await startup56.observe_startup_control_0056_witness_v1(selected)
+    assert (
+        control.observation.control.revision == 7
+        and measured.server_incarnation_sha256 == control.server_incarnation_sha256
+        and measured.role_route_sha256 == control.role_route_sha256
+    )
+    pins = {
+        "schema": cli._PIN_SCHEMA,
+        "source_manifest_sha256": source["manifest_sha256"],
+        "inherited_native_definitions_sha256": _N234_INHERITED_NATIVE_SHA256,
+        "granted_inherited_acl_shape_sha256": _N234_POSTGRANT_ACL_SHAPE_SHA256,
+        "deployment_frame_writer_sha256": (
+            measured.observation.frame_writer_observation_sha256
+        ),
+        "deployment_custody_sha256": measured.observation.raw_custody_catalog_sha256,
+        "deployment_server_incarnation_sha256": measured.server_incarnation_sha256,
+        "deployment_role_route_sha256": measured.role_route_sha256,
+    }
+    private = tmp_path / "private-pins"
+    private.mkdir(mode=0o700)
+    os.chmod(private, 0o700)
+    pin_file = private / "caller-pins.json"
+    raw = canonical(pins)
+    descriptor = os.open(pin_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "wb") as stream:
+        stream.write(raw)
+    assert pin_file.stat().st_mode & 0o777 == 0o600
+
+    ca_file = os.environ["CTCC_DEVVAL_CUSTODY_TEST_TLS_CA_FILE"]
+    ca_sha256 = os.environ["CTCC_DEVVAL_CUSTODY_TEST_TLS_CA_SHA256"]
+    factories = (
+        selected.writer_factory,
+        selected.custody_factory,
+        selected.frame_reader_factory,
+    )
+    urls = tuple(factory.kw["bind"].url for factory in factories)
+    assert all(url.password is None and not url.query for url in urls)
+    child_env = {
+        "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+        "PYTHONPATH": str(_SOURCE_ROOT),
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "ENVIRONMENT": "production",
+        "TRADING_MODE": "okx_demo",
+        "CTCC_NATIVE_ONLY_LIFESPAN_V1": "true",
+        "OKX_DEMO_ENABLED": "true",
+        "PAPER_AUTO_TICKS": "false",
+        "PAPER_PERSISTENCE_ENABLED": "false",
+        "OKX_DEMO_OBSERVABILITY_ENABLED": "false",
+        "OKX_DEMO_SOAK_ENABLED": "false",
+        "OKX_DEMO_ALLOW_ORDER_WRITES": "false",
+        "DATABASE_URL": urls[0].render_as_string(hide_password=False),
+        "OKX_DEMO_NATIVE_CUSTODY_DATABASE_URL": urls[1].render_as_string(
+            hide_password=False
+        ),
+        "OKX_DEMO_NATIVE_FRAME_READER_DATABASE_URL": urls[2].render_as_string(
+            hide_password=False
+        ),
+        "CTCC_NATIVE_PG_TLS_CA_FILE": ca_file,
+        "CTCC_NATIVE_PG_TLS_CA_SHA256": ca_sha256,
+    }
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-B",
+        "-m",
+        "scripts.native_startup_0056_diagnostic_cli_v1",
+        "--inspect-configured",
+        "--pins-file",
+        str(pin_file),
+        "--pins-sha256",
+        sha(raw),
+        cwd=str(_SOURCE_ROOT),
+        env=child_env,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        async with asyncio.timeout(210):
+            stdout, stderr = await process.communicate()
+    finally:
+        if process.returncode is None:
+            process.kill()
+            await process.wait()
+    assert len(stdout) <= 4096 and len(stderr) == 0
+    assert process.returncode == 2
+    assert read_evidence_json(stdout.strip()) == cli._output("OBSERVED_DENY")
+    async with owner_factory() as session:
+        assert (await session.get(DemoAutomationState, 1)).control_revision == 7
+
+
 async def test_actual0056_stable_role_identity_on_distinct_connections(
     _actual_0056_role_observation_lab,
 ):

@@ -513,7 +513,7 @@ def test_fitted_diagnostic_is_explicit_and_cases_only(
     if accepted:
         args, observed = current56._arguments()
         assert args.fitted_catalog_diagnostic is True and observed == 1
-        assert len(current56._FITTED_CASES) == 21
+        assert len(current56._FITTED_CASES) == 22
         assert current56_contract.devval_catalog.HERMETIC_CATALOG_CASE in (
             current56._FITTED_CASES
         )
@@ -530,6 +530,7 @@ def test_fitted_diagnostic_is_explicit_and_cases_only(
             "test_actual0056_configured_product_tls_child_is_source_pinned_and_read_back",
             "test_actual0056_native_lifespan_denies_before_recovery_cas",
             "test_actual0056_inert_startup_candidate_binds_source_roles_and_control",
+            "test_actual0056_configured_startup_cli_is_readonly_and_denies_shell_gate",
             "test_actual0056_stable_role_identity_on_distinct_connections",
             "test_actual0056_owner_grant_lock_and_rollback",
             "test_actual0056_draft_locked_owner_grant_and_separate_role_readback",
