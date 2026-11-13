@@ -115,6 +115,10 @@ _FITTED_CASES = (
         "test_actual0056_restricted_account_control_read_replays_exact_scope",
     ),
     (
+        fitted_measurement.CASE[0],
+        "test_actual0056_restricted_writer_control_replays_and_holds_uid_lock",
+    ),
+    (
         "tests.integration.test_qualification_submission_intent_repository",
         "test_uncertain_and_expired_intent_read_is_audit_only_and_hold_remains",
     ),
