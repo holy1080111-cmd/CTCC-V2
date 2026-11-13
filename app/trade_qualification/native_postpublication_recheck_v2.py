@@ -199,6 +199,7 @@ def _register_postpublication_public_scan_v2(state):
     if (
         issued.scope != previous.scope
         or issued.control_expectation != previous.control_expectation
+        or issued.database_head != previous.database_head
         or issued.issuer_sha256 == previous.issuer_sha256
         or issued.issued_row_sha256 == previous.issued_row_sha256
         or issued.source_generation is None

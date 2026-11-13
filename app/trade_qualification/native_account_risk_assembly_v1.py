@@ -7639,6 +7639,7 @@ class IssuedAccountForG11V1:
     instrument_specs: tuple = field(repr=False)
     execution_mode: object = field(repr=False)
     source_generation: object = field(repr=False)
+    database_head: str
     execution_authority: bool = field(default=False, init=False)
 
 
@@ -7983,6 +7984,10 @@ _CONTROLLED_SOURCE_PATHS_V1 = (
     "app/trade_qualification/native_ledger_runtime_v2.py",
     "app/trade_qualification/native_continuation_guard_v1.py",
     "app/database/repositories/account_issued_revision_current55_v1.py",
+    "app/database/repositories/native_issuer_transaction.py",
+    "app/core/native_writer_observation_0056_v1.py",
+    "app/core/native_locked_demo_control_0056_v1.py",
+    "app/domain/collector_current_0056_inherited_catalog_v1.py",
     "app/database/repositories/account_history_original_raw_proof_bank_current55_v1.py",
     "app/exchange/okx/native_demo_source_identity_v2.py",
     "app/exchange/okx/native_demo_write_v2.py",

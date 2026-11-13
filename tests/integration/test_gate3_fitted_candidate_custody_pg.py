@@ -2205,6 +2205,10 @@ async def test_actual0056_reviewed_owner_target_plan_has_no_grant(
 async def test_actual0056_full_native_role_observation_tls(
     _actual_0056_role_observation_lab,
 ):
+    from app.database.repositories import (
+        native_issuer_transaction as issuer_transaction,
+    )
+
     _, owner_factory, selected, pregrant = _actual_0056_role_observation_lab
     first = await observation.observe_native_roles_0056_v1(
         selected, owner_factory=owner_factory, source=_SOURCE_ROOT
@@ -2236,6 +2240,28 @@ async def test_actual0056_full_native_role_observation_tls(
         writer = await writer_observation.observe_restricted_readwrite_writer_0056_v1(
             session
         )
+        catalog, write = await issuer_transaction.read_actual_native_issuer_transaction(
+            session
+        )
+        (
+            repeated_catalog,
+            repeated,
+        ) = await issuer_transaction.read_actual_native_issuer_transaction(session)
+        assert repeated_catalog == catalog
+        assert repeated[:9] == write[:9] and repeated[9] >= write[9]
+    assert catalog.head == "0056" and catalog.role_oid == write[3]
+    async with selected.writer_factory() as session, session.begin():
+        await observation.current55._session_settings(session, frame=True)
+        (
+            read_catalog,
+            readback,
+        ) = await issuer_transaction.read_actual_native_issuer_transaction(session)
+    assert read_catalog == catalog and readback[8] != write[8]
+    assert readback[:7] == write[:7]
+    async with selected.frame_reader_factory() as session, session.begin():
+        await observation.current55._session_settings(session, frame=True)
+        with pytest.raises(issuer_transaction.NativeIssuerTransactionError):
+            await issuer_transaction.read_actual_native_issuer_transaction(session)
     assert writer.native_definitions_sha256 == first.inherited_native_definitions_sha256
     assert writer.startup_admission is writer.execution_authority is False
     if pregrant is not None:
@@ -3505,11 +3531,25 @@ async def test_actual0056_restart_recovery_revokes_existing_account_arm(
     from app.core.native_role_witness_0056_v1 import (
         observe_restricted_native_roles_0056_witness_v1,
     )
+    from app.database.repositories import (
+        native_issuer_transaction as issuer_transaction,
+    )
     from app.database.repositories.demo_control import DemoControlRepository
+    from app.database.repositories.qualification_ledger import (
+        QualificationLedgerRepository,
+    )
+    from app.trade_qualification.control_bound_ledger import ControlExpectation
     from app.trade_qualification.demo_control import ControlPins, ControlScope
+    from app.trade_qualification.native_prepare_owner_0056_v1 import (
+        NativeQualificationWriter0056Error,
+        QualificationWritePurpose0056,
+        QualificationWriterPins0056V1,
+        held_native_qualification_writer_0056_v1,
+    )
+    from app.trade_qualification.reservations import LedgerScope
     from scripts import read_demo_account_control_0056 as read_control
 
-    _, owner_factory, factories, _ = _actual_0056_role_observation_lab
+    owner_engine, owner_factory, factories, _ = _actual_0056_role_observation_lab
     witness = await observe_restricted_native_roles_0056_witness_v1(
         factories, source=_SOURCE_ROOT
     )
@@ -3520,6 +3560,11 @@ async def test_actual0056_restart_recovery_revokes_existing_account_arm(
     )
     selected = {"factories": factories}
     monkeypatch.setattr(recovery.selectors, "_record", lambda _: selected)
+    ledger_scope = LedgerScope(account_id=scope.account_id, settlement_currency="USDT")
+    ledger = QualificationLedgerRepository(
+        owner_factory, clock=lambda: datetime.now(UTC)
+    )
+    await ledger.initialize_capture_scope(ledger_scope)
     repository = DemoControlRepository(owner_factory, clock=lambda: datetime.now(UTC))
     token = b"c" * 32
     pins = ControlPins("a" * 64, "b" * 64, "c" * 64)
@@ -3535,6 +3580,71 @@ async def test_actual0056_restart_recovery_revokes_existing_account_arm(
         command_id="e" * 64,
         arm_expires_at=owner.state.lease_until,
     )
+    expected = QualificationWriterPins0056V1(
+        ControlExpectation(
+            scope,
+            token,
+            armed.state.owner_epoch,
+            armed.state.revision,
+            armed.event_sha256,
+            pins,
+        ),
+        0,
+        0,
+        None,
+        armed.state.arm_expires_at,
+    )
+    async with (
+        factories.writer_factory() as session,
+        session.begin(),
+        held_native_qualification_writer_0056_v1(
+            factories,
+            session,
+            ledger_scope,
+            roles=witness,
+            purpose=QualificationWritePurpose0056.ISSUE_ACCOUNT_REVISION,
+            expected=expected,
+        ) as issued_fence,
+    ):
+        stamp = issued_fence.transaction
+        assert (
+            stamp.role_oid > 0
+            and stamp.backend_pid > 0
+            and stamp.transaction_id.isdecimal()
+        )
+        assert issued_fence.observation.control.state == armed.state
+        assert issued_fence._scope_row_for_issue().account_revision == 0
+        assert stamp.observed_at <= await issued_fence.recheck() < expected.expires_at
+        assert (
+            issued_fence.admission == "DENY"
+            and issued_fence.execution_authority is False
+        )
+        async with owner_engine.begin() as competing:
+            with pytest.raises(DBAPIError) as blocked:
+                await competing.exec_driver_sql(
+                    "LOCK TABLE public.demo_collector_issued_account_revisions IN ACCESS EXCLUSIVE MODE NOWAIT"
+                )
+            assert blocked.value.orig.sqlstate == "55P03"
+    with pytest.raises(NativeQualificationWriter0056Error):
+        async with (
+            factories.writer_factory() as session,
+            session.begin(),
+            held_native_qualification_writer_0056_v1(
+                factories,
+                session,
+                ledger_scope,
+                roles=witness,
+                purpose=QualificationWritePurpose0056.RESERVE_QUALIFICATION,
+                expected=expected,
+            ),
+        ):
+            pytest.fail("bootstrap claims reached reservation purpose")
+    async with factories.writer_factory() as session, session.begin():
+        await observation.current55._session_settings(session, frame=True)
+        current, event = await issuer_transaction.read_actual_issuer_control_0056(
+            session, scope
+        )
+        assert current == armed.state and event == armed.event_sha256
     stable_roles = await observe_restricted_role_identity_0056_v2(
         factories, source=_SOURCE_ROOT
     )
@@ -3595,6 +3705,20 @@ async def test_actual0056_restart_recovery_revokes_existing_account_arm(
         is readback.execution_authority
         is False
     )
+    with pytest.raises(NativeQualificationWriter0056Error):
+        async with (
+            factories.writer_factory() as session,
+            session.begin(),
+            held_native_qualification_writer_0056_v1(
+                factories,
+                session,
+                ledger_scope,
+                roles=witness,
+                purpose=QualificationWritePurpose0056.ISSUE_ACCOUNT_REVISION,
+                expected=expected,
+            ),
+        ):
+            pytest.fail("previous armed head survived durable stop")
     observed = await read_control._read_selected_control(
         factories, stable_roles, stopped.control_event_sha256
     )

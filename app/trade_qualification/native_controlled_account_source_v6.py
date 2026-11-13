@@ -1905,6 +1905,7 @@ def _finish_owned_account_issuer_v1(state, readback, *, key):
     if (
         readback.source != source
         or readback.claims_json != state["claims_json"]
+        or readback.database_head not in {"0055", "0056"}
         or sha(readback.proof_json) != readback.transition.issuer_sha256
         or readback.write_metadata[3] != readback.readback_metadata[3]
         or readback.write_metadata[8] == readback.readback_metadata[8]
@@ -2033,6 +2034,7 @@ def _issued_view_v6(state):
         instrument_specs=state["instrument_specs"],
         execution_mode=state["execution_mode"],
         source_generation=state["generation"],
+        database_head=readback.database_head,
     )
 
 
@@ -7571,6 +7573,10 @@ def _install_source_kernel_v6():
             partition_repository.controlled,
             partition_policy,
             issuer55,
+            issuer55.issuer_transaction,
+            issuer55.issuer_transaction.locked,
+            issuer55.issuer_transaction.writer56,
+            issuer55.issuer_transaction.writer56.inherited,
             lineage55,
             catalog55,
             catalog55.frame_policy,

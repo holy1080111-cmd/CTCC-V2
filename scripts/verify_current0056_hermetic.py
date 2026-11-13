@@ -156,6 +156,7 @@ _FITTED_CASES = (
     ),
     contract.CONTROL_MONITOR_CASE,
     contract.REPORT_RESUME_CASE,
+    contract.INITIAL_TRANSPORT_CASE,
     (
         fitted_measurement.CASE[0],
         "test_actual0056_held_frame_reader_uses_same_transaction_and_real_catalog",

@@ -1,4 +1,4 @@
-"""Native-owned current55 DB0054-table issue/CAS and independent transaction replay.
+"""Native-owned DB0054-table issue/CAS and independent transaction replay.
 
 Only the native financial capability can enter. Data-only codec values, rows,
 saved proof JSON, caller factories and clocks cannot authorize this function.
@@ -25,9 +25,7 @@ from app.database.models.account_revision_collector_lineage import (
 from app.database.repositories import (
     account_revision_collector_lineage as original_lineage,
 )
-from app.database.repositories.collector_current_0055_multirole_catalog_v1 import (
-    verify_actual_issuer_catalog_v2,
-)
+from app.database.repositories import native_issuer_transaction as issuer_transaction
 from app.database.repositories.demo_control_current55_v2 import DemoControlRepositoryV2
 from app.database.repositories.qualification_ledger import QualificationLedgerRepository
 from app.domain.native_clock import native_stamp
@@ -165,6 +163,7 @@ class _IssuedReadbackV1:
     write_metadata: tuple = field(repr=False)
     readback_metadata: tuple = field(repr=False)
     readback_observed_at: datetime
+    database_head: str
     execution_authority: bool = field(default=False, init=False)
 
 
@@ -324,15 +323,12 @@ def _control_sha(state):
 
 
 async def _catalog_metadata(session, state, transition=None):
-    # Use the new exact55 writer and unchanged native DB metadata validators.
-    catalog = await verify_actual_issuer_catalog_v2(session)
-    _source(state, transition)
-    metadata = await original_lineage._metadata(session)
+    catalog, metadata = await issuer_transaction.read_actual_native_issuer_transaction(
+        session
+    )
     view, stamp = _source(state, transition)
     if (
-        catalog["role_oid"] != metadata[3]
-        or catalog["database_head"] != "0055"
-        or catalog["native_baseline_admission"] is not True
+        catalog.role_oid != metadata[3]
         or metadata[9] > utc_from_ns(stamp["utc_ns"])
         or metadata[9] >= view.expires_at
     ):
@@ -340,10 +336,18 @@ async def _catalog_metadata(session, state, transition=None):
     return catalog, metadata
 
 
-async def _locked_scope(session, state, transition=None):
+async def _read_current_control(session, scope, catalog):
+    if catalog.head == "0056":
+        return await issuer_transaction.read_actual_issuer_control_0056(session, scope)
+    return await DemoControlRepositoryV2.read_in_transaction(session, scope)
+
+
+async def _locked_scope(session, state, transition=None, *, catalog):
     view, _ = _source(state, transition)
-    observed_control, event_sha = await DemoControlRepositoryV2.read_in_transaction(
-        session, control.ControlScope(view.scope.environment, view.scope.account_id)
+    observed_control, event_sha = await _read_current_control(
+        session,
+        control.ControlScope(view.scope.environment, view.scope.account_id),
+        catalog,
     )
     _source(state, transition)
     ledger = QualificationLedgerRepository(
@@ -529,7 +533,9 @@ async def _issue(
                 await session.execute(_TIMEOUT_SQL, {"limit": milliseconds})
                 _source(state)
                 write_catalog, write_metadata = await _catalog_metadata(session, state)
-                scope_row, _, _ = await _locked_scope(session, state)
+                scope_row, _, _ = await _locked_scope(
+                    session, state, catalog=write_catalog
+                )
                 lineage, hwm = await _read_parents(session, state)
                 view, stamp = _source(state)
                 sampled_at = utc_from_ns(stamp["utc_ns"])
@@ -605,7 +611,9 @@ async def _issue(
                     or read_metadata[8] == write_metadata[8]
                 ):
                     _deny("native_account_issuer_independent_transaction_required")
-                await _locked_scope(read_session, state, transition)
+                await _locked_scope(
+                    read_session, state, transition, catalog=read_catalog
+                )
                 await _read_parents(read_session, state, transition)
                 saved = await read_session.scalar(
                     select(Issued)
@@ -639,6 +647,7 @@ async def _issue(
                 write_metadata,
                 final_read_meta,
                 utc_from_ns(_clock()["utc_ns"]),
+                write_catalog.head,
             )
             return _finish(state, result, key=_SOURCE_KEY)
     except asyncio.CancelledError:
@@ -791,10 +800,13 @@ async def read_issued_revision_locked_v1(
         # All SQL below is read/lock only. Never autoflush a caller's pending
         # mutations before the original source/own-chain check has completed.
         with session.no_autoflush:
-            catalog = await verify_actual_issuer_catalog_v2(session)
-            metadata = await original_lineage._metadata(session)
+            (
+                catalog,
+                metadata,
+            ) = await issuer_transaction.read_actual_native_issuer_transaction(session)
             if (
-                catalog["role_oid"] != readback.write_metadata[3]
+                catalog.head != readback.database_head
+                or catalog.role_oid != readback.write_metadata[3]
                 or metadata[:7] != readback.write_metadata[:7]
                 or metadata[8]
                 in (readback.write_metadata[8], readback.readback_metadata[8])
@@ -803,9 +815,10 @@ async def read_issued_revision_locked_v1(
             (
                 observed_control,
                 observed_event,
-            ) = await DemoControlRepositoryV2.read_in_transaction(
+            ) = await _read_current_control(
                 session,
                 control.ControlScope(view.scope.environment, view.scope.account_id),
+                catalog,
             )
             if (
                 observed_control != view.control_state
@@ -844,8 +857,10 @@ async def read_issued_revision_locked_v1(
                 or saved.proof_json.encode("utf-8") != readback.proof_json
             ):
                 _deny("native_issued_revision_locked_row_changed")
-            final_catalog = await verify_actual_issuer_catalog_v2(session)
-            final_metadata = await original_lineage._metadata(session)
+            (
+                final_catalog,
+                final_metadata,
+            ) = await issuer_transaction.read_actual_native_issuer_transaction(session)
             stamp = native_stamp()
             now = utc_from_ns(stamp["utc_ns"])
             if (

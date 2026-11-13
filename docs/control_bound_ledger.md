@@ -197,3 +197,20 @@ Arm expiry after flush, renew/session changes, legacy-route denial, lost commit
 readback, and retained uncertain intent. Source pins and results belong to the
 external immutable validation bundle; full final-source regression remains a
 separate acceptance requirement.
+
+
+## DB0056 issuer and reservation transaction identity
+
+The issuer and reservation use the database's actual Alembic head and
+restricted writer catalog. DB0056 checks the inherited issuer, Control and
+ledger definitions in a direct TLS writer transaction. Issuance, independent
+readback and post-publication continuation must agree on the database head.
+The original issuer still supplies the account claims and still requires its
+one-use source, locked Control, unchanged source parents and a distinct
+committed readback transaction.
+
+The held DB0056 qualification check also binds Control, the original scope
+revisions, the PostgreSQL role and transaction, and the original expiry.
+For the issuance purpose it can verify the exact revision step applied by
+the database trigger. Stored claims and SQL observations carry no order
+authority.

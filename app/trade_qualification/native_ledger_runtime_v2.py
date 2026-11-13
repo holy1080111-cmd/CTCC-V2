@@ -26,6 +26,9 @@ from app.database.repositories import demo_control as _historical_control_reposi
 from app.database.repositories import (
     demo_control_current55_v2 as _native_control_repository55,
 )
+from app.database.repositories import (
+    native_issuer_transaction as _native_issuer_transaction,
+)
 from app.database.repositories import native_zero_fok_event_schema_v55 as _zero_event55
 from app.database.repositories import qualification_ledger as _native_repository
 from app.domain import native_zero_fok_closure_schema_v55 as _zero_schema55
@@ -664,7 +667,7 @@ async def configure_transaction(repository, binding, session):
         {"value": str(remaining)},
     )
     _record(repository, binding)
-    await _native_catalog55.verify_actual_issuer_catalog_v2(session)
+    await _require_issued_database_head(repository, binding, session)
     _record(repository, binding)
 
 
@@ -679,17 +682,35 @@ def _actual_session(repository, binding, session):
     return record
 
 
+async def _require_issued_database_head(repository, binding, session):
+    _, issued = _record(repository, binding)
+    catalog, _ = await _native_issuer_transaction.read_actual_native_issuer_transaction(
+        session
+    )
+    _actual_session(repository, binding, session)
+    if catalog.head != issued.database_head:
+        _deny("native_ledger_issued_database_changed")
+
+
 async def read_control_v2(repository, binding, session, scope):
     record = _actual_session(repository, binding, session)
     if scope != record["request"].scope:
         _deny("native_ledger_original_scope_required")
-    (
-        state,
-        event,
-    ) = await _native_control_repository55.DemoControlRepositoryV2.read_in_transaction(
-        session,
-        _native_control.control.ControlScope(scope.environment, scope.account_id),
+    _, issued = _record(repository, binding)
+    control_scope = _native_control.control.ControlScope(
+        scope.environment, scope.account_id
     )
+    if issued.database_head == "0056":
+        state, event = await _native_issuer_transaction.read_actual_issuer_control_0056(
+            session, control_scope
+        )
+    else:
+        (
+            state,
+            event,
+        ) = await _native_control_repository55.DemoControlRepositoryV2.read_in_transaction(
+            session, control_scope
+        )
     record = _actual_session(repository, binding, session)
     _native_control.guard_current_control(
         state,
@@ -753,7 +774,7 @@ async def require_intent_read_session_v2(
         or expected_sha256 != prepared.sha256
     ):
         _deny("native_ledger_own_intent_required")
-    await _native_catalog55.verify_actual_issuer_catalog_v2(session)
+    await _require_issued_database_head(repository, binding, session)
     _actual_session(repository, binding, session)
 
 
@@ -1280,7 +1301,7 @@ async def _lock_native_intent_for_transport_v2(state, *, session, key):
         await configure_transaction(repository, binding, session)
     else:
         _require_native_transport_lock_v2(state, session=session, key=key)
-    await _native_catalog55.verify_actual_issuer_catalog_v2(session)
+    await _require_issued_database_head(repository, binding, session)
     _actual_session(repository, binding, session)
     row, control_state, control_event = await control_locked_v2(
         repository, binding, session, request.scope, request=request
@@ -1513,6 +1534,10 @@ _NATIVE_GUARD = _native_guard.install_native_guards_v1(
         _native_control,
         _native_intent,
         _native_catalog55,
+        _native_issuer_transaction,
+        _native_issuer_transaction.locked,
+        _native_issuer_transaction.writer56,
+        _native_issuer_transaction.writer56.inherited,
         _native_catalog55.policy,
         _native_catalog55.policy.native_closure,
         _native_catalog55.policy.native_close_intent,

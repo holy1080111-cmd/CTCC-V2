@@ -384,6 +384,7 @@ def test_pg2_keeps_all_required_cases_and_modules_once_across_both_roles():
         "test_actual0056_restricted_ledger_replays_retained_control_bound_intent",
         current56_contract.CONTROL_MONITOR_CASE[1],
         current56_contract.REPORT_RESUME_CASE[1],
+        current56_contract.INITIAL_TRANSPORT_CASE[1],
     ],
 )
 def test_current56_pg1_readback_refuses_missing_native_role_case(
@@ -408,6 +409,25 @@ def test_current56_pg1_readback_refuses_missing_native_role_case(
     assert readback(cases) is accepted_prior_checks
     with pytest.raises(ValueError, match="^pytest_required_execution_not_verified$"):
         readback([case for case in cases if case[1] != removed])
+
+
+def test_current56_pg1_readback_rejects_changed_positive_transport_junit(
+    monkeypatch, tmp_path
+):
+    cases = current56_contract.CURRENT56_PG1_REQUIRED_CASES
+    report_path, _ = current56_contract.component_report_paths("postgres", 1)
+    report = tmp_path / report_path
+    report.parent.mkdir(parents=True)
+    monkeypatch.setattr(current56_contract.previous, "_collection", lambda *_: object())
+    _junit(report, [f"{module.replace('.', '/')}.py::{name}" for module, name in cases])
+    original = report.read_bytes()
+    identity = {"tests": {"sha256": _sha(original)}}
+    assert current56_contract._collection(tmp_path, "postgres", 1, identity) is not None
+    report.write_bytes(original + b"\n")
+    with pytest.raises(
+        ValueError, match="^current56_postgres_custody_execution_missing$"
+    ):
+        current56_contract._collection(tmp_path, "postgres", 1, identity)
 
 
 @pytest.mark.parametrize("index", [True, False, -1, 2, "0"])
@@ -512,7 +532,7 @@ def test_fitted_diagnostic_is_explicit_and_cases_only(
     if accepted:
         args, observed = current56._arguments()
         assert args.fitted_catalog_diagnostic is True and observed == 1
-        assert len(set(current56._FITTED_CASES)) == len(current56._FITTED_CASES) == 35
+        assert len(set(current56._FITTED_CASES)) == len(current56._FITTED_CASES) == 36
         assert current56_contract.devval_catalog.HERMETIC_CATALOG_CASE in (
             current56._FITTED_CASES
         )
@@ -553,6 +573,7 @@ def test_fitted_diagnostic_is_explicit_and_cases_only(
             "test_actual0056_control_monitor_joins_exact_release_and_restricted_tls",
         ) in current56._FITTED_CASES
         assert current56_contract.REPORT_RESUME_CASE in current56._FITTED_CASES
+        assert current56_contract.INITIAL_TRANSPORT_CASE in current56._FITTED_CASES
         assert current56._FITTED_JUNIT not in current56_contract.component_artifacts(
             "postgres", 1
         )
