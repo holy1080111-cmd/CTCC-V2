@@ -153,7 +153,7 @@ class _PostgresCaseProgress:
         try:
             self._write(
                 {
-                    "schema": "ctcc.linux_postgres_progress.v1",
+                    "schema": "ctcc.linux_postgres_progress.v2",
                     "event": "collection",
                     "postgres_component_index": index,
                     "selected_count": len(selected),
@@ -179,14 +179,18 @@ class _PostgresCaseProgress:
         self._stream.flush()
         os.fsync(self._stream.fileno())
 
-    def _case(self, event, nodeid):
+    def _case(self, event, nodeid, **details):
         case = self._cases.get(nodeid)
         if case is None:
             raise ValueError("postgres_progress_case_invalid")
-        self._write({"event": event, **case})
+        self._write({"event": event, **case, **details})
 
     def pytest_runtest_logstart(self, nodeid):
         self._case("case_start", nodeid)
+
+    def pytest_runtest_logreport(self, report):
+        if report.failed and report.when in ("setup", "call", "teardown"):
+            self._case("case_failure", report.nodeid, phase=report.when)
 
     def pytest_runtest_logfinish(self, nodeid):
         self._case("case_finish", nodeid)

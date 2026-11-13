@@ -588,17 +588,26 @@ def test_postgres_progress_preserves_crash_prefix_and_redacts_nodeids(
     location = (selection.FITTED_CUSTODY_TEST_PATH, 0, "synthetic")
     try:
         manager.hook.pytest_runtest_logstart(nodeid=selected[0], location=location)
+        manager.hook.pytest_runtest_logreport(
+            report=SimpleNamespace(
+                nodeid=selected[0],
+                failed=True,
+                when="call",
+                longrepr="private-traceback",
+            )
+        )
         manager.hook.pytest_runtest_logfinish(nodeid=selected[0], location=location)
         manager.hook.pytest_runtest_logstart(nodeid=selected[1], location=location)
         # Simulate an unexpected exit before case_finish and sessionfinish.
         raw = path.read_bytes()
         assert not collection.exists()
-        assert len(synced) == 4 + (selection.os.name == "posix")
+        assert len(synced) == 5 + (selection.os.name == "posix")
         assert b"param-plain" not in raw and b"test_synthetic" not in raw
+        assert b"private-traceback" not in raw
         rows = [json.loads(line) for line in raw.splitlines()]
         selected_bytes = json.dumps(selected, separators=(",", ":")).encode("ascii")
         assert rows[0] == {
-            "schema": "ctcc.linux_postgres_progress.v1",
+            "schema": "ctcc.linux_postgres_progress.v2",
             "event": "collection",
             "postgres_component_index": 1,
             "selected_count": 2,
@@ -610,9 +619,11 @@ def test_postgres_progress_preserves_crash_prefix_and_redacts_nodeids(
                 "selection_index": ordinal,
                 "source_module": selection.FITTED_CUSTODY_TEST_PATH,
                 "node_sha256": _sha(selected[ordinal].encode("utf-8")),
+                **({"phase": "call"} if event == "case_failure" else {}),
             }
             for event, ordinal in (
                 ("case_start", 0),
+                ("case_failure", 0),
                 ("case_finish", 0),
                 ("case_start", 1),
             )

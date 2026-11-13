@@ -499,7 +499,11 @@ def _run(args, index, raw, files, runner_sha, root):
                 *(tls.pytest_environment if tls else ()),
                 *(("-e", f"{HERMETIC_CATALOG_ENV}=1") if needs_devval_tls else ()),
             ),
-            timeout=shared.FULL_TEST_TIMEOUT_SECONDS,
+            timeout=(
+                shared.POSTGRES_TEST_TIMEOUT_SECONDS
+                if args.suite == "postgres" and not diagnostic
+                else shared.FULL_TEST_TIMEOUT_SECONDS
+            ),
         )
         identity["tests"] = shared.verify_pytest_report(
             root / junit,
