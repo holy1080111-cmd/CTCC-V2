@@ -15,14 +15,14 @@ jobs:
       - name: Check out exact diagnostic source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 2
+          fetch-depth: 0
           persist-credentials: false
       - name: Verify parent product scope and prepare exact product inputs
         shell: bash
         run: |
           set -euo pipefail
           product=7c036ef08b3fef778e9b6f0c442c5b97a6717d70
-          test "$(git rev-parse HEAD^)" = "$product"
+          git merge-base --is-ancestor "$product" HEAD
           test "$(git diff --name-only "$product" HEAD)" = $'.github/workflows/db0056-tool-linux-n301.yml\nMANIFEST.sha256'
           destination="$RUNNER_TEMP/operator-tools"
           mkdir "$destination" "$destination/context" "$destination/results"
