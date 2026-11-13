@@ -3,6 +3,7 @@
 import argparse
 import io
 import json
+import os
 import re
 import tarfile
 from contextlib import ExitStack
@@ -12,11 +13,16 @@ from uuid import uuid4
 from scripts import current0056_fitted_catalog_measurement_v1 as fitted_measurement
 from scripts import current0056_hermetic_contract as contract
 from scripts import current0056_postgrant_acl_measurement_v1 as postgrant_acl
+from scripts import pg_financial_v3_expiry as financial_v3
 from scripts import verify_final_hermetic as shared
 from scripts.current0055_catalog_receipt import verify_current55_catalog_report
 from scripts.devval_campaign_physical_catalog_v1 import HERMETIC_CATALOG_ENV
 from scripts.devval_hermetic_tls import devval_tls
 from scripts.evidence_json import read_evidence_json
+from scripts.prospective_capture_custody import (
+    settle_owned_capture_writers,
+    stable_read,
+)
 from scripts.verify_current0055_hermetic import (
     _COPIED_SOURCE,
     _PG_READY,
@@ -47,6 +53,10 @@ _EXACT_HOST_HELPERS = (
     "verify_current0055_hermetic.py",
     "verify_final_hermetic.py",
     "verify_linux_shard.py",
+)
+_FINANCIAL_V3_HELPERS = (
+    "pg_financial_v3_expiry.py",
+    "prospective_capture_custody.py",
 )
 _PARENT_HEAD_SQL = "SELECT version_num FROM public.alembic_version"
 _FITTED_JUNIT = "test-results/fitted-catalog-diagnostic.xml"
@@ -150,13 +160,15 @@ def _arguments():
     )
     parser.add_argument("--shard-index", type=int)
     parser.add_argument("--postgres-component-index", type=int)
-    parser.add_argument("--fitted-catalog-diagnostic", action="store_true")
+    diagnostics = parser.add_mutually_exclusive_group()
+    diagnostics.add_argument("--fitted-catalog-diagnostic", action="store_true")
+    diagnostics.add_argument("--original-financial-v3-expiry", action="store_true")
     args = parser.parse_args()
     if (
         (args.shard_index is not None and args.suite != "shard")
         or (args.postgres_component_index is not None and args.suite != "postgres")
         or (
-            args.fitted_catalog_diagnostic
+            (args.fitted_catalog_diagnostic or args.original_financial_v3_expiry)
             and (args.suite != "postgres" or args.postgres_component_index != 1)
         )
         or not re.fullmatch(r"[0-9a-f]{40}", args.commit)
@@ -198,7 +210,12 @@ def _admit_archive(args, archive_bytes=None):
     expected_runner = files[contract.RUNNER_PATH]["sha256"]
     if contract.digest(Path(__file__).read_bytes()) != expected_runner:
         raise ValueError("current56_runner_does_not_match_archive")
-    for name in _EXACT_HOST_HELPERS:
+    helpers = (
+        (*_EXACT_HOST_HELPERS, *_FINANCIAL_V3_HELPERS)
+        if getattr(args, "original_financial_v3_expiry", False)
+        else _EXACT_HOST_HELPERS
+    )
+    for name in helpers:
         source = Path(__file__).with_name(name)
         if contract.digest(source.read_bytes()) != files[f"scripts/{name}"]["sha256"]:
             raise ValueError("current56_host_helper_does_not_match_archive")
@@ -216,7 +233,8 @@ def main(*, archive_bytes=None):
 
 
 def _run(args, index, raw, files, runner_sha, root):
-    diagnostic = args.fitted_catalog_diagnostic
+    expiry_diagnostic = args.original_financial_v3_expiry
+    diagnostic = args.fitted_catalog_diagnostic or expiry_diagnostic
     test_results = root / "test-results"
     test_results.mkdir(mode=0o777)
     test_results.chmod(
@@ -273,7 +291,9 @@ def _run(args, index, raw, files, runner_sha, root):
         "external_order_writes": 0,
         "trading_acceptance": False,
     }
-    if diagnostic:
+    if expiry_diagnostic:
+        identity["validation_scope"] = "original_financial_v3_expiry_only"
+    elif diagnostic:
         identity["validation_scope"] = "fitted_catalog_diagnostic_only"
     _write(root / "identity.json", identity)
     run = shared.Run(root)
@@ -508,7 +528,17 @@ def _run(args, index, raw, files, runner_sha, root):
             identity["recovery"] = shared.verify_pytest_report(
                 root / contract.RECOVERY_REPORT, required_cases=contract.RECOVERY_CASES
             )
-        if diagnostic:
+        if expiry_diagnostic:
+            stage, junit = financial_v3.STAGE, f"test-results/{financial_v3.JUNIT}"
+            test_command = (
+                *_PYTEST,
+                "-p",
+                "scripts.pg_financial_v3_expiry_trace",
+                "--tb=no",
+                f"--junitxml=/validation-results/{financial_v3.JUNIT}",
+                financial_v3.NODE,
+            )
+        elif diagnostic:
             stage, junit = "fitted-catalog-diagnostic", _FITTED_JUNIT
             test_command = (
                 *_PYTEST,
@@ -533,6 +563,11 @@ def _run(args, index, raw, files, runner_sha, root):
                 "CTCC_RUN_B3_PREFIX_33=1",
                 "-e",
                 "CTCC_B3_SCALE_RECEIPT_DIR=/validation-results",
+                *(
+                    ("-e", "CTCC_ORIGINAL_FINANCIAL_V3_EXPIRY=1")
+                    if expiry_diagnostic
+                    else ()
+                ),
                 *(tls.pytest_environment if tls else ()),
                 *(
                     (
@@ -546,14 +581,22 @@ def _run(args, index, raw, files, runner_sha, root):
                 *(("-e", f"{HERMETIC_CATALOG_ENV}=1") if needs_devval_tls else ()),
             ),
             timeout=(
-                shared.POSTGRES_TEST_TIMEOUT_SECONDS
+                15 * 60
+                if expiry_diagnostic
+                else shared.POSTGRES_TEST_TIMEOUT_SECONDS
                 if args.suite == "postgres" and not diagnostic
                 else shared.FULL_TEST_TIMEOUT_SECONDS
             ),
         )
         identity["tests"] = shared.verify_pytest_report(
             root / junit,
-            required_cases=_FITTED_CASES if diagnostic else (),
+            required_cases=(
+                ((financial_v3.MODULE, financial_v3.CASE),)
+                if expiry_diagnostic
+                else _FITTED_CASES
+                if diagnostic
+                else ()
+            ),
             allow_unrelated_skips=not diagnostic,
         )
         if anchor:
@@ -640,21 +683,36 @@ def _run(args, index, raw, files, runner_sha, root):
         raise
     finally:
         try:
-            cleanup = shared.cleanup_resources(resources, run_id)
+            if expiry_diagnostic:
+                cleanup = settle_owned_capture_writers(
+                    resources, run_id, {"deadline": None}
+                )
+                cleanup_passed = cleanup["verified_absent"] is True
+            else:
+                cleanup = shared.cleanup_resources(resources, run_id)
+                cleanup_passed = all(item["status"] != "FAIL" for item in cleanup)
         finally:
             tls_resources.close()
         _write(root / "cleanup.json", cleanup)
-        identity["cleanup"] = (
-            "PASS" if all(item["status"] != "FAIL" for item in cleanup) else "FAIL"
-        )
+        identity["cleanup"] = "PASS" if cleanup_passed else "FAIL"
         if identity["cleanup"] == "FAIL" and not diagnostic:
             identity.update(component_validation="FAIL", hermetic_regression="FAIL")
         _write(root / "identity.json", identity)
-        expected = (
-            _diagnostic_artifacts(run.steps)
-            if diagnostic
-            else contract.component_artifacts(args.suite, index)
-        )
+        if expiry_diagnostic:
+            _export_financial_expiry(root, raw, files, identity, run.steps, cleanup)
+            expected = {
+                "identity.json",
+                "source-files.json",
+                "steps.json",
+                "cleanup.json",
+                financial_v3.EXPORT,
+            }
+        else:
+            expected = (
+                _diagnostic_artifacts(run.steps)
+                if diagnostic
+                else contract.component_artifacts(args.suite, index)
+            )
         hashes = {
             name: contract.digest((root / name).read_bytes())
             for name in sorted(expected)
@@ -662,7 +720,10 @@ def _run(args, index, raw, files, runner_sha, root):
         }
         _write(root / "results.sha256.json", hashes)
     try:
-        if diagnostic:
+        if expiry_diagnostic:
+            if not (root / financial_v3.EXPORT).is_file():
+                raise ValueError("financial_v3_expiry_export_missing")
+        elif diagnostic:
             verify_fitted_catalog_diagnostic(root, raw, files)
         else:
             contract.verify_current56_component(
@@ -683,6 +744,97 @@ def _run(args, index, raw, files, runner_sha, root):
         _write(root / "results.sha256.json", hashes)
         raise
     return 0
+
+
+def _export_financial_expiry(root, raw, files, identity, steps, cleanup):
+    stage = financial_v3.STAGE
+    if (
+        not steps
+        or tuple(step["name"] for step in steps)
+        != (*contract.component_stage_names("postgres", 1)[:-1], stage)
+        or any(step["exit_code"] != 0 or "failure_type" in step for step in steps[:-1])
+        or cleanup["verified_absent"] is not True
+        or contract.digest(raw) != identity["archive_sha256"]
+        or contract.migration_readback(
+            contract._read(root, "migration-identity.log"),
+            contract.migration_digest(files),
+        )
+        != identity["migration"]
+        or contract._read(root, "copied-source-exact.log").strip()
+        != str(len(files)).encode()
+        or contract._read(root, stage + ".log")
+        .splitlines()
+        .count(b"HERMETIC_EXECUTION_AUTHORITY=0")
+        != 1
+    ):
+        return
+    tests = root / "test-results"
+    if tests.resolve(strict=True) != tests:
+        raise ValueError("financial_v3_expiry_results_alias")
+    report = {
+        "schema": "ctcc.pg_original_financial_v3_expiry_diagnostic.v1",
+        "commit": identity["commit"],
+        "tree": identity["tree"],
+        "archive_sha256": identity["archive_sha256"],
+        "manifest_sha256": identity["manifest_sha256"],
+        "image_id": identity["image_id"],
+        "migration": identity["migration"],
+        "node_sha256": financial_v3.NODE_SHA256,
+        "exit_code": steps[-1]["exit_code"],
+        "cleanup_verified": True,
+        "trace": None,
+        "junit": None,
+        "full_postgresql_acceptance": False,
+        "execution_authority": False,
+    }
+    try:
+        original, _ = stable_read(tests / financial_v3.TRACE, financial_v3.TRACE_LIMIT)
+        events, complete = financial_v3.read_trace(original)
+        if any(
+            row["event"] == "budget" and row["data"]["boundary"] == "unobserved"
+            for row in events
+        ):
+            raise ValueError("financial_v3_expiry_original_lease_missing")
+        report["trace"] = {
+            "sha256": contract.digest(original),
+            "complete": complete,
+            "events": events,
+        }
+    except (OSError, ValueError):
+        report["trace"] = None
+    try:
+        original, _ = stable_read(tests / financial_v3.JUNIT, financial_v3.TRACE_LIMIT)
+        report["junit"] = {
+            "sha256": contract.digest(original),
+            "outcome": financial_v3.read_junit(original),
+        }
+    except (OSError, ValueError):
+        report["junit"] = None
+    finished = report["trace"] is not None and report["trace"]["complete"]
+    passed = (
+        finished
+        and report["trace"]["events"][-1]["data"]["outcome"] == "returned"
+        and steps[-1]["exit_code"] == 0
+        and report["junit"] is not None
+        and report["junit"]["outcome"] == "passed"
+    )
+    report["diagnostic_outcome"] = (
+        "ORIGINAL_CASE_PASSED"
+        if passed
+        else "ORIGINAL_CASE_FAILED"
+        if finished
+        and report["junit"] is not None
+        and report["junit"]["outcome"] in {"failure", "error"}
+        else "INCOMPLETE"
+    )
+    wire = json.dumps(report, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+    with (root / financial_v3.EXPORT).open("xb") as output:
+        output.write(wire)
+        output.flush()
+        os.fsync(output.fileno())
+    observed, _ = stable_read(root / financial_v3.EXPORT, 2 * financial_v3.TRACE_LIMIT)
+    if observed != wire or (steps[-1]["exit_code"] == 0 and not passed):
+        raise ValueError("financial_v3_expiry_export_invalid")
 
 
 def _diagnostic_artifacts(steps):

@@ -1,0 +1,54 @@
+name: DB0056 original financial V3 expiry
+
+on:
+  push:
+    branches: [work/db0056-original-financial-v3-expiry]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  original-financial-v3:
+    if: github.ref == 'refs/heads/work/db0056-original-financial-v3-expiry'
+    name: Original financial V3 expiry cluster ${{ matrix.cluster }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        cluster: [1, 2]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Replay the exact original V3 case in an isolated cluster
+        shell: bash
+        run: |
+          set -euo pipefail
+          commit=$(git rev-parse HEAD)
+          test "$commit" = "$GITHUB_SHA"
+          tree=$(git rev-parse 'HEAD^{tree}')
+          archive="$RUNNER_TEMP/ctcc-source.tar"
+          git -c core.autocrlf=false -c core.eol=lf archive --format=tar --output="$archive" "$commit"
+          digest=$(sha256sum "$archive" | cut -d ' ' -f 1)
+          python3 -m scripts.verify_current0056_hermetic \
+            --archive "$archive" --archive-sha256 "$digest" \
+            --commit "$commit" --tree "$tree" \
+            --suite postgres --postgres-component-index 1 --original-financial-v3-expiry \
+            --output "$RUNNER_TEMP/ctcc-financial-v3"
+      - name: Retain source and closed diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ctcc-db0056-original-financial-v3-${{ matrix.cluster }}-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/ctcc-source.tar
+            ${{ runner.temp }}/ctcc-financial-v3/identity.json
+            ${{ runner.temp }}/ctcc-financial-v3/steps.json
+            ${{ runner.temp }}/ctcc-financial-v3/cleanup.json
+            ${{ runner.temp }}/ctcc-financial-v3/source-files.json
+            ${{ runner.temp }}/ctcc-financial-v3/results.sha256.json
+            ${{ runner.temp }}/ctcc-financial-v3/original-financial-v3-expiry-redacted.json
+          if-no-files-found: error
+          retention-days: 30
