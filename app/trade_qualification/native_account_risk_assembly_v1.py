@@ -7013,6 +7013,8 @@ _CONTROLLED_SOURCE_PATHS_V1 = (
     "app/trade_qualification/account_current_source_v4.py",
     "app/database/repositories/demo_control_current55_v2.py",
     "app/database/repositories/demo_operator_acknowledgements_current55_v1.py",
+    "app/database/repositories/native_legacy_control_genesis_0056_v1.py",
+    "app/database/repositories/native_legacy_control_clear_0056_v1.py",
     "app/database/repositories/account_revision_collector_lineage_current55_v1.py",
     "app/database/repositories/account_revision_collector_lineage.py",
     "app/database/repositories/qualification_native_checkpoint_v2.py",
@@ -7151,6 +7153,7 @@ class _ControlOperatorReplayV1:
     original_measurement: bytes = field(repr=False)
     expires_at: datetime
     monotonic_deadline_ns: int
+    _owned_mirror_checkpoint_0056: bytes | None = field(default=None, repr=False)
     _owned_database_0056: tuple | None = field(default=None, repr=False)
 
 
@@ -7609,6 +7612,11 @@ def _replay_owned_control_operator_source_v1(state, *, key):
         control_state["genesis"].original_measurement,
         state["expires_at"],
         state["monotonic_deadline_ns"],
+        _owned_mirror_checkpoint_0056=(
+            state["mirror_observation"].local_checkpoint.document_json
+            if selected_database is not None
+            else None
+        ),
         _owned_database_0056=selected_database,
     )
 

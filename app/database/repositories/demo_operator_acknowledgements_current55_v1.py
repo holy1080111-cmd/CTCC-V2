@@ -10,12 +10,13 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 
-from sqlalchemy import select, text
+from sqlalchemy import Text, cast, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.models.account_revision_collector_lineage import (
     DemoCollectorCurrentRevisionLineage as Lineage,
 )
+from app.database.models.demo_automation import DemoAutomationState
 from app.database.models.demo_control import DemoAccountControl, DemoControlJournal
 from app.database.models.demo_operator_acknowledgements_v55 import (
     DemoControlClearAcknowledgementV2 as ClearRow,
@@ -23,11 +24,18 @@ from app.database.models.demo_operator_acknowledgements_v55 import (
 from app.database.models.demo_operator_acknowledgements_v55 import (
     DemoPolicyCounterInitializationV1 as CounterRow,
 )
+from app.database.models.operations import AuditLog
 from app.database.repositories import (
     account_revision_collector_lineage_current55_v1 as lineage55,
 )
 from app.database.repositories import (
     collector_current_0055_multirole_catalog_v1 as catalog55,
+)
+from app.database.repositories import (
+    native_legacy_control_clear_0056_v1 as legacy_clear,
+)
+from app.database.repositories import (
+    native_legacy_control_genesis_0056_v1 as legacy_genesis,
 )
 from app.database.repositories import qualification_native_checkpoint_v2 as checkpoint
 from app.database.repositories.demo_control import (
@@ -60,9 +68,15 @@ _OPERATOR_FENCE = text(
     "LOCK TABLE public.demo_account_controls, public.demo_control_journal, "
     "public.demo_control_clear_acknowledgements_v2, "
     "public.demo_policy_counter_initializations_v1, "
-    "public.demo_collector_current_revision_lineages "
+    "public.demo_collector_current_revision_lineages, public.audit_logs "
     "IN ROW EXCLUSIVE MODE NOWAIT"
 )
+_LEGACY_CLEAR_FENCE = text(
+    "LOCK TABLE public.demo_automation_state, public.okx_demo_sync_checkpoints, "
+    "public.okx_demo_order_state, public.okx_demo_position_state, "
+    "public.okx_demo_algo_order_state IN SHARE ROW EXCLUSIVE MODE NOWAIT"
+)
+_DB_TIME = text("SELECT pg_catalog.clock_timestamp()")
 _CLEAR_COLUMNS = (
     "ack_sha256",
     "environment",
@@ -221,6 +235,8 @@ async def _transaction(session, source):
                 ClearRow,
                 CounterRow,
                 Lineage,
+                AuditLog,
+                DemoAutomationState,
             )
         ):
             _deny("control56_operator_original_writer_required")
@@ -241,7 +257,14 @@ def _same_control(actual, event, replay, *, target=None, target_event=None):
 
 
 async def _locked(
-    session, replay, ledger, *, target=None, target_event=None, held=None
+    session,
+    replay,
+    ledger,
+    *,
+    target=None,
+    target_event=None,
+    held=None,
+    allow_stopped_checkpoint=False,
 ):
     if held is None:
         state, event = await DemoControlRepositoryV2.read_in_transaction(
@@ -266,15 +289,29 @@ async def _locked(
     )
     if saved.lineage_json.encode("utf-8") != replay.lineage.lineage_json:
         _deny("control55_operator_original_lineage_changed")
+    if held is not None and replay.purpose == "clear_stop":
+        await session.execute(_LEGACY_CLEAR_FENCE)
+        held.check()
     point = await ledger._read_portfolio_checkpoint_locked(
         session, replay.scope, scope_row, _held0056=held
     )
-    _flat(replay, point)
+    if (
+        allow_stopped_checkpoint
+        and held is not None
+        and replay.purpose == "clear_stop"
+        and not point.known_flat
+    ):
+        legacy_clear.stopped_checkpoint(point.document_json)
+        _flat(replay, point, stopped_singleton=True)
+    else:
+        _flat(replay, point)
     return scope_row, state, event, saved, point
 
 
-def _flat(replay, point):
-    if type(point) is not PortfolioLocalCheckpoint or point.known_flat is not True:
+def _flat(replay, point, *, stopped_singleton=False):
+    if type(point) is not PortfolioLocalCheckpoint or (
+        not stopped_singleton and point.known_flat is not True
+    ):
         _deny("control55_operator_local_unknown_or_exposure")
     local = decode(point.document_json, 262144)
     receipt = decode(replay.current.current_receipt_json, 65536)
@@ -287,7 +324,7 @@ def _flat(replay, point):
         or receipt.get("identity", {}).get("settlement_currency")
         != replay.scope.settlement_currency
         or local.get("schema_version") != "ctcc.portfolio_local_checkpoint.v2"
-        or local.get("blocking_reasons") != []
+        or (not stopped_singleton and local.get("blocking_reasons") != [])
         or type(local.get("currency_states")) is not list
         or not 1 <= len(local["currency_states"]) <= 128
         or any(
@@ -310,7 +347,7 @@ def _flat(replay, point):
     return receipt
 
 
-def _proofs(replay, point, operator_json):
+def _proofs(replay, point, operator_json, *, legacy_clear_raw=None):
     receipt = _flat(replay, point)
     # Purpose labels bind the actual full same-CURRENT receipt/native lineage,
     # never caller counts, summaries or a supplied true flag.
@@ -357,7 +394,12 @@ def _proofs(replay, point, operator_json):
         for label, value in prefix
     )
     result += (
-        ("local_reconciliation", journal.digest(point.document_json)),
+        (
+            "local_reconciliation",
+            journal.digest(
+                point.document_json if legacy_clear_raw is None else legacy_clear_raw
+            ),
+        ),
         ("operator_ack", control.digest(operator_json)),
     )
     if replay.purpose == "policy_counter_initialize":
@@ -405,7 +447,7 @@ def _operator_document(replay):
     _deny("control55_operator_purpose_invalid")
 
 
-def _ack(replay, scope_row, point, metadata, sampled_at):
+def _ack(replay, scope_row, point, metadata, sampled_at, *, legacy_clear_raw=None):
     if not metadata[9] <= sampled_at < replay.expires_at:
         _deny("control55_operator_actual_clock_order_invalid")
     operator_json = _operator_document(replay)
@@ -422,7 +464,9 @@ def _ack(replay, scope_row, point, metadata, sampled_at):
         "db_role_oid": metadata[3],
         "db_backend_pid": metadata[7],
         "db_transaction_id": metadata[8],
-        "proofs": _proofs(replay, point, operator_json),
+        "proofs": _proofs(
+            replay, point, operator_json, legacy_clear_raw=legacy_clear_raw
+        ),
         "operator_ack_json": operator_json,
     }
     if replay.purpose == "clear_stop":
@@ -532,6 +576,159 @@ def _new_row(ack, target, replay):
             ack_json=control.canonical(counter.policy_counter_ack_document_v1(ack)),
         )
     _deny("control55_operator_exact_ack_required")
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class _ColdLegacyClear:
+    origin_event: str
+    created_at: datetime
+    cleared_at: datetime
+    before: bytes = field(repr=False)
+    after: bytes = field(repr=False)
+
+    def proof(self, replay):
+        return legacy_clear.receipt(
+            event=self.origin_event,
+            acquired_event=replay.previous_control_event_sha256,
+            lineage=replay.lineage.lineage_sha256,
+            created_at=self.created_at,
+            clear_at=self.cleared_at,
+            before=self.before,
+            after=self.after,
+        )
+
+
+async def _legacy_singleton(session):
+    return (
+        await session.scalars(
+            select(DemoAutomationState)
+            .limit(2)
+            .execution_options(populate_existing=True)
+            .with_for_update()
+        )
+    ).one()
+
+
+async def _verify_legacy_origin(session, replay, origin, created_at):
+    lineage = await DemoControlRepositoryV2.verify_historical_binding(
+        session, replay.previous_control, replay.previous_control_event_sha256
+    )
+    legacy_clear.verify_origin(lineage, origin, created_at=created_at)
+
+
+async def _clear_cold_legacy(session, source, ledger, held, scope_row, previous):
+    replay = source()
+    if (
+        held is None
+        or replay.purpose != "clear_stop"
+        or previous.known_flat
+        or type(replay._owned_mirror_checkpoint_0056) is not bytes
+        or previous.document_json != replay._owned_mirror_checkpoint_0056
+    ):
+        _deny("control56_cold_legacy_clear_original_source_required")
+    before = await _legacy_singleton(session)
+    held.check()
+    replay = source()
+    origin = legacy_clear.origin(before)
+    now = control.utc(await session.scalar(_DB_TIME))
+    created = legacy_genesis._exact_readback([before], now, origin)
+    await _verify_legacy_origin(session, replay, origin, created)
+    held.check()
+    replay = source()
+    if not replay.previous_control.updated_at <= now < replay.expires_at:
+        _deny("control56_cold_legacy_clear_clock_changed")
+    changed = await session.scalar(
+        update(DemoAutomationState)
+        .where(
+            DemoAutomationState.id == 1,
+            DemoAutomationState.control_revision == 1,
+            DemoAutomationState.armed.is_(False),
+            DemoAutomationState.emergency_stop.is_(True),
+            DemoAutomationState.locked.is_(True),
+            DemoAutomationState.restart_latch_required.is_(True),
+            DemoAutomationState.updated_at == created,
+            DemoAutomationState.lock_reasons == before.lock_reasons,
+        )
+        .values(**legacy_clear.cleared_values(now))
+        .returning(DemoAutomationState.control_revision)
+    )
+    held.check()
+    replay = source()
+    if changed != 2:
+        _deny("control56_cold_legacy_clear_CAS_changed")
+    legacy_clear.exact_cleared(
+        await _legacy_singleton(session), created_at=created, clear_at=now, event=origin
+    )
+    point = await ledger._read_portfolio_checkpoint_locked(
+        session, replay.scope, scope_row, _held0056=held
+    )
+    held.check()
+    replay = source()
+    _flat(replay, point)
+    proof = _ColdLegacyClear(
+        origin, created, now, previous.document_json, point.document_json
+    )
+    proof.proof(replay)
+    return point, proof
+
+
+def _legacy_audit_documents(proof, replay):
+    return (
+        {"checkpoint_json": proof.before.decode("ascii")},
+        {
+            "checkpoint_json": proof.after.decode("ascii"),
+            "receipt_json": proof.proof(replay).decode("ascii"),
+        },
+    )
+
+
+async def _verify_legacy_audit(session, replay, ack, proof, point):
+    predicate = (
+        AuditLog.action == legacy_clear.ACTION,
+        AuditLog.resource_type == legacy_clear.RESOURCE,
+        AuditLog.resource_id == ack.ack_sha256,
+    )
+    size = (
+        await session.execute(
+            select(
+                func.pg_catalog.octet_length(cast(AuditLog.before, Text))
+                + func.pg_catalog.octet_length(cast(AuditLog.after, Text))
+            )
+            .select_from(AuditLog)
+            .where(*predicate)
+            .limit(2)
+        )
+    ).scalar_one()
+    if type(size) is not int or not 1 <= size <= 2_100_000:
+        _deny("control56_cold_legacy_clear_audit_bound")
+    actual = (
+        await session.scalars(
+            select(AuditLog)
+            .where(*predicate)
+            .limit(2)
+            .execution_options(populate_existing=True)
+        )
+    ).one()
+    before, after = _legacy_audit_documents(proof, replay)
+    if (
+        actual.actor != legacy_clear.ACTOR
+        or actual.before != before
+        or actual.after != after
+        or actual.occurred_at != proof.cleared_at
+        or actual.ip_address is not None
+        or not proof.cleared_at <= ack.owner_sampled_at < replay.expires_at
+        or point.document_json != proof.after
+        or dict(ack.proofs)["local_reconciliation"]
+        != journal.digest(proof.proof(replay))
+    ):
+        _deny("control56_cold_legacy_clear_audit_changed")
+    legacy_clear.exact_cleared(
+        await _legacy_singleton(session),
+        created_at=proof.created_at,
+        clear_at=proof.cleared_at,
+        event=proof.origin_event,
+    )
+    await _verify_legacy_origin(session, replay, proof.origin_event, proof.created_at)
 
 
 def _make_store_clear_v1():
@@ -721,9 +918,19 @@ def _make_entry_v1():
                 ):
                     write_session = session
                     scope_row, _, _, _, point = await _locked(
-                        session, source(), ledger, held=held
+                        session,
+                        source(),
+                        ledger,
+                        held=held,
+                        allow_stopped_checkpoint=True,
                     )
                     source()
+                    legacy_proof = None
+                    if not point.known_flat:
+                        point, legacy_proof = await _clear_cold_legacy(
+                            session, source, ledger, held, scope_row, point
+                        )
+                        source()
                     if replay.purpose == "policy_counter_initialize":
                         existing = await session.scalar(
                             select(CounterRow).where(
@@ -739,7 +946,16 @@ def _make_entry_v1():
                     metadata = await _metadata(session)
                     replay = source()
                     sampled = _time()
-                    ack, target = _ack(replay, scope_row, point, metadata, sampled)
+                    ack, target = _ack(
+                        replay,
+                        scope_row,
+                        point,
+                        metadata,
+                        sampled,
+                        legacy_clear_raw=None
+                        if legacy_proof is None
+                        else legacy_proof.proof(replay),
+                    )
                     saved = _new_row(ack, target, replay)
                     session.add(saved)
                     await session.flush()
@@ -753,6 +969,30 @@ def _make_entry_v1():
                         target_event = saved.clear_event_sha256
                         columns = _CLEAR_COLUMNS
                         pin = saved.ack_sha256
+                        if legacy_proof is not None:
+                            before, after = _legacy_audit_documents(
+                                legacy_proof, replay
+                            )
+                            session.add(
+                                AuditLog(
+                                    actor=legacy_clear.ACTOR,
+                                    action=legacy_clear.ACTION,
+                                    resource_type=legacy_clear.RESOURCE,
+                                    resource_id=pin,
+                                    before=before,
+                                    after=after,
+                                    occurred_at=legacy_proof.cleared_at,
+                                )
+                            )
+                            await session.flush()
+                            point = await ledger._read_portfolio_checkpoint_locked(
+                                session, replay.scope, scope_row, _held0056=held
+                            )
+                            _flat(source(), point)
+                            await _verify_legacy_audit(
+                                session, source(), ack, legacy_proof, point
+                            )
+                            source()
                     else:
                         _validate_counter_row(saved, replay)
                         target_event = replay.previous_control_event_sha256
@@ -774,7 +1014,13 @@ def _make_entry_v1():
                 ):
                     if session is write_session:
                         _deny("control55_operator_independent_session_required")
-                    scope_row, current_state, current_event, _, _ = await _locked(
+                    (
+                        scope_row,
+                        current_state,
+                        current_event,
+                        _,
+                        read_point,
+                    ) = await _locked(
                         session,
                         source(),
                         ledger,
@@ -791,7 +1037,18 @@ def _make_entry_v1():
                     if _row_raw(saved, columns) != written:
                         _deny("control55_operator_committed_row_changed")
                     if replay.purpose == "clear_stop":
-                        _validated_clear_row_v2(saved)
+                        actual_ack = _validated_clear_row_v2(saved)
+                        if legacy_proof is not None:
+                            if (
+                                actual_ack.db_role_oid,
+                                actual_ack.db_backend_pid,
+                                actual_ack.db_transaction_id,
+                            ) != (metadata[3], metadata[7], metadata[8]):
+                                _deny("control56_cold_legacy_clear_transaction_changed")
+                            await _verify_legacy_audit(
+                                session, source(), actual_ack, legacy_proof, read_point
+                            )
+                            source()
                     else:
                         _validate_counter_row(saved, replay)
                     observation = ControlObservation(

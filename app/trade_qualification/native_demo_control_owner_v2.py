@@ -1038,6 +1038,8 @@ def _make_kernel():
             repository56,
             historical_repository,
             operator_repository,
+            operator_repository.legacy_clear,
+            operator_repository.legacy_genesis,
             lineage_repository,
             legacy_lineage,
             journal_repository,
