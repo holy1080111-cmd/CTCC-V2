@@ -21,7 +21,8 @@ def test_local_analysis_page_is_served_with_no_external_assets() -> None:
     assert "https://" not in html and "http://" not in html
     assert "匯入檔案的來源未經驗證" in html
     assert 'href="/readiness"' in html
-    assert 'href="/docs#/paper"' in html
+    assert 'href="#paper-section"' in html
+    assert 'href="/docs' not in html
 
 
 def test_local_analysis_page_only_posts_exact_file_to_existing_offline_api() -> None:
@@ -42,6 +43,15 @@ def test_local_analysis_page_only_posts_exact_file_to_existing_offline_api() -> 
     assert '["/api/paper/account", "/api/paper/state"]' in html
     assert 'method: "GET"' in html
     assert "OKX 實際持倉仍未知" in html
+    assert paths["/api/paper/orders"].methods == {"POST"}
+    assert paths["/api/paper/ticks"].methods == {"POST"}
+    assert 'paperPost("/api/paper/orders", token' in html
+    assert 'paperPost("/api/paper/ticks", token' in html
+    assert "paperLimitWrap.hidden = paperMode.value !== \"limit\";" in html
+    assert "client_order_id: pendingPaperOrder.id" in html
+    assert "if (pendingPaperOrder.uncertain)" in html
+    assert "paperConfirm.checked = false;" in html
+    assert "/api/paper/reset" not in html and "/api/okx" not in html
     for denied in (
         "source_authenticity_verified === false",
         "execution_authority === false",
