@@ -87,6 +87,25 @@ def _write(path: Path, value: object) -> None:
     )
 
 
+def _reject_secret_in_output(root: Path, secret_file: Path) -> None:
+    """Scan every retained output byte before a PASS artifact can be sealed."""
+    secret = secret_file.read_bytes()
+    if len(secret) != 64:
+        raise ValueError("owner_scram_lab_secret_invalid")
+    for path in root.rglob("*"):
+        if path.is_symlink() or path.is_junction():
+            raise ValueError("owner_scram_lab_output_link_invalid")
+        if not path.is_file():
+            continue
+        with path.open("rb") as stream:
+            overlap = b""
+            while block := stream.read(65536):
+                joined = overlap + block
+                if secret in joined:
+                    raise ValueError("owner_scram_lab_secret_in_output")
+                overlap = joined[-(len(secret) - 1) :]
+
+
 def _verify(root: Path, raw: bytes, files: dict, identity: dict) -> None:
     steps = read_evidence_json((root / "steps.json").read_bytes())
     cleanup = read_evidence_json((root / "cleanup.json").read_bytes())
@@ -379,6 +398,7 @@ def _run(args, raw, files, root, resources_stack):
             "tests/integration/test_native_owner_scram_lab_pg_v1.py::" + _CASE[1],
             timeout=600,
         )
+        _reject_secret_in_output(root, secret.host_secret_file)
         identity["result"] = "PASS"
     except Exception as error:
         identity["result"] = "FAIL"

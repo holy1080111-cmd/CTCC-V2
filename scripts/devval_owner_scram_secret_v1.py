@@ -13,12 +13,12 @@ import stat
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from scripts.devval_hermetic_tls import _POSTGRES_BOOT
 
-_SOURCE = "/ctcc-owner-scram-input/password"
+_SOURCE = "/ctcc-owner-scram-password"
 _POSTGRES_PRIVATE = "/ctcc-devval-tls/postgres-password"
 _PYTEST_SECRET = "/ctcc-owner-scram-secret"
 _ENTRYPOINT = "exec /usr/local/bin/docker-entrypoint.sh"
@@ -36,6 +36,7 @@ class OwnerScramLabSecretError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class OwnerScramLabSecretV1:
+    host_secret_file: Path = field(repr=False)
     postgres_mount: tuple[str, str]
     pytest_mount: tuple[str, str]
     postgres_command: tuple[str, str, str]
@@ -92,6 +93,7 @@ def owner_scram_lab_secret_v1(
         ):
             raise OwnerScramLabSecretError("owner_scram_lab_secret_unavailable")
         yield OwnerScramLabSecretV1(
+            host_secret_file=secret,
             postgres_mount=(
                 "--mount",
                 f"type=bind,source={secret},target={_SOURCE},readonly",

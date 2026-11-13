@@ -14,13 +14,19 @@ from scripts.devval_owner_scram_secret_v1 import (
     _boot_command,
     owner_scram_lab_secret_v1,
 )
-from scripts.verify_owner_scram_0056_hermetic import _arguments
+from scripts.verify_owner_scram_0056_hermetic import (
+    _arguments,
+    _reject_secret_in_output,
+)
 
 
 def test_postgres_boot_uses_private_password_file_without_value():
     command = _boot_command(("sh", "-ceu", _POSTGRES_BOOT))
     assert command[:2] == ("sh", "-ceu")
     assert command[2].count("exec /usr/local/bin/docker-entrypoint.sh") == 1
+    assert (
+        "cp /ctcc-owner-scram-password /ctcc-devval-tls/postgres-password" in command[2]
+    )
     assert "POSTGRES_PASSWORD_FILE=/ctcc-devval-tls/postgres-password" in command[2]
     assert "chown postgres:postgres /ctcc-devval-tls/postgres-password" in command[2]
     assert "POSTGRES_PASSWORD=" not in command[2]
@@ -69,3 +75,15 @@ def test_secret_is_private_and_cleaned_or_posix_only():
         assert secret_path.read_bytes() not in lab.postgres_command[2].encode()
     assert secret_path is not None and not secret_path.exists()
     assert not secret_path.parent.exists()
+
+
+def test_retained_output_scan_catches_secret_across_read_blocks(tmp_path):
+    secret = tmp_path / "password"
+    secret.write_bytes(b"s" * 64)
+    output = tmp_path / "output"
+    output.mkdir()
+    (output / "safe.log").write_bytes(b"safe")
+    _reject_secret_in_output(output, secret)
+    (output / "leak.log").write_bytes(b"x" * 65530 + b"s" * 64)
+    with pytest.raises(ValueError, match="owner_scram_lab_secret_in_output"):
+        _reject_secret_in_output(output, secret)

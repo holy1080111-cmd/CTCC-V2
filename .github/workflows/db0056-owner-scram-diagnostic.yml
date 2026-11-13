@@ -1,0 +1,69 @@
+name: DB0056 owner SCRAM diagnostic
+
+on:
+  push:
+    branches: [work/db0056-owner-scram-diagnostic]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  owner-scram:
+    if: github.ref == 'refs/heads/work/db0056-owner-scram-diagnostic'
+    name: Isolated owner SCRAM cluster ${{ matrix.cluster }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        cluster: [1, 2]
+    steps:
+      - name: Checkout exact diagnostic source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Run exact source in an isolated SCRAM lab
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -C
+          commit=$(git rev-parse HEAD)
+          test "$commit" = "$GITHUB_SHA"
+          tree=$(git rev-parse 'HEAD^{tree}')
+          archive="$RUNNER_TEMP/ctcc-owner-scram-source.tar"
+          git -c core.autocrlf=false -c core.eol=lf archive --format=tar --output="$archive" "$commit"
+          digest=$(sha256sum "$archive" | cut -d ' ' -f 1)
+          python3 -m scripts.verify_owner_scram_0056_hermetic \
+            --archive "$archive" --archive-sha256 "$digest" \
+            --commit "$commit" --tree "$tree" \
+            --owner-scram-lab-only \
+            --output "$RUNNER_TEMP/ctcc-owner-scram"
+
+      - name: Preserve safe source and run status
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ctcc-db0056-owner-scram-status-${{ matrix.cluster }}-${{ github.sha }}
+          path: |
+            MANIFEST.sha256
+            ${{ runner.temp }}/ctcc-owner-scram/identity.json
+            ${{ runner.temp }}/ctcc-owner-scram/steps.json
+            ${{ runner.temp }}/ctcc-owner-scram/cleanup.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Preserve verified redacted acceptance
+        if: success()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ctcc-db0056-owner-scram-pass-${{ matrix.cluster }}-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/ctcc-owner-scram/results.sha256.json
+            ${{ runner.temp }}/ctcc-owner-scram/test-results/owner-scram-lab.json
+            ${{ runner.temp }}/ctcc-owner-scram/test-results/owner-scram.xml
+          if-no-files-found: error
+          retention-days: 14
