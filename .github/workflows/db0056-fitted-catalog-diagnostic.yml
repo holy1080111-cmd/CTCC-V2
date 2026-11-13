@@ -53,5 +53,6 @@ jobs:
             ${{ runner.temp }}/ctcc-fitted-catalog/test-results/devval-campaign-native-catalogs.json
             ${{ runner.temp }}/ctcc-fitted-catalog/test-results/current0056-fitted-catalog-single-redacted.json
             ${{ runner.temp }}/ctcc-fitted-catalog/test-results/current0056-inherited-native-catalog-redacted.json
+            ${{ runner.temp }}/ctcc-fitted-catalog/test-results/current0056-postgrant-acl-redacted.json
           if-no-files-found: error
           retention-days: 30

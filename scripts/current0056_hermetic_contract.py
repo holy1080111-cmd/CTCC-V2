@@ -9,6 +9,7 @@ from pathlib import Path
 
 from scripts import current0055_hermetic_contract as previous
 from scripts import current0056_fitted_catalog_measurement_v1 as fitted_measurement
+from scripts import current0056_postgrant_acl_measurement_v1 as postgrant_acl
 from scripts import devval_campaign_physical_catalog_v1 as devval_catalog
 from scripts import verify_final_hermetic as shared
 from scripts.current0055_catalog_receipt import verify_current55_catalog_report
@@ -136,6 +137,7 @@ def component_artifacts(mode, index):
         artifacts.add(f"test-results/{devval_catalog.HERMETIC_CATALOG_FILE}")
         artifacts.add(f"test-results/{fitted_measurement.FILE}")
         artifacts.add(f"test-results/{fitted_measurement.INHERITED_FILE}")
+        artifacts.add(f"test-results/{postgrant_acl.FILE}")
     if component_is_anchor(mode, index):
         artifacts.update(
             f"{stage}.log" for stage in (*_PARENT_UPGRADE, *_EMPTY_ROUNDTRIP)
@@ -181,9 +183,18 @@ def verify_fitted_and_inherited_catalogs(root, identity, files):
         identity=identity,
         source_files=files,
     )
+    postgrant = postgrant_acl.verify_measurement(
+        _read(root, f"test-results/{postgrant_acl.FILE}", maximum=8_192),
+        identity=identity,
+        source_files=files,
+    )
     if (
         inherited["cluster_system_identifier_sha256"]
         != fitted["cluster_system_identifier_sha256"]
+        or postgrant["cluster_system_identifier_sha256"]
+        != fitted["cluster_system_identifier_sha256"]
+        or postgrant["inherited_native_definitions_sha256"]
+        != inherited["definitions"]["postgrant_readonly_inherited_sha256"]
     ):
         raise ValueError("current56_fitted_inherited_cluster_mismatch")
     return fitted
