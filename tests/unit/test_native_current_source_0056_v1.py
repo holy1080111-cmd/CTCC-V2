@@ -3,6 +3,7 @@
 from dataclasses import replace
 from datetime import timedelta
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -60,15 +61,48 @@ async def test_observation_binds_the_actual_frozen_packet_and_disarmed_control(
 
 @pytest.mark.asyncio
 async def test_preflight_refusal_cannot_run_account_requests(monkeypatch):
-    async def refuse():
-        raise ValueError("synthetic private URL")
-
-    called = []
-    monkeypatch.setattr(source, "_settings", lambda instrument: object())
-    monkeypatch.setattr(source, "_observe_roles", refuse)
-    monkeypatch.setattr(source, "_attempt", lambda settings: called.append(settings))
+    settings = SimpleNamespace(okx_demo_native_evidence_root="unused")
+    capture_attempt = AsyncMock()
+    monkeypatch.setattr(source, "_settings", lambda instrument: settings)
+    monkeypatch.setattr(
+        source, "require_private_evidence_base_v2", Mock(side_effect=ValueError)
+    )
+    monkeypatch.setattr(source, "_capture", capture_attempt)
     with pytest.raises(
         source.NativeCurrentSource0056Error, match="observation_unavailable"
     ):
         await source.observe_configured_current_account_0056_v1("BTC-USDT-SWAP")
-    assert called == []
+    capture_attempt.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_0056_checks_exact_selected_factories_before_any_signed_get(monkeypatch):
+    selectors = source.selectors
+    factories = SimpleNamespace(
+        frame_reader_engine=SimpleNamespace(dispose=AsyncMock()),
+        custody_engine=SimpleNamespace(dispose=AsyncMock()),
+    )
+    client = SimpleNamespace(account_config_selector_v2=AsyncMock())
+    monkeypatch.setattr(selectors, "_configured_inputs", Mock(return_value=object()))
+    monkeypatch.setattr(selectors, "_server_settings_pin", Mock(return_value="pin"))
+    monkeypatch.setattr(selectors, "_route_artifact", Mock(return_value=b"route"))
+    monkeypatch.setattr(
+        selectors,
+        "select_configured_native_demo_factories_v2",
+        Mock(return_value=factories),
+    )
+    witness = AsyncMock(side_effect=ValueError("synthetic private deployment detail"))
+    monkeypatch.setattr(selectors, "_source_roles_before_get_0056", witness)
+    with pytest.raises(
+        selectors.NativeDemoCallerReadinessErrorV2,
+        match="^native_demo_identity_selector_failed$",
+    ):
+        await selectors.select_configured_demo_source_identity_0056_v1(
+            private_client=client,
+            read_session=object(),
+            instrument_ids=("BTC-USDT-SWAP",),
+        )
+    witness.assert_awaited_once_with(factories)
+    client.account_config_selector_v2.assert_not_awaited()
+    factories.frame_reader_engine.dispose.assert_awaited_once()
+    factories.custody_engine.dispose.assert_awaited_once()

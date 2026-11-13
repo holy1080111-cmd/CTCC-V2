@@ -13,10 +13,6 @@ from app.core.native_locked_demo_control_0056_v1 import (
     NativeLockedDemoControl0056V1,
     read_locked_demo_control_0056_v1,
 )
-from app.core.native_role_witness_0056_v1 import (
-    RestrictedNativeRoles0056WitnessV1,
-    observe_restricted_native_roles_0056_witness_v1,
-)
 from app.database.repositories.public_runtime_bundle_custody import (
     RuntimeBundleCustodyRepository,
 )
@@ -34,7 +30,6 @@ from app.trade_qualification import account_native_proof_storage as storage
 from app.trade_qualification.account_runtime import ControlledDemoAccountSession
 from app.trade_qualification.demo_control import ControlScope
 
-_SOURCE = Path(__file__).resolve().parents[2]
 _RECEIPT = "db0056-current-source-observation.json"
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 
@@ -57,38 +52,21 @@ def _need(condition: bool, code: str) -> None:
         raise NativeCurrentSource0056Error(code) from None
 
 
-def _attempt(settings):
+def _attempt(
+    settings, *, leaf_prefix="db0056-current-", parts=("route-proof", "native-proof")
+):
     base = require_private_evidence_base_v2(settings.okx_demo_native_evidence_root)
-    leaf = "db0056-current-" + uuid4().hex
+    leaf = leaf_prefix + uuid4().hex
     with storage._root_context(base) as directory:
         mkdir_private_evidence_child_v2(directory, leaf)
         with directory.child(leaf) as attempt:
-            for name in ("route-proof", "native-proof"):
+            for name in parts:
                 mkdir_private_evidence_child_v2(attempt, name)
     result = base / leaf
     require_private_evidence_base_v2(str(result))
-    for name in ("route-proof", "native-proof"):
+    for name in parts:
         require_private_evidence_base_v2(str(result / name))
     return result
-
-
-async def _observe_roles():
-    factories = selectors.select_configured_native_demo_factories_v2()
-    try:
-        result = await observe_restricted_native_roles_0056_witness_v1(
-            factories, source=_SOURCE
-        )
-        _need(
-            type(result) is RestrictedNativeRoles0056WitnessV1
-            and result.observation.database_head == "0056"
-            and result.observation.admission == "DENY"
-            and result.startup_admission is False
-            and result.execution_authority is False,
-            "native_current_0056_role_preflight_refused",
-        )
-        return result
-    finally:
-        await _dispose(None, factories)
 
 
 async def _observe_control(factories, scope, roles):
@@ -169,20 +147,22 @@ def _source_document(operands, plan, plan_sha, before, after):
     }
 
 
-async def _capture(settings, instrument_id: str, root: Path, roles):
+async def _capture(settings, instrument_id: str):
     selection = factories = None
     client = OkxDemoPrivateRestClient(settings=settings)
     try:
         with client.pinned_read_session() as lease:
-            selection = await selectors.select_configured_demo_identity_v2(
+            selection = await selectors.select_configured_demo_source_identity_0056_v1(
                 private_client=client,
                 read_session=lease,
                 instrument_ids=(instrument_id,),
             )
             factories = selection.factories
+            roles = selection.source_roles_0056
             plan = selection.current_plan
             scope = ControlScope("demo", plan.expected_uid)
             before = await _observe_control(factories, scope, roles)
+            root = _attempt(settings)
             plan_sha = capture.plan_sha256(plan)
             account = ControlledDemoAccountSession.from_pinned_read_session(
                 read_session=lease, plan=plan, expected_plan_sha256=plan_sha
@@ -210,7 +190,7 @@ async def _capture(settings, instrument_id: str, root: Path, roles):
                 # Errors between acquisition and consumption retire the local
                 # capability while retaining its already-committed audit data.
                 current._CURRENT.pop(owned, None)
-            return _source_document(operands, plan, plan_sha, before, after)
+            return root, _source_document(operands, plan, plan_sha, before, after)
     finally:
         await _dispose(selection, factories)
 
@@ -232,10 +212,11 @@ async def observe_configured_current_account_0056_v1(
     """One explicit native read. Positive result is current-data evidence only."""
     try:
         settings = _settings(instrument_id)
-        roles = await _observe_roles()
-        root = _attempt(settings)
-        async with asyncio.timeout(60):
-            document = await _capture(settings, instrument_id, root, roles)
+        require_private_evidence_base_v2(settings.okx_demo_native_evidence_root)
+        # Role/catalog preflight is separately bounded by 55 seconds. The
+        # signed selector and original page-chain retain their own deadlines.
+        async with asyncio.timeout(120):
+            root, document = await _capture(settings, instrument_id)
         _need(
             all(
                 type(value) is str and _DIGEST.fullmatch(value) is not None

@@ -21,6 +21,17 @@ summary. The published private summary carries hashes and shows
 completeness, startup admission, or order authority. The account proof and
 original captured bytes may remain after a late refusal.
 
+Add `--include-history` for the original CURRENT-index history bundle. This
+uses the V5 account capture, original indexed source witnesses and the
+positions archive. It has its own credential lease and private directory.
+The restricted DB0056 writer checks existing partition checkpoints with the
+original read procedure. The diagnostic refuses before crossing a partition
+boundary that requires a new checkpoint. It does not write checkpoints. A
+successful receipt binds Control before and after acquisition, the reviewed
+database route and the separately reopened bundle. It leaves the history
+tail, full account and execution acceptance unset. The standalone command
+without the option remains the V7 CURRENT page-chain check.
+
 ## 2026-10-24 DB0048 host dependency correction under validation
 
 Exact source `baaffa12d59e409ae6318fe7f19d162a8af6829a`, tree

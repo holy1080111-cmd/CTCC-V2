@@ -44,6 +44,7 @@ from app.trade_qualification import account_native_runtime as runtime
 _SELECTIONS = WeakKeyDictionary()
 _SELECTING = {}
 _MAX_SELECTIONS = 16
+_SOURCE_ONLY_0056 = object()
 _ROUTE_ARTIFACT_NAME = "configured_demo_official_route_evidence_v2.json"
 _ROUTE_ARTIFACT_SHA = "426a0fe117bc756e2c8c2c850f5658134966e8be785d1f2aca46e4ed0e0d7544"
 _ORIGIN = "https://openapi.okx.com"
@@ -106,6 +107,12 @@ class ConfiguredDemoIdentitySelectionV2:
     @property
     def factories(self):
         return _record(self)["factories"]
+
+    @property
+    def source_roles_0056(self):
+        roles = _record(self)["source_roles_0056"]
+        _need(roles is not None, "native_demo_selector_0056_source_required")
+        return roles
 
     def close(self):
         _need(type(self) is ConfiguredDemoIdentitySelectionV2)
@@ -288,6 +295,7 @@ async def select_configured_demo_identity_v2(
     instrument_ids,
     retain_read_transport=False,
     source_only_role_preflight=False,
+    _source_use=None,
 ):
     """One real configured signed GET; no HTTP UID/mainUID/route proof input."""
     token = object()
@@ -301,10 +309,21 @@ async def select_configured_demo_identity_v2(
         _SELECTING[token] = asyncio.current_task()
         _need(type(retain_read_transport) is bool)
         _need(type(source_only_role_preflight) is bool)
+        _need(
+            _source_use is None
+            or (
+                _source_use is _SOURCE_ONLY_0056
+                and not source_only_role_preflight
+                and not retain_read_transport
+            )
+        )
         settings = _configured_inputs(private_client, read_session, instrument_ids)
         server_pin = _server_settings_pin(settings)
         artifact = _route_artifact()
         factories = select_configured_native_demo_factories_v2()
+        source_roles_0056 = None
+        if _source_use is _SOURCE_ONLY_0056:
+            source_roles_0056 = await _source_roles_before_get_0056(factories)
         if source_only_role_preflight:
             # This opt-in source diagnostic proves the actual selector-owned
             # factory set before its first signed GET. Existing callers keep
@@ -359,7 +378,12 @@ async def select_configured_demo_identity_v2(
         end = at.replace(microsecond=(at.microsecond // 1000) * 1000)
         plan = capture.CurrentDemoAccountCapturePlanV7(
             contract_version="ctcc.demo_current_account_plan.v7",
-            plan_id="configured-current55-" + uuid.uuid4().hex,
+            plan_id=(
+                "configured-current55-"
+                if source_roles_0056 is None
+                else "configured-current56-"
+            )
+            + uuid.uuid4().hex,
             created_at=at,
             expected_uid=uid,
             expected_main_uid=main_uid,
@@ -435,6 +459,7 @@ async def select_configured_demo_identity_v2(
             "record": record,
             "selector_signature": observation.request_signature,
             "factories": factories,
+            "source_roles_0056": source_roles_0056,
             "factory_pins": (
                 history._factory_pin(factories.custody_factory),
                 history._factory_pin(factories.frame_reader_factory),
@@ -464,6 +489,37 @@ async def select_configured_demo_identity_v2(
                 _SELECTIONS.pop(result, None)
             if factories is not None:
                 await _dispose_failed_selection_factories_v2(factories)
+
+
+async def _source_roles_before_get_0056(factories):
+    from app.core.native_role_witness_0056_v1 import (
+        RestrictedNativeRoles0056WitnessV1,
+        observe_restricted_native_roles_0056_witness_v1,
+    )
+
+    roles = await observe_restricted_native_roles_0056_witness_v1(
+        factories, source=Path(__file__).resolve().parents[2]
+    )
+    _need(
+        type(roles) is RestrictedNativeRoles0056WitnessV1
+        and roles.observation.database_head == "0056"
+        and roles.observation.admission == "DENY"
+        and roles.startup_admission is roles.execution_authority is False,
+        "native_demo_selector_0056_role_preflight_refused",
+    )
+    return roles
+
+
+async def select_configured_demo_source_identity_0056_v1(
+    *, private_client, read_session, instrument_ids
+):
+    """Check the exact selected DB0056 factories before the first signed GET."""
+    return await select_configured_demo_identity_v2(
+        private_client=private_client,
+        read_session=read_session,
+        instrument_ids=instrument_ids,
+        _source_use=_SOURCE_ONLY_0056,
+    )
 
 
 async def _dispose_failed_selection_factories_v2(factories):
@@ -505,7 +561,12 @@ def _replay_configured_demo_identity_selection_v2(selection, *, key):
         type(original_key) is object and key is original_key,
         "native_demo_selector_source_key_required",
     )
-    return _record(selection)["record"]
+    state = _record(selection)
+    _need(
+        state["source_roles_0056"] is None,
+        "native_demo_selector_0056_source_has_no_control_authority",
+    )
+    return state["record"]
 
 
 @dataclass(frozen=True, slots=True, repr=False)

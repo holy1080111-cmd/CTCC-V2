@@ -135,6 +135,12 @@ class OwnedNativeHistoryCurrentSourceV2:
         _deny("native_history_owner_not_transferable")
 
 
+class _OwnedNativeHistoryCurrentSource0056V1(OwnedNativeHistoryCurrentSourceV2):
+    """A distinct owner type that the financial assembler cannot consume."""
+
+    __slots__ = ()
+
+
 class _FinancialHistoryBindingV1:
     __slots__ = ("__weakref__",)
 
@@ -793,6 +799,45 @@ async def acquire_native_history_current_source_v2(
     )
 
 
+async def acquire_configured_history_current_source_0056_v1(
+    *, selection, read_session, private_client, raw_root, companion_root
+):
+    """Collect and immediately burn the configured DB0056 diagnostic owner."""
+    from app.demo_automation.native_server_selectors_v2 import _record
+
+    selected = _record(selection)
+    if (
+        selected["read_session"] is not read_session
+        or selected["private_client"] is not private_client
+        or selected["source_roles_0056"] is None
+    ):
+        _deny("native_history_0056_original_selector_required")
+    factories = selected["factories"]
+    owner = await _acquire_native_history_source(
+        read_session=read_session,
+        private_client=private_client,
+        scope_config=selected["evidence"].scope_config,
+        session_factory=factories.writer_factory,
+        custody_session_factory=factories.custody_factory,
+        raw_root=raw_root,
+        companion_root=companion_root,
+        _partition_key=_PARTITION_CURRENT_V2,
+        _source_selection_0056=selection,
+    )
+    state = _OWNERS.pop(owner, None)
+    if state is None:
+        _deny("native_history_0056_owner_unavailable")
+    try:
+        if (
+            type(owner) is not _OwnedNativeHistoryCurrentSource0056V1
+            or _record(selection) is not selected
+        ):
+            _deny("native_history_0056_owner_changed")
+        return _history_source_only_digest(state)
+    finally:
+        state.clear()
+
+
 async def _acquire_native_history_source(
     *,
     read_session,
@@ -805,6 +850,7 @@ async def _acquire_native_history_source(
     _partition_key=None,
     _asof_history_start=None,
     _controlled_asof_token=None,
+    _source_selection_0056=None,
     _json_guard=_json_lexical_guard.require,
     _json_binding=_json_lexical_guard.BINDING,
     _json_module=_json_lexical_guard,
@@ -839,6 +885,26 @@ async def _acquire_native_history_source(
             _deny("native_history_lease_required")
         scope_config.__post_init__()
         partition_reader_type = AccountHistoryPartitionRepository
+        source56 = None
+        if _source_selection_0056 is not None:
+            if (
+                _controlled_asof_token is not None
+                or _asof_history_start is not None
+                or _partition_key is not _PARTITION_CURRENT_V2
+            ):
+                _deny("native_history_0056_source_purpose_required")
+            from app.demo_automation.native_server_selectors_v2 import _record
+
+            source56 = _record(_source_selection_0056)
+            if (
+                source56["source_roles_0056"] is None
+                or source56["read_session"] is not read_session
+                or source56["private_client"] is not private_client
+                or source56["evidence"].scope_config is not scope_config
+                or source56["factories"].writer_factory is not session_factory
+                or source56["factories"].custody_factory is not custody_session_factory
+            ):
+                _deny("native_history_0056_original_selector_required")
         if _controlled_asof_token is None:
             session_key = sha(read_session.binding_id.encode("ascii"))
         else:
@@ -1031,15 +1097,28 @@ async def _acquire_native_history_source(
                         # A boundary checkpoint must already exist before a
                         # later CURRENT is appended. Never backfill/reseal an
                         # earlier original boundary after advancing its head.
+                        partition_scope = HistoryPartitionScopeV1(
+                            scope.environment,
+                            scope.account_id,
+                            scope.settlement_currency,
+                        )
+                        if source56 is None:
+                            partition_reader = partition_reader_type(
+                                factory, clock=clock
+                            )
+                        else:
+                            _require_source_history_revision_0056(revision)
+                            from app.database.repositories.account_history_partition_current56_source_v1 import (
+                                Db0056SourcePartitionReaderV1,
+                            )
+
+                            partition_reader = Db0056SourcePartitionReaderV1(
+                                source56["factories"],
+                                clock=clock,
+                                expected_roles=source56["source_roles_0056"],
+                            )
                         partition = await _checked_await(
-                            state,
-                            partition_reader_type(factory, clock=clock).read(
-                                HistoryPartitionScopeV1(
-                                    scope.environment,
-                                    scope.account_id,
-                                    scope.settlement_currency,
-                                )
-                            ),
+                            state, partition_reader.read(partition_scope)
                         )
                         if (
                             partition.head_sequence != revision
@@ -1255,11 +1334,12 @@ async def _acquire_native_history_source(
                         custody_proof_sha256=proof_pin,
                     )
                     _check_pins(state)
-                    owner_type = (
-                        OwnedNativeHistoryCurrentSourceV2
-                        if _partition_key is _PARTITION_CURRENT_V2
-                        else OwnedNativeHistorySourceFactsV1
-                    )
+                    if source56 is not None:
+                        owner_type = _OwnedNativeHistoryCurrentSource0056V1
+                    elif _partition_key is _PARTITION_CURRENT_V2:
+                        owner_type = OwnedNativeHistoryCurrentSourceV2
+                    else:
+                        owner_type = OwnedNativeHistorySourceFactsV1
                     owner = object.__new__(owner_type)
                     _OWNERS[owner] = state
                     successful = True
@@ -1287,6 +1367,13 @@ async def _acquire_native_history_source(
         raise
     except Exception:  # noqa: BLE001 -- never expose private transport/SQL errors
         _deny()
+
+
+def _require_source_history_revision_0056(revision: int) -> None:
+    # This source-only operation has no checkpoint-append authority. Stop
+    # before crossing a boundary that would require its own original seal.
+    if (revision + 1) % 32 == 0:
+        _deny("native_history_0056_next_checkpoint_requires_original_writer")
 
 
 async def _replay_history_state_v1(
@@ -1491,19 +1578,23 @@ def consume_owned_native_history_current_source_only_v1(owner) -> str:
     if state is None:
         _deny("native_history_source_only_owner_unavailable")
     try:
-        _check_pins(state)
-        digest = state.get("source_sha256")
-        if (
-            state.get("partition_current_key") is not _PARTITION_CURRENT_V2
-            or type(digest) is not str
-            or re.fullmatch(r"[a-f0-9]{64}", digest) is None
-            or type(state.get("raw_inventory")) is not dict
-            or type(state.get("companion_inventory")) is not dict
-        ):
-            _deny("native_history_source_only_owner_changed")
-        return digest
+        return _history_source_only_digest(state)
     finally:
         state.clear()
+
+
+def _history_source_only_digest(state) -> str:
+    _check_pins(state)
+    digest = state.get("source_sha256")
+    if (
+        state.get("partition_current_key") is not _PARTITION_CURRENT_V2
+        or type(digest) is not str
+        or re.fullmatch(r"[a-f0-9]{64}", digest) is None
+        or type(state.get("raw_inventory")) is not dict
+        or type(state.get("companion_inventory")) is not dict
+    ):
+        _deny("native_history_source_only_owner_changed")
+    return digest
 
 
 def discard_owned_native_history_current_source_only_v1(owner) -> None:

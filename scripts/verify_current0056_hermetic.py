@@ -131,6 +131,10 @@ _FITTED_CASES = (
         "test_actual0056_restricted_writer_retains_current_v7_page_chain",
     ),
     (
+        fitted_measurement.CASE[0],
+        "test_actual0056_restricted_partition_reopens_existing_b3_prefix",
+    ),
+    (
         "tests.integration.test_qualification_submission_intent_repository",
         "test_uncertain_and_expired_intent_read_is_audit_only_and_hold_remains",
     ),
