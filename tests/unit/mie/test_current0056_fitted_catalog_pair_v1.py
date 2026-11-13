@@ -33,6 +33,24 @@ def test_normalized_catalog_replays_strict_shape_without_raw_roles():
     assert pair.verify_normalized_catalog_document(normalized) == pair._sha(raw)
 
 
+def test_pregrant_and_postgrant_fitted_catalog_are_distinct_profiles():
+    catalog, roles = _catalog_and_roles()
+    after = pair.normalized_catalog_document(catalog, **roles)
+    with pytest.raises(ValueError, match="fitted_catalog_function_acl_changed"):
+        pair.normalized_catalog_document(catalog, **(roles | {"fitted_roles": None}))
+    catalog["function_grants"] = []
+    before = pair.normalized_catalog_document(
+        catalog, **(roles | {"fitted_roles": None})
+    )
+    assert pair.verify_normalized_catalog_document(before, pregrant=True) != (
+        pair.verify_normalized_catalog_document(after)
+    )
+    with pytest.raises(pair.FittedPairRefusal):
+        pair.verify_normalized_catalog_document(before)
+    with pytest.raises(pair.FittedPairRefusal):
+        pair.verify_normalized_catalog_document(after, pregrant=True)
+
+
 def test_extra_catalog_role_is_hashed_in_retained_document():
     catalog, roles = _catalog_and_roles()
     catalog["roles"].append(

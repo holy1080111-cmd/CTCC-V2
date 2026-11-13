@@ -636,3 +636,13 @@ def observe_readwrite_writer_0056(value):
 def observe_owner_installation_0056(value):
     """Validate the actual read-only pre-grant owner graph, without admission."""
     return _observe_readonly(value, owner_mode=True)
+
+
+def observe_owner_readwrite_installation_0056(value):
+    """Validate the actual pre-grant owner graph in a write transaction."""
+    try:
+        return _observe_inherited_graph(value, owner_mode=True, read_only="off")
+    except inherited.Current0055CatalogError:
+        raise
+    except (KeyError, TypeError, ValueError, AttributeError):
+        inherited._deny()

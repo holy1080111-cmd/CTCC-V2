@@ -72,6 +72,32 @@ def test_synthetic_measurement_is_redacted_and_denied(monkeypatch):
     assert receipt["source"]["commit"] == identity["commit"]
 
 
+def test_inherited_receipt_keeps_raw_and_portable_pregrant_digests_separate(
+    monkeypatch,
+):
+    identity, files, _, _, _ = _inputs(monkeypatch)
+    digests = {
+        "owner_pregrant_inherited_sha256": "a" * 64,
+        "owner_pregrant_readwrite_inherited_sha256": "a" * 64,
+        "owner_pregrant_fitted_raw_sha256": "b" * 64,
+        "owner_pregrant_fitted_normalized_sha256": "c" * 64,
+        "postgrant_readonly_inherited_sha256": "d" * 64,
+        "postgrant_readwrite_inherited_sha256": "d" * 64,
+    }
+    value = capture._inherited_receipt(identity, files, "f" * 64, digests)
+    raw = capture._canonical(value)
+    assert (
+        capture.verify_inherited_measurement(raw, identity=identity, source_files=files)
+        == value
+    )
+    assert value["startup_admission"] is False
+    value["definitions"]["postgrant_readwrite_inherited_sha256"] = "e" * 64
+    with pytest.raises(capture.FittedMeasurementRefusal):
+        capture.verify_inherited_measurement(
+            capture._canonical(value), identity=identity, source_files=files
+        )
+
+
 def test_changed_archive_inventory_or_head_refused(monkeypatch):
     inputs = _inputs(monkeypatch)
     identity, files, _, catalog, roles = inputs

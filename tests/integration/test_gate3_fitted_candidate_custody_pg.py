@@ -64,6 +64,7 @@ from scripts import current0055_native_lifecycle_acl_v1 as lifecycle_acl
 from scripts import current0055_runtime_grants as core_acl
 from scripts import current0056_fitted_catalog_measurement_v1 as fitted_measurement
 from scripts import current0056_fitted_delta_catalog_v1 as fitted_delta
+from scripts import current0056_native_owner_pregrant_v1 as owner_pregrant
 from scripts import current_contract_source_scopes_v1 as source_scopes
 from scripts import devval_campaign_physical_catalog_v1 as devval_catalog
 from tests.integration.test_gate3_canonical_schedule_claim import migrate, pin_record
@@ -1006,12 +1007,13 @@ _ROLE_OBS56_REFUSAL = "^native_roles_0056_observation_unavailable$"
 
 async def _install_test_demo_grants(owner, demo):
     names = dict(zip(("writer", "custody", "frame_reader"), demo, strict=True))
+    sql = owner_pregrant.exact_42_grant_sql_0056(**names)
     core, account = account_acl._plans(**names)
     previous, lifecycle = lifecycle_acl._plans(**names)
     assert core == core_acl._plan(**names) and previous == core + account
     assert (len(core), len(account), len(lifecycle)) == (28, 11, 3)
     plan = previous + lifecycle
-    assert all(not grant.target.startswith("gate3_fitted_") for grant in plan)
+    assert sql == tuple(grant.sql() for grant in plan)
 
     async with owner.begin() as connection:
         owner_oid = await connection.scalar(observation.current55._OWNER_OID_SQL)
@@ -1024,8 +1026,8 @@ async def _install_test_demo_grants(owner, demo):
         await core_acl._access(
             connection, plan, role_oids, granted=False, targets=before
         )
-        for grant in plan:
-            await connection.exec_driver_sql(grant.sql())
+        for statement in sql:
+            await connection.exec_driver_sql(statement)
         assert (
             await core_acl._target_oids(connection, expected, owner_oid, granted=True)
             == before
@@ -1094,6 +1096,18 @@ async def _actual_0056_role_observation_lab():
         created_roles = True
         async with owner.begin() as connection:
             await connection.run_sync(_migrate_runtime_custody_head)
+        owner_factory = async_sessionmaker(
+            owner, autoflush=False, expire_on_commit=False
+        )
+        pregrant = None
+        if os.environ.get(devval_catalog.HERMETIC_CATALOG_ENV) == "1":
+            pregrant = await owner_pregrant.observe_owner_pregrant_diagnostic_0056(
+                owner_factory,
+                source=_SOURCE_ROOT,
+                writer=demo[0],
+                custody=demo[1],
+                frame_reader=demo[2],
+            )
         await _install_test_demo_grants(owner, demo)
         await _verify_actual_tls_roles((owner, *role_engines))
         factories = tuple(
@@ -1111,6 +1125,7 @@ async def _actual_0056_role_observation_lab():
                 role_engines[1],
                 role_engines[2],
             ),
+            pregrant,
         )
     finally:
         try:
@@ -1140,7 +1155,7 @@ async def _actual_0056_role_observation_lab():
 async def test_actual0056_full_native_role_observation_tls(
     _actual_0056_role_observation_lab,
 ):
-    _, owner_factory, selected = _actual_0056_role_observation_lab
+    _, owner_factory, selected, pregrant = _actual_0056_role_observation_lab
     first = await observation.observe_native_roles_0056_v1(
         selected, owner_factory=owner_factory, source=_SOURCE_ROOT
     )
@@ -1173,12 +1188,24 @@ async def test_actual0056_full_native_role_observation_tls(
         )
     assert writer.native_definitions_sha256 == first.inherited_native_definitions_sha256
     assert writer.startup_admission is writer.execution_authority is False
+    if pregrant is not None:
+        fitted_measurement.retain_hermetic_inherited_measurement(
+            cluster_system_identifier_sha256=pregrant.cluster_system_identifier_sha256,
+            owner_pregrant_inherited_sha256=pregrant.inherited_native_definitions_sha256,
+            owner_pregrant_readwrite_inherited_sha256=(
+                pregrant.inherited_readwrite_native_definitions_sha256
+            ),
+            owner_pregrant_fitted_raw_sha256=pregrant.fitted_raw_owner_catalog_sha256,
+            owner_pregrant_fitted_normalized_sha256=pregrant.fitted_normalized_owner_catalog_sha256,
+            postgrant_readonly_inherited_sha256=first.inherited_native_definitions_sha256,
+            postgrant_readwrite_inherited_sha256=writer.native_definitions_sha256,
+        )
 
 
 async def test_actual0056_full_native_role_rejects_swapped_roles_and_extra_grant(
     _actual_0056_role_observation_lab,
 ):
-    owner, owner_factory, selected = _actual_0056_role_observation_lab
+    owner, owner_factory, selected, _ = _actual_0056_role_observation_lab
     args = {"owner_factory": owner_factory, "source": _SOURCE_ROOT}
     baseline = await observation.observe_native_roles_0056_v1(selected, **args)
     swapped = replace(

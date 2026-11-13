@@ -49,7 +49,7 @@ _PARENT_HEAD_SQL = "SELECT version_num FROM public.alembic_version"
 _FITTED_JUNIT = "test-results/fitted-catalog-diagnostic.xml"
 _FITTED_CASES = (
     fitted_measurement.CASE,
-    (fitted_measurement.CASE[0], "test_actual0056_full_native_role_observation_tls"),
+    fitted_measurement.INHERITED_CASE,
     (
         fitted_measurement.CASE[0],
         "test_actual0056_full_native_role_rejects_swapped_roles_and_extra_grant",
@@ -625,6 +625,7 @@ def _diagnostic_artifacts(steps):
         "cleanup.json",
         _FITTED_JUNIT,
         f"test-results/{fitted_measurement.FILE}",
+        f"test-results/{fitted_measurement.INHERITED_FILE}",
         *(f"{step['name']}.log" for step in steps),
     }
 
@@ -723,11 +724,24 @@ def verify_fitted_catalog_diagnostic(root, raw, files):
     )
     if junit != identity["tests"] or junit["passed"] != len(_FITTED_CASES):
         raise ValueError("fitted_catalog_diagnostic_test_scope_changed")
-    return fitted_measurement.verify_measurement(
+    inherited_receipt = fitted_measurement.verify_inherited_measurement(
+        contract._read(
+            root, f"test-results/{fitted_measurement.INHERITED_FILE}", maximum=8192
+        ),
+        identity=identity,
+        source_files=files,
+    )
+    fitted_receipt = fitted_measurement.verify_measurement(
         contract._read(root, f"test-results/{fitted_measurement.FILE}"),
         identity=identity,
         source_files=files,
     )
+    if (
+        inherited_receipt["cluster_system_identifier_sha256"]
+        != fitted_receipt["cluster_system_identifier_sha256"]
+    ):
+        raise ValueError("fitted_catalog_diagnostic_cluster_mismatch")
+    return fitted_receipt
 
 
 if __name__ == "__main__":

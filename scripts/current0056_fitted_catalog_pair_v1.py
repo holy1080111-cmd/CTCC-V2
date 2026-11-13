@@ -110,27 +110,23 @@ def normalized_catalog_document(
     *,
     owner: str,
     demo_roles: tuple[str, str, str],
-    fitted_roles: dict[str, str],
+    fitted_roles: dict[str, str] | None,
 ) -> dict:
     """Validate raw physical shape and scrub all retained role-name fields."""
     fitted.inspect_catalog_document(
         document, owner=owner, demo_roles=demo_roles, fitted_roles=fitted_roles
     )
-    names = dict(
-        zip(
-            (
-                owner,
-                *demo_roles,
-                *(
-                    fitted_roles[key]
-                    for key in ("publisher", "observer", "reader", "evaluator")
-                ),
-            ),
-            _TOKENS,
-            strict=True,
+    fitted_names = (
+        tuple(
+            fitted_roles[key]
+            for key in ("publisher", "observer", "reader", "evaluator")
         )
+        if fitted_roles is not None
+        else ()
     )
-    _need(len(names) == 8, "fitted_pair_roles")
+    role_names = (owner, *demo_roles, *fitted_names)
+    names = dict(zip(role_names, _TOKENS[: len(role_names)], strict=True))
+    _need(len(names) == len(role_names), "fitted_pair_roles")
     normalized = _normalized(document, names)
     for key in ("roles", "role_create"):
         for row in normalized[key]:
@@ -153,30 +149,40 @@ def normalized_catalog_document(
         b"ctcc_" not in redacted
         and all(
             name.encode("utf-8") not in redacted
-            for name in (*demo_roles, *fitted_roles.values())
+            for name in (*demo_roles, *fitted_names)
         ),
         "fitted_pair_role_redaction",
     )
     return normalized
 
 
-def verify_normalized_catalog_document(document: dict) -> str:
+def verify_normalized_catalog_document(
+    document: dict, *, pregrant: bool = False
+) -> str:
     """Rerun strict shape checks on retained role-neutral physical evidence."""
-    _need(type(document) is dict, "fitted_pair_normalized_invalid")
+    _need(
+        type(document) is dict and type(pregrant) is bool,
+        "fitted_pair_normalized_invalid",
+    )
     owner = "ctcc"
     demo = (
         "ctcc_pair_demo_writer",
         "ctcc_pair_demo_custody",
         "ctcc_pair_demo_frame",
     )
-    roles = {
-        key: "ctcc_pair_fitted_" + key
-        for key in ("publisher", "observer", "reader", "evaluator")
-    }
+    roles = (
+        None
+        if pregrant
+        else {
+            key: "ctcc_pair_fitted_" + key
+            for key in ("publisher", "observer", "reader", "evaluator")
+        }
+    )
+    role_names = (owner, *demo, *(roles or {}).values())
     reverse = dict(
         zip(
-            _TOKENS,
-            (owner, *demo, *(roles[key] for key in roles)),
+            _TOKENS[: len(role_names)],
+            role_names,
             strict=True,
         )
     )

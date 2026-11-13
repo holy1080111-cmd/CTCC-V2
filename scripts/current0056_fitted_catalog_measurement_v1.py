@@ -25,6 +25,11 @@ from scripts.evidence_json import read_evidence_json
 
 SCHEMA = "ctcc.current0056.fitted_catalog_measurement.redacted.v1"
 FILE = "current0056-fitted-catalog-single-redacted.json"
+INHERITED_FILE = "current0056-inherited-native-catalog-redacted.json"
+INHERITED_CASE = (
+    "tests.integration.test_gate3_fitted_candidate_custody_pg",
+    "test_actual0056_full_native_role_observation_tls",
+)
 CASE = (
     "tests.integration.test_gate3_fitted_candidate_custody_pg",
     "test_actual0056_two_fresh_fitted_catalogs_and_drift_refusal",
@@ -330,21 +335,7 @@ def retain_hermetic_measurement(
     database_oid: int,
 ) -> None:
     """Write one no-clobber redacted file in the existing isolated test mount."""
-    from app.trade_evidence.storage import _posix_root, _root_path, _write_fd
-
-    _need(sys.platform == "linux", "fitted_measurement_not_linux")
-    _need(
-        _IDENTITY.is_file() and _SOURCE_FILES.is_file(),
-        "fitted_measurement_runner_mount",
-    )
-    identity_raw = _IDENTITY.read_bytes()
-    source_files_raw = _SOURCE_FILES.read_bytes()
-    _need(
-        0 < len(identity_raw) <= 8_192 and 0 < len(source_files_raw) <= 2_000_000,
-        "fitted_measurement_runner_mount",
-    )
-    identity = read_evidence_json(identity_raw)
-    source_files = read_evidence_json(source_files_raw)
+    identity, source_files, source_files_raw = _read_hermetic_inputs()
     raw = build_measurement(
         identity=identity,
         source_files=source_files,
@@ -358,11 +349,36 @@ def retain_hermetic_measurement(
         database_oid=database_oid,
     )
     verify_measurement(raw, identity=identity, source_files=source_files)
+    _publish_redacted(FILE, raw)
+
+
+def _read_hermetic_inputs():
+    _need(sys.platform == "linux", "fitted_measurement_not_linux")
+    _need(
+        _IDENTITY.is_file() and _SOURCE_FILES.is_file(),
+        "fitted_measurement_runner_mount",
+    )
+    identity_raw = _IDENTITY.read_bytes()
+    source_files_raw = _SOURCE_FILES.read_bytes()
+    _need(
+        0 < len(identity_raw) <= 8_192 and 0 < len(source_files_raw) <= 2_000_000,
+        "fitted_measurement_runner_mount",
+    )
+    return (
+        read_evidence_json(identity_raw),
+        read_evidence_json(source_files_raw),
+        source_files_raw,
+    )
+
+
+def _publish_redacted(name, raw):
+    from app.trade_evidence.storage import _posix_root, _root_path, _write_fd
+
     with _posix_root(_root_path(Path("/validation-results"))) as results:
         # The host verifier runs under another UID. Publish only the already
         # redacted document, at read-only mode, with exclusive file creation.
         fd = os.open(
-            FILE,
+            name,
             os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
             0o444,
             dir_fd=results.fd,
@@ -372,4 +388,73 @@ def retain_hermetic_measurement(
         finally:
             os.close(fd)
         os.fsync(results.fd)
-        _need(results.read(FILE, 1_200_000) == raw, "fitted_measurement_readback")
+        _need(results.read(name, 1_200_000) == raw, "fitted_measurement_readback")
+
+
+def _inherited_receipt(
+    identity, source_files, cluster_system_identifier_sha256, digests
+):
+    source = source_identity(identity, source_files, _canonical(source_files))
+    required = {
+        "owner_pregrant_inherited_sha256",
+        "owner_pregrant_readwrite_inherited_sha256",
+        "owner_pregrant_fitted_raw_sha256",
+        "owner_pregrant_fitted_normalized_sha256",
+        "postgrant_readonly_inherited_sha256",
+        "postgrant_readwrite_inherited_sha256",
+    }
+    _need(
+        type(digests) is dict
+        and type(cluster_system_identifier_sha256) is str
+        and _HEX.fullmatch(cluster_system_identifier_sha256) is not None
+        and set(digests) == required
+        and all(
+            type(value) is str and _HEX.fullmatch(value) for value in digests.values()
+        )
+        and digests["postgrant_readonly_inherited_sha256"]
+        == digests["postgrant_readwrite_inherited_sha256"]
+        and digests["owner_pregrant_inherited_sha256"]
+        == digests["owner_pregrant_readwrite_inherited_sha256"],
+        "inherited_measurement_digest_scope",
+    )
+    return {
+        "schema": "ctcc.current0056.inherited_native_catalog_measurement.inert.v1",
+        "case": list(INHERITED_CASE),
+        "source": source,
+        "run_id": identity["run_id"],
+        "cluster_system_identifier_sha256": cluster_system_identifier_sha256,
+        "definitions": digests,
+        "native_reference_sealed": False,
+        "startup_admission": False,
+        "execution_authority": False,
+    }
+
+
+def verify_inherited_measurement(raw, *, identity, source_files):
+    _need(type(raw) is bytes and 0 < len(raw) <= 8_192, "inherited_measurement_size")
+    value = read_evidence_json(raw)
+    _need(
+        type(value) is dict
+        and raw
+        == _canonical(
+            _inherited_receipt(
+                identity,
+                source_files,
+                value.get("cluster_system_identifier_sha256"),
+                value.get("definitions"),
+            )
+        ),
+        "inherited_measurement_identity",
+    )
+    return value
+
+
+def retain_hermetic_inherited_measurement(
+    *, cluster_system_identifier_sha256, **digests
+):
+    identity, files, _ = _read_hermetic_inputs()
+    raw = _canonical(
+        _inherited_receipt(identity, files, cluster_system_identifier_sha256, digests)
+    )
+    verify_inherited_measurement(raw, identity=identity, source_files=files)
+    _publish_redacted(INHERITED_FILE, raw)
