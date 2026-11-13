@@ -7151,6 +7151,7 @@ class _ControlOperatorReplayV1:
     original_measurement: bytes = field(repr=False)
     expires_at: datetime
     monotonic_deadline_ns: int
+    _owned_database_0056: tuple | None = field(default=None, repr=False)
 
 
 def _make_control_operator_module_binding_v1():
@@ -7510,6 +7511,46 @@ def _replay_controlled_current_lineage_v1(held, *, key):
     )
 
 
+def _replay_controlled_current_lineage_database_0056_v1(held, *, key):
+    """Recover exact installed writer inputs only from the owning live registry."""
+    from app.trade_qualification import (
+        native_controlled_account_source_v6 as controlled,
+    )
+
+    _, _, lineage55, _, _, _ = _control_operator_modules_v1()
+    if key is not lineage55._SOURCE_KEY:
+        _deny("native_control_operator_lineage_purpose_required")
+    controlled._REQUIRE_SOURCE_KERNEL_V6()
+    source = controlled._CURRENT_V6.get(id(held))
+    if source is not None:
+        if source["current"] is not held:
+            _deny("native_control_operator_original_CURRENT_unavailable")
+        controlled._check_v6(source)
+    else:
+        _control_operator_registry_v1()
+        matches = tuple(
+            state
+            for state in _CONTROL_OPERATOR_ACTIVE_V1.values()
+            if state["current"] is held
+        )
+        if len(matches) != 1:
+            _deny("native_control_operator_original_CURRENT_unavailable")
+        source = matches[0]
+        _control_operator_check_v1(source)
+    database = controlled._owned_database_0056_v6(source)
+    if database is None:
+        return None
+    ctrl = source["control"]
+    expectation = ctrl["observation"]
+    if (
+        ctrl["factory"] is not held["lineage_factory"]
+        or expectation.state.scope != ctrl["scope"]
+        or ctrl["ledger_scope"].account_id != ctrl["scope"].account_id
+    ):
+        _deny("native_control_operator_lineage_database_0056_changed")
+    return *database, ctrl["ledger_scope"], expectation.state, expectation.event_sha256
+
+
 def _take_owned_control_operator_source_v1(cap, *, key):
     _, operator55, _, _, _, _ = _control_operator_modules_v1()
     if key is not operator55._SOURCE_KEY:
@@ -7549,6 +7590,11 @@ def _replay_owned_control_operator_source_v1(state, *, key):
     replay, _ = current._replay_account_revision_lineage_v1(
         state["current"], key=old_lineage._SOURCE_KEY
     )
+    from app.trade_qualification import native_controlled_account_source_v6
+
+    selected_database = native_controlled_account_source_v6._owned_database_0056_v6(
+        state
+    )
     return _ControlOperatorReplayV1(
         state["purpose"],
         state["command_id"],
@@ -7563,6 +7609,7 @@ def _replay_owned_control_operator_source_v1(state, *, key):
         control_state["genesis"].original_measurement,
         state["expires_at"],
         state["monotonic_deadline_ns"],
+        _owned_database_0056=selected_database,
     )
 
 

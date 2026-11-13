@@ -1326,7 +1326,15 @@ class QualificationLedgerRepository:
             state_sha256=digest(state),
         )
 
-    async def _bootstrap_checkpoint(self, session, scope, row):
+    async def _bootstrap_checkpoint(self, session, scope, row, *, _held0056=None):
+        if _held0056 is not None:
+            from app.database.repositories.qualification_native_checkpoint_v2 import (
+                check_held_qualification_checkpoint_0056_v1,
+            )
+
+            check_held_qualification_checkpoint_0056_v1(
+                self, session, scope, row, _held0056
+            )
         observed = self._now(row)
         state = checked_bootstrap(
             await self._state(session, scope, row), LedgerScopeState
@@ -1348,10 +1356,16 @@ class QualificationLedgerRepository:
                 )
         else:
             from app.database.repositories.qualification_native_checkpoint_v2 import (
+                validate_held_positive_checkpoint_0056_v1,
                 validate_positive_checkpoint_claims_v2,
             )
 
-            await validate_positive_checkpoint_claims_v2(self, session, scope, row)
+            if _held0056 is None:
+                await validate_positive_checkpoint_claims_v2(self, session, scope, row)
+            else:
+                await validate_held_positive_checkpoint_0056_v1(
+                    self, session, scope, row, _held0056
+                )
         received = self._now(row)
         if received < observed:
             raise QualificationLedgerError("ledger_clock_regressed")
@@ -1402,7 +1416,9 @@ class QualificationLedgerRepository:
                 session, scope, selected
             )
 
-    async def _read_portfolio_checkpoint_locked(self, session, scope, selected):
+    async def _read_portfolio_checkpoint_locked(
+        self, session, scope, selected, *, _held0056=None
+    ):
         """The original B5 body in the caller's same UID-locked transaction."""
         from app.database.models.demo_automation import DemoAutomationState
         from app.database.models.okx_demo import (
@@ -1443,7 +1459,12 @@ class QualificationLedgerRepository:
                 account_id=row.account_id,
                 settlement_currency=row.settlement_currency,
             )
-            point = await self._bootstrap_checkpoint(session, row_scope, row)
+            if _held0056 is None:
+                point = await self._bootstrap_checkpoint(session, row_scope, row)
+            else:
+                point = await self._bootstrap_checkpoint(
+                    session, row_scope, row, _held0056=_held0056
+                )
             states.append(_plain(point.state))
         # Every durable consumed intent remains unresolved until its own
         # reservation explicitly transitions to reconciled_flat. No TTL.

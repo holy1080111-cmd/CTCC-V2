@@ -103,6 +103,8 @@ class ControlledCoverageSourceV6:
     monotonic_deadline_ns: int
     writer_inventory_sha256: str
     read_session: DemoPinnedReadSession = field(repr=False)
+    db0056_factories: object | None = field(default=None, repr=False)
+    db0056_roles: object | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True, slots=True, repr=False)

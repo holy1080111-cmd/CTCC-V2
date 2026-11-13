@@ -626,6 +626,8 @@ def _coverage_context_v6(binding):
         monotonic_deadline_ns=state["monotonic_deadline_ns"],
         writer_inventory_sha256=state["inventory"][0]["writer_sha256"],
         read_session=ctrl["read_session"],
+        db0056_factories=ctrl.get("db0056_factories"),
+        db0056_roles=ctrl.get("db0056_roles"),
     )
 
 
@@ -665,6 +667,8 @@ def _replay_controlled_current_mirror_context_v6(binding, *, key):
         monotonic_deadline_ns=operator_state["monotonic_deadline_ns"],
         writer_inventory_sha256=operator_state["inventory"][0]["writer_sha256"],
         read_session=ctrl["read_session"],
+        db0056_factories=ctrl.get("db0056_factories"),
+        db0056_roles=ctrl.get("db0056_roles"),
     )
 
 
@@ -7777,6 +7781,9 @@ def _install_source_kernel_v6():
             bound,
             coverage55,
             mirror55,
+            mirror55.checkpoint,
+            mirror55.checkpoint.locked,
+            mirror55.checkpoint.locked.writer56,
             custody,
             control,
             counter,

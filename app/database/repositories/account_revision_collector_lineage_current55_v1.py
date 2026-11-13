@@ -6,17 +6,22 @@ registry; no old54 head or native admission is borrowed or projected.
 """
 
 import asyncio
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import native_locked_demo_control_0056_v1 as locked56
+from app.database.models.account_capture_journal import DemoAccountCaptureEvent
 from app.database.models.account_revision_collector_lineage import (
     DemoCollectorCurrentRevisionLineage as Lineage,
 )
+from app.database.models.qualification_ledger import QualificationAccountScope
 from app.database.repositories import (
     collector_current_0055_multirole_catalog_v1 as current55,
 )
+from app.database.repositories import native_issuer_transaction as issuer_transaction
 from app.database.repositories import public_runtime_bundle_custody as custody
 from app.database.repositories.account_capture_journal import (
     AccountCaptureJournalRepository,
@@ -35,6 +40,10 @@ from app.trade_qualification import demo_control as control
 from app.trade_qualification import reservations
 
 _SOURCE_KEY = object()
+_DB56_LINEAGE_FENCE = text("""
+LOCK TABLE public.demo_collector_current_revision_lineages,
+           public.demo_account_capture_events IN ACCESS SHARE MODE NOWAIT
+""")
 _META_SQL = text("""
 SELECT current_user,session_user,current_setting('role'),r.oid::bigint,r.rolsuper,
        r.rolcreaterole,r.rolbypassrls,pg_backend_pid(),pg_current_xact_id()::text,
@@ -81,6 +90,14 @@ def _owner(state):
     return native._replay_controlled_current_lineage_v1(state, key=_SOURCE_KEY)
 
 
+def _owner_database(state):
+    from app.trade_qualification import native_account_risk_assembly_v1 as native
+
+    return native._replay_controlled_current_lineage_database_0056_v1(
+        state, key=_SOURCE_KEY
+    )
+
+
 def _remaining(replay, stamp):
     remaining = min(
         (replay.expires_at - utc_from_ns(stamp["utc_ns"])).total_seconds(),
@@ -121,6 +138,89 @@ async def _locked(session, ledger, scope):
     )
     row = await ledger._locked(session, scope)
     return row, control_state, control_event
+
+
+@asynccontextmanager
+async def _owned_lineage_transaction(session, ledger, scope, state, replay, stamp):
+    database = _owner_database(state)
+    if database is None:
+        await _admit(session, replay, stamp)
+        yield await _locked(session, ledger, scope)
+        await current55.verify_actual_issuer_catalog_v2(session)
+        return
+
+    factories, roles, expected_scope, expected_control, expected_event = database
+    writer, engine, _, _ = locked56._factory_pins(factories)
+    transaction = session.sync_session.get_transaction()
+    locked56._require_session(session, engine, transaction)
+    if (
+        scope != expected_scope
+        or writer is not state["lineage_factory"]
+        or not all(
+            session.get_bind(mapper=model) is engine.sync_engine
+            for model in (
+                Lineage,
+                DemoAccountCaptureEvent,
+                QualificationAccountScope,
+            )
+        )
+        or session.get_bind(clause=_DB56_LINEAGE_FENCE) is not engine.sync_engine
+        or session.get_bind(clause=_META_SQL) is not engine.sync_engine
+    ):
+        policy.deny("collector_lineage_database_0056_changed")
+    await session.execute(
+        text("SET TRANSACTION ISOLATION LEVEL READ COMMITTED, READ WRITE")
+    )
+    await session.execute(text("SET LOCAL synchronous_commit='on'"))
+    async with locked56.held_native_writer_control_0056_v1(
+        factories,
+        session,
+        expected_control.scope,
+        roles=roles,
+        purpose=locked56.NativeWriterControlPurpose0056.PREPARE_OBSERVATION,
+    ) as held:
+        control_observation = held.observation.control
+        if (control_observation.state, control_observation.event_sha256) != (
+            expected_control,
+            expected_event,
+        ):
+            policy.deny("collector_lineage_database_0056_changed")
+        _, checked_stamp = _owner(state)
+        remaining_ms = max(1, min(1000, int(_remaining(replay, checked_stamp) * 1000)))
+        await session.execute(
+            text("""
+            SELECT pg_catalog.set_config('statement_timeout', :timeout, true),
+                   pg_catalog.set_config('lock_timeout', :timeout, true)
+        """),
+            {"timeout": str(remaining_ms)},
+        )
+        held.check_held()
+        row = await ledger._locked(session, scope)
+        held.check_held()
+        await session.execute(_DB56_LINEAGE_FENCE)
+        held.check_held()
+        (
+            catalog,
+            before,
+        ) = await issuer_transaction.read_actual_native_issuer_transaction(session)
+        held.check_held()
+        if catalog.head != "0056":
+            policy.deny("collector_lineage_database_0056_changed")
+        yield row, control_observation.state, control_observation.event_sha256
+        held.check_held()
+        (
+            observed,
+            after,
+        ) = await issuer_transaction.read_actual_native_issuer_transaction(session)
+        held.check_held()
+        if (
+            observed != catalog
+            or before[:9] != after[:9]
+            or after[9] < before[9]
+            or _owner_database(state) != database
+        ):
+            policy.deny("collector_lineage_database_0056_changed")
+        _owner(state)
 
 
 def _control_pin(state):
@@ -247,12 +347,14 @@ async def _record_held_current_revision_lineage_v2(state, *, key):
         async with asyncio.timeout(_remaining(replay, stamp)):
             before_custody = await _custody_readback(state, replay)
             replay, stamp = _owner(state)
-            async with factory() as session, session.begin():
+            async with (
+                factory() as session,
+                session.begin(),
+                _owned_lineage_transaction(
+                    session, ledger, scope, state, replay, stamp
+                ) as (row, control_state, control_event),
+            ):
                 write_session = session
-                await _admit(session, replay, stamp)
-                row, control_state, control_event = await _locked(
-                    session, ledger, scope
-                )
                 chain = await journal_repo._read_chain_locked(
                     session, scope, replay.reference.capture_id
                 )
@@ -347,17 +449,18 @@ async def _record_held_current_revision_lineage_v2(state, *, key):
                     control_event=control_event,
                 )
                 _owner(state)
-                await current55.verify_actual_issuer_catalog_v2(session)
             # A different ORM session and XID independently reopen committed
             # source/scope/control. Same backend PID is allowed for pooled DBs.
             replay, stamp = _owner(state)
-            async with factory() as session, session.begin():
+            async with (
+                factory() as session,
+                session.begin(),
+                _owned_lineage_transaction(
+                    session, ledger, scope, state, replay, stamp
+                ) as (current_row, control_state, control_event),
+            ):
                 if session is write_session:
                     policy.deny("collector_lineage_independent_session_required")
-                await _admit(session, replay, stamp)
-                current_row, control_state, control_event = await _locked(
-                    session, ledger, scope
-                )
                 readback = await _metadata(session)
                 if (
                     readback[3] != metadata[3]
@@ -398,7 +501,6 @@ async def _record_held_current_revision_lineage_v2(state, *, key):
                 ):
                     policy.deny("collector_lineage_committed_readback_changed")
                 _owner(state)
-                await current55.verify_actual_issuer_catalog_v2(session)
             after_custody = await _custody_readback(state, replay)
             if (
                 after_custody.recorded_at != before_custody.recorded_at

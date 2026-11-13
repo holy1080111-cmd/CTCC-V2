@@ -4,6 +4,7 @@ import os
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -36,13 +37,27 @@ async def test_actual0056_restricted_control_repository_reads_back_lifecycle(
         observe_restricted_native_roles_0056_witness_v1,
     )
     from app.database.repositories import demo_control_current56_v1 as repository56
+    from app.database.repositories import (
+        demo_operator_acknowledgements_current55_v1 as operator,
+    )
     from app.database.repositories.demo_control import DemoControlRepository
+    from app.database.repositories.qualification_ledger import (
+        QualificationLedgerRepository,
+    )
+    from app.database.repositories.qualification_native_checkpoint_v2 import (
+        held_qualification_checkpoint_0056_v1,
+    )
     from app.trade_qualification.demo_control import (
         ControlPins,
         ControlScope,
+        DemoControlError,
         account_lock_key,
     )
     from app.trade_qualification.demo_control_runtime import DemoControlOwner
+    from app.trade_qualification.reservations import (
+        LedgerScope,
+        QualificationLedgerError,
+    )
 
     owner_engine, owner_factory, selected, _ = _actual_0056_role_observation_lab
     roles = await observe_restricted_native_roles_0056_witness_v1(
@@ -70,10 +85,16 @@ async def test_actual0056_restricted_control_repository_reads_back_lifecycle(
         clock=clock,
         expected_acquire_event="7" * 64,
     )
+    stale_pins = ControlPins("b" * 64, "c" * 64, "d" * 64)
     with pytest.raises(repository56.DemoControlRepository0056Error):
-        await DemoControlOwner(
-            stale, scope, ControlPins("b" * 64, "c" * 64, "d" * 64)
-        ).start()
+        await stale.acquire(
+            scope,
+            owner_token=b"g" * 32,
+            pins=stale_pins,
+            command_id="6" * 64,
+        )
+    with pytest.raises(DemoControlError, match="control_owner_uncertain"):
+        await DemoControlOwner(stale, scope, stale_pins).start()
     assert (await current.read(scope)).event_sha256 == genesis.event_sha256
     pending_sessions = []
     original = repository56.DemoControlRepository._store
@@ -167,6 +188,63 @@ async def test_actual0056_restricted_control_repository_reads_back_lifecycle(
     reopened = await current.read(scope)
     assert reopened.state.revision == stop.state.revision + 1
     assert reopened.state.emergency_stop is True
+    ledger_scope = LedgerScope(account_id=scope.account_id, settlement_currency="USDT")
+    await QualificationLedgerRepository(
+        owner_factory, clock=clock
+    ).initialize_capture_scope(ledger_scope)
+    ledger = QualificationLedgerRepository(selected.writer_factory, clock=clock)
+    async with selected.writer_factory() as session, session.begin():
+        async with held_qualification_checkpoint_0056_v1(
+            selected, session, scope, roles=roles
+        ) as held:
+            local_scope = await ledger._locked(session, ledger_scope)
+            assert await held.recheck_control() == (
+                reopened.state,
+                reopened.event_sha256,
+            )
+            checkpoint = await ledger._bootstrap_checkpoint(
+                session, ledger_scope, local_scope, _held0056=held
+            )
+            assert (
+                checkpoint.state.account_revision
+                == checkpoint.state.ledger_revision
+                == 0
+            )
+            async with owner_engine.begin() as competing:
+                with pytest.raises(DBAPIError) as blocked:
+                    await competing.exec_driver_sql(
+                        "LOCK TABLE public.demo_collector_issued_account_revisions IN ACCESS EXCLUSIVE MODE NOWAIT"
+                    )
+                assert blocked.value.orig.sqlstate == "55P03"
+        with pytest.raises(
+            QualificationLedgerError,
+            match="ledger56_checkpoint_original_scope_required",
+        ):
+            await ledger._bootstrap_checkpoint(
+                session, ledger_scope, local_scope, _held0056=held
+            )
+
+    # Verify the operator's actual restricted TLS lock path, without minting
+    # an operator capability or making a trading/clear claim from fixture data.
+    replay = SimpleNamespace(
+        _owned_database_0056=(selected, roles),
+        session_factory=selected.writer_factory,
+        previous_control=reopened.state,
+    )
+    async with (
+        selected.writer_factory() as session,
+        session.begin(),
+        operator._transaction(session, lambda: replay) as hold,
+    ):
+        assert await hold.recheck_control() == (reopened.state, reopened.event_sha256)
+        async with owner_engine.begin() as competing:
+            with pytest.raises(DBAPIError) as blocked:
+                await competing.exec_driver_sql(
+                    "LOCK TABLE public.demo_control_clear_acknowledgements_v2 "
+                    "IN ACCESS EXCLUSIVE MODE NOWAIT"
+                )
+            assert blocked.value.orig.sqlstate == "55P03"
+    assert (await current.read(scope)).event_sha256 == reopened.event_sha256
 
 
 async def test_actual0056_control_monitor_joins_exact_release_and_restricted_tls(

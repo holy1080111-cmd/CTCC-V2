@@ -7,11 +7,16 @@ constructed. This read never grants eligibility or mints a source/account cap.
 
 import hashlib
 import json
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import object_session
 
+from app.core import native_locked_demo_control_0056_v1 as locked
+from app.core.native_role_witness_0056_v1 import RestrictedNativeRoles0056WitnessV1
 from app.database.models.account_issued_revision import (
     DemoCollectorIssuedAccountRevision,
 )
@@ -23,6 +28,11 @@ from app.database.repositories.qualification_ledger import QualificationLedgerRe
 from app.domain.source_primitives import canonical
 from app.trade_qualification import account_ledger_claims_v2 as codec
 from app.trade_qualification import reservations as ledger
+
+_CHECKPOINT_FENCE = text(
+    "LOCK TABLE public.qualification_account_scopes, public.qualification_reservations, "
+    "public.demo_collector_issued_account_revisions IN ACCESS SHARE MODE NOWAIT"
+)
 
 
 def _deny(code):
@@ -44,6 +54,117 @@ def _finite_payload(raw):
         )
     except (ValueError, TypeError, RecursionError):
         return False
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class _HeldQualificationCheckpoint0056V1:
+    selected: object
+    session: AsyncSession
+    control: locked.NativeLockedDemoControl0056V1
+    _held: locked.HeldNativeWriterControl0056V1
+
+    def check(self) -> None:
+        self._held.check_held()
+
+    async def recheck_catalog(self) -> None:
+        self.check()
+        fresh = await locked.writer56.observe_restricted_readwrite_writer_0056_v1(
+            self.session
+        )
+        self.check()
+        if fresh != self.control.writer_catalog:
+            _deny("ledger56_checkpoint_catalog_changed")
+
+    async def recheck_control(self):
+        scope = self.control.control.state.scope
+        self.check()
+        row = await locked.DemoControlRepository._locked(self.session, scope)
+        self.check()
+        await self.session.refresh(row)
+        self.check()
+        state, event = await locked.DemoControlRepositoryV2._snapshot(self.session, row)
+        self.check()
+        return state, event
+
+
+_ACTIVE_HELD_CHECKPOINTS_0056 = {}
+
+
+@asynccontextmanager
+async def held_qualification_checkpoint_0056_v1(
+    selected, session, control_scope, *, roles
+):
+    """Retain the exact restricted Control and schema within this transaction."""
+    if type(roles) is not RestrictedNativeRoles0056WitnessV1:
+        _deny("ledger56_checkpoint_original_roles_required")
+    async with locked.held_native_writer_control_0056_v1(
+        selected,
+        session,
+        control_scope,
+        roles=roles,
+        purpose=locked.NativeWriterControlPurpose0056.PREPARE_OBSERVATION,
+    ) as held:
+        engine = selected.writer_factory.kw["bind"].sync_engine
+        if (
+            session.get_bind(clause=_CHECKPOINT_FENCE) is not engine
+            or session.get_bind(mapper=QualificationAccountScope) is not engine
+            or session.get_bind(mapper=DemoCollectorIssuedAccountRevision) is not engine
+        ):
+            _deny("ledger56_checkpoint_original_writer_required")
+        await session.execute(_CHECKPOINT_FENCE)
+        held.check_held()
+        witness = _HeldQualificationCheckpoint0056V1(
+            selected, session, held.observation, held
+        )
+        await witness.recheck_catalog()
+        _ACTIVE_HELD_CHECKPOINTS_0056[id(witness)] = witness
+        try:
+            yield witness
+            await witness.recheck_catalog()
+        finally:
+            _ACTIVE_HELD_CHECKPOINTS_0056.pop(id(witness), None)
+
+
+def check_held_qualification_checkpoint_0056_v1(
+    repository, session, scope, row, witness
+) -> None:
+    if (
+        type(witness) is not _HeldQualificationCheckpoint0056V1
+        or _ACTIVE_HELD_CHECKPOINTS_0056.get(id(witness)) is not witness
+        or witness.session is not session
+        or type(repository) is not QualificationLedgerRepository
+        or repository.session_factory is not witness.selected.writer_factory
+        or type(scope) is not ledger.LedgerScope
+        or type(row) is not QualificationAccountScope
+        or object_session(row) is not session.sync_session
+        or (scope.environment, scope.account_id)
+        != (
+            witness.control.control.state.scope.environment,
+            witness.control.control.state.scope.account_id,
+        )
+        or (row.environment, row.account_id, row.settlement_currency)
+        != (scope.environment, scope.account_id, scope.settlement_currency)
+    ):
+        _deny("ledger56_checkpoint_original_scope_required")
+    witness.check()
+
+
+async def validate_held_positive_checkpoint_0056_v1(
+    repository, session, scope, row, witness
+):
+    def check():
+        check_held_qualification_checkpoint_0056_v1(
+            repository, session, scope, row, witness
+        )
+        return repository._now(row)
+
+    check()
+    if not _finite_payload(row.claims_json):
+        if repository._claims(row).scope != scope:
+            _deny("ledger_claim_scope_mismatch")
+        return
+    await _validate_held_finite_checkpoint_rows(session, scope, row, check=check)
+    check()
 
 
 async def validate_positive_checkpoint_claims_v2(repository, session, scope, row):

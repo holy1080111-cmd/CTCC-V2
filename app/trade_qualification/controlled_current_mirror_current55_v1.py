@@ -8,6 +8,7 @@ reservations, intents, protection or errors. Returned values are inert DATA.
 import asyncio
 import math
 import re
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from types import CoroutineType, FunctionType
@@ -16,6 +17,7 @@ from uuid import UUID
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.native_role_witness_0056_v1 import RestrictedNativeRoles0056WitnessV1
 from app.database.models.okx_demo import OkxDemoSyncCheckpoint
 from app.database.models.operations import AuditLog
 from app.database.repositories import (
@@ -24,6 +26,12 @@ from app.database.repositories import (
 from app.database.repositories import demo_control_current55_v2 as controls55
 from app.database.repositories import public_runtime_bundle_custody as custody
 from app.database.repositories import qualification_ledger as ledger
+from app.database.repositories import (
+    qualification_native_checkpoint_v2 as checkpoint,
+)
+from app.demo_automation.native_server_selectors_v2 import (
+    ConfiguredNativeDemoFactoriesV2,
+)
 from app.domain import native_clock
 from app.domain.source_primitives import (
     canonical,
@@ -155,6 +163,7 @@ def _context_signature(value):
     )
     _utc(value.original_expires_at)
     record = value.current_record
+    _mirror_database_profile(value)
     _utc(record.expires_at)
     _need(
         type(record.monotonic_deadline_ns) is int
@@ -214,6 +223,22 @@ def _mirror_control_deadline_v1(value, now):
     return min(_utc(value.lease_until), _utc(value.arm_expires_at))
 
 
+def _mirror_database_profile(value):
+    factories, roles = value.db0056_factories, value.db0056_roles
+    if factories is roles is None:
+        return None
+    _need(
+        type(factories) is ConfiguredNativeDemoFactoriesV2
+        and type(roles) is RestrictedNativeRoles0056WitnessV1
+        and factories.writer_factory is value.session_factory
+        and roles.observation.database_head == "0056"
+        and roles.observation.admission == "DENY"
+        and roles.execution_authority is False,
+        "controlled56_mirror_original_roles_required",
+    )
+    return factories, roles
+
+
 def _check(state):
     if type(state) is dict and _CONFIGURATION_OPERATIONS_V1.get(id(state)) is state:
         return _check_configuration_operation_v1(state)
@@ -270,6 +295,8 @@ def _check(state):
         and value.current_custody_repository is original.current_custody_repository
         and value.source_generation is original.source_generation
         and value.read_session is original.read_session
+        and value.db0056_factories is original.db0056_factories
+        and value.db0056_roles is original.db0056_roles
         and signature == state["signature"],
         "controlled55_mirror_original_source_changed",
     )
@@ -641,7 +668,8 @@ async def _setup_and_lock(state, session):
             {"value": str(remaining_ms)},
         ),
     )
-    await _checked_await(state, catalog55.verify_actual_issuer_catalog_v2(session))
+    if _mirror_database_profile(source) is None:
+        await _checked_await(state, catalog55.verify_actual_issuer_catalog_v2(session))
     # Same legacy capture lock, before the UID lock: no reverse legacy
     # capture->UID dependency is introduced. Both waits remain bounded.
     await _checked_await(
@@ -655,12 +683,11 @@ async def _setup_and_lock(state, session):
             )
         ),
     )
-    actual_control, event = await _checked_await(
-        state,
-        controls55.DemoControlRepositoryV2.read_in_transaction(
-            session, control.ControlScope("demo", source.scope.account_id)
-        ),
-    )
+    return control.ControlScope("demo", source.scope.account_id)
+
+
+async def _lock_scope_and_mirror(state, session, actual_control, event):
+    source = state["source"]
     _need(
         canonical(control.document(actual_control))
         == canonical(control.document(source.control_state))
@@ -697,6 +724,55 @@ async def _setup_and_lock(state, session):
     return repository, selected
 
 
+@asynccontextmanager
+async def _held_mirror_transaction(state, session):
+    control_scope = await _setup_and_lock(state, session)
+    profile = _mirror_database_profile(state["source"])
+    if profile is None:
+        actual, event = await _checked_await(
+            state,
+            controls55.DemoControlRepositoryV2.read_in_transaction(
+                session, control_scope
+            ),
+        )
+        repository, row = await _lock_scope_and_mirror(state, session, actual, event)
+        yield repository, row, None
+        return
+    factories, roles = profile
+    async with checkpoint.held_qualification_checkpoint_0056_v1(
+        factories, session, control_scope, roles=roles
+    ) as held:
+        _check(state)
+        observation = held.control.control
+        repository, row = await _lock_scope_and_mirror(
+            state, session, observation.state, observation.event_sha256
+        )
+        yield repository, row, held
+        _check(state)
+
+
+def _held_checkpoint_args(held):
+    return {} if held is None else {"_held0056": held}
+
+
+async def _mirror_catalog(state, session, held):
+    check = (
+        catalog55.verify_actual_issuer_catalog_v2(session)
+        if held is None
+        else held.recheck_catalog()
+    )
+    await _checked_await(state, check)
+
+
+async def _read_final_control(state, session, held):
+    scope = control.ControlScope("demo", state["source"].scope.account_id)
+    if held is not None:
+        return await _checked_await(state, held.recheck_control())
+    return await _checked_await(
+        state, controls55.DemoControlRepositoryV2.read_in_transaction(session, scope)
+    )
+
+
 async def _write(state, projection, counts, current_receipt, anchor):
     source = state["source"]
     _check(state)
@@ -705,11 +781,18 @@ async def _write(state, projection, counts, current_receipt, anchor):
     state["sessions"].append(session)
     transaction = session.begin()
     state["transactions"].append(transaction)
-    async with session, transaction:
-        repository, selected = await _setup_and_lock(state, session)
+    async with (
+        session,
+        transaction,
+        _held_mirror_transaction(state, session) as (repository, selected, held),
+    ):
+        checkpoint_args = _held_checkpoint_args(held)
         before = await _metadata(state, session)
         point = await _checked_await(
-            state, repository._bootstrap_checkpoint(session, source.scope, selected)
+            state,
+            repository._bootstrap_checkpoint(
+                session, source.scope, selected, **checkpoint_args
+            ),
         )
         _need(
             point.state_sha256 == anchor,
@@ -718,7 +801,7 @@ async def _write(state, projection, counts, current_receipt, anchor):
         local_before = await _checked_await(
             state,
             repository._read_portfolio_checkpoint_locked(
-                session, source.scope, selected
+                session, source.scope, selected, **checkpoint_args
             ),
         )
         previous = await _checked_await(state, session.get(OkxDemoSyncCheckpoint, 1))
@@ -743,13 +826,16 @@ async def _write(state, projection, counts, current_receipt, anchor):
         local_after = await _checked_await(
             state,
             repository._read_portfolio_checkpoint_locked(
-                session, source.scope, selected
+                session, source.scope, selected, **checkpoint_args
             ),
         )
         state["local_after"] = local_after
         _same_other_local(local_before, local_after)
         after_point = await _checked_await(
-            state, repository._bootstrap_checkpoint(session, source.scope, selected)
+            state,
+            repository._bootstrap_checkpoint(
+                session, source.scope, selected, **checkpoint_args
+            ),
         )
         _need(
             after_point.state_sha256 == anchor
@@ -812,12 +898,7 @@ async def _write(state, projection, counts, current_receipt, anchor):
             and audit.occurred_at == sampled[4],
             "controlled55_mirror_written_rows_changed",
         )
-        final_control, final_event = await _checked_await(
-            state,
-            controls55.DemoControlRepositoryV2.read_in_transaction(
-                session, control.ControlScope("demo", source.scope.account_id)
-            ),
-        )
+        final_control, final_event = await _read_final_control(state, session, held)
         _need(
             canonical(control.document(final_control))
             == canonical(control.document(source.control_state))
@@ -825,12 +906,15 @@ async def _write(state, projection, counts, current_receipt, anchor):
             "controlled55_mirror_control_changed",
         )
         final_point = await _checked_await(
-            state, repository._bootstrap_checkpoint(session, source.scope, selected)
+            state,
+            repository._bootstrap_checkpoint(
+                session, source.scope, selected, **checkpoint_args
+            ),
         )
         final_local = await _checked_await(
             state,
             repository._read_portfolio_checkpoint_locked(
-                session, source.scope, selected
+                session, source.scope, selected, **checkpoint_args
             ),
         )
         _need(
@@ -840,7 +924,7 @@ async def _write(state, projection, counts, current_receipt, anchor):
             "controlled55_mirror_final_local_or_revision_changed",
         )
         state["final_local"] = final_local
-        await _checked_await(state, catalog55.verify_actual_issuer_catalog_v2(session))
+        await _mirror_catalog(state, session, held)
         final = await _metadata(state, session)
         _need(
             before[:4] == final[:4] and before[4] <= sampled[4] <= final[4],
@@ -876,8 +960,12 @@ async def _readback(state, written):
     state["sessions"].append(session)
     transaction = session.begin()
     state["transactions"].append(transaction)
-    async with session, transaction:
-        repository, selected = await _setup_and_lock(state, session)
+    async with (
+        session,
+        transaction,
+        _held_mirror_transaction(state, session) as (repository, selected, held),
+    ):
+        checkpoint_args = _held_checkpoint_args(held)
         before = await _metadata(state, session)
         _need(
             session is not written["session"]
@@ -887,7 +975,10 @@ async def _readback(state, written):
         )
         await _checked_await(state, session.refresh(selected))
         point = await _checked_await(
-            state, repository._bootstrap_checkpoint(session, source.scope, selected)
+            state,
+            repository._bootstrap_checkpoint(
+                session, source.scope, selected, **checkpoint_args
+            ),
         )
         _need(
             ledger.canonical(point.state) == written["ledger_json"],
@@ -919,14 +1010,14 @@ async def _readback(state, written):
         local = await _checked_await(
             state,
             repository._read_portfolio_checkpoint_locked(
-                session, source.scope, selected
+                session, source.scope, selected, **checkpoint_args
             ),
         )
         _need(
             local.document_json == written["local_after"].document_json,
             "controlled55_mirror_full_local_readback_changed",
         )
-        await _checked_await(state, catalog55.verify_actual_issuer_catalog_v2(session))
+        await _mirror_catalog(state, session, held)
         after = await _metadata(state, session)
         _need(
             before[:4] == after[:4] and before[4] <= after[4],

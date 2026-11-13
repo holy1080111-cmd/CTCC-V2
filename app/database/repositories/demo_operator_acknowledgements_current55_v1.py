@@ -6,6 +6,7 @@ all committed columns in another session/XID. Unknown commit is never retried.
 """
 
 import asyncio
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 
@@ -15,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database.models.account_revision_collector_lineage import (
     DemoCollectorCurrentRevisionLineage as Lineage,
 )
-from app.database.models.demo_control import DemoControlJournal
+from app.database.models.demo_control import DemoAccountControl, DemoControlJournal
 from app.database.models.demo_operator_acknowledgements_v55 import (
     DemoControlClearAcknowledgementV2 as ClearRow,
 )
@@ -28,7 +29,11 @@ from app.database.repositories import (
 from app.database.repositories import (
     collector_current_0055_multirole_catalog_v1 as catalog55,
 )
-from app.database.repositories.demo_control import ControlObservation
+from app.database.repositories import qualification_native_checkpoint_v2 as checkpoint
+from app.database.repositories.demo_control import (
+    ControlObservation,
+    DemoControlRepository,
+)
 from app.database.repositories.demo_control_current55_v2 import (
     DemoControlRepositoryV2,
     _validated_clear_row_v2,
@@ -51,6 +56,13 @@ SELECT current_user,session_user,current_setting('role'),r.oid::bigint,r.rolsupe
        clock_timestamp()
 FROM pg_roles r WHERE r.rolname=current_user
 """)
+_OPERATOR_FENCE = text(
+    "LOCK TABLE public.demo_account_controls, public.demo_control_journal, "
+    "public.demo_control_clear_acknowledgements_v2, "
+    "public.demo_policy_counter_initializations_v1, "
+    "public.demo_collector_current_revision_lineages "
+    "IN ROW EXCLUSIVE MODE NOWAIT"
+)
 _CLEAR_COLUMNS = (
     "ack_sha256",
     "environment",
@@ -166,7 +178,7 @@ async def _metadata(session):
     return row
 
 
-async def _admit(session, replay):
+async def _admit(session):
     for statement in (
         "SET TRANSACTION ISOLATION LEVEL READ COMMITTED",
         "SET LOCAL search_path TO pg_catalog, public, pg_temp",
@@ -176,7 +188,47 @@ async def _admit(session, replay):
         "SET LOCAL statement_timeout='1000ms'",
     ):
         await session.execute(text(statement))
-    await catalog55.verify_actual_control_catalog_v2(session)
+
+
+@asynccontextmanager
+async def _transaction(session, source):
+    # The original native operator capability is replayed after the transaction
+    # settings await. Only that replay can select the actual DB0056 branch.
+    await _admit(session)
+    replay = source()
+    selected_database = replay._owned_database_0056
+    if selected_database is None:
+        await catalog55.verify_actual_control_catalog_v2(session)
+        source()
+        yield None
+        await catalog55.verify_actual_control_catalog_v2(session)
+        source()
+        return
+    selected, roles = selected_database
+    if replay.session_factory is not selected.writer_factory:
+        _deny("control56_operator_original_writer_required")
+    async with checkpoint.held_qualification_checkpoint_0056_v1(
+        selected, session, replay.previous_control.scope, roles=roles
+    ) as held:
+        source()
+        held.check()
+        connection = selected.writer_factory.kw["bind"].sync_engine
+        if session.get_bind(clause=_OPERATOR_FENCE) is not connection or any(
+            session.get_bind(mapper=model) is not connection
+            for model in (
+                DemoAccountControl,
+                DemoControlJournal,
+                ClearRow,
+                CounterRow,
+                Lineage,
+            )
+        ):
+            _deny("control56_operator_original_writer_required")
+        await session.execute(_OPERATOR_FENCE)
+        await held.recheck_catalog()
+        source()
+        yield held
+    source()
 
 
 def _same_control(actual, event, replay, *, target=None, target_event=None):
@@ -188,10 +240,15 @@ def _same_control(actual, event, replay, *, target=None, target_event=None):
         _deny("control55_operator_control_revision_changed")
 
 
-async def _locked(session, replay, ledger, *, target=None, target_event=None):
-    state, event = await DemoControlRepositoryV2.read_in_transaction(
-        session, replay.previous_control.scope
-    )
+async def _locked(
+    session, replay, ledger, *, target=None, target_event=None, held=None
+):
+    if held is None:
+        state, event = await DemoControlRepositoryV2.read_in_transaction(
+            session, replay.previous_control.scope
+        )
+    else:
+        state, event = await held.recheck_control()
     _same_control(state, event, replay, target=target, target_event=target_event)
     scope_row = await ledger._locked(session, replay.scope)
     saved = await session.scalar(
@@ -210,7 +267,7 @@ async def _locked(session, replay, ledger, *, target=None, target_event=None):
     if saved.lineage_json.encode("utf-8") != replay.lineage.lineage_json:
         _deny("control55_operator_original_lineage_changed")
     point = await ledger._read_portfolio_checkpoint_locked(
-        session, replay.scope, scope_row
+        session, replay.scope, scope_row, _held0056=held
     )
     _flat(replay, point)
     return scope_row, state, event, saved, point
@@ -481,13 +538,23 @@ def _make_store_clear_v1():
     replay_source = native._replay_owned_control_operator_source_v1
     source_key = _SOURCE_KEY
 
-    async def store(session, row, target, state):
+    async def store(session, row, target, state, held):
         # Ack row is already flushed in this same XID. Old54 _store remains exact
         # v1 and is deliberately not used to serialize a v2 clear event.
+        replay = replay_source(state, key=source_key)
+        if held is None:
+            live = await DemoControlRepositoryV2._locked(session, target.scope)
+        else:
+            _same_control(*await held.recheck_control(), replay)
+            live = await DemoControlRepository._locked(session, target.scope)
+            held.check()
         replay_source(state, key=source_key)
-        live = await DemoControlRepositoryV2._locked(session, target.scope)
-        replay_source(state, key=source_key)
-        if live is None or live.control_revision != row.stopped_control_revision:
+        if (
+            type(live) is not DemoAccountControl
+            or live.control_revision != row.stopped_control_revision
+            or (live.environment, live.account_id)
+            != (target.scope.environment, target.scope.account_id)
+        ):
             _deny("control55_operator_control_CAS_changed")
         for name, value in {
             "control_revision": target.revision,
@@ -520,7 +587,15 @@ def _make_store_clear_v1():
             )
         )
         await session.flush()
-        replay_source(state, key=source_key)
+        replay = replay_source(state, key=source_key)
+        if held is not None:
+            _same_control(
+                *await held.recheck_control(),
+                replay,
+                target=target,
+                target_event=row.clear_event_sha256,
+            )
+            replay_source(state, key=source_key)
 
     return store
 
@@ -639,11 +714,15 @@ def _make_entry_v1():
             if remaining <= 0:
                 _deny("control55_operator_original_expiry")
             async with asyncio.timeout(remaining):
-                async with replay.session_factory() as session, session.begin():
+                async with (
+                    replay.session_factory() as session,
+                    session.begin(),
+                    _transaction(session, source) as held,
+                ):
                     write_session = session
-                    await _admit(session, source())
-                    source()
-                    scope_row, _, _, _, point = await _locked(session, source(), ledger)
+                    scope_row, _, _, _, point = await _locked(
+                        session, source(), ledger, held=held
+                    )
                     source()
                     if replay.purpose == "policy_counter_initialize":
                         existing = await session.scalar(
@@ -668,7 +747,7 @@ def _make_entry_v1():
                     await session.refresh(saved)
                     source()
                     if replay.purpose == "clear_stop":
-                        await store_clear(session, saved, target, state)
+                        await store_clear(session, saved, target, state, held)
                         source()
                         _validated_clear_row_v2(saved)
                         target_event = saved.clear_event_sha256
@@ -680,20 +759,28 @@ def _make_entry_v1():
                         columns = _COUNTER_COLUMNS
                         pin = saved.initialization_sha256
                     written = _row_raw(saved, columns)
-                    await catalog55.verify_actual_control_catalog_v2(session)
-                    source()
+                    if held is not None:
+                        _same_control(
+                            *await held.recheck_control(),
+                            source(),
+                            target=target,
+                            target_event=target_event,
+                        )
                 source()
-                async with replay.session_factory() as session, session.begin():
+                async with (
+                    replay.session_factory() as session,
+                    session.begin(),
+                    _transaction(session, source) as held,
+                ):
                     if session is write_session:
                         _deny("control55_operator_independent_session_required")
-                    await _admit(session, source())
-                    source()
                     scope_row, current_state, current_event, _, _ = await _locked(
                         session,
                         source(),
                         ledger,
                         target=target,
                         target_event=target_event,
+                        held=held,
                     )
                     source()
                     readback_metadata = await _metadata(session)
@@ -731,8 +818,13 @@ def _make_entry_v1():
                         written,
                     )
                     _verify_operator_readback_v1(value, source())
-                    await catalog55.verify_actual_control_catalog_v2(session)
-                    source()
+                    if held is not None:
+                        _same_control(
+                            *await held.recheck_control(),
+                            source(),
+                            target=target,
+                            target_event=target_event,
+                        )
                 source()
                 return finish(state, value, key=source_key)
         except BaseException as error:  # noqa: BLE001 -- Retain unknown state; preserve cancellation without private error text.
